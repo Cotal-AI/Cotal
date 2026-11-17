@@ -8,8 +8,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // The caller reserves a fresh 0700 scratch directory for this invocation alone. This script
 // atomically claims it and retains the small fixture/receipt as evidence, never deletes it.
-const [repoArg, scratchArg] = process.argv.slice(2);
+const [repoArg, scratchArg, phase = 'uid'] = process.argv.slice(2);
 assert(repoArg && scratchArg, 'usage: repro-darwin-peer-close.mts <repo> <exclusive-private-scratch>');
+assert(phase === 'uid' || phase === 'pid', 'phase must be uid or pid');
 const repo = resolve(repoArg), scratch = resolve(scratchArg);
 const parent = lstatSync(scratch);
 assert(parent.isDirectory() && !parent.isSymbolicLink() && parent.uid === process.geteuid!() && (parent.mode & 0o777) === 0o700);
@@ -40,16 +41,16 @@ try {
     nativePath, nativeSHA256: hash(nativePath),
   };
   writeFileSync(join(root, 'identity.json'), JSON.stringify(identity, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
-  const { openVerified } = await import(pathToFileURL(join(repo, 'bin/daemon/client.ts')).href);
-  const { defaultPeerUid, assertSocketPathFits } = await import(pathToFileURL(join(repo, 'bin/daemon/endpoint.ts')).href);
+  const { ClosedPeerRefusal, openVerified } = await import(pathToFileURL(join(repo, 'bin/daemon/client.ts')).href);
+  const { defaultPeerUid, defaultPeerPid, assertSocketPathFits } = await import(pathToFileURL(join(repo, 'bin/daemon/endpoint.ts')).href);
   const paths = { dir: join(root, 'runtime'), socket: join(root, 'runtime/d.sock'), state: join(root, 'state'), lock: join(root, 'state/daemon.lock') };
   assertSocketPathFits(paths.socket);
   assert(process.platform === 'darwin' || process.platform === 'linux', 'requires a native Unix socket host');
-  const closed = join(root, 'closed.json'), ready = join(root, 'ready');
+  const closed = join(root, 'closed.json'), ready = join(root, 'ready'), release = join(root, 'release');
   // Independent listener seals receipt after accepted socket close and listener close callbacks.
   // Its bytes count is server-observed only, not proof of attempted client writes.
-  const code = `const fs=require('fs'),net=require('net');let bytes=0;const server=net.createServer(s=>{s.on('data',b=>bytes+=b.length);s.once('close',()=>server.close(()=>fs.writeFileSync(process.argv[2],JSON.stringify({pid:process.pid,bytes,closedAt:new Date().toISOString()}),{flag:'wx'})));s.destroy()});server.listen(process.argv[1],()=>{fs.chmodSync(process.argv[1],0o600);fs.writeFileSync(process.argv[3],'ready',{flag:'wx'})});setTimeout(()=>process.exit(91),10000).unref();`;
-  child = spawn(process.execPath, ['-e', code, paths.socket, closed, ready], { stdio: ['ignore', 'ignore', 'inherit'] });
+  const code = `const fs=require('fs'),net=require('net');let bytes=0;const server=net.createServer(s=>{s.on('data',b=>bytes+=b.length);s.once('close',()=>server.close(()=>fs.writeFileSync(process.argv[2],JSON.stringify({pid:process.pid,bytes,closedAt:new Date().toISOString()}),{flag:'wx'})));if(process.argv[4]==='pid'){const t=setInterval(()=>{if(fs.existsSync(process.argv[5])){clearInterval(t);s.destroy()}},2)}else s.destroy()});server.listen(process.argv[1],()=>{fs.chmodSync(process.argv[1],0o600);fs.writeFileSync(process.argv[3],'ready',{flag:'wx'})});setTimeout(()=>process.exit(91),10000).unref();`;
+  child = spawn(process.execPath, ['-e', code, paths.socket, closed, ready, phase, release], { stdio: ['ignore', 'ignore', 'inherit'] });
   child.on('error', error => { spawnError = error; });
   closePromise = new Promise<void>(resolveClose => child!.once('close', () => { childClosed = true; resolveClose(); }));
   const startDeadline = Date.now() + 5000;
@@ -59,9 +60,10 @@ try {
     await new Promise(r => setTimeout(r, 10));
   }
   let nativeReadReturned = false;
+  let uidReadReturned = false;
   let failure: unknown;
   try {
-    const sock = await openVerified({ paths, timeoutMs: 1000, peerUid: (socket: import('node:net').Socket) => {
+    const afterClose = (socket: import('node:net').Socket): number => {
       // The existing test seam only schedules the stock native reader after the real close.
       // No native result, error or credential is injected.
       const deadline = Date.now() + 3000;
@@ -69,10 +71,18 @@ try {
         assert(Date.now() < deadline, 'listener close receipt missing');
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
       }
-      const uid = defaultPeerUid(socket);
+      const value = phase === 'uid' ? defaultPeerUid(socket) : defaultPeerPid(socket);
       nativeReadReturned = true;
-      return uid;
-    } });
+      return value;
+    };
+    const sock = await openVerified({ paths, timeoutMs: 1000, ...(phase === 'uid'
+      ? { peerUid: afterClose }
+      : { peerUid: (socket: import('node:net').Socket) => {
+        const uid = defaultPeerUid(socket);
+        uidReadReturned = true;
+        writeFileSync(release, 'close', { flag: 'wx', mode: 0o600 });
+        return uid;
+      }, peerPid: afterClose }) });
     sock.destroy();
   } catch (error) { failure = error; }
   await boundedClose(closePromise, 5000);
@@ -82,16 +92,17 @@ try {
   const receipt = JSON.parse(readFileSync(closed, 'utf8'));
   assert.equal(receipt.bytes, 0);
   assert.equal(existsSync(paths.socket), false);
+  if (phase === 'pid') assert.equal(uidReadReturned, true, 'the first real uid read must finish before the second-read close');
   if (process.platform === 'darwin') {
     assert.equal(nativeReadReturned, false);
-    assert(failure instanceof Error && (failure as Error & { code?: string }).code === 'PEER_UID_MISMATCH' && failure.message.includes('Socket is not connected'), 'unchanged Darwin entry must reproduce original native peer-read failure');
+    assert(failure instanceof Error && failure instanceof ClosedPeerRefusal && (failure as Error & { code?: string }).code === 'PEER_UID_MISMATCH' && failure.message.includes('Socket is not connected'), 'closed Darwin peer remains refused with a typed stopping observation');
   } else {
     assert.equal(nativeReadReturned, true, 'Linux control must actually read native peer credentials');
     assert(failure instanceof Error && (failure as Error & { code?: string }).code === 'PEER_NOT_LOCK_OWNER', 'Linux control requires the expected lifetime-owner refusal');
   }
   assert.equal(hash(nativePath), identity.nativeSHA256);
   assert(require.cache[nativePath], 'the pinned native helper must have actually loaded');
-  const outcome = { accepted: true, identity, platform: process.platform, node: process.version, repo, fixture: root, listener: receipt, nativeReadReturned, scope: process.platform === 'darwin' ? 'unchanged native Darwin reproduction' : 'Linux scheduling control only, not Darwin acceptance', error: { name: (failure as Error).name, code: (failure as Error & { code?: string }).code, message: (failure as Error).message } };
+  const outcome = { accepted: true, phase, identity, platform: process.platform, node: process.version, repo, fixture: root, listener: receipt, nativeReadReturned, scope: process.platform === 'darwin' ? 'native Darwin closed peer remains refused' : 'Linux scheduling control only, not Darwin acceptance', error: { name: (failure as Error).name, code: (failure as Error & { code?: string }).code, message: (failure as Error).message } };
   writeFileSync(join(root, 'outcome.json'), JSON.stringify(outcome, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   console.log(JSON.stringify(outcome, null, 2));
 } finally {
