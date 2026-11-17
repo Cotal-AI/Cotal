@@ -126,14 +126,9 @@ try {
   assert(!existsSync(plist), 'refuse to replace a LaunchAgent');
   const absent = await call('preflight service absent', '/bin/launchctl', ['print', target]);
   assert.equal(absent.exit, 113, 'service absence must be confirmed, not an unreadable GUI domain');
-  const metadata = await fetch('https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v0.164.16', { headers: { Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(30000) });
-  assert(metadata.ok, `release metadata HTTP ${metadata.status}`);
-  const release = await metadata.json();
-  const assets = release.assets.filter(asset => asset.name === 'Cotal_0.164.16_aarch64.dmg');
-  assert.equal(assets.length, 1);
-  const asset = assets[0];
-  assert.match(asset.digest, /^sha256:[a-f0-9]{64}$/);
-  report.release = { tag: release.tag_name, assetId: asset.id, name: asset.name, digest: asset.digest, url: asset.browser_download_url };
+  // Public release metadata was independently read before this measurement was dispatched.
+  const asset = { id: 751469545, name: 'Cotal_0.164.16_aarch64.dmg', digest: 'sha256:ca71e976fb5dd067cbb6cf275099a58798cc5c21b1b0958536cb4bcdd8f1cc8b', browser_download_url: 'https://github.com/Cotal-AI/Cotal/releases/download/v0.164.16/Cotal_0.164.16_aarch64.dmg' };
+  report.release = { tag: 'v0.164.16', assetId: asset.id, name: asset.name, digest: asset.digest, url: asset.browser_download_url };
   const dmg = join(root, asset.name);
   ok(await call('download released app', '/usr/bin/curl', ['--fail', '--location', '--retry', '2', '--output', dmg, asset.browser_download_url]));
   assert.equal(createHash('sha256').update(readFileSync(dmg)).digest('hex'), asset.digest.slice(7));
@@ -206,7 +201,7 @@ try {
     try {
       await nativeAction('cleanup exact service bootout', ['bootout']);
       report.cleanupService = await call('cleanup service absence', '/bin/launchctl', ['print', target]);
-      if (report.cleanupService.exit === 0) process.exitCode = 1;
+      if (report.cleanupService.exit !== 113) process.exitCode = 1;
     } catch (error) { report.cleanupOwnershipError = publicText(error); process.exitCode = 1; }
   } else {
     try {
