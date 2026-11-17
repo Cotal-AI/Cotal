@@ -32,6 +32,12 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "manager.
 const src = readFileSync(SRC, "utf8");
 const count = (needle: string): number => src.split(needle).length - 1;
 
+const coverageDoc = readFileSync(join(dirname(SRC), "..", "..", "..", "docs", "control-discovery.mdx"), "utf8");
+c("the discovery reference distinguishes function coverage from a shipped journal action path",
+  coverageDoc.includes("## Journal action coverage")
+    && coverageDoc.includes("Passing them does not prove")
+    && coverageDoc.includes("not a journal cutover"));
+console.log("\nCoverage scope: source wiring only, not a shipped journal action path. See docs/control-discovery.mdx#journal-action-coverage.");
 console.log("\n── the span this suite reads, asserted rather than assumed ──");
 // Every cell below is a count over this text. A file that moved, or an anchor that was renamed,
 // would make the counts trivially zero and several claims vacuously true.
