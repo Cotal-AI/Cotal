@@ -13,6 +13,11 @@ export function extensionNpmMutationPath(): string {
   return `${extensionMutationLockPath()}.npm-child`;
 }
 
+/** Check a retained connector prefix under its caller-held writer before copying its npm-owned state. */
+export function assertExtensionPrefixIdle(config: string): void {
+  assertNoProcessMutation(join(config, ".extensions.lock.npm-child"), "extension npm mutation");
+}
+
 function canonicalGlobalRoot(root: string): string {
   mkdirSync(root, { recursive: true });
   return realpathSync(root);

@@ -5,7 +5,7 @@ import { globalConfigDir } from "@cotal-ai/core";
 import { executionIdentity } from "./execution-identity.js";
 import { acquireLock } from "./advisory-lock.js";
 import { readLocalRecordSource } from "./local-record-source.js";
-import { claimExtensionMutationLock } from "./extension-mutation.js";
+import { assertExtensionPrefixIdle, claimExtensionMutationLock } from "./extension-mutation.js";
 import { claimUpdateClosureAccess } from "./update-closure.js";
 
 interface Selection { readonly v: 1; readonly entry: string; readonly version: string; readonly root: string }
@@ -53,7 +53,10 @@ export function connectorConfigDir(): string {
   if (!id) return globalConfigDir();
   if (existsSync(id.path)) ownedAncestors(id.path);
   const bytes = readLocalRecordSource(join(id.path, "selection.json"), 8192, true);
-  if (!bytes) return globalConfigDir();
+  if (!bytes) {
+    const previous = previousConfig(id);
+    return previous === join(id.path, "cotal") ? previous : globalConfigDir();
+  }
   ownedAncestors(id.path);
   const record = JSON.parse(bytes.toString("utf8")) as Selection;
   if (record.v !== 1 || record.entry !== id.entry || record.version !== id.version || record.root !== join(id.path, "cotal")) throw new Error("connector retention selection differs from this installation");
@@ -92,6 +95,7 @@ export function retainConnectorConfig(): string {
         releaseWriter = () => { writer.release(); pass.release(); };
       } catch (error) { pass.release(); throw error; }
     }
+    assertExtensionPrefixIdle(current);
     if (connectorConfigDir() !== globalConfigDir()) return connectorConfigDir();
     if ((previousConfig(id) ?? globalConfigDir()) !== current) throw new Error("connector retention source changed before its copy; retry reconciliation");
     mkdirSync(id.path, { recursive: true, mode: 0o700 });
@@ -111,12 +115,12 @@ export function retainConnectorConfig(): string {
     } finally { if (existsSync(staging)) rmSync(staging, { recursive: true }); }
     if (realpathSync(root) !== root) throw new Error("retained connector state resolved through a link");
     const record: Selection = { v: 1, entry: id.entry, version: id.version, root };
-    const temporary = join(id.path, `.selection-${randomBytes(8).toString("hex")}`);
-    writeFileSync(temporary, JSON.stringify(record), { flag: "wx", mode: 0o600 });
-    renameSync(temporary, join(id.path, "selection.json"));
     const next = join(dirname(id.path), `.current-${randomBytes(8).toString("hex")}`);
     writeFileSync(next, JSON.stringify(record), { flag: "wx", mode: 0o600 });
     renameSync(next, join(dirname(id.path), "current.json"));
+    const temporary = join(id.path, `.selection-${randomBytes(8).toString("hex")}`);
+    writeFileSync(temporary, JSON.stringify(record), { flag: "wx", mode: 0o600 });
+    renameSync(temporary, join(id.path, "selection.json"));
     return root;
   } finally { releaseWriter(); releaseSeed(); releaseClosure(); }
 }

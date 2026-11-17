@@ -15,7 +15,7 @@ writeFileSync(entry, "// installed fixture\n");
 const module = pathToFileURL(join(import.meta.dirname, "../src/connector-retention.ts")).href;
 let passed = 0;
 try {
-  for (const scenario of ["retain", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version"] as const) {
+  for (const scenario of ["retain", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "orphan-child", "interrupted-lineage"] as const) {
     const config = join(root, scenario);
     mkdirSync(join(config, "cotal/seed/store/0.162.0"), { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "cotal/extensions/node_modules/old"), { recursive: true, mode: 0o700 });
@@ -23,14 +23,17 @@ try {
     writeFileSync(join(config, "cotal/extensions/node_modules/old/lazy.js"), "old graph\n");
     const script = `
 import assert from 'node:assert/strict';
-import {readFileSync,writeFileSync,symlinkSync,renameSync,mkdirSync} from 'node:fs';
+import {readFileSync,writeFileSync,symlinkSync,renameSync,mkdirSync,rmSync} from 'node:fs';
+import {spawn,spawnSync} from 'node:child_process';
+import fs from 'node:fs';
+import {syncBuiltinESMExports} from 'node:module';
 import {join,dirname} from 'node:path';
 ${scenario === "no-identity" ? "" : `Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});`}
 const {connectorConfigDir,retainConnectorConfig}=await import(${JSON.stringify(module)});
 const original=${JSON.stringify(join(config, "cotal"))};
 assert.equal(connectorConfigDir(),original);
 ${scenario === "no-identity" ? `assert.throws(()=>retainConnectorConfig(),/installed POSIX/);` : scenario === "linked-prefix" ? `renameSync(join(original,'extensions'),join(original,'foreign'));symlinkSync(join(original,'foreign'),join(original,'extensions'));assert.throws(()=>retainConnectorConfig(),/non-directory/);` : `
-const selected=retainConnectorConfig();
+${scenario === "interrupted-lineage" ? `const rename=fs.renameSync;let publications=0;fs.renameSync=(source,target)=>{if(/(?:selection|current)\\.json$/.test(String(target))&&++publications===2)throw new Error('interrupted second publication');return rename(source,target)};syncBuiltinESMExports();assert.throws(()=>retainConnectorConfig(),/interrupted second publication/);fs.renameSync=rename;syncBuiltinESMExports();const selected=connectorConfigDir();assert.notEqual(selected,original);` : "const selected=retainConnectorConfig();"}
 assert.notEqual(selected,original);
 assert.equal(connectorConfigDir(),selected);
 assert.equal(retainConnectorConfig(),selected);
@@ -42,6 +45,8 @@ ${scenario === "invalid-selection" ? `const record=join(dirname(selected),'selec
 ${scenario === "linked-parent" ? `const parent=dirname(dirname(dirname(selected))),outside=join(original,'moved-install');renameSync(parent,outside);symlinkSync(outside,parent);assert.throws(()=>connectorConfigDir(),/private|link/);` : ""}
 ${scenario === "stage-root" ? `const stage=join(original,'.extensions.stage-fixture','config');mkdirSync(join(stage,'cotal/extensions'),{recursive:true,mode:0o700});process.env.XDG_CONFIG_HOME=stage;assert.equal(connectorConfigDir(),join(stage,'cotal'));` : ""}
 ${scenario === "next-version" ? `writeFileSync(${JSON.stringify(join(installed, "package.json"))},JSON.stringify({name:'cotal-ai',version:'0.165.5',bin:{cotal:'./dist/cotal.js'}}));const next=retainConnectorConfig();assert.notEqual(next,selected);assert.equal(readFileSync(join(next,'extensions/node_modules/old/lazy.js'),'utf8'),'new graph\\n');assert.equal(readFileSync(join(original,'extensions/node_modules/old/lazy.js'),'utf8'),'old graph\\n');` : ""}
+${scenario === "interrupted-lineage" ? `writeFileSync(${JSON.stringify(join(installed, "package.json"))},JSON.stringify({name:'cotal-ai',version:'0.165.6',bin:{cotal:'./dist/cotal.js'}}));const next=retainConnectorConfig();assert.equal(readFileSync(join(next,'extensions/node_modules/old/lazy.js'),'utf8'),'new graph\\n','published selection must remain source when lineage publication was interrupted');` : ""}
+${scenario === "orphan-child" ? `const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});try{const wrapper=spawnSync(process.execPath,['--import','tsx','--input-type=module','-e',${JSON.stringify(`import {beginExtensionNpmMutation} from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/extension-mutation.ts")).href)};beginExtensionNpmMutation().markLive(Number(process.env.MARKED_CHILD));`)}],{env:{...process.env,XDG_CONFIG_HOME:dirname(selected),MARKED_CHILD:String(child.pid)},encoding:'utf8'});assert.equal(wrapper.status,0,wrapper.stderr);writeFileSync(${JSON.stringify(join(installed, "package.json"))},JSON.stringify({name:'cotal-ai',version:'0.165.7',bin:{cotal:'./dist/cotal.js'}}));assert.throws(()=>retainConnectorConfig(),/still running|mutation/,'live orphan marker must block source copy even with free locks');}finally{rmSync(join(selected,'.extensions.lock.npm-child'),{force:true});child.kill('SIGTERM');await new Promise(done=>child.once('exit',done));}` : ""}
 `}
 console.log('PASS');
 `;
