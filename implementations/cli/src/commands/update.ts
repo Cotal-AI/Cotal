@@ -947,7 +947,7 @@ export function printLegacyReport(
 function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string } {
   const cache = mkdtempSync(join(tmpdir(), "cotal-npm-view-"));
   try {
-    const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=3000"]);
+    const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000"]);
     if (result.status !== 0) return { ok: false, error: failure(result) };
     try {
       return { ok: true, version: parseNpmVersion(result.stdout) };

@@ -30,7 +30,7 @@ for (const consistent of [false, true]) {
   const actions: string[] = [], lines: string[] = [];
   const offline: UpdateRuntime = { ...rt, isCurrent: () => consistent,
     npm: args => {
-      assert.ok(args.includes("--fetch-retries=0") && args.includes("--fetch-timeout=3000"));
+      assert.ok(args.includes("--fetch-retries=0") && args.includes("--fetch-timeout=15000"));
       return { status: 1, stdout: '{"error":{"code":"EAI_AGAIN"}}', stderr: "npm error EAI_AGAIN" };
     },
     reportRunningManager: async () => { actions.push("custody"); return "legacy"; },
