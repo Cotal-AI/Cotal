@@ -468,6 +468,10 @@ try {
 } finally {
   if (occupiedInstance) {
     try {
+      assert(occupiedSeat?.birth, 'no seat stop without its captured native lifetime');
+      assert.equal(processBirth(occupiedSeat.pid), occupiedSeat.birth, 'no seat stop after native lifetime replacement');
+      const inventory = body(await old('verify original occupied lifecycle before fixture cleanup', ['ps', '--on', occupiedInstance, '--space', report.participant.space, '--json']));
+      assert(inventory.items?.some(row => row.name === occupiedName && row.lifecycleUid === occupiedSeat.lifecycleUid), 'no seat stop if its public lifecycle changed');
       const stop = await old('stop only fixture-owned occupied seat through original Manager', ['stop', occupiedName, '--on', occupiedInstance, '--space', report.participant.space, '--json']);
       ok(stop);
       if (occupiedSeat) {
