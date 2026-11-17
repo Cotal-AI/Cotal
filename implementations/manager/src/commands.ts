@@ -56,7 +56,7 @@ type Values = Record<string, string | undefined>;
 
 /** Read the resume commit token from its protected handoff file once, check it against the
  *  digest named on argv, then unlink it. Errors name the field only; the value is never echoed. */
-export function readResumeCommitFile(path: string, sha256: string): string {
+function readResumeCommitFile(path: string, sha256: string): string {
   if (!path.startsWith("/") || path.length > 4096 || /[\u0000-\u001f\u007f]/u.test(path) || !/^[0-9a-f]{64}$/.test(sha256)) throw new CommandFailure("refused", "USAGE_INVALID", "--resume-commit-file needs an absolute protected path and --resume-commit-sha256 its full digest");
   protectedCredentialReference(path);
   const bytes = readLocalRecordSource(path, 128, true);
