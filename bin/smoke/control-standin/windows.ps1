@@ -13,7 +13,8 @@ $shared = "C:\cotal-standin"
 $epFile = Join-Path $env:RUNNER_TEMP "standin-endpoint.json"
 $log = Join-Path $shared "standin.log"
 $user = "cotalstandin"
-$password = "Cx1!" + [guid]::NewGuid().ToString("N").Substring(0, 20)
+# `net user` asks for confirmation on a password over 14 characters, and there is no one to answer.
+$password = "Cx1!" + [guid]::NewGuid().ToString("N").Substring(0, 10)
 
 function Invoke-Hook($ep) {
   $env:COTAL_NAME = "victim"
@@ -37,6 +38,7 @@ New-Item -ItemType Directory -Force $shared | Out-Null
 icacls $shared /grant "Everyone:(OI)(CI)F" | Out-Null
 Copy-Item (Join-Path $PSScriptRoot "standin.mjs") $shared -Force
 net user $user $password /add | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "could not create the local user $user" }
 $victim = $null
 $standin = $null
 try {
