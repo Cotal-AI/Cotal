@@ -56,17 +56,28 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
           const current = observed.managers.find(row => row.space === manager.space && row.instanceId === manager.instanceId);
           if (!current || current.pid !== manager.pid || processBirth(manager.pid!) !== managerBirth) throw new Error("hosted Manager lifetime changed during preserving observation");
         };
+        const bounded = async <T>(read: () => Promise<T>): Promise<T> => {
+          const remaining = preservingDeadline! - Date.now();
+          if (remaining <= 0) throw preservingPreinstallRefusal(preinstallPreservationObservation(observed));
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const result = await Promise.race([read(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(preservingPreinstallRefusal(preinstallPreservationObservation(observed))), remaining); })]);
+            if (Date.now() >= preservingDeadline!) throw preservingPreinstallRefusal(preinstallPreservationObservation(observed));
+            return result;
+          } finally { clearTimeout(timer); }
+        };
         let status;
         for (;;) {
           pin();
-          status = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", preservingDeadline === undefined ? 3000 : Math.max(1, Math.min(3000, preservingDeadline - Date.now())), { instanceId: manager.instanceId });
+          const ask = () => askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", preservingDeadline === undefined ? 3000 : Math.max(1, Math.min(3000, preservingDeadline - Date.now())), { instanceId: manager.instanceId });
+          status = preservingDeadline === undefined ? await ask() : await bounded(ask);
           if (status.ok) break;
           if (!/manager is in preserving mode/.test(status.error ?? "")) throw new Error(status.error ?? "hosted Manager status did not answer");
           preservingDeadline ??= Date.now() + 5000;
           const custody = preinstallPreservationObservation(observed);
           if (custody.seats !== 0 || !["gone", "transaction"].includes(custody.owner) || Date.now() >= preservingDeadline) throw preservingPreinstallRefusal(custody);
           await delay(Math.min(100, Math.max(1, preservingDeadline - Date.now())));
-          const fresh = await queryDaemon({ paths, timeoutMs: Math.max(1, Math.min(1000, preservingDeadline - Date.now())) });
+          const fresh = await bounded(() => queryDaemon({ paths, timeoutMs: Math.max(1, Math.min(1000, preservingDeadline! - Date.now())) }));
           if (!fresh.ok) throw new Error("machine daemon custody is unreadable during preserving observation");
           observed = fresh.result;
         }

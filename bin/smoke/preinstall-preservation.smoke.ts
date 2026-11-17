@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { homeCotalDir } from "@cotal-ai/workspace";
 import { preinstallPreservationObservation, preservingPreinstallRefusal } from "../daemon/preinstall-preservation.js";
-import { processBirth } from "../daemon/lifetime.js";
+import { processStartToken } from "@cotal-ai/core";
 import type { DaemonStatus } from "../daemon/protocol.js";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 
@@ -18,7 +18,7 @@ const path = join(homeCotalDir(), ".update-closure.lock");
 const status = { managers: [{ space: "test", pid: process.pid, instanceId: "instance" }], update: { restartEvidence: { prepared: true, managers: [{ space: "test", fenced: true, seats: 0 }] } } } as unknown as DaemonStatus;
 const record = (pid: number, start: string) => { writeFileSync(path, JSON.stringify({ pid, start, nonce: "test-nonce", ts: Date.now() - 2000 }), { mode: 0o600 }); };
 check.equal(preinstallPreservationObservation(status).owner, "unknown");
-record(process.pid, processBirth(process.pid)!);
+record(process.pid, processStartToken(process.pid)!);
 const bytes = readFileSync(path);
 check.equal(preinstallPreservationObservation(status).owner, "transaction");
 check.deepEqual(readFileSync(path), bytes, "observing custody writes nothing");
@@ -31,7 +31,7 @@ const foreign = { ...status, update: { ...status.update!, restartEvidence: { ...
 check.equal(preinstallPreservationObservation(foreign).seats, "unknown");
 const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });
 try {
-  await once(child, "spawn"); const pid = child.pid!; const start = processBirth(pid)!;
+  await once(child, "spawn"); const pid = child.pid!; const start = processStartToken(pid)!;
   record(pid, start);
   check.equal(preinstallPreservationObservation(status).owner, "live");
   const ended = once(child, "exit"); child.kill("SIGKILL"); await ended;
