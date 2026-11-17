@@ -7,6 +7,19 @@ import { fileURLToPath } from 'node:url';
 
 const base = new URL('../src-tauri/installers/', import.meta.url);
 const readText = (path: string) => readFileSync(new URL(path, base), 'utf8').replace(/\r\n/g, '\n');
+test('foreign service bootstraps historical dependencies without shielding the candidate', () => {
+  const workflow = readText('../../../.github/workflows/windows-setup-proof.yml');
+  const start = workflow.indexOf('      - name: Prepare independent published CLI service');
+  const end = workflow.indexOf('      - name: Verify published installers and fixture broker', start);
+  assert.ok(start >= 0 && end > start);
+  const bootstrap = workflow.slice(start, end);
+  assert.match(bootstrap, /if: matrix\.cell == 'foreign'/);
+  assert.match(bootstrap, /npm install --before=2026-11-16T19:38:00\.000Z --prefix "\$env:RUNNER_TEMP\/cli-service" cotal-ai@0\.164\.7/);
+  assert.equal((workflow.match(/--before=/g) ?? []).length, 1);
+  assert.doesNotMatch(workflow, /npm_config_before|NPM_CONFIG_BEFORE/i);
+  assert.doesNotMatch(workflow, /GITHUB_ENV[^\n]*before|before[^\n]*GITHUB_ENV/i);
+});
+
 test('pinned installer guard precedes the old uninstaller without changing update mode', () => {
   execFileSync(process.execPath, [fileURLToPath(new URL('../scripts/prepare-installer.mjs', import.meta.url))]);
   const source = readText('installer.nsi');
