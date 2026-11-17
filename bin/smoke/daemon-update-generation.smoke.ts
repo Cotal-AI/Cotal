@@ -160,8 +160,8 @@ for (const self of [true, false]) {
 
 // Receipt validation never treats malformed state as absent, and leaves other installs alone.
 {
-  const state = join(root, "receipts");
-  mkdirSync(state, { mode: 0o700 });
+  const state = join(root, "receipts", "daemon");
+  mkdirSync(state, { recursive: true, mode: 0o700 });
   const paths = { state, lock: join(state, "lock"), socket: join(state, "socket") };
   assert.equal(preflightInstalledDaemon({ state }), false);
   writeFileSync(unitReceiptFile(paths), "not json");
@@ -171,10 +171,11 @@ for (const self of [true, false]) {
     mkdirSync(native, { mode: 0o700 });
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(' ') !== '--user show-environment') process.exit(99);\nconsole.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});\n`, { mode: 0o700 });
-    const priorPath = process.env.PATH, priorEntry = process.argv[1], priorExecArgv = process.execArgv;
+    const priorPath = process.env.PATH, priorEntry = process.argv[1], priorExecArgv = process.execArgv, priorHome = process.env.COTAL_HOME;
     process.execArgv = [];
     process.argv[1] = fileURLToPath(new URL("../cotal.ts", import.meta.url));
     process.env.PATH = `${native}:${priorPath}`;
+    process.env.COTAL_HOME = join(root, "receipts");
     try {
       const source = 'ExecStart="/other/node" "/other/cotal.js" daemon serve\n';
       const unitPath = join(directory, "cotal-daemon.service");
@@ -233,6 +234,23 @@ for (const self of [true, false]) {
         if (priorLauncher === undefined) delete process.env.COTAL_LAUNCHER; else process.env.COTAL_LAUNCHER = priorLauncher;
         if (priorPrefix === undefined) delete process.env.npm_config_prefix; else process.env.npm_config_prefix = priorPrefix;
       }
+      for (const currentParent of [false, true]) {
+        const lines: string[] = [];
+        const priorLog = console.log;
+        console.log = (line?: unknown) => { lines.push(String(line)); };
+        const oldParent = { COTAL_UPDATE_PARENT: String(process.pid) };
+        try {
+          await waitForInstalledDaemonGeneration("0.13.2", {
+            quiet: currentParentWaits({ ...oldParent, ...(currentParent ? { COTAL_UPDATE_PARENT_WAITS: "1" } : {}) }, process.pid, true),
+            query: (async () => { throw new Error("another installation must never be queried"); }) as NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"],
+          });
+          if (currentParent) await waitForInstalledDaemonGeneration("0.13.2", {
+            query: (async () => { throw new Error("another installation must never be queried"); }) as NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"],
+          });
+        } finally { console.log = priorLog; }
+        assert.equal(lines.filter(line => line.includes("the background service belongs to another Cotal installation")).length, 1,
+          currentParent ? "the marked child and parent report another installation once" : "the child of an older parent keeps the other installation fact");
+      }
       writeFileSync(unitReceiptFile(paths), JSON.stringify({ ...receipt, unitPath: join(state, "outside.service") }));
       writeFileSync(join(state, "outside.service"), source, { mode: 0o600 });
       assert.throws(() => preflightInstalledDaemon(paths), (error: Error & { remedy?: string }) => {
@@ -241,7 +259,7 @@ for (const self of [true, false]) {
         assert.match(error.remedy!, /remove only.*daemon install.*daemon uninstall/);
         return true;
       });
-    } finally { process.env.PATH = priorPath; process.argv[1] = priorEntry!; process.execArgv = priorExecArgv; }
+    } finally { process.env.PATH = priorPath; process.env.COTAL_HOME = priorHome; process.argv[1] = priorEntry!; process.execArgv = priorExecArgv; }
   }
 }
 
