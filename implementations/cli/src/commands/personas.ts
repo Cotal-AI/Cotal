@@ -2,13 +2,14 @@ import { readFileSync } from "node:fs";
 import {
   agentFilePath,
   assertValidName,
+  assertValidRole,
   oneLine,
   personaDir,
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { cachedPreferences, CommandFailure, resolvePreference, parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
-import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
+import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
@@ -263,6 +264,13 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
     process.exit(1);
   }
   const subscribe = parseCommaList(v.subscribe);
+  // A role is the address `spawn --role` launches under, so a role spawn would refuse is refused here,
+  // as `persona create` refuses it, before anything is written. Control characters are refused first.
+  if (v.role !== undefined) {
+    assertLabels({ role: v.role });
+    try { assertValidRole(v.role); }
+    catch (error) { throw new CommandFailure("refused", "USAGE_INVALID", `--role: ${oneLine((error as Error).message)}`); }
+  }
 
   const bytes = await serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
   commitPersona(path, expected, bytes);
