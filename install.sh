@@ -1205,8 +1205,8 @@ main() {
   ok_line "Cotal $INSTALLED_VERSION"
 
   write_launcher
-  if [ -n "$PREVIOUS_VERSION" ]; then
-    if ! "$BIN_DIR/cotal" update; then
+  if [ -n "$PREVIOUS_VERSION" ] || [ -e "${COTAL_HOME:-$HOME/.cotal}/daemon/service-unit.json" ]; then
+    if ! COTAL_INSTALL_RECONCILE=1 "$BIN_DIR/cotal" update; then
       die "Cotal was installed, but reconciliation did not complete." \
         "Run $(shquote "$BIN_DIR/cotal") update to finish this update."
     fi

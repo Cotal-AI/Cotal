@@ -454,6 +454,32 @@ export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daem
   return true;
 }
 
+/** Recreate a shell installation's missing runtime binding without adopting another CLI's service. */
+export function reconcileMissingShellRuntime(paths: Pick<DaemonPaths, "state">): void {
+  if (process.platform !== "linux" || process.env.COTAL_LAUNCHER !== "1" || process.env.COTAL_INSTALL_RECONCILE !== "1") return;
+  const root = process.env.npm_config_prefix;
+  if (!root || !isAbsolute(root)) return;
+  const { receipt, plan } = recordedUnit(paths, undefined);
+  const identity = installedDaemonIdentity(paths);
+  const argv = daemonServeArgv(undefined);
+  const entry = argv[argv.indexOf("daemon") - 1];
+  if (identity.same || identity.installedEntry !== entry || entry !== join(root, "lib", "node_modules", "cotal-ai", "dist", "cotal.js")) return;
+  const source = readFileSync(receipt.unitPath, "utf8");
+  const executable = /^ExecStart="((?:\\.|[^"\\])*)"/m.exec(source)?.[1];
+  if (!executable) return;
+  const old = executable.replace(/\\([\\"])/g, "$1").replaceAll("%%", "%").replaceAll("$$", "$");
+  if (!recordedSourceMarked(receipt, plan.mechanism) || !old.startsWith(join(root, "runtime") + "/") || old.split("/").includes("..") || existsSync(old)) return;
+  const next = source.replace(/^ExecStart="(?:\\.|[^"\\])*"/m, `ExecStart=${unitValue(argv[0]!, true)}`);
+  const sha256 = createHash("sha256").update(next).digest("hex");
+  // Revalidate the receipt and source immediately before publishing the owned rewrite.
+  if (recordedUnit(paths, undefined).receipt.unitSha256 !== receipt.unitSha256) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon service changed during installation");
+  writeSecretFileAtomic(receipt.unitPath, next);
+  try { writeSecretFileAtomic(unitReceiptFile(paths), `${JSON.stringify({ ...receipt, unitSha256: sha256 })}\n`); }
+  catch (error) { writeSecretFileAtomic(receipt.unitPath, source); throw error; }
+  assertSystemdSource(receipt.unitPath, sha256);
+  submitSystemdUnitRegistration("reload", plan.unit);
+}
+
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
 export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string): { same: boolean; installed: string; installedEntry: string; current: string } {
   return recordedDaemonIdentity(recordedUnit(paths, daemonHome));

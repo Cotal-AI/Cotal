@@ -1,13 +1,13 @@
 import strictAssert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 import { EndpointRefusal } from "../daemon/endpoint.js";
 import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js";
-import { installedDaemonIdentity, preflightInstalledDaemon, unitReceiptFile } from "../daemon/install.js";
+import { installedDaemonIdentity, preflightInstalledDaemon, reconcileMissingShellRuntime, unitReceiptFile } from "../daemon/install.js";
 import { currentParentWaits } from "../daemon/update-entry.js";
 import { executeUpdate, update, updateRuntime, type UpdateRuntime } from "@cotal-ai/cli/update";
 
@@ -183,6 +183,56 @@ for (const self of [true, false]) {
       writeFileSync(unitReceiptFile(paths), JSON.stringify(receipt));
       assert.equal(installedDaemonIdentity(paths).same, false);
       assert.equal(preflightInstalledDaemon({ state }), true);
+      const priorReconcile = process.env.COTAL_INSTALL_RECONCILE;
+      process.env.COTAL_INSTALL_RECONCILE = "1";
+      const priorLauncher = process.env.COTAL_LAUNCHER, priorPrefix = process.env.npm_config_prefix;
+      const shellRoot = join(root, "shell");
+      const shellEntry = join(shellRoot, "lib/node_modules/cotal-ai/dist/cotal.js");
+      mkdirSync(join(shellRoot, "lib/node_modules/cotal-ai/dist"), { recursive: true });
+      writeFileSync(join(shellRoot, "lib/node_modules/cotal-ai/package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "dist/cotal.js" } }));
+      writeFileSync(shellEntry, "");
+      const oldEntry = process.argv[1];
+      process.env.COTAL_LAUNCHER = "1";
+      process.env.npm_config_prefix = shellRoot;
+      process.argv[1] = shellEntry;
+      writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif(process.argv.includes('show-environment')) console.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});\n`, { mode: 0o700 });
+      try {
+        const missing = `Environment=COTAL_DAEMON_NATIVE_SERVICE=1\nExecStart="${shellRoot}/runtime/removed/bin/node" "${shellEntry}" daemon serve\n`;
+        const save = (text: string) => {
+          writeFileSync(unitPath, text);
+          writeFileSync(unitReceiptFile(paths), JSON.stringify({ ...receipt, unitSha256: createHash("sha256").update(text).digest("hex") }));
+        };
+        save(missing);
+        delete process.env.COTAL_INSTALL_RECONCILE;
+        reconcileMissingShellRuntime(paths);
+        assert.equal(readFileSync(unitPath, "utf8"), missing, "ordinary update does not rewrite runtime identity");
+        process.env.COTAL_INSTALL_RECONCILE = "1";
+        const unmarked = missing.replace("Environment=COTAL_DAEMON_NATIVE_SERVICE=1\n", "");
+        save(unmarked);
+        reconcileMissingShellRuntime(paths);
+        assert.equal(readFileSync(unitPath, "utf8"), unmarked, "unmarked source is not adopted");
+        const oldNode = join(shellRoot, "runtime/removed/bin/node");
+        mkdirSync(join(shellRoot, "runtime/removed/bin"), { recursive: true });
+        writeFileSync(oldNode, "retained runtime");
+        save(missing);
+        reconcileMissingShellRuntime(paths);
+        assert.equal(readFileSync(unitPath, "utf8"), missing, "existing runtime is not replaced");
+        rmSync(oldNode);
+        reconcileMissingShellRuntime(paths);
+        assert.equal(installedDaemonIdentity(paths).same, true, "missing same-entry shell runtime is rebound to this Node");
+        assert.ok(!readFileSync(unitPath, "utf8").includes("runtime/removed"));
+        writeFileSync(unitPath, missing);
+        assert.throws(() => reconcileMissingShellRuntime(paths), /not the unit this daemon installed/, "edited native source is never adopted");
+        writeFileSync(unitPath, source);
+        writeFileSync(unitReceiptFile(paths), JSON.stringify(receipt));
+        reconcileMissingShellRuntime(paths);
+        assert.equal(readFileSync(unitPath, "utf8"), source, "foreign entry is untouched");
+      } finally {
+        if (priorReconcile === undefined) delete process.env.COTAL_INSTALL_RECONCILE; else process.env.COTAL_INSTALL_RECONCILE = priorReconcile;
+        process.argv[1] = oldEntry;
+        if (priorLauncher === undefined) delete process.env.COTAL_LAUNCHER; else process.env.COTAL_LAUNCHER = priorLauncher;
+        if (priorPrefix === undefined) delete process.env.npm_config_prefix; else process.env.npm_config_prefix = priorPrefix;
+      }
       writeFileSync(unitReceiptFile(paths), JSON.stringify({ ...receipt, unitPath: join(state, "outside.service") }));
       writeFileSync(join(state, "outside.service"), source, { mode: 0o600 });
       assert.throws(() => preflightInstalledDaemon(paths), (error: Error & { remedy?: string }) => {

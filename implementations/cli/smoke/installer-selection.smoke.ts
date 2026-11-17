@@ -103,6 +103,13 @@ cotal --version
   const initial = spawnSync("/bin/sh", [driver, library], { env: pinnedEnv, encoding: "utf8" });
   assert.equal(initial.status, 0, output(initial));
   assert(!existsSync(pinned.env.FIXTURE_UPDATE_ARGS), "first installation needs no reconciliation");
+  const retained = fixture("retained-service");
+  const daemonState = join(retained.home, ".cotal", "daemon");
+  mkdirSync(daemonState, { recursive: true });
+  writeFileSync(join(daemonState, "service-unit.json"), "{}");
+  const reinstalled = spawnSync("/bin/sh", [driver, library], { env: { ...retained.env, PATH: `${retained.newBin}:${toolPath}` }, encoding: "utf8" });
+  assert.equal(reinstalled.status, 0, output(reinstalled));
+  assert.equal(readFileSync(retained.env.FIXTURE_UPDATE_ARGS, "utf8"), "update\n", "retained native receipt triggers reconciliation without a previous package");
   const downgrade = spawnSync("/bin/sh", [driver, library], { env: { ...pinnedEnv, FIXTURE_TARGET: "0.82.1" }, encoding: "utf8" });
   assert.equal(downgrade.status, 0, output(downgrade));
   assert.equal(readFileSync(pinned.env.FIXTURE_UPDATE_ARGS, "utf8"), "update\n", "rerun reconciles the selected release without --self");
