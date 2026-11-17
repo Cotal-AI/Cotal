@@ -697,7 +697,11 @@ try {
       rStatic.reply.ok === true && existsSync(staticPath) && loadAgentFile(staticPath).owner === undefined, rStatic.reply);
     const rStaticAgain = await A.call("define-persona", { name: "epstatic", persona: "Again." });
     check("so the same caller's redefine refuses as operator-owned",
-      rStaticAgain.reply.ok === false && String(rStaticAgain.reply.error?.message ?? "").includes("operator-owned"), rStaticAgain.reply);
+      rStaticAgain.reply.ok === false && rStaticAgain.reply.error?.code === "permission-denied" &&
+        rStaticAgain.reply.error.outcome === "not-executed" &&
+        rStaticAgain.reply.error.details?.some((detail) => detail.kind === "ai.cotal.persona-ownership-refused" && detail.operatorOwned === true) === true &&
+        String(rStaticAgain.reply.error.message).includes("operator-owned"), rStaticAgain.reply);
+    check("the refused redefine preserves the saved persona", loadAgentFile(staticPath).persona === "Static body.");
     const rStaticShow = await A.call("show-persona", { name: "epstatic" });
     check("and its show-persona is not-found", rStaticShow.reply.ok === false && rStaticShow.reply.error?.code === "not-found", rStaticShow.reply);
 
