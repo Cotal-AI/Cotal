@@ -2,12 +2,18 @@
 
 ## Harness permission requests withdrawn
 
-Releases 0.165.0 and 0.165.1 let a Claude Code connector hold a permission prompt for its owner
+Releases 0.165.0 to 0.165.2 let a Claude Code connector hold a permission prompt for its owner
 to answer from another session. This release removes that. Claude Code's own dialog is again the
 only way to answer a prompt.
 
-A space set up on 0.165 keeps an empty `cotal_permissions_<space>` bucket. Nothing reads or
-writes it, and its records age out after 30 days.
+The removal reaches an agent once its connector runs this release. `cotal update` replaces the
+installed files. A running Claude session keeps the plugin it already loaded, so reload plugins
+or reopen the session. Until then the session runs the 0.165 connector. No shipped command or
+dashboard answered a held prompt in 0.165, and none does now. Claude Code's own dialog answers
+the prompt as before.
+
+A space set up on 0.165 keeps its `cotal_permissions_<space>` bucket. This release neither reads
+nor writes it, and each record ages out 30 days after it was written.
 
 The Manager cluster advances to revision 51. A `status.connectors` row no longer carries
 `permissionRequests`, and the closed status schema rejects a row that does. Upgrade Managers and
