@@ -3416,7 +3416,11 @@ action command's submissions are `class: journal` (§13.3).
    the goal; the goal is not rewritten and its status does not linger non-terminal. An owner
    that observed the entity still running when the deadline passed MAY add a detail of kind
    `ai.cotal.goal.entity-running` to the `uncertain` result's `details`, and a caller then
-   reports the action as still starting.
+   reports the action as still starting. A client's observation failure after acceptance
+   retains the acceptance data, including `goalId`, beside the unknown-outcome error. That
+   data is a claim on the submitted goal, not proof of its success. A connector may reuse
+   that claim for an identical spawn while its allocated entity is still starting; this
+   does not change the goal's terminal fact or grant a new submission authority.
 7. Goals bind the target's `(principal, lifecycleUid)` (§13.1): a goal accepted against a
    lifecycle is not redeemable, cancellable, or effectful against a same-name successor. A
    restarted instance (same `instanceId`/UID, advanced epoch) recovers its goals from journal

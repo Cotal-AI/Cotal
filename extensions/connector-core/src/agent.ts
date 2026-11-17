@@ -40,6 +40,7 @@ import {
   ANYCAST_NOTICE_KEY,
   MENTION_NOTICE_KEY,
   partsToText,
+  canonicalJson,
   assertValidRole,
   type MessageMeta,
   type Presence,
@@ -2691,6 +2692,8 @@ export class MeshAgent extends EventEmitter {
 
   // ---- supervision ---------------------------------------------------------
 
+  private readonly pendingSpawns = new Map<string, Promise<ControlReply & { instanceId?: string }>>();
+
   /** Ask the manager to spawn a new teammate into this space (its `spawn` action).
    *  The request uses {@link SPAWN_TIMEOUT_MS} as its floor; after acceptance, core follows through
    *  the exact connector-selected readiness budget carried by the acceptance.
@@ -2740,10 +2743,31 @@ export class MeshAgent extends EventEmitter {
     const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events, runtime: opts?.runtime, join: opts?.join, persona: opts?.persona, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish }, once: opts?.once };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
-    const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true, ...(instance !== undefined ? { instanceId: instance } : {}) });
+    const key = canonicalJson(JSON.parse(JSON.stringify({ ...args, instance, caller: this.ep.principal, lifecycleUid: this.config.lifecycleUid })));
+    const previous = this.pendingSpawns.get(key);
+    if (previous) {
+      const pending = await previous;
+      const allocation = pending.data as { name?: string; uid?: string } | undefined;
+      // Only an exact-incarnation join or confirmed absence releases this retry claim. A failed
+      // read is not evidence that the previous launch vanished.
+      if (allocation?.name && allocation.uid) {
+        const inspected = await this.managerInvoke("ps", undefined, pending.instanceId ? { instanceId: pending.instanceId } : {});
+        const rows = Array.isArray(inspected.data) ? inspected.data as Array<{ name?: string; lifecycleUid?: string; presenceIdentityVerified?: boolean; status?: string }> : undefined;
+        const row = rows?.find(r => r.name === allocation.name);
+        if (inspected.ok && rows && (!row || typeof row.lifecycleUid === "string" && row.lifecycleUid !== allocation.uid || row.lifecycleUid === allocation.uid && (row.presenceIdentityVerified === true || row.status === "exited"))) {
+          if (this.pendingSpawns.get(key) === previous) this.pendingSpawns.delete(key);
+        } else return pending;
+      } else return pending;
+    }
+    const invoking = this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true, ...(instance !== undefined ? { instanceId: instance } : {}) });
+    this.pendingSpawns.set(key, invoking);
+    const reply = await invoking;
+    if (reply.ok || reply.code !== "uncertain" && reply.outcome !== "unknown") {
+      if (this.pendingSpawns.get(key) === invoking) this.pendingSpawns.delete(key);
+    }
     // There is no allocated name to inspect before acceptance. Preserve the submission's goal
     // rather than auditing the requested persona alias and discarding the unknown result.
-    if ((reply.data as { submissionUnknown?: boolean } | undefined)?.submissionUnknown) return reply;
+    if ((reply.data as { submissionUnknown?: boolean } | undefined)?.submissionUnknown || !reply.ok && reply.outcome === "unknown") return reply;
     // The record is forwarded as written and the manager records its model as written, so the
     // inline model is audited as sent.
     const pinned = requested || opts?.persona?.model;
