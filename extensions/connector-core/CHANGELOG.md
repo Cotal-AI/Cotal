@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.166.1
+
+### Patch Changes
+
+- ef7e5c4: Keep the accepted goal in a pending spawn result and reuse it when the same caller retries while its seat is still starting.
+
 ## 0.166.0
 
 ### Minor Changes

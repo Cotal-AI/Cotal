@@ -1,5 +1,38 @@
 # @cotal-ai/cli
 
+## 0.166.1
+
+### Patch Changes
+
+- 8acd8b7: Clear adapter readiness when a foreground service exits so a clean dashboard shutdown records its exit without a schema refusal.
+- b0ae04c: Keep the installer launcher on the updated CLI when reconciliation repairs installation permissions, and verify the selected version before reporting success.
+- eaffa0a: Open an authenticated local dashboard browser session with `cotal service start web`, reusing a running dashboard and preserving manual access with `--no-open`.
+- 85608df: Applications without a native Cotal connector can serve the gateway tools with `cotal mcp`. The stdio host keeps one local mesh identity until disconnect, uses the existing terminal-seat lifetime on static spaces, and retires that identity on shutdown. Signed-in spaces still require a native or hosted connector.
+- ad4775c: Leave the installation and running Manager untouched when self-update cannot reach the registry, with a short plain notice instead of a stop instruction and npm error.
+- 927e317: Reconcile retained shell-installed daemon services when reinstalling after removal of their Node runtime.
+- 2708bfd: Read commands keep showing the previous retained connector inventory after a bare npm upgrade.
+  
+  Version output can report pending reconciliation and stale runtimes retain their version-skew remedy without writing configuration. Reconciliation checks current-version selection separately, so it still creates an isolated new set rather than modifying the prior inventory.
+- 3fb9ae2: Reconcile a POSIX installation after a manual upgrade without stopping its standalone Manager or seats.
+  
+  Authenticate the Manager and seat inventory, then reconcile connectors in a separate installation-and-release prefix while retaining the previous prefix at its original paths. Initial installed reconciliation also preserves the shared prefix so a Manager started from another copy can keep launching its loaded connector generation until restart. Windows, source checkouts and version-changing admission are unchanged.
+- 7debbae: Allow a conversation to connect again after registered addresses change without sending its previous retirement credentials to the replacement authority.
+- 45fcbb8: Retry transient package download failures during self-update with a short bounded backoff.
+- 512ad63: Automatic connector reconciliation after self-update keeps its seed children on the same installed selection.
+  
+  A version-changing update can leave the CLI running a retained package. Its seed child now re-enters through the parent's logical installed entry instead of treating the retained package as another installation. Other re-execution callers and the seed custody checks are unchanged.
+- 88d8b80: Repair now removes read-only seed generations left by an older failed connector install. Garbage collection makes unreferenced generations' directories owner-writable before deleting them.
+- ec18250: Recover interrupted connector refreshes, including pending markers written by released versions, once reconcile custody ends without requiring manual marker deletion.
+- Updated dependencies [04338d1]
+- Updated dependencies [1eed7a4]
+- Updated dependencies [eaffa0a]
+- Updated dependencies [ef7e5c4]
+- Updated dependencies [d4eee72]
+- Updated dependencies [2708bfd]
+- Updated dependencies [3fb9ae2]
+  - @cotal-ai/workspace@0.166.1
+  - @cotal-ai/core@0.166.1
+
 ## 0.166.0
 
 ### Minor Changes

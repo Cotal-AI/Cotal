@@ -1,5 +1,57 @@
 # cotal-ai
 
+## 0.166.1
+
+### Patch Changes
+
+- 5d4ffaf: Daemon uninstall waits through a macOS peer disconnect during shutdown.
+  
+  The bounded shutdown check reobserves a connection closed before its kernel identity could be read. It still requires the daemon process and endpoint to be gone before removing the recorded installation.
+- 6cacf74: Recover an unchanged Linux daemon service after its local Cotal home was deleted. Install and uninstall verify the surviving protected service source and native unit before restoring its receipt or removing it, and refuse modified or overridden units.
+- 41f261a: Repeating daemon installation on Linux succeeds when the recorded service is unchanged and belongs to this installation. It verifies the existing unit without rewriting it or restarting the daemon.
+- ae73950: Self-update reports a stopped service owned by another installation once.
+  
+  The reconcile child honors the updater's existing reporting marker for this fact. A child started by an older updater without that marker still reports it. Service ownership checks and stopped-service behavior are unchanged.
+- b0ae04c: Keep the installer launcher on the updated CLI when reconciliation repairs installation permissions, and verify the selected version before reporting success.
+- 85608df: Applications without a native Cotal connector can serve the gateway tools with `cotal mcp`. The stdio host keeps one local mesh identity until disconnect, uses the existing terminal-seat lifetime on static spaces, and retires that identity on shutdown. Signed-in spaces still require a native or hosted connector.
+- 646122b: Remove unused internal CLI exports and an uncalled manager cleanup helper without changing command behavior.
+- 8b0c336: Bound Linux daemon service startup to 60 seconds so systemd restarts a hung daemon even after its updater stops observing readiness.
+- 927e317: Reconcile retained shell-installed daemon services when reinstalling after removal of their Node runtime.
+- 3fb9ae2: Reconcile a POSIX installation after a manual upgrade without stopping its standalone Manager or seats.
+  
+  Authenticate the Manager and seat inventory, then reconcile connectors in a separate installation-and-release prefix while retaining the previous prefix at its original paths. Initial installed reconciliation also preserves the shared prefix so a Manager started from another copy can keep launching its loaded connector generation until restart. Windows, source checkouts and version-changing admission are unchanged.
+- 45fcbb8: Retry transient package download failures during self-update with a short bounded backoff.
+- b434656: Let Linux daemon commands reach the existing private runtime directory and user manager from non-login sessions without runtime environment variables.
+- Updated dependencies [8acd8b7]
+- Updated dependencies [5d4ffaf]
+- Updated dependencies [04338d1]
+- Updated dependencies [1eed7a4]
+- Updated dependencies [43cbc00]
+- Updated dependencies [b0ae04c]
+- Updated dependencies [eaffa0a]
+- Updated dependencies [85608df]
+- Updated dependencies [ad4775c]
+- Updated dependencies [ef7e5c4]
+- Updated dependencies [d4eee72]
+- Updated dependencies [927e317]
+- Updated dependencies [2708bfd]
+- Updated dependencies [3fb9ae2]
+- Updated dependencies [7debbae]
+- Updated dependencies [45fcbb8]
+- Updated dependencies [512ad63]
+- Updated dependencies [88d8b80]
+- Updated dependencies [ec18250]
+  - @cotal-ai/cli@0.166.1
+  - @cotal-ai/seat@0.166.1
+  - @cotal-ai/workspace@0.166.1
+  - @cotal-ai/core@0.166.1
+  - @cotal-ai/manager@0.166.1
+  - @cotal-ai/connector-core@0.166.1
+  - @cotal-ai/auth@0.166.1
+  - @cotal-ai/delivery@0.166.1
+  - @cotal-ai/runtime@0.166.1
+  - @cotal-ai/registry@0.166.1
+
 ## 0.166.0
 
 ### Minor Changes

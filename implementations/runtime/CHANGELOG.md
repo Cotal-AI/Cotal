@@ -1,5 +1,21 @@
 # @cotal-ai/runtime
 
+## 0.166.1
+
+### Patch Changes
+
+- Updated dependencies [04338d1]
+- Updated dependencies [1eed7a4]
+- Updated dependencies [eaaafc4]
+- Updated dependencies [eaffa0a]
+- Updated dependencies [ef7e5c4]
+- Updated dependencies [d4eee72]
+- Updated dependencies [2708bfd]
+- Updated dependencies [3fb9ae2]
+  - @cotal-ai/workspace@0.166.1
+  - @cotal-ai/core@0.166.1
+  - @cotal-ai/lang@0.166.1
+
 ## 0.166.0
 
 ### Patch Changes

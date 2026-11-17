@@ -1,5 +1,22 @@
 # @cotal-ai/workspace
 
+## 0.166.1
+
+### Patch Changes
+
+- 04338d1: Enable dashboard service posting with an explicitly supplied separate credential while keeping read-only mode the default.
+- eaffa0a: Open an authenticated local dashboard browser session with `cotal service start web`, reusing a running dashboard and preserving manual access with `--no-open`.
+- d4eee72: Allow local setup under a private user group's default umask without getfacl by checking for extended ACLs with Python when available.
+- 2708bfd: Read commands keep showing the previous retained connector inventory after a bare npm upgrade.
+  
+  Version output can report pending reconciliation and stale runtimes retain their version-skew remedy without writing configuration. Reconciliation checks current-version selection separately, so it still creates an isolated new set rather than modifying the prior inventory.
+- 3fb9ae2: Reconcile a POSIX installation after a manual upgrade without stopping its standalone Manager or seats.
+  
+  Authenticate the Manager and seat inventory, then reconcile connectors in a separate installation-and-release prefix while retaining the previous prefix at its original paths. Initial installed reconciliation also preserves the shared prefix so a Manager started from another copy can keep launching its loaded connector generation until restart. Windows, source checkouts and version-changing admission are unchanged.
+- Updated dependencies [1eed7a4]
+- Updated dependencies [ef7e5c4]
+  - @cotal-ai/core@0.166.1
+
 ## 0.166.0
 
 ### Minor Changes

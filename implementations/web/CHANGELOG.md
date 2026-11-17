@@ -1,5 +1,12 @@
 # @cotal-ai/web
 
+## 0.166.1
+
+### Patch Changes
+
+- 04338d1: Enable dashboard service posting with an explicitly supplied separate credential while keeping read-only mode the default.
+- eaffa0a: Open an authenticated local dashboard browser session with `cotal service start web`, reusing a running dashboard and preserving manual access with `--no-open`.
+
 ## 0.166.0
 
 ### Patch Changes
