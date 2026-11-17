@@ -1,6 +1,7 @@
 import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
+import { isLoopbackLiteral } from "@cotal-ai/core/loopback";
 import { parse as parseYaml } from "yaml";
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
@@ -22,6 +23,7 @@ import { ProtectedRecordStore, shellPath, unsearchableFolder } from "./protected
 import { rootNamesNoSpace } from "./space.js";
 import { codeSpan } from "./text-wrap.js";
 import { tlsIntent } from "./broker-url.js";
+import { brokerAddressForDisplay } from "./broker-display.js";
 
 /**
  * One coherent answer to "which mesh does this command act on, and where do its creds + personas
@@ -111,6 +113,7 @@ export interface ResolveFlags {
 export type MeshTargetErrorCode =
   | "no-meshes"
   | "unknown-space"
+  | "server-host-mismatch"
   | "ambiguous-target"
   | "default-occupied"
   | "stale-auth-root"
@@ -127,7 +130,8 @@ export interface MeshTargetErrorDetails {
   server?: string;
   /** A checkout root involved. */
   root?: string;
-  /** Running meshes, for the ambiguous case — each formatted `"<space> (<root>)"`. */
+  /** Candidate registrations: `"<space> (<root>)"` for ambiguity, or `"<space> (<server>)"`
+   *  for a local host-spelling mismatch. A candidate is not proof of a running listener. */
   available?: string[];
   /** The same meshes by SPACE NAME, in `available`'s order — set where the ambiguity is a set of
    *  RECORDED meshes a caller can select by name: the running meshes of the bare fallback, or the
@@ -1045,17 +1049,20 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // server URL - so "the entry on that server" is not a single thing. `.find()` would silently
     // hand back whichever sorted first, connecting the caller to an arbitrary tenant; refuse and
     // name them instead (`--space` picks one explicitly, handled above).
-    const serverKey = (server: string): string => {
+    const serverKey = (server: string, localHint = false): string => {
       try {
         const url = new URL(server);
         if (url.pathname === "/") url.pathname = "";
+        if (localHint && (url.hostname.toLowerCase() === "localhost" || isLoopbackLiteral(url.hostname)))
+          url.hostname = "127.0.0.1";
         return url.href;
       } catch {
         return server;
       }
     };
     const requestedServer = serverKey(flags.server);
-    const onServer = loadMeshes().filter((e) => serverKey(e.server) === requestedServer && !offline.has(e.space));
+    const meshes = loadMeshes();
+    const onServer = meshes.filter((e) => serverKey(e.server) === requestedServer && !offline.has(e.space));
     if (onServer.length > 1)
       throw new MeshTargetError(
         "ambiguous-target",
@@ -1071,6 +1078,17 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       assertRootIsSingleTenant(onServer[0].root);
       return { ...targetFromEntry(onServer[0], flags.server, "flag-server", flags.readOnly), recordedServer: onServer[0].server };
     }
+    // Host spellings do not prove listener identity: localhost can resolve off-machine, and IPv4
+    // and IPv6 (or two loopback IPs) can host different brokers on the same port. Use this comparison
+    // only to explain a miss, never to choose trust material or redirect the requested connection.
+    const localHint = serverKey(flags.server, true);
+    const nearby = meshes.filter((e) => serverKey(e.server) !== requestedServer && serverKey(e.server, true) === localHint);
+    if (nearby.length)
+      throw new MeshTargetError(
+        "server-host-mismatch",
+        `no space is registered at ${flags.server}; local registrations use another host spelling`,
+        { server: flags.server, available: nearby.map((e) => `${e.space} (${brokerAddressForDisplay(e.server) ?? "an invalid broker address"})`) },
+      );
     // The folder's own space may be recorded here at another address; nothing records the default
     // space a folder with no records resolves to.
     const local = localTarget(findCotalRoot(cwd), flags.server, "flag-server", flags.readOnly);

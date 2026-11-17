@@ -75,6 +75,11 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         : parts(`no space named "${boundedValue(String(d.requested), SHOWN_VALUE_MAX)}" is registered here`, "see `cotal space`");
     case "ambiguous-target":
       return parts(`multiple meshes running: ${(d.available ?? []).join(", ")}`, "pick one with `--space <name>` or set a default with `cotal use <name>`");
+    case "server-host-mismatch":
+      return parts(
+        `no space is registered at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid broker address"}; possible local registrations: ${(d.available ?? []).join(", ")}`,
+        "use a recorded address with `--server <url>`, or verify the requested broker and name its space with `--space <name>`; different local hosts can serve different brokers",
+      );
     case "default-occupied":
       return parts(`another mesh ("${d.space}") is running at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid broker address"}`, `run \`cotal up\` here to start yours, or \`--space ${d.space}\` to join it`);
     case "stale-auth-root":

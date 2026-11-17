@@ -261,6 +261,11 @@ no registration, the Next says to check the address instead. The request is not 
 recorded broker in its place. A trailing slash or scheme case change in `--server` retains the
 registered space. Matching preserves the URL's transport scheme and TLS intent. If equivalent
 addresses name several registered spaces, pass `--space` to choose one.
+Loopback host spellings are not interchangeable: `localhost` can resolve elsewhere, and IPv4
+and IPv6 can serve different brokers on one port. When an unmatched address differs only by a
+loopback host spelling from a registration, resolution refuses with `TARGET_NOT_FOUND`, exit 2,
+and lists those possible local registrations. It sends no credentials and does not assume `main`.
+Use the listed broker address, or verify the requested broker and pass `--space <name>` explicitly.
 Target resolution given `--server` probes only records at that address,
 including when `--space` is omitted. `status --all` still checks every recorded address because
 `--all` asks for that scope. This refusal wording does not describe the infrastructure report from

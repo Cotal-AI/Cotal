@@ -401,6 +401,7 @@ export function targetErrorCode(code: MeshTargetErrorCode): RefusalCode {
   switch (code) {
     case "no-meshes":
     case "unknown-space":
+    case "server-host-mismatch":
     case "user-auth-unrecorded":
       return "TARGET_NOT_FOUND";
     case "not-started":

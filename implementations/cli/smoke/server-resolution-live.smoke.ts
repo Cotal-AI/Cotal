@@ -12,6 +12,7 @@
  * never pkill, so a co-running broker on :4222 is untouched. Needs `nats-server` on PATH.
  * Run: pnpm smoke:server-resolution:live
  */
+import type { MeshTargetError } from "@cotal-ai/workspace";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -43,7 +44,7 @@ const startCwd = process.cwd(); // restored before cleanup so Windows can rmdir 
 process.chdir(cwd); // a dir with no `.cotal` up-tree, so bare resolution falls through to the registry
 
 const { probeConnect, DEFAULT_SERVER } = await import("@cotal-ai/core");
-const { recordMesh, loadMeshes, resolveMeshTarget, spaceAccountPath, listSpaceAccounts } = await import("@cotal-ai/workspace");
+const { recordMesh, loadMeshes, resolveMeshTarget, spaceAccountPath, listSpaceAccounts, renderWorkspaceError } = await import("@cotal-ai/workspace");
 const { resolveControlTarget } = await import("@cotal-ai/workspace");
 
 let pass = 0;
@@ -96,6 +97,27 @@ try {
     ok(`equivalent broker spelling retains the registered space: ${server}`, target.space === "team-alpha", target);
     ok(`equivalent broker spelling preserves the requested transport: ${server}`, target.server === server, target);
   }
+  for (const host of ["localhost", "[::1]", "127.0.0.2"]) {
+    const server = `nats://${host}:${PORT_OTHER}`;
+    let mismatch: unknown;
+    try {
+      await resolveControlTarget({ server }, "control-caller-privileged", undefined, { onRefusal: "throw" });
+    } catch (error) {
+      mismatch = error;
+    }
+    ok(`another local host refuses without selecting trust: ${host}`, (mismatch as { code?: string })?.code === "server-host-mismatch", mismatch);
+    const message = renderWorkspaceError({ kind: "target", error: mismatch as MeshTargetError });
+    ok(`host mismatch names the registered space and address: ${host}`, message.includes("team-alpha") && message.includes(OTHER), message);
+    ok(`host mismatch offers explicit selection without starting a new stack: ${host}`, message.includes("--space <name>") && !message.includes("cotal up"), message);
+  }
+  const { removeMesh } = await import("@cotal-ai/workspace");
+  recordMesh({ space: "ipv6-only", server: `nats://[::1]:${PORT_OTHER}`, root: mismatchRoot, mode: "open", ts });
+  const ipv6 = resolveMeshTarget(cwd, { server: `nats://[::1]:${PORT_OTHER}` });
+  ok("a separately registered IPv6 listener keeps its own space", ipv6.space === "ipv6-only", ipv6);
+  let severalHints: unknown;
+  try { resolveMeshTarget(cwd, { server: `nats://localhost:${PORT_OTHER}` }); } catch (error) { severalHints = error; }
+  ok("a host mismatch lists all possible registrations without picking one", (severalHints as { details?: { available?: string[] } })?.details?.available?.length === 2, severalHints);
+  removeMesh("ipv6-only");
   recordMesh({ space: "same-broker", server: `${OTHER}/`, root: projectRoot, mode: "open", ts });
   let ambiguous: unknown;
   try {
@@ -104,7 +126,6 @@ try {
     ambiguous = error;
   }
   ok("equivalent broker spellings still refuse multiple registered spaces", (ambiguous as { code?: string })?.code === "ambiguous-target", ambiguous);
-  const { removeMesh } = await import("@cotal-ai/workspace");
   removeMesh("same-broker");
   const tlsTarget = resolveMeshTarget(cwd, { server: OTHER.replace("nats:", "tls:") });
   ok("a different transport does not match the plaintext registration", tlsTarget.space !== "team-alpha", tlsTarget);
