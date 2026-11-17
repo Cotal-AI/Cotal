@@ -2,6 +2,7 @@
  * Anycast request status, live (SPEC §8.1): a real delivery daemon on a JWT-auth broker records each
  * role request's take, answers its sender's status and cancel, and sends the sender a notice naming
  * the holder that took it. Covers:
+ *  - empty-bucket startup and repeated sweeps create no anycast scan consumers;
  *  - a take, its notice from the delivery lease holder, the status it leaves, a refused cancel;
  *  - a cancel before any take, the delete it makes, and the take it then refuses;
  *  - take and cancel raced on one request: exactly one wins, every time;
@@ -20,6 +21,7 @@
  *    across a stream recreation never deletes the new stream's request at that seq.
  *
  * Run: pnpm smoke:anycast-request-status:auth   (needs `nats-server` on PATH; local-only)
+ * Add --idle-five-minutes to observe the idle bucket again five minutes after startup.
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -101,7 +103,8 @@ type Got = { msg: CotalMessage; delivery: Delivery; kind: MessageMeta["kind"] };
 try {
   await awaitBrokerReady(() => isReachable(SERVERS), { servers: SERVERS, attempts: 50, delayMs: 200 });
   const provIdent = newIdentity();
-  const provCreds = await mintCreds(auth, provIdent, "provisioner");
+  // The optional idle observation outlasts the provisioner profile's five-minute default.
+  const provCreds = await mintCreds(auth, provIdent, "provisioner", { expiresInSeconds: 15 * 60 });
   await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
   const mgr = new CotalEndpoint({ space, servers: SERVERS, creds: provCreds, card: { name: "mgr", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false });
   mgr.on("error", () => {});
@@ -127,23 +130,56 @@ try {
     },
   };
 
+  // Production profiles cannot list consumers. This harness-only user observes the bucket without
+  // changing the delivery credential whose startup and maintenance we exercise.
+  const inspector = newIdentity();
+  const inspectorJwt = await encodeUser("anycast-inspector", fromPublic(inspector.id), fromPublic(auth.account.pub),
+    { pub: { allow: [">"] }, sub: { allow: [">"] } },
+    { signer: nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed)) });
+  const inspectorCreds = fmtCreds(inspectorJwt, fromSeed(new TextEncoder().encode(inspector.seed)));
+  const inspectorNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(inspectorCreds), maxReconnectAttempts: 0 });
+  conns.push(inspectorNc);
+  const inspectorJsm = await jetstreamManager(inspectorNc);
+  const scanConsumers = async () => {
+    const consumers = [];
+    for await (const info of inspectorJsm.consumers.list(`KV_${anycastBucket(space)}`)) consumers.push(info.name);
+    return consumers;
+  };
+  check("0a the provisioned anycast bucket has no messages or consumers",
+    (await dJsm.streams.info(`KV_${anycastBucket(space)}`)).state.messages === 0 && (await scanConsumers()).length === 0);
+
   let daemonLease: number | undefined;
-  const startDaemon = async (): Promise<CotalEndpoint> => {
+  const daemonErrors: string[] = [];
+  const startDaemon = async (acquireLease = true): Promise<CotalEndpoint> => {
     const d = new CotalEndpoint({
       space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [],
       consume: false, watchPresence: false, registerPresence: false,
       card: { name: "delivery", role: "delivery", kind: "endpoint" },
     });
-    d.on("error", () => {});
+    d.on("error", (e: Error) => daemonErrors.push(e.message));
     d.on("warning", () => {});
     await d.start();
     await d.startPlane3((owner, uid) => d.aclForOwner(owner, uid));
     // The lease the agents check a notice's sender against.
-    daemonLease = await d.acquireDeliveryLease(0);
+    if (acquireLease) daemonLease = await d.acquireDeliveryLease(0);
     endpoints.push(d);
     return d;
   };
-  let daemon = await startDaemon();
+  let daemon = await startDaemon(false);
+  await sleep(1500); // Startup launches its maintenance pass asynchronously.
+  const idleConsumers = await scanConsumers();
+  check("0b startup on an empty anycast bucket creates no scan consumer", idleConsumers.length === 0, idleConsumers);
+  if (process.argv.includes("--idle-five-minutes")) {
+    await sleep(5 * 60 * 1000);
+    const laterConsumers = await scanConsumers();
+    check("0d the idle bucket still has no scan consumer five minutes later", laterConsumers.length === 0, laterConsumers);
+  }
+  const idleAuthority = (daemon as unknown as { anycastAuthority: AnycastRequestAuthority }).anycastAuthority;
+  await idleAuthority.sweep();
+  const repeatedConsumers = await scanConsumers();
+  check("0c another empty-bucket sweep creates no scan consumer", repeatedConsumers.length === 0, repeatedConsumers);
+  check("0e idle maintenance reported no errors", daemonErrors.length === 0, daemonErrors);
+  daemonLease = await daemon.acquireDeliveryLease(0);
 
   const mkAgent = async (name: string, role?: string) => {
     const ident = newIdentity();
@@ -190,6 +226,8 @@ try {
   const g1 = await nextRequest(x, seen, s1.msg.id);
   check("1a the holder's copy carries a take", typeof g1?.delivery.take === "function");
   check("1b before the take the sender reads waiting", (await sender.ep.anycastStatus(s1.ack.seq)).state === "waiting");
+  await idleAuthority.sweep();
+  check("1b2 a pending request stays waiting after the sweep", (await sender.ep.anycastStatus(s1.ack.seq)).state === "waiting");
   const t1 = await g1!.delivery.take!();
   check("1c the take is recorded", t1.taken === true, t1);
   check("1d a retry of the same take is the same answer", (await g1!.delivery.take!()).taken === true);
