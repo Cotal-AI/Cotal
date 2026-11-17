@@ -1,5 +1,30 @@
 # @cotal-ai/cli
 
+## 0.165.2
+
+### Patch Changes
+
+- f419ba9: The first `cotal send` to an open space that runs elsewhere is now stored. The one-shot sender consumes nothing, so it never created the space's streams, and the send exited 3 with `OPERATION_UNKNOWN` until a chat session had started there. `send` now creates them before it publishes, as a chat session does. A space this machine started whose streams are gone still refuses with `TARGET_UNAVAILABLE`. The endpoint gains `ensureOpenSpaceStreams()`.
+- e36b376: `cotal spawn --foreground` no longer exits 0 when a signal kills its application. It exits with 128 plus the signal number, as a shell does, so SIGTERM gives 143 and SIGKILL gives 137, and `cotal spawn ... && next` stops.
+- f57b717: `cotal manager start --dry-run`, and `cotal service start <preset> --dry-run`, with an option that differs from a stopped service's saved one no longer save the definition again. Before, the preview rewrote it, so the next real start used the previewed `--runtime` and could fail with `unknown runtime`. The dry run still makes the same checks.
+- 575d7c6: Self-updates wait for newly listed release archives to become available without failing the command during registry propagation.
+  
+  The updater reports its progress for up to ten minutes. If the release is still unavailable, it keeps the installed version and exits successfully. Integrity, metadata, access and installation failures remain errors.
+- 4767c1d: `backup restore --accept-missing-source` rebuilds a missing preserved store at the path its cut records, a custom `--store-dir` included, and the restored space starts on that store. Before, a restore with no `--store-dir` chose `.cotal/nats` and failed `OPERATION_UNKNOWN`, so the recorded path had to be passed again. A `--store-dir` naming another path is now refused before staging.
+- 9edbf60: A restore interrupted after its commit intent and before it bound a listener now recovers forward with bare `cotal up`, as its refusal advises. Before, every `up` exited 3 with "re-entry has no bound listener proof" and the restore stayed stuck. `up` now starts the listener when no process of this account names the attempt and the recorded port is free, including from a `degraded` record an earlier `up` left. While a listener the interrupted run started still runs, `up` names its pid and refuses, because a second server would open the restored store beside it.
+- 3d3b1dd: On a running controller stack, `cotal manager start` now reports the stack's manager running and starts nothing, as the docs say, instead of refusing with `LIFECYCLE_BLOCKED`. `cotal manager restart` still refuses to restart a stack member by itself. Its Next used to be `cotal up`, which only reuses the running manager. It now names `cotal manager stop --yes`, then `cotal up`, which restarts the manager and keeps the broker. `cotal service start` and `restart` of a stack member behave the same way.
+- 614bd86: Start existing local spaces after an upgrade without requiring a membership-store repair flag.
+  
+  A stopped stack converts its derived File-backed membership feed before starting services. Durable membership and message history remain intact. Running or adopted brokers are left unchanged and name the explicit conversion command.
+- 88919a2: Pin local Managers during software updates on every platform.
+  
+  The updater reads native process and Manager identity records before requesting a user-auth control caller, so another machine's Manager does not make local update selection ambiguous.
+- Updated dependencies [f419ba9]
+- Updated dependencies [9edbf60]
+- Updated dependencies [c040eec]
+  - @cotal-ai/core@0.165.2
+  - @cotal-ai/workspace@0.165.2
+
 ## 0.165.1
 
 ### Patch Changes
