@@ -687,10 +687,24 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const brokerLogfileSizeLimit = recordedBroker ? recordedBroker.logfileSizeLimit : request.logfileSizeLimit ?? unstarted?.broker?.logfileSizeLimit;
   const brokerLogfileMaxNum = recordedBroker ? recordedBroker.logfileMaxNum : request.logfileMaxNum ?? unstarted?.broker?.logfileMaxNum;
   // The manager's session ceiling is kept by its saved definition, so a bare up starts it with the
-  // ceiling an earlier up set rather than the default. An explicit --max-sessions replaces it.
-  const savedManager = serviceDefinitionStore(space).read(STACK_DEFINITION.manager)?.record.value.launch;
+  // ceiling an earlier up set rather than the default. An explicit --max-sessions replaces it only
+  // once the manager is stopped; a live refresh must not silently discard the requested ceiling.
+  const managerDefinition = serviceDefinitionStore(space).read(STACK_DEFINITION.manager);
+  const savedManager = managerDefinition?.record.value.launch;
   const savedSessions = savedManager?.type === "adapter" && savedManager.options.root === root ? savedManager.options["max-sessions"] : undefined;
   const maxSessions = request.maxSessions ?? (typeof savedSessions === "number" ? savedSessions : undefined);
+  if (request.maxSessions !== undefined) {
+    for (const row of serviceInstances(space, STACK_DEFINITION.manager).filter((row) => observeServiceProcess(row.record.value) === "running")) {
+      const applied = row.record.value.definitionRevision === managerDefinition?.record.revision && savedManager?.type === "adapter" && savedManager.adapter === STACK_ADAPTER.manager && savedManager.options.root === root
+        ? typeof savedSessions === "number" ? savedSessions : 64
+        : undefined;
+      if (applied !== request.maxSessions)
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the running manager ${applied === undefined ? "has no matching saved launch definition for its session ceiling" : `uses --max-sessions ${applied}`} and cannot change it at runtime; nothing was started or written`, {
+          target: { root, space, instanceId: row.name, maxSessions: applied ?? null, requestedMaxSessions: request.maxSessions },
+          remedy: `stop the stack with \`cotal down --yes\`, then run \`cotal up --max-sessions ${request.maxSessions}\``,
+        });
+    }
+  }
   // The mode is pinned by the first whole-stack up. A conflicting explicit request refuses here,
   // before any preflight write, preparation or launch.
   if (previous && request.mode !== undefined && request.mode !== previous.journal.mode)
