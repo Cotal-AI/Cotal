@@ -132,6 +132,9 @@ Set `COTAL_SKIP_ASSIST=1` to disable these offers.
 
 Run `cotal status` to inspect saved preparation and running services.
 It does not start anything.
+If connector seeding failed, status names the package and recorded cause and exits 5.
+Fix that cause, then run `cotal ext seed --repair` before trying startup again.
+For a recorded permission refusal, follow its permission remedy first.
 For commands, flags, and exit codes, see the [CLI reference](cli.mdx).
 
 ## Next steps [#next-steps]

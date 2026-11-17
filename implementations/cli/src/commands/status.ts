@@ -159,11 +159,12 @@ import { storeWriteProblem } from "../lib/store-dir.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 import { askManager } from "@cotal-ai/workspace/control";
+import { readCursor } from "../seed/lock.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` is a broad, recovery-oriented report: it exits 0, or 4 when it could not read part of what
- * it reports; this explicit mode is for an operator or monitor that needs a component state per
- * component and an exit code to branch on.
+ * it reports, or 5 for a recorded connector seed failure. The explicit mode is for an operator or
+ * monitor that needs a component state per component and an exit code to branch on.
  *
  * THAT DIVISION IS ABOUT EXIT CODES AND COMPLETENESS, NOT ABOUT TRUTHFULNESS, and #1576 is where the
  * difference bit. Bare status printed `delivery  running (pid N)` over a daemon whose responder had
@@ -280,7 +281,11 @@ export interface StatusResult {
     skills: { state: "current" | "not-installed" | "behind" | "unreadable"; total: number; behind: number; retired: number; error: string | null };
     web: { installed: boolean | null; installedError: string | null; url: string | null; urlError: string | null };
   };
-  extensions: { root: string; items: { package: string; label: string; version: string }[] | null };
+  extensions: {
+    root: string;
+    items: { package: string; label: string; version: string }[] | null;
+    seedFailure: { package: string; phase: "copy" | "add"; cause: string } | null;
+  };
   folder: {
     root: string;
     auth: { state: "space" | "spaces" | "none" | "unreadable"; spaces: string[]; userAuth: boolean; error: string | null };
@@ -460,6 +465,9 @@ export async function status(args: ParsedArgs): Promise<void> {
   if (preferencesFolder) hints.push(`protect the preferences folder: ${preferencesFolder.remedy}`);
   const machine = await readMachine(selected, gaps, hints);
   const extensions = readExtensions(gaps);
+  const seedFailure = extensions.seedFailure ? new CommandFailure("failed", "OPERATION_FAILED",
+    `connector setup is incomplete: a previous seed failed (package "${extensions.seedFailure.package}", phase ${extensions.seedFailure.phase}): ${extensions.seedFailure.cause}`,
+    { remedy: `fix the recorded cause first, then run \`${displayCmd()} ext seed --repair\`` }) : undefined;
   const skewedExtensions = extensions.items?.filter((item) => item.package.startsWith("@cotal-ai/") && item.version !== machine.version) ?? [];
   const extensionWarnings: OutputWarning[] = skewedExtensions.length ? [{
     code: "EXTENSION_VERSION_SKEW",
@@ -500,7 +508,9 @@ export async function status(args: ParsedArgs): Promise<void> {
   const store = full ?? logged;
   const stackManager = selected.ok ? await readStackManager(selected.target, services) : undefined;
   // Two readers can name the same unreadable record, so each hint is listed once.
-  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), hints: [...new Set(hints)] };
+  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), hints: extensions.seedFailure
+    ? [`Fix the recorded cause first: ${extensions.seedFailure.cause}`, `Then run \`${displayCmd()} ext seed --repair\` to finish connector setup before starting a space`]
+    : [...new Set(hints)] };
   const parts = gaps.warnings.length;
   // A preference variable `config set` would refuse is named, but it was read, so the run stays complete.
   // An unreadable preferences file is already a gap, so the variables are checked without it.
@@ -520,11 +530,12 @@ export async function status(args: ParsedArgs): Promise<void> {
       result,
       completeness: parts ? "partial" : "complete",
       warnings: [...gaps.warnings, ...extensionWarnings, ...invalidValues, ...survivors],
-      ...(parts ? { partial: { message: `status could not read ${parts === 1 ? "one part" : `${parts} parts`} of what it reports; the warnings name ${parts === 1 ? "it" : "each"}` } } : {}),
+      ...(seedFailure ? { failure: seedFailure } : parts ? { partial: { message: `status could not read ${parts === 1 ? "one part" : `${parts} parts`} of what it reports; the warnings name ${parts === 1 ? "it" : "each"}` } } : {}),
     },
     (result) => statusView(result, Boolean(values.verbose), Boolean(values.all) || Boolean(values.wide)),
   );
   if (values.components) await printComponentHealth(cwd, values);
+  if (seedFailure) process.exitCode = 5;
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -726,7 +737,14 @@ function readSkills(gaps: Gaps): StatusResult["machine"]["skills"] {
 function readExtensions(gaps: Gaps): StatusResult["extensions"] {
   const { versions, unreadable } = readExtensionVersions();
   if (unreadable !== undefined) gaps.add("EXTENSIONS_UNREADABLE", `the extensions manifest could not be read: ${unreadable}`);
-  return { root: extensionsDir(), items: unreadable === undefined ? versions.map((e) => ({ package: e.pkg, label: e.label, version: e.version })) : null };
+  let seedFailure: StatusResult["extensions"]["seedFailure"] = null;
+  try {
+    const cursor = readCursor();
+    if (cursor?.failed !== undefined) seedFailure = { package: cursor.package, phase: cursor.phase, cause: cursor.failed };
+  } catch (error) {
+    gaps.add("SEED_CURSOR_UNREADABLE", `the connector seed cursor could not be read: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return { root: extensionsDir(), items: unreadable === undefined ? versions.map((e) => ({ package: e.pkg, label: e.label, version: e.version })) : null, seedFailure };
 }
 
 /** The lease `holder` the delivery daemon THIS WORKSPACE launched would write, or `undefined` when it
@@ -1877,6 +1895,7 @@ function machineOverview(r: StatusResult, wide: boolean): Section {
     ? r.extensions.items === null ? stateCell("manifest could not be read", "failed") : r.extensions.items.length ? r.extensions.items.map((item) => `${item.label} v${item.version}`).join(" · ") : undefined
     : extensionsCell(r.extensions);
   if (extensions !== undefined) rows.push(["Extensions", extensions]);
+  if (r.extensions.seedFailure) rows.push(["Connector setup", stateCell(`incomplete · ${r.extensions.seedFailure.package} failed during ${r.extensions.seedFailure.phase}: ${r.extensions.seedFailure.cause}`, "failed")]);
   return {
     title: "This machine",
     blocks: [
@@ -2085,6 +2104,10 @@ function backupRecovery(maintenance: StatusResult["maintenance"]): string | null
 }
 
 function nextActions(r: StatusResult): Section {
+  if (r.extensions.seedFailure) return {
+    title: "Next",
+    blocks: r.hints.map(hint => ({ kind: "lines", lines: [cell(hint, "hint")] })),
+  };
   const recovery = backupRecovery(r.maintenance);
   if (recovery) return { title: "Next", blocks: [...new Set([recovery, ...r.hints])].map((hint) => ({ kind: "lines", lines: [cell(hint, "hint")] })) };
   const cmd = displayCmd();
