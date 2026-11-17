@@ -9,18 +9,15 @@ import {prepareUnreachableRegistration} from './unreachable-registration-state.m
 /** Exercise the candidate's installed updater without installing a native daemon. */
 export async function unreachableRegistrationPair({candidate,next,output,scratchRoot}){
  const pair=await candidatePairRegistry(resolve(candidate),resolve(next));
- const prior=process.env.npm_config_registry;
  try{
   pair.activateTarget();
-  process.env.npm_config_registry=pair.url;
-  return await matrixCell({source:pair.identity.sourceVersion,layout:'npm',state:'configured',method:'self',candidate:next,direction:'B','expected-target':pair.identity.targetVersion,output,scratchRoot,
+  return await matrixCell({source:pair.identity.sourceVersion,layout:'npm',state:'configured',method:'self',configuredPair:pair,'expected-target':pair.identity.targetVersion,output,scratchRoot,
    prepare:async context=>{
     context.report.configuredPair=pair.identity;
     context.report.configuredPairHarnessSha256=createHash('sha256').update(readFileSync(import.meta.filename)).digest('hex');
     return prepareUnreachableRegistration(context);
    }});
  }finally{
-  if(prior===undefined)delete process.env.npm_config_registry;else process.env.npm_config_registry=prior;
   await pair.close();
  }
 }

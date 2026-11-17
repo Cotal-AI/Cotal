@@ -361,6 +361,8 @@ function safeRoot(output, localParent = '/var/tmp/upgrade-matrix') {
 
 export async function matrixCell(options) {
   const { source = 'latest', state = 'fresh', method = 'self', layout = 'npm' } = options;
+  const configuredPair = options.configuredPair;
+  if (configuredPair) assert(state === 'configured' && method === 'self' && layout === 'npm' && ['linux', 'darwin'].includes(process.platform) && !options.candidate && !options['candidate-next'] && typeof options.prepare === 'function', 'configured pair requires the explicit POSIX composition');
   const nextHopMode = candidateNextOptions(options);
   const daemonHostedManager = daemonHostedManagerOptions(options);
   const policy = options['expect-policy-refusal'];
@@ -531,13 +533,23 @@ export async function matrixCell(options) {
   try {
     const target = ok(await npmCall('resolve public latest', ['view', 'cotal-ai@latest', 'version', '--json']), 'public latest');
     report.target = JSON.parse(target.stdout);
-    if (expectedTarget && !options.candidate) assert.equal(report.target, expectedTarget, 'public target differs from frozen release; do not certify another version');
+    if (expectedTarget && !options.candidate && !configuredPair) assert.equal(report.target, expectedTarget, 'public target differs from frozen release; do not certify another version');
     report.resolvedBeforeCell = report.target;
     if (nextHopMode) assertPublishedPairTarget(options, report.resolvedBeforeCell, json(join(options.candidate,'bootstrap.json')).version);
     report.source = source === 'latest' ? report.target : source;
     if (publishedLaunchd) assert.notEqual(report.target, report.source, 'next published release is not available yet');
     report.registry = ok(await npmCall('record npm registry', ['config', 'get', 'registry']), 'registry').stdout.trim();
-    if (nextHopMode) {
+    if (configuredPair) {
+      assert.equal(new URL(report.registry).origin, 'https://registry.npmjs.org', 'configured pair starts from public registry only');
+      assert.equal(report.source, configuredPair.identity.sourceVersion);
+      report.target = configuredPair.identity.targetVersion;
+      if (expectedTarget) assert.equal(report.target, expectedTarget);
+      report.tier = 'candidate-B (synthetic registry, real native processes)';
+      report.environment.registryOverridden = true;
+      report.candidate = { source: configuredPair.identity.source, version: report.target, direction: 'B' };
+      env.npm_config_registry = configuredPair.url;
+      restoreRegistry = configureCandidateRegistry(home, configuredPair.url);
+    } else if (nextHopMode) {
       const { candidatePairRegistry } = await import('./candidate-pair-registry.mjs');
       overlay = options['candidate-follow-on']
         ? await candidatePairRegistry(resolve(options.candidate), resolve(options['candidate-next']), resolve(options['candidate-follow-on']), report.registry)
