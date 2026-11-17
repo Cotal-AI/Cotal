@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -83,7 +83,7 @@ const old = (label, args) => call(label, process.execPath, [oldEntry, ...args]);
 const fresh = (label, args) => call(label, process.execPath, [freshEntry, ...args]);
 const candidateEntry = process.env.DESKTOP_REPAIR_CLI;
 const repairCommand = process.env.DESKTOP_REPAIR_COMMAND ?? 'status';
-assert(['status', 'install', 'disabled'].includes(repairCommand), 'unsupported repair entry command');
+assert(['status', 'install', 'disabled', 'unreadable-source'].includes(repairCommand), 'unsupported repair entry command');
 if (!candidateEntry) assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
 report.repairCommand = repairCommand;
 const candidate = (label, args) => call(label, process.execPath, [candidateEntry, ...args]);
@@ -203,6 +203,36 @@ try {
       entrySha256: createHash('sha256').update(readFileSync(candidateEntry)).digest('hex') };
     const sessionPath = join(cotalHome, 'idp-sessions.json');
     const stateBefore = readFileSync(sessionPath, 'utf8');
+    if (repairCommand === 'unreadable-source') {
+      await ownedService();
+      const sourceIdentity = statSync(plist);
+      const receiptBefore = readFileSync(receiptPath, 'utf8');
+      try {
+        chmodSync(plist, 0);
+        assert.throws(() => readFileSync(plist), { code: 'EACCES' }, 'real source read must fail, not only have a permission bit');
+        const refused = await candidate('unreadable source refuses install repair', ['daemon', 'install', '--json']);
+        assert.equal(refused.timedOut, false);
+        assert.equal(refused.signal, null);
+        assert.equal(refused.exit, 2);
+        assert.equal(JSON.parse(refused.stdout).error.code, 'CONFLICT');
+        assert.equal(readFileSync(receiptPath, 'utf8'), receiptBefore);
+        assert.equal(readFileSync(sessionPath, 'utf8'), stateBefore);
+        assert(!existsSync(join(cotalHome, 'daemon/service-repair.json')), 'unreadable source must not publish repair intent');
+        for (const held of heldProcesses) {
+          const live = await call(`unreadable source preserves original process ${held.pid}`, '/bin/ps', ['-p', String(held.pid), '-o', 'pid=,lstart=,comm=']);
+          ok(live);
+          assert.equal(live.stdout, held.process.stdout, 'refusal must retain the original daemon and Manager lifetimes');
+        }
+      } finally {
+        const current = statSync(plist);
+        assert.equal(current.dev, sourceIdentity.dev);
+        assert.equal(current.ino, sourceIdentity.ino, 'restore permissions only on the same owned source');
+        chmodSync(plist, sourceIdentity.mode & 0o777);
+      }
+      assert.equal(readFileSync(plist, 'utf8'), source);
+      await ownedService();
+      report.unreadableSourceAcceptance = { actualReadDenied: true, refusedConflict: true, sourceAndReceiptUnchanged: true, credentialsPreserved: true, originalLifetimesRetained: true, modeRestored: true };
+    }
     if (repairCommand === 'disabled') {
       const { spaceSegment } = await import(pathToFileURL(resolve('packages/workspace/dist/index.js')).href);
       const hostingPath = join(cotalHome, 'daemon', spaceSegment(report.participant.space), 'manager-host.json');
@@ -249,7 +279,7 @@ try {
       report.installRepairAcceptance = { state: installed.state, pid: installedPid, sourceOutsideAppBeforeStatus: true, credentialsPreserved: true };
       }
     }
-    if (repairCommand !== 'disabled') {
+    if (repairCommand !== 'disabled' && repairCommand !== 'unreadable-source') {
     const repaired = body(await candidate(repairCommand === 'install' ? 'candidate status observes install-repaired program' : 'candidate daemon status repairs missing program', ['daemon', 'status', '--json']));
     if (repairCommand === 'install') assert.equal(repaired.pid, report.installRepairAcceptance.pid, 'status observes the already repaired native lifetime');
     assert.notEqual(repaired.pid, before.pid, 'repair starts a fresh daemon lifetime');
