@@ -21,7 +21,7 @@ process.env.COTAL_HOME = home;
 const { canonicalJson, conversationSelection, eventChannel, mintLifecycleUid } = await import("@cotal-ai/core");
 const { recordMesh, resolveTargetOrThrow } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/auth");
-const { saveIdpSession } = await import("../../auth/src/login.js");
+const { saveIdpSession, deleteIdpSession } = await import("../../auth/src/login.js");
 const { provisionUserApp, retireUserApp } = await import("../src/lib/app-user-identity.js");
 const { appIdentity } = await import("../src/commands/app-identity.js");
 
@@ -503,6 +503,7 @@ try {
     const c = await connected(provisionUserApp(target, "moved", session, true));
     const file = join(c.retire.dir, "identity.json");
     const record = JSON.parse(readFileSync(file, "utf8"));
+    assert.deepEqual(Object.keys(record.retirementTarget).sort(), ["root", "server", "space", "tlsRequired", "userAuth"]);
     record.state = "retiring";
     writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
     const moved = bundle();
@@ -558,7 +559,33 @@ try {
         userAuth: target.userAuth, policy: target.policy });
     });
   }
-  assert.equal(assertions, 42);
+  await check("a moved registration reconnects when only its new sign-in remains", async () => {
+    const session = "session-missing-login";
+    const p = await pendingOf(provisionUserApp(target, "moved", session, true));
+    decide(p.requestId, { approve: EMPTY });
+    const c = await connected(provisionUserApp(target, "moved", session, true));
+    const file = join(c.retire.dir, "identity.json"), record = JSON.parse(readFileSync(file, "utf8"));
+    assert.deepEqual(Object.keys(record.retirementTarget).sort(), ["root", "server", "space", "tlsRequired", "userAuth"]);
+    record.state = "retiring";
+    writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
+    const moved = bundle();
+    moved.server = "nats://127.0.0.1:2";
+    moved.userAuth.idp.url = `${base}/moved-idp`;
+    moved.userAuth.endpoints.url = `${base}/moved/s/${SPACE}`;
+    movedRegistration = moved;
+    recordMesh({ space: SPACE, server: moved.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
+      userAuth: moved.userAuth, policy: moved.policy as { events: "required" } });
+    deleteIdpSession(home, `${base}/idp`);
+    const before = deletes;
+    const nextTarget = await resolveTargetOrThrow({ space: SPACE });
+    const next = await pendingOf(provisionUserApp(nextTarget, "moved", session, true));
+    assert.equal(deletes, before, "no retirement credential goes to the replacement");
+    assert.notEqual(next.requestId, p.requestId);
+    assert(existsSync(join(home, "app-identities", `unconfirmed-${record.requestId}`, "identity.json")));
+    decide(next.requestId, { approve: EMPTY });
+    await connected(provisionUserApp(nextTarget, "moved", session, true));
+  });
+  assert.equal(assertions, 43);
   console.log(`conversation-approval-live: ${assertions} checks passed; isolated HTTPS fixture authority and fixture human decision, not hosted acceptance`);
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));

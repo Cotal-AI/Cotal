@@ -334,9 +334,11 @@ unfinished cleanup with the mesh's retirement phase. Calling `cotal_disconnect` 
 once. `cotal_connect` retries it too, and connects with a new identity once the mesh confirms
 retirement. A restarted plugin server recovers the same way. New recovery records retain the original
 registration pins, so retirement still goes to that authority after the registered addresses change.
-An older record without those pins is kept under `app-identities/unconfirmed-<requestId>` in the
-private Cotal home when the registration changes. Its retirement is not confirmed and no credential
-is sent to the replacement authority. The session can request a fresh identity with a new approval.
+After a registration change, an older record without those pins, or a pinned record whose original
+authority is unavailable or refuses sign-in, is set aside without confirming retirement.
+Set-aside records live at `app-identities/unconfirmed-<id>` in the private Cotal home, hold a
+credential, and can be removed by deleting that directory after revoking the old identity at its
+authority. No credential is sent to the replacement authority. The session can request a fresh identity with a new approval.
 A different issuer or audience never authorizes reuse of the old request. After each connection, the plugin
 retires the same mesh's saved identities whose plugin server process no longer exists, such as one
 killed before it could retire them. This runs in the background, so the connection does not wait

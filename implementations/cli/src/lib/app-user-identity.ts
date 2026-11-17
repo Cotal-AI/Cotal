@@ -20,7 +20,7 @@ interface SavedIdentity {
   root: string;
   trust: string;
   /** Original registration pins, used only to retire at the authority that issued this request. */
-  retirementTarget?: MeshTarget;
+  retirementTarget?: Pick<MeshTarget, "space" | "root" | "server" | "tlsRequired" | "userAuth">;
   session: string;
   requestId: string;
   label: string;
@@ -72,6 +72,9 @@ function read(dir: string): SavedIdentity {
       !record.consumer || !Number.isInteger(record.consumer.pid) || record.consumer.pid <= 0 ||
       Boolean(record.remote) === Boolean(record.local))
     throw new Error("conversation identity recovery record is invalid; it was retained");
+  if (record.retirementTarget && Object.keys(record.retirementTarget).some((key) =>
+      !["space", "root", "server", "tlsRequired", "userAuth"].includes(key)))
+    throw new Error("conversation retirement pins contain unexpected fields; recovery state was retained");
   if (record.selection !== undefined) checkConversationSelection(record.selection);
   const pending = record.remote?.approval?.pending;
   if (pending !== undefined) checkConversationApprovalPending(pending, new URL(record.remote!.url).origin);
@@ -270,7 +273,8 @@ async function provisionOnSpace(
       if (readdirSync(dir).length) throw new Error("conversation identity state is incomplete; it was retained for recovery");
       const token = randomBytes(32).toString("base64url");
       record = {
-        v: 1, space: target.space, root: target.root, trust: trust(target), retirementTarget: target, session,
+        v: 1, space: target.space, root: target.root, trust: trust(target), retirementTarget: { space: target.space, root: target.root, server: target.server,
+          tlsRequired: target.tlsRequired, userAuth: target.userAuth }, session,
         requestId: randomBytes(24).toString("base64url"), label: name, token, state: "creating",
         consumer: { pid: process.ppid, start: processStartToken(process.ppid) }, ...(selection ? { selection } : {}),
         remote: { url: authority.url, idpUrl: target.userAuth!.idp.url, approval: {} },
@@ -362,6 +366,14 @@ export async function retireDeadUserApps(target: MeshTarget): Promise<void> {
   }
 }
 
+/** Preserve unconfirmed credentials without reserving the conversation's active session key. */
+function setAside(dir: string, record: SavedIdentity): void {
+  record.state = "retiring";
+  save(dir, record);
+  renameSync(dir, join(identityRoot(), `unconfirmed-${record.requestId}`));
+  if (process.platform !== "win32") syncFile(identityRoot());
+}
+
 /** `when` is decided under the record's lock, so a consumer that reissued it in between keeps it. */
 async function retire(dir: string, when?: (record: SavedIdentity) => boolean): Promise<void> {
   if (!isUserAppDir(dir)) throw new Error("not a saved conversation identity directory");
@@ -369,51 +381,65 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean): P
   try {
     const record = read(dir);
     if (when && !when(record)) return;
-    const target = record.retirementTarget ?? await resolveTargetOrThrow({ space: record.space });
+    const current = await resolveTargetOrThrow({ space: record.space });
+    const target = record.retirementTarget ? { ...current, ...record.retirementTarget } : current;
     if (record.retirementTarget && trust(target) !== record.trust)
       throw new Error("conversation identity retirement pins do not match its saved trust; retirement was not sent");
     if (trust(target) !== record.trust) {
       // Older records lack the original registration. Preserve their recovery state outside the
       // active session key without sending their credentials to the replacement registration.
-      record.state = "retiring";
-      save(dir, record);
-      renameSync(dir, join(identityRoot(), `unconfirmed-${record.requestId}`));
-      if (process.platform !== "win32") syncFile(identityRoot());
+      setAside(dir, record);
       return;
     }
     const provider = resolveAuthProvider();
     record.state = "retiring";
     save(dir, record);
     if (record.remote) {
-      const authority = await discoverConversationAuthority(target);
-      if (authority.url !== record.remote.url || record.remote.idpUrl !== target.userAuth?.idp.url)
-        throw new Error("conversation identity authority changed; recovery was not sent");
-      let material = record.remote.material;
-      if (!material) {
-        if (record.selection && !authority.selection)
-          throw new Error("the selected mesh no longer offers selection for conversation identities; recovery was not sent");
-        if (!authority.approval)
-          throw new Error("the selected mesh does not advertise connection approval v1; recovery was not sent");
-        markUnderApproval(dir, record);
-        const replay = await request(provider)({ url: authority.url, idpUrl: record.remote.idpUrl, method: "POST", body: creationBody(record) });
-        const outcome = creationOutcome(record, authority, replay, "recovery");
-        // Refused, or still pending: the authority issued nothing, so there is nothing to retire.
-        if (!("material" in outcome)) {
-          discard(dir);
-          return;
+      let unavailable = false;
+      const originalRequest = async (args: Parameters<ReturnType<typeof request>>[0]) => {
+        try {
+          const response = await request(provider)(args);
+          if ([401, 403].includes(response.status)) unavailable = true;
+          return response;
+        } catch (error) { unavailable = true; throw error; }
+      };
+      try {
+        let authority: ConversationAuthority;
+        try { authority = await discoverConversationAuthority(target); }
+        catch (error) { unavailable = true; throw error; }
+        if (authority.url !== record.remote.url || record.remote.idpUrl !== target.userAuth?.idp.url)
+          throw new Error("conversation identity authority changed; recovery was not sent");
+        let material = record.remote.material;
+        if (!material) {
+          if (record.selection && !authority.selection)
+            throw new Error("the selected mesh no longer offers selection for conversation identities; recovery was not sent");
+          if (!authority.approval)
+            throw new Error("the selected mesh does not advertise connection approval v1; recovery was not sent");
+          markUnderApproval(dir, record);
+          const replay = await originalRequest({ url: authority.url, idpUrl: record.remote.idpUrl, method: "POST", body: creationBody(record) });
+          const outcome = creationOutcome(record, authority, replay, "recovery");
+          // Refused, or still pending: the authority issued nothing, so there is nothing to retire.
+          if (!("material" in outcome)) {
+            discard(dir);
+            return;
+          }
+          material = outcome.material;
+          record.remote.material = material;
+          save(dir, record);
         }
-        material = outcome.material;
-        record.remote.material = material;
-        save(dir, record);
+        material = checkConversationMaterial(material, authority, record.requestId, record.selection, approvalExpectation(record.remote));
+        const expected = new URL(`${authority.url}/${material.actor}`);
+        expected.searchParams.set("lifecycleUid", assertLifecycleToken(material.lifecycleUid));
+        if (material.retire.url !== expected.href) throw new Error("saved retirement URL does not name the exact lifecycle");
+        const response = await originalRequest({ url: expected.href, idpUrl: record.remote.idpUrl, method: "DELETE" });
+        const phase = conversationRetirementPhase(response.status, response.body, material);
+        if (phase !== "terminal")
+          throw new Error(`conversation identity retirement is pending at phase ${JSON.stringify(phase)}; its saved lifecycle was retained for an exact retry`);
+      } catch (error) {
+        if (!unavailable || trust(current) === record.trust) throw error;
+        setAside(dir, record);
+        return;
       }
-      material = checkConversationMaterial(material, authority, record.requestId, record.selection, approvalExpectation(record.remote));
-      const expected = new URL(`${authority.url}/${material.actor}`);
-      expected.searchParams.set("lifecycleUid", assertLifecycleToken(material.lifecycleUid));
-      if (material.retire.url !== expected.href) throw new Error("saved retirement URL does not name the exact lifecycle");
-      const response = await request(provider)({ url: expected.href, idpUrl: record.remote.idpUrl, method: "DELETE" });
-      const phase = conversationRetirementPhase(response.status, response.body, material);
-      if (phase !== "terminal")
-        throw new Error(`conversation identity retirement is pending at phase ${JSON.stringify(phase)}; its saved lifecycle was retained for an exact retry`);
     } else {
       const local = record.local!;
       const store = workspaceSecretStore(target.root);
