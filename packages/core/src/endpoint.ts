@@ -1717,10 +1717,13 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Fetch, broker-prove and adopt the source credential, then refresh the same connection
    * once outgoing mux and named-reply requests are quiet. A busy timeout retains the connection
-   * and adopted credential. Call again to retry. This does not tear down endpoint bindings. */
+   * and adopted credential. Call again to retry. This does not tear down endpoint bindings.
+   * A dropped connection that is being re-established carries no request, so it redials now
+   * instead of after its backoff; the rebuild re-fetches a stale credential from the source. */
   async refreshCredsRequestSafe(): Promise<void> {
     if (!this.credsSource) throw new Error("credential refresh requires a creds source");
     const nc = this.nc;
+    if (!nc && !this.stopped && (this.reconnecting || this.reestablishing)) return await this.reconnect();
     if (!nc || this.stopped) throw new Error("credential refresh requires a running endpoint");
     const deadline = Date.now() + CotalEndpoint.RELOAD_DEADLINE_MS;
     await this.runCredsTxn(async () => {

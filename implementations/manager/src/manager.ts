@@ -3029,11 +3029,16 @@ export class Manager {
   }
 
   /** #2073: the shared bounded-retry shape for a closed standing connection: wait out each of
-   *  {@link STATIC_RECONCILE_RETRY_DELAYS_MS}, trying `attempt` after each. A stop landing while
-   *  this loop waits is not a fault this loop reports (the caller re-checks `leaseStopping`). */
-  private async boundedReconnect(label: string, attempt: () => Promise<boolean>): Promise<boolean> {
+   *  {@link STATIC_RECONCILE_RETRY_DELAYS_MS}, trying `attempt` after each. Waiting does not repair
+   *  two closes, so they skip the first delay. One that closes while an all-duty renewal is in flight,
+   *  as one the broker expires just before adoption, tries when that renewal adopts. One whose
+   *  credential has `expired` tries at once, because its attempt renews the credential. A stop landing
+   *  while this loop waits is not a fault this loop reports (the caller re-checks `leaseStopping`). */
+  private async boundedReconnect(label: string, attempt: () => Promise<boolean>, expired = false): Promise<boolean> {
+    let first = this.remoteBundleAdoption ?? (expired ? Promise.resolve() : undefined);
     for (const delayMs of STATIC_RECONCILE_RETRY_DELAYS_MS) {
-      await new Promise((r) => setTimeout(r, delayMs));
+      await (first ?? new Promise((r) => setTimeout(r, delayMs)));
+      first = undefined;
       if (this.leaseStopping) return true;
       try {
         if (await attempt()) return true;
@@ -10304,7 +10309,7 @@ export class Manager {
       await this.dialGoalWriter(gw);
       console.error("manager goal-writer re-dialed");
       return true;
-    });
+    }, inspectCredHealth(gw?.creds ?? "").state === "expired");
     if (this.leaseStopping || recovered) return;
     console.error("! manager goal-writer could not be re-dialed; leaving the credential to the next renewal pass");
   }
@@ -10415,7 +10420,7 @@ export class Manager {
       await this.dialSessionLedgerConnection(sw, identity);
       console.error("manager session-ledger re-dialed");
       return true;
-    });
+    }, inspectCredHealth(sw?.creds ?? "").state === "expired");
     if (this.leaseStopping || recovered) return;
     console.error("! manager session-ledger could not be re-dialed; leaving the credential to the next renewal pass");
   }
