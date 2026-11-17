@@ -385,13 +385,13 @@ jobs:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
       - uses: actions/download-artifact@v4
-        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true || matrix.deadUpdater == true
+        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'candidate-next-two-homes' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true || matrix.deadUpdater == true
         with:
           artifact-ids: ${{ needs.release-pack.outputs.artifact }}
           merge-multiple: true
           path: ${{ runner.temp }}/release-candidate
       - uses: actions/download-artifact@v4
-        if: matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true || matrix.deadUpdater == true
+        if: matrix.scenario == 'candidate-next-two-homes' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true || matrix.deadUpdater == true
         with:
           artifact-ids: ${{ needs.release-next.outputs.artifact }}
           merge-multiple: true
@@ -403,7 +403,7 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/release-follow-on
       - name: Verify candidate immutable source and full package census
-        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true || matrix.deadUpdater == true
+        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'candidate-next-two-homes' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true || matrix.deadUpdater == true
         shell: bash
         env:
           SOURCE_SHA: ${{ needs.select.outputs.source }}
@@ -431,7 +431,7 @@ jobs:
           mkdirSync(process.env.RUNNER_TEMP + '/upgrade-evidence', { recursive: true });
           writeFileSync(process.env.RUNNER_TEMP + '/upgrade-evidence/candidate-origin.json', JSON.stringify({ source: manifest.source, artifact: process.env.CANDIDATE_ARTIFACT, digest: process.env.CANDIDATE_DIGEST }));
           const cell = JSON.parse(process.env.CELL);
-          if (cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || cell.followOnAction || cell.chain === true || cell.deadUpdater === true) {
+          if (cell.scenario === 'candidate-next-two-homes' || cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || cell.followOnAction || cell.chain === true || cell.deadUpdater === true) {
             const nextRoot = process.env.RUNNER_TEMP + '/release-next/';
             const next = JSON.parse(readFileSync(nextRoot + 'manifest.json'));
             const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -472,7 +472,7 @@ jobs:
           printf '%s  %s\n' 87921721f6dcdf01a454a8d62f8d15f12dee8fd2934a470f435e034f60ca5e9d "$package" | sha256sum -c -
           dpkg-deb -x "$package" "$RUNNER_TEMP/released-desktop"
       - name: Prepare disposable Linux user manager
-        if: matrix.platform == 'linux' && (matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'daemon-self' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.scenario == 'source-0.164.10-daemon-self-chain' || matrix.scenario == 'agent-stop-consent' || matrix.deadUpdater == true)
+        if: matrix.platform == 'linux' && (matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'daemon-self' || matrix.scenario == 'candidate-next-two-homes' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.scenario == 'source-0.164.10-daemon-self-chain' || matrix.scenario == 'agent-stop-consent' || matrix.deadUpdater == true)
         shell: bash
         run: |
           set -euo pipefail
@@ -522,6 +522,16 @@ jobs:
           const directory = process.env.RUNNER_TEMP + '/upgrade-evidence';
           mkdirSync(directory, { recursive: true });
           writeFileSync(directory + '/coordinate.json', JSON.stringify(cell));
+          if (cell.scenario === 'candidate-next-two-homes') {
+            const { twoHomeUpgrade } = await import('./scripts/automatic-update-two-homes.mjs');
+            const { verifyTwoHomeUpgrade } = await import('./scripts/automatic-update-two-homes-evidence.mjs');
+            const result = await twoHomeUpgrade({ oldDirectory: process.env.RUNNER_TEMP + '/release-candidate', targetDirectory: process.env.RUNNER_TEMP + '/release-next', root: directory + '/two-homes' });
+            assert.equal(result.old.source, cell.sourceSHA);
+            assert.equal(result.target.source, cell.sourceSHA);
+            assert.equal(result.old.version, cell.sourceVersion);
+            assert.equal(result.target.version, cell.targetVersion);
+            verifyTwoHomeUpgrade(result);
+          } else {
           const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
           const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
           const args = ['scripts/automatic-update-platform-baseline.mjs', '--source', cell.sourceVersion, '--layout', cell.channel, '--state', (cell.deadUpdater ? 'daemon' : states[cell.scenario]), '--method', method, '--expected-target', cell.targetVersion, '--output', directory];
@@ -572,6 +582,7 @@ jobs:
           if (cell.phase === 'candidate' || paired) assert.equal(report.candidate?.source, cell.sourceSHA);
           const refusal = cell.chain ? undefined : matchKnownRefusal(cell, report);
           process.exitCode = refusal ? 0 : cellExitCode(report);
+          }
           NODE
       - uses: actions/upload-artifact@v4
         if: always()
@@ -644,6 +655,32 @@ jobs:
             assert(expected, 'evidence coordinate must be required by the frozen plan');
             assert.deepEqual(cell, expected, 'complete evidence coordinate must match the frozen plan');
             assert.equal(entry.name, `upgrade-cell-${cell.id}`, 'artifact name must match its coordinate');
+            if (cell.scenario === 'candidate-next-two-homes') {
+              const { verifyTwoHomeUpgrade } = await import('./scripts/automatic-update-two-homes-evidence.mjs');
+              const report = JSON.parse(readFileSync(join(directory, 'two-homes/result.json')));
+              const verdict = verifyTwoHomeUpgrade(report);
+              assert.equal(report.harnessSource, process.env.EXPECTED_HARNESS_SOURCE);
+              for (const name of ['automatic-update-two-homes.mjs', 'automatic-update-two-homes-evidence.mjs']) {
+                const bytes = execFileSync('git', ['show', report.harnessSource + ':scripts/' + name]);
+                assert.equal(report.harnessFiles[name], createHash('sha256').update(bytes).digest('hex'), 'two-home harness source mismatch');
+              }
+              assert.equal(report.old.source, plan.sourceSHA);
+              assert.equal(report.target.source, plan.sourceSHA);
+              assert.equal(report.old.version, cell.sourceVersion);
+              assert.equal(report.target.version, cell.targetVersion);
+              const origin = JSON.parse(readFileSync(join(directory, 'candidate-origin.json')));
+              const nextOrigin = JSON.parse(readFileSync(join(directory, 'candidate-next-origin.json')));
+              assert.equal(origin.artifact, process.env.EXPECTED_CANDIDATE_ARTIFACT);
+              assert.equal(origin.source, plan.sourceSHA);
+              assert.equal(origin.digest, process.env.EXPECTED_CANDIDATE_DIGEST);
+              assert.equal(nextOrigin.artifact, process.env.EXPECTED_NEXT_ARTIFACT);
+              assert.equal(nextOrigin.source, plan.sourceSHA);
+              assert.equal(nextOrigin.digest, process.env.EXPECTED_NEXT_DIGEST);
+              assert.equal(report.old.manifestSha256, nextOrigin.sourceManifestSha256);
+              assert.equal(report.target.manifestSha256, nextOrigin.targetManifestSha256);
+              actual.push({ id: cell.id, status: 'passed', assertions: Object.fromEntries(cell.requiredAssertions.map(name => [name, verdict.acceptance])) });
+              continue;
+            }
             if (plan.phase === 'candidate' || cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction) || cell.chain === true || cell.deadUpdater === true) {
               const origin = JSON.parse(readFileSync(join(directory, 'candidate-origin.json')));
               assert.equal(origin.source, plan.sourceSHA);

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
@@ -14,6 +15,8 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
   assert(!existsSync(root), 'two-home proof needs a new private root');
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const report = { source: 'real installed candidate pair', calls: [], checks: [], cleanup: 'not-started' };
+  report.harnessSource = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim();
+  report.harnessFiles = Object.fromEntries(['automatic-update-two-homes.mjs', 'automatic-update-two-homes-evidence.mjs'].map(name => [name, createHash('sha256').update(readFileSync(new URL(name, import.meta.url))).digest('hex')]));
   const save = () => writeFileSync(join(root, 'result.json'), JSON.stringify(report, null, 2));
   const check = (name, value) => { report.checks.push({ name, passed: Boolean(value) }); save(); assert(value, name); };
   const old = await candidateRegistry(resolve(oldDirectory), 'A', 'https://registry.npmjs.org/');
@@ -90,6 +93,9 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
           check('older Manager exclusion starts no fixture process', !existsSync(joined));
           const retained = await ok('B', 'old Manager remains answering', ['ps', '--json']);
           check('old Manager control request still succeeds', JSON.parse(retained.stdout).outcome === 'ok');
+          await ok('B', 'home status after command', ['status', '--json']);
+          const recovery = join(directory, 'B/cotal/update-recovery.json');
+          check('old Manager exclusion leaves no recovery obligation', !existsSync(recovery) || JSON.parse(readFileSync(recovery, 'utf8')) === null);
           continue;
         }
         if (route === 'up') { await ok('B', 'ordinary next up', ['up', '--detach']); running = true; }
@@ -101,6 +107,9 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         }
         const b = await ok('B', 'home version after ordinary command', ['--version']);
         check(`${route} ordinary command reconciles B completely`, inventory(b.stdout, target.identity.version) && !b.stdout.includes('Reconciliation pending'));
+        await ok('B', 'home status after command', ['status', '--json']);
+        const recovery = join(directory, 'B/cotal/update-recovery.json');
+        check(`${route} home has no recovery obligation`, !existsSync(recovery) || JSON.parse(readFileSync(recovery, 'utf8')) === null);
         report[`${route}ManifestSha256`] = createHash('sha256').update(readFileSync(manifest)).digest('hex');
       } finally {
         if (running) {
