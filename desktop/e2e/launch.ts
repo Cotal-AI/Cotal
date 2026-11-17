@@ -148,21 +148,22 @@ try {
       await until("macOS native metadata and welcome ready", async () => {
         alive();
         const prefix = `${target.label}-${appearance}-attempt-${++attempt}`;
+        const inspectAt = new Date().toISOString();
+        const accessibility = run("swift", [join(repo, "desktop/e2e/details.swift"), String(nativePid), "--inspect"]);
+        const inspectedAt = new Date().toISOString();
+        writeFileSync(join(output, `${target.label}-accessibility-${appearance}.log`), accessibility);
+        writeFileSync(join(output, `${prefix}-accessibility.log`), accessibility);
+        assert.ok(accessibility.toLowerCase().includes("macos") && accessibility.toLowerCase().includes("gb") && !accessibility.toLowerCase().includes("reading computer information"), "macOS accessibility exposes real OS and memory metadata");
         const regionAt = new Date().toISOString();
         run("screencapture", ["-x", "-R", bounds.join(","), png]);
         copyFileSync(png, join(output, `${prefix}-region.png`));
         const displayAt = new Date().toISOString();
-        // Keep both capture paths before AX inspection or clicks. A later full-display
-        // failure capture cannot distinguish initial paint from regional capture behavior.
+        // The cold AX observer can take seconds. Capture after it settles so the visual
+        // check observes the same or a later state, never an earlier loading frame.
         run("screencapture", ["-x", join(output, `${target.label}-display-${appearance}.png`)]);
         copyFileSync(join(output, `${target.label}-display-${appearance}.png`), join(output, `${prefix}-display.png`));
         writeFileSync(join(output, `${target.label}-capture-${appearance}.json`), JSON.stringify({ pid: nativePid, bounds, regionAt, displayAt, capturedAt: new Date().toISOString() }));
-        const inspectAt = new Date().toISOString();
-        const accessibility = run("swift", [join(repo, "desktop/e2e/details.swift"), String(nativePid), "--inspect"]);
-        writeFileSync(join(output, `${target.label}-accessibility-${appearance}.log`), accessibility);
-        writeFileSync(join(output, `${prefix}-accessibility.log`), accessibility);
-        writeFileSync(join(output, `${prefix}-timing.json`), JSON.stringify({ pid: nativePid, bounds, regionAt, displayAt, inspectAt, inspectedAt: new Date().toISOString() }));
-        assert.ok(accessibility.toLowerCase().includes("macos") && accessibility.toLowerCase().includes("gb") && !accessibility.toLowerCase().includes("reading computer information"), "macOS accessibility exposes real OS and memory metadata");
+        writeFileSync(join(output, `${prefix}-timing.json`), JSON.stringify({ pid: nativePid, bounds, inspectAt, inspectedAt, regionAt, displayAt, capturedAt: new Date().toISOString() }));
         run("swift", [join(repo, "desktop/e2e/welcome.swift"), png]);
         return true;
       }, Boolean, 60_000);
