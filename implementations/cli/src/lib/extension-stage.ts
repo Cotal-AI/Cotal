@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { connectorConfigDir, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
+import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { repairInstallModes } from "./install-umask.js";
 
@@ -35,9 +35,11 @@ function checkedRecord(): Promotion | undefined {
 }
 /** Complete a journaled directory promotion while holding the ordinary closure and prefix barriers. */
 export function recoverExtensionPromotion(): void {
+  if (!canRecoverConnectorConfig()) return;
   if (!checkedRecord()) return;
   const releaseClosure = claimUpdateClosureAccess(true);
   try {
+    if (!canRecoverConnectorConfig()) return;
     const release = claimExtensionMutation();
     try { const record = checkedRecord(); if (record) finish(record); }
     finally { release(); }
