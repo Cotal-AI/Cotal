@@ -400,7 +400,9 @@ view a key that leaves, such as `q` or Ctrl-C, is not a signal, and the view exi
 you leave it.
 
 Output that cannot be written, for example to a full disk, is reported in one line on stderr, and
-the command stops with exit 3, or with the non-zero status it had already set. It may have stopped
+the command stops with exit 3, or with the non-zero status it had already set. That includes output
+redirected to a file that a file-size limit or a full disk cuts short, so a truncated JSON export
+does not exit 0. It may have stopped
 partway, so check what it did before you retry. A reader that closes the output early, as `| head`
 does, ends the command quietly with the status it had already set, or 0. A command that follows a
 stream, such as `watch`, `history --follow`, `console` or `channel members --follow`, notices the
