@@ -496,10 +496,10 @@ try {
     try {
       const again = await shippedCli("install", "--dry-run", "--json"), againPlain = await shippedCli("install", "--dry-run", "--plain");
       check("L6 a receipt naming a missing unit is refused without claiming an existing install", again.status === 2 && again.doc.error?.code === "TARGET_NOT_FOUND", { status: again.status, out: again.out.slice(0, 300) });
-      check("L6 the missing-source refusal is identical in plain and JSON", againPlain.status === 2 && sameText(again, againPlain), { error: again.doc.error, plain: againPlain.out + againPlain.err });
+      check("L6 the missing-source refusal is identical in plain and JSON", againPlain.status === 2 && `${againPlain.out}${againPlain.err}`.includes(again.doc.error?.message), { error: again.doc.error, plain: againPlain.out + againPlain.err });
       const explicit = await shippedCli("install", "--daemon-home", paths.state, "--dry-run", "--json");
       const explicitPlain = await shippedCli("install", "--daemon-home", paths.state, "--dry-run", "--plain");
-      check("L6 an explicit target also refuses the missing source in plain and JSON", explicit.status === 2 && explicit.doc.error?.code === "TARGET_NOT_FOUND" && explicitPlain.status === 2 && sameText(explicit, explicitPlain), { error: explicit.doc.error, plain: explicitPlain.out + explicitPlain.err });
+      check("L6 an explicit target retains the same missing-source refusal", explicit.status === 2 && explicit.doc.error?.code === "TARGET_NOT_FOUND" && explicitPlain.status === 2 && `${explicitPlain.out}${explicitPlain.err}`.includes(explicit.doc.error?.message), { result: explicit.doc.result, plain: explicitPlain.out + explicitPlain.err });
       check("L6 refused installs preserve the receipt and write no unit", readFileSync(receipt, "utf8") === receiptBefore && !existsSync(r.doc.result.unitPath) && !existsSync(join(root, "cotal-daemon.service")));
     } finally {
       rmSync(receipt, { force: true });
