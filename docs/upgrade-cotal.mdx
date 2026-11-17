@@ -319,7 +319,9 @@ is reported with the retained repair files for inspection. Hosting intents and s
 retained. A disabled service, changed source or present non-file launch path is not repaired.
 Symlinks are resolved when comparing installations. Windows missing-program repair is not supported.
 
-A present service from another installation is not rebound. The updater reads its endpoint before
+A present service from another installation is not rebound, including an older LaunchAgent that
+records its working directory as a plist field. Its CLI entry is checked separately from Node options.
+An unrecognized LaunchAgent argument layout refuses without repair. The updater reads its endpoint before
 reporting it left running. If no daemon answers, it reports `No daemon answers; this update did not start it.`
 and does not wait for the new CLI version on that socket. On Linux, the updater starts
 a stopped unit only when `systemctl --user show` reports `UnitFileState=enabled`; any other state is

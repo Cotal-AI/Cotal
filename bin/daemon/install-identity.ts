@@ -1,4 +1,5 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { CommandFailure } from "@cotal-ai/workspace/local-observation";
 import type { ServiceMechanism, UnitReceipt } from "./install.js";
 
@@ -34,7 +35,17 @@ export function recordedSourceIdentity(receipt: UnitReceipt, mechanism: ServiceM
     return { executable: args[0], entry };
   };
   const installed = coordinate(argv), current = coordinate(typeof expected === "function" ? expected() : expected);
-  if (mechanism === "launchd-agent") installed.entry = argv[argv.indexOf("daemon") - 2]!.replace(/daemon-cwd\.js$/, "cotal.js");
+  if (mechanism === "launchd-agent") {
+    const daemon = argv.indexOf("daemon");
+    const legacy = /<key>WorkingDirectory<\/key>\s*<string>[^<]*<\/string>/.test(bytes.toString("utf8"));
+    const entry = argv[daemon - (legacy ? 1 : 2)];
+    if (daemon < (legacy ? 2 : 3) || argv[daemon + 1] !== "serve" || !entry || !isAbsolute(entry)
+      || !argv.slice(1, daemon - (legacy ? 1 : 2)).every(flag => /^--[A-Za-z][A-Za-z0-9-]*(?:=[^\s"]*)?$/.test(flag))
+      || (!legacy && (basename(entry) !== "daemon-cwd.js" || !isAbsolute(argv[daemon - 1] ?? "")))) {
+      throw new CommandFailure("refused", "CONFLICT", "the recorded LaunchAgent installation could not be identified; nothing was changed");
+    }
+    installed.entry = legacy ? entry : join(dirname(entry), "cotal.js");
+  }
   if (mechanism === "scheduled-task") installed.entry = installed.entry.replace(/daemon-native\.js$/, "cotal.js");
   if (!installed.executable || !installed.entry) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon installation could not be identified");
   const missing = (path: string) => {

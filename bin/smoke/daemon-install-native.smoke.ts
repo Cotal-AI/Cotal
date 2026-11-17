@@ -322,6 +322,27 @@ try {
     check("legacy refusal changes no native job or source", r.calls.every(c => c.args[0] === "print") && readFileSync(plist, "utf8") === legacySource);
     observedJob = { state: "loaded", job: { label, program: node, programArguments: argv, workingDirectory: home } };
     check("legacy matching native directory remains accepted", code(() => service.check(legacyReceipt)) === "none");
+    {
+      const entry = join(root, "legacy-cli.js");
+      writeFileSync(entry, "// existing legacy installation\n");
+      for (const flags of [[], ["--max-semi-space-size=1"]]) {
+        const expected = [process.execPath, ...flags, entry, "daemon", "serve"];
+        const identitySource = legacySource.replace(/<key>ProgramArguments<\/key><array>[\s\S]*?<\/array>/,
+          `<key>ProgramArguments</key><array>${expected.map(value => `<string>${xmlText(value)}</string>`).join("")}</array>`);
+        writeFileSync(plist, identitySource, { mode: 0o600 });
+        const identityReceipt = { ...receipt, unitSha256: sha(identitySource) };
+        const matching = recordedSourceIdentity(identityReceipt, "launchd-agent", expected);
+        check(`legacy ${flags.length ? "with flags" : "without flags"} identifies the present CLI, not a Node option`, matching.same && !matching.missing && matching.installedEntry === entry);
+        const foreign = recordedSourceIdentity(identityReceipt, "launchd-agent", [process.execPath, "/other/cotal.js", "daemon", "serve"]);
+        check("legacy present foreign entry is not missing or adopted", !foreign.same && !foreign.missing && foreign.installedEntry === entry);
+        rmSync(entry);
+        check("legacy absent CLI entry remains repairable", recordedSourceIdentity(identityReceipt, "launchd-agent", expected).missing);
+        writeFileSync(entry, "// existing legacy installation\n");
+        writeFileSync(plist, identitySource.replace(legacyDirectory, ""), { mode: 0o600 });
+        check("unknown directory-free legacy launcher refuses rather than inferring a missing path", code(() => recordedSourceIdentity(identityReceipt, "launchd-agent", expected)) === "CONFLICT");
+      }
+      writeFileSync(plist, legacySource, { mode: 0o600 });
+    }
     observedJob = { state: "loaded", job: { label, program: node, programArguments: argv, workingDirectory: "/foreign" } };
     check("legacy changed native directory still refuses", code(() => service.check(legacyReceipt)) === "CONFLICT");
     const unknownSource = legacySource.replace(legacyDirectory, "");
