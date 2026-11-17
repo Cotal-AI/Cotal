@@ -4,7 +4,10 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 /** Fail closed on incomplete two-home evidence, including unreachable later routes. */
-export function verifyTwoHomeUpgrade(report) {
+export function verifyTwoHomeUpgrade(report, { platform, hosted = false } = {}) {
+  assert(['linux', 'darwin'].includes(report?.platform) && ['x64', 'arm64'].includes(report?.arch), 'native POSIX platform and architecture required');
+  if (platform !== undefined) assert.equal(report.platform, platform, 'two-home evidence native platform differs from coordinate');
+  if (hosted) assert.equal(report.environment?.hostedDisposable, true, 'two-home release evidence requires a disposable hosted runner');
   assert(report?.acceptance === true && report.cleanup === 'both owned stacks stopped', 'two-home workflow must finish with confirmed cleanup');
   assert(Array.isArray(report.checks) && report.checks.length >= 60 && report.checks.every(check => check.passed === true), 'all two-home checks must be present and passing');
   assert(report.old?.version && report.target?.version && report.old.version !== report.target.version, 'distinct old and target releases required');

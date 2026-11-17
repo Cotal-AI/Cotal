@@ -15,6 +15,9 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
   assert(!existsSync(root), 'two-home proof needs a new private root');
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const report = { source: 'real installed candidate pair', calls: [], checks: [], cleanup: 'not-started' };
+  report.platform = process.platform;
+  report.arch = process.arch;
+  report.environment = { hostedDisposable: process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted', nodeVersion: process.version };
   report.harnessSource = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim();
   report.harnessFiles = Object.fromEntries(['automatic-update-two-homes.mjs', 'automatic-update-two-homes-evidence.mjs'].map(name => [name, createHash('sha256').update(readFileSync(new URL(name, import.meta.url))).digest('hex')]));
   const save = () => writeFileSync(join(root, 'result.json'), JSON.stringify(report, null, 2));
