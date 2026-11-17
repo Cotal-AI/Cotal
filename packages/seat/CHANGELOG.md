@@ -1,5 +1,13 @@
 # @cotal-ai/seat
 
+## 0.166.1
+
+### Patch Changes
+
+- 5d4ffaf: Daemon uninstall waits through a macOS peer disconnect during shutdown.
+  
+  The bounded shutdown check reobserves a connection closed before its kernel identity could be read. It still requires the daemon process and endpoint to be gone before removing the recorded installation.
+
 ## 0.166.0
 
 No changes in this release.

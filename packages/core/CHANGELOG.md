@@ -1,5 +1,12 @@
 # @cotal-ai/core
 
+## 0.166.1
+
+### Patch Changes
+
+- 1eed7a4: A durable channel leave refused by a delivery daemon older than 0.166.0 now says the daemon predates lifecycle-aware membership discovery, that the channel stays joined, and that restarting the daemon at this version fixes it. `docs/UPGRADING.md` lists the requirement.
+- ef7e5c4: Keep the accepted goal in a pending spawn result and reuse it when the same caller retries while its seat is still starting.
+
 ## 0.166.0
 
 ### Minor Changes

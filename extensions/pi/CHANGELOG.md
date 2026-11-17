@@ -1,5 +1,12 @@
 # @cotal-ai/pi
 
+## 0.166.1
+
+### Patch Changes
+
+- bf3d2f0: A pi turn that fails now shows pi's own error in the agent's presence line, for example `Pi turn ended with error (Unknown provider: unknown) after 2 automatic continuation attempts`. Before this, the line said only that the turn ended with an error. When pi had no model provider set up, the user was told to start a new turn or replace the seat, and neither step helps. The error is put on one line and cut to 300 characters.
+- 9541212: A Pi seat now receives messages that arrive during a long run at its next turn boundary instead of only when the run ends. On transports without a provider response hook, such as the Codex subscription, Pi running a tool from an answer now confirms the batch that request carried. A steer sent while a tool runs no longer trips the dispatch watchdog's hold, which used to block every later message for the rest of the run.
+
 ## 0.166.0
 
 ### Patch Changes
