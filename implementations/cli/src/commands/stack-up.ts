@@ -636,7 +636,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const unstarted = recorded !== undefined && stackNeverStarted(recorded.journal) ? recorded.journal : undefined;
   const previous = unstarted ? undefined : recorded;
   // A stopped stack's broker is prepared again from its own recorded inputs. An explicit request for
-  // a different store, cap or bind host refuses; none is replaced by a default.
+  // a different store or bind host refuses; none is replaced by a default.
   const recordedInputs = previous?.journal.broker;
   // The broker binds its recorded host, or 127.0.0.1 when none was recorded. A bind that does not
   // serve the recorded address starts a broker its clients never reach, so it pins nothing: while
@@ -655,8 +655,23 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // The cap is fixed while the broker runs. A stopped broker starts again with an explicit new cap,
   // which replaces the recorded one, as after a cap too small for the space's streams.
   const newCap = recordedInputs !== undefined && request.maxFileStore !== undefined && request.maxFileStore !== recordedInputs.maxFileStore;
-  const capReplaced = newCap && !serviceInstances(space, STACK_DEFINITION.broker).some((row) => observeServiceProcess(row.record.value) === "running");
-  const recordedBroker = recordedInputs && { ...recordedInputs, ...(strayHost !== undefined ? { host: request.host } : {}), ...(capReplaced ? { maxFileStore: request.maxFileStore } : {}) };
+  const newLog = recordedInputs !== undefined && (
+    request.logFile !== undefined && resolve(request.logFile) !== recordedInputs.logFile ||
+    request.logfileSizeLimit !== undefined && request.logfileSizeLimit !== recordedInputs.logfileSizeLimit ||
+    request.logfileMaxNum !== undefined && request.logfileMaxNum !== recordedInputs.logfileMaxNum
+  );
+  const brokerStopped = (newCap || newLog) && !serviceInstances(space, STACK_DEFINITION.broker).some((row) => observeServiceProcess(row.record.value) === "running");
+  const recordedBroker = recordedInputs && {
+    ...recordedInputs,
+    ...(strayHost !== undefined ? { host: request.host } : {}),
+    ...(newCap && brokerStopped ? { maxFileStore: request.maxFileStore } : {}),
+    // Native logging is fixed for the running process too. Keep omitted settings on its next start.
+    ...(newLog && brokerStopped ? {
+      ...(request.logFile !== undefined ? { logFile: resolve(request.logFile) } : {}),
+      ...(request.logfileSizeLimit !== undefined ? { logfileSizeLimit: request.logfileSizeLimit } : {}),
+      ...(request.logfileMaxNum !== undefined ? { logfileMaxNum: request.logfileMaxNum } : {}),
+    } : {}),
+  };
   const changedInputs = recordedBroker ? [
     request.storeDir !== undefined && resolve(request.storeDir) !== recordedBroker.storeDir ? `--store-dir ${resolve(request.storeDir)} (recorded: ${recordedBroker.storeDir})` : undefined,
     request.maxFileStore !== undefined && request.maxFileStore !== recordedBroker.maxFileStore ? `--max-file-store ${request.maxFileStore} (recorded: ${recordedBroker.maxFileStore ?? "none"})` : undefined,
@@ -666,7 +681,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     request.logfileMaxNum !== undefined && request.logfileMaxNum !== recordedBroker.logfileMaxNum ? `--logfile-max-num ${request.logfileMaxNum} (recorded: ${recordedBroker.logfileMaxNum ?? "none"})` : undefined,
   ].filter((input) => input !== undefined) : [];
   if (changedInputs.length)
-    throw new CommandFailure("refused", "CONFLICT", `${changedInputs.join(", ")} ${changedInputs.length === 1 ? "differs" : "differ"} from this stack's recorded broker inputs; nothing was prepared`, { target: { root, space, recorded: recordedBroker }, remedy: `run bare \`cotal up\` from ${root} to start it with its recorded inputs${newCap ? `; a new --max-file-store applies once the broker is stopped with \`cotal down --yes\`` : ""}` });
+    throw new CommandFailure("refused", "CONFLICT", `${changedInputs.join(", ")} ${changedInputs.length === 1 ? "differs" : "differ"} from this stack's recorded broker inputs; nothing was prepared`, { target: { root, space, recorded: recordedBroker }, remedy: `run bare \`cotal up\` from ${root} to start it with its recorded inputs${newCap ? `; a new --max-file-store applies once the broker is stopped with \`cotal down --yes\`` : ""}${newLog ? `; new native log settings apply once the broker is stopped with \`cotal down --yes\`, then \`cotal up\` with the requested log flags` : ""}` });
   // A journal written before broker inputs were recorded cannot tell which store, cap or bind host
   // its stopped broker used: `cotal down` removed the registration that held them, and broker
   // preparation would otherwise fall back to the default `.cotal/nats` store with no cap. Such a
