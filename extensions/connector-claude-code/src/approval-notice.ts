@@ -5,7 +5,7 @@
  */
 import type { ApprovalNotice } from "./app-host.js";
 
-export const APPROVAL_ID = /^[a-z2-7]{26}$/;
+const APPROVAL_ID = /^[a-z2-7]{26}$/;
 const STATUSES = new Set<ApprovalNotice["status"]>(["approved", "denied", "expired", "refused"]);
 
 /** The frame the host writes to the feed for a decided request, or nothing for any other shape. */
