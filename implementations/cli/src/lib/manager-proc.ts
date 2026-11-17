@@ -159,7 +159,8 @@ export function supervisorMayServe(space: string, installedEntry?: string): bool
         if (!commandIsCotalSupervisor(command)) return [];
         return [`${name} ${supervisorProcessUid(Number(name))} ${command}`];
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ESRCH") return [];
         throw error;
       }
     });
