@@ -293,7 +293,7 @@ export async function submitAndFollowGoalWith(
     const terminal = terminals.get(acceptedKey);
     const observationFailure = (code: "unavailable" | "permission-denied" | "deadline-exceeded", reason: string) => ({
       ...attributed,
-      reply: { ...attributed.reply, ok: false as const, data: undefined, error: {
+      reply: { ...attributed.reply, ok: false as const, error: {
         code, outcome: "unknown" as const,
         message: `the goal "${goalId}" was accepted, but ${reason}. THE GOAL IS UNAFFECTED - it may already have succeeded; this is not evidence the goal failed. Do NOT retry: another submission could duplicate the effect. Inspect 'ps'/'inspect' first (SPEC 13.6)`,
       } },

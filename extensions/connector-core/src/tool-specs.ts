@@ -1912,6 +1912,12 @@ export function cotalToolSpecs(
           // An uncertain launch is still managed and may yet join. Reported as an error it reads as a
           // failed launch, and the caller's retry starts a second agent on the same work.
           const pending = reply.code === "uncertain";
+          const accepted = reply.data as { goalId?: string; submissionUnknown?: boolean } | undefined;
+          if (!reply.ok && !pending && reply.outcome === "unknown" && accepted?.goalId && !accepted.submissionUnknown) {
+            const goalId = accepted.goalId;
+            const message = `Spawn for ${name} was accepted as goal "${goalId}", but its outcome is not known yet. It may still be starting or may already have succeeded. An identical retry in this session returns the same goal instead of submitting another spawn. Inspect 'ps'/'inspect' or read manager goal-result for this goal as the same caller.`;
+            return { text: message, structured: { status: "unknown", name, goalId, manager: reply.instanceId, message } };
+          }
           const submission = reply.data as { goalId?: string; submissionUnknown?: boolean } | undefined;
           if (!reply.ok && submission?.submissionUnknown && submission.goalId) {
             const goalId = submission.goalId;
@@ -1921,7 +1927,7 @@ export function cotalToolSpecs(
           }
           if (!reply.ok && !pending) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
           const d = reply.data as {
-            name?: string; mode?: string; model?: string; id?: string; actor?: string; executor?: { lifecycleUid: string };
+            name?: string; goalId?: string; mode?: string; model?: string; id?: string; actor?: string; executor?: { lifecycleUid: string };
             pinAudit?: { requested: string; error: string; unreported?: true };
             once?: { goalId: string; deadlineAt?: number }; waitingFor?: string; startupNotice?: string;
           } | undefined;
@@ -1941,18 +1947,21 @@ export function cotalToolSpecs(
             const manager = d.executor?.lifecycleUid ?? reply.instanceId;
             const state = pending ? "it has not joined the mesh within its readiness window and may still be booting" : "it joined the mesh";
             const audit = unreported ? "was not reported by this manager" : "could not be audited";
-            const message = `${lead} (id ${id}, manager ${manager}${mode ? `, runtime ${mode}` : ""}): ${state}, but its model pin ${JSON.stringify(requested)} ${audit} (${error}). ` +
-              `Do not spawn it again: a retry starts a second agent.`;
+            const message = `${lead} (id ${id}, manager ${manager}${mode ? `, runtime ${mode}` : ""})${d.goalId ? `, accepted goal "${d.goalId}"` : ""}: ${state}, but its model pin ${JSON.stringify(requested)} ${audit} (${error}). ` +
+              (pending ? "An identical retry in this session while it is starting returns the same goal. Inspect this seat rather than submitting different spawn options." : "Do not spawn it again: a retry starts a second agent.");
             return {
               text: message,
               structured: {
-                status: "partial", name: actual, id, manager, ...(mode ? { runtime: mode } : {}), joined: !pending,
+                status: "partial", name: actual, id, manager, goalId: d.goalId, ...(mode ? { runtime: mode } : {}), joined: !pending,
                 model: { requested, audited: false, reported: !unreported, error }, message,
               },
             };
           }
-          if (pending)
-            return ok(`${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}), but it did not join the mesh within its readiness window. It may still be booting, so do not spawn it again: a retry starts a second agent. Watch cotal_roster for ${shownSpawnName(actual, seatId)}, and cotal_despawn it if it never joins.`);
+          if (pending) {
+            const goalId = d?.goalId;
+            const message = `${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}): accepted${goalId ? ` as goal "${goalId}"` : ""}, but its readiness outcome is not known yet. It may still be starting. An identical retry by this caller while it is starting returns this same goal, not another seat. Watch cotal_roster for ${shownSpawnName(actual, seatId)} or inspect it before deciding what to do.`;
+            return { text: message, structured: { status: "starting", name: actual, goalId, id: seatId, manager: reply.instanceId, message } };
+          }
           // A once spawn names its task, so the spawner can read how it ended.
           const task = d?.once
             ? ` Its task is goal ${JSON.stringify(d.once.goalId)}, ${d.once.deadlineAt !== undefined ? `with a deadline of ${new Date(d.once.deadlineAt).toISOString()}` : "with no deadline"}; it is stopped when the task ends. Read the outcome with cotal_invoke(endpoint="manager", command="goal-result", args={"goalId":${JSON.stringify(d.once.goalId)}}).`
