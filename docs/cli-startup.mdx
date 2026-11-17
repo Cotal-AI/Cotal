@@ -648,7 +648,8 @@ the store over its cap, as on a new space whose cap is below the stack's own fir
 
 When the stack's broker process is stopped by a signal, such as SIGSTOP, it accepts connections and
 never answers, so `up` refuses `TARGET_UNAVAILABLE` before it writes anything or records the broker's
-readiness again. It names that pid and gives `kill -CONT <pid>`, as `down` does.
+readiness again. It names that pid and gives `kill -CONT <pid>` to resume the stack. To stop it
+instead, `cotal down --yes` resumes the exact owned broker and continues its guarded stop.
 
 Before it launches a broker, the controller binds the broker address once, and so does the legacy
 launcher that an unprepared folder or `up -f` starts. When another process holds it, `up` refuses
