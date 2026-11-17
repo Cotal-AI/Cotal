@@ -95,7 +95,7 @@ const composed: Command = { ...command, async run(args) {
         return execution;
       },
       recoverExecution: recoverExecutionUpdate,
-    } : {}), async prepareReconciliation(flags) {
+    } : {}), async prepareReconciliation(flags: Record<string, unknown>) {
     const entry = logicalExecutionEntry();
     if (!entry || updateRuntime.checkout() || !["linux", "darwin"].includes(process.platform) || process.env.COTAL_UPDATE_PARENT || readUpdateRecovery()) return;
     try {
