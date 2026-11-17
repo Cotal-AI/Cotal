@@ -105,7 +105,6 @@ const COMMAND_SURFACES = [
   "@cotal-ai/web",
   "@cotal-ai/linear",
   "../../docs.js",
-  "../../mcp.js",
 ];
 
 /** Split `text` on `|` that sits outside any `<…>`, `[…]` or `(…)` group. */

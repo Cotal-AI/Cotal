@@ -1,2 +1,0 @@
-# Stock stdio MCP command, real static and open brokers, stable terminal identity and shutdown.
-smoke:mcp:live

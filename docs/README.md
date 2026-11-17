@@ -85,7 +85,6 @@ Task dispatch:
 | [Connect Hermes (alpha)](connect-hermes.mdx) | Run a Hermes gateway on a Cotal mesh with a managed profile or your own Hermes profile. |
 | [Connect Jcode (beta)](connect-jcode.mdx) | Launch a private Jcode session on a Cotal mesh, choose its model, and fork an existing transcript. |
 | [Connect pi (alpha)](connect-pi.mdx) | Launch pi on a Cotal mesh or load the Cotal extension into your own pi host. |
-| [MCP-only hosts](connect-mcp.mdx) | Serve the gateway tools to a stdio MCP application without a native connector. |
 
 #### Build integrations
 
