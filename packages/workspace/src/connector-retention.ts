@@ -53,7 +53,7 @@ function setHasHolders(path: string): boolean {
 /** Reserve before launch so even a Manager killed during spawn leaves a conservative holder. */
 export function retainConnectorSeat(manager: string, agent: string): { active: boolean; launched(pid?: number): void; ended(): void } {
   const id = identity();
-  if (!id || connectorConfigDir() === globalConfigDir()) return { active: false, launched() {}, ended() {} };
+  if (!id || currentConfig(id) === undefined) return { active: false, launched() {}, ended() {} };
   const release = claimUpdateClosureAccess();
   let file: string;
   const holder: ConnectorHolder = { v: 1, manager, agent };
@@ -128,7 +128,7 @@ function pruneConnectorSets(id: { entry: string; version: string; path: string }
 export function pruneRetainedConnectorConfig(holders: readonly (string | undefined)[]): void {
   try {
     const id = identity();
-    if (!id || connectorConfigDir() === globalConfigDir()) return;
+    if (!id || currentConfig(id) === undefined) return;
     const release = claimUpdateClosureAccess();
     try { pruneConnectorSets(id, holders); } finally { release(); }
   } catch { /* Cleanup must never fail a successful update. */ }
