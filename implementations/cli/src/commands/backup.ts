@@ -53,7 +53,7 @@ import { refuseControllerCut } from "../lib/stack-journal.js";
 import { authorityFingerprint } from "../lib/maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, createAttemptClone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "../lib/isolated-broker.js";
 import { cotalRoot } from "../lib/paths.js";
-import { heldClaim, movedFolderRefusal, preservedSourceState, restoreNextStep } from "../lib/restore.js";
+import { heldClaim, missingCutRemedy, movedFolderRefusal, preservedSourceState, restoreNextStep } from "../lib/restore.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { liveMeshProcesses, localIdentityCleanupTargets } from "./clean.js";
 import { backupMaintenance } from "./backup-maintenance.js";
@@ -112,7 +112,7 @@ function backupInterruptNotice(root: string, attemptId: string, destination: str
 
 /** This root has no stopped preserved cut to back up. Nothing was claimed or copied. */
 function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
-  if (!record) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy: "stop the stack with `cotal down --preserve-state`, then create the backup" });
+  if (!record) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy: missingCutRemedy });
   // A restore that still runs is named and waited for; only a stale one is rolled back.
   if (record.state === "restore-ready") {
     const assessment = assessRestoreClaim(record, { unrecordedOwnersDead: attemptProcessesGone(root) });

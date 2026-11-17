@@ -1,11 +1,11 @@
 /** Hermetic CLI backup artifact and maintenance-grammar smoke. */
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT, BACKUP_MANIFEST_FORMAT_V1, BACKUP_MANIFEST_FORMAT_V2, createArtifactWriter, inspectBackupArtifact, stageArtifact } from "../src/lib/backup-artifact.js";
 import { backupRead } from "../src/commands/backup-read.js";
 import { down } from "../src/commands/down.js";
@@ -383,10 +383,11 @@ try {
   // the folder as it found it, so a later `up` there finds no state to start from.
   const bare = join(root, "bare-folder");
   mkdirSync(bare);
+  const missingCutNext = "if the stack is already stopped, start it with `cotal up` on this root first. Run `cotal down --preserve-state` on this root, then retry this command";
   await assert.rejects(
     prepareRestore(bare, { restore: destination }),
-    (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "LIFECYCLE_BLOCKED" && error.message.endsWith("found none") && (error.remedy ?? "").includes("cotal down --preserve-state"),
-    "a restore with no maintenance journal is a refusal that names the preserve",
+    (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "LIFECYCLE_BLOCKED" && error.message.endsWith("found none") && error.remedy === missingCutNext,
+    "a restore with no maintenance journal names restart, preserve and retry in order",
   );
   assert.equal(existsSync(join(bare, ".cotal")), false, "the refused restore created no .cotal state");
 
@@ -394,16 +395,41 @@ try {
   // maintenance state. A destination that already exists is a conflict, not a failed creation.
   const previousCwd = process.cwd(), previousHome = process.env.COTAL_HOME;
   const createRoot = join(root, "create-root");
-  mkdirSync(join(createRoot, ".cotal"), { recursive: true });
+  mkdirSync(join(createRoot, ".cotal"), { recursive: true, mode: 0o700 });
   process.env.COTAL_HOME = join(root, "create-home");
   process.chdir(createRoot);
   try {
     await assert.rejects(
       backup({ positionals: ["create", join(root, "create-artifact")], values: {}, raw: [] }),
-      (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "LIFECYCLE_BLOCKED" && error.message.includes("records none") && (error.remedy ?? "").includes("cotal down --preserve-state"),
-      "a create with no preserved cut says so and names the preserve",
+      (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "LIFECYCLE_BLOCKED" && error.message.includes("records none") && error.remedy === missingCutNext,
+      "a create with no preserved cut names restart, preserve and retry in order",
     );
     assert.equal(existsSync(join(createRoot, ".cotal", "maintenance")), false, "that refusal created no maintenance state");
+    const worktree = resolve(import.meta.dirname, "../../..");
+    const cliHome = join(root, "cli-home");
+    const cliEnv = { ...process.env };
+    for (const key of Object.keys(cliEnv)) if (key.startsWith("COTAL_")) delete cliEnv[key];
+    Object.assign(cliEnv, { HOME: cliHome, COTAL_HOME: cliHome, XDG_CONFIG_HOME: join(cliHome, "config"), XDG_RUNTIME_DIR: join(cliHome, "runtime"), COTAL_SKIP_CONNECTOR_SEED: "1" });
+    for (const command of [["backup", "create"], ["backup", "restore"], ["up", "--restore"]]) {
+      for (const format of ["--plain", "--json"]) {
+        const directory = join(root, "missing-cut-artifact");
+        const refused = spawnSync(join(worktree, "node_modules/.bin/tsx"), [join(worktree, "bin/cotal.ts"), ...command, directory, format], {
+          cwd: createRoot,
+          env: cliEnv,
+          encoding: "utf8",
+          timeout: 30_000,
+        });
+        const label = `${command.join(" ")} ${format}`;
+        assert.equal(refused.status, 2, `${label} refuses a missing cut: ${refused.stderr}`);
+        if (format === "--json") {
+          const envelope = JSON.parse(refused.stdout);
+          assert.equal(envelope.error.code, "LIFECYCLE_BLOCKED", label);
+          assert.equal(envelope.error.remedy, missingCutNext, label);
+        } else assert.ok((refused.stdout + refused.stderr).includes(missingCutNext), label);
+        assert.equal(existsSync(join(createRoot, ".cotal", "maintenance")), false, `${label} writes no maintenance state`);
+        assert.equal(existsSync(directory), false, `${label} writes no artifact`);
+      }
+    }
     const createStore = join(createRoot, ".cotal", "nats");
     mkdirSync(createStore, { recursive: true });
     const createLock = acquireMaintenanceLock(createRoot);

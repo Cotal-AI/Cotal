@@ -56,7 +56,9 @@ attempt tree. Restore artifacts and targets likewise cannot nest inside or conta
 preserved source, or the maintenance attempt tree.
 
 `backup create` checks its preconditions before it claims the cut or creates any maintenance state.
-A root with no preserved cut refuses and names `cotal down --preserve-state`. A cut in another state
+A root with no preserved cut refuses and gives the preservation sequence. If the stack is already
+stopped, run `cotal up` on that root first, then `cotal down --preserve-state`, then retry the backup.
+`backup restore` and `up --restore` give the same sequence when no cut exists. A cut in another state
 refuses and names that state and its space. A create during a restore that still runs refuses
 `LIFECYCLE_BLOCKED` (exit 2), names that restore attempt, its process and when it started, and says
 to wait for it. A create that finds the root's maintenance lock held, such as by another

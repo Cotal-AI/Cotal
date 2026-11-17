@@ -932,9 +932,11 @@ export function heldRestoreAttempt(root: string): { attemptId: string; journalSt
   return { attemptId: journal.restore.attemptId, journalState: journal.state, remedy: restoreNextStep(journal.state, journal.restore.attemptId, restoreLeftOut(journal)) };
 }
 
+export const missingCutRemedy = "if the stack is already stopped, start it with `cotal up` on this root first. Run `cotal down --preserve-state` on this root, then retry this command";
+
 /** A root with no stopped preserved cut to restore into. Nothing was staged, moved or claimed. */
 function notRestorable(root: string, journal: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
-  const remedy = !journal ? "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root"
+  const remedy = !journal ? missingCutRemedy
     : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, restoreLeftOut(journal))
     : "this root's maintenance attempt must finish first; check it with `cotal status`";
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`, { target: { root, ...(journal ? { state: journal.state } : {}) }, remedy });
