@@ -560,11 +560,15 @@ the interrupted connector before it clears the evidence.
 
 A bare environment flag does not authenticate a seed child. Each seed child carries the live lock's
 nonce and the parent PID. It also records a liveness marker, so a repair after a crash refuses to
-race an orphaned installer. On Linux, a pending marker records the parent's process start token.
-Once that parent is gone, a process census checks for children carrying the marker's seed nonce.
-If none remain, the next update, repair, or startup clears the marker, reports that recovery in one
-line, and repairs the interrupted connector. A reused parent PID does not count as the original
-process. A live parent or child still blocks recovery. An unreadable census, a corrupt marker, or a
-platform without this census still refuses rather than guessing from elapsed time.
+race an orphaned installer. A pending marker belongs to a running reconcile only while the
+process-pinned reconcile lock matches its parent PID and nonce. Once that custody ends, recovery
+waits out a ten-second publication grace from the marker's timestamp, then reads the marker again.
+An already-authenticated child can publish its live PID during that grace. A child whose pending
+marker was cleared or replaced refuses before any mutation. A later child cannot authenticate
+against the dead parent's lock and takes the ordinary extension mutation lock instead.
+The next update, repair, or startup clears a stale pending marker, reports recovery in one line,
+and repairs the interrupted connector. This also recovers markers written by released versions on
+all platforms, without inspecting unrelated processes. A live child still blocks by PID and process
+start token. A corrupt marker still refuses.
 `ext seed --reset` quarantines corrupt manifest and authority state, then
 rebuilds. See [`cotal ext` in the CLI reference](cli-installation.mdx#ext) for the operator-facing flags.
