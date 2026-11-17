@@ -23,7 +23,7 @@ test('workflow downloads paired artifacts, runs actual callable and strict summa
   const workflow = readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8');
   assert(workflow.includes("matrix.scenario == 'candidate-next-two-homes'"));
   assert(workflow.includes("const { twoHomeUpgrade } = await import('./scripts/automatic-update-two-homes.mjs')"));
-  assert(workflow.includes("const verdict = verifyTwoHomeUpgrade(report)"));
+  assert(workflow.includes("const verdict = verifyTwoHomeUpgrade(report, { platform: cell.platform, hosted: true })"));
   assert(workflow.includes("report.old.manifestSha256, nextOrigin.sourceManifestSha256"));
   assert(workflow.includes("report.target.manifestSha256, nextOrigin.targetManifestSha256"));
   assert(workflow.includes("report.harnessFiles[name]"));
@@ -31,4 +31,11 @@ test('workflow downloads paired artifacts, runs actual callable and strict summa
 
 test('incomplete or success-only two-home evidence never grades acceptance', () => {
   for (const value of [undefined, {}, { acceptance: true, cleanup: 'both owned stacks stopped', checks: [] }]) assert.throws(() => verifyTwoHomeUpgrade(value));
+});
+
+test('a Linux receipt cannot qualify a Darwin coordinate or pretend to be hosted', () => {
+  const report = { platform: 'linux', arch: 'x64', environment: { hostedDisposable: false } };
+  assert.throws(() => verifyTwoHomeUpgrade(report, { platform: 'darwin' }), /native platform differs/);
+  assert.throws(() => verifyTwoHomeUpgrade(report, { platform: 'linux', hosted: true }), /disposable hosted runner/);
+  assert.throws(() => verifyTwoHomeUpgrade({ ...report, arch: undefined }), /architecture required/);
 });

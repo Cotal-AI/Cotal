@@ -522,7 +522,7 @@ jobs:
             assert.equal(result.target.source, cell.sourceSHA);
             assert.equal(result.old.version, cell.sourceVersion);
             assert.equal(result.target.version, cell.targetVersion);
-            verifyTwoHomeUpgrade(result);
+            verifyTwoHomeUpgrade(result, { platform: cell.platform, hosted: true });
           } else {
           const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
           const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
@@ -645,7 +645,7 @@ jobs:
             if (cell.scenario === 'candidate-next-two-homes') {
               const { verifyTwoHomeUpgrade } = await import('./scripts/automatic-update-two-homes-evidence.mjs');
               const report = JSON.parse(readFileSync(join(directory, 'two-homes/result.json')));
-              const verdict = verifyTwoHomeUpgrade(report);
+              const verdict = verifyTwoHomeUpgrade(report, { platform: cell.platform, hosted: true });
               assert.equal(report.harnessSource, process.env.EXPECTED_HARNESS_SOURCE);
               for (const name of ['automatic-update-two-homes.mjs', 'automatic-update-two-homes-evidence.mjs']) {
                 const bytes = execFileSync('git', ['show', report.harnessSource + ':scripts/' + name]);
