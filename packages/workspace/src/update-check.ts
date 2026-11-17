@@ -50,7 +50,8 @@ export async function checkForUpdate(): Promise<UpdateCheck | undefined> {
       child.once("close", code => {
         clearTimeout(timeout);
         try {
-          const version: unknown = JSON.parse(stdout);
+          const payload: unknown = JSON.parse(stdout);
+          const version = Array.isArray(payload) && payload.length === 1 ? payload[0] : payload;
           if (code !== 0 || typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw new Error("registry latest unavailable");
           resolve({ version });
         } catch { resolve({ error: "registry latest unavailable" }); }
