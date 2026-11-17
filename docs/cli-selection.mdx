@@ -137,11 +137,13 @@ directories owned by you or root, with no symlinks. World write refuses. Group w
 on a directory you own whose group is your user private group, the Debian and Ubuntu default, and
 that has no extended ACL. On Linux, `getent` must show that the group is your primary group, lists
 no other member and is no other account's primary group, and `getfacl` must show no ACL entries
-beyond the base ones. That account list counts only when `/etc/nsswitch.conf` names `files` and
+beyond the base ones. When `getfacl` is not installed, `python3 -I` reads the entry's extended
+attribute names without following symlinks instead. Either `system.posix_acl_access` or
+`system.posix_acl_default` means an extended ACL and refuses; unrelated attributes do not. That account list counts only when `/etc/nsswitch.conf` names `files` and
 `systemd` alone for passwd and group. A directory source such as LDAP or SSSD can list part of its
-accounts, so with one configured, group write refuses. `getent` and `getfacl` run from your PATH
-with a 2 second limit each, so the first check in a process can take a few seconds. A proven group
-holds for the life of the process. When a read is unavailable, group write refuses; install the
+accounts, so with one configured, group write refuses. `getent`, `getfacl` and `python3` run from your PATH
+with a 2 second limit and a 4 MiB output limit each, so the first check in a process can take a few seconds. A proven group
+holds for the life of the process. When neither ACL reader is installed, or the selected read fails, group write refuses; install the
 `acl` package for `getfacl`, or remove group write. Root-owned sticky temporary directories are
 allowed. New control directories, the persona catalog `.cotal/agents` included, use mode 0700,
 even with a group-writable umask. An unsafe existing path refuses before the
