@@ -338,6 +338,8 @@ export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined,
   if (plan.alreadyInstalled) return { ...plan, lingerEnabled: plan.lingerAlready, ...omitted, state: "installed" };
   if (plan.recovered) {
     submitSystemdUnitControl("stop", plan.unit);
+    const stopped = recoveredLinuxUnit(daemonHome);
+    if (!stopped || stopped.unitSha256 !== plan.sha256) throw new CommandFailure("refused", "CONFLICT", "the surviving daemon source changed during its native stop; no receipt was restored and it was not started");
     mkSecretDir(paths.state);
     writeReceipt(paths, { v: 1, mechanism: "systemd-user", unit: plan.unit, unitPath: plan.unitPath, unitSha256: plan.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted });
     submitSystemdUnitControl("start", plan.unit);
