@@ -34,7 +34,7 @@ import {
   type ToolResultAnswer,
 } from "@cotal-ai/core";
 
-export interface ToolResultJournalOptions {
+interface ToolResultJournalOptions {
   /** Injectable clock. Retention is the only time input; capture order never decides eligibility. */
   now?: () => number;
   maxEntries?: number;
@@ -42,14 +42,14 @@ export interface ToolResultJournalOptions {
   retentionMs?: number;
 }
 
-export interface ToolResultStart {
+interface ToolResultStart {
   threadId: string;
   toolCallId: string;
   /** The fixed eligible set, decided at START against the frontier. Empty means nobody, so no entry. */
   consentIds: readonly string[];
 }
 
-export interface ToolResultCapture {
+interface ToolResultCapture {
   threadId: string;
   toolCallId: string;
   content: string;
@@ -57,7 +57,7 @@ export interface ToolResultCapture {
 }
 
 /** Why a capture did not land. `no-entry` is the §13.19.2 refusal, not an error condition. */
-export type ToolResultCaptureOutcome = "captured" | "no-entry" | "already-captured";
+type ToolResultCaptureOutcome = "captured" | "no-entry" | "already-captured";
 
 interface Entry {
   threadId: string;
