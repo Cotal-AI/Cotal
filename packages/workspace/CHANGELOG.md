@@ -1,5 +1,15 @@
 # @cotal-ai/workspace
 
+## 0.165.4
+
+### Patch Changes
+
+- 5413861: Allow stop, attach and terminal input to reach managed processes that have not joined the mesh.
+- d5ecb99: Allow file-only credential minting and signer export after stopping a local static space without repeating its broker address.
+- Updated dependencies [16d0381]
+- Updated dependencies [20ed7a7]
+  - @cotal-ai/core@0.165.4
+
 ## 0.165.3
 
 ### Patch Changes
