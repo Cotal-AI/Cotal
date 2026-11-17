@@ -221,6 +221,9 @@ try {
   }
   if (process.platform === "linux") {
     rmSync(home, { recursive: true });
+    const missingStatus = call("status");
+    check("status still refuses a missing explicit home", missingStatus.exit === 2 && missingStatus.body.error?.code === "TARGET_NOT_FOUND" && !existsSync(home));
+    check("lost-home uninstall preview verifies ownership without recreating state", ok("uninstall", "--dry-run").state === "would-remove" && !existsSync(home));
     uninstallAttempted = true;
     check("an unchanged Linux service can be removed after its daemon home is lost", ok("uninstall", "--yes").state === "removed");
     await verifyRemoved();
@@ -229,6 +232,7 @@ try {
     ok("install");
     await statusUntil(true);
     rmSync(home, { recursive: true });
+    check("lost-home install preview verifies ownership without recreating state", ok("install", "--dry-run").recovered === true && !existsSync(home));
     check("install restores the receipt of an unchanged surviving Linux service", ok("install").recovered === true && existsSync(receipt));
     await statusUntil(true);
   }
