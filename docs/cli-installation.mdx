@@ -149,7 +149,10 @@ updates through the new helper. Other unsupported platforms still require manual
 Daily checks, update notices and their settings remain available on every platform.
 Bare `cotal update --auto` reports the saved setting and the platform limit.
 On Linux, macOS and Windows, enabling or reading an enabled setting also checks the daemon's
-schedule. If no daemon answers, it names `cotal daemon install` and `cotal daemon status`.
+schedule. If no daemon answers on a supported service host, it names `cotal daemon install` and
+`cotal daemon status`. Linux service installation needs systemd and `systemctl` on `PATH`.
+On Linux without systemd, the advice names `cotal daemon serve` under your own supervisor and
+`cotal update --self` for manual updates instead.
 An answering daemon without an active automatic schedule is reported separately, including one
 paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
 the command installs and starts nothing.

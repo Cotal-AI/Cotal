@@ -9,7 +9,7 @@ import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, r
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, preflightInstalledDaemon, reconcileMissingShellRuntime, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
+import { daemonServiceProblem, installedDaemonIdentity, preflightInstalledDaemon, reconcileMissingShellRuntime, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { cleanupExecutionStore } from "../execution-store.js";
@@ -164,15 +164,17 @@ const composed: Command = { ...command, async run(args) {
     currentPackages = updateRuntime.isCurrent?.() === true;
     return currentPackages;
   }, async automaticUpdateAdvice() {
+    const problem = daemonServiceProblem();
+    const installAdvice = problem ? `${problem.message}. ${problem.remedy}` : "Run `cotal daemon install`, then inspect `cotal daemon status`.";
     try {
       const reply = await queryDaemon({ paths: daemonPaths() });
       if (!reply.ok) throw new Error(`machine daemon update schedule is unreadable: ${reply.error.message}`);
       if (!reply.result.update) throw new Error("machine daemon returned no update schedule; run `cotal daemon status` to inspect it");
       if (reply.result.update.automatic && typeof reply.result.update.nextAttempt === "string") return undefined;
-      return "The daemon is not scheduling automatic installation. Run `cotal daemon status` to inspect it. If no daemon service is installed, run `cotal daemon install`.";
+      return `The daemon is not scheduling automatic installation. Run \`cotal daemon status\` to inspect it. ${problem ? installAdvice : "If no daemon service is installed, run `cotal daemon install`."}`;
     } catch (error) {
       if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
-        return "No daemon service is running the automatic update schedule. Run `cotal daemon install`, then inspect `cotal daemon status`.";
+        return `No daemon service is running the automatic update schedule. ${installAdvice}`;
       }
       throw error;
     }

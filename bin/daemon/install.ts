@@ -40,7 +40,7 @@ import { Worker } from "node:worker_threads";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
-import { codeSpan, CommandFailure, executionIdentity, readLocalRecordSource } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, executionIdentity, readLocalRecordSource, resolveOnPath } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
 import { ClosedPeerRefusal, isStoppingLifetime, openVerified, readLine } from "./client.js";
@@ -56,6 +56,14 @@ import { removeAllServiceRecords } from "./service-records.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
 export type ServiceMechanism = "systemd-user" | "launchd-agent" | "scheduled-task";
+
+/** Detect an unsupported Linux service host without querying or changing its supervisor. */
+export function daemonServiceProblem(): CommandFailure | undefined {
+  if (process.platform !== "linux" || (existsSync("/run/systemd/system") && resolveOnPath("systemctl"))) return undefined;
+  return new CommandFailure("refused", "UNSUPPORTED", "the Linux background service requires systemd, with /run/systemd/system present and systemctl on PATH; this environment does not provide both", {
+    remedy: "run `cotal daemon serve` under your own supervisor (OpenRC, runit or s6), and use `cotal update --self` for manual updates",
+  });
+}
 
 /** What `install` wrote, so `uninstall` acts on that exact unit and never on a name. */
 export interface UnitReceipt {
@@ -280,6 +288,8 @@ function nativeInstallPlan(service: NativeService, paths: DaemonPaths, daemonHom
 
 /** Everything `install` would do, with no effect: the unit it would write and, on Linux, the linger it needs. */
 export function planInstall(paths: DaemonPaths, daemonHome: string | undefined): InstallPlan {
+  const problem = daemonServiceProblem();
+  if (problem) throw problem;
   const service = nativeService();
   if (service) {
     const { mechanism, unit, unitPath, sha256, user, restart, wantedBy } = nativeInstallPlan(service, paths, daemonHome);

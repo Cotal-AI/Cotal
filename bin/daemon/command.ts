@@ -33,7 +33,7 @@ import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths,
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, startInstalled } from "./install.js";
+import { admitWindowsNativeDaemon, applyInstall, applyUninstall, daemonServiceProblem, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy } from "./guidance.js";
@@ -606,6 +606,10 @@ async function run(args: ParsedArgs): Promise<void> {
     }
     const space = args.values.space;
     if (subcommand.flagNames?.includes("space") && typeof space === "string" && space.trim()) recordOperationContext({ target: { space } });
+  }
+  if (mode === "install" || mode === "setup") {
+    const problem = daemonServiceProblem();
+    if (problem) throw problem;
   }
   if (mode === "desktop") {
     return runDesktopBridge({ resolveTarget: () => target(args), version: binVersion(), peerUid, peerPid });
