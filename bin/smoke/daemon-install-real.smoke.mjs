@@ -148,6 +148,12 @@ try {
       && unit.ActiveState === "active" && unit.FragmentPath === plan.unitPath && Number(unit.MainPID) === first.pid);
   }
   if (process.platform === "linux") {
+    const sourceBefore = readFileSync(plan.unitPath);
+    const receiptBefore = readFileSync(receipt);
+    const repeated = ok("install");
+    const unchanged = (await statusUntil(true)).body.result;
+    check("repeated install verifies the existing service without restarting it", repeated.alreadyInstalled === true && unchanged.pid === first.pid && unchanged.startedAt === first.startedAt);
+    check("repeated install leaves unit and receipt byte-identical", readFileSync(plan.unitPath).equals(sourceBefore) && readFileSync(receipt).equals(receiptBefore));
     const native = (...args) => {
       const result = spawnSync("/usr/bin/systemctl", ["--user", ...args], { encoding: "utf8", timeout: 120_000 });
       assert.equal(result.status, 0, `systemctl ${args[0]}: ${result.stderr}`);
