@@ -266,7 +266,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (name === "agent-bearer") return true;
   // `app-identity` is machine-facing too: the Claude connector's local server runs it on every
   // connection, so, like a credential exchange, it must not seed the store under a running connector.
-  if (name === "app-identity" || name === "mcp") return true;
+  if (name === "app-identity") return true;
   return false;
 }
 

@@ -346,8 +346,6 @@
    "current:channel defaults --window"
   ],
   "cli:channel--yes": "current:channel remove --yes",
-  "cli:mcp": "current:mcp",
-  "cli:mcp--space": "current:mcp --space",
   "cli:chat": "current:chat",
   "cli:chat--creds": "pending:chat --creds",
   "cli:chat--kind": "current:chat --kind",
