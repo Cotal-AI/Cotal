@@ -1,4 +1,17 @@
+import {readFileSync,statSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {join} from 'node:path';
 import assert from 'node:assert/strict';
+
+export function incompleteDaemonTrace(report,output){
+ return Object.values(report.daemonDiagnostics ?? {}).some(stage=>(stage.observations ?? []).some(observation=>{
+  if(!observation.artifact||!/daemon\.log/.test(observation.artifact))return false;
+  assert(/^[A-Za-z0-9_.-]+$/.test(observation.artifact));
+  const path=join(output,observation.artifact);assert(statSync(path).size<=512*1024,'bounded daemon log archive required');
+  const bytes=readFileSync(path);assert.equal(bytes.length,observation.bytes);assert.equal(createHash('sha256').update(bytes).digest('hex'),observation.sha256);
+  return bytes.includes(Buffer.from('DARWIN_SOCKET_TRACE_INCOMPLETE'));
+ }));
+}
 
 /** Diagnostic only: issue stock read-only requests and retain every outcome without retrying it. */
 export async function measureDaemonRequests({stage,request,count=50,deadlineMs=180000,now=Date.now}){

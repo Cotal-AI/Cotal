@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {measureDaemonRequests} from './darwin-peer-frequency.mjs';
+import {incompleteDaemonTrace,measureDaemonRequests} from './darwin-peer-frequency.mjs';
 
 test('bounded read-only sample preserves successes and exact peer-read errors without retries',async()=>{
  let clock=0,calls=0;
@@ -10,6 +10,16 @@ test('bounded read-only sample preserves successes and exact peer-read errors wi
  }});
  assert.equal(calls,3);assert.equal(result.completed,3);assert.equal(result.enotconn,1);assert.equal(result.failures,1);assert.equal(result.rows[1].exit,3);
 });
+test('daemon-only incomplete marker is read from hash-bound archive, not metadata',async()=>{
+ const {mkdtempSync,writeFileSync}=await import('node:fs');const {createHash}=await import('node:crypto');
+ const root=mkdtempSync('/var/tmp/daemon-trace-marker-'),name='cell-daemon.log.txt',bytes=Buffer.from('daemon ready\nDARWIN_SOCKET_TRACE_INCOMPLETE pid=123 code=EACCES\n');
+ writeFileSync(root+'/'+name,bytes);
+ const report={calls:[{stdout:'',stderr:''}],daemonDiagnostics:{'after-update':{observations:[{artifact:name,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')}]}}};
+ assert.equal(JSON.stringify(report.daemonDiagnostics).includes('DARWIN_SOCKET_TRACE_INCOMPLETE'),false);
+ assert.equal(incompleteDaemonTrace(report,root),true);
+ writeFileSync(root+'/'+name,'changed');assert.throws(()=>incompleteDaemonTrace(report,root));
+});
+
 test('total deadline ends measurement without manufacturing samples',async()=>{
  let clock=0;
  const result=await measureDaemonRequests({stage:'after-update',count:50,deadlineMs:100,now:()=>clock,request:async()=>{clock+=60;return {exit:0,stdout:'ready',stderr:''};}});

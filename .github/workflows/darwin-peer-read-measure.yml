@@ -82,10 +82,12 @@ jobs:
           test -z "$prior_options"
           test -z "$prior_trace"
           restore_trace_environment() {
-            launchctl unsetenv NODE_OPTIONS
-            launchctl unsetenv DARWIN_SOCKET_TRACE_FILE
-            test -z "$(launchctl getenv NODE_OPTIONS || true)"
-            test -z "$(launchctl getenv DARWIN_SOCKET_TRACE_FILE || true)"
+            local failed=0
+            launchctl unsetenv NODE_OPTIONS || failed=1
+            launchctl unsetenv DARWIN_SOCKET_TRACE_FILE || failed=1
+            test -z "$(launchctl getenv NODE_OPTIONS || true)" || failed=1
+            test -z "$(launchctl getenv DARWIN_SOCKET_TRACE_FILE || true)" || failed=1
+            return "$failed"
           }
           trap restore_trace_environment EXIT
           launchctl setenv NODE_OPTIONS "$NODE_OPTIONS"

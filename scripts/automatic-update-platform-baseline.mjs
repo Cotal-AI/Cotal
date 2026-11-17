@@ -1471,7 +1471,10 @@ export async function matrixCell(options) {
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (overlay) report.registryRequests = await overlay.close();
-    if (/DARWIN_SOCKET_TRACE_INCOMPLETE/.test(report.calls.map(call => call.stdout + call.stderr).join('\n')) || JSON.stringify(report.daemonDiagnostics ?? {}).includes('DARWIN_SOCKET_TRACE_INCOMPLETE')) {
+    const traceIncompleteInDaemonLog = options['peer-frequency'] === 'true'
+      ? (await import('./darwin-peer-frequency.mjs')).incompleteDaemonTrace(report, output)
+      : false;
+    if (/DARWIN_SOCKET_TRACE_INCOMPLETE/.test(report.calls.map(call => call.stdout + call.stderr).join('\n')) || traceIncompleteInDaemonLog) {
       report.diagnosticFailure = 'socket trace incomplete, diagnostic result cannot be accepted';
       report.result = 'failed'; report.refusal = report.diagnosticFailure;
     }
