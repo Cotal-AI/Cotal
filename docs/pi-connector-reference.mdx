@@ -47,8 +47,12 @@ Reliability uses three distinct points:
 1. The matching custom `message_start` proves Pi dequeued the batch locally.
 2. A `context` event containing that exact batch proves it entered one provider request.
 3. A successful `after_provider_response` proves acceptance early when the transport exposes an HTTP
-   response. Some transports, including the Codex subscription, omit that hook; their following clean
-   terminal assistant boundary proves acceptance for the exact context instead.
+   response. Some transports, including the Codex subscription, omit that hook. For them, Pi running
+   a tool from the answer, or the following clean terminal assistant boundary, proves acceptance for
+   the exact context instead.
+
+The next batch goes out once the current one is accepted. A message that arrives during a long run
+is therefore steered in at Pi's next turn boundary, after the running tool, on every transport.
 
 Only provider-confirmed IDs become eligible for acknowledgement, and only at a terminal agent
 boundary. The Pi-local ledger commits those IDs through `MeshAgent.drainInboxIds()`, which removes
@@ -91,7 +95,9 @@ the person who aborted is the party who continues. Non-aborted `stop`, `toolUse`
 `session_before_compact { reason: "overflow", willRetry: true }` identifies the overflow path but is
 not itself a terminal decision. An abort or dispatch watchdog blocks automatic replay. In managed
 headless use, restart is the safe recovery because it terminates any possibly-live provider call
-before durable redelivery.
+before durable redelivery. The dispatch watchdog times only a batch sent to start a turn. A steer
+into a running turn waits for the running tool to finish, and one Pi never takes is held at the
+run's terminal boundary.
 
 `reload`, `new`, `resume`, and `fork` tear down Pi's extension runtime. The adapter keeps its mesh,
 control listener, delivery association, and ordered presence chain in a process-global identity map,

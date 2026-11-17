@@ -85,6 +85,8 @@ export class PiDriver {
   private nudges: string[] = [];
   private presence = Promise.resolve();
   private activeSignal?: AbortSignal;
+  /** Pi is running a turn: set at its agent start, cleared at its agent end. */
+  private running = false;
   private pendingContinuation = false;
   private overflowRetry = false;
   private continuationAttempts = 0;
@@ -117,6 +119,7 @@ export class PiDriver {
 
   onSessionStart(context: PiContextLike): void {
     this.context = context;
+    this.running = false;
     if (this._state === "shuttingDown") {
       context.shutdown();
       return;
@@ -155,6 +158,7 @@ export class PiDriver {
       return;
     }
     this.activeSignal = context.signal;
+    this.running = true;
     this.overflowRetry = false;
     if (this.pendingContinuation) {
       this.pendingContinuation = false;
@@ -221,14 +225,20 @@ export class PiDriver {
 
   onToolStart(name: string): void {
     if (this._state === "shuttingDown") return;
-    // A transport without after_provider_response confirms nothing before agent end, but Pi runs a
-    // tool only from a clean answer to the request that carried these batches. Their run turns are
-    // seen, and cotal_yield is itself a tool, so it must find them surfaced.
+    // A transport without after_provider_response confirms nothing in onProviderResponse, but Pi runs a
+    // tool only from a clean answer to the request that carried these batches. That answer accepts
+    // them as a 2xx would, so they are confirmed here and the next batch can steer in before the run
+    // ends; left unconfirmed, every later message waited for the whole run. Confirming surfaces their
+    // run turns, and cotal_yield is itself a tool, so it must find them surfaced.
     for (const id of this.requestBatchIds) {
-      const turnIds = this.batches.find((candidate) => candidate.id === id)?.turnIds;
-      if (turnIds) this.mesh.commitSurfacedTurns(turnIds);
+      const batch = this.batches.find((candidate) => candidate.id === id);
+      if (batch && !batch.confirmed) this.confirm(batch);
     }
     this.enqueuePresence("working", `running ${name || "tool"}`);
+    if (this._state !== "held") {
+      this._state = "streaming";
+      this.pump();
+    }
   }
 
   onToolEnd(): void {
@@ -238,6 +248,7 @@ export class PiDriver {
 
   onAgentEnd(messages: readonly unknown[], context: PiContextLike): void {
     if (this._state === "shuttingDown") return;
+    this.running = false;
     const lastAssistant = [...messages]
       .reverse()
       .find((message) => message && typeof message === "object" && (message as { role?: unknown }).role === "assistant") as
@@ -402,7 +413,10 @@ export class PiDriver {
         },
         { triggerTurn: true, deliverAs: "steer" },
       );
-      if (!batch.started) {
+      // Only a dispatch that must start a turn is watched. A steer into a running turn starts at Pi's
+      // next turn boundary, after whatever tool is running, and holding it at the deadline blocked
+      // delivery for the rest of the run; one Pi never takes is caught when the run ends (finalizeEnd).
+      if (!batch.started && !this.running) {
         batch.watchdog = setTimeout(() => {
           if (!batch.started) this.hold(`Pi did not start dispatched Cotal batch ${batch.id}`);
         }, this.startTimeoutMs);

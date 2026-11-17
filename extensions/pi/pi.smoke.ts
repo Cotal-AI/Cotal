@@ -1049,6 +1049,59 @@ for (const assistant of [
   ok(mesh.drained.join() === "slow", "late lifecycle confirmation remains associated with the original batch");
 }
 
+// A steer into a running turn starts after the running tool, so the start watchdog does not hold it.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("first")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 5);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  const first = startBatch(driver, host);
+  driver.onAgentStart(ctx);
+  confirm(driver, first);
+  driver.onToolStart("bash");
+  mesh.items.push(item("steer"));
+  driver.onIncoming();
+  ok(host.sent.at(-1)?.details.ids.join() === "steer", "a message that arrives during a tool is steered into the run");
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  ok(driver.state !== "held", "a steer waiting behind a running tool is not held by the start watchdog");
+  driver.onToolEnd();
+  confirm(driver, startBatch(driver, host));
+  mesh.items.push(item("later"));
+  driver.onIncoming();
+  ok(host.sent.at(-1)?.details.ids.join() === "later", "a later message still steers into the same run");
+  confirm(driver, startBatch(driver, host));
+  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], ctx);
+  ok(mesh.drained.join() === "first,steer,later", "the run's terminal boundary commits every steered batch");
+}
+
+// Without a provider response hook, a tool start confirms the answered request's batches, so the next
+// batch steers in during the run instead of waiting for it to end.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("first")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 20);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  const first = startBatch(driver, host);
+  driver.onAgentStart(ctx);
+  driver.onContext([{ role: "custom", customType: "cotal-inbox", details: first }]);
+  mesh.items.push(item("second"));
+  driver.onIncoming();
+  ok(host.sent.length === 1, "a batch in a request with no answer yet still holds back the next one");
+  driver.onToolStart("bash");
+  ok(host.sent.at(-1)?.details.ids.join() === "second", "a tool start confirms the answered batch and the next one steers in");
+  driver.onToolEnd();
+  const second = startBatch(driver, host);
+  driver.onContext([{ role: "custom", customType: "cotal-inbox", details: second }]);
+  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], ctx);
+  ok(mesh.drained.join() === "first,second", "the run's terminal boundary commits both batches");
+}
+
 // Presence writes complete in callback invocation order despite asynchronous operations.
 {
   const mesh = new FakeMesh();
