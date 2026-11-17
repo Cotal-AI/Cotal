@@ -903,6 +903,11 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
   }
   const seats = await askManager(cliControl, target.space, target.server, "ps", undefined, target.auth, "owner", undefined, pin);
   if (!seats.ok) throw new Error(seats.error ?? "manager seat inventory request failed");
+  if (options.retainGraph) {
+    const custody = (status.data as { custody?: unknown } | undefined)?.custody;
+    if (custody === undefined || custody === "legacy") console.log(`Standalone Manager ${on ?? "(instance unavailable)"} in ${JSON.stringify(target.space)} keeps its loaded execution generation; no restart or seat stop is requested. New launches remain subject to the extension generation check.`);
+    return "none";
+  }
   const report = await legacyManagerReport(
     (status.data ?? {}) as { custody?: unknown },
     Array.isArray(seats.data)
@@ -914,10 +919,6 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       : [],
   );
   if (!report) return "none";
-  if (options.retainGraph) {
-    console.log(`Standalone Manager ${on ?? "(instance unavailable)"} in ${JSON.stringify(target.space)} keeps its loaded execution generation; no restart or seat stop is requested. New launches remain subject to the extension generation check.`);
-    return "none";
-  }
   const remedy = typeof flags.creds === "string" ? undefined : recordedStackRemedy(target.root, target.space, target.server, (status.data ?? {}) as { instanceId?: unknown; lifecycleUid?: unknown });
   printLegacyReport(report, target.space, undefined, console.log, on, remedy);
   return "legacy";
