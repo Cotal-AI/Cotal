@@ -11,10 +11,10 @@
  *  B. `--follow --json` across two feed polls that change nothing writes its snapshot and no event,
  *     and a member who joins then is an event. No two records in a row show the same census, and the
  *     end record carries the last poll the follow read. The plain follow offers no command to follow.
- *  C. an agent that follows the family team.> on a provisioned credential (a bare join holds no
- *     durable membership) is a durable member of the durable #team.build and a live-only one of the
- *     live #team.chat. Once it stops, it stays on #team.build as a member with stored copies and
- *     leaves #team.chat. A follow of #team.build drops it once only the channel's class turns live.
+ *  C. an agent that follows the family team.> on a provisioned credential is a durable member of
+ *     the durable #team.build and a live-only one of the live #team.chat. Once it stops, it stays on
+ *     #team.build as a member with stored copies and leaves #team.chat. A follow of #team.build drops
+ *     it once only the channel's class turns live.
  *
  * COTAL_HOME is sandboxed, the child environment carries no `COTAL_` variable of the runner, and the
  * stack stops with `cotal down --yes`. Needs `nats-server` on PATH. Run: pnpm smoke:channel-members:live
@@ -84,12 +84,17 @@ try {
   const stack = cotal("up", "--server", SERVER, "--no-manager");
   check("up starts the static-auth stack", stack.status === 0, stack.out.slice(-600));
   if (stack.status !== 0) throw new Error("the stack did not start; no later cell can run");
-  check("#general is registered", cotal("channel", "set", "general", "--desc", "General talk").status === 0);
+  check("#general is durable with replay disabled", cotal("channel", "set", "general", "--desc", "General talk", "--delivery", "durable", "--no-replay").status === 0);
   check("#archive has a retained message and no saved entry", cotal("send", "-c", "archive", "kept").status === 0);
-  started("join", "--name", "anna", "--channel", "general");
-  started("join", "--name", "bert", "--channel", "lounge");
-  const seen = await until(() => named(census("general"), "anna") && named(census("lounge"), "bert"), 90_000);
+  const anna = started("join", "--name", "anna", "--channel", "general");
+  const bert = started("join", "--name", "bert", "--channel", "lounge");
+  const joinedMember = (channel: string, name: string) => census(channel)?.members.find((m) => m.name === name);
+  const seen = await until(() => joinedMember("general", "anna")?.live === true && joinedMember("general", "anna")?.durable === true
+    && joinedMember("lounge", "bert")?.live === true && joinedMember("lounge", "bert")?.durable === true, 90_000);
   check("the feed observes anna on #general and bert on #lounge", seen);
+  check("a bare join establishes durable membership without replay", joinedMember("general", "anna")?.durable === true, anna.out);
+  check("a bare join establishes the default durable policy on an unregistered channel", joinedMember("lounge", "bert")?.durable === true, bert.out);
+  check("bare durable joins do not retry a missing read ACL", !/no read ACL|boot durable self-join not yet established/.test(anna.out + bert.out), anna.out + bert.out);
 
   console.log("\nA. a name the space does not have");
   const unknown = cotal("channel", "members", "nosuch", "--json");
@@ -144,6 +149,10 @@ try {
   console.log("\nC. a family follower");
   check("#team.build is durable and #team.chat is live",
     cotal("channel", "set", "team.build", "--delivery", "durable").status === 0 && cotal("channel", "set", "team.chat", "--delivery", "live").status === 0);
+  const dana = started("join", "--name", "dana", "--channel", "team.chat");
+  const liveJoin = await until(() => joinedMember("team.chat", "dana")?.live === true, 90_000);
+  check("a bare join on a live channel has no durable membership", liveJoin && joinedMember("team.chat", "dana")?.durable === false, dana.out);
+  check("a bare live join has no durable self-join warning", !/no read ACL|boot durable self-join not yet established/.test(dana.out), dana.out);
   const fernCreds = join(base, "fern.creds");
   const minted = envelope(cotal("auth", "mint", "fern", "--provision", "--allow-subscribe", "team.>", "--allow-publish", "team.build", "--out", fernCreds, "--json").stdout) as
     { result?: { lifecycleUid?: string } } | undefined;
