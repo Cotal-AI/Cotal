@@ -1388,6 +1388,7 @@ async function connectWithoutSeed(
 /** Trusted native service embedding. The supplied connection is explicitly scoped by its
  *  credential file; no account signer, cached operator login or purger mint is substituted. */
 interface WebServiceLifecycle {
+  readonly posting?: { creds: string; expiresAt: number };
   readonly connection: Omit<Connection, "auth">;
   readonly onSession: (session: WebSession) => void | Promise<void>;
   readonly onReady: () => void | Promise<void>;
@@ -1413,7 +1414,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // `cotal actor revoke` kills the dashboard live (eviction) while a scope edit bites at the next
   // refresh.
   const started = lifecycle
-    ? { conn: lifecycle.connection, user: undefined, pidPath: undefined, purgeCreds: undefined, post: { mode: "off", reason: POST_OFF_SERVICE } as PostCapability, poster: undefined }
+    ? { conn: lifecycle.connection, user: undefined, pidPath: undefined, purgeCreds: undefined, post: (lifecycle.posting ? { mode: "participant" } : { mode: "off", reason: POST_OFF_SERVICE }) as PostCapability, poster: lifecycle.posting ? operatorPoster(lifecycle.connection, { ...lifecycle.posting, lifecycleUid: mintLifecycleUid() }) : undefined }
     : await connectWithoutSeed(args.raw, values, host, port);
   if (!started) return;
   const { conn, user, pidPath, purgeCreds, post, poster } = started;

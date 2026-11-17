@@ -31,7 +31,8 @@ See [Use the console](console.mdx#terminal-console) for keys, controls, attachme
 
 Start the `@cotal-ai/web` service with `cotal service start web`.
 The dashboard ships with `cotal-ai` and is seeded automatically, but it is separate from stack startup.
-It requires a registered static-auth root and explicit read-only intent, and it reads the `web.creds` that `cotal up` mints for the space unless you pass `--creds`.
+It requires a registered static-auth root and defaults to read-only, using the `web.creds` that `cotal up` mints for the space unless you pass `--creds`.
+[Authorize posting](web-dashboard.mdx#authorize-posting) with a separate protected credential when you need the composer.
 See [Use the web dashboard](web-dashboard.mdx#web-dashboard) for setup and private browser access.
 
 ## Check visibility limits [#what-each-surface-can-see]
