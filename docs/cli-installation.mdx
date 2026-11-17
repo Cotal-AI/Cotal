@@ -418,7 +418,10 @@ and names `chmod g-w <path>` as the next step.
 
 Third-party extensions are listed with their installed version and recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
-a future follow-up. A failed connector/extension install, npm metadata check, or requested global
+a future follow-up. When `update --self` cannot reach the registry before selecting a release,
+it reports that nothing changed and exits 0 without reconciling packages or inspecting Manager
+custody. The version read has no retries and a three-second network timeout. Unknown availability
+is not a claim that the installed version is current. A failed connector/extension install, npm metadata check after reconciliation, or requested global
 install is reported and makes the command exit nonzero. Independent extension attempts continue so
 the output includes every failure; an unavailable npm registry does not undo a completed local
 reconcile, but the command still exits nonzero because it could not establish that the install is
