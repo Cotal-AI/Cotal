@@ -1,5 +1,33 @@
 # cotal-ai
 
+## 0.165.4
+
+### Patch Changes
+
+- e50f5af: Refresh local computer vitals while the daemon is signed out.
+- Updated dependencies [62a04ab]
+- Updated dependencies [e7d413b]
+- Updated dependencies [16d0381]
+- Updated dependencies [20ed7a7]
+- Updated dependencies [e61f1d5]
+- Updated dependencies [5413861]
+- Updated dependencies [b1c2fb9]
+- Updated dependencies [d2923ec]
+- Updated dependencies [5d9c40b]
+- Updated dependencies [d5ecb99]
+- Updated dependencies [0ba9fe1]
+- Updated dependencies [ff2dc46]
+  - @cotal-ai/cli@0.165.4
+  - @cotal-ai/core@0.165.4
+  - @cotal-ai/connector-core@0.165.4
+  - @cotal-ai/workspace@0.165.4
+  - @cotal-ai/manager@0.165.4
+  - @cotal-ai/auth@0.165.4
+  - @cotal-ai/delivery@0.165.4
+  - @cotal-ai/registry@0.165.4
+  - @cotal-ai/runtime@0.165.4
+  - @cotal-ai/seat@0.165.4
+
 ## 0.165.3
 
 ### Patch Changes
