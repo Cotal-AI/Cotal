@@ -8,11 +8,12 @@ rows, and only a daemon at 0.166.0 or later reports each row's lifecycle.
 
 ### What changes for you
 
-- Restart the delivery daemon at this version along with the clients. `cotal up` runs it.
+- If this machine runs the space, restart the delivery daemon at this version along with the
+  clients. `cotal up` runs it. If the space runs elsewhere, its host must update the delivery service.
 - Until then, an agent on the new connector that holds any durable membership cannot leave a
-  durable channel. The leave reports
-  `the delivery daemon predates lifecycle-aware membership discovery`, and the channel stays
-  joined with its memberships open.
+  durable channel. The leave says the delivery service is older, that the leave was not applied,
+  and that the channel stays joined with its memberships open. For a hosted space it asks the host
+  to update, rather than asking the participant to run `cotal up`.
 
 ## Harness permission requests withdrawn
 
