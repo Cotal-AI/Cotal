@@ -1,17 +1,19 @@
-/** Opt-in lifecycle of a real per-user service on disposable GitHub-hosted Linux/macOS/Windows runners.
+/** Explicit opt-in lifecycle of a real per-user service on disposable hosts.
+ * Linux also accepts COTAL_TEST_DISPOSABLE_USER_SERVICE=1 for a dedicated test user.
  * Uses the built CLI and its ownership checks. Never signs in, connects, or force-removes a job.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-if (process.env.COTAL_TEST_REAL_SERVICE !== "1" || process.env.GITHUB_ACTIONS !== "true"
-  || process.env.RUNNER_ENVIRONMENT !== "github-hosted"
+const disposableLinux = process.platform === "linux" && process.env.COTAL_TEST_DISPOSABLE_USER_SERVICE === "1";
+if (process.env.COTAL_TEST_REAL_SERVICE !== "1" || (!disposableLinux && (process.env.GITHUB_ACTIONS !== "true"
+  || process.env.RUNNER_ENVIRONMENT !== "github-hosted"))
   || !["linux", "darwin", "win32"].includes(process.platform) || !process.env.RUNNER_TEMP) {
-  console.error("REFUSED: real daemon service tests require explicit opt-in on a disposable GitHub-hosted Linux/macOS/Windows runner.");
+  console.error("REFUSED: real daemon service tests require explicit opt-in on a disposable GitHub-hosted runner or dedicated Linux test user.");
   process.exit(2);
 }
 
@@ -145,9 +147,51 @@ try {
     check("systemd supervises the answering daemon from the recorded unit", unit.LoadState === "loaded"
       && unit.ActiveState === "active" && unit.FragmentPath === plan.unitPath && Number(unit.MainPID) === first.pid);
   }
+  if (process.platform === "linux") {
+    const native = (...args) => {
+      const result = spawnSync("/usr/bin/systemctl", ["--user", ...args], { encoding: "utf8", timeout: 120_000 });
+      assert.equal(result.status, 0, `systemctl ${args[0]}: ${result.stderr}`);
+      return result.stdout.trim();
+    };
+    check("native unit requires readiness within 60 seconds", native("show", plan.unit, "--property=Type", "--value") === "notify"
+      && native("show", plan.unit, "--property=TimeoutStartUSec", "--value") === "1min");
+    const dropin = `${plan.unitPath}.d`;
+    const hang = join(root, "startup-hang.mjs");
+    writeFileSync(hang, "setInterval(() => {}, 1000); await new Promise(() => {});\n");
+    native("stop", plan.unit);
+    mkdirSync(dropin, { mode: 0o700 });
+    try {
+      writeFileSync(join(dropin, "startup-hang.conf"), `[Service]\nEnvironment="NODE_OPTIONS=--import=${hang}"\n`);
+      native("daemon-reload");
+      native("start", "--no-block", plan.unit);
+      await delay(2000);
+      const hungPid = native("show", plan.unit, "--property=MainPID", "--value");
+      check("hung daemon remains in startup before the deadline", Number(hungPid) > 0
+        && native("show", plan.unit, "--property=ActiveState", "--value") === "activating");
+      // No updater or readiness observer runs here. Only the native service manager
+      // can terminate this pre-import hang and start another process.
+      const deadline = Date.now() + 100_000;
+      let restarted = false;
+      while (Date.now() < deadline) {
+        if (Number(native("show", plan.unit, "--property=NRestarts", "--value")) > 0
+          && native("show", plan.unit, "--property=MainPID", "--value") !== hungPid) { restarted = true; break; }
+        await delay(1000);
+      }
+      check("systemd restarts a non-exiting startup hang without a live observer", restarted);
+    } finally {
+      native("stop", plan.unit);
+      rmSync(join(dropin, "startup-hang.conf"));
+      rmdirSync(dropin);
+      native("daemon-reload");
+      native("start", plan.unit);
+    }
+    await statusUntil(true);
+    check("healthy daemon becomes ready again after the hang is removed", native("show", plan.unit, "--property=ActiveState", "--value") === "active");
+  }
+  const beforeStart = (await statusUntil(true)).body.result;
   ok("start");
   const second = (await statusUntil(true)).body.result;
-  check("start preserves the running instance", second.pid === first.pid && second.startedAt === first.startedAt);
+  check("start preserves the running instance", second.pid === beforeStart.pid && second.startedAt === beforeStart.startedAt);
   if (process.platform === "win32") {
     const seatRoot = join(packageRoot, "node_modules", "@cotal-ai", "seat");
     const seatManifest = JSON.parse(readFileSync(join(seatRoot, "package.json"), "utf8"));

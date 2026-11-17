@@ -113,6 +113,7 @@ try {
     process.argv[1] = join(process.cwd(), "bin", "dist", "cotal.js");
     try {
       const unit = renderDaemonUnit(join(root, "units"), undefined);
+      check("systemd bounds startup and accepts the in-unit readiness helper", unit.bytes.includes("Type=notify\nNotifyAccess=all\nTimeoutStartSec=60\n"));
       check("systemd allows retirement and signals only daemon first", unit.bytes.includes("TimeoutStopSec=90\n") && unit.bytes.includes("KillMode=mixed\n"));
     } finally { process.argv[1] = entry!; process.execArgv = execArgv; process.env.PATH = path; }
   }

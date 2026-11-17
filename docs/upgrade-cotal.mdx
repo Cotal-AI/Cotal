@@ -317,10 +317,15 @@ covers service startup and the target daemon's authenticated status, and the par
 the daemon to answer at the target version before completing the update rather than accepting a zero
 exit code from the reconciliation child alone. Protection starts with the first release that carries
 each recovery step, and the transition into that release is guarded by the candidate-to-next upgrade
-matrix cells. A target daemon that hangs during startup without exiting is bounded only by the live
-readiness observer; startup hangs after observer death are tracked in
-[#6881](https://github.com/Cotal-AI/Cotal/issues/6881), and desktop application bundle updates are
-tracked in [#6880](https://github.com/Cotal-AI/Cotal/issues/6880).
+matrix cells. Newly installed Linux daemon units use `Type=notify` and `TimeoutStartSec=60`.
+The daemon sends readiness only after its local control listener is ready. If startup hangs,
+systemd terminates it and restarts the unit even when the updater's readiness observer has died.
+Existing units retain their installed policy until reinstalled. This does not prove that a mesh
+connection or hosted Manager is ready. On macOS, launchd has no startup readiness timeout, and
+Windows Task Scheduler's `ExecutionTimeLimit` bounds the whole process lifetime rather than startup.
+On those platforms a non-exiting startup hang remains unbounded after the live observer dies.
+No bootstrap timer substitutes for that missing native bound. Desktop application bundle updates
+are tracked in [#6880](https://github.com/Cotal-AI/Cotal/issues/6880).
 Published Windows updater records without a start token are accepted only when the active lock's
 process ID and nonce match, and the retained process predates both the recovery record and lock
 file. New Windows updater records carry the native process creation token. Unreadable evidence
