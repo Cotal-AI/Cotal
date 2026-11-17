@@ -132,8 +132,10 @@ export interface MeshAgentOptions {
    *  so `meta.cwd` stays unknown until the harness reports it through {@link MeshAgent.setCwd}. */
   withholdProcessCwd?: boolean;
   /** The connector already decided to arm the event plane, then removed `COTAL_EVENTS` from the
-   *  process environment. The card follows this decision instead of reading the scrubbed environment. */
+   *  process environment. The card and startup check follow this decision. */
   eventsArmed?: boolean;
+  /** The event state root read by the connector before it scrubbed the process environment. */
+  eventsWorkspaceRoot?: string;
   /** A once task this seat pulled and did not claim within {@link ONCE_HANDOFF_MS} is sealed and
    *  reported. For a connector whose wake for the task is a push it cannot confirm, so a dead push
    *  cannot hold a served task. */
@@ -752,9 +754,12 @@ export class MeshAgent extends EventEmitter {
       watchPresence: false,
       beforeBind: async () => {
         const env = this.launchEnv ?? process.env;
-        if (this.eventStartupChecked || !eventPlaneArmed(config, env)) return;
+        if (this.eventStartupChecked || !(options.eventsArmed ?? eventPlaneArmed(config, env))) return;
         try {
-          await checkEventStartup(this.ep, env);
+          await checkEventStartup(this.ep, {
+            ...env,
+            COTAL_WORKSPACE_ROOT: options.eventsWorkspaceRoot ?? env.COTAL_WORKSPACE_ROOT,
+          });
           this.eventStartupChecked = true;
         } catch (error) {
           // A space that requires events cannot admit a seat whose transcript cannot start.
