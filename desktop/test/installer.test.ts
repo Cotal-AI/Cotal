@@ -5,6 +5,35 @@ import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+test('Windows rollback proof rejects the preceding occupied-seat receipt', () => {
+  const source = readText('../../test/win-updater-proof.mjs');
+  const predicate = source.match(/const hop = await until\([^\n]*, (value => [^\n]+), 600_000\);/)?.[1];
+  assert.ok(predicate, 'exercise the callback used by the hosted proof');
+  const old = { schema: 1, outcome: 'refused', code: 20, toVersion: '0.164.9', completedAt: '2026-11-16T15:17:35.083Z' };
+  const accept = runInNewContext(`(${predicate})`, { priorSetupResult: JSON.stringify(old), hopStartedAt: Date.parse('2026-11-16T15:17:57.469Z') });
+  assert.equal(accept(old), false, 'the hosted stale receipt is not a new hop');
+  assert.equal(accept({ ...old, message: 'changed but still old' }), false);
+  assert.equal(accept({ ...old, completedAt: '2026-11-16T15:18:35.083Z' }), true, 'fresh refusal must reach diagnostics, not time out');
+  assert.equal(accept({ ...old, code: 21, completedAt: undefined }), true, 'native move-refusal receipts do not carry completedAt');
+  assert.equal(accept({ ...old, outcome: 'rolled-back', code: 23, completedAt: '2026-11-16T15:18:35.083Z' }), true);
+  assert.equal(accept({ ...old, schema: 2, completedAt: '2026-11-16T15:18:35.083Z' }), false);
+  assert.match(source, /assert.equal\(rolledBack.outcome, 'rolled-back'/);
+  assert.match(source, /assert.equal\(rolledBack.code, 23\)/);
+  assert.match(source, /Hop 1 main view shows the rollback reason.*'applied-update'/);
+  assert.match(source, /Hop 1 Settings shows the rollback reason/);
+});
+
+test('Windows refusal probe registers files and retains diagnostic failures', () => {
+  const probe = readText('../../test/win-updater-refusal.ps1');
+  assert.match(probe, /\$ErrorActionPreference = 'Stop'/);
+  assert.match(probe, /Get-ChildItem[^\n]*-File -ErrorAction Stop/);
+  assert.match(probe, /RmRegisterResources\(\$session, \$paths.Count, \$paths/);
+  assert.match(probe, /\$listed -eq 234/);
+  assert.match(probe, /\$listed -ne 0.*throw/);
+  assert.match(probe, /operation = 'file-holders'/);
+  assert.doesNotMatch(probe, /CommandLine/);
+});
+
 const base = new URL('../src-tauri/installers/', import.meta.url);
 const readText = (path: string) => readFileSync(new URL(path, base), 'utf8').replace(/\r\n/g, '\n');
 test('pinned installer guard precedes the old uninstaller without changing update mode', () => {

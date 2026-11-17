@@ -330,33 +330,22 @@ try {
   await until('occupied seat cleared in daemon status', () => call('daemon', 'status'), reply => reply.ok && reply.result.agents?.every(row => row.state === 'read' && row.agents.length === 0));
 
   // Hop 1 (0.164.8 -> 0.164.9): N+1's bundled daemon throws before it binds, so setup restores N.
+  const priorSetupResult = JSON.stringify(readSetupResult());
+  const hopStartedAt = Date.now();
   await ui('close');
-  const hop = await until('Hop 1 setup finished', async () => readSetupResult(), value => value && value.toVersion === '0.164.9' && (value.outcome === 'rolled-back' && value.code === 23 || value.outcome === 'refused'));
+  const hop = await until('Hop 1 setup finished with a new receipt', async () => readSetupResult(), value => value?.schema === 1 && JSON.stringify(value) !== priorSetupResult && value.toVersion === '0.164.9' && (!value.completedAt || Date.parse(value.completedAt) >= hopStartedAt) && ['updated', 'rolled-back', 'rollback-unconfirmed', 'refused'].includes(value.outcome), 600_000);
   if (hop.outcome === 'refused') {
-    const probe = join(out, 'refusal-probe.ps1');
-    writeFileSync(probe, [
-      "$runtime = Join-Path $env:LOCALAPPDATA 'Cotal\\runtime'",
-      "$acl = Get-Acl -LiteralPath $runtime",
-      "$first = Get-ChildItem -LiteralPath $runtime -Force | Select-Object -First 1",
-      "$entry = if ($first) { Get-Acl -LiteralPath $first.FullName } else { $null }",
-      "$readonly = @(Get-ChildItem -LiteralPath $runtime -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReadOnly } | Select-Object -ExpandProperty FullName)",
-      "$session = [uint32]0; $key = 'cotal-proof-holders-0000000000000'",
-      "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class ProofHolders { [DllImport(\"rstrtmgr.dll\", CharSet=CharSet.Unicode)] public static extern int RmStartSession(out uint s, uint f, string k); [DllImport(\"rstrtmgr.dll\", CharSet=CharSet.Unicode)] public static extern int RmRegisterResources(uint s, uint n, string[] p, uint a, IntPtr ap, uint sv, string[] sn); [DllImport(\"rstrtmgr.dll\", CharSet=CharSet.Unicode)] public static extern int RmGetList(uint s, out uint need, ref uint count, IntPtr info, out uint reboot); [DllImport(\"rstrtmgr.dll\")] public static extern int RmEndSession(uint s); }'",
-      "$started = [ProofHolders]::RmStartSession([ref]$session, 0, $key)",
-      "$registered = if ($started -eq 0) { [ProofHolders]::RmRegisterResources($session, 1, @($runtime), 0, [IntPtr]::Zero, 0, @()) } else { $started }",
-      "$needed = [uint32]0; $count = [uint32]0; $reboot = [uint32]0",
-      "$listed = if ($registered -eq 0) { [ProofHolders]::RmGetList($session, [ref]$needed, [ref]$count, [IntPtr]::Zero, [ref]$reboot) } else { $registered }",
-      "if ($started -eq 0) { [void][ProofHolders]::RmEndSession($session) }",
-      "[pscustomobject]@{ owner = $acl.Owner; access = @($acl.Access | ForEach-Object { $_.IdentityReference.Value + ' ' + $_.FileSystemRights }); first = $first.FullName; firstOwner = $entry.Owner; readOnly = $readonly; holderQuery = @{ started = $started; registered = $registered; listed = $listed; needed = $needed }; helperSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } | ConvertTo-Json -Depth 4",
-    ].join('\n'));
+    const probe = fileURLToPath(new URL('win-updater-refusal.ps1', import.meta.url));
     let folder = 'probe failed';
-    try { folder = JSON.parse((await execute(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', probe], { encoding: 'utf8' })).stdout); }
+    try { folder = JSON.parse(await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', probe])); }
     catch (error) { folder = error.message; }
     const version = existsSync(join(runtime, 'package.json')) ? JSON.parse(readFileSync(join(runtime, 'package.json'), 'utf8')).version : null;
     const service = await call('daemon', 'status').catch(error => ({ ok: false, message: error.message }));
     record('Hop 1 refusal left this state', { setup: hop, folder, installedVersion: version, service });
   }
   const rolledBack = hop;
+  assert.equal(rolledBack.outcome, 'rolled-back', `Hop 1 must restore N, not merely refuse setup: ${JSON.stringify(rolledBack)}`);
+  assert.equal(rolledBack.code, 23);
   assert.equal(rolledBack.fromVersion, '0.164.8');
   assert.equal(await installed(), '0.164.8');
   const restored = await until('Hop 1 service and Manager ready again on 0.164.8', () => call('daemon', 'status'), reply => reply.ok && reply.result.version === '0.164.8' && reply.result.state === 'ready');
@@ -365,9 +354,12 @@ try {
 
   launchApp();
   const restoredApp = await until('Hop 1 restored 0.164.8 opens its window', () => ui('describe'), value => value.visible === true);
-  const reasonText = await ui('text', 'connection-description');
+  const reasonText = await until('Hop 1 main view shows the rollback reason', () => ui('text', 'applied-update'), text => text.includes('Setup code 23:') && text.includes('Cotal 0.164.8 is running again.'));
   assert.match(reasonText, /running again/, 'The restored window shows the rollback reason');
   record('Hop 1 window shows the reason', { pid: restoredApp.pid, reasonText });
+  await ui('settings');
+  await until('Hop 1 Settings shows the rollback reason', () => ui('text', 'settings-update-summary'), text => text.includes('Setup code 23:') && text.includes('Cotal 0.164.8 is running again.'));
+  await ui('click', 'open-settings');
 
   await quitApp('restored 0.164.8 app exited');
   launchApp(['--background']);
@@ -437,7 +429,7 @@ try {
   try {
     const setupCheck = await run(ps, [
       '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
-      "$ErrorActionPreference='Stop'; Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes; $procs = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*installer*.exe' -or $_.Name -like '*setup*.exe' }); $rows = @(); foreach ($p in $procs) { $w = @(); try { $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$p.ProcessId); $els = [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond); foreach ($el in $els) { if ($el.Current.Name) { $w += [string]$el.Current.Name } } } catch {} $rows += @{ pid = [int]$p.ProcessId; name = [string]$p.Name; commandLine = [string]$p.CommandLine; texts = $w } }; $rows | ConvertTo-Json -Depth 4 -Compress",
+      "$ErrorActionPreference='Stop'; Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes; $procs = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*installer*.exe' -or $_.Name -like '*setup*.exe' }); $rows = @(); foreach ($p in $procs) { $w = @(); try { $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$p.ProcessId); $els = [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond); foreach ($el in $els) { if ($el.Current.Name) { $w += [string]$el.Current.Name } } } catch {} $rows += @{ pid = [int]$p.ProcessId; name = [string]$p.Name; texts = $w } }; $rows | ConvertTo-Json -Depth 4 -Compress",
     ]);
     failure.activeSetupProcesses = JSON.parse(setupCheck || '[]');
   } catch (setupDiagError) {
