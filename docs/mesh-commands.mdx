@@ -11,11 +11,11 @@ This catalog is generated from the built-in Manager, auth and registry cluster c
 
 A published catalog does not establish that a service is running or that a caller has authority. Resolve the live endpoint before invoking it; [discovery](control-discovery.mdx#service-discovery) verifies the registered contract digests. Installed versions may differ from this page. Capability names classify commands; they are not grants. Target modes and instance routing remain enforced by the broker and service.
 
-For an already authorized space, these examples inspect the Manager and make a read-only status call. Choose the Manager instance explicitly where required by your deployment. They do not create a grant or start a service.
+For an already authorized space, these examples inspect the Manager and make a read-only status call. Choose the Manager instance explicitly where required by your deployment. They do not create a grant or start a service. `status` takes a `null` input, so the call passes no `--args` and the CLI sends `null`; `--args` takes a JSON object.
 
 ```sh
 cotal describe manager --space <space> --on <instance>
-cotal invoke manager status --args 'null' --space <space> --on <instance>
+cotal invoke manager status --space <space> --on <instance>
 ```
 
 The [CLI endpoint reference](cli-endpoints.mdx) explains discovery, target selection and invocation. Agent sessions use `cotal_describe` followed by `cotal_invoke`; see the [tool catalog](mcp-tools.mdx). Do not substitute an identity field in command arguments for the authenticated target.
