@@ -497,11 +497,16 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
         `len counts the elements of an array or the units of a string, and ${kindOf(v)} has no length in this language: the only length a function has on the host is its parameter count, a property of the implementation's wrapper and not a program value. For a record's size, use \`len(keys(r))\`.`,
       );
     }, { any: [0] })],
+    // The free array walks spell the methods (§5.2), so each captures the length BEFORE the first
+    // call, as the method does and as JavaScript does: an element the callback appends is not visited
+    // (measured before the fix: a `push` inside the callback grew all five walks, and a callback that
+    // appended every round failed the run on the L4013 step bound).
     [
       "map",
       higher("map", async (frame, list, f) => {
         const out: unknown[] = [];
-        for (let i = 0; i < list.length; i += 1) out.push(await f(frame, [list[i], i]));
+        const len = list.length;
+        for (let i = 0; i < len; i += 1) out.push(await f(frame, [list[i], i]));
         return born(out, frame.depth);
       }),
     ],
@@ -509,7 +514,8 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
       "filter",
       higher("filter", async (frame, list, f) => {
         const out: unknown[] = [];
-        for (let i = 0; i < list.length; i += 1) {
+        const len = list.length;
+        for (let i = 0; i < len; i += 1) {
           const item = list[i];
           if (await f(frame, [item, i])) out.push(item);
         }
@@ -519,7 +525,8 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
     [
       "find",
       higher("find", async (frame, list, f) => {
-        for (let i = 0; i < list.length; i += 1) {
+        const len = list.length;
+        for (let i = 0; i < len; i += 1) {
           const item = list[i];
           if (await f(frame, [item, i])) return item;
         }
@@ -529,14 +536,16 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
     [
       "some",
       higher("some", async (frame, list, f) => {
-        for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) return true;
+        const len = list.length;
+        for (let i = 0; i < len; i += 1) if (await f(frame, [list[i], i])) return true;
         return false;
       }),
     ],
     [
       "every",
       higher("every", async (frame, list, f) => {
-        for (let i = 0; i < list.length; i += 1) if (!(await f(frame, [list[i], i]))) return false;
+        const len = list.length;
+        for (let i = 0; i < len; i += 1) if (!(await f(frame, [list[i], i]))) return false;
         return true;
       }),
     ],
