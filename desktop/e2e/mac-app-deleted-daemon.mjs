@@ -217,12 +217,12 @@ try {
   const connector = join(root, 'connector');
   mkdirSync(connector, { mode: 0o700 });
   writeFileSync(join(connector, 'package.json'), JSON.stringify({ name: 'deleted-app-fixture', version: '1.0.0', type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } }));
-  if (repairCommand === 'occupied-manager') {
+  if (['occupied-manager', 'unreadable-manager'].includes(repairCommand)) {
     const core = pathToFileURL(join(oldPrefix, 'lib/node_modules/cotal-ai/node_modules/@cotal-ai/core/dist/index.js')).href;
     const seat = join(connector, 'seat.mjs');
     const seatReceipt = join(connector, 'seat-process.json');
     writeFileSync(seat, `import{CotalEndpoint}from${JSON.stringify(core)};import{readFileSync,writeFileSync}from'node:fs';import{execFile}from'node:child_process';const e=process.env;const cmd=JSON.parse(e.COTAL_BEARER_CMD);const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(error,stdout)=>error?reject(error):resolve(stdout.trim())));const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(e.COTAL_SENTINEL_CREDS,'utf8'),card:{owner:e.COTAL_OWNER,actor:e.COTAL_ACTOR,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();writeFileSync(${JSON.stringify(seatReceipt)},JSON.stringify({pid:process.pid,lifecycleUid:e.COTAL_LIFECYCLE_UID,name:e.COTAL_NAME}),{mode:0o600});setInterval(()=>{},1000);for(const s of['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`);
-    writeFileSync(join(connector, 'index.js'), `import{registry}from'@cotal-ai/core';registry.register({kind:'connector',name:'deleted-app-fixture',requires:['node'],buildLaunch:o=>{if(!o.userAuth)throw Error('occupied proof requires actual user-auth launch');return{command:process.execPath,args:[${JSON.stringify(seat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}}}});`);
+    writeFileSync(join(connector, 'index.js'), `import{registry}from'@cotal-ai/core';registry.register({kind:'connector',name:'deleted-app-fixture',requires:['node'],buildLaunch:o=>{if(!o.userAuth)throw Error('occupied proof requires actual user-auth launch');return{command:${JSON.stringify(process.execPath)},args:[${JSON.stringify(seat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}}}});`);
   } else {
     writeFileSync(join(connector, 'index.js'), "import {registry} from '@cotal-ai/core';registry.register({kind:'connector',name:'deleted-app-fixture',requires:['node'],buildLaunch(){throw Error('this measurement launches no seats')}});\n");
   }
@@ -411,10 +411,29 @@ try {
         await delay(250);
       }
       assert(answered, 'same Manager must answer instance-pinned public seat inspection after resuming');
+      // A public read is not admission proof. Launch and stop an actual owned lifecycle on that same Manager.
+      assert.equal(processBirth(manager.pid), managerBefore.birth, 'original Manager must remain pinned immediately before new-work admission');
+      occupiedInstance = manager.instanceId;
+      const admissionReceipt = join(connector, 'seat-process.json');
+      assert(!existsSync(admissionReceipt), 'admission proof must not reuse a prior seat receipt');
+      ok(await old('public new lifecycle launch after unreadable repair refusal', ['spawn', '--agent', 'deleted-app-fixture', '--on', occupiedInstance, '--name', occupiedName, '--detach', '--no-events', '--space', report.participant.space]));
+      const admissionDeadline = Date.now() + 20000;
+      while (!existsSync(admissionReceipt) && Date.now() < admissionDeadline) await delay(100);
+      const admitted = JSON.parse(readFileSync(admissionReceipt, 'utf8'));
+      assert.equal(admitted.name, occupiedName);
+      assert(typeof admitted.lifecycleUid === 'string' && admitted.lifecycleUid.length > 0);
+      occupiedSeat = { ...await identity(admitted.pid, 'actual new lifecycle after unreadable refusal'), lifecycleUid: admitted.lifecycleUid };
+      assert(occupiedSeat.birth);
+      assert.equal(processBirth(manager.pid), managerBefore.birth, 'actual new work must be admitted by the original Manager lifetime');
+      const admittedInventory = body(await old('public original Manager confirms actual admitted lifecycle', ['ps', '--on', occupiedInstance, '--space', report.participant.space, '--json']));
+      assert(admittedInventory.items?.some(row => row.name === occupiedName && row.lifecycleUid === occupiedSeat.lifecycleUid));
+      assert(admittedInventory.managers?.some(row => row.instanceId === occupiedInstance && row.state === 'answered'));
+      report.unreadableManagerNewWork = { pid: occupiedSeat.pid, birth: occupiedSeat.birth, lifecycleUid: occupiedSeat.lifecycleUid, instanceId: occupiedInstance, originalManagerBirth: managerBefore.birth, publicLaunchSucceeded: true };
       assert.equal(readFileSync(plist, 'utf8'), sourceBefore);
       assert.equal(readFileSync(receiptPath, 'utf8'), receiptBefore);
+      assert.equal(readFileSync(sessionPath, 'utf8'), stateBefore);
       await ownedService();
-      report.unreadableManagerAcceptance = { actualSuspensionObserved: true, repairRefused: true, nativeRecordsUnchanged: true, credentialsPreserved: true, originalLifetimesRetained: true, publicSeatInspectionRecovered: true, lifecycleFenceReleaseMeasured: false };
+      report.unreadableManagerAcceptance = { actualSuspensionObserved: true, repairRefused: true, nativeRecordsUnchanged: true, credentialsPreserved: true, originalLifetimesRetained: true, publicSeatInspectionRecovered: true, lifecycleFenceReleaseMeasured: true };
     }
     if (repairCommand === 'unreadable-source') {
       await ownedService();
