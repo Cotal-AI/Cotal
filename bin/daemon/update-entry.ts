@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { registry, type Command } from "@cotal-ai/core";
-import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, updateManagerPin } from "@cotal-ai/cli/update";
+import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, updateManagerPin, repairInstallModes } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, resolveControlTarget } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
@@ -13,6 +13,7 @@ import { installedDaemonIdentity, preflightInstalledDaemon, reconcileMissingShel
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { cleanupExecutionStore } from "../execution-store.js";
+import { repairExecutionInstallModes } from "../execution-transaction.js";
 import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate, executionInstallRoot } from "./execution-update.js";
 import type { ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
 import { findMesh, logicalExecutionEntry, retainConnectorConfig, shellPath } from "@cotal-ai/workspace";
@@ -87,6 +88,7 @@ const composed: Command = { ...command, async run(args) {
   const runtime = { ...updateRuntime,
     ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {
       preflightExecution: preflightExecutionUpdate,
+      repairInstallModes: (root: string) => repairExecutionInstallModes(executionInstallRoot(), () => repairInstallModes(root)),
       executionGlobalRoot: () => dirname(executionInstallRoot()),
       prepareExecution: async (version: string, root: string) => {
         assertDaemonReachable();

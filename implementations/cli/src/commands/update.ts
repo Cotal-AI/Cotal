@@ -123,6 +123,8 @@ export interface UpdateRuntime {
   /** Refuse unsupported or unwritable execution destinations before any persistent writes. */
   preflightExecution?(): void;
   executionGlobalRoot?(): string;
+  /** Preserve the selected execution binding while hardening installer-owned modes. */
+  repairInstallModes?(root: string): number;
   /** Prepare a complete retained target under the held global root lock, without publication. */
   prepareExecution?(version: string, root: string): Promise<ExecutionReplacement>;
   /** Reopen only a journal already validated against this logical installation. */
@@ -178,7 +180,7 @@ export interface UpdateRuntime {
   generationWaited?: boolean;
 }
 
-export { installedCliVersion };
+export { installedCliVersion, repairInstallModes };
 
 export const updateRuntime: UpdateRuntime = {
   env: process.env,
@@ -278,7 +280,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   // reconcile is allowed to run.
   const install = launcherInstallRoot();
   for (const { what, root } of args.values.self === true && rt.prepareExecution ? [] : [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
-    const repaired = repairInstallModes(root);
+    const repaired = (rt.repairInstallModes ?? repairInstallModes)(root);
     if (repaired) rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
   }
   const code = await executeUpdate(Boolean(args.values.self), rt, args.values);
@@ -1313,6 +1315,8 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       return await repairReplacement(`installed daemon generation: ${message(error)}`, 1, true);
     }
   }
+  try { execution?.verify(targetVersion); }
+  catch (error) { return await repairReplacement(`selected execution after reconciliation: ${message(error)}`, 1, true); }
   rt.out("Removing completed update recovery snapshot");
   snapshot.discard();
   clearUpdateRecovery();
@@ -1330,6 +1334,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     if (result.stderr) rt.stderr(result.stderr);
     if (result.stdout) rt.stdout(result.stdout);
     if (result.status !== 0) return false;
+    execution?.verify(version);
     if (rt.env.COTAL_AUTO_UPDATE !== "1") {
       const recovery = readUpdateRecovery();
       if (recovery && recovery.phase !== "verified-ready") writeUpdateRecovery({ ...recovery, installed: version, phase: "verified-ready" });

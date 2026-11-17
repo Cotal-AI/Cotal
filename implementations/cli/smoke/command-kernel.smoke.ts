@@ -1371,8 +1371,10 @@ async function completionOut(positionals: string[]): Promise<string> {
       return { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: "0.13.2", dist: { tarball: "https://registry.example/package.tgz", integrity: "sha512-fixture" } }) };
     },
   });
-  fixture.rt.prepareExecution = async () => ({ entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: "/private/execution.json", async preflight() {}, publish() {}, restore() {}, verify() {} });
+  let selectedChecks = 0;
+  fixture.rt.prepareExecution = async () => ({ entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: "/private/execution.json", async preflight() {}, publish() {}, restore() {}, verify() { selectedChecks++; } });
   assert.equal(await executeUpdate(true, fixture.rt), 0);
+  assert.equal(selectedChecks, 2, "selected launcher is verified before and after target reconciliation");
   assert.ok(!fixture.events.some(event => event.startsWith("global:install:")), "npm must not reify the live package for staged publication");
   assert.ok(fixture.events.some(event => event.includes("installing cotal-ai@0.13.2 beside the running version; this 0.13.1 process stays loaded until the new version is verified")));
   assert.ok(fixture.events.some(event => /✓ new version installed and verified \(\d+\.\d s\)/.test(event)));
