@@ -400,7 +400,8 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean): P
           const checked = await checkDiscoveryDocument(response);
           if (checked.ok) {
             const { space, server, tlsRequired, userAuth } = checked.value;
-            const original = { ...current, space, server, tlsRequired, userAuth };
+            const original = { ...current, root: record.root, space, server, tlsRequired,
+              userAuth: { ...current.userAuth, ...userAuth } };
             if (trust(original) === record.trust) target = original;
           }
         }

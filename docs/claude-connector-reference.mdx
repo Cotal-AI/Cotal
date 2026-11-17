@@ -335,8 +335,9 @@ once. `cotal_connect` retries it too, and connects with a new identity once the 
 retirement. A restarted plugin server recovers the same way. New recovery records retain the original
 registration pins, so retirement still goes to that authority after the registered addresses change.
 After a registration change, an older issued record without those pins first reads discovery at its
-saved exchange address. Retirement uses that registration only when its trust hash matches the saved
-record. A record without issued material has no saved exchange address and is set aside. If discovery
+saved exchange address. Reconstruction keeps the saved root and local registration fields while
+replacing the public pins. Retirement uses that registration only when its full trust hash matches
+the saved record. A record without issued material has no saved exchange address and is set aside. If discovery
 is unavailable or the hash differs, or the original authority is
 unavailable or refuses sign-in, the record is set aside without confirming retirement.
 Set-aside records live at `app-identities/unconfirmed-<id>` in the private Cotal home, hold a

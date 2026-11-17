@@ -24,6 +24,7 @@ await import("@cotal-ai/auth");
 const { saveIdpSession, deleteIdpSession } = await import("../../auth/src/login.js");
 const { provisionUserApp, retireUserApp } = await import("../src/lib/app-user-identity.js");
 const { appIdentity } = await import("../src/commands/app-identity.js");
+const { remoteUserEntry } = await import("../src/commands/meshes-add.js");
 
 execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1",
   "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", join(home, "server.key"), "-out", join(home, "server.crt")], { stdio: "ignore" });
@@ -52,7 +53,7 @@ const contractGrant = (actor: string, s: Selection | null | undefined) => s
   : { scope: [], role: null, allowSubscribe: [], allowPublish: [eventChannel({ owner, actor })], subscribe: [] };
 const bundle = () => ({ space: SPACE, server: "nats://127.0.0.1:1", tlsRequired: false,
   userAuth: { provider: "cotal", idp: { url: `${base}/idp`, issuer: `${base}/idp`, audience: "cotal-cli" }, endpoints: { url: `${base}/registration/${SPACE}` } },
-  policy: { events: "required" }, sentinelCreds: "fixture-sentinel",
+  policy: { events: "required" as const }, sentinelCreds: "fixture-sentinel",
   cloudCapabilities: { conversationIdentity: { version: 1, url: `${base}/api/spaces/${SPACE}/conversation-identities` },
     conversationIdentitySelection: { version: 1 },
     ...(advertise === "absent" ? {} : { connectionApproval: { version: advertise === "old" ? 2 : 1 } }) },
@@ -504,10 +505,14 @@ try {
     failure = undefined;
   });
   await check("a legacy retiring identity recovers matching original pins and reconnects under the same name", async () => {
+    recordMesh(remoteUserEntry(SPACE, target.server, target.root, bundle(), false, false));
+    const registeredTarget = await resolveTargetOrThrow({ space: SPACE });
+    assert.equal(registeredTarget.userAuth?.remote, true);
+    assert(registeredTarget.userAuth?.sentinelCredsPath);
     const session = "session-moved";
-    const p = await pendingOf(provisionUserApp(target, "moved", session, true));
+    const p = await pendingOf(provisionUserApp(registeredTarget, "moved", session, true));
     decide(p.requestId, { approve: EMPTY });
-    const c = await connected(provisionUserApp(target, "moved", session, true));
+    const c = await connected(provisionUserApp(registeredTarget, "moved", session, true));
     const file = join(c.retire.dir, "identity.json");
     const record = JSON.parse(readFileSync(file, "utf8"));
     assert.deepEqual(Object.keys(record.retirementTarget).sort(), ["root", "server", "space", "tlsRequired", "userAuth"]);
@@ -520,10 +525,11 @@ try {
     moved.userAuth.idp.url = `${base}/moved-idp`;
     moved.userAuth.endpoints.url = `${base}/moved/registration/${SPACE}`;
     movedRegistration = moved;
-    recordMesh({ space: SPACE, server: moved.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
-      userAuth: moved.userAuth, policy: moved.policy as { events: "required" } });
+    recordMesh(remoteUserEntry(SPACE, moved.server, target.root, moved, false, false));
     saveIdpSession(home, moved.userAuth.idp.url, { token: "isolated-fixture-human-session", sub: "isolated-human", expiresAt: Math.floor(Date.now() / 1000) + 600 });
     const nextTarget = await resolveTargetOrThrow({ space: SPACE });
+    assert.equal(nextTarget.userAuth?.remote, true);
+    assert(nextTarget.userAuth?.sentinelCredsPath);
     const before = deletes;
     const next = await pendingOf(provisionUserApp(nextTarget, "moved", session, true));
     assert.equal(deletes, before + 1);
