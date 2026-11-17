@@ -222,7 +222,11 @@ Update reads the recorded mesh inventory without refreshing account space catalo
 login to a remote mesh does not block the software update. An unreachable registered broker does
 not block either update flow when no local Manager of this installation serves that space. The
 liveness check keeps the registration unchanged. Local manager continuity checks still
-apply before changing the installation.
+apply before changing the installation. If a local stack's project folder was moved or deleted,
+update stops its creation-pinned recorded members and releases the old registration, using the
+same recovery as `down --space <space> --yes`. It does not ask you to restore internal identity
+files. For a renamed folder, run `cotal space create <space> --adopt --root <folder>` and then
+`cotal up` there to keep its history.
 
 After `update --self` replaces the installation, its verified replacement waits up to 120 seconds
 for the recorded same-installation daemon to load the new version and its intended hosted Managers

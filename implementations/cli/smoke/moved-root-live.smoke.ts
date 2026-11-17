@@ -34,7 +34,7 @@ try {
   const created = cli(root, "space", "create", space, "--json");
   check("space create prepares a private project", created.status === 0);
   if (created.status !== 0) throw new Error("private project was not prepared");
-  const up = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
+  const up = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
   started = up.status === 0;
   if (!started) throw new Error("private stack did not start");
   const healthy = json(other, "status", "--space", space);
@@ -60,6 +60,13 @@ try {
   check("the selected space gets the same diagnosis without --space", selected.status === 0 && implicit.envelope.result?.selected?.connection === "root-gone");
   const override = json(other, "status", "--space", space, "--server", `nats://127.0.0.1:${await freePort()}`);
   check("an explicit different server keeps its own connection failure", override.envelope.result?.selected?.connection === "unreachable");
+  const update = cli(other, "update", "--self");
+  check("self-update recovers a moved stack without asking for internal identity files", update.stdout.includes("Stack stopped; its folder was gone") && !update.stderr.includes("running manager continuity check") && !update.stderr.includes("restore its identity") && !update.stderr.includes("Restore the seed"));
+  started = false;
+  const adopted = cli(moved, "space", "create", space, "--adopt");
+  check("the moved stack records can still be adopted after update", adopted.status === 0);
+  const stopped = cli(moved, "down", "--space", space, "--yes", "--json");
+  check("the recovered space has no running stack members", stopped.status === 0);
 } finally {
   if (started) {
     // Restore the root before stopping, so the ordinary stack stop owns every process it started.
