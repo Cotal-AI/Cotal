@@ -115,7 +115,7 @@ const composed: Command = { ...command, async run(args) {
     }
     retainConnectorConfig();
     retainedReconciliation = true;
-    for (const manager of managers) console.log(`Manager ${manager.instanceId} keeps its agents on the previous version and takes the installed version at its next restart. When their work is finished, restart from its recorded folder: cd ${shellPath(manager.root)} && cotal manager stop --with-agents --yes --space ${shellPath(manager.space)} && cotal up --space ${shellPath(manager.space)}`);
+    for (const manager of managers) console.log(`Manager ${manager.instanceId} keeps its agents on the previous version and takes the installed version at its next restart. When their work is finished, restart from its recorded folder: cd ${shellPath(manager.root)} && cotal down --with-agents --yes --space ${shellPath(manager.space)} && cotal up --space ${shellPath(manager.space)}`);
   }, isCurrent() {
     currentPackages = updateRuntime.isCurrent?.() === true;
     return currentPackages;

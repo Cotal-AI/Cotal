@@ -15,7 +15,7 @@ writeFileSync(entry, "// installed fixture\n");
 const module = pathToFileURL(join(import.meta.dirname, "../src/connector-retention.ts")).href;
 let passed = 0;
 try {
-  for (const scenario of ["retain", "no-identity", "invalid-selection", "linked-prefix"] as const) {
+  for (const scenario of ["retain", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root"] as const) {
     const config = join(root, scenario);
     mkdirSync(join(config, "cotal/seed/store/0.162.0"), { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "cotal/extensions/node_modules/old"), { recursive: true, mode: 0o700 });
@@ -23,7 +23,7 @@ try {
     writeFileSync(join(config, "cotal/extensions/node_modules/old/lazy.js"), "old graph\n");
     const script = `
 import assert from 'node:assert/strict';
-import {readFileSync,writeFileSync,symlinkSync,renameSync} from 'node:fs';
+import {readFileSync,writeFileSync,symlinkSync,renameSync,mkdirSync} from 'node:fs';
 import {join,dirname} from 'node:path';
 ${scenario === "no-identity" ? "" : `Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});`}
 const {connectorConfigDir,retainConnectorConfig}=await import(${JSON.stringify(module)});
@@ -39,6 +39,8 @@ writeFileSync(join(selected,'extensions/node_modules/old/lazy.js'),'new graph\\n
 assert.equal(readFileSync(join(original,'extensions/node_modules/old/lazy.js'),'utf8'),'old graph\\n');
 assert.equal(readFileSync(join(original,'seed/stamp.json'),'utf8'),JSON.stringify({generation:'0.162.0'}));
 ${scenario === "invalid-selection" ? `const record=join(dirname(selected),'selection.json');writeFileSync(record,JSON.stringify({v:1,entry:'wrong',version:'0.165.4',root:selected}),{mode:0o600});assert.throws(()=>connectorConfigDir(),/differs/);` : ""}
+${scenario === "linked-parent" ? `const parent=dirname(dirname(dirname(selected))),outside=join(original,'moved-install');renameSync(parent,outside);symlinkSync(outside,parent);assert.throws(()=>connectorConfigDir(),/private|link/);` : ""}
+${scenario === "stage-root" ? `const stage=join(original,'.extensions.stage-fixture','config');mkdirSync(join(stage,'cotal/extensions'),{recursive:true,mode:0o700});process.env.XDG_CONFIG_HOME=stage;assert.equal(connectorConfigDir(),join(stage,'cotal'));` : ""}
 `}
 console.log('PASS');
 `;

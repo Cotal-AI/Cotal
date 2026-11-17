@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { executionIdentity } from "./execution-identity.js";
@@ -25,17 +25,29 @@ function ownedDirectory(path: string): void {
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) throw new Error(`connector retention directory is not private: ${path}`);
 }
+function ownedAncestors(path: string): void {
+  const config = resolve(globalConfigDir());
+  for (let parent = path; parent !== config; parent = dirname(parent)) {
+    if (parent === dirname(parent)) throw new Error("connector retention escaped its config directory");
+    ownedDirectory(parent);
+  }
+}
 
 /** Connector and seed state selected for this installed execution. Legacy processes keep their original paths. */
 export function connectorConfigDir(): string {
   const id = identity();
   if (!id) return globalConfigDir();
+  if (existsSync(id.path)) ownedAncestors(id.path);
   const bytes = readLocalRecordSource(join(id.path, "selection.json"), 8192, true);
   if (!bytes) return globalConfigDir();
-  ownedDirectory(id.path);
+  ownedAncestors(id.path);
   const record = JSON.parse(bytes.toString("utf8")) as Selection;
   if (record.v !== 1 || record.entry !== id.entry || record.version !== id.version || record.root !== join(id.path, "cotal")) throw new Error("connector retention selection differs from this installation");
   ownedDirectory(record.root);
+  for (const name of ["seed", "extensions"]) {
+    const path = join(record.root, name);
+    if (existsSync(path) && (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink())) throw new Error(`retained connector state is not a real directory: ${path}`);
+  }
   return record.root;
 }
 
@@ -54,18 +66,20 @@ export function retainConnectorConfig(): string {
     releaseWriter = claimExtensionMutationLock();
     if (connectorConfigDir() !== current) return connectorConfigDir();
     mkdirSync(id.path, { recursive: true, mode: 0o700 });
-    for (let path = id.path; path !== resolve(globalConfigDir()); path = dirname(path)) ownedDirectory(path);
+    ownedAncestors(id.path);
     const root = join(id.path, "cotal");
-    mkdirSync(root, { mode: 0o700, recursive: true });
-    ownedDirectory(root);
-    for (const name of ["seed", "extensions"]) {
-      const source = join(current, name), destination = join(root, name);
-      if (!existsSync(source)) continue;
-      const stat = lstatSync(source);
-      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`cannot retain non-directory connector state: ${source}`);
-      if (existsSync(destination)) throw new Error(`unfinished retained connector state requires inspection: ${destination}`);
-      cpSync(source, destination, { recursive: true, verbatimSymlinks: true, filter: path => !/reconcile\.(?:lock|child\.json)/.test(path.split("/").at(-1)!) });
-    }
+    if (existsSync(root)) throw new Error(`unfinished retained connector state requires inspection: ${root}`);
+    const staging = mkdtempSync(join(id.path, ".preparing-"));
+    try {
+      for (const name of ["seed", "extensions"]) {
+        const source = join(current, name), destination = join(staging, name);
+        if (!existsSync(source)) continue;
+        const stat = lstatSync(source);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`cannot retain non-directory connector state: ${source}`);
+        cpSync(source, destination, { recursive: true, verbatimSymlinks: true, filter: path => !/^reconcile\.(?:lock(?:\..*)?|child\.json)$/.test(path.split("/").at(-1)!) });
+      }
+      renameSync(staging, root);
+    } finally { if (existsSync(staging)) rmSync(staging, { recursive: true }); }
     if (realpathSync(root) !== root) throw new Error("retained connector state resolved through a link");
     const record: Selection = { v: 1, entry: id.entry, version: id.version, root };
     const temporary = join(id.path, `.selection-${randomBytes(8).toString("hex")}`);
