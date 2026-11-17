@@ -421,6 +421,9 @@ It performs no install, reconcile or process restart and takes no mesh selection
 afterwards, no log files and no npm update notifier, so it leaves nothing in npm's cache, log
 directory or notifier stamp. Missing registry data or an unreadable extension inventory remains
 unknown or partial, never an empty successful check.
+If the extension manifest is corrupt, the check still reports the running and registry versions,
+leaves the manifest unchanged and exits 4. JSON reports `extensions: null`, partial completeness
+and the `EXTENSION_INVENTORY_UNREADABLE` warning.
 
 The report compares first-party recorded versions with the running CLI. It does not inspect
 package contents, signatures or loaded process generations. `cotal update` and `update --self`
