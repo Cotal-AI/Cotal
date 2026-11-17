@@ -1,5 +1,23 @@
 # @cotal-ai/cli
 
+## 0.165.3
+
+### Patch Changes
+
+- ac95cec: Provision bare joins for durable channel membership instead of retrying a missing read grant.
+- 070a882: `cotal doctor auth --fix` in the root of a space registered as open no longer refuses `AUTH_REQUIRED` with a next step that names the command that just failed. Like `cotal doctor auth` there, it says the space is open and issues no credentials, so there are none to check, and exits 0 as a no-op; its JSON records the repair as requested and not attempted.
+- e67578a: `cotal up --runtime ""` and a blank `--runtime` refuse `USAGE_INVALID`, exit 1, before anything is started or written. Before, an empty value, as an unset variable gives, started the stack on the default runtime.
+- 5d57737: A broker-only start killed after it recorded its broker's pid and before it registered its space no longer leaves a broker that `up` and `down` both refuse. The next `up` refuses `CONFLICT` with that broker's pid and `cotal down`, with or without `--server`, and `cotal down` stops it. Before, `up` called the broker "not started here", and an `up` without `--server` started a second broker on the same store at another port. `down` refused for lack of a registration.
+- 1c0b96f: A leading flag typed with a typographic dash, such as `cotal ––json status` or `cotal −−version`, is now refused naming the flag to type with hyphens, as the same word after the command word already was. It was reported as an unknown command, and `−−version` was offered the `version` command.
+- 2072e00: `cotal down delivery`, its `--dry-run` and a named set such as `cotal down manager delivery --dry-run` work after a whole-stack `down`. Before, they refused `TARGET_NOT_FOUND` for the `delivery.creds` file that the whole-stack stop removed. A stop and its preview now read only the adapter's declaration, not the launch options.
+- 21f46ae: Check application executables before foreground launch credentials are issued, and direct incomplete setup to dependency repair before startup.
+- 4f52a07: Let extension removal reclaim pidfiles whose recorded processes are proven dead while preserving records that may still belong to running processes.
+- 9620b5b: Keep the selected release and working Node runtime links when rerunning the shell installer.
+- 91b3067: Output redirected to a file that a file-size limit or a full disk cuts short now reports `✗ could not write to stdout` on stderr and exits 3. Before, Node's file stream counted a partial write as done, so `cotal docs cli-usage --json > report.json` under `ulimit -f 1` left 1024 bytes of invalid JSON and exited 0.
+- a4dd00e: `cotal update --self` no longer stops when a Manager for the selected hosted space runs on this machine from another Cotal installation. That Manager keeps its own files, so the update installs, reconciles and exits 0. Before, the update installed the new version, refused on that Manager and rolled back.
+- @cotal-ai/core@0.165.3
+  - @cotal-ai/workspace@0.165.3
+
 ## 0.165.2
 
 ### Patch Changes

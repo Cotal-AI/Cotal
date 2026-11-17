@@ -1,5 +1,11 @@
 # @cotal-ai/lang
 
+## 0.165.3
+
+### Patch Changes
+
+- 3b68b85: Preserve the tested element in workflow filter, find and findLast results when a predicate replaces or removes it.
+
 ## 0.165.2
 
 ### Patch Changes
