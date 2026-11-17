@@ -40,6 +40,7 @@ export interface CustodianLaunch {
   confirmBefore?: readonly import("./startup-confirm.js").StartupReply[];
   confirmReady?: readonly string[];
   confirmBlockers?: readonly import("./startup-confirm.js").StartupBlocker[];
+  confirmNotice?: string;
   /** Who started this custodian: the launcher's run marker, carried so a census can attribute an
    *  orphan to its run without walking `/proc/*\/cwd` (#1648). */
   run?: string;
@@ -94,7 +95,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   try {
     // Built before the child exists, so a prompt that cannot match starts nothing.
     if ((launch.confirmBefore?.length || launch.confirmReady?.length || launch.confirmBlockers?.length) && launch.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
-    confirmGate = launch.confirm === undefined ? undefined : new StartupConfirmGate(launch.confirm, launch.confirmBefore, launch.confirmReady, launch.confirmBlockers);
+    confirmGate = launch.confirm === undefined ? undefined : new StartupConfirmGate(launch.confirm, launch.confirmBefore, launch.confirmReady, launch.confirmBlockers, launch.confirmNotice);
     proc = pty.spawn(launch.command, launch.args, {
       name: "xterm-256color",
       cols: DEFAULT_COLS,
@@ -344,6 +345,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
       }
     }
     confirmGate?.disarm();
+    for (const sock of controllers) send(sock, { event: "startup", outcome: confirmGate?.outcome ?? "pending" });
     for (const sock of controllers) send(sock, { event: "exit", exit });
     resolveWaiters();
     settleTerminal();
@@ -365,7 +367,13 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   proc.onExit(({ exitCode, signal }) => {
     markExited({ code: exitCode, ...(signal === undefined ? {} : { signal }) });
   });
+  let lastStartupOutcome = confirmGate?.outcome ?? "pending";
   reap = setInterval(() => {
+    const outcome = confirmGate?.outcome ?? "pending";
+    if (outcome !== lastStartupOutcome) {
+      lastStartupOutcome = outcome;
+      for (const sock of controllers) send(sock, { event: "startup", outcome });
+    }
     if (!alive) {
       if (reap) clearInterval(reap);
       reap = undefined;
@@ -520,6 +528,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
           rows,
           status: alive ? "running" : "exited",
           ...(exit ? { exit } : {}),
+          startupOutcome: confirmGate?.outcome ?? "pending",
         });
         if (!alive) send(sock, { event: "exit", ...(exit ? { exit } : {}) });
         return;

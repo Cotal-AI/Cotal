@@ -11,7 +11,7 @@ import type { AgentHandle, Runtime } from "@cotal-ai/core";
 import { LegacyPtyRuntime } from "../src/runtime/pty.js";
 import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import { TmuxRuntime } from "../../../extensions/tmux/src/runtime.js";
-import { available as tmuxAvailable } from "../../../extensions/tmux/src/driver.js";
+import { available as tmuxAvailable, listWindows } from "../../../extensions/tmux/src/driver.js";
 import { CLAUDE_READY_TEXTS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "../../../extensions/connector-claude-code/src/trust.js";
 
 const counted = countedAssert(nodeAssert);
@@ -37,10 +37,9 @@ try {
   else console.log(`SKIP custody: Linux-only seat transport (host: ${process.platform})`);
   if (tmuxAvailable()) runtimes.push(["tmux", new TmuxRuntime(session)]);
   else console.log("SKIP tmux: tmux is not installed; pane startup is not exercised");
-  // The notice modes declare Claude's registration notice. The custodial runtime reports no
-  // outcome and spawns no new seat, so it is not given them.
+  // Every production startup path must carry the connector's required notice and outcome.
   const NOTICE_MODES = ["notice", "notice-early", "silent", "ready-notice"];
-  const cases = runtimes.flatMap(([runtimeName, runtime]) => ["normal", "trusted", "missing", "ready", "ready-trusted", "unknown", ...(runtimeName === "custody" ? [] : NOTICE_MODES)].map((mode) => {
+  const cases = runtimes.flatMap(([runtimeName, runtime]) => ["normal", "trusted", "missing", "ready", "ready-trusted", "unknown", ...NOTICE_MODES].map((mode) => {
     if (runtimeName === "tmux" && !ownsTmux) {
       assert.throws(() => execFileSync("tmux", ["has-session", "-t", session], { stdio: "ignore" }));
       ownsTmux = true;
@@ -90,8 +89,7 @@ try {
       }
       // A runtime that declares it reports the outcome reports the one from the read that ended the watch.
       const outcome = test.handle.startupOutcome?.();
-      if (test.name.startsWith("custody-")) assert.equal(outcome, undefined, `${test.name}: the custodial runtime claims no outcome`);
-      else assert.equal(outcome, {
+      assert.equal(outcome, {
         normal: "confirmed", trusted: "confirmed", missing: "failed", ready: "ready", "ready-trusted": "ready", unknown: "failed",
         notice: "confirmed", "notice-early": "confirmed", silent: "failed", "ready-notice": "ready",
       }[test.mode], `${test.name}: the startup outcome`);
@@ -104,6 +102,6 @@ try {
 } finally {
   for (const handle of handles) handle.stop({ graceful: false });
   await Promise.all(handles.map((h) => h.waitForExit?.()));
-  if (ownsTmux) execFileSync("tmux", ["kill-session", "-t", session], { stdio: "ignore" });
+  if (ownsTmux) assert.deepEqual(listWindows(session), [], "all owned panes and their session ended");
   rmSync(root, { recursive: true, force: true });
 }

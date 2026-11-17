@@ -11,9 +11,7 @@ import {
   type RuntimeReference,
   rejectionText,
 } from "@cotal-ai/core";
-import { CustodialPtyRuntime } from "./custodial-pty.js";
-import { LegacyPtyRuntime } from "./pty.js";
-import { unsupportedTransport } from "@cotal-ai/seat";
+import { PtyRuntime } from "./pty.js";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";
 
@@ -96,29 +94,6 @@ export async function requireRuntimeReap(
   // of them did.
   if (evidence.outcome === "absent") throw new RuntimeReapUnproven(runtime.kind, reference);
   return evidence;
-}
-
-/**
- * The built-in `pty` runtime on every platform. It spawns in-process and never starts a custodian
- * (#1391). On Linux it still adopts and reaps seats that an earlier `CustodialPtyRuntime` launched,
- * so a manager can drain custody records left by a pre-repair manager. It has no `reserve`, so the
- * manager records no custody reference for a new spawn.
- */
-class PtyRuntime extends LegacyPtyRuntime {
-  private custodial?: CustodialPtyRuntime;
-
-  private legacyCustody(): CustodialPtyRuntime {
-    if (process.platform !== "linux") throw unsupportedTransport();
-    return (this.custodial ??= new CustodialPtyRuntime());
-  }
-
-  override adopt(reference: RuntimeReference): AgentHandle {
-    return this.legacyCustody().adopt(reference);
-  }
-
-  reap(reference: RuntimeReference): Promise<RuntimeReapEvidence> {
-    return this.legacyCustody().reap(reference);
-  }
 }
 
 /** How a manager picks its backend. `auto` is the deterministic default — always `pty`. External

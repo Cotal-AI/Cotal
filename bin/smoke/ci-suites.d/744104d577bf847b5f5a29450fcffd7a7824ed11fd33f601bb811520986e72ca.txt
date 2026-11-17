@@ -1,0 +1,2 @@
+# Linux default PTY custody survives a normal manager replacement and reaps on explicit agent stop.
+smoke:manager-pty-continuity

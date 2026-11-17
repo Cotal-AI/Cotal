@@ -136,9 +136,10 @@ A successor needs a durable custody reference and the runtime's work-closure ope
 seat-process reap is insufficient. Missing, failed or timed-out proof refuses recovery and retires
 the seat without claiming its tools or remote effects were cancelled. Built-in `pty` provides no
 work-closure guarantee and refuses new `supervise` requests before launch. Its older supervised
-records cannot authorize recovery without proof. Ordinary launches remain available. A seat on a runtime that can adopt a live seat (tmux) and still running when the successor
-starts is adopted in place: the successor checks that the recorded tmux server, window and pane are
-the ones the slot names and that the pane's process still runs, then manages that seat again under
+records cannot authorize recovery without proof. Ordinary launches remain available. A seat on a runtime that can adopt a live seat (Linux pty or tmux) and still running when the successor
+starts is adopted in place. Linux pty checks the recorded custodian's start identity and exit evidence.
+tmux checks that the recorded server, window and pane are the ones the slot names and that the pane's process still runs.
+The successor manages that seat again under
 its existing credential, without a restart. Both paths read the record the manager writes to
 `.cotal/seat-records/<space>/<name>.json` once a supervised or adoptable seat is ready, rewrites at
 every restart and credential renewal, and removes when the seat is freed. A spent budget, a missing

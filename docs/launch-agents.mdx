@@ -96,7 +96,8 @@ Hermes, Jcode, and pi expose no option mechanism and refuse them.
 
 ## Choose a runtime [#choose-a-runtime]
 
-The built-in `pty` runtime runs seats inside the manager process on every supported platform.
+On Linux, the built-in `pty` runtime gives each seat a detached custodian, so the PTY can outlive its manager.
+On macOS and Windows, seats remain inside the manager process and rolling custody is unsupported.
 To use an extension runtime, install its provider and select it when configuring the manager.
 For example, `cotal ext add @cotal-ai/orca` installs the Orca provider.
 Other providers include `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`.
@@ -109,11 +110,14 @@ A session that was already there keeps its other windows.
 On Linux, a moved socket belonging to a live tmux server makes the session check fail, even when its path contains repeated whitespace.
 Cotal leaves that server's sessions in place.
 
-<Callout type="warn" title="Stopping the manager stops its pty seats">
+<Callout type="warn" title="Manager replacement and seat lifetime">
 
-The built-in `pty` runtime has no hot update.
-Replacing or stopping its manager closes and deprovisions its seats, including during bare `cotal down`.
-A stopping manager refuses new spawns and waits for already accepted launches before stopping those seats too.
+On Linux, a normal manager stop releases its custodied seats for a successor to adopt.
+Terminal attachments reconnect through the successor. An explicit stop of the agents still ends them.
+A custodian with no connected manager stops its child after ten minutes, so restart the manager within that window.
+On macOS and Windows, replacing or stopping the manager still closes its in-process PTYs.
+Seats launched by an older in-process Linux manager need one maintenance stop before they gain custody.
+A stopping manager refuses new spawns and waits for already accepted launches before applying its stop policy.
 
 </Callout>
 
@@ -125,8 +129,7 @@ Set `COTAL_DETACH_KEY=ctrl-<char>` if that conflicts with the application's keyb
 For a pty agent that exits on its own, the manager's `seat reaped:` log line includes its exit code and signal, when applicable.
 If the child printed a connector line beginning with `[cotal-<name>]` or `[cotal-<name>/<part>]`, the report includes its last such line, limited to 240 characters.
 
-On Linux, a manager can adopt and reap seats that an older manager left under detached per-seat custodians.
-It does not launch new custodians.
+On Linux, a manager launches, adopts and reaps seats under detached per-seat custodians.
 A custodian exits a few seconds after its agent ends.
 Use `cotal manager seats` to list those custodians and `cotal manager seats --drain` to retire only ones whose agents have exited.
 A custodian keeps exit evidence beside the custody record, so a successor manager can report the same outcome.

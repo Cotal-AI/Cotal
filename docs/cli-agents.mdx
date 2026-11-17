@@ -634,8 +634,7 @@ cotal manager seats [--drain [--yes|--dry-run]] [--json|--plain]
 asks first on a terminal and needs `--yes` in a script, as [Manager maintenance](cli-maintenance.mdx#manager-maintenance)
 describes.
 
-The pty runtime used to start a detached custodian process for every Linux seat. It now spawns
-in-process, but custodians that an earlier manager started keep running, and one whose agent has
+The pty runtime starts a detached custodian process for every Linux seat. One whose agent has
 exited stays resident while a manager still holds its connection. This command lists the custody
 records under `COTAL_SEAT_ROOT` (default `~/.cotal/seats`), one line per seat:
 

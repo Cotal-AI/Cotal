@@ -49,9 +49,9 @@ writeFileSync(
   // not a valid specifier: node rejects `D:\...` with ERR_UNSUPPORTED_ESM_URL_SCHEME ("Received
   // protocol 'd:'") before the module loads, so the owner died with no record written. Same idiom
   // spawn-action.smoke.ts uses for the same reason.
-  `import { PtyRuntime } from ${JSON.stringify(pathToFileURL(join(managerRoot, "dist", "runtime", "pty.js")).href)};\n` +
+  `import { LegacyPtyRuntime } from ${JSON.stringify(pathToFileURL(join(managerRoot, "dist", "runtime", "pty.js")).href)};\n` +
     `import { writeFileSync } from "node:fs";\n` +
-    `const handle = new PtyRuntime().spawn("counter", { command: process.execPath, args: ["-e", ${JSON.stringify(childProgram)}], env: { ...${JSON.stringify(launchEnv())}, PIDFILE: process.env.PIDFILE ?? "" } }, ${JSON.stringify(repo)});\n` +
+    `const handle = new LegacyPtyRuntime().spawn("counter", { command: process.execPath, args: ["-e", ${JSON.stringify(childProgram)}], env: { ...${JSON.stringify(launchEnv())}, PIDFILE: process.env.PIDFILE ?? "" } }, ${JSON.stringify(repo)});\n` +
     // The record waits for the child's first output: ConPTY creates the child after spawn returns,
     // and the pid a manager reads then must name it.
     `const off = handle.attach().onData(() => { off(); writeFileSync(process.env.READY ?? "", JSON.stringify({ managerPid: process.pid, childPid: handle.pid, hasReference: handle.reference !== undefined })); });\n` +

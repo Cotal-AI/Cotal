@@ -103,6 +103,7 @@ export type SeatExit = { code?: number; signal?: number; diagnostic?: string };
 
 export type ServerEvent =
   | { event: "output"; sub: number; data: string }
+  | { event: "startup"; outcome: import("./startup-confirm.js").StartupOutcome }
   // `exit` is the status the custodian reaped, so a reader learns how the child ended from the
   // event itself rather than only from a later hello or wait-exit round trip.
   | { event: "exit"; sub?: number; exit?: SeatExit };
@@ -118,6 +119,7 @@ export type ServerReply =
       rows: number;
       status: "running" | "exited";
       exit?: SeatExit;
+      startupOutcome?: import("./startup-confirm.js").StartupOutcome;
     }
   | { id: number; ok: true; op: "snapshot"; data: string; cols: number; rows: number }
   | { id: number; ok: true; op: "subscribe-output"; sub: number }

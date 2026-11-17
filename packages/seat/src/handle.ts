@@ -1,6 +1,7 @@
 import { SeatClient } from "./client.js";
 import type { SeatRecord } from "./record.js";
 import { DEFAULT_COLS, DEFAULT_ROWS, type SeatExit } from "./protocol.js";
+import type { StartupOutcome } from "./startup-confirm.js";
 
 export interface SeatAttachSession {
   readonly cols: number;
@@ -20,6 +21,7 @@ export interface SeatHandle {
   readonly record: SeatRecord;
   status(): "running" | "exited";
   exitInfo(): SeatExit | undefined;
+  startupOutcome(): StartupOutcome;
   stop(opts?: { graceful?: boolean }): void;
   release(): void;
   waitForExit(): Promise<void>;
@@ -78,6 +80,7 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
     record,
     status: () => status,
     exitInfo: () => exit ?? client.exitInfo(),
+    startupOutcome: () => client.startupOutcome(),
     stop: (opts) => {
       later((c) => c.stop(opts?.graceful === false ? "hard" : "graceful"));
     },

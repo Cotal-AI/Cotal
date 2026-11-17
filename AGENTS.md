@@ -108,10 +108,9 @@ program with no broker. Depends on nothing else in the repo; it knows about effe
 detached custodian process per seat. The custodian owns the `node-pty` object, child relationship,
 screen mirror, and exit observation. A manager worker adopts a proxy handle over a permissioned
 Unix socket. Depends on nothing else in the repo; it knows about host processes, not about NATS.
-Custody is Linux only; its host primitives for the daemon endpoint build on Linux, macOS and Windows. The built-in `pty` runtime does not
-launch through it: the manager spawns pty seats in-process on every platform, and uses this
-package only to adopt and reap seats that an earlier manager left under a custodian (on Linux;
-elsewhere `adopt` throws).
+Custody is Linux only; its host primitives for the daemon endpoint build on Linux, macOS and Windows.
+The built-in `pty` runtime launches, adopts and reaps Linux seats through this package.
+On macOS and Windows the manager still spawns PTYs in-process and adoption throws.
 - `**@cotal-ai/runtime**` (`implementations/runtime`): the host that runs a cotal-lang program on
 the mesh: the mesh handler binding the effect interface onto the real planes, the durable step
 journal, and the `RunDriver` the manager daemon hosts. Depends on core and lang.

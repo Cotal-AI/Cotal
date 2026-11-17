@@ -14,12 +14,12 @@ import {
 } from "@cotal-ai/seat";
 import { preparePtyLaunch } from "./windows-launch.js";
 import { WindowsSeatStop } from "./windows-stop.js";
+import { CustodialPtyRuntime } from "./custodial-pty.js";
 
 /**
  * In-process node-pty ownership. The worker is the child's parent, so killing
- * the worker kills the seat. `createRuntime("pty")` spawns here on every
- * platform; on Linux its subclass still adopts seats an earlier custodial
- * manager launched. This class's own `adopt` throws.
+ * the worker kills the seat. Used by the built-in runtime on macOS and Windows,
+ * where rolling custody is unsupported. This class's own `adopt` throws.
  */
 export class LegacyPtyRuntime implements Runtime {
   readonly kind = "pty" as const;
@@ -268,5 +268,7 @@ export class LegacyPtyRuntime implements Runtime {
   }
 }
 
-/** @deprecated Use LegacyPtyRuntime. Kept so existing isolated fixtures keep compiling. */
-export { LegacyPtyRuntime as PtyRuntime };
+/** Linux seats outlive their manager under a custodian. Other platforms retain in-process
+ *  ownership and refuse adoption until their custody transport is qualified. A Linux launch
+ *  failure propagates, never retries through the destructive in-process runtime. */
+export const PtyRuntime = process.platform === "linux" ? CustodialPtyRuntime : LegacyPtyRuntime;

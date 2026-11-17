@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { createRuntime, requireRuntimeAdopt } from "../src/index.js";
 import { MANAGER_STATUS_CONTRACT } from "../src/manager-service-contract.js";
 import { LegacyPtyRuntime } from "../src/runtime/pty.js";
-import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import type { Runtime } from "@cotal-ai/core";
 
 let pass = 0;
@@ -125,7 +124,7 @@ if (process.platform !== "linux") {
 } else {
   const root = mkdtempSync(join(tmpdir(), "cotal-custodial-"));
   process.env.COTAL_SEAT_ROOT = root;
-  const rt = new CustodialPtyRuntime();
+  const rt = createRuntime("pty", "cotal-smoke");
   const h = rt.spawn("counter", { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], env: { PATH: process.env.PATH ?? "" } }, process.cwd());
   check("spawned handle exposes a durable reference", h.reference !== undefined && h.reference.kind === "pty", h.reference);
   const adopted = requireRuntimeAdopt(rt, h.reference!);
@@ -180,6 +179,7 @@ setInterval(() => {}, 1_000);
     check(`${name}: the declared prompt appears`, await until(() => output.includes("to confirm"), delayMs + 3_000), output);
     check(`${name}: the seat reaches normal input`, await until(() => output.includes("NORMAL INPUT"), 3_000), output);
     check(`${name}: exactly one Enter reaches the child`, file(sink) === "\r", file(sink));
+    check(`${name}: confirmation outcome reaches the manager proxy`, await until(() => handle.startupOutcome?.() === "confirmed", 1_000));
     handle.stop({ graceful: false });
     await handle.waitForExit?.();
     off();
@@ -188,6 +188,40 @@ setInterval(() => {}, 1_000);
 
   await confirmationCell("early prompt", 50);
   await confirmationCell("late prompt after the old five-second window", 5_500);
+
+  const noticeInput = join(root, "notice.input");
+  const noticeGate = join(root, "notice.ready");
+  const noticeChild = join(root, "notice-child.cjs");
+  writeFileSync(noticeChild, `const fs = require("node:fs");
+process.stdin.setRawMode(true);
+process.stdin.resume();
+process.stdout.write("Enter to confirm");
+process.stdin.on("data", data => {
+  fs.appendFileSync(process.env.SINK, data);
+  process.stdout.write("\\x1b[2J\\x1b[Hwaiting for notice");
+});
+const timer = setInterval(() => {
+  if (fs.existsSync(process.env.NOTICE_GATE)) {
+    clearInterval(timer);
+    process.stdout.write("\\x1b[2J\\x1b[Hrequired startup notice");
+  }
+}, 25);
+setInterval(()=>{},1000);
+`);
+  const notice = rt.spawn("required notice", {
+    command: process.execPath, args: [noticeChild],
+    env: { PATH: process.env.PATH ?? "", SINK: noticeInput, NOTICE_GATE: noticeGate },
+    confirm: "Enter to confirm", confirmNotice: "required startup notice",
+  }, process.cwd());
+  await notice.attach().backlog();
+  check("notice: native confirmation receives one Enter", await until(() => file(noticeInput) === "\r", 3_000));
+  check("notice: proxy stays pending before the required notice", notice.startupOutcome?.() === "pending");
+  writeFileSync(noticeGate, "ready");
+  check("notice: only the observed notice confirms startup", await until(() => notice.startupOutcome?.() === "confirmed", 3_000));
+  check("notice: no second Enter reaches normal input", file(noticeInput) === "\r");
+  notice.stop({ graceful: false });
+  await notice.waitForExit?.();
+  drop(notice);
 
   const noPromptSink = join(root, "no-prompt.input");
   const noPrompt = rt.spawn("no prompt", {
@@ -212,6 +246,7 @@ setInterval(() => {}, 1_000);
   let unmatchedOutput = "";
   const unmatchedOff = unmatchedSession.onData((chunk) => { unmatchedOutput += chunk.toString("utf8"); });
   await unmatched.waitForExit?.();
+  check("unmatched prompt: failed startup outcome precedes exit proof", unmatched.startupOutcome?.() === "failed");
   check(
     "unmatched prompt: the seat fails bounded with the connector-owned prompt named",
     unmatchedOutput.includes('startup confirmation failed: prompt "Enter to confirm" did not appear within 15000ms'),

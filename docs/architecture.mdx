@@ -95,7 +95,7 @@ A client can embed core without adopting that workstation state.
 Two packages are independent of core and NATS. `@cotal-ai/lang` implements the workflow language,
 interpreter, and journal. `@cotal-ai/seat` supplies detached PTY custody and identity-checked adoption
 and reaping on Linux. Its other-platform operations throw.
-The manager's built-in PTY runtime normally owns seats in-process.
+The manager's built-in PTY runtime uses detached custody on Linux and owns seats in-process on macOS and Windows.
 See [process supervision](cli-processes.mdx#supervise) for successor recovery.
 
 Extensions peer-depend on the host's core instance and self-register when imported.

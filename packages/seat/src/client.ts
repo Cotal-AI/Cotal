@@ -9,6 +9,7 @@ import {
   type StopMode,
 } from "./protocol.js";
 import type { SeatRecord } from "./record.js";
+import type { StartupOutcome } from "./startup-confirm.js";
 
 export interface HelloInfo {
   name: string;
@@ -38,6 +39,7 @@ export class SeatClient {
   private pendingExit = false;
   private pendingExitInfo: SeatExit | undefined;
   private closed = false;
+  private startup: StartupOutcome = "pending";
 
   constructor(private readonly record: SeatRecord) {}
 
@@ -71,6 +73,9 @@ export class SeatClient {
     });
     const reply = await this.request({ op: "hello", token: this.record.token });
     if (!reply.ok || reply.op !== "hello") throw new Error(reply.ok ? "unexpected hello reply" : reply.error);
+    // A startup event may follow hello in the same socket read. Do not overwrite that newer
+    // outcome with the hello snapshot when this promise resumes.
+    if (this.startup === "pending") this.startup = reply.startupOutcome ?? "pending";
     this.helloInfo = {
       name: reply.name,
       pid: reply.pid,
@@ -85,6 +90,10 @@ export class SeatClient {
   info(): HelloInfo {
     if (!this.helloInfo) throw new Error("seat client is not connected");
     return this.helloInfo;
+  }
+
+  startupOutcome(): StartupOutcome {
+    return this.startup;
   }
 
   async snapshot(): Promise<{ data: string; cols: number; rows: number }> {
@@ -190,6 +199,10 @@ export class SeatClient {
   private dispatch(raw: unknown): void {
     const msg = raw as ServerReply | ServerEvent;
     if ("event" in msg) {
+      if (msg.event === "startup") {
+        this.startup = msg.outcome;
+        return;
+      }
       if (msg.event === "output") {
         const fn = this.output.get(msg.sub) ?? this.pendingSubscribe;
         if (fn) fn(Buffer.from(msg.data, "base64"));

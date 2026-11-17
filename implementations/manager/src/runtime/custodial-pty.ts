@@ -13,14 +13,14 @@ export function custodyRoot(): string {
 /**
  * Linux custodial pty: a one-shot launcher starts a detached per-seat
  * custodian, then this process holds only a proxy AgentHandle.
- * `createRuntime("pty")` no longer spawns through this class (#1391); it uses
- * it only to adopt and reap seats a pre-repair manager left running. Spawn and
+ * The built-in `pty` runtime uses this class on Linux. Spawn and
  * adopt throw the named transport error off Linux.
  */
 export class CustodialPtyRuntime implements CustodialRuntime {
   readonly kind = "pty" as const;
   readonly streamsTerminal = true;
   readonly supportsRelease = true;
+  readonly reportsStartupOutcome = true;
   /**
    * Private cache of active SeatRecords keyed by custody reference id, populated on spawn and adopt
    * and pruned on reap or release. Custody records are retained on disk across seat exit so that
@@ -56,7 +56,7 @@ export class CustodialPtyRuntime implements CustodialRuntime {
     const rec = launchSeat({
       root: this.root,
       name,
-      spec: { command: spec.command, args: spec.args, env: spec.env ?? {}, confirm: spec.confirm, confirmBefore: spec.confirmBefore, confirmReady: spec.confirmReady, confirmBlockers: spec.confirmBlockers, artifacts: spec.artifacts },
+      spec: { command: spec.command, args: spec.args, env: spec.env ?? {}, confirm: spec.confirm, confirmBefore: spec.confirmBefore, confirmReady: spec.confirmReady, confirmBlockers: spec.confirmBlockers, confirmNotice: spec.confirmNotice, artifacts: spec.artifacts },
       cwd,
       ...(reference ? { id: reference.id } : {}),
     });
