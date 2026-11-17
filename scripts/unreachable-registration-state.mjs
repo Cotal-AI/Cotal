@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {createConnection,createServer} from 'node:net';
-import {mkdirSync,readFileSync,readdirSync,renameSync} from 'node:fs';
+import {mkdirSync,readFileSync,readdirSync,renameSync,existsSync,realpathSync} from 'node:fs';
+import {inspectInstalledUpdateRoute} from './daemon-cell-diagnostics.mjs';
 import {join} from 'node:path';
 
 const hash=path=>createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -17,7 +18,7 @@ async function unreachable(port){
   const socket=createConnection({host:'127.0.0.1',port});
   socket.setTimeout(2000,()=>{socket.destroy();reject(new Error('loopback probe timed out'));});
   socket.once('connect',()=>{socket.destroy();reject(new Error('fixture broker port unexpectedly answers'));});
-  socket.once('error',error=>{socket.destroy();if(error.code==='ECONNREFUSED')done(true);else reject(error);});
+  socket.once('error',error=>{socket.destroy();if(error.code==='ECONNREFUSED')done({host:'127.0.0.1',port,code:error.code,observedAt:new Date().toISOString()});else reject(error);});
  });
 }
 
@@ -37,7 +38,7 @@ export async function prepareUnreachableRegistration(context){
   mayRun=true;
   await ok('start real local broker without Manager',['up','--root',localRoot,'--space',local,'--open','--no-manager','--server',`nats://127.0.0.1:${localPort}`,'--detach']);
   const stopped=await down();assert.equal(stopped.exit,0,stopped.stdout+stopped.stderr);mayRun=false;
-  await unreachable(localPort);await unreachable(gonePort);
+  const probesBefore=[await unreachable(localPort),await unreachable(gonePort)];
   await ok('register unreachable broker through public CLI',['space','add',gone,'--server',`nats://127.0.0.1:${gonePort}`,'--root',goneRoot,'--mode','open','--force','--yes']);
   assert.deepEqual(readdirSync(join(project,'.cotal')),[],'only the empty harness marker may move out of the command root');
   renameSync(join(project,'.cotal'),join(root,'empty-harness-marker'));
@@ -49,10 +50,13 @@ export async function prepareUnreachableRegistration(context){
   assert.equal(records.length,1);assert.equal(records[0].space,gone);assert.equal(records[0].offline,true);
   const journal=join(localRoot,'.cotal/stack-controller.json');
   const before={registry:registry.stdout,journalSha256:hash(journal)};
-  report.unreachableRegistration={local,gone,localRoot,goneRoot,commandRoot:project,localPort,gonePort,before,harnessSha256:hash(import.meta.filename)};
+  const routeBefore=inspectInstalledUpdateRoute(pkg);
+  const commandContext={cwd:realpathSync(project),projectMarker:existsSync(join(project,'.cotal')),selected:JSON.parse(selection.stdout).result.current,observedAt:new Date().toISOString()};
+  report.unreachableRegistration={local,gone,localRoot,goneRoot,commandRoot:project,localPort,gonePort,before,probesBefore,commandContext,routeBefore,harnessSha256:hash(import.meta.filename)};
   check('stopped local stack and unreachable registration prepared through public CLI',true,before);
   return async()=>{
-   await unreachable(localPort);await unreachable(gonePort);
+   report.unreachableRegistration.probesAfter=[await unreachable(localPort),await unreachable(gonePort)];
+   report.unreachableRegistration.routeAfter=inspectInstalledUpdateRoute(pkg);
    const after=await ok('registry after unreachable update',['meshes','--json']);
    assert.equal(after.stdout,before.registry,'update must retain the unrelated offline registration');
    assert.equal(hash(journal),before.journalSha256,'update must leave the stopped stack journal untouched');

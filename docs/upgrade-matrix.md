@@ -71,6 +71,8 @@ product coordinates:
 The unreachable-registration cells run from a folder with no project marker and clear the selected
 space before updating. They create, start and stop a separate local stack through the public CLI,
 then register a dead loopback broker with `space add --force`. Both ports must refuse connections.
+The report retains their timed refusal observations, the neutral command folder and the installed route before and after.
+A passing update must publish a newer selected target through the staged route, with validated descriptor and inventory hashes.
 The registration and stopped stack journal must remain unchanged. Public 0.165.3 to 0.165.4 refuses
 at staged admission as tracked in [#7224](https://github.com/Cotal-AI/Cotal/issues/7224).
 The report labels that measured refusal as known red, but it remains failed in both acceptance fields.
