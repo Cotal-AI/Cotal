@@ -402,8 +402,8 @@ try {
   // a connector's agent, which listens for it.
   const helperErrors: string[] = [];
   helperEp.on("error", (e: unknown) => { helperErrors.push(String((e as Error).message).slice(0, 200)); });
-  await toolAgent.start();
-  await toolAgent.waitUntilConnected();
+  // start() retries in the background, so the readiness deadline must run alongside it.
+  await Promise.race([toolAgent.start(), toolAgent.waitUntilConnected()]);
   const tools = cotalToolSpecs(toolConfig, "smoke");
   const tool = async (name: "cotal_describe" | "cotal_invoke", args: Record<string, unknown>) => {
     const r = await tools.find((t) => t.name === name)!.run(toolAgent, toolConfig, args);
