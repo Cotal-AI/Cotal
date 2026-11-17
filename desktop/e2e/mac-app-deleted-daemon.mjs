@@ -268,10 +268,11 @@ try {
           assert.equal(live.process.stdout, held.process.stdout);
         }
       } finally {
-        const held = await identity(manager.pid, 'resume only original Manager lifetime');
-        assert.equal(held.process.stdout, managerBefore.process.stdout, 'never signal a replacement Manager');
+        // Resume before diagnostic subprocesses: their failure must not leave the owned Manager suspended.
         assert.equal(processBirth(manager.pid), managerBefore.birth, 'native Manager lifetime must match immediately before CONT');
         process.kill(manager.pid, 'SIGCONT');
+        const held = await identity(manager.pid, 'original Manager lifetime after resume');
+        assert.equal(held.process.stdout, managerBefore.process.stdout, 'never accept a replacement Manager');
       }
       let answered = false;
       const recoveryDeadline = Date.now() + 20000;
@@ -286,11 +287,11 @@ try {
         }
         await delay(250);
       }
-      assert(answered, 'same Manager must accept public control after resuming; no retained fence may dead-end it');
+      assert(answered, 'same Manager must answer instance-pinned public seat inspection after resuming');
       assert.equal(readFileSync(plist, 'utf8'), sourceBefore);
       assert.equal(readFileSync(receiptPath, 'utf8'), receiptBefore);
       await ownedService();
-      report.unreadableManagerAcceptance = { actualSuspensionObserved: true, repairRefused: true, nativeRecordsUnchanged: true, credentialsPreserved: true, originalLifetimesRetained: true, publicControlRecovered: true };
+      report.unreadableManagerAcceptance = { actualSuspensionObserved: true, repairRefused: true, nativeRecordsUnchanged: true, credentialsPreserved: true, originalLifetimesRetained: true, publicSeatInspectionRecovered: true, lifecycleFenceReleaseMeasured: false };
     }
     if (repairCommand === 'unreadable-source') {
       await ownedService();
