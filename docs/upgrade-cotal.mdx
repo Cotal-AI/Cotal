@@ -154,6 +154,9 @@ The service checks its hosted agent count before setup checks for other programs
 installation. Its hosted launch fence stays held until shutdown, so another hosted agent cannot
 start between that check and the stop. Independently launched processes are only observed,
 not fenced against later launches.
+Setup matches each service reply to its request. If preparation times out, a late preparation
+reply cannot acknowledge recovery. Malformed or unknown replies refuse the connection, and
+an abort without its own reply remains unconfirmed.
 
 Setup disables the owned scheduled task during replacement. A service that was running is
 started from the new files and checked for readiness. An installed, stopped service stays
