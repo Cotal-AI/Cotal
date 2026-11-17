@@ -27,7 +27,7 @@ assert.equal(preflight, 1);
 assert.equal(later, 0, "no update work follows the refused preflight");
 const run = (kind: string, json = false) => spawnSync(process.execPath, [...process.execArgv,
   join(import.meta.dirname, "update-self-refusal.fixture.ts"), "update", "--self", ...(json ? ["--json"] : [])], {
-  env: { ...process.env, UPDATE_REFUSAL_FIXTURE: kind, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", DO_NOT_TRACK: "1" },
+  env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), UPDATE_REFUSAL_FIXTURE: kind, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", DO_NOT_TRACK: "1" },
   encoding: "utf8", timeout: 15_000,
 });
 const human = run("unwritable");

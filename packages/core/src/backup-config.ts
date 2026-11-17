@@ -23,7 +23,6 @@ import {
   managerBucket,
   membersBucket,
   membershipBucket,
-  permissionBucket,
   presenceBucket,
   spacePrefix,
   taskStream,
@@ -92,7 +91,6 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
     { name: `KV_${deliveryBucket(space)}`, class: "lease" },
     { name: `KV_${managerBucket(space)}`, class: "lease" },
     { name: `KV_${anycastBucket(space)}`, class: "control" },
-    { name: `KV_${permissionBucket(space)}`, class: "control" },
     ...endpointPlaneStreamNames(space).filter((name) => !workflow.has(name)).map((name) => ({ name, class: "control" as const })),
     { name: objectStoreStream(artifactBucket(space)), class: "artifact" },
   ];

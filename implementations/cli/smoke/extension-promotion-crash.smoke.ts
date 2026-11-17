@@ -14,7 +14,7 @@ try {
   for (const phase of ["old-renamed", "new-promoted"] as const) {
     const home = join(root, phase), config = join(home, "config");
     mkdirSync(home, { mode: 0o700 }); mkdirSync(config, { mode: 0o700 });
-    const env = { ...process.env, HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" };
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" };
     const run = (args: string[], extra = {}) => spawnSync(process.execPath, [bin, ...args], { cwd: home, env: { ...env, ...extra }, encoding: "utf8", timeout: 120000 });
     const source = (version: string) => {
       const dir = join(home, `source-${version}`); mkdirSync(dir);

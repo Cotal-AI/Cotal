@@ -190,7 +190,7 @@ const STATUS_OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["agent", "state", "binaries", "eventPlane", "permissionRequests"],
+        required: ["agent", "state", "binaries", "eventPlane"],
         properties: {
           agent: { type: "string" },
           state: { enum: ["available", "unavailable"] },
@@ -198,10 +198,6 @@ const STATUS_OUTPUT_SCHEMA = {
           /** Whether this connector publishes the AG-UI event plane. Required and explicit: a
            *  client must never read an absent fact as true. */
           eventPlane: { type: "boolean" },
-          /** Whether this connector relays its harness's permission prompts to the agent's owner
-           *  (SPEC §8.2). True only on a user-auth mesh, where an owner's interactive row can answer.
-           *  A client reads it absent, from an older Manager, as false. */
-          permissionRequests: { type: "boolean" },
           reason: { type: "string" },
         },
       },
@@ -338,7 +334,6 @@ export interface ManagerConnectorStatus {
   state: "available" | "unavailable";
   binaries: Record<string, string>;
   eventPlane: boolean;
-  permissionRequests: boolean;
   reason?: string;
 }
 
@@ -1293,11 +1288,14 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  49 = `spawn` takes `eventPayloads` to withhold tool arguments and results. The input schema
  *  is closed, so a revision-48 contract rejects this field.
  *
- *  50 = every `status.connectors` row requires `permissionRequests`, whether the connector relays its
- *  harness's permission prompts to the agent's owner on this mesh. The status output schema is closed,
- *  so a revision-49 contract rejects it. */
+ *  50 = every `status.connectors` row required `permissionRequests`, for the harness permission
+ *  requests that revision 51 withdraws.
+ *
+ *  51 = `status.connectors` rows no longer carry `permissionRequests`. The status output schema is
+ *  closed, so a revision-50 contract rejects a row without the field and this one rejects a row
+ *  with it. The number moves forward because revision 50 was published. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 50, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 51, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

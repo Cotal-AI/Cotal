@@ -22,7 +22,7 @@ try {
   for (const name of ["home", "config", "cotal", "runtime"]) mkdirSync(join(root, name), { mode: 0o700 });
   const installedEntry = join(import.meta.dirname, "../dist/cotal.js");
   const request = { v: 1, nonce: randomBytes(16).toString("hex"), installedEntry, daemonArgv: [process.execPath, "--max-semi-space-size=1", installedEntry, "daemon", "serve"], flags: {} };
-  const env = { ...process.env, HOME: join(root, "home"), COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: join(root, "runtime") };
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: join(root, "home"), COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: join(root, "runtime") };
   const run = (input = request) => spawnSync(process.execPath, [join(import.meta.dirname, "../dist/execution-preinstall.js"), JSON.stringify(input)], { cwd: root, env, encoding: "utf8", timeout: 20_000 });
   const before = inventory(root);
   const accepted = run();

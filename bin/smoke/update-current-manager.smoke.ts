@@ -19,7 +19,7 @@ if (process.platform !== "linux") {
     for (const checkout of [false, true]) {
       const home = join(root, String(checkout));
       mkdirSync(home, { mode: 0o700 });
-      const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "config"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+      const env: NodeJS.ProcessEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "config"), COTAL_SKIP_CONNECTOR_SEED: "1" };
       delete env.XDG_RUNTIME_DIR;
       const script = `
 process.argv[1] = ${JSON.stringify(entry)};

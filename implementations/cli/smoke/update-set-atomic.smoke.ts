@@ -17,7 +17,7 @@ const home = join(root, 'home'), config = join(root, 'config'), tools = join(roo
 for (const dir of [home, config, tools]) mkdirSync(dir, { mode: 0o700 });
 const bin = resolve('bin/dist/cotal.js');
 const generation = (JSON.parse(readFileSync(resolve('bin/package.json'), 'utf8')) as { version: string }).version;
-const env = { ...process.env, HOME: home, COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: config,
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))), HOME: home, COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: config,
   COTAL_ALLOW_CHECKOUT_SEED: '1', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_NO_UPDATE_CHECK: '1' };
 const run = (args: string[], extra = {}) => spawnSync(process.execPath, [bin, ...args], { cwd: root, env: { ...env, ...extra }, encoding: 'utf8', timeout: 120000 });
 const seed = run(['ext', 'seed']);

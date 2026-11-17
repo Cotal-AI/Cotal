@@ -79,7 +79,7 @@ if (!childMode) {
     renameSync(reference.node.sourcePath, `${reference.node.sourcePath}.retired`);
     cell("original Node path is unavailable", () => assert.equal(existsSync(reference.node.sourcePath), false));
     cell("verification never resolves the removed original", () => verifyMigrationExecution(lock, installedRoot, reference));
-    const env = { ...process.env, PATH: `${dirname(node)}:${process.env.PATH}`, npm_config_prefix: join(fixture, "prefix") };
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), PATH: `${dirname(node)}:${process.env.PATH}`, npm_config_prefix: join(fixture, "prefix") };
     const version = run(node, [join(reference.generation.root, "dist/cotal.js"), "--version"], "retained-before", env);
     cell("retained package runs on retained Node", () => assert.equal(version.split("\n")[0], `cotal-ai ${originalVersion}`));
     const beforeNode = hash(node), beforeInventory = hash(join(directory, "inventory.json"));

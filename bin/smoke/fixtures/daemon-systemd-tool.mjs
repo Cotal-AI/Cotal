@@ -34,7 +34,7 @@ if (basename(process.argv[1]) === "loginctl") {
   if (operation === "start" && context.nativeEntry) {
     spawnSync(process.execPath, [context.nativeEntry, "daemon", "serve"], {
       cwd: context.home,
-      env: { ...process.env, HOME: context.home, COTAL_HOME: context.cotal, XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: context.rt, DO_NOT_TRACK: "1" },
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: context.home, COTAL_HOME: context.cotal, XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: context.rt, DO_NOT_TRACK: "1" },
       stdio: "ignore",
       timeout: 10_000,
     });
