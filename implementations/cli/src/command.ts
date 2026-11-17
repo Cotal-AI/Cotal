@@ -203,9 +203,9 @@ function configFolderRefusal(problem: ConfigFolderProblem): CommandFailure {
  * which resolves its alias too.
  */
 async function extSeedGate(registry: Registry, argv: string[], configFolder: ConfigFolderProblem | undefined, leading: ReadonlySet<string>): Promise<boolean> {
-  const [word, sub] = argv;
+  const [word, ...words] = argv;
   const extCmd = word === undefined || !registry.has("command", word) ? undefined : registry.resolve<Command>("command", word);
-  if (extCmd?.name !== "ext" || sub !== "seed") return false;
+  if (extCmd?.name !== "ext" || metadataPositionals(extCmd, words).positionals[0]?.value !== "seed") return false;
   // A help request short-circuits to usage and mutates NOTHING (the maintenance run writes the seed
   // stamp/manifest).
   if (asksForHelp(argv)) {
