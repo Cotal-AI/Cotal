@@ -296,9 +296,9 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   let connB = await connectRw();
   opened.push(connB);
   connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
-  // conn B's own drops, from its status stream. Adopting a renewed rw cred reconnects conn B in place,
-  // and until the redial lands the broker has no conn B to report, so a sweep in that window did not
-  // miss connections.
+  // conn B's own drops, from its status stream, and the forced reconnect `presentRwCreds` counts as it
+  // starts it. Adopting a renewed rw cred reconnects conn B in place, and until the redial lands the
+  // broker has no conn B to report, so a sweep in that window did not miss connections.
   let connBDown = false;
   let connBDrops = 0;
   let connBNative = watchNativeConnection(connB, "membership conn B");
@@ -395,6 +395,11 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   const presentRwCreds = async (): Promise<void> => {
     if (rwStopped) return;
     if (!connB.isClosed()) {
+      // nats.js resolves reconnect() before the old transport closes, and conn B's status stream reports
+      // the drop only after that, so a sweep run as soon as this returns could find conn B gone while the
+      // feed still counted it up. The drop starts here; count it here (#7120).
+      connBDown = true;
+      connBDrops++;
       await connB.reconnect().catch(() => {});
       return;
     }
