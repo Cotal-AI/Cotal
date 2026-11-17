@@ -1,0 +1,39 @@
+name: Deleted macOS app daemon measurement
+on:
+  push:
+    branches:
+      - measure/mac-app-deleted-daemon
+permissions:
+  contents: read
+concurrency:
+  group: mac-app-deleted-daemon
+  cancel-in-progress: false
+jobs:
+  measure:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Prepare existing loopback authority fixture
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          brew install nats-server
+      - name: Record released app deletion and CLI recovery
+        shell: bash
+        run: |
+          export NPM_BIN="$(command -v npm)"
+          node --import tsx desktop/e2e/mac-app-deleted-daemon.mjs
+      - name: Retain command receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-app-deleted-daemon
+          path: ${{ runner.temp }}/mac-app-deleted-daemon/evidence
+          if-no-files-found: error
+          retention-days: 7
