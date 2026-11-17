@@ -15,7 +15,7 @@ import { waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { cleanupExecutionStore } from "../execution-store.js";
 import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate, executionInstallRoot } from "./execution-update.js";
 import type { ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
-import { logicalExecutionEntry, retainConnectorConfig } from "@cotal-ai/workspace";
+import { logicalExecutionEntry, retainConnectorConfig, shellPath } from "@cotal-ai/workspace";
 import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
@@ -115,6 +115,7 @@ const composed: Command = { ...command, async run(args) {
     }
     retainConnectorConfig();
     retainedReconciliation = true;
+    for (const manager of managers) console.log(`Manager ${manager.instanceId} keeps its agents on the previous version and takes the installed version at its next restart. When their work is finished, restart from its recorded folder: cd ${shellPath(manager.root)} && cotal manager stop --with-agents --yes --space ${shellPath(manager.space)} && cotal up --space ${shellPath(manager.space)}`);
   }, isCurrent() {
     currentPackages = updateRuntime.isCurrent?.() === true;
     return currentPackages;
