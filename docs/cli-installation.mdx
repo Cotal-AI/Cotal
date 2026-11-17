@@ -537,6 +537,9 @@ cotal ext root            # print just the install prefix (scriptable)
 cotal ext seed [--repair|--reset|--force]
 ```
 
+`add` and `remove` each take one operand. Missing or extra operands are usage errors and
+leave the extension inventory unchanged.
+
 Operator-installed extensions: `add` installs an npm package into a cotal-owned prefix and records
 every registry provider it contributes. Commands appear in help, completion, and dispatch; runtime
 providers are loaded on demand by commands such as `supervise`, and by a running manager the first

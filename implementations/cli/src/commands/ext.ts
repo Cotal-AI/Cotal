@@ -73,7 +73,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
   if (sub === undefined || (sub === "list" && !rest.length)) return list(presentationOf(v));
   // `ext root` stays a raw path for `$(cotal ext root)`; a structured form of one path adds nothing.
   if (v.json || v.plain) throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
-  if (sub === "add" && rest[0]) return addExtension(atThisVersion(rest[0])).catch(exitOnInterruptedAdd);
+  if (sub === "add" && rest.length === 1 && rest[0]) return addExtension(atThisVersion(rest[0])).catch(exitOnInterruptedAdd);
   if (sub === "__update-add" && rest[0] && rest[1]) {
     if (Number(process.env[EXT_UPDATE_PARENT_ENV]) !== process.ppid)
       throw new Error("internal update extension replay must be launched by its recorded parent");
@@ -88,7 +88,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
     for (const line of lines) console.log(line);
     return;
   }
-  if (sub === "remove" && rest[0]) return remove(rest[0]);
+  if (sub === "remove" && rest.length === 1 && rest[0]) return remove(rest[0]);
   // `cotal ext root` prints just the prefix path — a one-line scripting primitive (cf. `npm root -g`,
   // `brew --prefix`) so tooling can locate the store without parsing the human inventory.
   if (sub === "root" && !rest.length) {
