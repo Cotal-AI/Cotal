@@ -34,7 +34,7 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
     reconcileMissingShellRuntime(paths);
     const installation = installedDaemonIdentity(paths);
     if (!installation.same) {
-      console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
+      if (!probe.quiet) console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
       return;
     }
   }
