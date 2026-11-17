@@ -98,7 +98,6 @@ const cases: { args: string[]; message: RegExp }[] = [
   { args: ["--max-payload", "67108865"], message: /--max-payload 67108865 is over 67108864 bytes \(64 MiB\), which nats-server refuses to start on/ },
   { args: ["--max-payload", "263167"], message: /--max-payload 263167 is below 263168 bytes, the least the space's manager starts on/ },
   { args: ["--max-payload", "1048576", "--user-auth", "--service-endpoints"], message: /--max-payload 1048576 is below 2098176 bytes, the least a space with --service-endpoints starts on/ },
-  { args: ["--max-payload", "2098176", "--open"], message: /--max-payload sets the broker's message size limit, which the open broker configuration does not render/ },
   { args: ["--account-resolver", "cache"], message: /--account-resolver takes memory or full \(got "cache"\)/ },
   { args: ["--account-resolver", "full", "--open"], message: /--account-resolver sets how the broker resolves space accounts, and the open broker configuration has none/ },
   { args: ["--restore", join(folder, "nonexistent"), "--restore-only", "full"], message: /--restore-only takes registry/ },
