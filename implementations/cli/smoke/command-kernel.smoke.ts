@@ -6,7 +6,7 @@
 import "./update-isolation.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -275,6 +275,72 @@ async function completionOut(positionals: string[]): Promise<string> {
     rmSync(xdg, { recursive: true, force: true });
     if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
+}
+
+// --- the built executable reaches update's partial inventory report without loading its overlay ---
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-update-check-"));
+  const config = join(root, "config", "cotal");
+  const manifest = join(config, "extensions", "extensions.json");
+  const corrupt = "{broken\n";
+  mkdirSync(join(config, "extensions"), { recursive: true });
+  writeFileSync(manifest, corrupt);
+  const env = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    HOME: join(root, "home"), COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"),
+    COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1",
+  };
+  const run = (...words: string[]) => {
+    const result = spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), ...words], {
+      cwd: root, env, encoding: "utf8", timeout: 60_000,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(readFileSync(manifest, "utf8"), corrupt, "the check never repairs the corrupt manifest");
+    assert.deepEqual(readdirSync(config), ["extensions"], "no seed or promotion files are written");
+    assert.deepEqual(readdirSync(join(config, "extensions")), ["extensions.json"]);
+    return result;
+  };
+  try {
+    for (const words of [["update", "--check", "--json"], ["update", "--check", "-j"], ["--json", "update", "--check"]]) {
+      const result = run(...words);
+      assert.equal(result.status, 4, result.stderr || result.stdout);
+      assert.equal(result.stderr, "", "JSON has one report and no startup error");
+      const report = JSON.parse(result.stdout);
+      assert.equal(report.command, "update");
+      assert.equal(report.outcome, "partial");
+      assert.equal(report.completeness, "partial");
+      assert.equal(report.error.code, "OPERATION_PARTIAL");
+      assert.equal(report.result.kind, "update-check");
+      assert.match(report.result.current, /^\d+\.\d+\.\d+/);
+      assert.match(report.result.latest, /^\d+\.\d+\.\d+/);
+      assert.equal(report.result.extensions, null);
+      assert.equal(report.result.installationChanged, false);
+      assert.equal(report.result.processesRestarted, false);
+      assert.deepEqual(report.warnings.map((warning: { code: string }) => warning.code), ["EXTENSION_INVENTORY_UNREADABLE", "RECONCILIATION_UNREADABLE"]);
+    }
+    for (const flags of [[], ["--plain"]]) {
+      const result = run("update", "--check", ...flags);
+      assert.equal(result.status, 4, result.stderr || result.stdout);
+      assert.match(result.stdout, /Running CLI/);
+      assert.match(result.stdout, /Registry latest/);
+      assert.match(result.stdout, /Inventory unavailable/);
+      assert.match(result.stderr, /The extension inventory could not be read/);
+    }
+    for (const flags of [["--self"], ["--space", "unused"], ["--unknown"]]) {
+      const result = run("update", "--check", "--json", ...flags);
+      assert.equal(result.status, 1, result.stderr || result.stdout);
+      assert.equal(JSON.parse(result.stdout).error.code, "USAGE_INVALID", "check inputs are still validated");
+      assert.equal(result.stderr, "");
+    }
+    for (const flags of [[], ["--self"]]) {
+      const result = run("update", ...flags);
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, /corrupt extensions manifest/, "non-check modes keep strict overlay refusal");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 }
 
