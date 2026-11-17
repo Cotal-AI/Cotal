@@ -62,9 +62,12 @@ export function normalizeMentions(mentions?: string[]): string[] | undefined {
 /** The `@name` mentions inside a message body, as bare names, for a multicast's `mentions` (a
  *  priority/wake hint). Every surface that posts typed text derives them the same way. A trailing
  *  `.` or `-` is punctuation, as in `thanks @ops-lead.`, since a chat name cannot end in one. An `@`
- *  inside a word, as in `ana@example.com`, or right after a `/`, as in `/@rover`, starts no mention. */
+ *  right after an ASCII letter or digit, `_`, `.`, `-` or `/` starts no mention, so an address such
+ *  as `ana@example.com` or a path such as `/@rover` names no one, and neither does `Done.@rover`.
+ *  Any other character may precede one, so `你好@rover` mentions `rover` in a script written
+ *  without spaces. */
 export function mentionsIn(text: string): string[] {
-  return [...text.matchAll(/(?<![\p{L}\p{M}\p{N}_.\/-])@([A-Za-z0-9_.-]*[A-Za-z0-9_])/gu)].map((m) => m[1]);
+  return [...text.matchAll(/(?<![A-Za-z0-9_.\/-])@([A-Za-z0-9_.-]*[A-Za-z0-9_])/g)].map((m) => m[1]);
 }
 
 /**
