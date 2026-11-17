@@ -403,7 +403,9 @@ nonzero result. Force-killing the process or closing its terminal is not a suppo
 Run through the installer's `cotal` launcher, `update` first removes group and other write from the
 folders and files you own in Cotal's install root, without following links. An installer from before
 it set its own umask, run under a umask of 0002, left that tree group-writable. Running the installer
-again repairs it the same way.
+again repairs it the same way. Permission repair preserves the selected CLI generation, including
+when an older updater hands reconciliation to the new release. Before reporting a successful
+self-update, the updater verifies the selected version again after reconciliation.
 
 `update` also removes group and other write from the folders and files you own in Cotal's config
 directory, `$XDG_CONFIG_HOME/cotal` or `~/.config/cotal`, which holds the extension prefix and the

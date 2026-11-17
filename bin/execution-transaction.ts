@@ -111,6 +111,25 @@ export function executionStagingPrefix(installed: string): string {
   return mkdtempSync(join(store, ".installing-"));
 }
 
+/** Rebind only the already selected launch route after our own mode-only hardening. */
+export function repairExecutionInstallModes(installed: string, repair: () => number): number {
+  const selected = selectExecutionProgram(installed);
+  const descriptor = selected.retained ? executionRecord(executionDescriptorPath(installed)) as ExecutionDescriptor : undefined;
+  const changed = repair();
+  if (descriptor?.launch) {
+    const launch = executionLaunchBinding(installed, descriptor.launch.entry);
+    const { ctime: before, ...previous } = descriptor.launch;
+    const { ctime: after, ...current } = launch;
+    if (JSON.stringify(previous) !== JSON.stringify(current)) throw new Error("execution launch route changed during permission repair");
+    if (before !== after) {
+      if (!changed) throw new Error("execution launch route changed without a permission repair");
+      writeExecutionDescriptor(installed, { ...descriptor, launch });
+    }
+    if (selectExecutionProgram(installed).root !== selected.root) throw new Error("selected execution changed during permission repair");
+  }
+  return changed;
+}
+
 /** Remove a superseded active descriptor after an in-place package-manager install took over. */
 export function retireSupersededExecutionDescriptor(installed: string): boolean {
   if (existsSync(join(installed, "desktop-runtime.json")) || (process.platform !== "linux" && process.platform !== "darwin")) return false;

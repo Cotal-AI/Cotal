@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
 import { cleanupExecutionStore } from "../execution-store.js";
-import { assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
+import { repairInstallModes } from "../../implementations/cli/src/lib/install-umask.js";
+import { assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, repairExecutionInstallModes, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
 
 if (["linux", "darwin"].includes(process.platform)) {
   process.umask(0o022);
@@ -28,7 +29,7 @@ if (["linux", "darwin"].includes(process.platform)) {
     const oldManifest = readFileSync(join(installed, "package.json"), "utf8");
     const oldProgram = readFileSync(join(installed, "dist/cotal-program.js"), "utf8");
     writeFileSync(join(source, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.2.0", bin: { cotal: "./dist/cotal.js" } }));
-    writeFileSync(join(source, "dist/cotal-program.js"), "export const version = 'new';\n");
+    writeFileSync(join(source, "dist/cotal-program.js"), "console.log('new generation'); export const version = 'new';\n");
     const store = executionStore(installed);
     mkdirSync(join(store, ".installing-Zz9999/lib"), { recursive: true, mode: 0o700 });
     mkdirSync(join(store, ".preparing-Yy8888"), { mode: 0o700 });
@@ -37,9 +38,16 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.deepEqual(readdirSync(store), [staging.slice(store.length + 1)], "a new staging folder replaces the abandoned ones");
     rmSync(staging, { recursive: true });
     const generation = retainExecutionGeneration(installed, source);
-    const journal = journalExecutionTransaction(installed, generation);
+    chmodSync(join(installed, "package.json"), 0o664);
+    const journal = journalExecutionTransaction(installed, generation, join(installed, "dist/cotal.js"));
     publishExecutionTransaction(installed, journal);
     assert.equal(selectExecutionProgram(installed).root, generation.root);
+    repairExecutionInstallModes(installed, () => repairInstallModes(join(scratch, "prefix")));
+    assert.equal(selectExecutionProgram(installed).root, generation.root, "permission repair must preserve the published launcher selection");
+    const selectedEntry = spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "--version"], { encoding: "utf8", cwd: scratch, timeout: 15_000 });
+    assert.equal(selectedEntry.status, 0, selectedEntry.stderr);
+    assert.equal(selectedEntry.stdout.trim(), "new generation");
+    assert.equal(lstatSync(join(installed, "package.json")).mode & 0o022, 0);
     assert.equal(retireSupersededExecutionDescriptor(installed), false, "active matching descriptor is never retired");
     for (const [path, mode] of [[join(installed, "dist/cotal.js"), 0o755], [store, 0o755], [executionDescriptorPath(installed), 0o644]] as const)
       assert.equal(lstatSync(path).mode & 0o777, mode, `${path} stays readable by the other accounts that run this package`);
@@ -56,6 +64,10 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.equal(selectExecutionProgram(installed).root, generation.root, "second rollback restores previous selected generation, not npm original version");
     writeFileSync(join(installed, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.4.0", bin: { cotal: "./dist/cotal.js" } }));
     assert.equal(selectExecutionProgram(installed).retained, false, "in-place replacement takes over selection");
+    const staleDescriptor = readFileSync(executionDescriptorPath(installed));
+    repairExecutionInstallModes(installed, () => repairInstallModes(join(scratch, "prefix")));
+    assert.deepEqual(readFileSync(executionDescriptorPath(installed)), staleDescriptor, "repair never revives a stale descriptor");
+    assert.equal(selectExecutionProgram(installed).retained, false);
     assert.equal(existsSync(executionDescriptorPath(installed)), true);
     assert.equal(retireSupersededExecutionDescriptor(installed), true, "superseded descriptor is retired when in-place install takes over");
     assert.equal(existsSync(executionDescriptorPath(installed)), false);
