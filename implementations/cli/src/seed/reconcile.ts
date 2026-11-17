@@ -56,6 +56,7 @@ import {
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
 import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers } from "./verify.js";
+import { assertAutomaticSeedManagers } from "./manager-guard.js";
 
 /**
  * The connector seeding reconcile: makes the four first-party connectors present on a fresh install
@@ -226,6 +227,8 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
   const releaseClosure = claimUpdateClosureAccess();
   try {
   assertReleasedSeedWriter(generation, "reconcile");
+  if (mode === "auto" && readStamp()?.generation !== undefined && readStamp()?.generation !== generation)
+    await assertAutomaticSeedManagers(generation);
   const lock = acquireReconcileLock();
   try {
     // Claim the mutation lock INSIDE the reconcile lock's finally: if it throws (an operator `cotal
