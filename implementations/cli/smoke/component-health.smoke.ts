@@ -507,6 +507,37 @@ try {
   const stoppedWeb = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
   check("an intentionally stopped optional dashboard returns to not-started with exit 0",
     stoppedWeb.status === 0 && /web\s+not-started · optional/.test(`${stoppedWeb.stdout}${stoppedWeb.stderr}`), `${stoppedWeb.stdout}${stoppedWeb.stderr}`);
+  for (const route of ["child-signal", "service-stop"] as const) {
+    const foreground = spawn(process.execPath, ["--import", TSX_LOADER, CLI, "service", "start", "web", "--space", WEB_SPACE, "--foreground"], { cwd: webRoot, env, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    foreground.stdout!.on("data", (chunk) => { output += chunk; });
+    foreground.stderr!.on("data", (chunk) => { output += chunk; });
+    const finished = new Promise<number | null>((resolve, reject) => {
+      foreground.once("error", reject);
+      foreground.once("close", resolve);
+    });
+    const timer = setTimeout(() => foreground.kill("SIGKILL"), 120_000);
+    try {
+      const deadline = Date.now() + 90_000;
+      while (!output.includes("Readiness observation: adapter-process-running") && !/Readiness observation:\s+adapter-process-running/.test(output) && Date.now() < deadline && foreground.exitCode === null) await sleep(100);
+      check(`foreground dashboard reaches adapter readiness before ${route}`, /Readiness observation:\s+adapter-process-running/.test(output), output);
+      const pid = Number(/PID:\s+(\d+)/.exec(output)?.[1]);
+      check(`foreground dashboard reports its child for ${route}`, Number.isSafeInteger(pid) && pid > 0, output);
+      if (route === "child-signal") process.kill(pid, "SIGINT");
+      else {
+        const stopped = cliIn(webRoot, ["service", "stop", "web", "--space", WEB_SPACE, "--yes"], 60_000);
+        check("external service stop confirms the foreground dashboard exit", stopped.status === 0, `${stopped.stdout}${stopped.stderr}`);
+      }
+      const code = await finished;
+      check(`foreground ${route} exits cleanly without a schema refusal`, code === 0 && !output.includes("SCHEMA_INVALID"), { code, output });
+      const status = cliIn(webRoot, ["service", "status", "web", "--space", WEB_SPACE, "--json"]);
+      const row = JSON.parse(status.stdout).result;
+      check(`foreground ${route} records stopped readiness and observed exit`, row.recordedState === "stopped" && row.readinessObservation === "not-checked" && row.exit?.code === 0, status.stdout);
+    } finally {
+      clearTimeout(timer);
+      if (foreground.exitCode === null && foreground.signalCode === null) { foreground.kill("SIGTERM"); await finished; }
+    }
+  }
   const webRemove = cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
   webService = webRemove.status !== 0;
   check("service remove forgets the stopped dashboard", webRemove.status === 0, `${webRemove.stdout}${webRemove.stderr}`);

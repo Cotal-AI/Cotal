@@ -430,7 +430,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       if (signal && !started.exit.observed()) { process.exitCode = signal === "SIGINT" ? 130 : 143; return; }
       const exit = started.exit.result(), current = serviceInstanceStore(space).read(started.instance.name);
       // A retained native stop keeps its record: only that stop's own receipt settles it.
-      if (current && current.record.value.process?.pid === started.instance.record.value.process?.pid && current.record.value.process?.token === started.instance.record.value.process?.token && !retainedStopRequest(current.record.value)) serviceInstanceStore(space).commit(current.name, current, { ...current.record.value, state: "stopped", readiness: "not-checked", exit, updatedAt: new Date().toISOString() });
+      if (current && current.record.value.process?.pid === started.instance.record.value.process?.pid && current.record.value.process?.token === started.instance.record.value.process?.token && !retainedStopRequest(current.record.value)) serviceInstanceStore(space).commit(current.name, current, { ...current.record.value, state: "stopped", readiness: "not-checked", adapterReadiness: undefined, exit, updatedAt: new Date().toISOString() });
       process.exitCode = signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : exit.code === 0 ? 0 : 5;
     } catch (error) {
       if (isCommandFailure(error)) process.stderr.write(`${renderReport(commandFailureReport(error), presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);
