@@ -49,6 +49,9 @@ An unwritable installation refuses before staging and names the owning install c
 If this first check refuses, `cotal update --self` exits 2 and reports that the installation
 cannot update itself from this account and no changes were made. The original reason and owning
 command remain in the refusal. A failure after update work begins can still have an unknown outcome.
+When the daemon's automatic update on Linux meets this refusal, it records the same sentence once,
+does not count a failed attempt and schedules no retry. After the installation changes, a successful
+`cotal update` records a new result and automatic updates resume.
 Update attempts, successful publications and daemon startup retire abandoned staging and completed
 transactions under the update lock. All execution generations remain, including earlier generations
 that loaded processes may still use. Another account's store is untouched; a cleanup warning does not fail the update.

@@ -16,6 +16,7 @@ import {
   readUpdateSettings,
   recordUpdateCompletion,
   recordUpdateDeferral,
+  recordUpdateRefusal,
   recordUpdateReplacement,
   setUpdateSetting,
   bindExtensionPeers,
@@ -246,7 +247,9 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
     try { rt.preflightExecution?.(); }
     catch (error) {
       if (isCommandFailure(error)) throw error;
-      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `This installation cannot update itself from this account: ${message(error)}; no changes were made`, {
+      const refusal = `This installation cannot update itself from this account: ${message(error)}; no changes were made`;
+      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateRefusal(rt.version(), refusal);
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", refusal, {
         native: { outcome: "not-executed" },
       });
     }

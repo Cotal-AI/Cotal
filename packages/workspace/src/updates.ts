@@ -98,5 +98,12 @@ export function recordUpdateDeferral(version: string, reason: string, registry =
   save("update-attempt.json", { version, failures: Math.max(0, (previous?.failures ?? 0) - (refundReplacement ? 1 : 0)), deferred: reason, result: reason, next: Date.now() + (registry ? 3600_000 : 60_000) });
 }
 
+/** Record an automatic attempt this account cannot make. No retry is scheduled until a successful manual update records a new result. */
+export function recordUpdateRefusal(version: string, reason: string): void {
+  if (process.env.COTAL_AUTO_UPDATE !== "1") return;
+  const previous = readRecord("update-attempt.json") as { failures?: number } | undefined;
+  save("update-attempt.json", { version, failures: previous?.failures ?? 0, result: reason, next: Number.MAX_SAFE_INTEGER });
+}
+
 /** Keep a tombstone so completion is an atomic write, rather than an unlink race. */
 export function clearUpdateRecovery(): void { save("update-recovery.json", null); }
