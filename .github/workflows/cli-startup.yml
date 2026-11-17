@@ -34,6 +34,12 @@ jobs:
           df -g "$HOME"
           node -e 'const s=require("node:fs").statfsSync(process.env.HOME);if(s.bavail*s.bsize<30*1024**3)throw Error("30GiB free space required")'
       - run: pnpm --filter "cotal-ai..." build
+      - name: Build the daemon host primitives for the native probe
+        if: github.event_name == 'push'
+        run: |
+          df -g "$HOME"
+          node -e 'const s=require("node:fs").statfsSync(process.env.HOME);if(s.bavail*s.bsize<30*1024**3)throw Error("30GiB free space required")'
+          pnpm --filter @cotal-ai/seat build:native
       - name: Reproduce peer credential read after native socket close
         id: peer-close
         if: github.event_name == 'push'
