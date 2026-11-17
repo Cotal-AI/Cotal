@@ -20,6 +20,8 @@ import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile }
 import type { HostedManager, HostedAgents } from "./protocol.js";
 import { readHostedAgents } from "./agents.js";
 import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile } from "./manager-cleanup.js";
+import { processBirth } from "./lifetime.js";
+import { probeLiveness } from "@cotal-ai/workspace/liveness";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
@@ -86,6 +88,43 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     return task;
   };
   const generationAttempts = new Map<ChildProcess, string>();
+  const abortGenerationRestart = (owner: string): Promise<void> => queueGeneration(async () => {
+    if (!generationOwners.delete(owner) && !generationReleases.has(owner)) return;
+    if (generationOwners.size !== 0) return;
+    generationReleases.add(owner);
+    generationPrepared = false;
+    for (const [child, attemptId] of generationAttempts) {
+      await generationCall(child, attemptId, "abort");
+      generationAttempts.delete(child);
+    }
+    generationReleases.clear();
+    generationPending = generationAcquisitions !== 0;
+    if (!generationPending) for (const l of live.values()) {
+      if (!l.child && !l.starting && !l.timer && l.view.state === "restarting") schedule(l);
+      else if (l.child) observe(l);
+    }
+  });
+  let reapingGeneration = false;
+  const generationReaper = setInterval(() => {
+    if (closed || reapingGeneration) return;
+    reapingGeneration = true;
+    void (async () => {
+      for (const owner of new Set([...generationOwners, ...generationReleases])) {
+        let record: unknown;
+        try { record = JSON.parse(owner); } catch { continue; }
+        if (!Array.isArray(record) || record[0] !== "peer" || !Number.isSafeInteger(record[2]) || typeof record[3] !== "string") continue;
+        const pid = record[2] as number;
+        try {
+          const start = processBirth(pid);
+          if (start !== undefined ? start !== record[3] : probeLiveness(pid) === "dead") {
+            await abortGenerationRestart(owner);
+            console.log(`machine daemon: released the preserving hold of updater ${pid} because that process ended`);
+          }
+        } catch { /* Unknown custody keeps the fence and retries on the next bounded observation. */ }
+      }
+    })().finally(() => { reapingGeneration = false; });
+  }, 1000);
+  generationReaper.unref();
   const generationCall = (child: ChildProcess, attemptId: string, op: "inspect" | "prepare" | "abort") => new Promise<number | undefined>((resolve, reject) => {
     if (child.exitCode !== null || child.signalCode !== null) { resolve(undefined); return; }
     const finish = (error?: Error) => {
@@ -674,10 +713,12 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     },
     prepareGenerationRestart(owner: string): Promise<void> {
       generationPending = true;
+      generationOwners.add(owner);
       generationAcquisitions++;
       return queueGeneration(async () => {
       generationAcquisitions--;
-      if (generationPrepared) { generationOwners.add(owner); return; }
+      generationOwners.add(owner);
+      if (generationPrepared) return;
       try {
         await Promise.all([...live.values()].map((l) => l.healthTask));
         // A timed-out prepare can still have landed. Roll back every retained attempt before retrying.
@@ -729,6 +770,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           try { await generationCall(child, attemptId, "abort"); generationAttempts.delete(child); }
           catch { /* Retain the exact attempt for rollback on the next automatic retry. */ }
         }
+        if (generationAttempts.size === 0) generationOwners.delete(owner);
         generationPending = generationAttempts.size !== 0 || generationAcquisitions !== 0;
         if (!generationPending) for (const l of live.values()) {
           if (!l.child && !l.starting && !l.timer && l.view.state === "restarting") schedule(l);
@@ -738,25 +780,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       }
       });
     },
-    abortGenerationRestart(owner: string): Promise<void> {
-      return queueGeneration(async () => {
-        if (!generationOwners.delete(owner) && !generationReleases.has(owner)) return;
-        if (generationOwners.size !== 0) return;
-        // Keep release authority and exact child attempts if an abort is unconfirmed.
-        generationReleases.add(owner);
-        generationPrepared = false;
-        for (const [child, attemptId] of generationAttempts) {
-          await generationCall(child, attemptId, "abort");
-          generationAttempts.delete(child);
-        }
-        generationReleases.clear();
-        generationPending = generationAcquisitions !== 0;
-        if (!generationPending) for (const l of live.values()) {
-          if (!l.child && !l.starting && !l.timer && l.view.state === "restarting") schedule(l);
-          else if (l.child) observe(l);
-        }
-      });
-    },
+    abortGenerationRestart,
     all: () => [...new Set([...spaces(true), ...live.keys()])].map(status),
     async disconnect(space: string, options?: { account?: boolean }) {
       // A crash during child shutdown must not restore a withdrawn hosting intent.
@@ -869,6 +893,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     },
     async close() {
       closed = true;
+      clearInterval(generationReaper);
       await Promise.all([...live.values()].map(async (l) => {
         l.stopping = true;
         closeProbeSession(l);

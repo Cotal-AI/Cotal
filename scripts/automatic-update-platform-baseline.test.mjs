@@ -84,6 +84,16 @@ test('driver reobserves roots at update and manual npm boundaries and requires e
   assert(refusal.includes("'source generation unchanged', 'earlier extension prefix unchanged'"));
 });
 
+test('composition lifecycle surrounds the ordinary public update without replacing it', () => {
+  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  const activate = source.indexOf('overlay.activateTarget();', source.indexOf("if (nextHopMode === 'candidate')"));
+  const before = source.indexOf('await compositionCleanup.beforeUpdate()');
+  const update = source.indexOf("await cotal('upgrade under test'", before);
+  const after = source.indexOf('await compositionCleanup.afterUpdate(update)');
+  assert(activate > 0 && activate < before && before < update && update < after);
+  assert(source.includes('cotalHome, prefix, call, cotal, daemon, check, report, output, cli, options'));
+});
+
 test('owned local fixture keeps its recorded identity and bytes while every other extension reaches target', () => {
   const before = [{pkg: 'cotal-upgrade-native-fixture', spec: '/owned/native-fixture', version: '0.164.11'}, {pkg: '@cotal-ai/tmux', spec: '@cotal-ai/tmux@0.164.11', version: '0.164.11'}];
   const extensions = [before[0], {...before[1], version: '0.164.1011'}];
@@ -269,7 +279,7 @@ test('documented hosted Manager command and container cleanup are extracted with
   assert(source.includes("['ps', '--on', current.instanceId, '--space', report.managerHost.space, '--json']"));
   assert(source.includes("const home = hosted && (state === 'daemon' || daemonHostedManager) ? homedir()"));
   assert(source.includes("if (!(hosted && (state === 'daemon' || daemonHostedManager))) Object.assign"));
-  assert(source.includes("if (daemonHostedManager) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') })"));
+  assert(source.includes("if (daemonHostedManager || options['dead-updater'] === 'true') Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') })"));
   assert(source.includes('const deadline = Date.now() + 60000;'));
   assert(source.includes('JSON.stringify(observed)'));
   assert(source.includes("['daemon', 'service-disconnect', '--space', report.managerHost.space, '--json']"));
@@ -526,7 +536,7 @@ test('workflow bounds diagnostics and preserves every immutable release head wit
     if (done.has(name)) return;
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
-    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 40 : 6), `${name} exceeds its matrix bound`);
+    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 42 : 6), `${name} exceeds its matrix bound`);
     if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof', 'windows-baseline', 'next-release-macos', 'windows-job-facts', 'select'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);

@@ -221,6 +221,14 @@ export function boundedCells(plan) {
   add("win32", "installer", "daemon-self", "Windows installer self-update excluded: no public shell installer route");
   add("win32", "npm", "daemon-scheduler", "Windows scheduler upgrade excluded until product readiness is established");
   add("linux", "npm", "candidate-a", "optional candidate A is outside the required bounded matrix");
+  for (const platform of ["linux", "darwin"]) add(platform, "npm", "candidate-next-dead-updater", null, {
+    sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A",
+    targetVersion: syntheticNextVersion(plan.targetVersion), targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+    syntheticVersionRule: "candidate.patch+1000", deadUpdater: true,
+    requiredAssertions: ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention",
+      "candidate-source-identity", "candidate-next-target", "next-hop-success", "native-service-manual", "independent-final-state",
+      "dead-updater-release", "live-owner-held", "next-update-alone"],
+  });
   return cells;
 }
 /** Convenience wrapper for workflow callers. */

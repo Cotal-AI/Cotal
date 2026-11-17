@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "allowJs": true, "checkJs": false },
+  "include": ["scripts/dead-updater-fixture.ts", "scripts/dead-updater-evidence.mjs", "scripts/dead-updater-evidence.test.mjs"]
+}
