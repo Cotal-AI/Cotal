@@ -759,22 +759,6 @@ export async function reportRunningManagers(
 ): Promise<"none" | "legacy"> {
   // Raw credentials are an explicit off-registry target, not an install-wide discovery request.
   if (typeof flags.creds === "string") return readOne(flags);
-  const { readMeshRegistry, getCurrent, clearCurrent } = await import("@cotal-ai/workspace");
-  const { goneStackRoot } = await import("../lib/stack-journal.js");
-  const { goneRootStackDown } = await import("./stack-gone.js");
-  const registry = readMeshRegistry();
-  if (registry.unusable.length) throw registry.unusable[0];
-  let recovered = false;
-  for (const entry of registry.entries) {
-    if (typeof flags.space === "string" && flags.space !== entry.space ||
-        typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(entry.server)) continue;
-    const root = goneStackRoot(entry.space);
-    if (root !== undefined && typeof flags.on !== "string") {
-      await goneRootStackDown(entry.space, root, { space: entry.space, yes: true });
-      if (getCurrent() === entry.space) clearCurrent();
-      recovered = true;
-    }
-  }
   const on = typeof flags.on === "string" ? await managerPin(flags, "cotal update") : undefined;
   const local = census({ ...flags, on });
   const selected = local.filter(manager =>
@@ -791,7 +775,6 @@ export async function reportRunningManagers(
     return verdict;
   }
   if (on !== undefined && local.length) throw new Error(`--on ${on} does not name a local Manager sharing this installation`);
-  if (recovered && readMeshRegistry().entries.length === 0) return "none";
   try {
     return await readOne(flags);
   } catch (e) {
