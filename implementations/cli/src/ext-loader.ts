@@ -25,6 +25,7 @@ import {
 } from "@cotal-ai/workspace";
 import { c } from "./ui.js";
 import { cliVersion } from "./lib/version.js";
+import { readUpdatePending } from "./lib/update-pending.js";
 
 /** The official runtimes and the name list live in workspace, beside the connector table, so the
  *  manager phrases the same refusal without importing the CLI. Re-exported for this package's readers. */
@@ -197,13 +198,8 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
   if (!pkg) return stub; // not a stub — already live
   const ext = loadExtensionsManifest().extensions.find((e) => e.pkg === pkg);
   if (!ext) throw new Error(`extension ${pkg} vanished from the manifest - \`cotal ext add\` it again`);
-  if (ext.pkg.startsWith("@cotal-ai/") && ext.version !== cliVersion()) {
-    const seeded = Object.values(SEEDED_EXTENSIONS).some((item) => item.pkg === ext.pkg);
-    if (!seeded && isBundledDesktopRuntime()) {
-      throw new Error(`this Cotal app runs ${cliVersion()}, and another Cotal install on this account moved the shared extension ${ext.pkg} to ${ext.version}`);
-    }
-    throw new Error(`${ext.pkg} is ${ext.version} and this cotal is ${cliVersion()} - run \`${seeded ? "cotal ext seed" : "cotal update --self"}\` to ${seeded ? "bring it to this version" : "reconcile this installation"}`);
-  }
+  const skew = firstPartyVersionSkew(ext);
+  if (skew) throw new Error(skew);
   await importInstalledExtension(ext, { kind: "command", name: stub.name }); // throws if the import doesn't advertise the stubbed command
   return registry.resolve<Command>("command", stub.name);
 }
@@ -228,19 +224,26 @@ export async function materializeExtension<T extends Extension = Extension>(ref:
   });
 }
 
-/** Why the first-party package that provides `ref` must not load: the binary seeds it at its own
- *  version, and the installed one differs, as after an upgrade until a command seeds again. A read
- *  does not seed, so it reaches this. Loading it would pair this core with another version's package. */
+/** Why the first-party package that provides `ref` must not load. A read does not reconcile, so
+ *  it can reach this after another home upgraded the shared CLI. */
 function seededVersionSkew(ref: ExtensionRef): string | undefined {
   const ext = loadExtensionsManifest().extensions.find((candidate) =>
     extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
   );
-  if (!ext || ext.version === cliVersion() || !ext.pkg.startsWith("@cotal-ai/")) return undefined;
+  return ext && firstPartyVersionSkew(ext);
+}
+
+/** Keep cached commands and providers on the same refusal and recovery path without importing them. */
+function firstPartyVersionSkew(ext: InstalledExtension): string | undefined {
+  const current = cliVersion();
+  if (ext.version === current || !ext.pkg.startsWith("@cotal-ai/")) return undefined;
   const seeded = Object.values(SEEDED_EXTENSIONS).some((item) => item.pkg === ext.pkg);
   if (!seeded && isBundledDesktopRuntime()) {
-    return `this Cotal app runs ${cliVersion()}, and another Cotal install on this account moved the shared extension ${ext.pkg} to ${ext.version}`;
+    return `this Cotal app runs ${current}, and another Cotal install on this account moved the shared extension ${ext.pkg} to ${ext.version}`;
   }
-  return `${ext.pkg} is ${ext.version} and this cotal is ${cliVersion()} - run \`${seeded ? "cotal ext seed" : "cotal update --self"}\` to ${seeded ? "bring it to this version" : "reconcile this installation"}`;
+  const pending = readUpdatePending(current);
+  if (pending.kind === "none") throw new Error(`extension ${ext.pkg} changed while reading its version mismatch; retry the command`);
+  return `${ext.pkg} is ${ext.version} and this cotal is ${current} - ${pending.instruction}`;
 }
 
 /** Resolve and probe an extension runtime before a manifest command mutates local or mesh state. */

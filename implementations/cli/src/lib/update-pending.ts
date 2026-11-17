@@ -2,6 +2,7 @@ import { loadExtensionsManifest, readUpdateRecovery, recoveryDisposition, type U
 import { readStamp } from "../seed/authority.js";
 import { isValidSemver } from "../seed/paths.js";
 import { compareSemver } from "../seed/reconcile.js";
+import { displayCmd } from "./self-exec.js";
 
 const repair = "Run `cotal update --self` to reconcile this installation.";
 
@@ -34,7 +35,7 @@ export function readUpdatePending(current: string): UpdatePending {
     }
     const instruction = generation !== undefined && compareSemver(generation, current) > 0
       ? `Reconciliation pending: This configuration home's seed store is at ${generation}, newer than this CLI ${current}. Use a CLI at ${generation} or newer, or restore the seed store and extensions folder from a backup taken before that generation.`
-      : "Reconciliation pending: Run `cotal update` to reconcile this configuration home with the installed CLI.";
+      : `Reconciliation pending: Run \`${displayCmd()} update\` to reconcile this configuration home with the installed CLI.`;
     return { kind: "version-mismatch", extensions, instruction };
   } catch (error) {
     return { kind: "unreadable", source: "manifest", error: error instanceof Error ? error.message : String(error), instruction: repair };

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { extensionsManifestPath, homeCotalDir } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { readUpdatePending, type UpdatePending } from "../src/lib/update-pending.js";
+import { displayCmd } from "../src/lib/self-exec.js";
 
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
@@ -43,7 +44,7 @@ const skew = read();
 assert.equal(skew.kind, "version-mismatch");
 if (skew.kind === "version-mismatch") {
   assert.deepEqual(skew.extensions, [{ package: "@cotal-ai/tmux", version: "0.161.1" }]);
-  assert.equal(skew.instruction, "Reconciliation pending: Run `cotal update` to reconcile this configuration home with the installed CLI.");
+  assert.equal(skew.instruction, `Reconciliation pending: Run \`${displayCmd()} update\` to reconcile this configuration home with the installed CLI.`);
 }
 const seed = join(process.env.XDG_CONFIG_HOME!, "cotal", "seed");
 mkdirSync(seed, { mode: 0o700 });

@@ -264,7 +264,7 @@ function followOnEvidence(data, directory, route = 'in-place') {
   } else if (data.cell.followOnAction === 'npm') {
     const bareVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n  Reconciliation pending: Run \`cotal update\` to reconcile this configuration home with the installed CLI.\n`, stderr: '' };
     const reconciledVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n`, stderr: '' };
-    const bareRuntimes = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { items: [{ name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: null, error: `@cotal-ai/tmux is ${b} and this cotal is ${c} - run \`cotal update --self\` to reconcile this installation` }] } }), stderr: '' };
+    const bareRuntimes = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { items: [{ name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: null, error: `@cotal-ai/tmux is ${b} and this cotal is ${c} - Reconciliation pending: Run \`cotal update\` to reconcile this configuration home with the installed CLI.` }] } }), stderr: '' };
     const reconciledRuntimes = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { items: [{ name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: true, error: null }] } }), stderr: '' };
     const bareDaemonStatus = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { state: 'ready', version: c, pid: 1234 } }), stderr: '' };
     const bareRoute = { name: 'cotal-ai', version: c, selectedCliVersion: c, packageManagerRecordVersion: c, updateRoute: 'in-place' };
@@ -279,7 +279,7 @@ function followOnEvidence(data, directory, route = 'in-place') {
       extensions: bareExtensions,
       installedExtensions: bareExtensions,
       launchGateRefusal: {
-        command: { exit: 1, signal: null, timeout: false, stdout: '', stderr: `✗ failed to reconcile @cotal-ai/tmux@${c} - run \`cotal update --self\` to reconcile this installation\n` },
+        command: { exit: 1, signal: null, timeout: false, stdout: '', stderr: `✗ failed to reconcile @cotal-ai/tmux@${c} - run \`cotal update\` to reconcile this configuration home with the installed CLI\n` },
         extensions: bareExtensions,
         installedExtensions: bareExtensions,
       },

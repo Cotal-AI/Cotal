@@ -1,4 +1,5 @@
 import { rmSync, writeFileSync, join, REPO, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, listNames, seedGeneration, track, finishScenario } from "./harness.js";
+import { displayCmd } from "../../src/lib/self-exec.js";
 
 try {
   // ── 9. operator-installed official entry brought to running generation on upgrade ───────────────
@@ -17,7 +18,7 @@ try {
     m.extensions.push({ pkg: "@cotal-ai/tmux", version: "9.9.9", spec: "@cotal-ai/tmux@9.9.9", provides: [{ kind: "runtime", name: "tmux" }], commands: [], connectors: [], localProcesses: [], servicePresets: [] });
     writeJson(mp, m);
     const cliRun = cotal(cfg, ["runtimes", "--json"], { COTAL_SKIP_CONNECTOR_SEED: "1" });
-    check("source-aware: CLI skew refusal names cotal update --self", cliRun.stdout.includes(`@cotal-ai/tmux is 9.9.9 and this cotal is ${seedGeneration()} - run \`cotal update --self\` to reconcile this installation`), cliRun.stdout);
+    check("source-aware: CLI skew refusal names home-local reconciliation", cliRun.stdout.includes(`@cotal-ai/tmux is 9.9.9 and this cotal is ${seedGeneration()} - Reconciliation pending: Run \`${displayCmd()} update\` to reconcile this configuration home with the installed CLI.`), cliRun.stdout);
 
     const desktopMarker = join(REPO, "desktop-runtime.json");
     writeFileSync(desktopMarker, "{}\n");

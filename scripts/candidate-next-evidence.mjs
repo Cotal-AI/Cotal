@@ -426,12 +426,12 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
       const bareRuntimesRow = [0, 4].includes(archivedBare.runtimes?.exit) ? JSON.parse(archivedBare.runtimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
       const bareTmuxRefusedOk = [0, 4].includes(archivedBare.runtimes?.exit) && archivedBare.runtimes?.signal === null && archivedBare.runtimes?.timeout === false
         && typeof bareRuntimesRow?.error === 'string'
-        && bareRuntimesRow.error.includes(`@cotal-ai/tmux is ${pair.targetVersion} and this cotal is ${pair.followOnVersion} - run \`cotal update --self\` to reconcile this installation`);
+        && bareRuntimesRow.error.includes(`@cotal-ai/tmux is ${pair.targetVersion} and this cotal is ${pair.followOnVersion} - Reconciliation pending: Run \`cotal update\` to reconcile this configuration home with the installed CLI.`);
       const gateRefusal = archivedBare.launchGateRefusal;
       const gateRefusalOk = gateRefusal?.command?.exit === 1
         && gateRefusal.command.signal === null
         && gateRefusal.command.timeout === false
-        && /run `cotal update --self` to reconcile this installation/.test(String(gateRefusal.command.stdout ?? '') + String(gateRefusal.command.stderr ?? ''))
+        && /run `cotal update` to reconcile this configuration home with the installed CLI/.test(String(gateRefusal.command.stdout ?? '') + String(gateRefusal.command.stderr ?? ''))
         && Array.isArray(gateRefusal.extensions)
         && gateRefusal.extensions.some(entry => entry.pkg === '@cotal-ai/tmux' && entry.version === pair.targetVersion)
         && Array.isArray(gateRefusal.installedExtensions)

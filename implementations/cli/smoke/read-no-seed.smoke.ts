@@ -4,7 +4,7 @@
  * read that still reached it would exit 1 with that refusal; a read must run past it and leave the
  * seed store and the extension manifest unwritten. A command that is not a read still meets the
  * gate. A read that would load a built-in installed at another version than the binary's names it
- * with `cotal ext seed` instead of importing it.
+ * with the home-local reconciliation remedy instead of importing it.
  *
  * Run: pnpm smoke:read-no-seed
  */
@@ -108,7 +108,7 @@ const GATE = /refusing to reconcile the operator-global seed store/;
   }));
   const manifest = join(xdg, "cotal", "extensions", "extensions.json");
   const before = readFileSync(manifest);
-  const remedy = "Reconciliation pending: Run `cotal update` to reconcile this configuration home with the installed CLI.";
+  const remedy = `Reconciliation pending: Run \`${displayCmd()} update\` to reconcile this configuration home with the installed CLI.`;
   const humanVersion = run(["--version"]);
   check("version directs a stale configuration home to reconcile without replacing the shared CLI",
     humanVersion.status === 0 && humanVersion.stdout.includes(remedy) && !humanVersion.stdout.includes("update --self"), shown(humanVersion));
@@ -136,7 +136,7 @@ const GATE = /refusing to reconcile the operator-global seed store/;
   }
   const row = rows.find((i) => i.name === "claude setup");
   check("status names the older built-in and the command that brings it to this version",
-    row?.state === "error" && row.text === `${pkg} is 0.0.1 and this cotal is ${VERSION} - run \`cotal ext seed\` to bring it to this version`, { status: r.status, rows });
+    row?.state === "error" && row.text === `${pkg} is 0.0.1 and this cotal is ${VERSION} - ${remedy}`, { status: r.status, rows });
   check("and never imported it", !existsSync(marker));
   check("status leaves the stale manifest unchanged and seeds nothing",
     readFileSync(manifest).equals(before) && !existsSync(join(xdg, "cotal", "seed")));
@@ -167,6 +167,56 @@ const GATE = /refusing to reconcile the operator-global seed store/;
       && aheadReport.warnings.some((warning: { code: string; message: string }) => warning.code === "EXTENSION_VERSION_SKEW" && warning.message.includes(aheadPending.instruction)), shown(aheadStatus));
   check("ahead-store diagnostics leave its manifest and stamp byte-identical",
     readFileSync(manifest).equals(aheadManifest) && readFileSync(stamp).equals(aheadStamp));
+}
+
+// Every mismatch refusal uses the same metadata remedy, including rows and lazy commands.
+{
+  const { home, xdg, run } = sandbox();
+  const prefix = join(xdg, "cotal", "extensions");
+  mkdirSync(prefix, { recursive: true });
+  const manifest = join(prefix, "extensions.json");
+  const seed = join(xdg, "cotal", "seed");
+  mkdirSync(seed);
+  const stamp = join(seed, "stamp.json");
+  const entries = [
+    { pkg: "@cotal-ai/connector-claude-code", version: "0.0.1", spec: "@cotal-ai/connector-claude-code@0.0.1", source: "seeded", commands: [],
+      provides: [{ kind: "connector", name: "claude" }, { kind: "connector-setup", name: "claude" }],
+      connectors: [{ name: "claude", requires: [], eventPlane: true, setup: { kind: "connector-setup", name: "claude" } }] },
+    { pkg: "@cotal-ai/tmux", version: "0.0.1", spec: "@cotal-ai/tmux@0.0.1", provides: [{ kind: "runtime", name: "tmux" }], commands: [] },
+    { pkg: "@cotal-ai/linear", version: "0.0.1", spec: "@cotal-ai/linear@0.0.1", commands: [{ name: "linear", summary: "skewed read", reads: true }] },
+  ];
+  writeFileSync(manifest, JSON.stringify({ extensions: entries }));
+  const noPath = join(home, "empty-path");
+  mkdirSync(noPath);
+  for (const generation of ["0.0.1", VERSION, "99.0.0"]) {
+    writeFileSync(stamp, JSON.stringify({ generation }));
+    const before = readFileSync(manifest);
+    const beforeStamp = readFileSync(stamp);
+    const extraEnv = { PATH: noPath, NO_COLOR: "1" };
+    const version = run(["version", "--json"], extraEnv);
+    const instruction = JSON.parse(version.stdout).result.reconciliation.instruction as string;
+    const status = run(["status", "--json"], extraEnv);
+    const report = JSON.parse(status.stdout);
+    const connector = report.result.machine.integrations.find((row: { name: string }) => row.name === "claude setup");
+    check(`connector row and Next agree with version at seed generation ${generation}`,
+      status.status === 0 && connector?.state === "error" && connector.text.endsWith(instruction)
+        && report.result.hints.includes(instruction) && !status.stdout.includes("cotal ext seed") && !status.stdout.includes("update --self"), shown(status));
+    const runtime = run(["runtimes", "--json"], extraEnv);
+    const tmux = JSON.parse(runtime.stdout).result.items.find((row: { name: string }) => row.name === "tmux");
+    check(`runtime refusal agrees with version at seed generation ${generation}`,
+      runtime.status === 4 && tmux?.error?.endsWith(instruction) && !runtime.stdout.includes("update --self"), shown(runtime));
+    const lazy = run(["linear"], extraEnv);
+    check(`lazy first-party command refuses with the same remedy at seed generation ${generation}`,
+      lazy.status === 1 && lazy.stderr.includes(instruction) && !lazy.stderr.includes("update --self"), shown(lazy));
+    if (generation !== "99.0.0") {
+      const human = run(["status"], extraEnv);
+      check(`no-PATH status renders a runnable checkout update command at seed generation ${generation}`,
+        human.status === 0 && human.stdout.includes("`pnpm cotal update`") && human.stderr.includes("`pnpm cotal update`")
+          && !`${human.stdout}${human.stderr}`.includes("`cotal update`"), shown(human));
+    }
+    check(`mismatch refusals do not import packages or change metadata at seed generation ${generation}`,
+      readFileSync(manifest).equals(before) && readFileSync(stamp).equals(beforeStamp) && !existsSync(join(prefix, "node_modules")));
+  }
 }
 
 // A real ext add must preserve the declaration the lazy command's seed decision reads.

@@ -20,7 +20,7 @@ import {
   type InstalledExtension,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
+import { displayCmd, selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
 import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, stampPath } from "./paths.js";
 import {
@@ -74,7 +74,7 @@ import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers } from 
  *    stamp; the ever-seeded authority (unioned with its monotonic backup on read) is the sole arbiter
  *    of removed-vs-never-seeded.
  *  - every still-installed first-party extension (`@cotal-ai/*`) is brought to the running generation
- *    on upgrade, or the reconcile refuses loud naming `cotal update --self`.
+ *    on upgrade, or the reconcile refuses loud naming the home-local update command.
  */
 
 /** `verify` is `cotal update`'s mode: every built-in is reconciled under the locks like `force`, but a
@@ -523,13 +523,14 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const desktop = isBundledDesktopRuntime();
+      const remedy = `run \`${displayCmd()} update\` to reconcile this configuration home with the installed CLI`;
       throw new CommandFailure(
         "refused",
         "DEPENDENCY_UNAVAILABLE",
         desktop
           ? `failed to reconcile ${operators.map((entry) => `${entry.pkg}@${generation}`).join(", ")}: ${detail}`
-          : `failed to reconcile ${operators.map((entry) => `${entry.pkg}@${generation}`).join(", ")}: ${detail} - run \`cotal update --self\` to reconcile this installation`,
-        { cause: error, ...(desktop ? {} : { remedy: "run `cotal update --self` to reconcile this installation" }) },
+          : `failed to reconcile ${operators.map((entry) => `${entry.pkg}@${generation}`).join(", ")}: ${detail} - ${remedy}`,
+        { cause: error, ...(desktop ? {} : { remedy }) },
       );
     }
   }
