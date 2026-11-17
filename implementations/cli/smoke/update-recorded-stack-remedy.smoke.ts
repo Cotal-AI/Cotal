@@ -17,7 +17,7 @@ for (const path of [project, join(project, ".cotal"), home, fixture, join(root, 
 const repo = join(import.meta.dirname, "../../..");
 const packed = process.env.COTAL_REMEDY_TEST_ENTRY;
 const entry = packed ?? join(repo, "bin/cotal.ts");
-const env = { ...process.env, HOME: home, COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: join(root, "rt"), TMPDIR: join(root, "tmp"), COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))), HOME: home, COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: join(root, "rt"), TMPDIR: join(root, "tmp"), COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
 let latest = "99.0.0";
 const server = createServer(async (request, response) => {
   if (decodeURIComponent(request.url ?? "") === "/cotal-ai") response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest }, versions: { [latest]: { name: "cotal-ai", version: latest } } }));
@@ -36,7 +36,7 @@ const core = packed ? pathToFileURL(join(dirname(packed), "../node_modules/@cota
 const seat = join(fixture, "seat.mjs");
 writeFileSync(join(fixture, "package.json"), JSON.stringify({ name: "cotal-stack-remedy-fixture", version: "0.0.1", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
 writeFileSync(seat, `import{CotalEndpoint}from${JSON.stringify(core)};const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});await ep.start();setInterval(()=>{},1000);for(const s of['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`);
-writeFileSync(join(fixture, "index.js"), `import{registry}from${JSON.stringify(core)};registry.register({kind:'connector',name:'stack-remedy-seat',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
+writeFileSync(join(fixture, "index.js"), `import{registry}from${JSON.stringify(core)};registry.register({kind:'connector',name:'stack-remedy-seat',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))),COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
 let started = false;
 async function cli(args: string[], updating = false): Promise<{ code: number | null; output: string }> {
   const child = spawn(process.execPath, [...(packed ? [] : ["--import", import.meta.resolve("tsx")]), entry, ...args], { cwd: project, env: { ...env, ...(updating ? { npm_config_registry: registry } : {}) }, stdio: ["ignore", "pipe", "pipe"] });

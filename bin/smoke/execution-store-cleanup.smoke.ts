@@ -145,7 +145,7 @@ if (["linux", "darwin"].includes(process.platform)) {
     }
     const homeA = join(scratch, "home-a"), homeB = join(scratch, "home-b");
     mkdirSync(homeA, { mode: 0o700 }); mkdirSync(homeB, { mode: 0o700 });
-    const env = (home: string) => ({ ...process.env, HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: join(home, "config") });
+    const env = (home: string) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: join(home, "config") });
     const paused = spawnSync(process.execPath, ["--input-type=module", "-e", `const{claimUpdateClosureAccess,writeUpdateRecovery}=await import(${JSON.stringify(workspace)});const release=claimUpdateClosureAccess();try{writeUpdateRecovery({previous:'0.4.0',target:'0.5.0',installed:'0.5.0',phase:'paused',reason:'cross-home smoke',execution:${JSON.stringify(legacy[0].journal)}})}finally{release()}`], { env: env(homeA), encoding: "utf8" });
     assert.equal(paused.status, 0, paused.stderr);
     const module = new URL("../dist/execution-store.js", import.meta.url).href;

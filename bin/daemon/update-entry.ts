@@ -293,8 +293,8 @@ const composed: Command = { ...command, async run(args) {
   const expectedVersion = replacementVersion ?? installedCliVersion();
   // A version-changing update already waited for the installed generation before it returned.
   // Waiting again prints the same line a second time in this process.
-  if (!daemonObserved && runtime.generationWaited !== true) {
-    if (args.values.self === true) {
+  if (!daemonObserved) {
+    if (args.values.self === true && runtime.generationWaited !== true) {
       await waitForInstalledDaemonGeneration(expectedVersion, {
         lifecycle: (paths: DaemonPaths, deadline: number) => process.platform === "win32" ? windowsGenerationLifecycle(paths, deadline) : posixGenerationLifecycle(paths),
       });

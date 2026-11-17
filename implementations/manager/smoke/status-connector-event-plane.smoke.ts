@@ -36,23 +36,19 @@ const base = {
 
 const status = (eventPlane: boolean) => ({
   ...base,
-  connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane, permissionRequests: false }],
+  connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane }],
 });
 
-check("the Manager contract retains connector event-plane facts after permission-prompt facts advance it", shipped.revision === 50, shipped);
+check("the Manager contract retains connector event-plane facts after permission-prompt facts are withdrawn", shipped.revision === 51, shipped);
 check("status accepts eventPlane true on a connector row", MANAGER_STATUS_CONTRACT.output.validate(status(true)) === true);
 check("status accepts eventPlane false on a connector row", MANAGER_STATUS_CONTRACT.output.validate(status(false)) === true);
 check("status requires an explicit eventPlane fact and never defaults it to true",
-  MANAGER_STATUS_CONTRACT.output.validate({ ...base, connectors: [{ agent: "probe", state: "available", binaries: {}, permissionRequests: false }] }) === false);
+  MANAGER_STATUS_CONTRACT.output.validate({ ...base, connectors: [{ agent: "probe", state: "available", binaries: {} }] }) === false);
 check("status keeps connector eventPlane typed as a boolean",
-  MANAGER_STATUS_CONTRACT.output.validate({ ...base, connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane: "yes", permissionRequests: false }] }) === false);
-check("status accepts permissionRequests true on a connector row",
-  MANAGER_STATUS_CONTRACT.output.validate({ ...base, connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane: false, permissionRequests: true }] }) === true);
-check("status requires an explicit permissionRequests fact, so a revision-49 row is refused",
-  MANAGER_STATUS_CONTRACT.output.validate({ ...base, connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane: false }] }) === false);
+  MANAGER_STATUS_CONTRACT.output.validate({ ...base, connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane: "yes" }] }) === false);
 
 console.log(`\n${passed} passed, ${failed} failed`);
-const EXPECTED = 7;
+const EXPECTED = 5;
 if (passed + failed !== EXPECTED) {
   console.log(`FAIL expected ${EXPECTED} cells, ran ${passed + failed}`);
   failed++;
