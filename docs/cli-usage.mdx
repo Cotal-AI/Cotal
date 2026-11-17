@@ -163,7 +163,8 @@ A word that starts with `-` reads as an option. A message or name that starts wi
 which the refusal gives. An option given with no value, last or just before another option, is
 refused naming the option and its placeholder. A short option takes its value after a space, so `-c=general` is refused
 rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
-typeset text, is refused naming the option it meant, rather than read as a positional.
+typeset text, is refused naming the option it meant, rather than read as a positional. Before the
+command word the same holds for the leading flags, so `cotal ––json status` names `--json`.
 
 
 ### Color

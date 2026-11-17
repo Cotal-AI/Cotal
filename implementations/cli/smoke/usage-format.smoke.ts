@@ -5,7 +5,9 @@
  * `usage:` line or a lowercase "refusing to clean store without --force"; and `help service nosuch`
  * refused without listing the subcommands. A missing `--yes` is the exception: its refusal and remedy
  * are the whole fix, so it prints without the help. A mistyped word that is near a command, leading
- * flag, subcommand or option names it. Under `--plain` or a locale without UTF-8, which have no
+ * flag, subcommand or option names it. A leading flag typed with a typographic dash, as `––json
+ * status`, is refused naming the flag with hyphens, as it is after the command word; it was an
+ * unknown command. Under `--plain` or a locale without UTF-8, which have no
  * refusal mark, the error is the classified report instead, still followed by the help; it used to
  * print the `✗` mark under `--plain` and the `!` warning mark under such a locale.
  *
@@ -118,6 +120,22 @@ for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
   const r = run(["status", typed]);
   check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
 }
+// Before the command word the same word was an unknown command: `––json status` got no suggestion
+// and `−−version` was offered the version command.
+for (const [args, flag] of [
+  [["\u2013\u2013json", "status"], "--json"],
+  [["\u2212\u2212version"], "--version"],
+  [["\u2013\u2013plain", "status"], "--plain"],
+  [["\u2013no-input", "status"], "--no-input"],
+  [["\u2014json", "status"], "--json"],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} is refused as a typographic dash before the command word, naming ${flag}`, r.status === 1 && r.stdout === ""
+    && r.stderr.startsWith(`✗ ${args[0]} starts with a typographic dash, so it is not an option\n  type the option with hyphens: ${flag}\n`) && !/unknown command|did you mean/.test(r.stderr), shown(r));
+}
+const leadingBogus = run(["\u2013\u2013bogus", "status"]);
+check("control: a leading typographic-dash word that names no leading flag is an unknown command", leadingBogus.status === 1
+  && leadingBogus.stderr.startsWith("✗ unknown command: \u2013\u2013bogus - run `cotal help` to list commands"), shown(leadingBogus));
 
 const missing = run(["space", "create"]);
 check("a missing argument a command checks has the same shape", usageShape(missing, /space create/), shown(missing));

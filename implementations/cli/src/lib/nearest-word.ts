@@ -39,7 +39,7 @@ export function suggestThen(word: string, candidates: Iterable<string>, remedy: 
 }
 
 /** The flags `cotal` reads before a command word, the words a mistyped leading flag is matched to. */
-const LEADING_FLAGS = ["--json", "--plain", "--no-color", "--no-input", "--version", "--help"];
+export const LEADING_FLAGS = ["--json", "--plain", "--no-color", "--no-input", "--version", "--help"];
 
 /** The words that name a listed command: its name and aliases. A word that begins with `-` is
  *  matched to the leading flags instead. */
