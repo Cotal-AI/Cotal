@@ -17,7 +17,7 @@ const env:NodeJS.ProcessEnv={...process.env};for(const key of Object.keys(env))i
 for(const name of ['home','state','config','runtime','tmp','project','other'])mkdirSync(join(root,name),{mode:0o700});
 for(const name of ['project','other'])mkdirSync(join(root,name,'.cotal'),{mode:0o700});
 Object.assign(env,{HOME:join(root,'home'),COTAL_HOME:join(root,'state'),XDG_CONFIG_HOME:join(root,'config'),XDG_RUNTIME_DIR:join(root,'runtime'),TMPDIR:join(root,'tmp'),DO_NOT_TRACK:'1',COTAL_TELEMETRY:'off',COTAL_SKIP_CONNECTOR_SEED:'1'});
-for(const key of Object.keys(process.env))if(key.startsWith('COTAL_'))delete process.env[key];Object.assign(process.env,env);process.chdir(join(root,'project'));
+for(const key of Object.keys(process.env))if(key.startsWith('COTAL_'))delete process.env[key];Object.assign(process.env,env);process.env.COTAL_HOME=join(root,'state');process.chdir(join(root,'project'));
 const entry=join(import.meta.dirname,'../../../bin/dist/cotal.js'),report:Record<string,any>={};
 const children:ChildProcess[]=[];let close:(()=>Promise<void>)|undefined;
 const pause=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
