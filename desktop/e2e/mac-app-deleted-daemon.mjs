@@ -83,7 +83,7 @@ const old = (label, args) => call(label, process.execPath, [oldEntry, ...args]);
 const fresh = (label, args) => call(label, process.execPath, [freshEntry, ...args]);
 let candidateEntry = process.env.DESKTOP_REPAIR_CLI;
 const repairCommand = process.env.DESKTOP_REPAIR_COMMAND ?? 'status';
-assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager', 'occupied-manager', 'crash-prepared', 'crash-published'].includes(repairCommand), 'unsupported repair entry command');
+assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager', 'occupied-manager', 'crash-prepared', 'crash-published', 'crash-prepared-mismatch'].includes(repairCommand), 'unsupported repair entry command');
 if (!candidateEntry && repairCommand !== 'self-update' && !repairCommand.startsWith('crash-')) assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
 if (repairCommand.startsWith('crash-')) assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE, 'crash proof requires a real guarded installed source closure');
 if (repairCommand === 'self-update') assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE && process.env.DESKTOP_REPAIR_TARGET_CLOSURE, 'self-update proof requires two real guarded installed package closures');
@@ -91,6 +91,7 @@ report.repairCommand = repairCommand;
 let candidateEnv = env;
 const candidate = (label, args) => call(label, process.execPath, [candidateEntry, ...args], { callEnv: candidateEnv });
 let candidateRegistry;
+let mismatchedEntry;
 let closeParticipant;
 let serviceOwnership;
 let copiedApp;
@@ -195,6 +196,14 @@ try {
     ok(await npm('install real guarded candidate before crash measurement', ['install', '--global', '--prefix', installedPrefix, `cotal-ai@${candidateRegistry.identity.version}`, '--no-audit', '--no-fund'], { callEnv: candidateEnv, timeout: 600000 }));
     candidateEntry = join(installedPrefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
     assert.equal(JSON.parse(readFileSync(join(installedPrefix, 'lib/node_modules/cotal-ai/package.json'), 'utf8')).version, candidateRegistry.identity.version);
+    if (repairCommand === 'crash-prepared-mismatch') {
+      const differentPrefix = join(root, 'different-candidate-install');
+      ok(await npm('install same guarded closure at distinct repair destination', ['install', '--global', '--prefix', differentPrefix, `cotal-ai@${candidateRegistry.identity.version}`, '--no-audit', '--no-fund'], { callEnv: { ...candidateEnv, npm_config_prefix: differentPrefix }, timeout: 600000 }));
+      mismatchedEntry = join(differentPrefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
+      assert.notEqual(mismatchedEntry, candidateEntry);
+      assert.equal(JSON.parse(readFileSync(join(differentPrefix, 'lib/node_modules/cotal-ai/package.json'), 'utf8')).version, candidateRegistry.identity.version);
+      assert.equal(createHash('sha256').update(readFileSync(mismatchedEntry)).digest('hex'), createHash('sha256').update(readFileSync(candidateEntry)).digest('hex'), 'only installed destination differs, not entry bytes or version');
+    }
   }
   mkdirSync(cotalHome, { recursive: true, mode: 0o700 });
   const { prepareUpdateParticipant } = await import(pathToFileURL(resolve('implementations/auth/smoke/update-participant.fixture.ts')).href);
@@ -266,7 +275,7 @@ try {
       const { spaceSegment } = await import(pathToFileURL(resolve('packages/workspace/dist/index.js')).href);
       const hostingPath = join(cotalHome, 'daemon', spaceSegment(report.participant.space), 'manager-host.json');
       const hostingBefore = readFileSync(hostingPath, 'utf8');
-      const phase = repairCommand.slice('crash-'.length);
+      const phase = repairCommand.split('-')[1];
       const version = report.candidate.version.split(/\r?\n/, 1)[0].replace('cotal-ai ', '');
       let verifiedNextSource;
       report.interruptionEvents = [];
@@ -322,6 +331,46 @@ try {
       assert.equal(readFileSync(hostingPath, 'utf8'), hostingBefore);
       report.interruptedRepair = { phase, captured: interrupted.captured, retryComplete: false, hostingPath, hostingSha256: sourceDigest(hostingBefore) };
       save();
+      if (repairCommand === 'crash-prepared-mismatch') {
+        assert(mismatchedEntry, 'different destination must be installed before the repair begins');
+        const intentPath = join(cotalHome, 'daemon/service-repair.json');
+        const beforeMismatch = [intentPath, receiptPath, plist, sessionPath, hostingPath].map(file => readFileSync(file));
+        const observedNative = async label => {
+          const job = await call(label, '/bin/launchctl', ['print', target], { timeout: 5000 });
+          assert(!job.timedOut && !job.signal && [0, 113].includes(job.exit));
+          const pid = Number(/^\s*pid = (\d+)\s*$/m.exec(job.stdout)?.[1]) || null;
+          const program = /^\s*program = (.+)$/m.exec(job.stdout)?.[1] ?? null;
+          if (job.exit === 0) assert(program, 'loaded job executable must be observed, not guessed');
+          return { exit: job.exit, pid, birth: pid ? processBirth(pid) : null, program };
+        };
+        const nativeBefore = await observedNative('interrupted native state before distinct destination refusal');
+        const observeOriginals = () => heldProcesses.map(row => {
+          const birth = processBirth(row.pid) ?? null;
+          return { pid: row.pid, expectedBirth: row.birth, observedBirth: birth, state: birth === null ? 'absent' : birth === row.birth ? 'original' : 'different' };
+        });
+        const originalBirths = observeOriginals();
+        assert(!originalBirths.some(row => row.state === 'different'), 'retained PID names a different lifetime before mismatch request');
+        const refused = await call('different installed destination cannot resume real interrupted repair', process.execPath, [mismatchedEntry, 'daemon', 'install', '--json'], { callEnv: candidateEnv });
+        const originalsAfter = observeOriginals();
+        report.interruptedRepair.destinationAttempt = { exit: refused.exit, originalBirths, originalsAfter };
+        save();
+        const nativeAfter = await observedNative('interrupted native state after distinct destination refusal');
+        Object.assign(report.interruptedRepair.destinationAttempt, { nativeBefore, nativeAfter });
+        save();
+        const bytesAfter = [intentPath, receiptPath, plist, sessionPath, hostingPath].map(file => readFileSync(file));
+        Object.assign(report.interruptedRepair.destinationAttempt, { beforeHashes: beforeMismatch.map(bytes => createHash('sha256').update(bytes).digest('hex')), afterHashes: bytesAfter.map(bytes => createHash('sha256').update(bytes).digest('hex')) });
+        save();
+        assert(!refused.timedOut && !refused.signal);
+        assert.equal(refused.exit, 3, 'current generic repair throw maps to the public unknown outcome');
+        const rejection = JSON.parse(refused.stdout);
+        assert.equal(rejection.error?.code, 'OPERATION_UNKNOWN');
+        assert.match(rejection.error?.message ?? '', /repair must finish from its recorded Cotal installation/);
+        for (const [index, file] of [intentPath, receiptPath, plist, sessionPath, hostingPath].entries()) assert.deepEqual(bytesAfter[index], beforeMismatch[index], `distinct destination changed ${file}`);
+        assert.deepEqual(nativeAfter, nativeBefore);
+        assert.deepEqual(originalsAfter, originalBirths);
+        report.interruptedRepair.destinationRefusal = { entry: mismatchedEntry, exit: refused.exit, protectedBytesUnchanged: true, nativeBoundaryObservationsUnchanged: true, originalLifetimeBoundaryStatesUnchanged: true, sameCandidateRetryPending: true };
+        save();
+      }
     }
     if (repairCommand === 'self-update') {
       candidateRegistry.activateTarget();
@@ -547,7 +596,10 @@ try {
     heldProcesses.push(await identity(restarted.pid, 'restarted repaired daemon'));
     for (const row of restarted.managers ?? []) if (row.pid) heldProcesses.push(await identity(row.pid, 'restarted repaired Manager'));
     report.repairAcceptance = { freshPid: repaired.pid, restartedPid: restarted.pid, version: restarted.version, programOutsideApp: true, credentialsPreserved: true };
-    if (repairCommand.startsWith('crash-')) report.interruptedRepair.retryComplete = true;
+    if (repairCommand.startsWith('crash-')) {
+      report.interruptedRepair.retryComplete = true;
+      if (report.interruptedRepair.destinationRefusal) report.interruptedRepair.destinationRefusal.sameCandidateRetryPending = false;
+    }
     }
     report.outcome = 'repair-measured';
   } else {
