@@ -44,7 +44,7 @@ import { acquireLock, acquireLockAsync, inspectLock, mkSecretDir, writeSecretFil
 import { codeSpan, CommandFailure, executionIdentity, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
-import { ClosedPeerRefusal, isStoppingLifetime, managerViaDaemon, openVerified, queryDaemon, readLine } from "./client.js";
+import { ClosedPeerRefusal, isStoppingLifetime, openVerified, queryDaemon, readLine } from "./client.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
@@ -564,6 +564,15 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
   const lock = await acquireLockAsync(join(paths.state, "service-repair.lock"));
   let fenced = false;
   let owner: ReturnType<typeof readLifetimeRecord>;
+  let socket: Awaited<ReturnType<typeof openVerified>> | undefined;
+  const request = async (op: "status" | "managers-prepare-restart" | "managers-abort-restart") => {
+    if (!socket || !owner?.start || processBirth(owner.pid) !== owner.start) throw new Error("the pinned daemon lifetime is no longer available");
+    const id = randomUUID().replaceAll("-", "");
+    socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op }));
+    const reply = JSON.parse(await readLine(socket, 70_000)) as DaemonResponse;
+    if (reply.id !== id || reply.v !== DAEMON_PROTOCOL_VERSION || !reply.ok || "event" in reply || !("version" in reply.result)) throw new Error("the pinned daemon refused service repair preparation");
+    return reply.result;
+  };
   try {
     let intent = readServiceRepair(paths.state);
     if (intent) {
@@ -595,16 +604,17 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
     const enabled = intent?.enabled ?? service!.isEnabled!(receipt);
     owner = readLifetimeRecord(paths.lock);
     try {
-      const answer = await queryDaemon({ paths });
-      if (!answer.ok) throw new Error("the daemon refused its status read before service repair");
-      if (!owner?.start || answer.result.pid !== owner.pid || processBirth(owner.pid) !== owner.start) throw new Error("the daemon lifetime changed before service repair");
-      if (intent && readFileSync(receipt.unitPath, "utf8") === intent.nextSource && recordedSourceIdentity(receipt, "launchd-agent", intent.argv).same && answer.result.version === version) {
-        if (hostedSpaces.some(space => !answer.result.managers?.some(manager => manager.space === space && manager.state === "answering"))) throw new Error("the repaired daemon's recorded Managers have not answered yet");
+      socket = await openVerified({ paths });
+      socket.on("error", () => {});
+      const answer = await request("status");
+      if (!owner?.start || answer.pid !== owner.pid || processBirth(owner.pid) !== owner.start) throw new Error("the daemon lifetime changed before service repair");
+      if (intent && readFileSync(receipt.unitPath, "utf8") === intent.nextSource && recordedSourceIdentity(receipt, "launchd-agent", intent.argv).same && answer.version === version) {
+        if (hostedSpaces.some(space => !answer.managers?.some(manager => manager.space === space && manager.state === "answering"))) throw new Error("the repaired daemon's recorded Managers have not answered yet");
         rmSync(serviceRepairFile(paths.state));
         return true;
       }
-      hostedSpaces = (answer.result.managers ?? []).filter(manager => manager.pid !== undefined).map(manager => manager.space);
-      await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
+      hostedSpaces = (answer.managers ?? []).filter(manager => manager.pid !== undefined).map(manager => manager.space);
+      await request("managers-prepare-restart");
       fenced = true;
     } catch (error) {
       if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error;
@@ -651,7 +661,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
         if (!answer.ok || answer.result.version !== version) throw new Error("repaired daemon has not confirmed this installed version");
         const fresh = readLifetimeRecord(paths.lock);
         if (!fresh?.start || fresh.pid !== answer.result.pid || processBirth(fresh.pid) !== fresh.start || (fresh.pid === owner?.pid && fresh.start === owner.start)) throw new Error("the repaired daemon has no fresh verified lifetime");
-        const current = recordedUnit(paths, daemonHome, nativeRun, true);
+        const current = recordedUnit(paths, daemonHome, nativeRun, false, true);
         if (!recordedSourceIdentity(current.receipt, "launchd-agent", argv).same) throw new Error("the repaired native source no longer names the selected installation");
         if (hostedSpaces.some(space => !answer.result.managers?.some(manager => manager.space === space && manager.state === "answering" && manager.pid !== undefined))) throw new Error("repaired hosted Managers have not answered");
         rmSync(serviceRepairFile(paths.state));
@@ -662,8 +672,8 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
       }
     }
   } finally {
-    try { if (fenced && owner?.start && processBirth(owner.pid) === owner.start) await managerViaDaemon({ paths }, { op: "managers-abort-restart" }); }
-    finally { lock.release(); }
+    try { if (fenced && owner?.start && processBirth(owner.pid) === owner.start) await request("managers-abort-restart"); }
+    finally { socket?.destroy(); lock.release(); }
   }
 }
 
