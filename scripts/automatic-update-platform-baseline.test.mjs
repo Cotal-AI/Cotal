@@ -605,7 +605,9 @@ for (const scenario of [
   const status = scenario.archive ? 200 : 503;
   const method = scenario.archive ? 'arrayBuffer' : 'text';
   const body = scenario.archive ? Buffer.from([0, 1, 255]) : 'upstream unavailable';
-  const root = mkdtempSync('/var/tmp/upgrade-matrix/registry-body-');
+  const parent = '/var/tmp/upgrade-matrix';
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const root = mkdtempSync(join(parent, 'registry-body-'));
   const packages = [];
   for (const [i, name] of JSON.parse(readFileSync(new URL('../.changeset/config.json', import.meta.url))).fixed.flat().entries()) {
     const dir = join(root, String(i));
