@@ -254,6 +254,8 @@ interface InstallPlan {
   readonly restart: string;
   readonly wantedBy: string;
   readonly daemonHome?: string;
+  /** The unchanged recorded service already belongs to this installation. */
+  readonly alreadyInstalled?: true;
 }
 
 /** A directive's value in the bytes that will be written, so a receipt never states a policy the
@@ -283,7 +285,13 @@ export function planInstall(paths: DaemonPaths, daemonHome: string | undefined):
   }
   const user = invokingUser();
   const rendered = renderDaemonUnit(systemdUserUnitDirectory(), daemonHome);
-  refuseInstalled(paths, daemonHome);
+  const existing = readReceipt(paths);
+  if (existing) {
+    const recorded = recordedUnit(paths, daemonHome);
+    if (!recordedDaemonIdentity(recorded).same) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon service belongs to another Cotal installation; nothing was changed");
+    const source = readFileSync(existing.unitPath, "utf8");
+    return { mechanism: "systemd-user", unit: existing.unit, unitPath: existing.unitPath, sha256: existing.unitSha256, user, lingerAlready: lingerEnabled(user), restart: directive(source, "Restart"), wantedBy: directive(source, "WantedBy"), ...(daemonHome !== undefined ? { daemonHome } : {}), alreadyInstalled: true };
+  }
   let present = false;
   try { lstatSync(rendered.unitPath); present = true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${rendered.unitPath} could not be inspected; no absent unit was inferred`); }
@@ -321,6 +329,7 @@ export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined,
     return { mechanism, unit, unitPath, sha256, user, restart, wantedBy, ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted, state: "installed" };
   }
   const plan = planInstall(paths, daemonHome);
+  if (plan.alreadyInstalled) return { ...plan, lingerEnabled: plan.lingerAlready, ...omitted, state: "installed" };
   const rendered = renderDaemonUnit(dirname(plan.unitPath), daemonHome);
   // This daemon's own state directory, which holds the receipt below. It is ours, so it is created
   // 0700 and checked; the user manager's unit directory is the operator's and is only created when

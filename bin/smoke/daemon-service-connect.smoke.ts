@@ -2320,7 +2320,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             check("G2 status names unavailable application but has no setup next step", human.out.includes("no available application") && !/Next[\s\S]*install an agent application/i.test(human.out), { status, human });
             const repeated = await cli("setup", "--idp", idpUrl);
             const installed = await cli("install");
-            check("G3 account refresh is unavailable and install refuses existing unit", repeated.code !== 0 && repeated.doc.error?.message?.includes("needs --space") && installed.code !== 0 && JSON.stringify(installed).includes("already has an installed unit"), { repeated, installed });
+            check("G3 account refresh is unavailable and the existing unit is verified", repeated.code !== 0 && repeated.doc.error?.message?.includes("needs --space") && (process.platform === "linux" ? installed.code === 0 && installed.doc.result?.alreadyInstalled === true : installed.code !== 0 && JSON.stringify(installed).includes("already has an installed unit")), { repeated, installed });
             return;
           }
           saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });

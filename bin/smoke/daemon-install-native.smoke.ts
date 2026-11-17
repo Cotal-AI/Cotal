@@ -639,7 +639,7 @@ try {
       };
       const call = (verb: string, home: string | undefined, flags: string[] = [], plain = false) => {
         const child = invoke(verb, home, [...flags, plain ? "--plain" : "--json"]);
-        const doc = (plain ? {} : JSON.parse(child.stdout)) as { outcome?: string; result?: { state: string; unitPath: string }; error?: { code: string; remedy?: string } };
+        const doc = (plain ? {} : JSON.parse(child.stdout)) as { outcome?: string; result?: { state: string; unitPath: string; unit?: string; alreadyInstalled?: boolean }; error?: { code: string; remedy?: string } };
         return { status: child.status, doc, out: child.stdout };
       };
       const effects = (): number => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { operation: string }).filter((c) => !["directory-read", "linger-read"].includes(c.operation)).length : 0;
@@ -678,8 +678,9 @@ try {
       const receipt = JSON.parse(readFileSync(receiptFile, "utf8")) as UnitReceipt;
       if (kind === "default" || kind === "managed") {
         const before = effects();
+        const receiptBefore = readFileSync(receiptFile, "utf8"), sourceBefore = readFileSync(receipt.unitPath, "utf8");
         const repeats = [call("install", home, ["--dry-run"]), call("install", home)];
-        check(`N7 recorded ${kind} install refuses another preview or apply`, repeats.every((r) => r.status === 2 && r.doc.error?.code === "CONFLICT") && effects() === before, repeats);
+        check(`N7 recorded ${kind} install succeeds without native effects or rewrites`, repeats.every((r) => r.status === 0 && r.doc.result?.alreadyInstalled === true) && effects() === before && readFileSync(receiptFile, "utf8") === receiptBefore && readFileSync(receipt.unitPath, "utf8") === sourceBefore, repeats);
         const again = call("install", home);
         const suffix = home ? ` --daemon-home '${home}'` : "";
         check(`N6 ${kind} install hints retain the selected daemon`, installed.out.includes(`Read it with \`cotal daemon status${suffix}\`, and remove it with \`cotal daemon uninstall${suffix}\`.`), installed.out);
@@ -688,9 +689,9 @@ try {
         const copied = spawnSync("/bin/sh", ["-c", `cotal() { exec "$COPY_NODE" "$COPY_CLI" "$@"; }\n${printed} --dry-run --json`], { cwd: dir, env: { ...env, COPY_NODE: process.execPath, COPY_CLI: cli }, encoding: "utf8", timeout: 30_000 });
         const copiedDoc = JSON.parse(copied.stdout) as { result?: { unit?: string; state?: string } };
         check(`N6 copied ${kind} install hint reaches its recorded Unicode-home unit`, copied.status === 0 && copiedDoc.result?.unit === receipt.unit && copiedDoc.result.state === "would-remove", copiedDoc);
-        check(`N6 repeat ${kind} install names the selected uninstall`, again.status === 2 && again.doc.error?.code === "CONFLICT" && again.doc.error.remedy === `remove it with \`cotal daemon uninstall${suffix}\` before installing again`, again.doc);
+        check(`N6 repeat ${kind} install reports the same verified unit`, again.status === 0 && again.doc.result?.alreadyInstalled === true && again.doc.result?.unit === receipt.unit, again.doc);
         const retry = spawnSync(process.execPath, [cli, "daemon", "install", ...(home ? ["--daemon-home", home] : []), "--plain"], { cwd: dir, env, encoding: "utf8", timeout: 30_000 });
-        check(`N6 repeat ${kind} install prints its Next in plain output`, retry.status === 2 && retry.stderr.includes(again.doc.error!.remedy!), retry.stderr);
+        check(`N6 repeat ${kind} install acknowledges the existing service in plain output`, retry.status === 0 && retry.stdout.includes("Already installed") && !retry.stderr.includes("before installing again"), { stdout: retry.stdout, stderr: retry.stderr });
 
         check(`N6 valid ${kind} receipt plans and starts`, call("uninstall", home, ["--dry-run"]).status === 0 && call("start", home).status === 0);
         const machineHome = home ?? env.COTAL_HOME!;
