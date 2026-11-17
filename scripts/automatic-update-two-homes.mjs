@@ -20,7 +20,7 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root }) {
   try {
     target = await candidateRegistry(resolve(targetDirectory), 'B', 'https://registry.npmjs.org/');
     report.old = old.identity; report.target = target.identity;
-    for (const route of ['up', 'launch']) {
+    for (const route of ['up', 'launch', 'old-manager']) {
       const directory = join(root, route);
       const prefix = join(root, 'prefix');
       const entry = join(prefix, 'bin', 'cotal');
@@ -59,7 +59,7 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root }) {
         const joined = join(fixture, 'joined.json');
         writeFileSync(join(fixture, 'seat.mjs'), `import{CotalEndpoint}from${JSON.stringify(core)};import{readFileSync,writeFileSync}from'node:fs';const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,creds:readFileSync(e.COTAL_CREDS,'utf8'),card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});await ep.start();writeFileSync(${JSON.stringify(joined)},JSON.stringify({pid:process.pid,name:e.COTAL_NAME,lifecycleUid:e.COTAL_LIFECYCLE_UID}));setTimeout(()=>ep.stop().finally(()=>process.exit(0)),2000);`);
         writeFileSync(join(fixture, 'index.js'), `import{registry}from'@cotal-ai/core';registry.register({kind:'connector',name:'two-home-seat',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(join(fixture, 'seat.mjs'))}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
-        if (route === 'launch') await ok('B', 'register fixture', ['ext', 'add', fixture]);
+        if (route !== 'up') await ok('B', 'register fixture', ['ext', 'add', fixture]);
         await ok('B', 'prepare space', ['space', 'create', 'twohomes', '--plain']);
         running = true;
         await ok('B', 'start original space', ['up', '--detach', ...(route === 'launch' ? ['--no-manager'] : [])]);
@@ -71,6 +71,17 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root }) {
         const stale = await ok('B', 'stale home version before command', ['--version']);
         check(`${route} B starts stale in shared installation`, stale.stdout.startsWith(`cotal-ai ${target.identity.version}\n`) && inventory(stale.stdout, old.identity.version));
         check(`${route} home-only hint never asks for self replacement`, !stale.stdout.includes('update --self'));
+        const manifest = join(directory, 'B/config/cotal/extensions/extensions.json');
+        const beforeManifest = readFileSync(manifest);
+        if (route === 'old-manager') {
+          const blocked = await call('B', 'old Manager exclusion', entry, ['spawn', '--detach', '--agent', 'two-home-seat', '--name', 'twohome-proof', '--no-events', '--json']);
+          check('older Manager blocks automatic connector migration', blocked.code !== 0 && `${blocked.stdout}${blocked.stderr}`.includes('LIFECYCLE_BLOCKED'));
+          check('older Manager home inventory remains unchanged', readFileSync(manifest).equals(beforeManifest));
+          check('older Manager exclusion starts no fixture process', !existsSync(joined));
+          const retained = await ok('B', 'old Manager remains answering', ['ps', '--json']);
+          check('old Manager control request still succeeds', JSON.parse(retained.stdout).outcome === 'ok');
+          continue;
+        }
         if (route === 'up') { await ok('B', 'ordinary next up', ['up', '--detach']); running = true; }
         else {
           await ok('B', 'ordinary next agent launch', ['spawn', '--foreground', '--agent', 'two-home-seat', '--name', 'twohome-proof', '--no-events']);
@@ -80,7 +91,6 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root }) {
         }
         const b = await ok('B', 'home version after ordinary command', ['--version']);
         check(`${route} ordinary command reconciles B completely`, inventory(b.stdout, target.identity.version) && !b.stdout.includes('Reconciliation pending'));
-        const manifest = join(directory, 'B/config/cotal/extensions/extensions.json');
         report[`${route}ManifestSha256`] = createHash('sha256').update(readFileSync(manifest)).digest('hex');
       } finally {
         if (running) {
