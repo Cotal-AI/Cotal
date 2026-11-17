@@ -98,6 +98,7 @@ import {
   preflightOrThrow,
   provenance,
   resolveAgentType,
+  resolveOnPath,
   resolveTargetOrThrow,
   serverFlag,
   spaceAccountPath,
@@ -1442,6 +1443,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
+  const binaryPins: Record<string, string | undefined> = { opencode: process.env.COTAL_OPENCODE_BIN, codex: process.env.COTAL_CODEX_BIN };
+  const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(binaryPins[bin]?.trim() || bin));
+  if (missing.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${agentType} needs ${missing.join(", ")} on PATH; nothing was launched`, {
+    target: { space, path },
+    remedy: `install or repair ${missing.join(", ")} on this machine, then run the same spawn again`,
+  });
   if (variant && !connector.supportsModelVariant) {
     stderrLine("✗ ", `${agentType} connector does not support model variants (variant)`, c.red);
     process.exit(1);
