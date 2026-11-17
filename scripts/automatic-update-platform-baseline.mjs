@@ -593,7 +593,7 @@ export async function matrixCell(options) {
     bootstrapEnvironment = undefined;
     if (options.prepare !== undefined) {
       assert.equal(typeof options.prepare, 'function', 'composition prepare must be an in-process callback, never a CLI string');
-      compositionCleanup = await options.prepare({ env, project, pkg, root, config, cotalHome, call, cotal, check, report });
+      compositionCleanup = await options.prepare({ env, project, pkg, root, config, cotalHome, output, id, call, cotal, check, report });
       assert(compositionCleanup === undefined || typeof compositionCleanup === 'function', 'composition prepare returns an optional owned cleanup callback');
     }
     if (containerManager) {

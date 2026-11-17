@@ -49,7 +49,7 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 40 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 42 isolated
 product coordinates:
 
 | Coordinates | Count |
@@ -60,12 +60,19 @@ product coordinates:
 | Linux stand-in agent with public stop consent, separately daemon-hosted and standalone | 2 |
 | Linux paused record pointing to a real snapshot under another config home | 1 |
 | Linux host update with a foreign-UID container's bare `cotal supervise` | 1 |
+| Legacy npm 0.162.0 updates while a same-user hosted-space Manager runs from a second installation on Linux and macOS | 2 |
 | The target release's own manual updater to a synthetic next version, with the service installed, on all three platforms | 3 |
 | The target release's own manual updater to a synthetic next version after stopping the installed native service, on all three platforms | 3 |
 | POSIX manual updater to a synthetic next version with the recorded user service disabled (`systemctl --user disable --now` on Linux, `launchctl disable` + `launchctl bootout` on macOS), staying stopped and reporting `service is disabled; not started` | 2 |
 | Linux manual updater to a synthetic next version with a stopped desktop-owned user service beside the npm CLI, staying stopped and naming the desktop service owner | 1 |
 | POSIX post-update follow-on actions (second self-update, manual `npm i -g`, and installer rerun) to a second synthetic version | 6 |
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
+
+The foreign-install Manager cells pin the old CLI to 0.162.0 in a legacy npm global layout.
+A second 0.162.0 installation supervises the selected signed-in space under the same user.
+The first installation's plain update must finish with exit 0 while the second Manager remains
+answering with the same PID, creation token, instance, lifecycle and installed entry bytes.
+Archived before/after public replies are verified after the update and before fixture cleanup.
 
 The manual native-service cells disable automatic updates, install the real service without a Manager
 or agent, verify it is ready at the source version, then run `cotal update --self`. Their final daemon
