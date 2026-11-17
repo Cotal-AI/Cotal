@@ -52,8 +52,9 @@ If you already have Node.js 22.10 or newer, run:
 npm install -g cotal-ai
 ```
 
-On Linux, this route also requires glibc. npm installation refuses Alpine and other musl distributions
-because the bundled terminal library cannot run there.
+On Linux, this route also requires glibc. A package manager can install Cotal on Alpine and other musl distributions,
+but the command refuses to start there because the bundled terminal library cannot run.
+This startup check does not depend on package install scripts.
 
 Use this route on Windows.
 The shell installer does not support Windows shells.

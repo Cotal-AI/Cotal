@@ -471,8 +471,8 @@ detect_platform() {
 }
 
 # Cotal does not run on musl. Its terminal layer (node-pty) ships prebuilt native binaries
-# for glibc only. Both this installer and `npm i -g cotal-ai` refuse the unsupported
-# platform before the terminal layer can crash the manager.
+# for glibc only. This installer refuses musl before installation. A package manager
+# can install Cotal there, but the command refuses startup before loading the terminal layer.
 #
 # Official Node builds are glibc-only too, so this also covers the vendored runtime.
 is_musl() {
@@ -484,7 +484,7 @@ is_musl() {
 refuse_musl() {
   die "Cotal does not support musl systems (Alpine and similar) yet." \
     "Its terminal layer ships prebuilt native binaries for glibc only, so Cotal would" \
-    "crash here. Both this installer and \`npm i -g cotal-ai\` refuse this platform." \
+    "crash here. npm can install Cotal here, but the command refuses to start." \
     "" \
     "Use a glibc distribution (Debian, Ubuntu, Fedora, Arch) or a glibc container:" \
     "  docker run -it debian:stable bash" \

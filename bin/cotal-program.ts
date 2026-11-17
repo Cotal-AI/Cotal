@@ -32,6 +32,18 @@ if (!Number.isInteger(nodeMajor) || !Number.isInteger(nodeMinor) || nodeMajor! <
   }
   process.exit(1);
 }
+// Package managers may skip lifecycle scripts. Refuse before loading the native PTY layer.
+if (process.platform === "linux") {
+  const report = process.report as NodeJS.ProcessReport & { excludeNetwork: boolean };
+  const excludeNetwork = report.excludeNetwork;
+  report.excludeNetwork = true;
+  const { header } = report.getReport() as { header: { glibcVersionRuntime?: string } };
+  report.excludeNetwork = excludeNetwork;
+  if (!header.glibcVersionRuntime) {
+    process.stderr.write("Cotal requires glibc on Linux. Alpine and other musl distributions are not supported. Use a glibc distribution or container such as Debian, Ubuntu, or Fedora.\n");
+    process.exit(1);
+  }
+}
 const emitWarning = process.emitWarning.bind(process) as (...args: unknown[]) => void;
 process.emitWarning = ((warning: unknown, ...rest: unknown[]) => {
   if (warning !== "The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.") emitWarning(warning, ...rest);

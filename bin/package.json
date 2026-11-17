@@ -34,7 +34,6 @@
     "node": ">=22.10"
   },
   "scripts": {
-    "preinstall": "node ./preinstall.mjs",
     "test": "tsx smoke/dep-pins.smoke.ts && tsx smoke/capability-census.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
@@ -71,7 +70,6 @@
   },
   "files": [
     "dist",
-    "preinstall.mjs",
     "seeded-connectors",
     "README.md",
     "LICENSE"
