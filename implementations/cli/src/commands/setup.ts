@@ -522,16 +522,16 @@ function bundleSpace(file: string): string {
   return check.value.space;
 }
 
-/** The applications setup can set up: every installed connector. With none installed, a `harness`
- *  no official connector provides is refused as a usage error, and the remedy names `cotal ext seed`
- *  only where it runs: it refuses a source checkout unless a sandboxed release test opts in. */
+/** The applications setup can set up: every installed connector. With none installed, reject an
+ *  unknown harness and name a recovery that also restores deliberately removed connectors.
+ *  A source checkout needs an installed CLI or an explicit sandboxed seed opt-in. */
 async function harnessCandidates(harness?: string): Promise<SetupConnectorCandidate[]> {
   const candidates = await setupConnectorCandidates(await setupConnectorSurface());
   if (candidates.length > 0) return candidates;
   if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw usage(`no harness ${JSON.stringify(harness)}; the official connectors are ${Object.keys(OFFICIAL_CONNECTORS).join(", ")}`, HARNESS_REMEDY);
   const seeds = seedWriterKind() === "released" || process.env.COTAL_ALLOW_CHECKOUT_SEED === "1";
   throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no connector is installed, so there is no application to set up", {
-    remedy: seeds ? "run `cotal ext seed`" : "this cotal is not a released install, so it does not seed connectors; run setup from an installed cotal-ai, or for a sandboxed release test set COTAL_ALLOW_CHECKOUT_SEED=1 and run `cotal ext seed`",
+    remedy: seeds ? (harness === undefined ? "run `cotal ext seed --reset` to restore all built-in extensions, including any you removed" : `run \`cotal ext add ${OFFICIAL_CONNECTORS[harness]}\``) : "this cotal is not a released install, so it does not seed connectors; run setup from an installed cotal-ai, or for a sandboxed release test set COTAL_ALLOW_CHECKOUT_SEED=1 and run `cotal ext seed`",
   });
 }
 

@@ -125,6 +125,11 @@ is every connector name that the live registry or the installed extension manife
 `setupConnectorSurface` materializes each one through the same loader the rest of the CLI uses.
 `setup.ts` names no connector.
 
+If no connector is installed, setup names `cotal ext add <package>` for the requested official
+harness. Without a selected harness, it names `cotal ext seed --reset` and explains that this
+restores all built-in extensions, including deliberate removals. Ordinary seeding preserves removals.
+A source checkout still needs an installed CLI or an explicit sandboxed seed opt-in.
+
 `setupConnectorCandidates` turns the surface into choices. It reads each hint from the connector's
 own declarations:
 
