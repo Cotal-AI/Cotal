@@ -7,7 +7,7 @@ import {
   principalKey, provisionAgentDurables, processStartToken, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider,
   type ConversationApprovalPending, type ConversationApprovalRefusal, type ConversationGrant, type ConversationPending, type ConversationSelection,
 } from "@cotal-ai/core";
-import { getSpaceAuth, homeCotalDir, resolveTargetOrThrow, userAuthStateDir, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
+import { checkDiscoveryDocument, discoveryDocumentUrl, pinnedFetch, getSpaceAuth, homeCotalDir, resolveTargetOrThrow, userAuthStateDir, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
 import {
   agentCapRefusal, checkConversationMaterial, conversationRetirementPhase, discoverConversationAuthority, legacyAgentCapRefusal, selectionRefusal, signedInSpace,
   type ConversationAuthority, type ConversationMaterial,
@@ -290,6 +290,15 @@ async function provisionOnSpace(
         throw new Error("the selected mesh does not advertise connection approval v1; the saved request was retained and not sent");
       markUnderApproval(dir, record);
       const response = await request(provider)({ url: authority.url, idpUrl: record.remote.idpUrl, method: "POST", body: creationBody(record) });
+      if (response.status === 409 && response.body !== null && typeof response.body === "object" &&
+          (response.body as { error?: unknown }).error === "name-taken" && readdirSync(root).some((entry) => {
+            if (!entry.startsWith("unconfirmed-") || !existsSync(join(root, entry, RECORD))) return false;
+            try {
+              const earlier = read(join(root, entry));
+              return earlier.session === session && earlier.space === target.space && earlier.label === name;
+            } catch { return false; }
+          }))
+        throw new ConversationRequestError("this conversation's earlier identity still holds the name; revoke the offline agent at the authority, or connect under another name", false);
       const outcome = creationOutcome(record, authority, response, "creation");
       if ("refused" in outcome) {
         discard(dir);
@@ -382,12 +391,27 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean): P
     const record = read(dir);
     if (when && !when(record)) return;
     const current = await resolveTargetOrThrow({ space: record.space });
-    const target = record.retirementTarget ? { ...current, ...record.retirementTarget } : current;
+    let target = record.retirementTarget ? { ...current, ...record.retirementTarget } : current;
+    if (!record.retirementTarget && record.remote?.material && trust(target) !== record.trust) {
+      try {
+        const address = new URL(record.remote.material.exchangeUrl);
+        const response = await pinnedFetch(discoveryDocumentUrl(address).href, "the original conversation registration");
+        if (response.ok) {
+          const checked = await checkDiscoveryDocument(response);
+          if (checked.ok) {
+            const { space, server, tlsRequired, userAuth } = checked.value;
+            const original = { ...current, root: record.root, space, server, tlsRequired,
+              userAuth: { ...current.userAuth, ...userAuth } };
+            if (trust(original) === record.trust) target = original;
+          }
+        }
+      } catch { /* Unavailable original pins leave the record set aside, without authenticated recovery. */ }
+    }
     if (record.retirementTarget && trust(target) !== record.trust)
       throw new Error("conversation identity retirement pins do not match its saved trust; retirement was not sent");
     if (trust(target) !== record.trust) {
-      // Older records lack the original registration. Preserve their recovery state outside the
-      // active session key without sending their credentials to the replacement registration.
+      // Older records could not recover matching original pins. Preserve their recovery state
+      // outside the active session key without authenticating at the replacement registration.
       setAside(dir, record);
       return;
     }

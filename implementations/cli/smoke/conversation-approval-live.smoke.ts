@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -24,6 +24,7 @@ await import("@cotal-ai/auth");
 const { saveIdpSession, deleteIdpSession } = await import("../../auth/src/login.js");
 const { provisionUserApp, retireUserApp } = await import("../src/lib/app-user-identity.js");
 const { appIdentity } = await import("../src/commands/app-identity.js");
+const { remoteUserEntry } = await import("../src/commands/meshes-add.js");
 
 execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1",
   "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", join(home, "server.key"), "-out", join(home, "server.crt")], { stdio: "ignore" });
@@ -51,8 +52,8 @@ const contractGrant = (actor: string, s: Selection | null | undefined) => s
       allowPublish: [eventChannel({ owner, actor }), ...s.channels.filter((c) => c.access === "read-post").map((c) => c.channel)], subscribe: [], endpoints: [] }
   : { scope: [], role: null, allowSubscribe: [], allowPublish: [eventChannel({ owner, actor })], subscribe: [] };
 const bundle = () => ({ space: SPACE, server: "nats://127.0.0.1:1", tlsRequired: false,
-  userAuth: { provider: "cotal", idp: { url: `${base}/idp`, issuer: `${base}/idp`, audience: "cotal-cli" }, endpoints: { url: `${base}/s/${SPACE}` } },
-  policy: { events: "required" }, sentinelCreds: "fixture-sentinel",
+  userAuth: { provider: "cotal", idp: { url: `${base}/idp`, issuer: `${base}/idp`, audience: "cotal-cli" }, endpoints: { url: `${base}/registration/${SPACE}` } },
+  policy: { events: "required" as const }, sentinelCreds: "fixture-sentinel",
   cloudCapabilities: { conversationIdentity: { version: 1, url: `${base}/api/spaces/${SPACE}/conversation-identities` },
     conversationIdentitySelection: { version: 1 },
     ...(advertise === "absent" ? {} : { connectionApproval: { version: advertise === "old" ? 2 : 1 } }) },
@@ -65,11 +66,14 @@ const decide = (requestId: string, decision: { approve: Selection } | "deny" | "
   else if (decision === "expire") a.state = "expired";
   else Object.assign(a, { state: "approved", approved: decision.approve, decidedAt: new Date().toISOString() });
 };
+let originalRegistration: ReturnType<typeof bundle> | undefined;
 let movedRegistration: ReturnType<typeof bundle> | undefined;
+let enforceNames = false;
+const retiredActors = new Set<string>();
 const server = createServer({ key, cert: ca }, async (req, res) => {
   const send = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
-  if (req.url === `/s/${SPACE}/.well-known/cotal-mesh`) return send(200, bundle());
-  if (req.url === `/moved/s/${SPACE}/.well-known/cotal-mesh`) return send(200, movedRegistration);
+  if (req.url === `/registration/${SPACE}/.well-known/cotal-mesh`) return send(200, originalRegistration ?? bundle());
+  if (req.url === `/moved/registration/${SPACE}/.well-known/cotal-mesh`) return send(200, movedRegistration);
   authenticated++;
   assert.equal(req.headers.authorization, "Bearer isolated-fixture-human-session");
   if (req.method === "POST") {
@@ -82,6 +86,9 @@ const server = createServer({ key, cert: ca }, async (req, res) => {
     let a = approvals.get(body.requestId);
     if (a && a.digest !== digest) return send(409, { error: "requestId reused with a different request" });
     if (!a) {
+      if (enforceNames && [...approvals.values()].some((previous) => previous.material &&
+          JSON.parse(previous.digest).label === body.label && !retiredActors.has(previous.material.actor)))
+        return send(409, { error: "name-taken" });
       const id = base32(26);
       a = { id, url: `${base}/approve/${id}`, expiresAt: new Date(Date.now() + 600_000).toISOString(), state: "pending", digest, proposed: body.selection ?? null };
       approvals.set(body.requestId, a);
@@ -109,7 +116,7 @@ const server = createServer({ key, cert: ca }, async (req, res) => {
     if (a.state === "approved") {
       const actor = `pa_${base32(26)}`, lifecycleUid = mintLifecycleUid();
       a.material = { v: 1, requestId: body.requestId, space: SPACE, owner, actor, lifecycleUid, grant: contractGrant(actor, a.approved),
-        policy: { events: "required" }, sentinelCreds: "fixture-sentinel", exchangeUrl: movedRegistration?.userAuth.endpoints.url ?? `${base}/s/${SPACE}`,
+        policy: { events: "required" }, sentinelCreds: "fixture-sentinel", exchangeUrl: movedRegistration?.userAuth.endpoints.url ?? `${base}/registration/${SPACE}`,
         retire: { url: `${base}/api/spaces/${SPACE}/conversation-identities/${actor}?lifecycleUid=${lifecycleUid}` },
         approval: { id: a.id, decidedAt: a.decidedAt, approved: a.approved } };
       a.state = "issued";
@@ -130,6 +137,7 @@ const server = createServer({ key, cert: ca }, async (req, res) => {
     deletes++;
     const exact = [...approvals.values()].find((a) => a.material?.retire.url === `${base}${req.url}`);
     assert(exact, "retirement must name one issued lifecycle");
+    retiredActors.add(exact.material!.actor);
     return send(200, { v: 1, actor: exact.material!.actor, lifecycleUid: exact.material!.lifecycleUid, phase: "terminal", complete: true });
   }
   send(404, {});
@@ -496,25 +504,32 @@ try {
     }
     failure = undefined;
   });
-  await check("a retiring identity finishes at its recorded registration before reconnecting at moved addresses", async () => {
+  await check("a legacy retiring identity recovers matching original pins and reconnects under the same name", async () => {
+    recordMesh(remoteUserEntry(SPACE, target.server, target.root, bundle(), false, false));
+    const registeredTarget = await resolveTargetOrThrow({ space: SPACE });
+    assert.equal(registeredTarget.userAuth?.remote, true);
+    assert(registeredTarget.userAuth?.sentinelCredsPath);
     const session = "session-moved";
-    const p = await pendingOf(provisionUserApp(target, "moved", session, true));
+    const p = await pendingOf(provisionUserApp(registeredTarget, "moved", session, true));
     decide(p.requestId, { approve: EMPTY });
-    const c = await connected(provisionUserApp(target, "moved", session, true));
+    const c = await connected(provisionUserApp(registeredTarget, "moved", session, true));
     const file = join(c.retire.dir, "identity.json");
     const record = JSON.parse(readFileSync(file, "utf8"));
     assert.deepEqual(Object.keys(record.retirementTarget).sort(), ["root", "server", "space", "tlsRequired", "userAuth"]);
+    delete record.retirementTarget;
+    enforceNames = true;
     record.state = "retiring";
     writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
     const moved = bundle();
     moved.server = "nats://127.0.0.1:2";
     moved.userAuth.idp.url = `${base}/moved-idp`;
-    moved.userAuth.endpoints.url = `${base}/moved/s/${SPACE}`;
+    moved.userAuth.endpoints.url = `${base}/moved/registration/${SPACE}`;
     movedRegistration = moved;
-    recordMesh({ space: SPACE, server: moved.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
-      userAuth: moved.userAuth, policy: moved.policy as { events: "required" } });
+    recordMesh(remoteUserEntry(SPACE, moved.server, target.root, moved, false, false));
     saveIdpSession(home, moved.userAuth.idp.url, { token: "isolated-fixture-human-session", sub: "isolated-human", expiresAt: Math.floor(Date.now() / 1000) + 600 });
     const nextTarget = await resolveTargetOrThrow({ space: SPACE });
+    assert.equal(nextTarget.userAuth?.remote, true);
+    assert(nextTarget.userAuth?.sentinelCredsPath);
     const before = deletes;
     const next = await pendingOf(provisionUserApp(nextTarget, "moved", session, true));
     assert.equal(deletes, before + 1);
@@ -524,11 +539,12 @@ try {
     assert.equal(reconnected.env.COTAL_SERVERS, moved.server);
     assert.notEqual(reconnected.env.COTAL_ACTOR, c.env.COTAL_ACTOR);
     movedRegistration = undefined;
+    enforceNames = false;
     assert.notEqual(JSON.parse(readFileSync(file, "utf8")).token, record.token);
     recordMesh({ space: SPACE, server: target.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
       userAuth: target.userAuth, policy: target.policy });
   });
-  for (const changedPin of ["addresses", "issuer", "audience"] as const) {
+  for (const changedPin of ["addresses", "issuer", "audience", "no-material"] as const) {
     await check(`a legacy retiring record with changed ${changedPin} is preserved without authenticated retirement`, async () => {
       const session = `session-legacy-${changedPin}`;
       const p = await pendingOf(provisionUserApp(target, "legacy", session, true));
@@ -536,17 +552,22 @@ try {
       await connected(provisionUserApp(target, "legacy", session, true));
       const file = savedFor(p.requestId), record = JSON.parse(readFileSync(file, "utf8"));
       delete record.retirementTarget;
+      if (changedPin === "no-material") delete record.remote.material;
       record.state = "retiring";
       writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
       const moved = bundle();
       moved.server = "nats://127.0.0.1:2";
       moved.userAuth.idp.url = `${base}/moved-idp`;
-      moved.userAuth.endpoints.url = `${base}/moved/s/${SPACE}`;
+      moved.userAuth.endpoints.url = `${base}/moved/registration/${SPACE}`;
       if (changedPin === "issuer") moved.userAuth.idp.issuer = `${base}/different-issuer`;
       if (changedPin === "audience") moved.userAuth.idp.audience = "different-audience";
       movedRegistration = moved;
       recordMesh({ space: SPACE, server: moved.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
         userAuth: moved.userAuth, policy: moved.policy as { events: "required" } });
+      originalRegistration = bundle();
+      if (changedPin === "addresses") originalRegistration.server = "nats://127.0.0.1:3";
+      if (changedPin === "issuer") originalRegistration.userAuth.idp.issuer = `${base}/different-issuer`;
+      if (changedPin === "audience") originalRegistration.userAuth.idp.audience = "different-audience";
       const before = authenticated, beforeDeletes = deletes;
       const next = await pendingOf(provisionUserApp(await resolveTargetOrThrow({ space: SPACE }), "legacy", session, true));
       assert.equal(authenticated, before + 1, "only the fresh request is authenticated");
@@ -554,38 +575,45 @@ try {
       assert.notEqual(next.requestId, p.requestId);
       const preserved = join(home, "app-identities", `unconfirmed-${record.requestId}`, "identity.json");
       assert.deepEqual(JSON.parse(readFileSync(preserved, "utf8")), record);
+      originalRegistration = undefined;
       movedRegistration = undefined;
       recordMesh({ space: SPACE, server: target.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
         userAuth: target.userAuth, policy: target.policy });
     });
   }
-  await check("a moved registration reconnects when only its new sign-in remains", async () => {
+  await check("a name conflict after set-aside explains the earlier identity and both remedies", async () => {
     const session = "session-missing-login";
     const p = await pendingOf(provisionUserApp(target, "moved", session, true));
     decide(p.requestId, { approve: EMPTY });
     const c = await connected(provisionUserApp(target, "moved", session, true));
     const file = join(c.retire.dir, "identity.json"), record = JSON.parse(readFileSync(file, "utf8"));
     assert.deepEqual(Object.keys(record.retirementTarget).sort(), ["root", "server", "space", "tlsRequired", "userAuth"]);
+    delete record.retirementTarget;
+    enforceNames = true;
     record.state = "retiring";
     writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
     const moved = bundle();
     moved.server = "nats://127.0.0.1:2";
     moved.userAuth.idp.url = `${base}/moved-idp`;
-    moved.userAuth.endpoints.url = `${base}/moved/s/${SPACE}`;
+    moved.userAuth.endpoints.url = `${base}/moved/registration/${SPACE}`;
     movedRegistration = moved;
     recordMesh({ space: SPACE, server: moved.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
       userAuth: moved.userAuth, policy: moved.policy as { events: "required" } });
     deleteIdpSession(home, `${base}/idp`);
     const before = deletes;
-    const nextTarget = await resolveTargetOrThrow({ space: SPACE });
-    const next = await pendingOf(provisionUserApp(nextTarget, "moved", session, true));
+    const unreadable = join(home, "app-identities", "unconfirmed-000-unreadable");
+    mkdirSync(unreadable, { mode: 0o700 });
+    writeFileSync(join(unreadable, "identity.json"), "not JSON", { mode: 0o600 });
+    const refused = await cli({ name: "moved", space: SPACE, session, events: true });
+    assert.equal(refused.code, 1);
+    assert.equal(refused.reply.retryable, false);
+    assert.match(refused.reply.error, /this conversation's earlier identity still holds the name/);
+    assert.match(refused.reply.error, /revoke the offline agent at the authority, or connect under another name/);
     assert.equal(deletes, before, "no retirement credential goes to the replacement");
-    assert.notEqual(next.requestId, p.requestId);
     assert(existsSync(join(home, "app-identities", `unconfirmed-${record.requestId}`, "identity.json")));
-    decide(next.requestId, { approve: EMPTY });
-    await connected(provisionUserApp(nextTarget, "moved", session, true));
+    enforceNames = false;
   });
-  assert.equal(assertions, 43);
+  assert.equal(assertions, 44);
   console.log(`conversation-approval-live: ${assertions} checks passed; isolated HTTPS fixture authority and fixture human decision, not hosted acceptance`);
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
