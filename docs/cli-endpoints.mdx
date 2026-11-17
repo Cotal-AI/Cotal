@@ -209,6 +209,8 @@ conflicting current-folder and selected-root account authorities refuse before p
 registered as open refuses `UNSUPPORTED`: it issues no credentials, so it has no signer to export.
 A per-user-auth space refuses `UNSUPPORTED` as `auth mint` does there, naming the login or
 enrollment path, and nothing is written.
+After a local static space is stopped, signer export can still resolve its retained broker
+configuration and validated trust without starting a broker or repeating its address.
 
 
 ### Protected output

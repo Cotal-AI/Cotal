@@ -1007,6 +1007,18 @@ if (process.platform === "linux") {
   const selected = await json(["use", "demo"]);
   check("use promotes the same adopted selection to explicit", selected.status === 0 && readCurrentSelection()?.source === "explicit" && selected.env?.outcome === "ok", shown(selected));
   check("use selects it and names its root", selected.status === 0 && getCurrent() === "demo" && selected.env?.result.preparedRoot === fresh && selected.env.result.currentRecorded === false, shown(selected));
+  const besidePrepared = await run(["meshes", "add", "beside-prepared", "--server", DEAD, "--root", root, "--mode", "open", "--force"], {}, fresh);
+  const stillPrepared = await json(["use"], fresh);
+  check("meshes add preserves an explicitly selected prepared space and does not announce a new default",
+    besidePrepared.status === 0 && findMesh("beside-prepared")?.server === DEAD && !besidePrepared.stdout.includes("it is now the default mesh") &&
+      stillPrepared.env?.result.current === "demo" && stillPrepared.env.result.preparedState === "prepared" && readCurrentSelection()?.source === "explicit",
+    { add: shown(besidePrepared), selection: stillPrepared.env?.result });
+  const preparedTarget = await json(["who"], fresh);
+  check("after registration, commands still refuse the selected prepared space instead of targeting the new entry",
+    refused(preparedTarget, 2, "TARGET_UNAVAILABLE") && preparedTarget.env?.target?.space === "demo", shown(preparedTarget));
+  const removedBesidePrepared = await run(["meshes", "rm", "beside-prepared"]);
+  check("removing that registration preserves the prepared selection",
+    removedBesidePrepared.status === 0 && getCurrent() === "demo" && readCurrentSelection()?.source === "explicit", shown(removedBesidePrepared));
   // The default report says it under Spaces; the recorded-meshes diagnostics say it again under --verbose.
   const status = await run(["status", "--plain"]);
   check("status says the selected space is prepared, not started", status.status === 0 && /Selected space 'demo' is prepared, not started/.test(status.stdout), shown(status));
@@ -1254,6 +1266,19 @@ if (process.platform === "linux") {
   check("...and use reports it as stopped, not as prepared and not started",
     stoppedUse.env?.result.preparedState === "stopped" && stoppedUse.env.result.lastOperation === "`cotal down`, completed"
       && stoppedUseHuman.stdout.includes(`stopped; its last operation, \`cotal down\`, completed - start it again with \`cotal up\` in ${fresh}`) && !/not started/.test(stoppedUseHuman.stdout), { json: stoppedUse.env?.result, human: stoppedUseHuman.stdout });
+  const selectStopped = await json(["use", "demo"], fresh);
+  const besideStopped = await run(["meshes", "add", "beside-stopped", "--server", DEAD, "--root", root, "--mode", "open", "--force"], {}, fresh);
+  const stillStopped = await json(["use"], fresh);
+  check("meshes add preserves an explicitly selected stopped space and does not announce a new default",
+    selectStopped.status === 0 && besideStopped.status === 0 && findMesh("beside-stopped")?.server === DEAD && !besideStopped.stdout.includes("it is now the default mesh") &&
+      stillStopped.env?.result.current === "demo" && stillStopped.env.result.preparedState === "stopped" && readCurrentSelection()?.source === "explicit",
+    { add: shown(besideStopped), selection: stillStopped.env?.result });
+  const stoppedTarget = await json(["who"], fresh);
+  check("after registration, commands still refuse the selected stopped space instead of targeting the new entry",
+    refused(stoppedTarget, 2, "TARGET_UNAVAILABLE") && stoppedTarget.env?.target?.space === "demo", shown(stoppedTarget));
+  const removedBesideStopped = await run(["meshes", "rm", "beside-stopped"]);
+  check("removing that registration preserves the stopped selection",
+    removedBesideStopped.status === 0 && getCurrent() === "demo" && readCurrentSelection()?.source === "explicit", shown(removedBesideStopped));
   // A second bare down of the stopped stack stops nothing: it needs no --yes, writes nothing, and
   // every presentation shows the same no-op.
   const journalBytes = () => readFileSync(stackJournalPath(fresh), "utf8");

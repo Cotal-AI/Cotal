@@ -491,12 +491,10 @@ export function validateUpArguments(args: ParsedArgs): void {
     if (args.values.open === true) throw new CommandFailure("refused", "USAGE_INVALID", "--auth-timeout sets the auth callout's timeout, and an open space has no auth callout; nothing was started", { remedy: "drop --auth-timeout, or start a user-auth space with --user-auth" });
     if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--auth-timeout cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}, which starts the broker its own record describes; nothing was started`, { remedy: "start it without --auth-timeout; a recorded timeout is rendered again" });
   }
-  // The payload limit is rendered by the auth-mode broker configuration. The open broker renders a
-  // different one that carries no limit, and a manifest or a restore starts the broker its own
-  // record describes, so none of the three takes the flag.
+  // Both broker modes render the payload limit. A manifest or a restore starts the broker its own
+  // record describes, so neither takes the flag.
   const requestedPayload = parseMaxPayload(args.values["max-payload"] as string | undefined);
   if (requestedPayload !== undefined) {
-    if (args.values.open === true) throw new CommandFailure("refused", "USAGE_INVALID", "--max-payload sets the broker's message size limit, which the open broker configuration does not render; nothing was started", { remedy: "drop --max-payload, or start an auth space without --open" });
     if (args.values.file !== undefined || args.values.restore !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload cannot be combined with ${args.values.file !== undefined ? "--file/-f" : "--restore"}, which starts the broker its own record describes; nothing was started`, { remedy: "start it without --max-payload; a recorded limit is rendered again" });
     // A space that admits service endpoints is a space whose auth host asserts the caller payload
     // precondition at startup, and that assertion REFUSES below the floor, so the auth context does
@@ -2357,12 +2355,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // the server, and the hostname is what the certificate has to match).
   assertServesDialHost(transport, new URL(server).hostname);
   const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore, false, { authTimeout, maxPayload, accountResolver, manager: values["no-manager"] !== true }) : undefined;
+  const brokerMaxPayload = setup?.maxPayload ?? maxPayload ?? readBrokerPolicy(cotalRoot())?.maxPayload;
   const port = Number(new URL(server).port) || 4222;
   // Both modes go through a RENDERER, never bare CLI flags. Open mode used to start from
   // `-js -sd … -p … -a …`, which never called a renderer at all — so the required transport union
   // protected the auth path and was silent on the open one, and a cert/key pair passed to an
   // open-mode `up` would have been accepted while the listener came up in cleartext.
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { port, host, transport, maxFileStore });
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { port, host, transport, maxFileStore, maxPayload: brokerMaxPayload });
   const natsArgs = [
     "-c", confPath,
     ...(boundListener ? ["--name", boundListener.serverName] : []),
@@ -2541,7 +2540,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       })();
     };
     const { authService, controlPlane } = await serveReadyListener({
-      child, server, space, storeDir, setup, seedFile, transport,
+      child, server, space, storeDir, setup, seedFile, transport, maxPayload: brokerMaxPayload,
       ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       host: values.host,
@@ -3547,7 +3546,7 @@ export function controllerStackNative(): StackUpNative {
   return {
     prepareBroker: async (opts) => {
       const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.logFile !== undefined ? { logFile: opts.logFile } : {}), ...(opts.logfileSizeLimit !== undefined ? { logfileSizeLimit: opts.logfileSizeLimit } : {}), ...(opts.logfileMaxNum !== undefined ? { logfileMaxNum: opts.logfileMaxNum } : {}), ...(opts.authTimeout !== undefined ? { authTimeout: opts.authTimeout } : {}), ...(opts.maxPayload !== undefined ? { maxPayload: opts.maxPayload } : {}), ...(opts.accountResolver !== undefined ? { accountResolver: opts.accountResolver } : {}), ...(opts.noManager ? { noManager: true } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
-      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}), ...(prepared.setup?.maxPayload !== undefined ? { maxPayload: prepared.setup.maxPayload } : {}), ...(prepared.setup?.accountResolver !== undefined ? { accountResolver: prepared.setup.accountResolver } : {}) };
+      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}), ...(prepared.maxPayload !== undefined ? { maxPayload: prepared.maxPayload } : {}), ...(prepared.setup?.accountResolver !== undefined ? { accountResolver: prepared.setup.accountResolver } : {}) };
     },
     initializeStreams: (server, space, setup, seedFile, recreateIssuedStores, recreateMembershipStore) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined, recreateIssuedStores, recreateMembershipStore, true),
     recreateDeletedStreams: ({ seed, ...opts }) => recreateDeletedStreams({ ...opts, ...(seed !== undefined ? { seed: seed as ChannelRegistryFile } : {}) }),
@@ -4107,6 +4106,7 @@ async function serveReadyListener(l: {
   space: string;
   storeDir: string;
   setup?: Awaited<ReturnType<typeof authSetup>>;
+  maxPayload?: number;
   seedFile?: ChannelRegistryFile;
   /** `--recreate-issued-stores`: the new backup directory the fresh boot's stream setup uses. */
   recreateIssuedStores?: string;
@@ -4175,7 +4175,7 @@ async function serveReadyListener(l: {
   // Commit the policy only for a listener that is up and recorded (S5), and before the control
   // plane (S9). startDeliveryWithBroker is HANDED the transport decision, so it does not depend on
   // the file at all.
-  commitTransportPolicy(cotalRoot(), transport, l.quietBoot, server, { authTimeout: setup?.authTimeout, maxPayload: setup?.maxPayload, accountResolver: setup?.accountResolver });
+  commitTransportPolicy(cotalRoot(), transport, l.quietBoot, server, { authTimeout: setup?.authTimeout, maxPayload: l.maxPayload ?? setup?.maxPayload, accountResolver: setup?.accountResolver });
   // An open mesh has no delivery daemon. Its mode is passed down because the root can still hold a
   // static stack's accounts. Class-2 credential renewal is NOT wired here: the MANAGER is the
   // renewal owner (it is resident in every mesh mode, where a foreground `up` process is not).
@@ -4312,10 +4312,11 @@ export async function prepareBrokerStart(opts: DetachOpts) {
     try { fd = openBrokerLog(logFile); } finally { if (fd !== undefined) closeSync(fd); }
   }
   const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport, opts.rotateSys, opts.maxFileStore, opts.quietBoot, { authTimeout: opts.authTimeout, maxPayload: opts.maxPayload, accountResolver: opts.accountResolver, manager: opts.noManager !== true, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum }) : undefined;
+  const maxPayload = setup?.maxPayload ?? opts.maxPayload ?? readBrokerPolicy(root)?.maxPayload;
   const port = Number(new URL(server).port) || 4222;
   // Same rule as the foreground path: every route to a listener names its transport (see
   // `writeOpenBrokerConf`). Detach must not be the mode where the fence quietly does not apply.
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { port, host, transport, maxFileStore: opts.maxFileStore, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum });
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { port, host, transport, maxFileStore: opts.maxFileStore, maxPayload, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum });
   // Trust preparation awaits; the pinned store is checked again before its config is handed back.
   if (opts.existingStore) recheckExistingStore(opts.existingStore, { space, storeDir });
   const args = [
@@ -4323,7 +4324,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
     ...(opts.boundListener ? ["--name", opts.boundListener.serverName] : []),
   ];
   const { path: bin, source, version } = await resolveNatsServer();
-  return { root, server, space, useAuth, storeDir, seedFile, host, transport, setup, confPath, args, bin, source, version };
+  return { root, server, space, useAuth, storeDir, seedFile, host, transport, setup, maxPayload, confPath, args, bin, source, version };
 }
 
 /**
@@ -4351,7 +4352,7 @@ export async function startMeshDetached(
   // entirely cannot carry a mandatory decision.
   opts: DetachOpts,
 ): Promise<{ server: string; pid: number; executable: string; controlPlane: boolean; authService: boolean; deliveryResponderBound: boolean | null; delivery: boolean; deliveryLost?: string; manager: boolean }> {
-  const { server, space, useAuth, storeDir, seedFile, transport, setup, args, bin, source, version } = await prepareBrokerStart(opts);
+  const { server, space, useAuth, storeDir, seedFile, transport, setup, maxPayload, args, bin, source, version } = await prepareBrokerStart(opts);
   await seedBeforeLaunch();
   const logPath = cotalPath("nats.log");
   const fd = openBrokerLog(logPath);
@@ -4364,7 +4365,7 @@ export async function startMeshDetached(
 
   await awaitSpawnedListener({ child, executable: { path: bin, source, version }, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
   const { authService, controlPlane } = await serveReadyListener({
-    child, server, space, storeDir, setup, seedFile, transport,
+    child, server, space, storeDir, setup, seedFile, transport, maxPayload,
     ...(opts.recreateIssuedStores !== undefined ? { recreateIssuedStores: opts.recreateIssuedStores } : {}),
     ...(opts.recreateMembershipStore ? { recreateMembershipStore: true } : {}),
     host: opts.host,
@@ -5580,11 +5581,11 @@ function checkStartStore(storeDir: string | undefined, space: string): void {
  * mode through a renderer is what makes the union total: there is now no route to a listener that
  * does not state its transport.
  */
-function writeOpenBrokerConf(storeDir: string, space: string, opts: { port: number; host: string; transport: BrokerTransport; maxFileStore?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number }): string {
+function writeOpenBrokerConf(storeDir: string, space: string, opts: { port: number; host: string; transport: BrokerTransport; maxFileStore?: number; maxPayload?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number }): string {
   const confPath = cotalPath("server-open.conf");
   writeBrokerConfig(
     confPath,
-    namedOpenConfig(openServerConfig({ port: opts.port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, logFile: opts.logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum, transport: opts.transport }), space),
+    namedOpenConfig(openServerConfig({ port: opts.port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, maxPayload: opts.maxPayload, logFile: opts.logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum, transport: opts.transport }), space),
   );
   return confPath;
 }

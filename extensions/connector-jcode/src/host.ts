@@ -478,7 +478,7 @@ export async function runJcodeHost(): Promise<void> {
 
   // The card is built from the process environment. That environment no longer has COTAL_EVENTS,
   // so the decision read above is what the card reports.
-  const agent = new MeshAgent(config, undefined, { eventsArmed });
+  const agent = new MeshAgent(config, undefined, { eventsArmed, eventsWorkspaceRoot });
   const relayServer = await startRelay(agent, config, relay);
   writeMcpConfig(home, relay, config);
 

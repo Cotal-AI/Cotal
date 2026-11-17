@@ -26,6 +26,7 @@ A bare `cotal spawn <persona>` can then find the selected mesh's credentials and
 
 A selected mesh stays selected when its broker is offline.
 Commands report that failure instead of connecting elsewhere.
+Registering another mesh with `space add` or `meshes add` also keeps a selected prepared or stopped space selected.
 If the selected entry no longer exists, the command refuses with `TARGET_NOT_FOUND`.
 
 With no selection, Cotal first uses the current project's `.cotal/`.

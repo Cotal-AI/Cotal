@@ -50,8 +50,11 @@ console.log("1. the positive control: a complete search still finds, and still r
   const both = locateSeatIn([answered(A, "other"), answered(B, "elsewhere")], "seat");
   check("a name on NEITHER of two managers that both answered is absent (a complete search concludes)",
     both.kind === "absent" && both.checked === 2 && both.instances.join() === [A, B].join(), both);
-  check("a single answering manager stays unpinned (no ambiguity to resolve)",
-    locateSeatIn([answered(A)], "seat").kind === "unpinned");
+  check("a single answering manager proves absence when it holds no seat",
+    locateSeatIn([answered(A)], "seat").kind === "absent");
+  const single = locateSeatIn([answered(A, "seat")], "seat");
+  check("a single hosting manager is pinned rather than using the class queue", single.kind === "pin" && single.instanceId === A, single);
+  check("a single refused read establishes no absence", locateSeatIn([refused(A)], "seat").kind === "unknown");
   // A name two answering managers both run picks neither, rather than the first one asked.
   const twice = locateSeatIn([answered(B, "seat"), answered(A, "seat")], "seat");
   check("a name on BOTH of two answering managers is several, naming each, never a pin",
@@ -124,7 +127,7 @@ console.log("\n4. a name held on several managers is a choice among those manage
 
 // DECLARED, not implied: a suite that ends early reddens no line, and `fail === 0` with a zero exit
 // reads as a pass in every one of those ways out. The count is checked however the process leaves.
-const EXPECTED_CELLS = 23;
+const EXPECTED_CELLS = 25;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {

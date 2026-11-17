@@ -304,7 +304,9 @@ holds when every recorded mesh is down and none is selected. A remote user mesh,
 `cotal meshes add --mode user`, is named and skipped when no `cotal manager start` or
 `cotal supervise` process that loaded this install may be serving its space. A supervisor whose
 command names another install's CLI entry is untouched by replacing this one, so it is no custody
-here, the same as a manager that runs on another machine. A node binary or a loader argument does
+here, the same as a manager that runs on another machine. On Linux, this check reads the kernel's
+argument boundaries, so spaces in the installed CLI path do not prevent attribution.
+A node binary or a loader argument does
 not name that entry. A supervisor under another numeric user ID counts only when an absolute
 argument resolves to this installation's CLI entry. This keeps a supervisor launched through sudo
 against the same installation in the continuity check. For the same user, a different mount
@@ -429,6 +431,9 @@ It performs no install, reconcile or process restart and takes no mesh selection
 afterwards, no log files and no npm update notifier, so it leaves nothing in npm's cache, log
 directory or notifier stamp. Missing registry data or an unreadable extension inventory remains
 unknown or partial, never an empty successful check.
+If the extension manifest is corrupt, the check still reports the running and registry versions,
+leaves the manifest unchanged and exits 4. JSON reports `extensions: null`, partial completeness
+and the `EXTENSION_INVENTORY_UNREADABLE` warning.
 
 The report compares first-party recorded versions with the running CLI. It does not inspect
 package contents, signatures or loaded process generations. `cotal update` and `update --self`
@@ -643,6 +648,9 @@ the seed keeps stdout to itself:
 | `--repair` | Recover after a seed that failed or was interrupted, or a lost authority (rebuilds that seed's connector; restores the removed-vs-never-seeded record from its durable backup). Also reinstalls a seeded built-in whose entry file is gone or whose `package.json` is not JSON or has no `version`. |
 | `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current. Refuses to downgrade a newer shared store. |
+
+Maintenance flags may precede `seed`: `cotal ext --repair seed` is equivalent to
+`cotal ext seed --repair`, including when the extensions manifest is corrupt.
 
 A seed that fails names the connector and the reason, such as npm missing from PATH. Until
 `cotal ext seed --repair` finishes it, each command that seeds refuses. The refusal says whether

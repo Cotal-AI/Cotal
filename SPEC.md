@@ -4079,6 +4079,9 @@ the persona would carry that the definer does not hold under the same delegation
 includes a saved list a redefine keeps by omitting the field. The check and the write MUST see the
 same catalog entry. A spawn of the persona is bounded again against its spawner. Revision 45 of the manager cluster adds both fields; both inputs
 are closed, so a revision-44 contract rejects either.
+An ownership refusal of `define-persona` MUST carry `permission-denied` with outcome
+`not-executed`. The reference manager includes an `ai.cotal.persona-ownership-refused` error detail with
+`operatorOwned: boolean`, so a client can explain the refusal without copying persona content.
 `endpoints`, on the inline record, on `define-persona` and in a catalog file, is a list of closed
 `{ endpoint, commands, instanceId? }` entries naming the endpoint commands the helper is handed. The
 manager MUST refuse, whatever the caller's standing, a single-label endpoint (§13.2), a reserved

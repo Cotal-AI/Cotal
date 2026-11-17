@@ -1442,7 +1442,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "cotal_web_session=<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP."
+            "description": "cotal_web_session=<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP."
           }
         }
       },
