@@ -20,7 +20,7 @@ export interface ProcessIdentity {
   start: string;
 }
 
-export interface ProcessStat extends ProcessIdentity {
+interface ProcessStat extends ProcessIdentity {
   parentPid: number;
   /** The process group, which the process table shows for any process, readable environment or not. */
   group: number;
@@ -181,7 +181,7 @@ function captureLaunchProcesses(identityValue: string, probe: ProcessIdentityPro
 }
 
 /** Every PID this seat's private home records. The caller must still prove ownership. */
-export function recordedTreePids(jcodeHome: string): number[] {
+function recordedTreePids(jcodeHome: string): number[] {
   const pids = new Set<number>();
   try {
     const registry = JSON.parse(readFileSync(join(jcodeHome, "servers.json"), "utf8")) as Record<string, { pid?: unknown }>;
@@ -253,7 +253,7 @@ async function waitGone(pids: number[], timeoutMs: number): Promise<boolean> {
 
 const LAUNCH_RECORD_FILE = "cotal-launch.json";
 
-export interface LaunchRecord {
+interface LaunchRecord {
   /** The launch-bound environment identity only this launch's Jcode descendants carry. */
   identity: string;
   /** Immutable identity of the connector host that owns those descendants. */
@@ -446,7 +446,7 @@ export function discardOnceReceipt(home: string, uid: string): void {
   rmSync(onceRecordPath(home, uid), { force: true });
 }
 
-export interface StopOrphanedTreeOptions {
+interface StopOrphanedTreeOptions {
   home: string;
   gracefulWaitMs?: number;
   killWaitMs?: number;
@@ -494,7 +494,7 @@ export async function stopOrphanedTree(options: StopOrphanedTreeOptions): Promis
   return targets;
 }
 
-export interface StopPrivateTreeOptions {
+interface StopPrivateTreeOptions {
   jcodeHome: string;
   /** Immutable identity of the bridge child spawned by this launch. */
   launch: ProcessIdentity;
