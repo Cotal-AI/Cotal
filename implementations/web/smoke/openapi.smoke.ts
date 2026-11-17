@@ -81,7 +81,7 @@ try {
   const cookie = exchange.headers.get('set-cookie')?.split(';')[0];
   assert(cookie);
   assert(cookie.startsWith('cotal_web_session='));
-  assert(exchange.headers.get('set-cookie')?.includes('HttpOnly; SameSite=Strict'));
+  assert(exchange.headers.get('set-cookie')?.includes('HttpOnly; SameSite=Lax'));
   const spent = await fetch(launchUrl, { redirect: 'manual' });
   assert.equal(spent.status, 401);
   conforms(responseSchema('/api/roster', 401), await spent.json());

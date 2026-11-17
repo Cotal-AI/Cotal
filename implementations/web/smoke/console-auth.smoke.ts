@@ -19,8 +19,10 @@
  * that ignores its verdict is an unauthenticated surface with a passing test.
  *
  * NOT DRIVEN, and no cell implies it: a real browser's cookie jar, and a real cross-site request. The
- * `SameSite=Strict` attribute is asserted as EMITTED, not as ENFORCED — enforcement is the browser's
- * and needs a browser. That boundary is stated rather than left for a reader to assume.
+ * `SameSite=Lax` attribute is asserted as EMITTED, not as ENFORCED — enforcement is the browser's
+ * and needs a browser. That boundary is stated rather than left for a reader to assume. It was
+ * `SameSite=Strict`, which withheld the session from a link on another site, so a homepage tile
+ * opened the dashboard with 401.
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
@@ -150,8 +152,8 @@ const req = (headers: Record<string, string | undefined> = {}, url = "/"): Req =
   // THE CASE THAT MATTERS MOST, and the suite did not have it until a mutation went looking. Moving
   // the origin check below the session check leaves every cell above green — because all of them
   // describe a request with NO session. The dangerous request is the opposite: the operator's own
-  // browser HAS a session, and another site's page is trying to ride it. `SameSite=Strict` should
-  // stop the cookie ever being sent, but that is the browser's promise, not ours, and this is the
+  // browser HAS a session, and another site's page is trying to ride it. `SameSite=Lax` should keep
+  // the cookie off that page's requests, but that is the browser's promise, not ours, and this is the
   // check that holds if the promise is not kept.
   const g4 = makeAuthGate(PORT);
   const authed = g4.check(req() as never, q(`k=${g4.launchToken}`)) as { exchange: string };
@@ -438,8 +440,8 @@ check("an exchange verdict sets the session cookie under the EXACT name, carryin
 check("…Path=/, as a whole attribute", cookieAttrs.includes("Path=/"), cookieAttrs);
 check("…HttpOnly as a WHOLE attribute, so page script cannot read it (`NotHttpOnly` must not satisfy this)",
   cookieAttrs.includes("HttpOnly"), cookieAttrs);
-check("…SameSite=Strict as a WHOLE attribute (EMITTED here; enforced by the browser)",
-  cookieAttrs.includes("SameSite=Strict"), cookieAttrs);
+check("…SameSite=Lax as its one SameSite attribute, so a link from another site carries it (EMITTED here; enforced by the browser)",
+  cookieAttrs.includes("SameSite=Lax") && cookieAttrs.filter((attr) => /^SameSite=/i.test(attr)).length === 1, cookieAttrs);
 check("…and redirects to the same path WITHOUT the token, so the spent secret leaves the address bar",
   ex.status === 302 && ex.headers.location === "/graph", { status: ex.status, location: ex.headers.location });
 check("…and EXECUTION STOPS after the redirect (the exchange answers; it does not also serve the route)",
