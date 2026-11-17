@@ -282,15 +282,80 @@ jobs:
           name: release-candidate
           path: ${{ runner.temp }}/release-candidate
           if-no-files-found: error
+  release-next:
+    needs: [select, release-native, release-pack]
+    if: needs.select.outputs.phase == 'candidate' && needs.release-native.result == 'success' && needs.release-pack.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      artifact: ${{ steps.next.outputs.artifact-id }}
+      digest: ${{ steps.next.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.select.outputs.source }}
+          path: product
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Require pack-runner disk budget
+        run: node -e "const s=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(s.bavail*s.bsize<20*1024**3)throw Error('Less than 20 GiB free before candidate installation and build')"
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+        working-directory: product
+      - run: pnpm --workspace-concurrency 3 build
+        working-directory: product
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/release-natives
+      - name: Assemble and guard the complete source-matched native closure
+        working-directory: product
+        run: |
+          node scripts/seat-assemble-natives.mjs
+          node scripts/workspace-assemble-natives.mjs
+          node packages/seat/scripts/assert-shipped-natives.mjs
+          node packages/workspace/scripts/assert-shipped-natives.mjs
+        env:
+          NATIVE_SOURCE: ${{ needs.select.outputs.source }}
+          SEAT_NATIVE_X64: ${{ runner.temp }}/release-natives/release-seat-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-seat-linux-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-seat-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-seat-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/release-natives/release-seat-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/release-natives/release-seat-win32-arm64/peercred.node
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/release-natives/release-workspace-win32-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-workspace-win32-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-workspace-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-workspace-darwin-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.release-pack.outputs.artifact }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/release-candidate
+      - name: Pack synthetic next closure from a separate clean product checkout
+        run: node scripts/pack-candidate-next.mjs --source-root "$GITHUB_WORKSPACE/product" --candidate "$RUNNER_TEMP/release-candidate" --output "$RUNNER_TEMP/release-next"
+      - uses: actions/upload-artifact@v4
+        id: next
+        with:
+          name: release-next
+          path: ${{ runner.temp }}/release-next
+          if-no-files-found: error
   release-cells:
-    needs: [select, release-pack]
-    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && (needs.select.outputs.phase == 'published' || needs.release-pack.result == 'success')
+    needs: [select, release-pack, release-next]
+    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && (needs.select.outputs.phase == 'published' || (needs.release-pack.result == 'success' && needs.release-next.result == 'success'))
     name: upgrade-${{ matrix.id }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 22
+      max-parallel: 25
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
@@ -332,7 +397,7 @@ jobs:
           writeFileSync(process.env.RUNNER_TEMP + '/upgrade-evidence/candidate-origin.json', JSON.stringify({ source: manifest.source, artifact: process.env.CANDIDATE_ARTIFACT, digest: process.env.CANDIDATE_DIGEST }));
           NODE
       - name: Prepare disposable Linux user manager
-        if: matrix.platform == 'linux' && (matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'daemon-self' || matrix.scenario == 'agent-stop-consent')
+        if: matrix.platform == 'linux' && (matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'daemon-self' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'agent-stop-consent')
         shell: bash
         run: |
           set -euo pipefail
@@ -374,12 +439,13 @@ jobs:
           const directory = process.env.RUNNER_TEMP + '/upgrade-evidence';
           mkdirSync(directory, { recursive: true });
           writeFileSync(directory + '/coordinate.json', JSON.stringify(cell));
-          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
           const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
           const args = ['scripts/automatic-update-platform-baseline.mjs', '--source', cell.sourceVersion, '--layout', cell.channel, '--state', states[cell.scenario], '--method', method, '--expected-target', cell.targetVersion, '--output', directory];
           if (process.env.PHASE === 'candidate') {
             const candidate = process.env.RUNNER_TEMP + '/release-candidate';
             args.push('--candidate', candidate, '--direction', 'B');
+            if (cell.scenario === 'candidate-next-daemon-self') args.push('--candidate-next', process.env.RUNNER_TEMP + '/release-next');
             if (method === 'installer') args.push('--candidate-installer', candidate + '/installer.sh');
           }
           if (['agent-stop-consent', 'standalone-stop-consent'].includes(cell.scenario)) args.push('--stop-agents', 'true');
@@ -415,7 +481,7 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   release-summary:
-    needs: [select, release-native, release-pack, release-cells]
+    needs: [select, release-native, release-pack, release-next, release-cells]
     if: always() && needs.select.outputs.applicable == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -451,6 +517,8 @@ jobs:
         env:
           EXPECTED_CANDIDATE_ARTIFACT: ${{ needs.release-pack.outputs.artifact }}
           EXPECTED_CANDIDATE_DIGEST: ${{ needs.release-pack.outputs.digest }}
+          EXPECTED_NEXT_ARTIFACT: ${{ needs.release-next.outputs.artifact }}
+          EXPECTED_NEXT_DIGEST: ${{ needs.release-next.outputs.digest }}
           EXPECTED_HARNESS_SOURCE: ${{ github.sha }}
         run: |
           node --input-type=module <<'NODE'
@@ -503,17 +571,21 @@ jobs:
               const harness = execFileSync('git', ['show', report.harnessSource + ':scripts/automatic-update-platform-baseline.mjs']);
               const nativeHarness = report.platform === 'win32' ? Buffer.from(harness.toString().replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')) : harness;
               assert.equal(report.harnessSha256, digest(nativeHarness), 'raw harness source hash mismatch');
-              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
               const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
               assert.equal(report.layout, cell.channel);
               assert.equal(report.state, states[cell.scenario]);
               assert.equal(report.method, method);
-              assert.equal(report.source, plan.sourceVersion);
-              assert.equal(report.sourceRequested, plan.sourceVersion);
-              assert.equal(cell.sourceVersion, plan.sourceVersion);
-              assert.equal(report.target, plan.targetVersion);
+              const next = cell.scenario === 'candidate-next-daemon-self';
+              assert.equal(report.source, cell.sourceVersion);
+              assert.equal(report.sourceRequested, cell.sourceVersion);
+              assert.equal(report.target, cell.targetVersion);
+              if (!next) {
+                assert.equal(cell.sourceVersion, plan.sourceVersion);
+                assert.equal(cell.targetVersion, plan.targetVersion);
+              }
               if (plan.phase === 'candidate') {
-                assert.equal(report.tier, 'candidate-B (synthetic registry, real native processes)');
+                assert.equal(report.tier, next ? 'candidate-next (synthetic registry, real native processes)' : 'candidate-B (synthetic registry, real native processes)');
                 assert.equal(report.candidate?.direction, 'B');
                 assert.equal(report.candidate?.source, plan.sourceSHA, 'raw candidate source must match before refusal matching');
                 assert.equal(report.environment?.registryOverridden, true);
@@ -533,11 +605,11 @@ jobs:
               assert(!report.cleanupFailure && !report.error, 'cleanup or harness error cannot be a known refusal');
               assert.equal(report.cleanupSafety?.passed, true, 'cleanup must be confirmed before grading');
               const ok = name => report.assertions.some(a => a.name === name && a.passed === true);
-              const manualFinalState = cell.scenario === 'daemon-self'
-                ? evaluateManualDaemonState({ diagnostics: report.daemonDiagnostics?.['after-update'], output: directory, target: plan.targetVersion, platform: cell.platform })
+              const manualFinalState = ['daemon-self', 'candidate-next-daemon-self'].includes(cell.scenario)
+                ? evaluateManualDaemonState({ diagnostics: report.daemonDiagnostics?.['after-update'], output: directory, target: cell.targetVersion, platform: cell.platform })
                 : undefined;
               const assertions = {
-                'target-version': report.target === plan.targetVersion && ok('CLI version is target') && ok('selected CLI reports target'),
+                'target-version': report.target === cell.targetVersion && ok('CLI version is target') && ok('selected CLI reports target'),
                 'extension-versions': ok('every recorded extension is at target') && ok('recorded extension package versions match target'),
                 'inventory-preserved': ok('every prior extension remains recorded'),
                 'status-healthy': ok('cotal status exits zero'),
@@ -546,7 +618,7 @@ jobs:
                 'installer-source-receipt': report.candidateInstaller?.source === plan.sourceSHA,
                 'foreign-snapshot-retained': ok('foreign snapshot bytes remain untouched'),
                 'container-manager-preserved': ok('foreign container Manager remains running and untouched') && ok('host selected remote user-sign-in mesh before upgrade') && report.participant?.remote === true && report.participant?.localManagerStarted === false,
-                'native-service-manual': cell.scenario === 'daemon-self' && ok('manual native service starts at source with scheduler disabled') && report.method === 'self' && report.environment?.nativeServiceRequested === true && report.calls.some(call => call.label === 'native install' && call.exit === 0) && report.calls.some(call => call.label === 'upgrade under test' && call.exit === 0 && Array.isArray(call.argv) && call.argv.includes('--self')),
+                'native-service-manual': ['daemon-self', 'candidate-next-daemon-self'].includes(cell.scenario) && ok('manual native service starts at source with scheduler disabled') && report.method === 'self' && report.environment?.nativeServiceRequested === true && report.calls.some(call => call.label === 'native install' && call.exit === 0) && report.calls.some(call => call.label === 'upgrade under test' && call.exit === 0 && Array.isArray(call.argv) && call.argv.includes('--self')),
                 'independent-final-state': manualFinalState?.passed === true && ok('independent manual service final state'),
                 'native-scheduler': ok('scheduler completed within observation deadline') && ok('daemon scheduler performed a replacement or reported up to date'),
                 'daemon-restart': ok('native daemon remains active at its expected generation') && (cell.platform !== 'darwin' || ok('launchd transition observed exactly one daemon restart')),

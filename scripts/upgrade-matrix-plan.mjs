@@ -58,6 +58,18 @@ export function publishedPredecessor(registry, target) {
 }
 const skipped = reason => ({ status: "skipped", acceptance: false, reason });
 
+/** Synthetic next-hop target: the candidate's stable patch plus 1000, never public latest. */
+export function syntheticNextVersion(candidate) {
+  requireValue(typeof candidate === "string" && stableVersion.test(candidate), "synthetic candidate must be a stable numeric version");
+  const parts = candidate.split(".").map(BigInt);
+  const max = BigInt(Number.MAX_SAFE_INTEGER);
+  requireValue(parts.every(part => part <= max) && parts[2] <= max - 1000n, "synthetic version exceeds safe numeric range");
+  parts[2] += 1000n;
+  const target = parts.join(".");
+  requireValue(compareVersions(target, candidate) > 0, "synthetic target must be newer than candidate");
+  return target;
+}
+
 /** event is a GitHub payload. context is trusted caller-supplied metadata, not PR code.
  * context: eventName, repository, packageManifest (read at sourceSHA), sourceVersion (registry
  * predecessor frozen by caller), published, publishJobConclusion. A true published flag certifies exact npm version, main manifest,
@@ -110,7 +122,7 @@ export function boundedCells(plan) {
   requireValue(typeof plan.sourceVersion === "string" && stableVersion.test(plan.sourceVersion), "missing frozen source version");
   requireValue(compareVersions(plan.targetVersion, plan.sourceVersion) > 0, "target must be newer than frozen source");
   const cells = [];
-  const add = (platform, channel, scenario, reason = null) => {
+  const add = (platform, channel, scenario, reason = null, identity = {}) => {
     const id = `${platform}-${channel}-${scenario}`;
     cells.push({ id, platform, runner: runners[platform], channel, scenario, phase: plan.phase,
       sourceSHA: plan.sourceSHA, sourceVersion: plan.sourceVersion, targetVersion: plan.targetVersion,
@@ -118,7 +130,8 @@ export function boundedCells(plan) {
       installerSource: channel === "installer" && scenario === "configured-rerun" && plan.phase === "candidate" ? "ARTIFACT/installer.sh" : null,
       installerReceiptRequired: channel === "installer" && scenario === "configured-rerun" && plan.phase === "candidate",
       installerOverride: false, required: !reason, disposition: reason ? "excluded" : "required", reason,
-      requiredAssertions: reason ? [] : ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention", ...(channel === "installer" && scenario === "configured-rerun" && plan.phase === "candidate" ? ["installer-source-receipt"] : []), ...(scenario === "daemon-scheduler" ? ["native-scheduler", "daemon-restart"] : []), ...(scenario === "daemon-self" ? ["native-service-manual", "independent-final-state"] : []), ...(["agent-stop-consent", "standalone-stop-consent"].includes(scenario) ? ["stop-consent", "owned-stack-cleanup"] : []), ...(scenario === "foreign-config-recovery" ? ["foreign-snapshot-retained"] : []), ...(scenario === "container-manager" ? ["container-manager-preserved", "owned-stack-cleanup"] : [])] });
+      requiredAssertions: reason ? [] : ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention", ...(channel === "installer" && scenario === "configured-rerun" && plan.phase === "candidate" ? ["installer-source-receipt"] : []), ...(scenario === "daemon-scheduler" ? ["native-scheduler", "daemon-restart"] : []), ...(["daemon-self", "candidate-next-daemon-self"].includes(scenario) ? ["native-service-manual", "independent-final-state"] : []), ...(scenario === "candidate-next-daemon-self" ? ["candidate-source-identity", "candidate-next-target"] : []), ...(["agent-stop-consent", "standalone-stop-consent"].includes(scenario) ? ["stop-consent", "owned-stack-cleanup"] : []), ...(scenario === "foreign-config-recovery" ? ["foreign-snapshot-retained"] : []), ...(scenario === "container-manager" ? ["container-manager-preserved", "owned-stack-cleanup"] : [])],
+      ...identity });
   };
   for (const platform of platforms) for (const scenario of ["fresh", "configured", "stale-self"]) add(platform, "npm", scenario);
   for (const platform of ["linux", "darwin"]) {
@@ -131,6 +144,14 @@ export function boundedCells(plan) {
   add("linux", "npm", "container-manager");
   for (const platform of platforms) add(platform, "npm", "daemon-self");
   for (const platform of ["linux", "darwin"]) add(platform, "installer", "daemon-self");
+  if (plan.phase === "candidate") {
+    const targetVersion = syntheticNextVersion(plan.targetVersion);
+    for (const platform of platforms) add(platform, "npm", "candidate-next-daemon-self", null, {
+      sourceVersion: plan.targetVersion, sourceKind: "packed-candidate-A", targetVersion,
+      targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+      syntheticVersionRule: "candidate.patch+1000",
+    });
+  }
   add("win32", "installer", "daemon-self", "Windows installer self-update excluded: no public shell installer route");
   add("win32", "npm", "daemon-scheduler", "Windows scheduler upgrade excluded until product readiness is established");
   add("linux", "npm", "candidate-a", "optional candidate A is outside the required bounded matrix");
