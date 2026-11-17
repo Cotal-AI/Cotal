@@ -29,6 +29,12 @@ copy keeps launching with its original connector generation until it is restarte
 
 ## Execution generations
 
+Homes sharing one CLI installation keep separate built-in connector inventories.
+After another home updates the CLI, the next command that needs built-ins reconciles this home.
+Version and help remain read-only. A home-only version mismatch names `cotal update`, without `--self`.
+Automatic reconciliation does not replace connectors used by an older local Manager.
+An active update holds reconciliation until its transaction finishes. Source checkouts do not seed installed homes.
+
 The `cotal` entry reads a versioned execution descriptor from its sibling retained-generation store.
 The descriptor name is bound to the logical package root. Its package name, original installed
 version and bootstrap hash select a retained package only after its inventory verifies.
