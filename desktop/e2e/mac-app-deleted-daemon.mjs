@@ -90,7 +90,7 @@ async function deleteOwnedApp() {
   assert.equal(current.dev, copiedApp.dev);
   assert.equal(current.ino, copiedApp.ino);
   ok(await call('verify copied bundle before removal', '/usr/bin/codesign', ['--verify', '--deep', '--strict', app]));
-  const retired = join(root, 'retired-owned-app');
+  const retired = `/Applications/.cotal-measure-retired-${process.env.GITHUB_RUN_ID}.app`;
   assert(!existsSync(retired));
   renameSync(app, retired);
   const held = statSync(retired);
@@ -240,7 +240,8 @@ try {
   try { if (mounted) await call('cleanup image detach', '/usr/bin/hdiutil', ['detach', mount]); }
   finally {
     try {
-      if (copiedApp && existsSync(app) && !report.cleanupUnknownService && !report.cleanupOwnershipError) await deleteOwnedApp();
+      if (copiedApp && existsSync(app) && !report.cleanupUnknownService && !report.cleanupOwnershipError
+        && !report.cleanupOutstanding && !report.cleanupProcessError && !report.cleanupUnresolvedProcesses && !report.cleanupCensusError) await deleteOwnedApp();
     } catch (error) { report.cleanupAppError = publicText(error); process.exitCode = 1; }
     report.finishedAt = new Date().toISOString(); save();
     let secrets = false;
