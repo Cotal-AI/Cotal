@@ -15,7 +15,7 @@ writeFileSync(entry, "// installed fixture\n");
 const module = pathToFileURL(join(import.meta.dirname, "../src/connector-retention.ts")).href;
 let passed = 0;
 try {
-  for (const scenario of ["retain", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "orphan-child", "interrupted-lineage"] as const) {
+  for (const scenario of ["retain", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "orphan-child", "interrupted-lineage", "initial-inherit"] as const) {
     const config = join(root, scenario);
     mkdirSync(join(config, "cotal/seed/store/0.162.0"), { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "cotal/extensions/node_modules/old"), { recursive: true, mode: 0o700 });
@@ -29,9 +29,10 @@ import fs from 'node:fs';
 import {syncBuiltinESMExports} from 'node:module';
 import {join,dirname} from 'node:path';
 ${scenario === "no-identity" ? "" : `Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});`}
-const {connectorConfigDir,retainConnectorConfig}=await import(${JSON.stringify(module)});
+const {connectorConfigDir,retainConnectorConfig,inheritConnectorConfig}=await import(${JSON.stringify(module)});
 const original=${JSON.stringify(join(config, "cotal"))};
 assert.equal(connectorConfigDir(),original);
+${scenario === "initial-inherit" ? "inheritConnectorConfig();assert.notEqual(connectorConfigDir(),original,'first installed seed must select without existing lineage');" : ""}
 ${scenario === "no-identity" ? `assert.throws(()=>retainConnectorConfig(),/installed POSIX/);` : scenario === "linked-prefix" ? `renameSync(join(original,'extensions'),join(original,'foreign'));symlinkSync(join(original,'foreign'),join(original,'extensions'));assert.throws(()=>retainConnectorConfig(),/non-directory/);` : `
 ${scenario === "interrupted-lineage" ? `const rename=fs.renameSync;let publications=0;fs.renameSync=(source,target)=>{if(/(?:selection|current)\\.json$/.test(String(target))&&++publications===2)throw new Error('interrupted second publication');return rename(source,target)};syncBuiltinESMExports();assert.throws(()=>retainConnectorConfig(),/interrupted second publication/);fs.renameSync=rename;syncBuiltinESMExports();const selected=connectorConfigDir();assert.notEqual(selected,original);` : "const selected=retainConnectorConfig();"}
 assert.notEqual(selected,original);
