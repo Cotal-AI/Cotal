@@ -38,7 +38,7 @@ import {
 } from "@cotal-ai/connector-core";
 import type { OpenCodeRecord } from "./agui-source.js";
 
-export interface OpenCodeMapperOptions {
+interface OpenCodeMapperOptions {
   /** The native session id. It is the `threadId` on every event and nothing else may claim it. */
   threadId: string;
   /** Mints a `runId`. Connector-minted, so every `RUN_STARTED` carries `runIdSource: "connector"`. */
