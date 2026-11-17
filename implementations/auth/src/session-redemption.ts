@@ -17,7 +17,7 @@ import { EpEnvelopeError, sessionLedgerKey, sessionsBucket, type SessionGrant } 
 import type { UserTokenSession } from "./token.js";
 
 /** What the verifier reads: the leader-served session row, and the serving manager's current gate. */
-export interface SessionRedemptionReads {
+interface SessionRedemptionReads {
   jsm: JetStreamManager;
   space: string;
   /** The serving manager gate's verdict for (owner, instanceId) and its current process epoch. */
