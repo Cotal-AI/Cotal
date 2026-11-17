@@ -90,7 +90,12 @@ function target(args: ParsedArgs): Target {
   return { paths: daemonPathsFor(home), home };
 }
 function resolveTarget(args: ParsedArgs): Target {
-  try { return target(args); }
+  try {
+    const resolved = target(args);
+    // Native user-service tools need the same validated runtime as the socket client.
+    if (process.platform === "linux" && !process.env.XDG_RUNTIME_DIR) process.env.XDG_RUNTIME_DIR = `/run/user/${process.geteuid!()}`;
+    return resolved;
+  }
   catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist; create it with mode 0700 first");
     throw asFailure(e);
