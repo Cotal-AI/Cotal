@@ -102,8 +102,11 @@ a private process-initialization phase. This is not a fresh authenticated endpoi
 Logs print only the session file's reference, never its bootstrap URL or readiness credential. A
 background `service start` ends with the `service logs` command for the new instance, which is where
 that reference appears. An endpoint error or warning in that log names only the error's class, its
-name and code, never its message. Open the private file locally and use its single-use launch link in the
-intended browser. There is no automatic browser action. The existing cookie and origin gates remain in use. Confirmed close
+name and code, never its message. Background `cotal service start web` reads the matching private record
+and opens a fresh single-use link in the default browser. Repeating the command reuses the process
+and preserves existing browser sessions. The local launch capability is separate from readiness authority
+and is never printed. Use `--no-open` to retain the manual private-file route, including for remote listeners.
+Foreground starts remain manual. The existing cookie and origin gates remain in use. Confirmed close
 removes only this child's unchanged session/PID records; uncertainty retains custody.
 
 Foreground service start uses the shared terminal lifetime. OS installation and full native caller

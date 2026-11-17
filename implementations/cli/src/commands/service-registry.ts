@@ -28,6 +28,7 @@ export const serviceFlags = [spaceFlag, jsonFlag, plainFlag,
   { name: "yes", short: "y", type: "boolean", description: "stop/restart/remove/uninstall: confirm the exact selected local target" },
   { name: "instance", type: "string", value: "<full-id>", description: "select one full owned service instance ID, not a prefix; remove: forget only that stopped instance record" },
   { name: "new-instance", type: "boolean", description: "start: explicitly allocate another process-driver instance" },
+  { name: "no-open", type: "boolean", description: "start web: keep browser authentication manual" },
   { name: "foreground", type: "boolean", description: "start: keep the owned process in this terminal; not a detachable view" },
   { name: "with-agents", type: "boolean", description: "stop/restart: request the declared native agent-stop policy; never generic descendant signals" },
   { name: "dry-run", type: "boolean", description: "start/stop/restart: preview an effect; install/uninstall: inspect native unit impact without changing it" },
@@ -53,6 +54,7 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (args.values.yes !== undefined && !["remove", "stop", "restart", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--yes belongs to service stop, restart, remove or uninstall");
   if (args.values.instance !== undefined) { if (!["start", "stop", "restart", "status", "logs", "install", "uninstall", "remove"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--instance belongs to a service instance operation or remove"); serviceInstanceId(String(args.values.instance)); }
   if (args.values["new-instance"] && (mode !== "start" || args.values.instance !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--new-instance belongs to start and cannot be combined with --instance");
+  if (args.values["no-open"] !== undefined && (mode !== "start" || name !== "web")) throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web");
   if (args.values.foreground && (mode !== "start" || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "--foreground belongs to start and cannot produce a JSON receipt stream");
   if (args.values["with-agents"] !== undefined && !["stop", "restart"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--with-agents belongs to service stop or restart with a declared native policy");
   if (args.values["dry-run"] && !["start", "stop", "restart", "install", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run belongs to service start, stop, restart, install or uninstall");
