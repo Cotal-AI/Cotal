@@ -83,7 +83,7 @@ const old = (label, args) => call(label, process.execPath, [oldEntry, ...args]);
 const fresh = (label, args) => call(label, process.execPath, [freshEntry, ...args]);
 let candidateEntry = process.env.DESKTOP_REPAIR_CLI;
 const repairCommand = process.env.DESKTOP_REPAIR_COMMAND ?? 'status';
-assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update'].includes(repairCommand), 'unsupported repair entry command');
+assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager'].includes(repairCommand), 'unsupported repair entry command');
 if (!candidateEntry && repairCommand !== 'self-update') assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
 if (repairCommand === 'self-update') assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE && process.env.DESKTOP_REPAIR_TARGET_CLOSURE, 'self-update proof requires two real guarded installed package closures');
 report.repairCommand = repairCommand;
@@ -171,6 +171,7 @@ try {
     report.selfUpdatePair = candidateRegistry.identity;
     candidateEnv = { ...env, npm_config_registry: candidateRegistry.url };
     const installedPrefix = join(root, 'candidate-install');
+    candidateEnv = { ...candidateEnv, npm_config_prefix: installedPrefix };
     ok(await npm('install real candidate A before app deletion', ['install', '--global', '--prefix', installedPrefix, `cotal-ai@${candidateRegistry.identity.sourceVersion}`, '--no-audit', '--no-fund'], { callEnv: candidateEnv, timeout: 600000 }));
     candidateEntry = join(installedPrefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
     assert.equal(JSON.parse(readFileSync(join(installedPrefix, 'lib/node_modules/cotal-ai/package.json'), 'utf8')).version, candidateRegistry.identity.sourceVersion);
@@ -234,6 +235,49 @@ try {
       const version = ok(await candidate('installed candidate version after self update', ['--version'])).stdout.split(/\r?\n/, 1)[0];
       assert.equal(version, `cotal-ai ${candidateRegistry.identity.targetVersion}`);
       report.selfUpdateRepairAcceptance = { exit: update.exit, pid, sourceOutsideAppBeforeStatus: true, credentialsPreserved: true, installedTarget: candidateRegistry.identity.targetVersion };
+    }
+    if (repairCommand === 'unreadable-manager') {
+      await ownedService();
+      const sourceBefore = readFileSync(plist, 'utf8');
+      const receiptBefore = readFileSync(receiptPath, 'utf8');
+      const managerBefore = heldProcesses.find(row => row.pid === manager.pid);
+      assert(managerBefore, 'only the fixture-retained Manager can be suspended');
+      const current = await identity(manager.pid, 'unreadable Manager before suspension');
+      assert.equal(current.process.stdout, managerBefore.process.stdout);
+      try {
+        ok(await call('suspend only original Manager for unreadable observation', '/bin/kill', ['-STOP', String(manager.pid)]));
+        const suspended = ok(await call('confirm original Manager suspended state', '/bin/ps', ['-p', String(manager.pid), '-o', 'stat=']));
+        assert.match(suspended.stdout.trim(), /^T/, 'the unreadable fault must actually be active');
+        const refused = await candidate('unreadable real Manager refuses install repair', ['daemon', 'install', '--json']);
+        assert.equal(refused.timedOut, false, 'fixture timeout is not a repair refusal');
+        assert.equal(refused.signal, null);
+        assert.notEqual(refused.exit, 0);
+        assert.match(JSON.parse(refused.stdout).error?.message ?? '', /Manager|repair preparation/i);
+        assert.equal(readFileSync(plist, 'utf8'), sourceBefore);
+        assert.equal(readFileSync(receiptPath, 'utf8'), receiptBefore);
+        assert.equal(readFileSync(sessionPath, 'utf8'), stateBefore);
+        assert(!existsSync(join(cotalHome, 'daemon/service-repair.json')), 'unreadable Manager cannot authorize native replacement');
+        for (const held of heldProcesses) {
+          const live = await identity(held.pid, 'unreadable Manager refusal original lifetime');
+          assert.equal(live.process.stdout, held.process.stdout);
+        }
+      } finally {
+        const held = await identity(manager.pid, 'resume only original Manager lifetime');
+        assert.equal(held.process.stdout, managerBefore.process.stdout, 'never signal a replacement Manager');
+        ok(await call('resume original Manager after unreadable refusal', '/bin/kill', ['-CONT', String(manager.pid)]));
+      }
+      let answered = false;
+      const recoveryDeadline = Date.now() + 20000;
+      while (Date.now() < recoveryDeadline) {
+        const ps = await call('old public client verifies Manager usable after unreadable refusal', process.execPath, [oldEntry, 'ps', '--space', report.participant.space, '--json'], { timeout: Math.max(1, Math.min(5000, recoveryDeadline - Date.now())) });
+        if (ps.exit === 0 && !ps.signal && !ps.timedOut) { answered = true; break; }
+        await delay(250);
+      }
+      assert(answered, 'same Manager must accept public control after resuming; no retained fence may dead-end it');
+      assert.equal(readFileSync(plist, 'utf8'), sourceBefore);
+      assert.equal(readFileSync(receiptPath, 'utf8'), receiptBefore);
+      await ownedService();
+      report.unreadableManagerAcceptance = { actualSuspensionObserved: true, repairRefused: true, nativeRecordsUnchanged: true, credentialsPreserved: true, originalLifetimesRetained: true, publicControlRecovered: true };
     }
     if (repairCommand === 'unreadable-source') {
       await ownedService();
@@ -311,7 +355,7 @@ try {
       report.installRepairAcceptance = { state: installed.state, pid: installedPid, sourceOutsideAppBeforeStatus: true, credentialsPreserved: true };
       }
     }
-    if (repairCommand !== 'disabled' && repairCommand !== 'unreadable-source') {
+    if (!['disabled', 'unreadable-source', 'unreadable-manager'].includes(repairCommand)) {
     const repaired = body(await candidate(repairCommand === 'self-update' ? 'candidate status observes self-update-repaired program' : repairCommand === 'install' ? 'candidate status observes install-repaired program' : 'candidate daemon status repairs missing program', ['daemon', 'status', '--json']));
     if (repairCommand === 'self-update') assert.equal(repaired.pid, report.selfUpdateRepairAcceptance.pid, 'status must observe the native lifetime already started by self-update');
     if (repairCommand === 'install') assert.equal(repaired.pid, report.installRepairAcceptance.pid, 'status observes the already repaired native lifetime');
