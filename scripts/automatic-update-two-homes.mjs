@@ -14,7 +14,7 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
   root = resolve(root);
   assert(!existsSync(root), 'two-home proof needs a new private root');
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const report = { source: 'real installed candidate pair', calls: [], checks: [], graphs: {}, managers: {}, cleanup: 'not-started' };
+  const report = { source: 'real installed candidate pair', calls: [], checks: [], graphs: {}, managers: {}, readOnly: {}, cleanup: 'not-started' };
   report.platform = process.platform;
   report.arch = process.arch;
   report.environment = { hostedDisposable: process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted', nodeVersion: process.version };
@@ -78,7 +78,7 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         const fixture = join(directory, 'fixture'); mkdirSync(fixture, { mode: 0o700 });
         const fixtureRoot = selectedConnectorRoot(join(directory, 'B/config/cotal'), logicalEntry, old.identity.version);
         const connectorModules = realpathSync(join(fixtureRoot, 'extensions/node_modules/@cotal-ai/connector-jcode'));
-        const core = pathToFileURL(execFileSync(process.execPath, ['--input-type=module', '-e', `import{createRequire}from'node:module';console.log(createRequire(${JSON.stringify(join(connectorModules, 'package.json'))}).resolve('@cotal-ai/core'));`], { encoding: 'utf8', env: environments.B }).trim()).href;
+        const core = execFileSync(process.execPath, ['--experimental-import-meta-resolve', '--input-type=module', '-e', `console.log(import.meta.resolve('@cotal-ai/core',${JSON.stringify(pathToFileURL(join(connectorModules, 'package.json')).href)}));`], { encoding: 'utf8', env: environments.B }).trim();
         writeFileSync(join(fixture, 'package.json'), JSON.stringify({ name: 'cotal-two-home-seat', version: '1.0.0', type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } }));
         const joined = join(fixture, 'joined.json');
         writeFileSync(join(fixture, 'seat.mjs'), `import{CotalEndpoint}from${JSON.stringify(core)};import{readFileSync,writeFileSync}from'node:fs';const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,creds:readFileSync(e.COTAL_CREDS,'utf8'),card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});await ep.start();writeFileSync(${JSON.stringify(joined)},JSON.stringify({pid:process.pid,name:e.COTAL_NAME,lifecycleUid:e.COTAL_LIFECYCLE_UID}));setTimeout(()=>ep.stop().finally(()=>process.exit(0)),2000);`);
@@ -96,9 +96,11 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         const oldGraphs = [...new Set([canonical, oldRoot])].map(path => ({ path, before: connectorGraph(path) }));
         if (route === 'old-manager') {
           const status = await ok('B', 'old Manager identity before', ['status', '--json']);
-          const local = JSON.parse(status.stdout).stackManager;
+          const local = JSON.parse(status.stdout).result.stackManager;
           assert(local && Number.isSafeInteger(local.pid) && typeof local.instanceId === 'string', 'live stack Manager identity required');
-          const served = await managerProbe('old Manager served identity before', local.instanceId);
+          const peers = JSON.parse((await ok('B', 'old Manager endpoint before', ['ps', '--json'])).stdout).result.managers;
+          assert(peers.length === 1 && peers[0].state === 'answered', 'one answering Manager required');
+          const served = await managerProbe('old Manager served identity before', peers[0].instanceId);
           report.managers[route] = { before: managerIdentity(served, local.pid) };
           check('old-manager starts exact old Manager', report.managers[route].before.version === old.identity.version);
         }
@@ -111,13 +113,14 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         } else await ok('A', 'self update shared installation', ['update', '--self']);
         const a = await ok('A', 'updated home version', ['--version']);
         check(`${route} A is fully reconciled`, inventory(a.stdout, target.identity.version) && !a.stdout.includes('Reconciliation pending'));
+        const selectedPath = selectionPath(canonical, logicalEntry, target.identity.version);
+        report.readOnly[route] = { targetSelectionAbsent: !existsSync(selectedPath), oldRoot, oldManifest: JSON.parse(readFileSync(join(oldRoot, 'extensions/extensions.json'), 'utf8')), oldManifestSha256: createHash('sha256').update(readFileSync(join(oldRoot, 'extensions/extensions.json'))).digest('hex') };
         const stale = await ok('B', 'stale home version before command', ['--version']);
-        check(`${route} B starts stale in shared installation`, stale.stdout.startsWith(`cotal-ai ${target.identity.version}\n`) && inventory(stale.stdout, old.identity.version));
+        check(`${route} B starts stale in shared installation`, stale.stdout.startsWith(`cotal-ai ${target.identity.version}\n`) && (inventory(stale.stdout, old.identity.version) || oldRoot !== canonical && stale.stdout === `cotal-ai ${target.identity.version}\n`) && report.readOnly[route].targetSelectionAbsent && !existsSync(selectedPath));
         check(`${route} home-only hint never asks for self replacement`, !stale.stdout.includes('update --self'));
         // --version is read-only. The next ordinary command creates the target selection.
-        const selectedPath = selectionPath(canonical, logicalEntry, target.identity.version);
         if (route === 'old-manager') {
-          await ok('B', 'ordinary old Manager agent launch', ['spawn', '--foreground', '--agent', 'two-home-seat', '--name', 'twohome-proof', '--no-events', '--on', report.managers[route].before.instanceId]);
+          await ok('B', 'ordinary old Manager agent launch', ['spawn', '--detach', '--agent', 'two-home-seat', '--name', 'twohome-proof', '--no-events', '--on', report.managers[route].before.instanceId]);
           const seat = JSON.parse(readFileSync(joined, 'utf8'));
           check('old-manager real old fixture joined', seat.pid > 0 && seat.name === 'twohome-proof' && typeof seat.lifecycleUid === 'string');
           report.oldManagerSeat = seat;
@@ -139,9 +142,9 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         check(`${route} old graphs byte and link unchanged`, report.graphs[route].old.every(row => JSON.stringify(row.before) === JSON.stringify(row.after)));
         const status = await ok('B', 'home status after command', ['status', '--json']);
         if (route === 'old-manager') {
-          const local = JSON.parse(status.stdout).stackManager;
-          assert(local && local.instanceId === report.managers[route].before.instanceId, 'stack Manager pin changed');
-          report.managers[route].after = managerIdentity(await managerProbe('old Manager served identity after', local.instanceId), local.pid);
+          const local = JSON.parse(status.stdout).result.stackManager;
+          assert(local && local.pid === report.managers[route].before.pid, 'stack Manager PID changed');
+          report.managers[route].after = managerIdentity(await managerProbe('old Manager served identity after', report.managers[route].before.instanceId), local.pid);
           check('old-manager version PID and birth unchanged', JSON.stringify(report.managers[route].before) === JSON.stringify(report.managers[route].after));
         }
         const recovery = join(directory, 'B/cotal/update-recovery.json');

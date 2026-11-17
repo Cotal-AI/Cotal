@@ -16,6 +16,7 @@ import {
   inheritConnectorConfig,
   isBundledDesktopRuntime,
   loadExtensionsManifest,
+  logicalExecutionEntry,
   provenance,
   quarantineExtensionsManifest,
   type InstalledExtension,
@@ -762,6 +763,10 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   // The pending marker records intent to spawn BEFORE the spawn, so the orphan window never opens
   // ownerless: a repair after a parent SIGKILL sees it and fails loud rather than racing the installer.
   const [bin, ...argv] = selfArgv();
+  // Seed children mutate this installed release's selected prefix, not a second prefix
+  // keyed by the immutable package entry that the bootstrap loaded.
+  const logical = logicalExecutionEntry();
+  if (logical) argv[argv.length - 1] = logical;
   const started = Date.now();
   console.error(c.dim(`Reconciling built-in ${name}@${generation}`));
   writeCursor({ nonce, package: name, phase: "copy" });
