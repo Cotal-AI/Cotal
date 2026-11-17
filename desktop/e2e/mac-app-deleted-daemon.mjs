@@ -334,10 +334,14 @@ try {
           const files = [join(cotalHome, 'daemon/service-repair.json'), receiptPath, plist, sessionPath, hostingPath, lockPath];
           const bytes = files.map(file => readFileSync(file));
           const competing = spawnSync(process.execPath, [candidateEntry, 'daemon', 'uninstall', '--yes', '--json'], { cwd: project, env: candidateEnv, encoding: 'utf8', timeout: 15000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 });
+          report.concurrentRepairAttempt = { exit: competing.status, signal: competing.signal, error: competing.error?.message, stdout: publicText(competing.stdout), stderr: publicText(competing.stderr), repairPid: pid, repairBirth: birth, ownerBefore: held, beforeHashes: bytes.map(value => createHash('sha256').update(value).digest('hex')) };
+          save();
           const ownerAfter = coreLockInspector.inspectLock(lockPath);
           const birthAfter = processBirth(pid);
+          Object.assign(report.concurrentRepairAttempt, { ownerAfter, birthAfter });
+          save();
           const bytesAfter = files.map(file => readFileSync(file));
-          report.concurrentRepairAttempt = { exit: competing.status, signal: competing.signal, error: competing.error?.message, stdout: publicText(competing.stdout), stderr: publicText(competing.stderr), repairPid: pid, repairBirth: birth, birthAfter, ownerBefore: held, ownerAfter, beforeHashes: bytes.map(value => createHash('sha256').update(value).digest('hex')), afterHashes: bytesAfter.map(value => createHash('sha256').update(value).digest('hex')) };
+          report.concurrentRepairAttempt.afterHashes = bytesAfter.map(value => createHash('sha256').update(value).digest('hex'));
           save();
           assert(!competing.error && !competing.signal, 'timeout or killed competing CLI is not a product refusal');
           assert.equal(competing.status, 2);
