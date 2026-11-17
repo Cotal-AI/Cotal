@@ -79,8 +79,10 @@ export const UNAUTHENTICATED = "unauthenticated";
 export const LAUNCH_TOKEN_ALREADY_USED = "launch-token-already-used";
 export const CROSS_ORIGIN = "cross-origin";
 /** The cookie the session rides in. NOT `Secure`: this surface is `http://127.0.0.1`, where a Secure
- *  cookie would simply never be sent. `HttpOnly` keeps it out of page script and `SameSite=Strict`
- *  keeps it off cross-site requests; the origin check carries what is left. Stated here rather than
+ *  cookie would simply never be sent. `HttpOnly` keeps it out of page script. `SameSite=Lax` keeps it
+ *  off another site's POSTs, frames and subresource requests, and sends it on a top-level GET
+ *  navigation, so a link from a homepage tile opens the dashboard. Every GET route only reads, and a
+ *  request another site's page sends carries an `Origin` the gate refuses. Stated here rather than
  *  discovered in review. */
 const SESSION_COOKIE = "cotal_web_session";
 /** The request path, without the query. This DUPLICATES the handler's own parse, deliberately: the
@@ -152,10 +154,10 @@ function cookieValue(header: string | undefined, name: string): string | undefin
  *  requests to http://127.0.0.1:7799. So no mesh read and no channel delete runs for a caller this
  *  gate has not admitted.
  *
- *  ORDER IS DELIBERATE: origin is checked BEFORE the session. A cross-site request arrives without
- *  the cookie anyway (SameSite=Strict), so checking the session first would report every such
- *  request as `unauthenticated` and the operator would never learn that something cross-origin was
- *  talking to their console. The more specific condition wins.
+ *  ORDER IS DELIBERATE: origin is checked BEFORE the session. A request another site's page sends
+ *  arrives without the cookie anyway (SameSite=Lax), so checking the session first would report every
+ *  such request as `unauthenticated` and the operator would never learn that something cross-origin
+ *  was talking to their console. The more specific condition wins.
  */
 export function makeAuthGate(port: number, host: string = WEB_HOST) {
   // Single-use, minted per process. 32 bytes: this is the only secret standing between a local
@@ -1558,7 +1560,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
       // Redirect so the spent token leaves the address bar and the browser history. This is the one
       // redirect on this surface and it is a SUCCESS, not a refusal.
       res.writeHead(302, {
-        "set-cookie": `${SESSION_COOKIE}=${verdict.exchange}; Path=/; HttpOnly; SameSite=Strict`,
+        "set-cookie": `${SESSION_COOKIE}=${verdict.exchange}; Path=/; HttpOnly; SameSite=Lax`,
         location: path,
       });
       return void res.end();
