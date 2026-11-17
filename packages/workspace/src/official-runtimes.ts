@@ -10,6 +10,7 @@
  * absent runtime from it, and the manager must not import the CLI.
  */
 export const OFFICIAL_RUNTIMES: Readonly<Record<string, string>> = {
+  bubblewrap: "@cotal-ai/bubblewrap",
   orca: "@cotal-ai/orca",
   tmux: "@cotal-ai/tmux",
   cmux: "@cotal-ai/cmux",

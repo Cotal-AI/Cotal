@@ -1,0 +1,21 @@
+{
+  "name": "@cotal-ai/bubblewrap",
+  "description": "Cotal Linux runtime for untrusted seats in an operator-supplied Bubblewrap root filesystem.",
+  "version": "0.165.4",
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "https://github.com/Cotal-AI/Cotal.git", "directory": "extensions/bubblewrap" },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "scripts": {
+    "test": "tsx smoke/runtime.smoke.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm run build"
+  },
+  "peerDependencies": { "@cotal-ai/core": "*" },
+  "devDependencies": { "@cotal-ai/core": "workspace:*", "@cotal-ai/smoke-kit": "workspace:*", "tsx": "^4.22.4" },
+  "files": ["dist"],
+  "publishConfig": { "access": "public" }
+}

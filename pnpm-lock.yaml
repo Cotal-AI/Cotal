@@ -317,6 +317,18 @@ importers:
         specifier: ^4.22.4
         version: 4.23.0
 
+  extensions/bubblewrap:
+    devDependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
+      tsx:
+        specifier: ^4.22.4
+        version: 4.23.0
+
   extensions/cmux:
     devDependencies:
       '@cotal-ai/core':
@@ -786,6 +798,9 @@ importers:
       '@cotal-ai/auth':
         specifier: workspace:*
         version: link:../auth
+      '@cotal-ai/bubblewrap':
+        specifier: workspace:*
+        version: link:../../extensions/bubblewrap
       '@cotal-ai/connector-claude-code':
         specifier: workspace:*
         version: link:../../extensions/connector-claude-code

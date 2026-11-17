@@ -1,0 +1,18 @@
+import { readFileSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { MeshAgent, configFromEnv } from '/app/extensions/connector-core/dist/index.js';
+const agent = new MeshAgent(configFromEnv());
+await agent.start();
+await agent.waitUntilConnected();
+const forbidden = readFileSync('/app/forbidden-path.txt', 'utf8');
+if (existsSync(forbidden) || existsSync('/proc/1/root' + forbidden)) throw Error('operator fixture exposed');
+const bare = spawnSync('/usr/bin/cotal', ['send', '-c', 'review6237', 'operator-attempt', '--space', process.env.COTAL_SPACE, '--json'], { encoding: 'utf8' });
+const result = JSON.parse(bare.stdout);
+await agent.setStatus('working', `bare result: ${bare.status}, ${result.outcome}, ${result.error?.code}`);
+if (bare.status !== 2 || result.outcome !== 'refused' || result.error?.code !== 'AUTH_REQUIRED') throw Error('bare operator CLI did not refuse');
+await agent.send('isolated-seat-positive-control', 'review6237');
+await agent.setStatus('working', `isolation verified: operator path absent, bare CLI refused ${result.error.code}`);
+const stop = async () => { await agent.stop(); process.exit(0); };
+process.on('SIGTERM', stop);
+process.on('SIGINT', stop);
+await new Promise(() => {});

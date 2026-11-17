@@ -76,7 +76,16 @@ Managed spawn filters inherited environment variables.
 
 Ambient host-session markers are not inherited. These include `CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, and analogous nested-session markers for other hosts. Temporary credentials, source-control tokens, and unrelated service secrets are excluded unless explicitly supplied by a persona or operator.
 
-Environment filtering does not confine files accessible through `HOME` or another supplied filesystem root. Filesystem containment requires a sandbox or VM.
+Environment filtering does not confine files accessible through `HOME` or another supplied filesystem root.
+The default `pty`, `tmux`, `cmux`, `orca` and `herdr` launches are trusted same-user seats.
+A shell-capable seat on that account can run the operator's CLI with the operator's authority,
+including from another directory or space. A private `COTAL_HOME` alone does not prevent this.
+
+Untrusted seats require an OS boundary. On Linux, the explicit
+[Bubblewrap runtime](launch-agents.mdx#untrusted-seats) starts an enrolled user-auth seat from a
+credential-free image without mounting the manager's files. Never give an untrusted image the
+operator's signer, login, registry or host control sockets. Broker ACLs still constrain the
+seat's own connection, and network services remain separate trust boundaries.
 
 ### Resume transcripts
 

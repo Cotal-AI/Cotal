@@ -1,0 +1,2 @@
+# Real delegated manager enrollment and foreground CLI in Bubblewrap.
+smoke:bubblewrap-launch

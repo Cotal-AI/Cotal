@@ -142,6 +142,35 @@ An uncertain launch reports its configured readiness window in milliseconds and 
 A stop prints `seat reaped:` only after the runtime proves exit; an unproved exit remains named in the shutdown error.
 See the [seat reference](cli-agents.mdx#seats) for custody inspection.
 
+## Untrusted seats [#untrusted-seats]
+
+The ordinary local runtimes run trusted agents as the operator's OS user. Do not use them for
+untrusted reviewers with shell access. On Linux, install the isolated runtime explicitly:
+
+```bash
+cotal ext add @cotal-ai/bubblewrap
+COTAL_BUBBLEWRAP_ROOTFS=<seat-rootfs> cotal supervise --runtime bubblewrap --space <space>
+```
+
+This requires a user-auth participant manager whose host enrolls managed agents. It does not
+support local static-auth spawning. The root filesystem is an operator-prepared image containing
+`/usr/bin/cotal`, its installed connectors and harnesses, and the libraries they need. It must
+contain no operator credentials, signer, mesh registry or host sockets. Bubblewrap must be installed
+at `/usr/bin/bwrap`, with unprivileged user namespaces enabled. The image root must not be group-
+or world-writable. Include the mountpoints `/proc`, `/dev`, `/home`, `/run`, `/tmp`, `/scratch`
+and `/workspace`.
+
+The runtime mounts that image read-only and creates private home, runtime, scratch and working
+directories in memory. Only the seat's scoped lifecycle handoff and persona enter through pipes.
+It inherits no operator environment. Provision model authentication inside the trusted image's
+own composition without adding operator mesh authority. Network access remains available for
+the broker and provider, so protect local network services separately.
+
+Host-local working directories, carried resumes and shared local MCP processes are unsupported.
+A missing image or unsupported launch refuses. There is no same-user fallback or terminal attach.
+Use mesh presence and messages to observe the seat. The sandbox ends when its launching manager
+process exits.
+
 ## Check connector availability [#check-connector-availability]
 
 Run `cotal status` before launching an agent.

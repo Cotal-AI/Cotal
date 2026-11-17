@@ -1313,6 +1313,7 @@
   "env:COTAL_OPENCODE_PROMPT": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_OPENCODE_RESOLVED_BIN": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_OPENCODE_SERVER_URL": "internal:connector plumbing the launcher sets for one harness",
+  "env:COTAL_BUBBLEWRAP_ROOTFS": "pending:config",
   "env:COTAL_ORCA_BIN": "pending:config",
   "env:COTAL_OWNER": "internal:seat session variable the launcher writes for a spawned seat",
   "env:COTAL_PARENT_PID": "internal:handoff between a Cotal process and the child it starts",

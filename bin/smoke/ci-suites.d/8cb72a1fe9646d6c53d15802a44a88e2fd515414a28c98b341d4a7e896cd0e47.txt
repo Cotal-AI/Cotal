@@ -1,0 +1,2 @@
+# Real native Linux namespace isolation, skipped on other platforms.
+smoke:bubblewrap

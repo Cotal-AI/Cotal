@@ -47,6 +47,7 @@
   },
   "devDependencies": {
     "@cotal-ai/auth": "workspace:*",
+    "@cotal-ai/bubblewrap": "workspace:*",
     "@cotal-ai/connector-claude-code": "workspace:*",
     "@cotal-ai/connector-codex": "workspace:*",
     "@cotal-ai/connector-core": "workspace:*",

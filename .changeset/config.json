@@ -17,6 +17,7 @@
       "@cotal-ai/linear",
       "@cotal-ai/cmux",
       "@cotal-ai/orca",
+      "@cotal-ai/bubblewrap",
       "@cotal-ai/tmux",
       "@cotal-ai/herdr",
       "@cotal-ai/connector-core",
