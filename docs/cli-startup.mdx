@@ -228,7 +228,10 @@ names them and the next step: `cotal up`
 finishes the start, and `cotal down --yes` stops them. For a native member whose startup is still
 unchecked, `down` makes a bounded wait for that same launch's verified readiness before reading
 its stop impact. It does not replace native stop authority with a process signal. When only its broker started and the space
-was not registered yet, it names that broker's pid, `cotal down --yes` and then `cotal up`. An
+was not registered yet, it names that broker's pid, `cotal down --yes` and then `cotal up`. A start
+killed before it could say so leaves the same broker. The next `up` then refuses `CONFLICT`, exit 2,
+with or without `--server`, and names that broker's pid and `cotal down`, because the broker holds
+this root's store and no second one starts beside it. `cotal down` stops it. An
 interrupted `up --no-manager` names `cotal up --no-manager` in each of these, because bare `up` adds
 the manager, and the `cotal down --yes` that settles such an `up` names it as its Next. An `up`
 interrupted while it writes a new space's trust material leaves the space new, so the next `up`

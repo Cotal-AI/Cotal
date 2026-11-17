@@ -92,6 +92,7 @@ import { c, stderrLine } from "../ui.js";
 import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { parsePid, probeLiveness, readPidfile } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
+import { interruptedStartBroker } from "../lib/legacy-start.js";
 import { downManifest } from "./down-manifest.js";
 import { directKvValue, refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
@@ -434,15 +435,19 @@ function guardLegacyBareDown(): { space: string; server: string } {
     if (!existsSync(join(root, ".cotal")) || !localMeshesForRoot(root).length && !pidRecordsUnder(root)) throw noOwnedStack(root);
     throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated whole-stack stop root; no process was signalled", { target, remedy: MACHINE_HOME_STOP });
   }
-  let mesh: NonNullable<ReturnType<typeof findMesh>>;
+  let mesh: { readonly space: string; readonly server: string };
   try {
     if (!realDirNoSymlink(root, ".cotal")) throw new Error("missing project control directory");
     // A root that hosts several spaces refuses before the registration lookup, naming them.
     try { assertSingleSpaceBroker(authDir(root), "bare down"); }
     catch (error) { throw new CommandFailure("refused", "CONFLICT", (error as Error).message, { target }); }
     const local = localMeshesForRoot(root), sole = local[0];
-    if (local.length !== 1 || sole?.origin !== "up") throw new Error("no unique locally started stack at this root");
-    mesh = sole;
+    // A start interrupted before it registered its space left its broker with no registration. The
+    // root's own files name that space and address, and the guards below apply to it unchanged.
+    const interrupted = local.length ? undefined : interruptedStartBroker(root);
+    if (interrupted) mesh = interrupted;
+    else if (local.length !== 1 || sole?.origin !== "up") throw new Error("no unique locally started stack at this root");
+    else mesh = sole;
   } catch (error) {
     if (error instanceof CommandFailure) throw error;
     throw noOwnedStack(root);
