@@ -4001,28 +4001,31 @@ export class CotalEndpoint extends EventEmitter {
    *  read while the backstop keeps delivering. */
   async leaveChannel(channel: string): Promise<{ left: boolean }> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
-    if (!this.channels.includes(channel)) return { left: false };
+    let left = this.channels.includes(channel);
     if (this.readsChannelsOnDemand) await this.readChannels();
     // Auth + durable-class ⇒ a Plane-3 membership may exist; tombstone it BEFORE touching local state.
-    // The join generation comes from the local mirror, but a BOOT membership whose hydration was missed
-    // (daemon down at connect) is NOT in the mirror — so re-resolve it from the delivery service on
-    // demand. FAIL-CLOSED: fetchMemberships throws on a responder-present error, so a leave whose
+    // Discover the channel's rows across this principal's lifecycles, including memberships absent
+    // from the local mirror. Keep each row's generation guard. fetchMemberships throws on a
+    // responder-present error, so a leave whose
     // tombstone can't be confirmed propagates (live sub stays up, mirror intact) for the caller to retry
     // — reporting `left` while the trusted reader keeps transferring to DLV is the fail-open leak. A
     // genuine no-responder (open / no delivery daemon, no Plane-3) means there is no membership to tombstone.
     if (this.authed && (isChannelFamily(channel) || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === "durable")) {
-      let generation = this.plane3Channels.get(channel);
-      if (generation === undefined)
-        generation = (await this.fetchMemberships())?.find((m) => m.channel === channel)?.generation;
-      if (generation !== undefined) {
-        await this.durableLeaveChannel(channel, generation);
-        this.plane3Channels.delete(channel);
+      const memberships = await this.fetchMemberships(channel);
+      if (memberships === undefined && this.plane3Channels.has(channel))
+        await this.durableLeaveChannel(channel, this.plane3Channels.get(channel));
+      for (const member of memberships ?? []) {
+        if (member.lifecycleUid === undefined)
+          throw new Error("durable leave requires lifecycle-aware channel membership discovery from the delivery daemon");
+        await this.durableLeaveChannel(channel, member.generation, member.lifecycleUid);
+        left = true;
       }
+      if (memberships !== undefined) this.plane3Channels.delete(channel);
     }
     this.unsubscribeChat(channel);
     const i = this.channels.indexOf(channel);
     if (i >= 0) this.channels.splice(i, 1);
-    return { left: true };
+    return { left };
   }
 
   /**
@@ -6293,7 +6296,16 @@ export class CotalEndpoint extends EventEmitter {
       let uid: string;
       try { uid = assertLifecycleToken(args.lifecycleUid); }
       catch (e) { return { ok: false, error: (e as Error).message }; }
-      const memberships = await this.ownerMemberships(caller, uid);
+      let memberships;
+      if (args.channel !== undefined) {
+        const channel = this.checkDurableChannelArg(args, "listMemberships", { family: true });
+        if (typeof channel !== "string") return channel;
+        memberships = (await listMembers(await this.membersRegistry(), { owner: caller }))
+          .filter((r) => r.channel === channel && r.leaveCursor === undefined)
+          .map((r) => ({ channel: r.channel, generation: r.generation, activated: r.activated === true, lifecycleUid: r.lifecycleUid }));
+      } else {
+        memberships = await this.ownerMemberships(caller, uid);
+      }
       // FENCE AFTER THE AWAIT, which is the one that matters. The entry check above cannot catch the
       // case this exists for: a request admitted WHILE SERVING, then descheduled inside its broker
       // read, resuming after a successor has taken the shard and reached READY. Re-ask at the point
@@ -7775,9 +7787,8 @@ export class CotalEndpoint extends EventEmitter {
   /** Agent-side: release a Plane-3 durable backstop (tombstone membership at the leave cursor). Passes
    *  the join generation so a stale leave can't tombstone a newer rejoin (the delivery daemon validates
    *  it) AND this incarnation's lifecycleUid — membership rows are lifecycle-keyed (SPEC 13.1), and a
-   *  leave must resolve its OWN row even after the ACL row was narrowed or purged. */
-  async durableLeaveChannel(channel: string, generation?: number): Promise<void> {
-    const lifecycleUid = this.requireLifecycleUid("leaving a durable channel");
+   *  leave must resolve the selected principal-owned row even after the ACL row was narrowed or purged. */
+  async durableLeaveChannel(channel: string, generation?: number, lifecycleUid = this.requireLifecycleUid("leaving a durable channel")): Promise<void> {
     const reply = await this.requestDelivery("durableLeave", { channel, generation, lifecycleUid });
     if (!reply.ok) throw new Error(reply.error ?? "durable leave rejected");
   }
@@ -7902,20 +7913,20 @@ export class CotalEndpoint extends EventEmitter {
     return reply.data as AnycastStatus;
   }
 
-  /** Agent-side: this session's CURRENT durable memberships (channel + join generation) from the
-   *  manager — the agent holds no read on the privileged members KV. `undefined` ⇒ NO control responder
+  /** Agent-side: current lifecycle memberships, or all principal-owned rows for an explicit channel,
+   *  from the delivery service. The agent holds no read on the privileged members KV. `undefined` ⇒ NO control responder
    *  (open / no delivery daemon, so there is no Plane-3 and no memberships). THROWS on a responder-present RPC
    *  failure, so a caller can FAIL-CLOSED rather than mistaking a transient error for "no membership". */
-  async fetchMemberships(): Promise<{ channel: string; generation: number; activated: boolean }[] | undefined> {
+  async fetchMemberships(channel?: string): Promise<{ channel: string; generation: number; activated: boolean; lifecycleUid?: string }[] | undefined> {
     let reply: ControlReply;
     try {
-      reply = await this.requestDelivery("listMemberships", { lifecycleUid: this.requireLifecycleUid("listing durable memberships") }, 5_000);
+      reply = await this.requestDelivery("listMemberships", { lifecycleUid: this.requireLifecycleUid("listing durable memberships"), ...(channel === undefined ? {} : { channel }) }, 5_000);
     } catch (e) {
       if (this.isNoResponders(e)) return undefined; // no delivery daemon — open / daemon-less, no Plane-3
       throw e; // responder present but errored — surface it (leaveChannel fails closed)
     }
     if (!reply.ok) throw new Error(reply.error ?? "listMemberships failed");
-    return (reply.data as { memberships?: { channel: string; generation: number; activated: boolean }[] } | undefined)?.memberships ?? [];
+    return (reply.data as { memberships?: { channel: string; generation: number; activated: boolean; lifecycleUid?: string }[] } | undefined)?.memberships ?? [];
   }
 
   /** Agent-side, first connect (auth): SELF-JOIN this session's durable boot channels via the
