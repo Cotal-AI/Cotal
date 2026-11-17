@@ -52,10 +52,17 @@ if (process.argv[2] === "--restore") {
     for (const arm of ["remove", "restore"] as const) {
       const dir = join(root, arm);
       const { prefix, child, cli } = sandbox(dir);
+      const invalidAdd = cli(["ext", "add", source, "unexpected-extra-argument"]);
+      check(`${arm}: surplus add operand refuses with usage`, invalidAdd.status === 1 && invalidAdd.stderr.includes("ext add <npm-package>"));
+      check(`${arm}: invalid add leaves the prefix absent`, !existsSync(prefix));
       const added = cli(["ext", "add", source]);
       assert.equal(added.status, 0, `${arm}: stock connector install failed: ${added.stderr.slice(-800)}`);
       const kept = join(prefix, "node_modules", "@cotal-ai", "connector-claude-code");
       check(`${arm}: built-in starts as a copy`, !lstatSync(kept).isSymbolicLink() && realpathSync(kept) !== realpathSync(source));
+      const manifestBefore = readFileSync(join(prefix, "extensions.json"), "utf8");
+      const invalidRemove = cli(["ext", "remove", keptName, "unexpected-extra-argument"]);
+      check(`${arm}: surplus remove operand refuses with usage`, invalidRemove.status === 1 && invalidRemove.stderr.includes("ext remove <name>"));
+      check(`${arm}: invalid remove keeps the manifest and installed package`, readFileSync(join(prefix, "extensions.json"), "utf8") === manifestBefore && existsSync(join(kept, "dist", "index.js")));
       const before = digest(join(kept, "dist", "index.js"));
       check(`${arm}: installed bytes match built source`, before === sourceDigest);
       const siblingName = `cotal-ext-copy-${arm}`;
@@ -130,7 +137,7 @@ if (process.argv[2] === "--restore") {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, 29, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, 37, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);

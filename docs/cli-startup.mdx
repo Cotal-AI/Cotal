@@ -60,7 +60,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--file <cotal.yaml>`, `-f` | none | Launch a whole mesh from a manifest |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing. Without `-f` it refuses `USAGE_INVALID` before anything starts or is written. A preview from an unprepared folder under the machine home reads that folder's empty policy rather than inheriting the home store; applying there requires `space create` first. |
 | `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. Without `-f`, that refusal is `DEPENDENCY_UNAVAILABLE` (exit 2) before anything is written, and for a known runtime the remedy names the `cotal ext add <pkg>` to run. With `-f`, overrides the manifest's runtime. An empty value, as an unset variable gives, names no runtime and refuses `USAGE_INVALID` (exit 1) |
-| `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh, and for a controller stack in its saved manager definition, and reused by every later manager launch, so a bare `up` after `down`, a repair or a resume does not silently drop back to 64. A running manager cannot change it: `cotal down` first, then `cotal up --max-sessions <n>` |
+| `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh, and for a controller stack in its saved manager definition, and reused by every later manager launch, so a bare `up` after `down`, a repair or a resume does not silently drop back to 64. A running manager cannot change it. On a controller stack, a different ceiling refuses `LIFECYCLE_BLOCKED`, exit 2, naming the running value and leaving the saved definition unchanged. A matching ceiling or a bare refresh reuses the manager. Run `cotal down --yes` first, then `cotal up --max-sessions <n>` |
 | `--seat-cap <n\|unlimited>` | `unlimited` | Live seats this root's manager admits for one owner. Recorded in this root and read by the manager at each start, so a bare `up` after `down`, a repair or a resume keeps it. A running manager cannot change it: `cotal down` first, then `cotal up --seat-cap <n>`. Cannot be combined with `--restore`, `--file` or `--no-manager` |
 | `--manager-name <name>` | none | Name this root's manager. `who --all` and the manager choice show the name, and on a user-auth mesh `--on` takes it. It is recorded in the root, so a restart or repair keeps it. A running manager keeps the name it started with, so a different name is refused until `cotal down`. The name is one line of at most 128 characters with no `/` or `\`, and it may not look like an instance id (26 to 32 lowercase letters and digits). Cannot be combined with `--no-manager`, `--file` or `--restore` |
 | `--no-manager` | off | Broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager. A refresh under the flag of a mesh whose manager is live refuses rather than keeping or stopping it. For a controller stack, use `cotal service stop stack-manager --space <s> --yes` first. A legacy stack has no command that stops only its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it broker-only. Cannot be combined with `--runtime`, `--max-sessions`, or an agent-declaring manifest |
@@ -487,6 +487,10 @@ observations could not be read, with that code.
 
 A controller stack opens three listeners. The broker serves clients at its `--server` port, and a
 websocket for the browser console's mesh session on a port `up` picks, which is always plaintext.
+`up` picks that port as it writes the broker's configuration, and nothing holds the port until the
+broker binds it. When another process binds it first, the broker exits before readiness and `up`
+launches it again on a newly picked port, at most four times; a text `up` says so on stderr each
+time. When the last launch fails the same way, the failure names those relaunches.
 The manager serves its console over plain HTTP on a port it picks when it starts. All three bind the
 `--host` address, and loopback without it, so `--host 0.0.0.0` opens each of them on every interface.
 The receipt's `Listeners` section names each one with its address, how far it reaches and whether it
@@ -648,7 +652,8 @@ the store over its cap, as on a new space whose cap is below the stack's own fir
 
 When the stack's broker process is stopped by a signal, such as SIGSTOP, it accepts connections and
 never answers, so `up` refuses `TARGET_UNAVAILABLE` before it writes anything or records the broker's
-readiness again. It names that pid and gives `kill -CONT <pid>`, as `down` does.
+readiness again. It names that pid and gives `kill -CONT <pid>` to resume the stack. To stop it
+instead, `cotal down --yes` resumes the exact owned broker and continues its guarded stop.
 
 Before it launches a broker, the controller binds the broker address once, and so does the legacy
 launcher that an unprepared folder or `up -f` starts. When another process holds it, `up` refuses
@@ -685,6 +690,10 @@ way on a controller root (see [Backups](cli-backups.mdx#backups)).
 
 
 ### User-auth controller
+
+User-auth startup checks the required IdP and its JWKS before creating trust, credentials or store
+state, including in a fresh folder without `space create` and with `-f`. A missing or invalid IdP
+refuses `USAGE_INVALID`, exit 1, and leaves no static signing authority behind.
 
 User-auth controller startup requires a plain loopback IP and an auth provider with read-only
 server preflight. A first enable checks the required IdP and its JWKS before creating maintenance
@@ -726,8 +735,10 @@ different `--store-dir` rather than silently opening a second store. `down` drop
 later start without `--store-dir` reads the store its last broker served from the broker config `up`
 wrote. A space named after its folder keeps the record, so its next start reopens the store the record
 names. When that store is not the default `.cotal/nats` and still holds JetStream data while the
-default store holds none, such as after `backup restore --store-dir`, the start refuses `CONFLICT`
-(exit 2) and names it. Pass `--store-dir <dir>` to reopen it, or remove it with
+default store holds none, such as after `backup restore --store-dir`, a bare `up` reopens it and
+prints `reopening <dir>, the store this root's last broker served`. `up -f` refuses `CONFLICT`
+(exit 2) and names it, and so does a bare `up` when the auth and open broker configs name two such
+stores. Pass `--store-dir <dir>` to reopen it, or remove it with
 `cotal clean store --force`. While that store holds data, a
 `--store-dir` that does not exist is taken for a mistyped path, and the start refuses `CONFLICT`
 (exit 2) and names both. Create the directory first to start a new empty store there.
@@ -923,7 +934,7 @@ running mesh and applies additively: all-new live channel-only manifests, or bou
 and mixed manifests on static-auth or open meshes through one native manager. It does not launch
 user-auth agents. `team remove` retires a returned deployment by its full ID within the limits in
 [Recorded team views](cli-agent-views.mdx#recorded-team-views). `spawn -f` no longer deploys a manifest; an additive
-ledger written by that older path is torn down with `cotal down -f <file> --run <id>`. When the manifest can be read and no additive ledger exists, `cotal down -f <file> --dry-run` previews this root's recorded stack and stops nothing. `up -f`,
+ledger written by that older path is torn down with `cotal down -f <file> --run <id>`. On retained legacy roots, when the manifest can be read and no additive ledger exists, `cotal down -f <file> --dry-run` previews this root's recorded stack and stops nothing. Controller-owned roots refuse `--file` and `--run`; use `cotal down --dry-run` there. `up -f`,
 `team deploy` and `team remove` take `--dry-run` to print the plan without mutating anything.
 `topology` validates the manifest and renders its channel / role / ACL graph. Given a folder
 instead of a manifest file, `topology view`, `up -f`, `down -f` and the `team` commands that take a

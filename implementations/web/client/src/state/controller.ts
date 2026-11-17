@@ -86,7 +86,7 @@ export interface Controller {
 
 /** `createOrder` builds the order machine for a lane: the feed's, or the open channel's. The
  *  default is `createEventOrder`; the suites pass a factory that records what was armed. */
-export interface ControllerOptions {
+interface ControllerOptions {
   createOrder?: (lane: "feed" | "open") => EventOrder;
   /** The time a live frame is stamped with when it arrives. Defaults to `Date.now`. */
   clock?: () => number;

@@ -23,7 +23,7 @@ function inputs(account: unknown, endpoint: unknown): { account: string; endpoin
   } catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the Linear service needs a native account name and full reverse-DNS endpoint class"); }
 }
 
-export const linearServicePreset: ServicePreset = {
+const linearServicePreset: ServicePreset = {
   kind: "service-preset", name: "linear", adapter: "linear-service", timeoutMs: 120000,
   summary: "native registered Linear MCP service using an existing account and authenticated root",
 };
@@ -65,7 +65,7 @@ function validateChild(args: ParsedArgs): void {
   serviceOperationId(args.values["service-instance"]); serviceOperationId(args.values["launch-request"]);
 }
 
-export const nativeLinearServiceCommand: Command = {
+const nativeLinearServiceCommand: Command = {
   kind: "command", name: "__service-linear", hidden: true, prepareMeshTarget: false,
   summary: "native Linear child with a private process/launch initialization receipt",
   flags: ["root", "space", "server", "account", "endpoint", "service-instance", "launch-request", "ready-file"].map((name) => ({ name, type: "string" as const })),

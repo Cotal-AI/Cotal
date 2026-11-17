@@ -1,4 +1,5 @@
-import { CotalEndpoint, mintLifecycleUid } from "@cotal-ai/core";
+import { CotalEndpoint, credsClaims, mintLifecycleUid } from "@cotal-ai/core";
+import { CommandFailure } from "../output.js";
 import type { UserViewAuth } from "../connect.js";
 
 /** How an observer authenticates: a static or open creds file, or the user-mode admin-view
@@ -26,6 +27,11 @@ export interface ObserverOptions {
  *  durables, and reads through tap, history and presence watch. It is returned unstarted; the
  *  caller's `MeshView` or lifecycle owns `start` and `stop`. */
 export function openObserver({ space, server, name, auth = {}, operator = false }: ObserverOptions): CotalEndpoint {
+  if (auth.creds && credsClaims(auth.creds).name === "agent") {
+    throw new CommandFailure("refused", "PERMISSION_DENIED", "an agent-profile credential cannot watch the space's chat feed", {
+      remedy: "mint a separate observer credential with `cotal auth mint <label> --profile observer --out <file>`, then pass that file with --creds",
+    });
+  }
   const role = operator ? { role: "operator" } : {};
   const ep = new CotalEndpoint({
     space,

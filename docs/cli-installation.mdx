@@ -28,7 +28,7 @@ A terminal that reports 0 columns gets the splash, questions and notes drawn for
 | `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server, including a Cloud space `cotal login` discovered. The flag value `cloud` is refused before anything is written or contacted, because the Cloud sign-in needs a terminal. The refusal names the scripted route: `cotal login`, then `--destination self-hosted --space <name>`. |
 | `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. When you have no `harness` preference of your own, it becomes yours too. |
 | `--runtime` | asked; none in a script | A runtime to set up besides the built-in `pty`: `tmux`, `cmux`, `orca`, `herdr` or an installed third-party one. Repeat it for each. |
-| `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. A script's folder must exist; a terminal offers to create it. |
+| `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. For a local space, `--yes` creates a missing folder; otherwise a script's folder must exist. A terminal offers to create it. |
 | `--space` | asked | The space to prepare (local) or the registered space to use (self-hosted). |
 | `--connection-file` | none | Self-hosted: register the space from a connection bundle exported where it runs, with the checks `space add --file` makes. |
 | `--configure-only` | on | Save preparation and start nothing. Refused with `--start`. |
@@ -536,6 +536,9 @@ cotal ext remove <name>
 cotal ext root            # print just the install prefix (scriptable)
 cotal ext seed [--repair|--reset|--force]
 ```
+
+`add` and `remove` each take one operand. Missing or extra operands are usage errors and
+leave the extension inventory unchanged.
 
 Operator-installed extensions: `add` installs an npm package into a cotal-owned prefix and records
 every registry provider it contributes. Commands appear in help, completion, and dispatch; runtime

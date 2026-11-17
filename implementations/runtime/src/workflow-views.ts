@@ -131,7 +131,7 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
 
 /** What an answer or amendment filed, as the caller sent it, which the host records under the
  *  answer id it returns. `value` is absent when none was given. */
-export interface ReceiptAnswer { readonly step: string; readonly value?: unknown; readonly artifact?: string }
+interface ReceiptAnswer { readonly step: string; readonly value?: unknown; readonly artifact?: string }
 
 /** `runId` is the run the caller named, for an answer or amendment whose result does not repeat it. */
 export function runReceipt(action: string, space: string | undefined, result: unknown, values: OutputValues, runId = result && typeof result === "object" && "runId" in result && typeof result.runId === "string" ? result.runId : undefined, answer?: ReceiptAnswer): void {

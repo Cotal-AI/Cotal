@@ -24,6 +24,8 @@ import { CopyCommand } from "../client/src/ui/CopyCommand.tsx";
 import { MessageRow } from "../client/src/ui/MessageRow.tsx";
 import { StaleMarker } from "../client/src/ui/StaleMarker.tsx";
 import { StatusDot, StatusWord } from "../client/src/ui/Status.tsx";
+import * as alertDialog from "../client/src/ui/shadcn/alert-dialog.tsx";
+import * as button from "../client/src/ui/shadcn/button.tsx";
 import { errorsDuring, mount } from "./mount.js";
 import { inShell } from "./providers.js";
 import { parseHtml, renderShell, staleMarker, startTags, unescapeHtml } from "./render-shell.js";
@@ -34,6 +36,11 @@ const ok = (name: string, cond: unknown, detail?: unknown) => {
   console.log(`  ok ${++n} ${name}`);
 };
 const same = (name: string, got: unknown, want: unknown) => ok(name, JSON.stringify(got) === JSON.stringify(want), { got, want });
+
+ok("shared UI modules expose their consumed components, not local helpers or unused parts",
+  typeof alertDialog.AlertDialogContent === "function" && typeof button.Button === "function"
+    && !["AlertDialogMedia", "AlertDialogOverlay", "AlertDialogPortal"].some((name) => name in alertDialog)
+    && !("buttonVariants" in button));
 
 const entry = (id: string, name: string, status: RosterEntry["status"], connector?: string, role?: string): RosterEntry =>
   ({ card: { id, name, kind: "agent", role, meta: connector ? { connector } : {} }, status, ts: 1 }) as RosterEntry;

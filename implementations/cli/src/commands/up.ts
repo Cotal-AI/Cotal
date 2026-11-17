@@ -275,7 +275,7 @@ import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
-import { assertStoreDirArgument, configuredStoreDir, lastServedStore, missingStoreWarning, servedStore, sharedStoreAtStart, sharedStoreWarning, storeWriteProblem, warnForeignStoreEntries } from "../lib/store-dir.js";
+import { assertStoreDirArgument, configuredStoreDir, lastServedStore, lastServedStores, missingStoreWarning, servedStore, sharedStoreAtStart, sharedStoreWarning, storeWriteProblem, warnForeignStoreEntries } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -1098,12 +1098,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const stackSpace = values.space ?? folderSpace();
     if (values.space === undefined && unnamedDefault(root, stackSpace)) assertSelectionNotMoved(root, stackSpace);
     recordOperationSpace(stackSpace);
-    if (!readMaintenanceJournal(root) && controllerStackApplies(root, stackSpace, values)) {
+    if (!readMaintenanceJournal(root)) {
+      const controller = controllerStackApplies(root, stackSpace, values);
       const recordedStack = readStackJournal(root);
       if ((recordedStack?.journal.mode ?? requestedStackMode(values)) === "user" && (!recordedStack || values.idp !== undefined)) {
         const server = values.server ?? recordedStack?.journal.server ?? localMeshesForRoot(root).find((m) => m.space === stackSpace)?.server ?? (values.host ? reconcileHostAndServer(values.host, undefined) : DEFAULT_SERVER);
         const transport = resolveTransport(values, undefined, root, { persist: false, quiet: true });
-        assertUserStackTransport(server, transport.kind === "tls-required");
+        if (controller) assertUserStackTransport(server, transport.kind === "tls-required");
         await preflightUserStack(root, stackSpace, values.idp);
       }
     }
@@ -2224,7 +2225,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   await assertBrokerAddressFree(server, "cotal up");
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
-    if (values["store-dir"] === undefined) refuseUnnamedLastStore(cotalPath("nats"));
+    if (values["store-dir"] === undefined) values["store-dir"] = reopenLastStore(cotalPath("nats"));
     else refuseMissingNamedStore(resolve(values["store-dir"]));
     checkStartStore(values["store-dir"], values.space ?? folderSpace());
   }
@@ -3546,7 +3547,7 @@ export function controllerStackNative(): StackUpNative {
   return {
     prepareBroker: async (opts) => {
       const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.logFile !== undefined ? { logFile: opts.logFile } : {}), ...(opts.logfileSizeLimit !== undefined ? { logfileSizeLimit: opts.logfileSizeLimit } : {}), ...(opts.logfileMaxNum !== undefined ? { logfileMaxNum: opts.logfileMaxNum } : {}), ...(opts.authTimeout !== undefined ? { authTimeout: opts.authTimeout } : {}), ...(opts.maxPayload !== undefined ? { maxPayload: opts.maxPayload } : {}), ...(opts.accountResolver !== undefined ? { accountResolver: opts.accountResolver } : {}), ...(opts.noManager ? { noManager: true } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
-      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}), ...(prepared.maxPayload !== undefined ? { maxPayload: prepared.maxPayload } : {}), ...(prepared.setup?.accountResolver !== undefined ? { accountResolver: prepared.setup.accountResolver } : {}) };
+      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort, moveWebsocketPort: prepared.setup.moveWebsocketPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}), ...(prepared.maxPayload !== undefined ? { maxPayload: prepared.maxPayload } : {}), ...(prepared.setup?.accountResolver !== undefined ? { accountResolver: prepared.setup.accountResolver } : {}) };
     },
     initializeStreams: (server, space, setup, seedFile, recreateIssuedStores, recreateMembershipStore) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined, recreateIssuedStores, recreateMembershipStore, true),
     recreateDeletedStreams: ({ seed, ...opts }) => recreateDeletedStreams({ ...opts, ...(seed !== undefined ? { seed: seed as ChannelRegistryFile } : {}) }),
@@ -3669,6 +3670,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // Before the dry-run print and before connector preflight or any write, as the refusals above.
   if (!opts.storeDir) refuseUnnamedLastStore(cotalPath("nats"));
   else refuseMissingNamedStore(resolve(opts.storeDir));
+  if (userAuth) await preflightUserStack(cotalRoot(), m.space, userAuth.idpUrl);
   checkStartStore(opts.storeDir, m.space);
 
   if (opts.dryRun) {
@@ -5549,6 +5551,18 @@ function refuseUnnamedLastStore(storeDir: string): void {
     throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and this start names no store, so it would open a new empty one at ${storeDir}; nothing was started`, { target: { root: cotalRoot(), storeDir: last }, remedy: `reopen it with --store-dir ${last}, or move that store away to start empty` });
 }
 
+/** The store a bare start that names none opens: the store this root's last broker served, while
+ *  it holds data and the default store holds none, since the default would open empty and leave the
+ *  data where it was. When the broker configs name two such stores, the start refuses as
+ *  {@link refuseUnnamedLastStore} does, because which one to reopen is the operator's choice. */
+function reopenLastStore(storeDir: string): string | undefined {
+  if (existsSync(join(storeDir, "jetstream"))) return undefined;
+  const last = lastServedStores(cotalRoot(), storeDir);
+  if (last.length > 1) refuseUnnamedLastStore(storeDir);
+  if (last.length === 1) for (const line of hang("", `reopening ${last[0]}, the store this root's last broker served`, terminalWidth(process.stdout), c.dim)) console.log(line);
+  return last[0];
+}
+
 /** A `--store-dir` that does not exist yet, while the last served store holds data, is taken for a
  *  mistyped path: the start would open a new empty store there. Creating the directory first names a
  *  new store on purpose. */
@@ -5657,7 +5671,7 @@ async function authSetup(
   // rather than two trailing optional numbers: a transposed pair of those renders a wrong
   // configuration in silence.
   requested: { authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; manager?: boolean; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number } = {},
-): Promise<{ confPath: string; creds: string; wsPort: number; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number; maxPayload?: number; accountResolver: "memory" | "full" }> {
+): Promise<{ confPath: string; creds: string; wsPort: number; moveWebsocketPort: () => Promise<number>; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number; maxPayload?: number; accountResolver: "memory" | "full" }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());
   let auth: SpaceAuth | undefined = await getSpaceAuth(store, space).catch((error: unknown) => { throw unreadableTrust(error); });
@@ -5786,12 +5800,17 @@ async function authSetup(
   const accountResolver = brokerAccountResolver(cotalRoot(), resolverChoice === "full" ? "full" : undefined);
   // Owner-private like the auth dir: nats-server writes each pushed claim here.
   if (accountResolver.kind === "full") mkSecretDir(accountResolver.directory);
-  writeBrokerConfig(confPath, serverConfig(auth, spaces, { transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, authTimeout, maxPayload, accountResolver, logFile: requested.logFile, logfileSizeLimit: requested.logfileSizeLimit, logfileMaxNum: requested.logfileMaxNum, host, wsPort, wsHost: host, extraAccounts }));
+  const render = (ws: number) => writeBrokerConfig(confPath, serverConfig(auth, spaces, { transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, authTimeout, maxPayload, accountResolver, logFile: requested.logFile, logfileSizeLimit: requested.logfileSizeLimit, logfileMaxNum: requested.logfileMaxNum, host, wsPort: ws, wsHost: host, extraAccounts }));
+  render(wsPort);
+  // The chosen port is free now, but nothing holds it until the broker binds it. When another process
+  // takes it first, the broker exits before readiness, and a controller stack start renders this
+  // configuration again on a newly chosen port.
+  const moveWebsocketPort = async () => { const moved = await freePort(host); render(moved); return moved; };
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
-  return { confPath, creds, wsPort, ...(prepared ? { prepared, stateDir } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), accountResolver: resolverChoice };
+  return { confPath, creds, wsPort, moveWebsocketPort, ...(prepared ? { prepared, stateDir } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), accountResolver: resolverChoice };
 }
 
 /**

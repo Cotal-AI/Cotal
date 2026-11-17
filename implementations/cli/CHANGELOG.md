@@ -1,5 +1,25 @@
 # @cotal-ai/cli
 
+## 0.165.4
+
+### Patch Changes
+
+- 62a04ab: Keep `status --components` successful on a healthy stack when the optional dashboard is installed but not started.
+- e7d413b: Keep running local Managers attributable during updates when the installed CLI path contains spaces.
+- 20ed7a7: Allow `cotal up --open --max-payload <bytes>` to configure the broker's message size limit and retain it across restarts.
+- b1c2fb9: Keep a selected prepared or stopped space selected when registering another mesh with `meshes add`.
+- d2923ec: Repair a corrupt extensions manifest when maintenance flags precede `seed`, as in `cotal ext --repair seed`.
+- 5d9c40b: Allow a stopped stack to enable or change its native broker log and rotation settings, and keep those settings for subsequent starts.
+- d5ecb99: Allow file-only credential minting and signer export after stopping a local static space without repeating its broker address.
+- 0ba9fe1: Report a repeated remote persona create as an ownership refusal, preserve the saved file, and point to local editing on the manager's host.
+- ff2dc46: Return a partial update-check report when the extension manifest is corrupt without changing the manifest.
+- Updated dependencies [16d0381]
+- Updated dependencies [20ed7a7]
+- Updated dependencies [5413861]
+- Updated dependencies [d5ecb99]
+  - @cotal-ai/core@0.165.4
+  - @cotal-ai/workspace@0.165.4
+
 ## 0.165.3
 
 ### Patch Changes

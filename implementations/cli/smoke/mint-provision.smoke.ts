@@ -18,7 +18,7 @@
  *      identity reads fix.x live but cannot join general
  *   5. --provision / --role / --allow-subscribe / --allow-publish off the agent profile, --signer on
  *      mint, and the footprint flags on `auth signer` → exit 1, one sentence, nothing written; `auth
- *      signer` into a missing folder → exit 2 naming it, nothing created; and
+ *      signer` into a missing folder → private directories and signer created; and
  *      the control that the same ACL flag on the agent profile still works
  *   6. --provision naming a mesh on another trust root; from a FRESH open root (no auth on disk, as
  *      `cotal up` leaves one), where mint and signer export refuse as unsupported; from a root holding
@@ -160,6 +160,29 @@ try {
   recordMesh({ space: SPACE, server: broker.servers, root, mode: "auth", ts: new Date().toISOString(), origin: "manual" });
   process.chdir(root); // `auth mint` finds the root's `.cotal/` by walking up from cwd, like the binary
   cleanup.push(() => process.chdir(cwd0));
+
+  // Signer output protection is independent of provisioning and its consuming-connect checks.
+  {
+    // Output names are filesystem paths, never shell commands, even with spaces and expansions.
+    const missingParent = join(root, "signer parent $HOME 'quoted'"), missingFolder = join(missingParent, "nested");
+    const missingSigner = join(missingFolder, "signer.json");
+    const result = await runCotal(["auth", "signer", "--out", missingSigner, "--plain"]);
+    check("auth signer creates missing nested output folders", result.code === 0 && existsSync(missingSigner), result.out);
+    check("  new folders are private", [missingParent, missingFolder].every((p) => (statSync(p).mode & 0o777) === 0o700));
+    const signer = JSON.parse(readFileSync(missingSigner, "utf8"));
+    check("  signer is private and holds only the selected account signer", (statSync(missingSigner).mode & 0o777) === 0o600
+      && signer.account.signingSeed === auth.account.signingSeed && signer.operator.seed === "");
+    check("  no secret appears in output and no split path is created", !result.out.includes(auth.account.signingSeed) && !existsSync(join(root, "signer")));
+    const linkedParent = join(root, "signer-link");
+    symlinkSync(missingParent, linkedParent);
+    const linked = await runCotal(["auth", "signer", "--out", join(linkedParent, "not-created", "signer.json")]);
+    check("auth signer refuses a symlink ancestor before creating descendants", linked.code === 2 && /PERMISSION_DENIED/.test(linked.out)
+      && !existsSync(join(missingParent, "not-created")), linked.out);
+    chmodSync(missingFolder, 0o777);
+    const unsafe = await runCotal(["auth", "signer", "--out", join(missingFolder, "unsafe.json")]);
+    check("auth signer still refuses an unprotected existing folder", unsafe.code === 2 && !existsSync(join(missingFolder, "unsafe.json")), unsafe.out);
+    chmodSync(missingFolder, 0o700);
+  }
 
   // A second, ordinary peer that will DM and anycast the minted identity. Provisioned the launcher
   // way (the control): its footprint is what --provision must reproduce for the minted one.
@@ -325,13 +348,6 @@ try {
     const r3s = await runCotal(["auth", "signer", "--provision", "--role", "board", "--out", signerOut]);
     check("auth signer with --provision/--role exits 1 with the reason", r3s.code === 1 && /use auth signer --out <private-file>/.test(r3s.out), r3s.out);
     check("  and writes no signer file", !existsSync(signerOut));
-    // No folder is created for signing material: a missing one is named, with the command that makes it.
-    const missingFolder = join(root, "no-such-folder");
-    const r3m = await runCotal(["auth", "signer", "--out", join(missingFolder, "signer.json")]);
-    check("auth signer into a missing folder exits 2 TARGET_NOT_FOUND naming the folder and how to make it",
-      r3m.code === 2 && /^\s*Code:\s+TARGET_NOT_FOUND$/m.test(r3m.out) && r3m.out.includes(`the --out folder ${missingFolder} does not exist; nothing was written`)
-        && r3m.out.includes(`(umask 077 && mkdir -p ${missingFolder})`), r3m.out);
-    check("  and creates nothing", !existsSync(missingFolder));
     // THE TWO ACL FLAGS, WHICH USED TO BE IGNORED HERE RATHER THAN REFUSED, AND THAT COST AN
     // OPERATOR A CREDENTIAL. `permissionsFor`'s observer/admin arm emits a FIXED read set over the
     // whole chat plane, and the command read `--allow-subscribe` only inside its agent branch. So

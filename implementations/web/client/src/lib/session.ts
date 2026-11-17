@@ -556,7 +556,7 @@ const count = (pattern: { one: string; many: string }, n: number): string => (n 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 
 /** The most characters of a tool name any title or description shows. */
-export const TOOL_NAME_CAP = 64;
+const TOOL_NAME_CAP = 64;
 
 /** A tool name as titles and descriptions show it: its first `cap` characters (`TOOL_NAME_CAP` unless
  *  given), and "…" when it is longer. The harness names its tools, so a name can be any length; the

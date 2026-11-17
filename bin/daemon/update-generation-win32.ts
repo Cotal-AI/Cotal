@@ -63,7 +63,7 @@ export function closeWindowsGeneration(): void {
 }
 
 /** Native supervision after a published Windows daemon exits successfully needs an explicit Run. */
-export async function windowsGenerationLifecycle(paths: DaemonPaths, deadline: number): Promise<{ poll(remainingMs: number): Promise<boolean | void>; close(): void }> {
+export async function windowsGenerationLifecycle(paths: DaemonPaths, deadline: number, quiet = false): Promise<{ poll(remainingMs: number): Promise<boolean | void>; close(): void }> {
   if (process.platform === "win32" && !captured) await captureWindowsGeneration(paths);
   if (process.platform !== "win32" || !captured || captured.paths.lock !== paths.lock)
     throw new Error("the Windows update has no retained authenticated daemon lifetime");
@@ -86,7 +86,7 @@ export async function windowsGenerationLifecycle(paths: DaemonPaths, deadline: n
       const identity = recordedSourceIdentity(receipt, "scheduled-task", [...daemonArgv(), "daemon", "serve"]);
       if (!identity.same) {
         if (!retained.pin) {
-          console.log(`machine daemon: the background service belongs to another Cotal installation (${identity.installedEntry}). This update left it stopped.`);
+          if (!quiet) console.log(`machine daemon: the background service belongs to another Cotal installation (${identity.installedEntry}). This update left it stopped.`);
           started = true;
           return false;
         }
@@ -96,7 +96,7 @@ export async function windowsGenerationLifecycle(paths: DaemonPaths, deadline: n
       if (!native.present) throw new Error("the Windows daemon task is absent; update did not register it");
       if (native.enabled !== true) {
         if (!retained.pin) {
-          console.log(`machine daemon: ${receipt.unit}: service is disabled; not started`);
+          if (!quiet) console.log(`machine daemon: ${receipt.unit}: service is disabled; not started`);
           started = true;
           return false;
         }

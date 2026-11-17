@@ -42,7 +42,7 @@ export type Attached = {
   ended: Accessor<string | undefined>
   close: () => Promise<void>
 }
-export type AttachResult = { ok: true; attached: Attached } | { ok: false; error: string }
+type AttachResult = { ok: true; attached: Attached } | { ok: false; error: string }
 
 export type Session = {
   conn: Accessor<Conn>

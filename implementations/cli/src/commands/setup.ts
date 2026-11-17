@@ -283,14 +283,15 @@ function destinationOf(value: string): Destination {
   throw usage(`--destination ${value} is not a destination: pass local or self-hosted`);
 }
 
-/** The inputs of a run that asks nothing: every one is a flag, and the project folder exists. No
+/** The inputs of a run that asks nothing: every one is a flag. With `--yes`, a missing local project folder is created. No
  *  `--runtime` sets up no runtime beyond `pty`. */
 function scriptedInputs(v: SetupValues, choices: readonly RuntimeChoice[]): SetupInputs {
   const missing = REQUIRED.filter((flag) => v[flag] === undefined);
   if (missing.length > 0) throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, v.destination === "self-hosted" ? SELF_HOSTED_FORM : SCRIPTED_FORM);
   const project = resolve(v.project!);
-  if (!isDir(project)) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
-  return { destination: destinationOf(v.destination!), harness: v.harness!, runtimes: runtimeFlags(v.runtime ?? [], choices), project, createProject: false, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
+  const createProject = v.destination === "local" && v.yes === true && !existsSync(project);
+  if (!isDir(project) && !createProject) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
+  return { destination: destinationOf(v.destination!), harness: v.harness!, runtimes: runtimeFlags(v.runtime ?? [], choices), project, createProject, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
 }
 
 /**
@@ -522,16 +523,16 @@ function bundleSpace(file: string): string {
   return check.value.space;
 }
 
-/** The applications setup can set up: every installed connector. With none installed, a `harness`
- *  no official connector provides is refused as a usage error, and the remedy names `cotal ext seed`
- *  only where it runs: it refuses a source checkout unless a sandboxed release test opts in. */
+/** The applications setup can set up: every installed connector. With none installed, reject an
+ *  unknown harness and name a recovery that also restores deliberately removed connectors.
+ *  A source checkout needs an installed CLI or an explicit sandboxed seed opt-in. */
 async function harnessCandidates(harness?: string): Promise<SetupConnectorCandidate[]> {
   const candidates = await setupConnectorCandidates(await setupConnectorSurface());
   if (candidates.length > 0) return candidates;
   if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw usage(`no harness ${JSON.stringify(harness)}; the official connectors are ${Object.keys(OFFICIAL_CONNECTORS).join(", ")}`, HARNESS_REMEDY);
   const seeds = seedWriterKind() === "released" || process.env.COTAL_ALLOW_CHECKOUT_SEED === "1";
   throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no connector is installed, so there is no application to set up", {
-    remedy: seeds ? "run `cotal ext seed`" : "this cotal is not a released install, so it does not seed connectors; run setup from an installed cotal-ai, or for a sandboxed release test set COTAL_ALLOW_CHECKOUT_SEED=1 and run `cotal ext seed`",
+    remedy: seeds ? (harness === undefined ? "run `cotal ext seed --reset` to restore all built-in extensions, including any you removed" : `run \`cotal ext add ${OFFICIAL_CONNECTORS[harness]}\``) : "this cotal is not a released install, so it does not seed connectors; run setup from an installed cotal-ai, or for a sandboxed release test set COTAL_ALLOW_CHECKOUT_SEED=1 and run `cotal ext seed`",
   });
 }
 

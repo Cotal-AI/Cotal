@@ -612,7 +612,12 @@ used as a send authorization gate.
 
 On a `durable` channel, membership carries the member's **join cursor** (the CHAT frontier captured
 at join, the same watermark used to deconflict the live tail and the backfill) and, on leave, a
-**leave cursor/tombstone**. The durable backstop is at-least-once (within retention)
+**leave cursor/tombstone**. An explicit channel leave MUST retire all open memberships for that
+channel owned by the authenticated principal, including earlier lifecycle rows, before closing the
+live subscription. The delivery service's `listMemberships` request MAY include a concrete channel
+or channel family in `channel` to discover those rows with their `lifecycleUid` and `generation`.
+Without `channel`, discovery remains lifecycle-exact. Each tombstone retains its generation guard.
+The durable backstop is at-least-once (within retention)
 for messages whose stream sequence is **> the member's join cursor and ≤ its leave cursor**, where each
 cursor is the CHAT frontier (the last sequence) captured at that transition; messages published before a
 join or after a leave are not redelivered as durable and are reachable only via an ACL-bounded history

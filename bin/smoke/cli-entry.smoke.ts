@@ -439,6 +439,34 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
     writeFileSync(join(home, "..", ".cotal", "agents", "x.md"), "---\nname: x\n---\nhi\n");
   };
+  for (const [sub, words, flags] of [
+    ["list", ["x"], []],
+    ["show", ["x", "y"], []],
+    ["edit", ["x", "y"], []],
+    ["new", ["x", "y"], ["--prompt", "Instructions", "--subscribe", "", "--force"]],
+    ["rm", ["x", "y"], ["--force"]],
+  ] as const) {
+    let file = "";
+    const r = cotal(["personas", sub, ...words, ...flags], (home) => {
+      persona(home);
+      file = join(home, "..", ".cotal", "agents", "x.md");
+    }, noSeed);
+    check(`personas ${sub} refuses surplus names before changing the catalog`,
+      r.status === 1 && r.stderr.includes("usage: cotal personas") &&
+        existsSync(file) && readFileSync(file, "utf8") === "---\nname: x\n---\nhi\n" &&
+        readdirSync(join(file, "..")).join() === "x.md", shown(r));
+  }
+  let createdFile = "";
+  const created = cotal(["personas", "new", "valid", "--prompt", "Instructions", "--subscribe", ""], (home) => {
+    createdFile = join(home, "..", ".cotal", "agents", "valid.md");
+  }, noSeed);
+  check("control: personas new still creates one named persona", created.status === 0 && existsSync(createdFile), shown(created));
+  let removedFile = "";
+  const removed = cotal(["personas", "rm", "x", "--force"], (home) => {
+    persona(home);
+    removedFile = join(home, "..", ".cotal", "agents", "x.md");
+  }, noSeed);
+  check("control: personas rm still removes one named persona", removed.status === 0 && !existsSync(removedFile), shown(removed));
   const editor = { ...noSeed, VISUAL: 'node -e ""', EDITOR: 'node -e ""' };
   const edited = cotal(["personas", "edit", "x"], persona, editor);
   check("control: personas edit runs the editor, and a draft left as it was saves nothing", edited.status === 0 && edited.stdout.includes('"x" is unchanged, so nothing was saved'), shown(edited));
@@ -682,6 +710,21 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     const r = cotal([...argv, `v${E}`, "--prompt", "body", "--subscribe", ""], persona, noSeed);
     check(`cotal ${argv.join(" ")} refuses control characters`,
       r.status === 1 && r.stderr.includes(`${argv[3]} takes a label without control characters`) && !raw.test(r.stdout + r.stderr), shown(r));
+  }
+  // `personas new` refuses a role `spawn --role` would refuse, as `persona create` does, and writes
+  // nothing: no new persona, and a persona it would replace with --force stays as it was.
+  for (const [name, role] of [["broken", "bad.role"], ["x", "bad role"], ["x", "bad#role"]] as const) {
+    let agents = "";
+    const r = cotal(["personas", "new", name, "--prompt", "body", "--subscribe", "", "--role", role, ...(name === "x" ? ["--force"] : [])], (home) => { persona(home); agents = join(home, "..", ".cotal", "agents"); }, noSeed);
+    check(`personas new ${name} --role ${JSON.stringify(role)} is refused naming the NATS-safe token rule, and nothing is written`,
+      r.status === 1 && r.stderr.includes(`--role: invalid role "${role}": must be a single NATS-safe token ([A-Za-z0-9_-])`) && !r.stdout.includes("spawn it") &&
+        readdirSync(agents).join() === "x.md" && readFileSync(join(agents, "x.md"), "utf8") === "---\nname: x\n---\nhi\n", { ...shown(r), files: readdirSync(agents) });
+  }
+  {
+    let file = "";
+    const r = cotal(["personas", "new", "x", "--prompt", "body", "--subscribe", "", "--role", "re-view_er1", "--force"], (home) => { persona(home); file = join(home, "..", ".cotal", "agents", "x.md"); }, noSeed);
+    check("control: personas new --force with a valid role saves it and suggests the launch with that role",
+      r.status === 0 && r.stdout.includes("spawn it:  `cotal spawn x --role re-view_er1`") && readFileSync(file, "utf8").includes("role: re-view_er1"), shown(r));
   }
   // A channel refusal quotes the value with its control characters escaped.
   for (const flag of ["--subscribe", "--allow-subscribe", "--allow-publish"]) {

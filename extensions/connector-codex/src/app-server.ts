@@ -152,7 +152,7 @@ interface RpcMessage {
   error?: { code?: number; message?: string };
 }
 
-export interface DriverOpts {
+interface DriverOpts {
   /** The agent's working directory (the thread's cwd). */
   cwd: string;
   /** Per-agent CODEX_HOME (isolation boundary: operator MCP servers / hooks / config never load). */

@@ -766,7 +766,7 @@ export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
  *  inside the cause so the reap line can say who asked, not just that a stop happened: on a shared
  *  host several principals hold stop authority, and `u_alice.actor`'s despawn must not read
  *  identically to `u_bob.actor`'s. */
-export type FreeSlotStopCause =
+type FreeSlotStopCause =
   | { kind: "stopped-requested"; requester: string }
   | { kind: "stopped-self" }
   | { kind: "stopped-reap"; parent: string }
@@ -874,7 +874,7 @@ export type ManagerResumeIdentity =
 
 /** A resumed seat's fork provenance: the session it forked, that session's title when it has one,
  *  and the SHA-256 the connector took over the source transcript it read. */
-export interface ForkProvenance {
+interface ForkProvenance {
   source: string;
   title?: string;
   transcriptSha256: string;
@@ -1481,7 +1481,7 @@ export interface SpawnAcceptance {
 /** The `turn` acceptance floor: the resolved seat incarnation the payload is addressed to, the
  *  goal coordinates the caller follows to the terminal, and the ABSOLUTE deadline the goal-bound
  *  hold is armed at — a follower bounds its wait on `deadlineAt`, never a relative window. */
-export interface TurnAcceptance {
+interface TurnAcceptance {
   name: string;
   owner: string;
   actor: string;
@@ -2667,7 +2667,8 @@ export class Manager {
           }
         } catch {}
       }
-      const intervalMs = Math.min(credRenewIntervalMs(5 * 60), credRenewIntervalMs(standingTtl));
+      // A refused family needs another pass inside the final quarter of its lifetime.
+      const intervalMs = Math.min(credRenewIntervalMs(5 * 60), Math.max(1, Math.floor(standingTtl * 1000 / 8)));
       this.resumeCredRenewal = () => {
         if (this.credRenewTimer || this.leaseStopping) return;
         this.credRenewTimer = setInterval(async () => {

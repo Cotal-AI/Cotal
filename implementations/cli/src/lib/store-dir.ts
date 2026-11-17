@@ -16,11 +16,16 @@ function renderedStores(root: string, resolveFrom?: string): string[] {
   return stores;
 }
 
-/** The store `root`'s last broker served, when it differs from `storeDir` and still holds JetStream
+/** The stores `root`'s last brokers served that differ from `storeDir` and still hold JetStream
  *  data. `down` drops the record that named a custom or restored store, but each real start writes
  *  its `store_dir` into the broker config it renders, and that file outlives `down`. */
+export function lastServedStores(root: string, storeDir: string): string[] {
+  return [...new Set(renderedStores(root).filter((last) => last !== resolve(storeDir) && existsSync(join(last, "jetstream"))))];
+}
+
+/** The first of {@link lastServedStores}. */
 export function lastServedStore(root: string, storeDir: string): string | undefined {
-  return renderedStores(root).find((last) => last !== resolve(storeDir) && existsSync(join(last, "jetstream")));
+  return lastServedStores(root, storeDir)[0];
 }
 
 /** Whether a broker configuration `root`'s last start rendered names the store `storeDir`. */

@@ -11,11 +11,11 @@ import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { CotalEndpoint, DEFAULT_SPACE, deliveryLeaseHolderFor, mintCreds, newIdentity, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, ConfirmationRequired, canonicalRoot, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, workspaceSecretStore, writeResult,
+  CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, readProcessCommand, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, workspaceSecretStore, writeResult,
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
-import { brokerStoreWrite, fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite, storeWriteFailedRefusal } from "../lib/broker-store-health.js";
+import { brokerStoreWrite, fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite, storeWriteError, storeWriteFailedRefusal } from "../lib/broker-store-health.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { releaseDeadForegroundHold } from "../lib/foreground-hold.js";
@@ -136,8 +136,7 @@ function readMembers(journal: StackJournal): Member[] {
 /** A live manager's agent impact is read through the broker on an authenticated stack. When the
  *  stack's broker is gone that read cannot succeed, so the refusal names the command that brings
  *  the broker back while keeping the live manager. A broker whose process runs but sends no
- *  greeting, as a suspended one does, is named with its pid; the broker stops last, so it is not
- *  signalled here. */
+ *  greeting is named with its pid; the broker stops last, so no stop signal is sent here. */
 async function managerImpact(journal: StackJournal, members: readonly Member[], manager: Member, withAgents: boolean): Promise<ServiceAdapterStopPlan | undefined> {
   try { return await prepareNativeServiceStop(manager.definition, manager.instance, withAgents); }
   catch (caught) {
@@ -149,11 +148,11 @@ async function managerImpact(journal: StackJournal, members: readonly Member[], 
     // Nothing was submitted: the stop's credential could not be recorded on a broker without JetStream.
     const disabled = jetStreamDisabled(journal.root, journal.space);
     if (disabled && !(isCommandFailure(caught) && caught.outcome !== "unknown")) throw disabledJetStreamStop(journal, manager, disabled);
-    // Most write failures leave JetStream enabled. The stop's issuance record then waits out its request
-    // deadline on a stream that cannot grow, so a stop with no answer names the failure the broker logged.
-    if ((caught as { name?: unknown } | undefined)?.name === "TimeoutError" || (isCommandFailure(caught) && caught.outcome === "unknown")) {
+    // A failed issuance may time out or return the broker's native store error. An explicit error
+    // must match the current broker log before it gains that log's recovery guidance.
+    if ((caught as { name?: unknown } | undefined)?.name === "TimeoutError" || (isCommandFailure(caught) && caught.outcome === "unknown") || storeWriteError(caught)) {
       const write = brokerStoreWrite(journal.root, journal.space);
-      if (write.state === "write-failed")
+      if (write.state === "write-failed" && (!storeWriteError(caught) || write.cause === caught.message))
         throw storeWriteFailedRefusal(write, journal.root, journal.space, "the manager's stop", caught, "no member was stopped", { root: journal.root, space: journal.space, manager: manager.instance.name }, manager.instance.record.value.process?.pid);
     }
     // The read connects through the broker, so a gone broker surfaces as the connect refusal.
@@ -475,11 +474,8 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
     if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, [...storeWarnings, ...abandonWarnings, ...await readinessAddressSurvivors(journal0.space)]);
     return nothingRunning(presentation, target, false, [...storeWarnings, ...abandonWarnings]);
   }
-  // A stopped broker takes connections and never answers, so every read through it would wait out
-  // its budget and the broker's own stop would wait on a signal it cannot act on.
   const broker = members.find((member) => member.role === "broker" && member.live);
   const brokerPid = broker?.instance.record.value.process?.pid;
-  if (brokerPid !== undefined && processStopped(brokerPid)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker, pid ${brokerPid}, is stopped, so it accepts connections at ${journal0.server} and never answers; no member was stopped`, { target: { ...target, broker: broker!.instance.name, pid: brokerPid }, remedy: `resume it with kill -CONT ${brokerPid} and run \`cotal down\` again` });
   const admittedRestore = scopeRefusals(journal0);
   assertJournalWritable(root, values);
   assertServiceRecordsWritable(root, journal0.space, values);
@@ -497,10 +493,29 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   // while its dependants run; it is recomputed after they stop and refuses on any change then.
   const manager = members.find((member) => member.role === "manager" && member.live);
   try {
+    if (!manager && withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's live manager and its native impact; no member was stopped", { target });
+    // Resume the exact owned broker before reads through it. This is not its stop: manager impact
+    // and the broker's final dependant scope still pass their normal guards, and SIGTERM stays last.
+    if (broker && brokerPid !== undefined && processStopped(brokerPid)) {
+      if (!values.yes) {
+        const answer = await prompts.confirm({ message: `Resume ${oneLine(journal0.space)}'s suspended broker, pid ${brokerPid}, to review and stop its controller stack?`, initialValue: false });
+        if (prompts.isCancel(answer) || !answer) {
+          putBack();
+          writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, cancelled: true, members: journal0.members }, noOp: true, warnings: [{ code: "USER_CANCELLED", target, message: "no member was resumed or stopped" }] }, () => planView(journal0, members, withAgents, settlement));
+          return;
+        }
+      }
+      const pin = broker.instance.record.value.process!;
+      const role = readProcessCommand(brokerPid);
+      if (!brokerLaunchAt(journal0.space, broker.instance.name, broker.instance.record.value.launchRequestId, root, journal0.server) || role.kind !== "command" || commandIsCotalSupervisor(role.command) || assertRecordIdentity(pin).kind !== "match")
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the suspended broker's exact launch, process identity or role could not be re-established; no signal was sent", { target: instanceProjection(broker.instance) });
+      try { process.kill(brokerPid, "SIGCONT"); }
+      catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the suspended broker could not be resumed; no member was stopped", { target: instanceProjection(broker.instance) }); }
+    }
     if (manager) {
       manager.native = await managerImpact(journal0, members, manager, withAgents);
       if (!manager.native) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the manager's native agent impact could not be established; no member was stopped", { target: instanceProjection(manager.instance) });
-    } else if (withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's live manager and its native impact; no member was stopped", { target });
+    }
     if (!values.yes) {
       // What the prompt asks to confirm. The receipt names the mesh, so the plan does not.
       if (presentation !== "json") {

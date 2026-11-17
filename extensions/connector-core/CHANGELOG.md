@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.165.4
+
+### Patch Changes
+
+- e61f1d5: Preserve event startup settings when Jcode clears its launch environment so sessions can join spaces that require events.
+
 ## 0.165.3
 
 No changes in this release.

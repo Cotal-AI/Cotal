@@ -598,6 +598,10 @@ cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plai
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
+On Linux, daemon installation reads its unit directory from the systemd user manager.
+Shell-quoted home and config paths, including spaces, are decoded without running a shell.
+Relative paths, control characters and malformed quoting are refused.
+
 Connect this computer to Cotal Cloud with `cotal daemon setup --cloud`, or use
 `cotal daemon setup --idp <url>` for another host. With no known provider, bare
 `cotal daemon setup` selects Cotal Cloud in a terminal or a pipe and prints how to choose another host. `--no-browser` keeps approval in the terminal.

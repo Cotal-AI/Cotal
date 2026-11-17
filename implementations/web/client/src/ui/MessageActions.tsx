@@ -15,7 +15,7 @@ import { useReturnFocus } from "./returnFocus.ts";
 import { hhmm } from "../lib/time.js";
 
 /** A touch held this long on a message opens its actions. */
-export const LONG_PRESS_MS = 500;
+const LONG_PRESS_MS = 500;
 /** A touch that moves further than this is a scroll, not a press. */
 export const PRESS_SLOP_PX = 8;
 /** How long after a fired press lifts its own click may still arrive. A click later than this is a

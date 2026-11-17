@@ -1,5 +1,12 @@
 # @cotal-ai/core
 
+## 0.165.4
+
+### Patch Changes
+
+- 16d0381: Keep expected membership reconnects from producing false incomplete-census warnings. A sweep that started while the feed's data connection was down remains incomplete even if that connection returns before the sweep finishes.
+- 20ed7a7: Allow `cotal up --open --max-payload <bytes>` to configure the broker's message size limit and retain it across restarts.
+
 ## 0.165.3
 
 No changes in this release.

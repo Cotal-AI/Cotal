@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
 import {
   discardLaunchArtifacts,
   reclaimWithChild,
@@ -312,15 +310,4 @@ export function exitProof(handle: AgentHandle): Promise<void> | undefined {
   }
   // Called from a continuation so a wait that throws becomes a rejection.
   return exited ? Promise.resolve().then(wait) : undefined;
-}
-
-/** Walk up from `startDir` to the pnpm workspace root (for spawning `pnpm cotal …`). */
-export function findWorkspaceRoot(startDir: string = process.cwd()): string {
-  let dir = resolve(startDir);
-  for (;;) {
-    if (existsSync(join(dir, "pnpm-workspace.yaml"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return resolve(startDir);
-    dir = parent;
-  }
 }

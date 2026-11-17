@@ -90,7 +90,7 @@ function assertObligFilter(filter: string): string {
  *  {@link enumerateObligationRows}) can treat a DEL/PURGE marker as corruption. SEAM NOTE: consumed
  *  ONLY by that parse layer, which turns each entry into a closed parsed obligation row BEFORE
  *  anything leaves; it is never placed on a barrier/mediator dependency (those receive parsed rows). */
-export interface RawRecordsEntry {
+interface RawRecordsEntry {
   key: string;
   data: Uint8Array;
   seq: number;
@@ -191,7 +191,7 @@ export function makeRecordsScannerOverConnection(nc: NatsConnection, space: stri
 /** SMOKE-ONLY probes. Never set in production. `afterCreate` and `afterFirstFetch` are the
  *  obligation scan's two race windows; the goal-index pair are the same two windows of the manager
  *  goal-index scan. */
-export interface RecordsScannerProbe extends LiteralConsumerProbe {
+interface RecordsScannerProbe extends LiteralConsumerProbe {
   afterManagerGoalIndexCreate?: () => Promise<void>;
   afterManagerGoalIndexFirstFetch?: () => Promise<void>;
 }
