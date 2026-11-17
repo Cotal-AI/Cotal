@@ -1098,12 +1098,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const stackSpace = values.space ?? folderSpace();
     if (values.space === undefined && unnamedDefault(root, stackSpace)) assertSelectionNotMoved(root, stackSpace);
     recordOperationSpace(stackSpace);
-    if (!readMaintenanceJournal(root) && controllerStackApplies(root, stackSpace, values)) {
+    if (!readMaintenanceJournal(root)) {
+      const controller = controllerStackApplies(root, stackSpace, values);
       const recordedStack = readStackJournal(root);
       if ((recordedStack?.journal.mode ?? requestedStackMode(values)) === "user" && (!recordedStack || values.idp !== undefined)) {
         const server = values.server ?? recordedStack?.journal.server ?? localMeshesForRoot(root).find((m) => m.space === stackSpace)?.server ?? (values.host ? reconcileHostAndServer(values.host, undefined) : DEFAULT_SERVER);
         const transport = resolveTransport(values, undefined, root, { persist: false, quiet: true });
-        assertUserStackTransport(server, transport.kind === "tls-required");
+        if (controller) assertUserStackTransport(server, transport.kind === "tls-required");
         await preflightUserStack(root, stackSpace, values.idp);
       }
     }
@@ -3669,6 +3670,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // Before the dry-run print and before connector preflight or any write, as the refusals above.
   if (!opts.storeDir) refuseUnnamedLastStore(cotalPath("nats"));
   else refuseMissingNamedStore(resolve(opts.storeDir));
+  if (userAuth) await preflightUserStack(cotalRoot(), m.space, userAuth.idpUrl);
   checkStartStore(opts.storeDir, m.space);
 
   if (opts.dryRun) {
