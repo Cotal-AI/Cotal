@@ -342,11 +342,17 @@ function npmCommand() {
   assert(existsSync(cli), `npm CLI missing: ${cli}; no shell fallback`);
   return [process.execPath, [cli]];
 }
-function safeRoot(output) {
-  const parent = hosted ? process.env.RUNNER_TEMP : '/var/tmp/upgrade-matrix';
+function safeRoot(output, localParent = '/var/tmp/upgrade-matrix') {
+  const parent = hosted ? process.env.RUNNER_TEMP : localParent;
   assert(parent && (hosted || process.platform === 'linux'), 'local runs require Linux private homes');
   mkdirSync(parent, { recursive: true, mode: 0o700 });
-  if (!hosted) assert.equal(statSync(parent).mode & 0o777, 0o700, 'private root must be mode 700');
+  if (!hosted) {
+    assert.equal(resolve(parent), parent, 'private scratch root must be absolute');
+    assert.equal(realpathSync(parent), parent, 'private scratch root must not traverse symlinks');
+    assert(lstatSync(parent).isDirectory() && !lstatSync(parent).isSymbolicLink());
+    assert.equal(statSync(parent).uid, process.getuid(), 'private scratch root must belong to this user');
+    assert.equal(statSync(parent).mode & 0o777, 0o700, 'private root must be mode 700');
+  }
   const disk = statfsSync(parent);
   assert(disk.bavail * disk.bsize >= 20 * 1024 ** 3, 'STOP: less than 20 GiB free before installation');
   mkdirSync(output, { recursive: true, mode: 0o700 });
@@ -389,7 +395,7 @@ export async function matrixCell(options) {
     return report;
   }
   assert(hosted || !['daemon', 'agent'].includes(state), 'REFUSED: native services and agent stacks require a disposable hosted runner');
-  const root = safeRoot(output);
+  const root = safeRoot(output, options.scratchRoot);
   const home = hosted && (state === 'daemon' || daemonHostedManager) ? homedir() : join(root, 'home');
   const prefix = layout === 'installer' ? (launchdProof ? join(root, 'installer') : join(home, '.local/share/cotal')) : join(root, 'prefix');
   const project = join(root, 'project');

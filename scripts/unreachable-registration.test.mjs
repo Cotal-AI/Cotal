@@ -78,6 +78,14 @@ test('configured pair requires exact immutable A and B identities',()=>{
  for(const change of [r=>r.configuredPair.source='b'.repeat(40),r=>r.source='0.165.3',r=>r.candidate.version='0.165.4',r=>r.configuredPair.sourceArchives=[]]){const bad=structuredClone(report);change(bad);assert.throws(()=>verifyUnreachablePairIdentity(bad,cell));}
 });
 
+test('explicit configured local scratch refuses a shared directory before installing',async()=>{
+ const {matrixCell}=await import('./automatic-update-platform-baseline.mjs');
+ const {mkdtempSync,mkdirSync,chmodSync}=await import('node:fs');
+ const root=mkdtempSync('/var/tmp/unreachable-scratch-');chmodSync(root,0o755);
+ await assert.rejects(matrixCell({source:'0.165.4',state:'configured',method:'self',layout:'npm',output:root+'/out',scratchRoot:root}),/private root must be mode 700/);
+ chmodSync(root,0o700);mkdirSync(root+'/private',{mode:0o700});
+});
+
 test('workflow invokes real composition and source-bound verifier without acceptance waiver',()=>{
  const workflow=readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml',import.meta.url),'utf8');
  for(const text of ['options.prepare = prepareUnreachableRegistration','verifyUnreachableRegistration({ report, cell })','unreachable registration fixture source mismatch','known red ${unreachableEvidence.issue}, not upgrade acceptance'])assert(workflow.includes(text));

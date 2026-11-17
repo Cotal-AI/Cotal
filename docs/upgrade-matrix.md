@@ -82,6 +82,10 @@ The report labels that measured refusal as known red, but it remains failed in b
 The installed source performs the first admission read, so a corrected target cannot repair that source's refusal.
 A stopped space selected in the update folder does not exercise this install-wide read.
 
+The programmatic configured-pair runner accepts `scratchRoot` for a private local test folder.
+It must be absolute, owned by the invoking user, mode `0700`, and free of symlink components.
+Hosted runs continue to use the runner's temporary directory.
+
 The manual native-service cells disable automatic updates, install the real service without a Manager
 or agent, verify it is ready at the source version, then run `cotal update --self`. Their final daemon
 status, installed version, socket and pause/lock records

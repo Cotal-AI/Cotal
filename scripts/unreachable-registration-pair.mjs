@@ -7,13 +7,13 @@ import {candidatePairRegistry} from './candidate-pair-registry.mjs';
 import {prepareUnreachableRegistration} from './unreachable-registration-state.mjs';
 
 /** Exercise the candidate's installed updater without installing a native daemon. */
-export async function unreachableRegistrationPair({candidate,next,output}){
+export async function unreachableRegistrationPair({candidate,next,output,scratchRoot}){
  const pair=await candidatePairRegistry(resolve(candidate),resolve(next));
  const prior=process.env.npm_config_registry;
  try{
   pair.activateTarget();
   process.env.npm_config_registry=pair.url;
-  return await matrixCell({source:pair.identity.sourceVersion,layout:'npm',state:'configured',method:'self',candidate:next,direction:'B','expected-target':pair.identity.targetVersion,output,
+  return await matrixCell({source:pair.identity.sourceVersion,layout:'npm',state:'configured',method:'self',candidate:next,direction:'B','expected-target':pair.identity.targetVersion,output,scratchRoot,
    prepare:async context=>{
     context.report.configuredPair=pair.identity;
     context.report.configuredPairHarnessSha256=createHash('sha256').update(readFileSync(import.meta.filename)).digest('hex');
