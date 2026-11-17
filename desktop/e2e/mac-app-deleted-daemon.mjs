@@ -83,13 +83,26 @@ const old = (label, args) => call(label, process.execPath, [oldEntry, ...args]);
 const fresh = (label, args) => call(label, process.execPath, [freshEntry, ...args]);
 const candidateEntry = process.env.DESKTOP_REPAIR_CLI;
 const repairCommand = process.env.DESKTOP_REPAIR_COMMAND ?? 'status';
-assert(['status', 'install'].includes(repairCommand), 'unsupported repair entry command');
+assert(['status', 'install', 'disabled'].includes(repairCommand), 'unsupported repair entry command');
 if (!candidateEntry) assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
 report.repairCommand = repairCommand;
 const candidate = (label, args) => call(label, process.execPath, [candidateEntry, ...args]);
 let closeParticipant;
 let serviceOwnership;
 let copiedApp;
+let disabledOverrideChanged = false;
+async function readDisabled(label) {
+  const read = ok(await call(label, '/bin/launchctl', ['print-disabled', domain]));
+  const block = /^\s*disabled services = \{([\s\S]*)\}\s*$/.exec(read.stdout);
+  assert(block, 'native disabled policy must be readable');
+  const matches = block[1].split('\n').map(line => line.trim()).filter(Boolean).map(line => {
+    const entry = /^"([^"\r\n]+)" => (true|false|disabled|enabled)$/.exec(line);
+    assert(entry, 'native disabled policy must parse without guessing');
+    return entry;
+  }).filter(entry => entry[1] === 'ai.cotal.daemon');
+  assert.equal(matches.length, 1, 'fixture-owned label must have one explicit disabled override');
+  return ['true', 'disabled'].includes(matches[0][2]);
+}
 async function deleteOwnedApp() {
   assert(copiedApp, 'no copied app identity');
   const current = statSync(app);
@@ -190,7 +203,17 @@ try {
       entrySha256: createHash('sha256').update(readFileSync(candidateEntry)).digest('hex') };
     const sessionPath = join(cotalHome, 'idp-sessions.json');
     const stateBefore = readFileSync(sessionPath, 'utf8');
-    if (repairCommand === 'install') {
+    if (repairCommand === 'disabled') {
+      const { spaceSegment } = await import('@cotal-ai/workspace');
+      const hostingPath = join(cotalHome, 'daemon', spaceSegment(report.participant.space), 'manager-host.json');
+      const hostingBefore = readFileSync(hostingPath, 'utf8');
+      report.disabledHosting = { path: hostingPath, sha256: createHash('sha256').update(hostingBefore).digest('hex') };
+      assert.equal(await readDisabled('record initial enabled override'), false);
+      disabledOverrideChanged = true;
+      ok(await nativeAction('operator disables exact owned missing-program job', ['disable']));
+      assert.equal(await readDisabled('confirm operator disabled override'), true);
+    }
+    if (repairCommand === 'install' || repairCommand === 'disabled') {
       const installed = body(await candidate('candidate daemon install repairs missing program', ['daemon', 'install', '--json']));
       assert.equal(installed.state, 'repaired', 'install must take its repair branch before any candidate status');
       assert.equal(installed.unit, receipt.unit);
@@ -202,12 +225,31 @@ try {
       assert(installedSource.includes(candidateEntry.replace(/cotal\.js$/, 'daemon-cwd.js')));
       assert.equal(readFileSync(sessionPath, 'utf8'), stateBefore, 'install repair preserves sign-in bytes');
       serviceOwnership = { receiptPath, receiptSha256: createHash('sha256').update(readFileSync(receiptPath)).digest('hex'), sha256: installedReceipt.unitSha256 };
+      if (repairCommand === 'disabled') {
+        assert.equal(await readDisabled('repair preserves disabled override'), true);
+        const absent = await nativeAction('disabled repaired job remains unloaded', ['print']);
+        assert.equal(absent.exit, 113, 'disabled repair must not bootstrap a replacement');
+        const stopped = await candidate('disabled repaired public status remains stopped', ['daemon', 'status', '--json']);
+        assert.equal(stopped.exit, 2);
+        assert.equal(JSON.parse(stopped.stdout).error.cause?.code, 'NOT_RUNNING');
+        assert.equal(readFileSync(plist, 'utf8'), installedSource);
+        assert.equal(readFileSync(sessionPath, 'utf8'), stateBefore);
+        assert.equal(createHash('sha256').update(readFileSync(report.disabledHosting.path)).digest('hex'), report.disabledHosting.sha256, 'disabled repair retains its hosted Manager intent');
+        assert(!existsSync(join(cotalHome, 'daemon/service-repair.json')), 'completed disabled repair clears its intent');
+        for (const held of heldProcesses) {
+          const gone = await call(`disabled repair original process gone ${held.pid}`, '/bin/ps', ['-p', String(held.pid), '-o', 'pid=,lstart=,comm=']);
+          assert.equal(gone.exit, 1, 'disabled repair leaves no original daemon or Manager running');
+        }
+        report.disabledRepairAcceptance = { state: installed.state, sourceOutsideApp: true, credentialsPreserved: true, disabled: true, nativeAbsent: true, publicNotRunning: true };
+      } else {
       const installedJob = ok(await nativeAction('install-triggered repaired job before status', ['print']));
       const installedPid = Number(/^\s*pid = (\d+)\s*$/m.exec(installedJob.stdout)?.[1]);
       assert(Number.isSafeInteger(installedPid) && installedPid > 1 && installedPid !== before.pid, 'install itself must start a fresh native job');
       heldProcesses.push(await identity(installedPid, 'install-triggered repaired daemon'));
       report.installRepairAcceptance = { state: installed.state, pid: installedPid, sourceOutsideAppBeforeStatus: true, credentialsPreserved: true };
+      }
     }
+    if (repairCommand !== 'disabled') {
     const repaired = body(await candidate(repairCommand === 'install' ? 'candidate status observes install-repaired program' : 'candidate daemon status repairs missing program', ['daemon', 'status', '--json']));
     if (repairCommand === 'install') assert.equal(repaired.pid, report.installRepairAcceptance.pid, 'status observes the already repaired native lifetime');
     assert.notEqual(repaired.pid, before.pid, 'repair starts a fresh daemon lifetime');
@@ -233,6 +275,7 @@ try {
     heldProcesses.push(await identity(restarted.pid, 'restarted repaired daemon'));
     for (const row of restarted.managers ?? []) if (row.pid) heldProcesses.push(await identity(row.pid, 'restarted repaired Manager'));
     report.repairAcceptance = { freshPid: repaired.pid, restartedPid: restarted.pid, version: restarted.version, programOutsideApp: true, credentialsPreserved: true };
+    }
     report.outcome = 'repair-measured';
   } else {
   await old('old CLI plain self update after deletion', ['update', '--self']);
@@ -265,6 +308,12 @@ try {
         await delay(200);
       }
       if (report.cleanupService.exit !== 113) process.exitCode = 1;
+      if (disabledOverrideChanged && report.cleanupService.exit === 113) {
+        ok(await nativeAction('cleanup restore recorded enabled override while job absent', ['enable']));
+        assert.equal(await readDisabled('cleanup confirms original enabled override'), false);
+        assert.equal((await nativeAction('cleanup enable did not load service', ['print'])).exit, 113);
+        report.cleanupDisabledOverrideRestored = true;
+      }
     } catch (error) { report.cleanupOwnershipError = publicText(error); process.exitCode = 1; }
   } else {
     try {
