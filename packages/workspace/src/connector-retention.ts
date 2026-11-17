@@ -3,7 +3,7 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, re
 import { basename, dirname, join, resolve } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { executionIdentity } from "./execution-identity.js";
-import { acquireLock } from "./advisory-lock.js";
+import { acquireLock, processStartToken } from "./advisory-lock.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 import { assertExtensionPrefixIdle, claimExtensionMutationLock } from "./extension-mutation.js";
 import { claimUpdateClosureAccess } from "./update-closure.js";
@@ -12,6 +12,75 @@ import { homeCotalDir } from "./cotal-home.js";
 import { MANAGER_PIDFILE, localProcessPathCandidates, recordedLocalProcessPaths } from "./local-process.js";
 import { commandIsCotalSupervisor, readProcessRecord } from "./pid.js";
 import { probeLiveness } from "./liveness.js";
+
+interface ConnectorHolder {
+  v: 1;
+  manager: string;
+  agent: string;
+  custody?: { pid: number; start: string; boot: string };
+}
+
+function bootIdentity(): string | undefined {
+  try { return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() || undefined; }
+  catch { return undefined; }
+}
+
+function holderDead(holder: ConnectorHolder): boolean {
+  const c = holder.custody;
+  if (!c || !Number.isSafeInteger(c.pid) || c.pid <= 0 || typeof c.start !== "string" || !c.start || typeof c.boot !== "string" || !c.boot) return false;
+  const boot = bootIdentity();
+  const start = processStartToken(c.pid);
+  return (boot !== undefined && boot !== c.boot) || probeLiveness(c.pid) === "dead" ||
+    (boot === c.boot && start !== undefined && start !== c.start);
+}
+
+function setHasHolders(path: string): boolean {
+  // No marker means this release predates durable seat provenance.
+  const marker = readLocalRecordSource(join(path, "holders-v1.json"), 128, true);
+  if (!marker || marker.toString("utf8") !== '{"v":1}\n') return true;
+  const directory = join(path, "holders");
+  ownedAncestors(directory);
+  for (const name of readdirSync(directory)) {
+    const file = join(directory, name);
+    const bytes = readLocalRecordSource(file, 8192, true);
+    if (!bytes) return true;
+    const holder = JSON.parse(bytes.toString("utf8")) as ConnectorHolder;
+    if (holder.v !== 1 || typeof holder.manager !== "string" || typeof holder.agent !== "string" || !holderDead(holder)) return true;
+  }
+  return false;
+}
+
+/** Reserve before launch so even a Manager killed during spawn leaves a conservative holder. */
+export function retainConnectorSeat(manager: string, agent: string): { active: boolean; launched(pid?: number): void; ended(): void } {
+  const id = identity();
+  if (!id || connectorConfigDir() === globalConfigDir()) return { active: false, launched() {}, ended() {} };
+  const release = claimUpdateClosureAccess();
+  let file: string;
+  const holder: ConnectorHolder = { v: 1, manager, agent };
+  try {
+    ownedAncestors(id.path);
+    const directory = join(id.path, "holders");
+    mkdirSync(directory, { mode: 0o700, recursive: true });
+    ownedAncestors(directory);
+    file = join(directory, `${randomBytes(16).toString("hex")}.json`);
+    writeFileSync(file, JSON.stringify(holder), { flag: "wx", mode: 0o600 });
+  } finally { release(); }
+  return {
+    active: true,
+    launched(pid) {
+      const boot = bootIdentity(), start = pid === undefined ? undefined : processStartToken(pid);
+      if (pid === undefined || !boot || !start) return;
+      holder.custody = { pid, start, boot };
+      const pending = `${file}.${randomBytes(8).toString("hex")}`;
+      try {
+        writeFileSync(pending, JSON.stringify(holder), { flag: "wx", mode: 0o600 });
+        renameSync(pending, file);
+      } catch { /* The reserved identity-less holder still protects the set. */ }
+      finally { try { rmSync(pending, { force: true }); } catch { /* Stale holders retain the set. */ } }
+    },
+    ended() { try { rmSync(file, { force: true }); } catch { /* Stale holders retain the set. */ } },
+  };
+}
 
 function pruneConnectorSets(id: { entry: string; version: string; path: string }, holders?: readonly (string | undefined)[]): void {
   // Older process records do not pin a connector version. Keep every set while any
@@ -49,7 +118,7 @@ function pruneConnectorSets(id: { entry: string; version: string; path: string }
       if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(name)) continue;
       const path = join(sets, name);
       if (path === id.path || keep.has(name)) continue;
-      try { ownedAncestors(path); rmSync(path, { recursive: true, force: true }); }
+      try { ownedAncestors(path); if (setHasHolders(path)) continue; rmSync(path, { recursive: true, force: true }); }
       catch { console.error(`connector set cleanup: could not remove ${name}; the update remains selected`); }
     }
   } catch { /* Unreadable holder state retains all sets. */ }
@@ -193,6 +262,8 @@ export function retainConnectorConfig(): string {
       renameSync(staging, root);
     } finally { if (existsSync(staging)) rmSync(staging, { recursive: true }); }
     if (realpathSync(root) !== root) throw new Error("retained connector state resolved through a link");
+    mkdirSync(join(id.path, "holders"), { mode: 0o700 });
+    writeFileSync(join(id.path, "holders-v1.json"), '{"v":1}\n', { flag: "wx", mode: 0o600 });
     const record: Selection = { v: 1, entry: id.entry, version: id.version, root };
     const next = join(dirname(id.path), `.current-${randomBytes(8).toString("hex")}`);
     writeFileSync(next, JSON.stringify(record), { flag: "wx", mode: 0o600 });
