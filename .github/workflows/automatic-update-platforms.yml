@@ -372,7 +372,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 40
+      max-parallel: 42
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
@@ -385,13 +385,13 @@ jobs:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
       - uses: actions/download-artifact@v4
-        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
+        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'unreachable-registration' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
         with:
           artifact-ids: ${{ needs.release-pack.outputs.artifact }}
           merge-multiple: true
           path: ${{ runner.temp }}/release-candidate
       - uses: actions/download-artifact@v4
-        if: matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
+        if: matrix.scenario == 'unreachable-registration' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
         with:
           artifact-ids: ${{ needs.release-next.outputs.artifact }}
           merge-multiple: true
@@ -403,7 +403,7 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/release-follow-on
       - name: Verify candidate immutable source and full package census
-        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
+        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'unreachable-registration' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
         shell: bash
         env:
           SOURCE_SHA: ${{ needs.select.outputs.source }}
@@ -431,7 +431,7 @@ jobs:
           mkdirSync(process.env.RUNNER_TEMP + '/upgrade-evidence', { recursive: true });
           writeFileSync(process.env.RUNNER_TEMP + '/upgrade-evidence/candidate-origin.json', JSON.stringify({ source: manifest.source, artifact: process.env.CANDIDATE_ARTIFACT, digest: process.env.CANDIDATE_DIGEST }));
           const cell = JSON.parse(process.env.CELL);
-          if (cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || cell.followOnAction || cell.chain === true) {
+          if (cell.scenario === 'unreachable-registration' || cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || cell.followOnAction || cell.chain === true) {
             const nextRoot = process.env.RUNNER_TEMP + '/release-next/';
             const next = JSON.parse(readFileSync(nextRoot + 'manifest.json'));
             const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -514,7 +514,7 @@ jobs:
           const directory = process.env.RUNNER_TEMP + '/upgrade-evidence';
           mkdirSync(directory, { recursive: true });
           writeFileSync(directory + '/coordinate.json', JSON.stringify(cell));
-          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured', 'unreachable-registration': 'configured' };
           const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
           const args = ['scripts/automatic-update-platform-baseline.mjs', '--source', cell.sourceVersion, '--layout', cell.channel, '--state', states[cell.scenario], '--method', method, '--expected-target', cell.targetVersion, '--output', directory];
           const paired = cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction) || cell.chain === true;
@@ -548,7 +548,13 @@ jobs:
             const { prepareUpdateParticipant } = await import(pathToFileURL(process.cwd() + '/implementations/auth/smoke/update-participant.fixture.ts'));
             options.prepare = prepareUpdateParticipant;
           }
-          const report = await matrixCell(options);
+          if (cell.scenario === 'unreachable-registration') {
+            const { prepareUnreachableRegistration } = await import('./scripts/unreachable-registration-state.mjs');
+            options.prepare = prepareUnreachableRegistration;
+          }
+          const report = cell.scenario === 'unreachable-registration'
+            ? await (await import('./scripts/unreachable-registration-pair.mjs')).unreachableRegistrationPair({ candidate, next: process.env.RUNNER_TEMP + '/release-next', output: directory })
+            : await matrixCell(options);
           assert.equal(report.environment?.hostedDisposable, true);
           assert.equal(report.source, cell.sourceVersion);
           assert.equal(report.sourceRequested, cell.sourceVersion);
@@ -556,7 +562,7 @@ jobs:
           assert.equal(report.platform, cell.platform);
           assert.equal(report.cleanupSafety?.passed, true, 'cleanup must be confirmed before matching');
           assert(!report.cleanupFailure && !report.error, 'harness or cleanup error cannot be an expected refusal');
-          if (cell.phase === 'candidate' || paired) assert.equal(report.candidate?.source, cell.sourceSHA);
+          if (cell.phase === 'candidate' || paired || cell.scenario === 'unreachable-registration') assert.equal(report.candidate?.source, cell.sourceSHA);
           const refusal = cell.chain ? undefined : matchKnownRefusal(cell, report);
           process.exitCode = refusal ? 0 : cellExitCode(report);
           NODE
@@ -631,7 +637,7 @@ jobs:
             assert(expected, 'evidence coordinate must be required by the frozen plan');
             assert.deepEqual(cell, expected, 'complete evidence coordinate must match the frozen plan');
             assert.equal(entry.name, `upgrade-cell-${cell.id}`, 'artifact name must match its coordinate');
-            if (plan.phase === 'candidate' || cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction) || cell.chain === true) {
+            if (plan.phase === 'candidate' || cell.scenario === 'unreachable-registration' || cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction) || cell.chain === true) {
               const origin = JSON.parse(readFileSync(join(directory, 'candidate-origin.json')));
               assert.equal(origin.source, plan.sourceSHA);
               assert.equal(origin.artifact, process.env.EXPECTED_CANDIDATE_ARTIFACT);
@@ -659,7 +665,7 @@ jobs:
               const harness = execFileSync('git', ['show', report.harnessSource + ':scripts/automatic-update-platform-baseline.mjs']);
               const nativeHarness = report.platform === 'win32' ? Buffer.from(harness.toString().replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')) : harness;
               assert.equal(report.harnessSha256, digest(nativeHarness), 'raw harness source hash mismatch');
-              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured', 'unreachable-registration': 'configured' };
               const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
               assert.equal(report.layout, cell.channel);
               assert.equal(report.state, states[cell.scenario]);
@@ -670,7 +676,7 @@ jobs:
               assert.equal(report.source, cell.sourceVersion);
               assert.equal(report.sourceRequested, cell.sourceVersion);
               assert.equal(report.target, cell.finalTargetVersion ?? cell.targetVersion);
-              if (!paired) {
+              if (!paired && cell.scenario !== 'unreachable-registration') {
                 assert.equal(cell.sourceVersion, plan.sourceVersion);
                 assert.equal(cell.targetVersion, plan.targetVersion);
               }
@@ -681,7 +687,7 @@ jobs:
                 assert.equal(report.nextHop?.sourceVersion, cell.sourceVersion);
                 assert.equal(report.nextHop?.firstTargetVersion, plan.targetVersion);
                 assert.equal(report.nextHop?.finalTargetVersion, finalTarget);
-              } else if (plan.phase === 'candidate') {
+              } else if (plan.phase === 'candidate' || cell.scenario === 'unreachable-registration') {
                 assert.equal(report.tier, 'candidate-B (synthetic registry, real native processes)');
                 assert.equal(report.candidate?.direction, 'B');
                 assert.equal(report.candidate?.source, plan.sourceSHA, 'raw candidate source must match before refusal matching');
@@ -746,7 +752,36 @@ jobs:
                 const { verifyCandidateNextEvidence } = await import('./scripts/candidate-next-evidence.mjs');
                 pairedEvidence = verifyCandidateNextEvidence({ report, cell, output: directory, sourceManifestSha256: origin.sourceManifestSha256, targetManifestSha256: origin.targetManifestSha256, followOnManifestSha256: origin.followOnManifestSha256 });
               }
+              let unreachableEvidence;
+              if (cell.scenario === 'unreachable-registration') {
+                const { verifyUnreachableRegistration } = await import('./scripts/unreachable-registration-evidence.mjs');
+                const { verifyUnreachablePairIdentity } = await import('./scripts/unreachable-registration-pair.mjs');
+                const pair = verifyUnreachablePairIdentity(report, cell);
+                assert.equal(report.configuredPairHarnessSha256, digest(execFileSync('git', ['show', report.harnessSource + ':scripts/unreachable-registration-pair.mjs'])), 'configured pair harness source mismatch');
+                const origin = JSON.parse(readFileSync(join(directory, 'candidate-next-origin.json')));
+                assert.equal(origin.source, plan.sourceSHA);
+                assert.equal(origin.artifact, process.env.EXPECTED_NEXT_ARTIFACT);
+                assert.equal(origin.digest, process.env.EXPECTED_NEXT_DIGEST);
+                assert(origin.artifact && origin.digest, 'configured pair target identity missing');
+                for (const [side, filename, version] of [['source', 'candidate-source-manifest.json', cell.sourceVersion], ['target', 'candidate-next-manifest.json', cell.targetVersion]]) {
+                  const bytes = readFileSync(join(directory, filename));
+                  const manifest = JSON.parse(bytes);
+                  assert.equal(digest(bytes), origin[side + 'ManifestSha256']);
+                  assert.equal(digest(bytes), pair[side + 'ManifestSha256']);
+                  assert.equal(manifest.source, plan.sourceSHA);
+                  assert.deepEqual(manifest.packages.map(pkg => pkg.name).sort(), JSON.parse(readFileSync('.changeset/config.json')).fixed.flat().sort());
+                  assert(manifest.packages.every(pkg => pkg.version === version));
+                  assert.deepEqual(pair[side + 'Packages'], manifest.packages);
+                  assert.deepEqual(pair[side + 'Archives'], manifest.packages.map(({ name, sha256 }) => ({ name, sha256 })));
+                }
+                const source = execFileSync('git', ['show', report.harnessSource + ':scripts/unreachable-registration-state.mjs']);
+                assert.equal(report.unreachableRegistration?.harnessSha256, digest(source), 'unreachable registration fixture source mismatch');
+                unreachableEvidence = verifyUnreachableRegistration({ report, cell });
+                if (unreachableEvidence.knownRed) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n${cell.id}: known red ${unreachableEvidence.issue}, not upgrade acceptance\n`);
+              }
               const assertions = {
+                'offline-registration-retained': unreachableEvidence?.passed === true && ok('offline registration and stopped stack remain unchanged'),
+                'stopped-stack-retained': unreachableEvidence?.passed === true && ok('stopped local stack and unreachable registration prepared through public CLI'),
                 'candidate-source-identity': pairedEvidence?.sourceIdentity === true,
                 'candidate-next-target': report.candidateNext?.targetVersion === (cell.followOnAction ? cell.targetVersion : finalTarget),
                 'next-hop-success': pairedEvidence?.nextHopSuccess === true,

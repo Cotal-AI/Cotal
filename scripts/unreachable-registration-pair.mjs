@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+import {resolve} from 'node:path';
+import {matrixCell} from './automatic-update-platform-baseline.mjs';
+import {candidatePairRegistry} from './candidate-pair-registry.mjs';
+import {prepareUnreachableRegistration} from './unreachable-registration-state.mjs';
+
+/** Exercise the candidate's installed updater without installing a native daemon. */
+export async function unreachableRegistrationPair({candidate,next,output,scratchRoot}){
+ const pair=await candidatePairRegistry(resolve(candidate),resolve(next));
+ try{
+  pair.activateTarget();
+  return await matrixCell({source:pair.identity.sourceVersion,layout:'npm',state:'configured',method:'self',configuredPair:pair,'expected-target':pair.identity.targetVersion,output,scratchRoot,
+   prepare:async context=>{
+    context.report.configuredPair=pair.identity;
+    context.report.configuredPairHarnessSha256=createHash('sha256').update(readFileSync(import.meta.filename)).digest('hex');
+    return prepareUnreachableRegistration(context);
+   }});
+ }finally{
+  await pair.close();
+ }
+}
+
+export function verifyUnreachablePairIdentity(report,cell){
+ const pair=report.configuredPair;
+ assert.equal(pair?.source,cell.sourceSHA);assert.equal(pair.sourceVersion,cell.sourceVersion);assert.equal(pair.targetVersion,cell.targetVersion);
+ assert.equal(report.candidate?.source,cell.sourceSHA);assert.equal(report.candidate.version,cell.targetVersion);
+ assert.equal(report.source,cell.sourceVersion);assert.equal(report.target,cell.targetVersion);
+ assert.equal(pair.sourceArchives?.length,24);assert.equal(pair.targetArchives?.length,24);
+ return pair;
+}
