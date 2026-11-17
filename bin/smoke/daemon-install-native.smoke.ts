@@ -113,7 +113,7 @@ try {
     check("repair refuses a non-file program", code(() => missingLaunchAgentProgram(receipt)) === "CONFLICT");
     rmSync(executable, { recursive: true });
     const nextSource = source.replace("program &amp; test", "new-program");
-    const intent: ServiceRepairIntent = { v: 1, receipt, previousSource: source, nextSource, enabled: false };
+    const intent: ServiceRepairIntent = { v: 1, receipt, previousSource: source, nextSource, enabled: false, argv: [executable, "/cotal.js", "daemon", "serve"], version: "1.2.3", hostedSpaces: [], phase: "prepared" };
     const nextReceipt = { ...receipt, unitSha256: sourceDigest(nextSource) };
     for (const selectedReceipt of [receipt, nextReceipt]) for (const selectedSource of [source, nextSource]) {
       check("repair resumes either recorded source/receipt crash state", code(() => assertServiceRepairPair(intent, selectedReceipt, selectedSource)) === "none");
