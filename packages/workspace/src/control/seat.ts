@@ -3,7 +3,7 @@ import { isConnectRefusal, type ConnectFlags } from "../connect.js";
 import { resolveControlTarget } from "../control-target.js";
 import { DEFAULT_MANAGER_NAME } from "../manager-name.js";
 import { CommandFailure, isCommandFailure } from "../output.js";
-import { askManager, readFailure, type ControlClient, type ManagerPin, type ManagerReply, type ScatterInstanceReply } from "./manager.js";
+import { askManager, scatterManager, readFailure, type ControlClient, type ManagerPin, type ManagerReply, type ScatterInstanceReply } from "./manager.js";
 import { presenceSeat } from "./seat-presence.js";
 
 /** The exchange's refusal of an unpinned manager-caller selection while several of the caller's own
@@ -90,7 +90,8 @@ export async function severalLive(failure: CommandFailure, readRoster: () => Pro
  * is answered by whichever instance wins the race and fails on a seat that plainly exists.
  *
  * Static and open callers read the seat's live presence routing hint before making a manager
- * request. A missing hint refuses. No class-queue answer or durable slot replaces that lookup.
+ * request. When no live peer matches, ask the managers for their live seats, including processes
+ * that never joined the mesh. No class-queue answer or durable slot replaces a live owner lookup.
  * The selected instance still requires the caller's own grant and checks its live seat mapping.
  *
  * On a user-auth mesh there is no scatter: the exchange refuses an unpinned selection while several
@@ -149,9 +150,18 @@ export async function locateSeat(
   const roster = await client.roster({ space: probe.space, server: probe.server });
   try { return { kind: "pin", ...presenceSeat(roster, name) }; }
   catch (error) {
-    if (isCommandFailure(error) && error.code === "TARGET_NOT_FOUND") return { kind: "absent", checked: 0, instances: [], space: probe.space };
-    throw error;
+    if (!isCommandFailure(error) || error.code !== "TARGET_NOT_FOUND") throw error;
   }
+  const census = await scatterManager(client, probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
+  if (!census.ok && census.noLiveManager) return { kind: "no-manager", space: probe.space, native: { code: census.code, detail: census.error } };
+  if (!census.ok) throw readFailure(census, { space: probe.space, scope: "all-managers" });
+  const loc = locateSeatIn(census.instances, name);
+  if (loc.kind === "pin") {
+    const rows = census.instances.find(i => i.instanceId === loc.instanceId)!.data as { name: string; id: string; lifecycleUid: string }[];
+    const row = rows.find(r => r.name === name)!;
+    return { ...loc, expectedSeat: { name: row.name, id: row.id, lifecycleUid: row.lifecycleUid } };
+  }
+  return loc.kind === "unpinned" ? loc : { ...loc, space: probe.space };
 }
 
 /**
@@ -170,7 +180,6 @@ export async function locateSeat(
 export function locateSeatIn(instances: readonly ScatterInstanceReply[], name: string): SeatLocation {
   const reachable = instances.filter((i) => i.reachable);
   const silent = instances.filter((i) => !i.reachable).map((i) => i.instanceId);
-  if (reachable.length <= 1 && !silent.length) return { kind: "unpinned" };
   const answered = reachable.filter((i) => i.error === undefined);
   const refused = reachable.filter((i) => i.error !== undefined).map((i) => ({ instanceId: i.instanceId, error: i.error as string }));
   const hosts = answered.filter((i) => ((i.data as { name?: unknown }[] | undefined) ?? []).some((r) => r.name === name));

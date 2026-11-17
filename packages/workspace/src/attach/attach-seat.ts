@@ -7,7 +7,7 @@ import { askManager, managerFailure, type ControlClient, type ManagerPin } from 
 import { locateSeat, seatMissRefusal, seatNotFoundMessage } from "../control/seat.js";
 import { presenceSeat } from "../control/seat-presence.js";
 import { isWorkspaceTargetError } from "../mesh-target.js";
-import { CommandFailure, recordOperationSpace } from "../output.js";
+import { CommandFailure, isCommandFailure, recordOperationSpace } from "../output.js";
 import { renderReport } from "../present.js";
 import { renderWorkspaceError } from "../render.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, writeNotice, type AttachNotice, type TerminalHold, type TerminalTransport } from "./attach-client.js";
@@ -194,8 +194,16 @@ async function establishAttachSession(
   // The loop reuses this target. Keep the first selection even when the manager was pinned;
   // a fresh selection on reconnect could attach another incarnation under the same alias.
   // Picker and spawn targets already carry their own immutable principal/lifecycle fence.
-  if (!t.auth.bearer && !v.expectedSeat && !v.expectedTarget)
-    v.expectedSeat = presenceSeat(await v.control.roster({ space: t.space, server: t.server }), v.name).expectedSeat;
+  if (!t.auth.bearer && !v.expectedSeat && !v.expectedTarget) {
+    try { v.expectedSeat = presenceSeat(await v.control.roster({ space: t.space, server: t.server }), v.name).expectedSeat; }
+    catch (error) {
+      if (!isCommandFailure(error) || error.code !== "TARGET_NOT_FOUND") throw error;
+      const info = await askManager(v.control, t.space, t.server, "status", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
+      if (!info.ok) throw managerFailure(info, "terminal attach", { space: t.space, agent: v.name, managerInstanceId: on ?? null });
+      const row = info.data as { id: string; lifecycleUid: string };
+      v.expectedTarget = { id: row.id, lifecycleUid: row.lifecycleUid };
+    }
+  }
   // A refusal's report names the mesh in its heading, so this block names it once, in a field.
   if (first) console.error(renderReport({ sections: [{ title: "Attach", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Agent", v.name], ["Manager", on ?? t.auth.managerInstanceId ?? "native selection"]] }] }] }, "rich", process.stderr));
   const reply = await askManager(v.control, t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on, expectedTarget: v.expectedTarget, expectedSeat: v.expectedSeat });
