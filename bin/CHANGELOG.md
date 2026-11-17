@@ -1,5 +1,37 @@
 # cotal-ai
 
+## 0.165.3
+
+### Patch Changes
+
+- 1c0b96f: A leading flag typed with a typographic dash, such as `cotal ––json status` or `cotal −−version`, is now refused naming the flag to type with hyphens, as the same word after the command word already was. It was reported as an unknown command, and `−−version` was offered the `version` command.
+- c6a9c64: Explain the required administrator privileges for updating a non-writable npm installation and the separate normal-account reconciliation step.
+- 9620b5b: Keep the selected release and working Node runtime links when rerunning the shell installer.
+- 91b3067: Output redirected to a file that a file-size limit or a full disk cuts short now reports `✗ could not write to stdout` on stderr and exits 3. Before, Node's file stream counted a partial write as done, so `cotal docs cli-usage --json > report.json` under `ulimit -f 1` left 1024 bytes of invalid JSON and exited 0.
+- a4dd00e: `cotal update --self` no longer stops when a Manager for the selected hosted space runs on this machine from another Cotal installation. That Manager keeps its own files, so the update installs, reconciles and exits 0. Before, the update installed the new version, refused on that Manager and rolled back.
+- Updated dependencies [ac95cec]
+- Updated dependencies [070a882]
+- Updated dependencies [e67578a]
+- Updated dependencies [5d57737]
+- Updated dependencies [1c0b96f]
+- Updated dependencies [2072e00]
+- Updated dependencies [21f46ae]
+- Updated dependencies [4f52a07]
+- Updated dependencies [9620b5b]
+- Updated dependencies [91b3067]
+- Updated dependencies [a4dd00e]
+- Updated dependencies [3b68b85]
+  - @cotal-ai/cli@0.165.3
+  - @cotal-ai/runtime@0.165.3
+  - @cotal-ai/auth@0.165.3
+  - @cotal-ai/manager@0.165.3
+  - @cotal-ai/connector-core@0.165.3
+  - @cotal-ai/delivery@0.165.3
+  - @cotal-ai/registry@0.165.3
+  - @cotal-ai/core@0.165.3
+  - @cotal-ai/seat@0.165.3
+  - @cotal-ai/workspace@0.165.3
+
 ## 0.165.2
 
 ### Patch Changes
