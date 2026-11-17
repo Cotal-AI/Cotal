@@ -2,6 +2,49 @@ import { createHash } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import { readLocalRecordSource } from "@cotal-ai/workspace";
 import type { UnitReceipt } from "./install.js";
+import type { Socket } from "node:net";
+import { MAX_LINE_BYTES } from "./endpoint.js";
+
+/** One pinned repair connection. A late timed-out reply never acknowledges a later request. */
+export function repairReplies(socket: Socket): { read(id: string, timeoutMs: number): Promise<string>; close(): void } {
+  let buffer = "";
+  let failure: Error | undefined;
+  let pending: { id: string; resolve(line: string): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | undefined;
+  const expired = new Set<string>();
+  const fail = (error: Error) => {
+    failure = error;
+    if (pending) { clearTimeout(pending.timer); pending.reject(error); pending = undefined; }
+  };
+  const data = (chunk: string) => {
+    buffer += chunk;
+    let newline: number;
+    while ((newline = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+      if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) { fail(new Error("daemon repair reply exceeds the line limit")); return; }
+      let id: unknown;
+      try { id = (JSON.parse(line) as { id?: unknown }).id; }
+      catch { fail(new Error("daemon repair returned malformed JSON")); return; }
+      if (typeof id !== "string") { fail(new Error("daemon repair reply has no request id")); return; }
+      if (expired.delete(id)) continue;
+      if (!pending || id !== pending.id) { fail(new Error("daemon repair returned an unknown request id")); return; }
+      const current = pending; pending = undefined; clearTimeout(current.timer); current.resolve(line);
+    }
+    if (Buffer.byteLength(buffer, "utf8") > MAX_LINE_BYTES) fail(new Error("daemon repair reply exceeds the line limit"));
+  };
+  const end = () => fail(new Error("daemon closed the repair connection without a reply"));
+  socket.setEncoding("utf8"); socket.on("data", data); socket.on("end", end); socket.on("error", fail);
+  return {
+    read(id, timeoutMs) {
+      if (failure) return Promise.reject(failure);
+      if (pending || expired.has(id)) return Promise.reject(new Error("daemon repair request overlaps another request"));
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { pending = undefined; expired.add(id); reject(new Error("timed out waiting for the daemon repair reply")); }, timeoutMs);
+        pending = { id, resolve, reject, timer };
+      });
+    },
+    close() { socket.off("data", data); socket.off("end", end); socket.off("error", fail); fail(new Error("daemon repair reader closed")); },
+  };
+}
 
 export interface ServiceRepairIntent {
   readonly v: 1;

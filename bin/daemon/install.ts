@@ -54,7 +54,7 @@ import { daemonCommandCopy } from "./guidance.js";
 import { recoverPausedTask } from "./restart-recovery.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
 import { removeAllServiceRecords } from "./service-records.js";
-import { assertServiceRepairPair, readServiceRepair, serviceRepairFile, sourceDigest } from "./service-repair.js";
+import { assertServiceRepairPair, readServiceRepair, repairReplies, serviceRepairFile, sourceDigest } from "./service-repair.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
 export type ServiceMechanism = "systemd-user" | "launchd-agent" | "scheduled-task";
@@ -565,11 +565,13 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
   let fenced = false;
   let owner: ReturnType<typeof readLifetimeRecord>;
   let socket: Awaited<ReturnType<typeof openVerified>> | undefined;
+  let replies: ReturnType<typeof repairReplies> | undefined;
   const request = async (op: "status" | "managers-prepare-restart" | "managers-abort-restart") => {
     if (!socket || !owner?.start || processBirth(owner.pid) !== owner.start) throw new Error("the pinned daemon lifetime is no longer available");
     const id = randomUUID().replaceAll("-", "");
+    const answer = replies!.read(id, op === "managers-prepare-restart" ? 130_000 : 70_000);
     socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op }));
-    const reply = JSON.parse(await readLine(socket, op === "managers-prepare-restart" ? 130_000 : 70_000)) as DaemonResponse;
+    const reply = JSON.parse(await answer) as DaemonResponse;
     if (reply.id !== id || reply.v !== DAEMON_PROTOCOL_VERSION || !reply.ok || "event" in reply || !("version" in reply.result)) throw new Error("the pinned daemon refused service repair preparation");
     return reply.result;
   };
@@ -608,6 +610,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
     try {
       socket = await openVerified({ paths });
       socket.on("error", () => {});
+      replies = repairReplies(socket);
       const answer = await request("status");
       if (!owner?.start || answer.pid !== owner.pid || processBirth(owner.pid) !== owner.start) throw new Error("the daemon lifetime changed before service repair");
       const job = darwinLaunchdJob(receipt.unit);
@@ -680,7 +683,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
     }
   } finally {
     try { if (fenced && owner?.start && processBirth(owner.pid) === owner.start) await request("managers-abort-restart"); }
-    finally { socket?.destroy(); lock.release(); }
+    finally { replies?.close(); socket?.destroy(); lock.release(); }
   }
 }
 
