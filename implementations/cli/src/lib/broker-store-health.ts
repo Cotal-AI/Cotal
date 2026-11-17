@@ -37,6 +37,11 @@ export function storeRefusedWrite(error: unknown): boolean {
   return false;
 }
 
+/** JetStream's stream-store failure, whose message is the native write error. */
+export function storeWriteError(error: unknown): error is JetStreamApiError {
+  return error instanceof JetStreamApiError && error.code === 10077;
+}
+
 /** The refusal of a manager stop on a full store. Its native stop rides a control credential whose
  *  issuance record must be stored before the credential is released (SPEC 13.15), and a store over
  *  its cap refuses that write as every other, so the stop refuses before any signal. */
@@ -163,13 +168,12 @@ export function jetStreamDisabledRefusal(write: Extract<StoreWriteObservation, {
   });
 }
 
-/** The refusal of a step that got no answer from a broker that logged a store write failure and kept
- *  JetStream enabled. A stream that cannot grow refuses each write to it, so a step whose credential
- *  needs an issuance record there waits until its deadline. The logged failure is named as the
- *  likely cause and the step's own failure is kept as its native detail. */
+/** The refusal of a step whose issuance write failed while JetStream stayed enabled. A stream that
+ *  cannot grow may refuse the write explicitly or leave it waiting until its deadline. The logged
+ *  failure is named and the step's own failure is kept as its native detail. */
 export function storeWriteFailedRefusal(write: Extract<StoreWriteObservation, { state: "write-failed" }>, root: string, space: string, step: string, failure: unknown, outcome: string, target: Record<string, unknown>, managerPid: number | undefined): CommandFailure {
   const detail = failure instanceof Error ? failure.message : String(failure);
-  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${step} got no answer (${detail}), and the broker logged a store write failure at ${write.at}: ${write.cause}; ${outcome}`, {
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${step} ${storeWriteError(failure) ? "was refused" : "got no answer"} (${detail}), and the broker logged a store write failure at ${write.at}: ${write.cause}; ${outcome}`, {
     target: { ...target, brokerLog: write.log },
     native: isCommandFailure(failure) ? { code: failure.code, outcome: failure.outcome, detail } : { code: failure instanceof Error ? failure.name : "UNKNOWN", outcome: "unknown", detail },
     remedy: storeWriteRoute(write, root, space, managerPid),

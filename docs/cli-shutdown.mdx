@@ -154,9 +154,9 @@ fix the logged cause, and run `cotal up`. Fixing the cause alone does not bring 
 
 Other store write failures, such as a file-size limit, leave JetStream enabled, and the broker
 refuses each later write to the stream that failed. When that stream holds credential issuance
-records, the manager's stop waits out its request deadline. `down` then refuses
-`DEPENDENCY_UNAVAILABLE`, exit 2, names the unanswered stop and the failure the broker logged, and
-stops no member. It names the same way out: `kill -TERM <pid>` for the manager on the stack's host,
+records, the manager's stop may receive that write error or wait out its request deadline. `down`
+then refuses `DEPENDENCY_UNAVAILABLE`, exit 2, names the native failure or unanswered stop and the
+failure the broker logged, and stops no member. It names the same way out: `kill -TERM <pid>` for the manager on the stack's host,
 then `cotal down`, then fix the logged cause and run `cotal up`. A dry run cannot predict this
 refusal, because a failure logged for another stream leaves the stop working.
 

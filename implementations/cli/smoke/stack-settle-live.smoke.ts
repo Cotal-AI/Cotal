@@ -806,10 +806,14 @@ try {
       { filled: filled && shown(filled), store });
     const managerPid = pidOf(space, "stack-manager");
     const down = cli(root, "down", "--yes", "--json");
-    check("down --yes refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the unanswered stop, the logged failure and the manager's SIGTERM, and stops nothing",
+    const nativeDetail = down.env?.error?.cause?.detail;
+    const timeout = nativeDetail === "timeout";
+    check("down --yes refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the failed issuance, logged cause and manager's SIGTERM, and stops nothing",
       down.status === 2 && down.env?.error?.code === "DEPENDENCY_UNAVAILABLE"
-        && /^the manager's stop got no answer \(timeout\), and the broker logged a store write failure at .+: file too large; no member was stopped$/.test(down.env.error.message)
-        && down.env.error.message.includes(`KV_cotal_issued_${space}`) && down.env.error.cause?.detail === "timeout"
+        && (timeout ? /^the manager's stop got no answer \(timeout\),/.test(down.env.error.message)
+          : typeof nativeDetail === "string" && nativeDetail.includes(`KV_cotal_issued_${space}`) && /file too large$/.test(nativeDetail) && down.env.error.message.startsWith(`the manager's stop was refused (${nativeDetail}),`))
+        && /and the broker logged a store write failure at .+: file too large; no member was stopped$/.test(down.env.error.message)
+        && down.env.error.message.includes(`KV_cotal_issued_${space}`)
         && (down.env.error.remedy ?? "").startsWith(`end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run \`cotal down\`; `)
         && managerPid !== null && alive(managerPid) && !gone(space, "stack-delivery") && !gone(space, "stack-broker"), shown(down));
     if (managerPid !== null) process.kill(managerPid, "SIGTERM");
