@@ -487,6 +487,10 @@ observations could not be read, with that code.
 
 A controller stack opens three listeners. The broker serves clients at its `--server` port, and a
 websocket for the browser console's mesh session on a port `up` picks, which is always plaintext.
+`up` picks that port as it writes the broker's configuration, and nothing holds the port until the
+broker binds it. When another process binds it first, the broker exits before readiness and `up`
+launches it again on a newly picked port, at most four times; a text `up` says so on stderr each
+time. When the last launch fails the same way, the failure names those relaunches.
 The manager serves its console over plain HTTP on a port it picks when it starts. All three bind the
 `--host` address, and loopback without it, so `--host 0.0.0.0` opens each of them on every interface.
 The receipt's `Listeners` section names each one with its address, how far it reaches and whether it

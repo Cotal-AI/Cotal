@@ -27,7 +27,11 @@
  *     address makes its bare `up` name stopping that space, and it keeps the address. A first `up`
  *     refused at a port another program holds names another `--server`, records no broker instance
  *     and pins nothing: `down --yes` stops nothing and the next `up` starts at another address. The
- *     refusal says the stack started no member. A running broker keeps its file store cap; a stopped
+ *     refusal says the stack started no member. When another process binds the websocket port `up`
+ *     chose before the broker binds it, the broker exits and `up` launches it again on a new port the
+ *     manager is given, also when the broker writes its own `--log-file`; a process that takes every
+ *     port it chooses fails the `up` after four relaunches, which it names.
+ *     A running broker keeps its file store cap; a stopped
  *     one takes a new `--max-file-store`. With no stream reservations, a recorded one-byte cap lets
  *     the empty streams start, then delivery's first write fails and keeps the broker as a partial
  *     start, whose Next, like `status`'s, names only a larger cap; stopping that broker lets a
@@ -962,6 +966,66 @@ try {
     check("and in the open mode it asked for, which the refused up did not pin", moved.env?.result !== undefined && JSON.stringify(moved.env.result).includes('"mode":"open"'), shown(moved));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
     await new Promise<void>((done) => holder.close(() => done()));
+  }
+
+  // 3k. The websocket port `up` chose is free when it is chosen, but nothing holds it until the broker
+  //     binds it. A process that binds it first, as one on a busy host can, takes it from the broker.
+  {
+    const configOf = (root: string) => join(root, ".cotal", "auth", "server.conf");
+    const wsPortIn = (config: string) => Number(/^websocket \{\n  host: .+\n  port: (\d+)$/m.exec(readFileSync(config, "utf8"))?.[1]);
+    const holders: ReturnType<typeof createServer>[] = [];
+    // Bind the websocket port each broker configuration `up` writes at `root` names, once it is
+    // written: only the first one, or every one.
+    const takeWebsocketPorts = (root: string, every: boolean) => {
+      const config = configOf(root), before = statSync(config, { throwIfNoEntry: false })?.mtimeMs;
+      const taken: number[] = [];
+      const timer = setInterval(() => {
+        let port: number;
+        try { if (statSync(config).mtimeMs === before) return; port = wsPortIn(config); } catch { return; }
+        if (!port || taken.includes(port)) return;
+        taken.push(port);
+        const holder = createServer();
+        holders.push(holder);
+        holder.on("error", () => { /* the broker bound it first; holder.listening stays false */ });
+        holder.listen(port, "127.0.0.1");
+        if (!every) clearInterval(timer);
+      }, 1);
+      return { taken, stop: () => clearInterval(timer) };
+    };
+    // A first up whose websocket port another process takes starts on a new one, which the manager is given.
+    const takenOnce = async (space: string, ...args: string[]) => {
+      const root = prepare(space);
+      const once = takeWebsocketPorts(root, false);
+      const started = await cliAsync(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, ...args, "--json");
+      once.stop();
+      track(space);
+      const listed = (started.env?.result?.listeners as { name: string; port: unknown }[] | undefined)?.find((listener) => listener.name === "websocket")?.port;
+      const managerLaunch = serviceDefinitionStore(space).read("stack-manager")?.record.value.launch;
+      const holder = holders.at(-1);
+      check(`${space}: up starts the stack when another process took the websocket port it chose first, on a newly chosen port the manager is given`,
+        started.status === 0 && started.env?.outcome === "ok" && once.taken.length === 1 && holder?.listening === true && typeof listed === "number" && listed !== once.taken[0]
+          && wsPortIn(configOf(root)) === listed && managerLaunch?.type === "adapter" && managerLaunch.options["ws-port"] === listed,
+        { up: shown(started), taken: once.taken, holding: holder?.listening, listed, manager: managerLaunch });
+      check(`${space}: down --yes stops it`, cli(root, "down", "--yes", "--json").status === 0);
+      return root;
+    };
+    const root = await takenOnce("wstaken");
+    // With --log-file the broker logs the failed bind there instead of in its startup log.
+    const logFile = join(storeDirs, "wstakenlog-broker.log");
+    await takenOnce("wstakenlog", "--log-file", logFile);
+    check("wstakenlog: the broker's own log names the bind the taken port failed", readFileSync(logFile, "utf8").includes("[FTL] Unable to listen for websocket connections: "));
+    const every = takeWebsocketPorts(root, true);
+    const failed = await cliAsync(root, "up", "--json");
+    every.stop();
+    track("wstaken");
+    check("a process that takes every websocket port up chooses fails the up after four relaunches, which the failure names",
+      failed.status !== 0 && failed.env?.error?.code === "OPERATION_FAILED" && every.taken.length === 5 && holders.every((holder) => holder.listening)
+        && failed.env.error.message.includes(`Unable to listen for websocket connections: listen tcp 127.0.0.1:${every.taken[4]}: bind: address already in use`)
+        && failed.env.error.message.endsWith("; the broker was launched again on 4 other websocket ports and nothing else was retried"),
+      { up: shown(failed), taken: every.taken });
+    check("no broker runs after it", gone("wstaken", "stack-broker"));
+    check("down --yes there exits 0", cli(root, "down", "--yes", "--json").status === 0);
+    await Promise.all(holders.map((holder) => new Promise<void>((done) => holder.close(() => done()))));
   }
 
   // 4. An orphan manager, member names and the delivery-aware marker (B2-01, B2-03, B2-07, B2-08).
