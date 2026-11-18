@@ -394,6 +394,10 @@ code rather than asking you to wait for publication. For a refused scoped connec
 `@cotal-ai:registry` line in `.npmrc` and restore that registry's connectivity or correct the setting
 before retrying. The updater does not bypass your configured registry. This preflight does not
 guarantee later registry requests or third-party dependency downloads will succeed.
+From 0.167.1, an npm `ETARGET` that names a date bound stops the update immediately with
+exit code 1. The diagnostic names `min-release-age` and `before`: adjust the setting that
+excludes the release, then run `cotal update --self` again. Cotal leaves the npm configuration
+and installed version unchanged instead of waiting for registry propagation.
 Entry version verification allows up to five minutes for a busy or slow machine. A verification
 timeout is reported separately from a wrong version or an entry that exits unsuccessfully.
 Cotal then installs the exact version it validated, resolves and verifies that
@@ -464,6 +468,13 @@ install is reported and makes the command exit nonzero. Independent extension at
 the output includes every failure; an unavailable npm registry does not undo a completed local
 reconcile, but the command still exits nonzero because it could not establish that the install is
 current.
+
+
+From 0.167.1, a recorded local-path extension whose installed folder was deleted does not block
+reconciliation of other extensions, even if its original source directory is gone. Cotal removes its
+`file:` dependency from the staged npm inputs, keeps its extension inventory entry and reports that
+it is not installed. Reinstall it with `cotal ext add <original-spec>` or drop the entry with
+`cotal ext remove <package>`. An installed local copy is kept even when its source directory is gone.
 
 
 ### Update availability [#update-availability]

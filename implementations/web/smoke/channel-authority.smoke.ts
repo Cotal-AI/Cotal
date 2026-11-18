@@ -227,7 +227,7 @@ function finalReturn(src: string, name: string): { text: string; mapsOwnRows: bo
     s.declarationList.declarations.some((d) => ts.isIdentifier(d.name) && d.name.text === "rows"));
   return { text: src.slice(last.getStart(sf), last.end), mapsOwnRows: mapsRows && declaresRows };
 }
-const endpointTs = read("../../../packages/core/src/endpoint.ts");
+const endpointTs = read("../../../packages/core/src/endpoint-history.ts");
 const readReturn = finalReturn(endpointTs, "multiChannelHistory");
 const readMapper = readReturn?.text;
 check("endpoint.ts declares the read's channel derivation in one extractable statement", Boolean(readMapper), { readMapper });

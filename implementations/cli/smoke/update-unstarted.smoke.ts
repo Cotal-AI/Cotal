@@ -3,7 +3,7 @@ import nodeAssert from "node:assert/strict";
 import { countedAssert } from "@cotal-ai/smoke-kit";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chownSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -94,6 +94,30 @@ try {
     process.chdir(cwd);
     assert.equal(await readManagerContinuity({ space: target.space }), "none", "a named stopped controller is eligible from another folder");
   } finally { process.chdir(cwd); }
+  // Native sudo regression: the controller journal belongs to a different account, and
+  // its member records are not in the updater's home. Run this cell on the root test machine.
+  if (process.getuid?.() === 0) {
+    const ownHome = process.env.COTAL_HOME;
+    const cwd = process.cwd();
+    const before = readFileSync(join(root, ".cotal", "stack-controller.json"));
+    try {
+      process.env.COTAL_HOME = join(other, "foreign-reader");
+      process.chdir(root);
+      chownSync(join(root, ".cotal"), 65534, 65534);
+      assert.equal(await readManagerContinuity({}), "none", "sudo leaves another account's implicit controller target untouched");
+      assert.equal(await readManagerContinuity({}, { readOnly: true, retainGraph: true }), "none", "staged reads leave another account's controller untouched");
+      await assert.rejects(readManagerContinuity({ server: target.server }), "an explicit server still refuses");
+      await assert.rejects(readManagerContinuity({ space: target.space }), "an explicit space still refuses");
+      await assert.rejects(readManagerContinuity({ creds: join(root, "missing.creds") }), "explicit credentials still refuse");
+      chownSync(join(root, ".cotal"), 0, process.getgid!());
+      await assert.rejects(readManagerContinuity({}), "missing member records in the same account still refuse");
+      assert.deepEqual(readFileSync(join(root, ".cotal", "stack-controller.json")), before, "cross-account reads preserve the controller journal");
+    } finally {
+      chownSync(join(root, ".cotal"), 0, process.getgid!());
+      process.env.COTAL_HOME = ownHome;
+      process.chdir(cwd);
+    }
+  }
   const ambient = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
   // Use the public CLI to prepare and select a space that never starts, then delete
   // its project. Neither ordinary reconciliation nor repeated self-update needs it.

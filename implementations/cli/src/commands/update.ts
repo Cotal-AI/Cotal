@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
@@ -871,6 +871,16 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       peek = resolveMeshTarget(process.cwd(), { server, space, offline });
     } catch (e) {
       if (!isWorkspaceTargetError(e)) throw e;
+      // Sudo can inspect another account's project without owning its controller records.
+      // The install-wide census already preserves its Manager. Do not borrow that account's
+      // authority or reinterpret its implicit project as this home's selected mesh.
+      if (e.code === "not-started" && typeof e.details.root === "string" && typeof e.details.stackSpace === "string" &&
+          e.details.recordedRoot === undefined && process.getuid &&
+          !["space", "server", "creds", "on"].some(key => typeof flags[key] === "string") &&
+          (() => { const directory = lstatSync(join(e.details.root!, ".cotal")); return directory.isDirectory() && directory.uid !== process.getuid!(); })()) {
+        console.log(`  ${e.details.stackSpace}: controller records in ${e.details.root} belong to another account; leaving its records and processes untouched, continuity not checked`);
+        return "none";
+      }
       // Prepared-only spaces have no registry entry for the gone-root check above.
       // As with a registered gone root, leave its records and processes untouched.
       if (e.code === "not-started" && e.details.rootMissing === true) {
@@ -1105,11 +1115,14 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
 }
 
 class ReleaseNotAvailable extends Error {}
+class ReleaseDateExcluded extends Error {}
 
 function releaseReadError(result: CommandResult, detail: string): Error {
   if (result.status !== null && !result.error) {
     try {
-      const error = (JSON.parse(result.stdout) as { error?: { code?: unknown } }).error;
+      const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown; detail?: unknown } }).error;
+      if (error?.code === "ETARGET" && [error.summary, error.detail].some(text => typeof text === "string" && /with a date before\b/i.test(text)))
+        return new ReleaseDateExcluded(`${detail}: npm's min-release-age or before setting excludes this release. Adjust that date filter and run \`cotal update --self\` again`);
       if (error?.code === "E404" || error?.code === "ETARGET") return new ReleaseNotAvailable(detail);
       if (typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code)) {
         const registry = detail.includes("@cotal-ai/") ? "the @cotal-ai:registry setting in .npmrc" : "your npm registry settings";
@@ -1190,6 +1203,11 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     }
     rt.out(`✓ release archives checked (${((Date.now() - releaseChecksStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
+    if (e instanceof ReleaseDateExcluded) {
+      recordUpdateDeferral(targetVersion, "npm date filter excludes the release");
+      rt.err(c.red(`✗ ${message(e)}. No global install was attempted.`));
+      return 1;
+    }
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
     rt.err(c.red(`✗ cotal-ai@${targetVersion} update preflight failed: ${message(e)}. No global install was attempted. ${e instanceof ReleaseNotAvailable ? "The release is still reaching the registry; run `cotal update --self` again in a few minutes." : "Correct the reported failure, then run `cotal update --self` again."}`));
     return 1;
