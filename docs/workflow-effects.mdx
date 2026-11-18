@@ -247,6 +247,17 @@ are observable. A turn the run itself ended without an accepted yield (its deadl
 cancellation, a refused handoff) is never a reply, whatever the seat yields to the relay later.
 
 
+## Message waits [#message-waits]
+
+`wait(message(channel, { from, matches }))` resolves with the first message posted on the channel
+after the wait opens that passes its filters. A message whose `from.id` differs from the sender its
+subject names never matches, whether or not the wait sets `from`
+([SPEC §5](../SPEC.md#5-envelopes)). `from` matches only messages whose subject sender is the
+principal this run recorded for the handle when it spawned the seat or bound the participant. The
+payload's `from.name` is not compared, so a peer that gives itself the agent's name does not match.
+A `from` handle outside the run's roster refuses the wait.
+
+
 ## Cancellation [#cancellation]
 
 A cancelled branch also withdraws what it relayed to a seat before its cancellation completes: its

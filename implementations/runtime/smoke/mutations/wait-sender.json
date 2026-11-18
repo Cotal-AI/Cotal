@@ -1,0 +1,45 @@
+{
+  "suite": [
+    "implementations/runtime/smoke/wait-sender.smoke.ts"
+  ],
+  "guard": "a message wait matches the principal the broker bound to the message, never the payload's display name",
+  "command": "pnpm smoke:runtime-wait-sender",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/wait-sender.json",
+  "why": [
+    "The suite imports the runtime source directly, so no rebuild is needed for these mutations.",
+    "",
+    "Two checks, mutated apart because each guards a case the other does not reach. The from.id",
+    "check is the only guard when the wait has no `from`, and the only guard against a post on the",
+    "seat's own subject that names someone else. The sender comparison is the only guard against",
+    "another principal posting under the seat's name, on a message that is otherwise authentic.",
+    "The third mutation removes the roster resolution, which leaves the wait with no sender to",
+    "compare, so the impostor answers again."
+  ],
+  "mutations": [
+    {
+      "name": "the from.id check is dropped, so a message whose payload names another sender than its subject can answer",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  if (parsed === null || !isFromSubjectSender(msg, parsed)) return false;",
+      "replace": "  if (parsed === null) return false;",
+      "expectRed": "a post on the seat's own subject carrying a different from.id is ignored",
+      "cell": "a post on the seat's own subject carrying a different from.id is ignored"
+    },
+    {
+      "name": "the sender comparison is dropped, so any principal on the channel answers a wait with `from`",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "  if (sender !== undefined && parsed.sender !== sender) return false;",
+      "replace": "",
+      "expectRed": "impostors posting APPROVED from their own principals",
+      "cell": "impostors posting APPROVED from their own principals"
+    },
+    {
+      "name": "the `from` handle is never resolved through the roster, so the wait has no sender to match",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const sender = ev.event === \"message\" && ev.from !== undefined ? this.waitSender(ev.from) : undefined;",
+      "replace": "    const sender = undefined as string | undefined;",
+      "expectRed": "impostors posting APPROVED from their own principals",
+      "cell": "impostors posting APPROVED from their own principals"
+    }
+  ]
+}

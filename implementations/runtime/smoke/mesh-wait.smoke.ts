@@ -159,12 +159,14 @@ const ctx = (requestId: string, resume?: Record<string, unknown>) => {
   return { ctx: value as never, bound, cancel };
 };
 
+/** Post as the dev principal `local.<from>`, named `from`, on that principal's own subject: an
+ *  authentic message, since a wait drops one whose `from.id` is not its subject's sender. */
 const sayOn = async (channel: string, text: string, from = "ann") => {
   const msg: CotalMessage = {
     id: `m-${Date.now()}-${text.length}-${from}`, ts: now(), space: SPACE,
-    from: { id: "x".repeat(26), name: from }, channel, parts: [{ kind: "text", text }],
+    from: { id: `local.${from}`, name: from }, channel, parts: [{ kind: "text", text }],
   };
-  await js.publish(chatSubject(SPACE, "o", "a", channel), new TextEncoder().encode(JSON.stringify(msg)));
+  await js.publish(chatSubject(SPACE, "local", from, channel), new TextEncoder().encode(JSON.stringify(msg)));
 };
 const say = async (text: string, from = "ann") => await sayOn(CHANNEL, text, from);
 
@@ -188,7 +190,15 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
 // ── 2) `from` and `matches` select; everything else is traffic ────────────────────────────────
 {
   const { ctx: k } = ctx(tok("filter"));
-  const awaited = handler.wait({ event: { event: "message", channel: CHANNEL, from: "bob", matches: "^.*ship it" } }, k);
+  // `from` is a handle this run spawned. Its roster entry, seeded the way an adopted run reads its
+  // settled spawn, records `bob` at the principal `local.bob`.
+  const bob = { agent: `bob#${"b".repeat(26)}`, persona: "dev" };
+  await handler.adopted([{
+    v: 1, seq: 1, run: "r-wait", scope: "", kind: "spawn", name: "bob", occurrence: 0,
+    inputHash: "sha256:0", requestId: tok("bobspawn"), state: "settled", status: "ok",
+    result: bob, external: { goalId: tok("bobspawn"), name: "bob", owner: "local", actor: "bob", uid: "b".repeat(26) },
+  }] as unknown as JournalEntry[]);
+  const awaited = handler.wait({ event: { event: "message", channel: CHANNEL, from: bob.agent, matches: "^.*ship it" } }, k);
   await wait(300);
   await say("ship it", "ann");        // right words, wrong sender
   await say("not yet", "bob");        // right sender, wrong words

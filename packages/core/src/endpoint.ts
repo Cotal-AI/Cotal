@@ -8897,7 +8897,7 @@ function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
  *  an old-shape alias. Every receive path asks this one predicate. What a path does with a refusal
  *  (drop, skip, ack, term or reject) and its own extra checks (a usable id, its own echo) stay with
  *  the path. */
-function isFromSubjectSender(msg: unknown, parsed: ParsedSubject): boolean {
+export function isFromSubjectSender(msg: unknown, parsed: ParsedSubject): boolean {
   return isRecord(msg) && isRecord(msg.from) && msg.from.id === parsed.sender && isPrincipalOwnerToken(parsed.owner);
 }
 
