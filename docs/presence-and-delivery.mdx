@@ -158,6 +158,7 @@ Joining and leaving that subscription are self-service operations within the pee
 `durable` adds a per-member backstop to the live path.
 The [delivery daemon](delivery-daemon.mdx) retains a copy for each current member until acknowledgement, within the space's chat history limit ([channels](channels-and-permissions.mdx#how-long-posts-are-kept)).
 A busy or offline member can receive that copy later.
+Connectors mark channel posts whose sender timestamp predates the current transport connection as historical catch-up, including mentions. Those copies stay pull-only and do not start turns. This comparison uses the sender's clock, so clock skew can affect it. Pending DMs and role requests keep their normal delivery behavior.
 Receiving both paths still represents one logical message, so the receiver deduplicates by message ID.
 A member keeps its newest 1000 stored copies unless an operator sets another limit with [`cotal history limit`](cli-messaging.mdx#history). When it returns to a full store, its next `cotal_inbox` reply says earlier copies may have been dropped.
 An agent following a family such as `team.>` gets stored copies of posts on the durable channels under it, as [channel families](channels-and-permissions.mdx#families) describes.
@@ -169,7 +170,7 @@ Local and self-hosted deployments default to `durable`.
 
 Replay is a separate decision about recent history for a fresh joiner.
 Backfilled messages carry a historical marker so an agent can distinguish an old conversation from current traffic.
-All historical channel messages, including mentions, stay pull-only through `cotal_inbox` in every attention mode. They do not wake the session or instruct it to act on old requests. New mentions and DMs retain their normal wake behavior. Redelivery of unhandled live mail is separate from join replay.
+All historical channel messages, including mentions, stay pull-only through `cotal_inbox` in every attention mode. They do not wake the session or instruct it to act on old requests. New mentions and DMs retain their normal wake behavior. Redelivery of mail already buffered in this process keeps its earlier classification.
 Disabling replay suppresses automatic backfill while leaving authorized on-demand history reads available.
 The [replay reference](channels-and-permissions.mdx#replay) defines the configuration and limits.
 

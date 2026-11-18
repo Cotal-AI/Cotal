@@ -594,6 +594,8 @@ export class MeshAgent extends EventEmitter {
   private _connected = false;
   /** Raw NATS transport liveness, separate from `_connected` (the full Cotal bind/readiness). */
   private _transportConnected = false;
+  /** Sender-time boundary for channel catch-up, refreshed on each transport connection. */
+  private channelLiveSince?: number;
   /** Wall-clock time of the latest inbox drain that actually committed at least one delivery.
    *  This is measured only after the backing acknowledgements succeed, never inferred from a read
    *  attempt or from an empty inbox. */
@@ -807,6 +809,7 @@ export class MeshAgent extends EventEmitter {
       if (this._stopping) return;
       if (this._transportConnected === e.connected) return;
       this._transportConnected = e.connected;
+      if (e.connected) this.channelLiveSince = Date.now();
       if (!e.connected) {
         this.transportDrops++;
         // This reader cannot vouch for a copy across a drop, so a role request taken and not yet
@@ -1340,7 +1343,11 @@ export class MeshAgent extends EventEmitter {
     }
     if (!meta)
       throw new Error(`message ${m.id} delivered without MessageMeta — its class is unauthenticated`);
-    const item = this.toInboxItem(m, meta.kind, meta.historical);
+    // The durable backstop can deliver an offline conversation after this seat returns, even
+    // when join replay is disabled or the delivery daemon transfers the copies late. Apply the
+    // same pull-only policy as join history. DMs and role requests remain actionable after a gap.
+    const historical = meta.historical || (meta.kind === "channel" && this.channelLiveSince !== undefined && m.ts < this.channelLiveSince);
+    const item = this.toInboxItem(m, meta.kind, historical);
     if (notice) item.notice = notice;
     // A notice asks for nothing and answers nothing. A role request awaiting its take is recorded
     // as asked of us only once it is taken, since a refused take drops it unseen.

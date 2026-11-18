@@ -200,6 +200,8 @@ The shared formatter indents body continuations and neutralizes attribution fiel
 A redelivered item includes the broker's delivery count and warns that an earlier delivery may already have run.
 The count comes from the broker, not a sender field.
 
+Channel posts sent before the connector's current transport connection are catch-up context, based on the envelope's sender timestamp. The shared connector marks them historical and keeps them pull-only, including mentions, without changing DM or role-request delivery. An item already buffered in this process keeps its classification across redelivery. A process restart has no earlier classification to retain. Clock skew can affect the timestamp comparison.
+
 ## Acknowledgement [#acknowledgement-and-redelivery]
 
 The connector acknowledges a durable message at its integration's handoff boundary.
