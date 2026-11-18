@@ -29,7 +29,7 @@ export function readUpdatePending(current: string): UpdatePending {
       const child = seedChildStatus();
       if (child.kind === "live") return { kind: "seed-active", instruction: `A connector seed child (pid ${child.pid}) is still installing. Wait for it to finish, then retry \`cotal update --check\`.` };
       const instruction = child.kind === "ambiguous"
-        ? `A connector seed may be mid-flight (marker ${child.path}). Check whether a seed process is still running before using \`cotal ext seed --repair\`.`
+        ? `A connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\`.`
         : child.kind === "stale"
           ? "A connector seed child stopped before completing. Run `cotal ext seed` to resume reconciliation."
           : cursor?.failed

@@ -158,8 +158,15 @@ await report(false, false, /cotal ext seed` to resume/);
 writeFileSync(childPath, "{broken");
 const ambiguous = read();
 assert.equal(ambiguous.kind, "seed");
-if (ambiguous.kind === "seed") assert.match(ambiguous.instruction, /may be mid-flight.*Check whether a seed process/);
-await report(false);
+const markerRemedy = /if no cotal process is running, remove it, then run `cotal ext seed --repair`/;
+if (ambiguous.kind === "seed") {
+  assert.ok(ambiguous.instruction.includes(childPath), "the remedy identifies only the ambiguous child marker");
+  assert.match(ambiguous.instruction, markerRemedy);
+}
+const ambiguousReport = JSON.parse(await report(true));
+assert.match(ambiguousReport.warnings[0].message, markerRemedy);
+assert.match(ambiguousReport.error.remedy, markerRemedy);
+assert.match((await report(false)).replace(/\s+/g, " "), markerRemedy);
 rmSync(childPath);
 
 writeFileSync(receipt, JSON.stringify(recovery));

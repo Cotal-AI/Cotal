@@ -459,6 +459,8 @@ After an interruption with no live owner, it names
 An unreadable seed journal reports `RECONCILIATION_UNREADABLE` with the same repair command.
 A failed seed includes its recorded cause and asks you to fix that before repairing.
 A stale pending child marker names `cotal ext seed` to resume the guarded recovery.
+An ambiguous child marker names its path. If no Cotal process is running, remove that marker,
+then run `cotal ext seed --repair`. The check never removes the marker itself.
 
 The report compares first-party recorded versions with the running CLI. It does not inspect
 package contents, signatures or loaded process generations. `cotal update` and `update --self`
