@@ -1350,7 +1350,14 @@
     "smoke:daemon-desktop": "pnpm --filter cotal-ai... build && tsx bin/smoke/desktop-setup.smoke.ts && tsx bin/smoke/daemon-desktop.smoke.ts && tsx bin/smoke/daemon-desktop-install.smoke.ts && tsx bin/smoke/daemon-desktop-setup.smoke.ts && tsx bin/smoke/daemon-startup-context.smoke.ts",
     "smoke:execution-generations": "tsx bin/smoke/daemon-generation-poll.smoke.ts && tsx bin/smoke/execution-generations.smoke.ts && tsx bin/smoke/execution-generation-cli.smoke.ts && tsx bin/smoke/execution-transaction.smoke.ts && tsx bin/smoke/execution-store-cleanup.smoke.ts && tsx bin/smoke/connector-set-cleanup.smoke.ts && tsx bin/smoke/execution-preinstall.smoke.ts && tsx bin/smoke/execution-preinstall-client.smoke.ts && tsx bin/smoke/manager-generation-owner.smoke.ts && tsx bin/smoke/preinstall-preservation.smoke.ts && tsx packages/workspace/smoke/execution-identity.smoke.ts",
     "smoke:migration-execution:live": "tsx bin/smoke/migration-execution.smoke.ts",
-    "smoke:daemon-transport": "tsx bin/smoke/daemon-shutdown-probe.smoke.ts && tsx bin/smoke/daemon-peer-close-guards.smoke.ts && tsx bin/smoke/daemon-transport.smoke.ts"
+    "smoke:daemon-transport": "tsx bin/smoke/daemon-shutdown-probe.smoke.ts && tsx bin/smoke/daemon-peer-close-guards.smoke.ts && tsx bin/smoke/daemon-transport.smoke.ts",
+    "smoke:quiescence-authority": "tsx implementations/auth/smoke/quiescence-authority.smoke.ts",
+    "smoke:quiescence-authority-roots": "tsx implementations/auth/smoke/quiescence-authority-roots.smoke.ts",
+    "smoke:quiescence-anycast": "tsx implementations/auth/smoke/quiescence-anycast.smoke.ts",
+    "smoke:quiescence-controls": "tsx implementations/auth/smoke/quiescence-controls.smoke.ts",
+    "smoke:quiescence-queues": "tsx implementations/auth/smoke/quiescence-queues.smoke.ts",
+    "smoke:quiescence-workflows": "tsx implementations/auth/smoke/quiescence-workflows.smoke.ts",
+    "smoke:space-quiescence": "tsx implementations/auth/smoke/space-quiescence.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

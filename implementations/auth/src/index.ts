@@ -1,3 +1,4 @@
+export { observeSpaceQuiescence, type SpaceQuiescenceOptions, type SpaceQuiescenceObservation } from "./space-quiescence.js";
 /** @module index */
 export { retainManagerAuthorityRoute } from "./provider.js";
 export { signOutIdpSession, type SignOutIdpSessionResult } from "./logout.js";
