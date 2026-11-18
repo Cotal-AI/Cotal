@@ -6503,7 +6503,7 @@ validators of §13.2, so `<pUid>` is a lifecycle UID and no row can name the sen
 | Mint | Serve rows | Caller rows |
 | --- | --- | --- |
 | User-auth, ledger row of kind `managed-agent` | yes | none |
-| User-auth, ledger row of kind `interactive` | yes | `owner` rows for `describe`, `prompts`, `prompt` and `prompt-answer`, and the reply read |
+| User-auth, ledger row of kind `interactive` | yes | `owner` rows for `describe`, `prompts`, `prompt`, `prompt-answer`, `commands` and `command`, and the reply read |
 | Static credential | no | no |
 | Open mesh | no rows exist | |
 | Every view, service credential and infrastructure profile | no | no |
@@ -6611,10 +6611,16 @@ invokes registered endpoints does not reach them.
 ### 13.22 The `agent` endpoint
 
 The endpoint `agent` on the principal route (§13.21) is the command set an agent serves about the
-questions its harness stops to ask: a tool permission, a question, a plan to approve, a form. Its
-contract is a core constant: cluster URN `ai.cotal.agent`, revision 1, every schema closed and
-frozen, nothing published to the contract store. A caller embeds the artifacts and pins their
-digests. Every command is ephemeral, untargeted, and declares `authorities: ["owner", "grant"]`.
+questions its harness stops to ask (a tool permission, a question, a plan to approve, a form) and
+about the harness commands and skills it runs. Its contract is a core constant: cluster URN
+`ai.cotal.agent`, revision 2, every schema closed and frozen, nothing published to the contract
+store. A caller embeds the artifacts and pins their digests. Every command is ephemeral and
+untargeted. The prompt commands declare `authorities: ["owner", "grant"]`; `commands` and `command`
+declare `authorities: ["owner"]`, so only the owner's interactive session runs an agent's commands.
+
+Revision 2 adds `commands` and `command`. The three prompt commands and their digests are unchanged,
+so a caller pinned to revision 1 still calls them. An agent that serves revision 1 answers `commands`
+and `command` with `unimplemented`, `not-executed`.
 
 | Command | Capability | Args | Output |
 | --- | --- | --- | --- |
@@ -6622,6 +6628,8 @@ digests. Every command is ephemeral, untargeted, and declares `authorities: ["ow
 | `prompts` | `agent.prompts.read` | `{}` | `{ runtime: { id, startedAt }, seq, open: PromptSummary[], closed: PromptSummary[] }` |
 | `prompt` | `agent.prompts.read` | `{ id }` | `{ prompt: AgentPrompt }` |
 | `prompt-answer` | `agent.prompts.answer` | `{ id, digest, option, note?, values? }` | `{ state: PromptState }` |
+| `commands` | `agent.commands.read` | `{}` | `{ supported: false }` or `{ supported: true, commands: CommandEntry[] }` |
+| `command` | `agent.commands.run` | `{ target, name, args? }` | `{}` |
 
 `prompts` lists at most 32 prompts in `open`, those that are `open` or `sent`, and at most 32 in
 `closed`, the last prompts of this runtime to close. `runtime` is the `id` and `startedAt` of the
@@ -6757,11 +6765,12 @@ the content does not have, a form no option submits, or a form schema whose `req
 property it does not declare. The schemas cannot express these. A summary's JSON encoding is at most
 4096 bytes of UTF-8 in every state its prompt can reach: when a prompt opens, the desk encodes its
 summary in every state, with the answerer's owner, actor and lifecycle UID, the option id and `seen`
-at their longest legal values, and does not open the prompt when the largest is over 4096 bytes. The desk serves only on a connection whose `max_payload` is
+at their longest legal values, and does not open the prompt when the largest is over 4096 bytes. The endpoint is served only on a connection whose `max_payload` is
 at least 524288 bytes, which holds the largest `prompts` reply (64 summaries) and the largest `prompt`
-reply with their envelopes. It checks this again on every replaced connection, and closes when the
-check fails there, as it does when the broker refuses its subscription. A reply that still does not
-fit is `resource-exhausted`, with its size in `details`.
+reply with their envelopes. The agent checks this again on every replaced connection, and stops
+serving the endpoint when the check fails there, as it does when the broker refuses its
+subscription; the desk then closes. A reply that still does not fit is `resource-exhausted`, with its
+size in `details`.
 
 `prompt-answer` runs these checks in order, as one step. Args that are not I-JSON (a lone surrogate
 in `note` or `values`) are `bad-request` before them. Each refusal is `not-executed` and leaves the
@@ -6824,6 +6833,44 @@ harness, whatever arrives while the receipt is pending.
 | `ai.cotal.agent.prompt-digest` | `{ digest }` | `failed-precondition` on a digest that differs from the prompt's |
 | `ai.cotal.agent.prompt-size` | `{ bytes, limit }` | `resource-exhausted` |
 
+**Commands.** `commands` lists the harness commands and skills the agent runs, and `command` runs one
+of them as the harness's own command, never as text for its model.
+
+```ts
+interface CommandEntry {
+  name: string;               // matches ^[^\s\p{C}]{1,128}$ with the ECMA-262 u flag: 1 to 128 characters, none whitespace or Unicode category C
+  target: "command" | "skill";
+  description?: string;       // 1 to 1024 characters
+  inputHint?: string;         // 1 to 256 characters: what `args` takes, when the harness says
+}
+```
+
+`{ supported: false }` means the agent's connector runs no commands. `{ supported: true }` with an
+empty list means it runs commands and has none. A list carries at most 512 entries and nothing else
+the harness keeps about a command, such as a file path or a skill's body. The agent leaves out a
+command whose name `command` cannot carry and shortens a longer text, marking the cut. A failed or
+unanswered list is `unavailable`, `not-executed`, never an empty list.
+
+`command` names an entry by its `target` and `name`. `args` is what the harness gives it, empty when
+absent. The effect is that the harness accepted the command. A command that runs the model runs as a
+turn of its own, and the reply does not wait for that turn to finish. Some commands, such as
+OpenCode's `goal clear`, run no turn. The agent starts a command only while no turn runs, holds at
+most 8 commands waiting to start, and waits at most 10 s for the harness to accept a command. A
+caller waits at least 15 s for the reply.
+
+| Case | Result |
+| --- | --- |
+| The agent's connector runs no commands, or none of this `target` | `unimplemented`, `not-executed` |
+| The agent is stopping, or stops while the command waits | `unavailable`, `not-executed` |
+| 8 commands already wait for a turn | `resource-exhausted`, `not-executed` |
+| 10 s pass while the command waits for a turn | `unavailable`, `not-executed`: it did not start |
+| The harness has no command or skill by that name | `not-found`, `not-executed` |
+| The harness refuses the command, and nothing started | `failed-precondition`, `not-executed` |
+| The harness fails in a way that does not say whether it started | `internal`, `unknown` |
+| 10 s pass while the harness is being asked | `deadline-exceeded`, `unknown`: it may have started |
+| The agent stops while the harness is being asked | `unavailable`, `unknown`: it may have started |
+| The harness accepts it | `ok`, `executed`, with `{}` |
+
 **Reader rules.**
 
 - A reader MUST drop a value that does not match the closed schemas, and a prompt with two options
@@ -6838,7 +6885,8 @@ harness, whatever arrives while the receipt is pending.
   of a `conflict` or `failed-precondition`, is a snapshot. For one runtime and one prompt id a reader
   ranks them `open`, then `sent` and `unconfirmed`, then `sent` and `delivered`, then `closed`, keeps
   the state further along, whichever reply carried it, and never goes back from `closed`.
-- A caller waits at least 15 s for a `prompt-answer` reply, longer than the desk's 10 s bound.
+- A caller waits at least 15 s for a `prompt-answer` or `command` reply, longer than the agent's 10 s
+  bounds.
 - A reader keeps two values per agent: the `(runtime.id, seq)` it last saw in presence (§6) and the
   `(runtime.id, seq)` of its last successful `prompts` reply. It is dirty while they differ. While
   dirty it calls `prompts`: when it first reads presence, on every presence event, and after it
@@ -7553,7 +7601,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - minted by the auth callout from a ledger row of either kind (§13.21): `P.ep.prin-reply.agent.<owner>.<actor>.<uid>.*.*.*.*.*`,
   replies under its own principal-route head; from an `interactive` row also
   `P.ep.prin.agent.<owner>.*.*.*.<command>.owner.<owner>.<actor>.<uid>.*` for each of `describe`,
-  `prompts`, `prompt` and `prompt-answer`. The kind is the ledger row's, never a scope token's. A
+  `prompts`, `prompt`, `prompt-answer`, `commands` and `command`. The kind is the ledger row's, never a scope token's. A
   static mint, a principal outside the ledger's row spaces such as a chat session, every view, and
   every observer, admin, delivery, supervisor, serve and infrastructure profile hold no
   principal-route row
@@ -7918,6 +7966,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-18 | **An agent's own commands and skills on the `agent` endpoint (§13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 2 with `commands`, which lists the harness commands and skills an agent runs as `{ name, target, description?, inputHint? }` entries or answers `{ supported: false }`, and `command`, which runs one by `{ target, name, args? }` and answers `{}` once the harness accepted it. Both declare the `owner` authority word only, so an interactive ledger row gets their two caller rows and no grant row can name them. A command waits at most 10 s for the harness, at most 8 wait for a turn, and every refusal carries a fixed code and outcome: one that never started is `not-executed`, and one whose start is not known is `unknown`. The prompt commands and their digests are unchanged, and an agent on revision 1 answers the two new commands `unimplemented`. |
 | 2026-11-18 | **Principal-route follow-ups (§6, §13.3, §13.5, §13.21), corrections.** A serve of the `agent` endpoint takes a fresh `prompts.seq` when it starts, so one `(runtime.id, seq)` never names two states, and `spec/cotal.schema.json` gives `prompts.open` and `prompts.seq` as non-negative integers, as §6 already said. A caller drops any message on the no-responders sentinel other than the broker's no-responders status and keeps waiting, on every route, where it used to end the call `internal`: a JetStream API request can name the sentinel as its reply subject. §13.5 now states that a service call drops a stored message on its reply read, as the principal route does; clients already did. The principal route has no cast: a request with `replyExpected: false` is refused before its handler runs. Stopping a principal serve waits for a handler in flight only until its request's `deadlineMs` has passed since the request arrived, and drops a reply that comes later. A principal-route `deadlineMs` is at most 30000: the serve refuses a larger one as `bad-request` before its handler runs, and a caller refuses it before publishing, so stop waits at most 30 s. A refused reply read is still `permission-denied` when the deadline passes first. |
 | 2026-11-18 | **Principal-route and prompt-desk corrections (§6, §13.14, §13.21, §13.22), additive.** A caller drops a stored message that reaches its reply read, one a JetStream read such as a Direct Get delivers on any subject its requester names, the sentinel included, and keeps waiting past a message under another head. Stopping a client ends its principal serves and waits for their handlers before the connection closes, and a process serves an endpoint once for its lifecycle. Under one `runtime.id` the presence `prompts.seq` never goes back, also across a stopped serve. The desk's admission refusals the schemas cannot express are now stated, and a reader drops a prompt with two options that share an id. No subject or schema changes. |
 | 2026-11-17 | **The agent's prompt desk (§13.22), additive.** An agent serves the `agent` endpoint from one prompt desk per process, the only writer of its prompts' states, which applies every event in one step in the order it arrives. §13.22 now states the two bounds every prompt has (offered for 1 s to 7 days, and settled 1 s to 24 h after an accepted answer), the desk's limits (32 prompts open or sent, the last 32 closed, 262144 bytes of content, 4096 bytes per summary in every state the prompt can reach, and a 524288-byte `max_payload` floor checked on every connection), the eleven `prompt-answer` checks in their order, when two answers are the same, the reply's 10 s bound and what state it carries, what else moves a prompt from each state, and that a caller waits at least 15 s for an answer's reply. No subject or schema changes. |

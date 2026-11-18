@@ -11,6 +11,7 @@
     "smoke:adoption-passive-preflight": { "seconds": 24.3, "shard": 2 },
     "smoke:adoption-proof": { "seconds": 6, "shard": 0 },
     "smoke:adoption-swap-strand": { "seconds": 17.9, "shard": 1 },
+    "smoke:agent-commands:auth": { "seconds": 13.2, "shard": 1 },
     "smoke:agent-file": { "seconds": 1, "shard": 2 },
     "smoke:agent-secret-segmentation": { "seconds": 3.1, "shard": 3 },
     "smoke:agent-skills": { "seconds": 9.7, "shard": 0 },
