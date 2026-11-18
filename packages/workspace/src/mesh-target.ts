@@ -4,7 +4,7 @@ import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth
 import { parse as parseYaml } from "yaml";
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
-import { recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
+import { isCommandFailure, recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
 import { assertRecordIdentity, parsePid, probeLiveness, readPidfile, type ProcessIdentityRecord } from "./pid.js";
 import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
 import {
@@ -141,6 +141,8 @@ export interface MeshTargetErrorDetails {
   /** For `unreadable-auth` with no space: the account records in the root's trust folder that will
    *  not load, by path. */
   records?: string[];
+  /** The failed trust reader's file-specific recovery step. */
+  trustRemedy?: string;
   /** What the caller asked for that didn't match (e.g. an unknown `--space`). */
   requested?: string;
   /** For `unknown-space`: the name came from the `cotal use` selection, not from `--space`. */
@@ -226,7 +228,7 @@ function loadTrustOrThrow(root: string, space: string): SpaceAuth | undefined {
   try {
     return loadSpaceAuth(authDir(root), space);
   } catch (e) {
-    throw new MeshTargetError("unreadable-auth", (e as Error).message, { space, root });
+    throw new MeshTargetError("unreadable-auth", (e as Error).message, { space, root, ...(isCommandFailure(e) && e.remedy ? { trustRemedy: e.remedy } : {}) });
   }
 }
 

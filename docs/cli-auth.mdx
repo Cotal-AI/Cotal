@@ -480,6 +480,11 @@ names each, such as `2 exported credential files need attention`. The exit code 
 Missing local signing trust is not inferred to mean an open or healthy mesh. An unreadable renewal
 record prevents a complete healthy verdict. Locally ordered older incarnation files are labeled as
 file observations, never proof of a live successor or permission to delete or respawn an agent.
+An unreadable trust record names its file and the restore step without directing removal of another
+account record. A corrupt system credential stays in the per-file table with its rotation guidance,
+so read-only diagnosis still reports the other credentials. An unreadable renewal record names its
+backup restore step and the manager that records the next renewal. It is never replaced with an
+inferred broker acceptance.
 
 
 ### Supported repair
