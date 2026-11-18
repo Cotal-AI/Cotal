@@ -22,7 +22,8 @@
  * handler runs and while `ready` waits; cells 31 and 32, `seq` across serves and endpoint objects of
  * one runtime, and a second server for one lifecycle in a process; cell 33, stop waits for a handler
  * in flight only until its request's deadline; cell 34, a JetStream API answer on the caller's
- * sentinel; cell 35, a refused reply publish is reported; a reconnect that rebinds, a
+ * sentinel; cell 35, a refused reply publish is reported; cell 36, a refused reply read whose flush
+ * never settles; a reconnect that rebinds, a
  * reconnect whose new credential lacks the rows, and the mixed-version cases that need no 0.165
  * release: an agent that serves nothing, a caller or an agent whose credential predates the rows,
  * and a caller pinned to a later revision.
@@ -100,6 +101,7 @@ const W = {
   stopper2: who(A, "stopper2", "managed-agent"),
   stopper3: who(A, "stopper3", "managed-agent"),
   mute: who(A, "mute", "managed-agent"),
+  deaf: who(A, "deaf", "interactive"),
   cycler: who(A, "cycler", "managed-agent"),
   web: who(A, "web", "interactive"),
   term: who(A, "term", "interactive"),
@@ -125,6 +127,8 @@ const grants = new Map<string, { target: Who; commands: string[] }[]>();
 const stripped = new Set<string>();
 /** Lifecycles whose serve credential keeps the subscription row and loses the reply publish row. */
 const muted = new Set<string>();
+/** Lifecycles whose caller credential keeps its request rows and loses the reply read. */
+const deaf = new Set<string>();
 const strip = (p: Perm): Perm => ({ ...p,
   pub: { ...p.pub, allow: (p.pub?.allow ?? []).filter((r) => !r.includes(".ep.prin")) },
   sub: { ...p.sub, allow: (p.sub?.allow ?? []).filter((r) => !r.includes(".ep.prin")) } });
@@ -132,6 +136,7 @@ const mintFor = async (t: ValidatedUserToken, connId: string, readerId: string):
   let p = (await shipped(t, connId, readerId)) as Perm;
   const uid = t.act.lifecycleUid!;
   if (stripped.has(uid)) p = strip(p);
+  if (deaf.has(uid)) p = { ...p, sub: { ...p.sub, allow: (p.sub?.allow ?? []).filter((r) => !r.includes(".ep.prin-reply.")) } };
   if (muted.has(uid)) p = { ...p, pub: { ...p.pub, allow: (p.pub?.allow ?? []).filter((r) => !r.includes(".ep.prin-reply.")) } };
   for (const g of grants.get(uid) ?? []) {
     const r = epPrincipalGrantRows(space, { owner: t.owner, actor: t.act.actor, uid }, { owner: g.target.owner, actor: g.target.actor, uid: g.target.uid }, g.commands);
@@ -818,6 +823,23 @@ try {
       !r.ok && codeOf(r.error) === "deadline-exceeded/unknown" && reported.length === 1 && reported[0].includes(`${P}.ep.prin-reply.agent.${A}.mute.`),
       { call: r.ok ? r.value : codeOf(r.error), reported });
     await muteEp.stop();
+  }
+
+  // ── cell 36: a refused reply read whose flush never settles ──
+  // The caller's credential keeps its request rows and lacks the reply read. The broker refuses the
+  // read; the call waits one flush for a publish refusal that would say nothing ran. That flush
+  // never settles here, the case of a connection that stopped answering: the refusal still wins.
+  {
+    deaf.add(W.deaf.uid);
+    const deafEp = await userEndpoint(W.deaf);
+    const nc = (deafEp as unknown as { nc: NatsConnection }).nc;
+    const flush = nc.flush.bind(nc);
+    nc.flush = () => new Promise<void>(() => {});
+    const r = await settle(call(deafEp, coderAt, "prompts", "owner", {}, 1500));
+    nc.flush = flush;
+    check("cell 36: a refused reply read whose flush never settles is permission-denied, unknown at the deadline, never deadline-exceeded",
+      !r.ok && codeOf(r.error) === "permission-denied/unknown", r.ok ? r.value : codeOf(r.error));
+    await deafEp.stop();
   }
 
   // ── cells 31 and 32: seq never goes back under one runtime id, and one server per lifecycle ──

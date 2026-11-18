@@ -524,7 +524,8 @@ async function exchange(
     /** How a broker refusal of the reply subscription reads. By default it is `unavailable`. With
      *  `permission` it is a permission refusal, and it waits one flush first: the request went out
      *  in the same tick and the broker answers in order, so a refusal of the publish too, which says
-     *  nothing ran, settles the call before it. */
+     *  nothing ran, settles the call before it. The deadline bounds that wait, and a read refusal
+     *  still waiting at the deadline is what the call throws. */
     readRefused?: "permission";
   },
 ): Promise<{ subject: string; data: Uint8Array }> {
@@ -533,6 +534,8 @@ async function exchange(
   let denialWatch: { denied: Promise<never>; release(): void } | undefined;
   let onAbort: (() => void) | undefined;
   let published = false;
+  /** A refused reply read, waiting for its flush. */
+  let readRefusal: EpEnvelopeError | undefined;
   const cancelled = new Promise<never>((_, reject) => {
     onAbort = () => reject(new EpEnvelopeError("unavailable", `${x.what} observation cancelled; the request may have executed`, published ? [{ ...x.unanswered, requestId: x.requestId }] : undefined, "unknown"));
     x.signal?.addEventListener("abort", onAbort, { once: true });
@@ -544,8 +547,8 @@ async function exchange(
         callback: (err, msg) => {
           if (err) {
             if (x.readRefused === "permission" && err instanceof PermissionViolationError) {
-              void nc.flush().catch(() => undefined).then(() => new Promise<void>((resolve) => setImmediate(resolve))).then(() =>
-                reject(new EpEnvelopeError("permission-denied", `the broker refused this caller's reply read "${x.replyFilter}" for ${x.what}: the request was published and may have run, and its reply cannot be read here; ${BROKER_REFUSAL_CAUSE}`, [{ ...x.unanswered, requestId: x.requestId }], "unknown")));
+              const refusal = readRefusal = new EpEnvelopeError("permission-denied", `the broker refused this caller's reply read "${x.replyFilter}" for ${x.what}: the request was published and may have run, and its reply cannot be read here; ${BROKER_REFUSAL_CAUSE}`, [{ ...x.unanswered, requestId: x.requestId }], "unknown");
+              void nc.flush().catch(() => undefined).then(() => new Promise<void>((resolve) => setImmediate(resolve))).then(() => reject(refusal));
               return;
             }
             reject(new EpEnvelopeError("unavailable", `the caller's reply subscription failed: ${err.message}`)); return;
@@ -572,7 +575,7 @@ async function exchange(
       nc.publish(x.subject, x.body, { reply: x.sentinel });
       published = true;
     });
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${x.what} within the ${x.deadlineMs}ms budget (SPEC 13.5)`, [{ ...x.unanswered, requestId: x.requestId }], "unknown")), x.deadlineMs); });
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(readRefusal ?? new EpEnvelopeError("deadline-exceeded", `no reply to ${x.what} within the ${x.deadlineMs}ms budget (SPEC 13.5)`, [{ ...x.unanswered, requestId: x.requestId }], "unknown")), x.deadlineMs); });
     return await Promise.race([outcome, timeout, denialWatch.denied, cancelled]);
   } finally {
     sub?.unsubscribe();

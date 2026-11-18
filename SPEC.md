@@ -6559,7 +6559,9 @@ no-responders status counts only on the sentinel: it is `unavailable`, `not-exec
 counts only when its subject is the one the addressed process derives, its id echoes the request
 and its output validates against the pinned contract. A refused
 publish is `permission-denied`, `not-executed`. A refused reply read is `permission-denied`, and its
-outcome is `not-executed` only when the publish was refused too, else `unknown`. A deadline is
+outcome is `not-executed` only when the publish was refused too, else `unknown`; it is still
+`permission-denied` when the deadline passes before the caller learns whether the publish was
+refused. A deadline is
 `deadline-exceeded`, `unknown`. The caller does not call `describe` first: it embeds the cluster
 artifacts and pins their digests, and calls `describe` only to learn which revision an agent serves
 after a `contract-mismatch`.
