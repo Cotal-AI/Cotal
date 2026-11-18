@@ -222,7 +222,10 @@ Update reads the recorded mesh inventory without refreshing account space catalo
 login to a remote mesh does not block the software update. An unreachable registered broker does
 not block either update flow when no local Manager of this installation serves that space. The
 liveness check keeps the registration unchanged. Local manager continuity checks still
-apply before changing the installation.
+apply before changing the installation. When a recorded local space's project folder no longer
+exists, update names the space and the gone folder, leaves its processes untouched, and makes no
+continuity claim for that space. A renamed project does not block the software update or require
+restoring internal identity files.
 
 After `update --self` replaces the installation, its verified replacement waits up to 120 seconds
 for the recorded same-installation daemon to load the new version and its intended hosted Managers
