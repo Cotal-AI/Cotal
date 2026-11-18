@@ -84,6 +84,8 @@ Each agent has a private `CODEX_HOME` under the manager workspace's `.cotal/code
 Your normal hooks, MCP servers, and configuration do not load into that home.
 Your `auth.json` is linked into it so token refresh uses the same credential file.
 
+Cotal waits for Codex's 30-second app-server listen timeout to settle before returning a detached startup result.
+An immediate app-server exit includes its last output in the failure report.
 See the [Codex connector reference](codex-connector-reference.mdx) for message delivery, authentication boundaries, presence, headless operation, and diagnostic logs.
 
 ## Watch structured events [#event-plane]

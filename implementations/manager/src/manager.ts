@@ -5798,14 +5798,14 @@ export class Manager {
 
   /** The refusal for an event-plane choice the registration policy or the connector cannot meet.
    *  Spawn and resume both ask before a seat's launch is built, so a seat retained without the
-   *  plane cannot come back on a space that now requires it. An absent choice arms the plane. */
+   *  plane cannot come back on a space that now requires it. An absent choice arms supported planes. */
   private eventsRefusal(connector: Connector, events: boolean | undefined): string | undefined {
     if (this.eventsRequired && events === false)
       return `space "${this.space}" requires the event plane by registration policy; --no-events (events: false on the start op) is not allowed`;
-    if (events !== false && !connector.eventChannel)
+    if ((this.eventsRequired || events === true) && !connector.eventChannel)
       return this.eventsRequired
         ? `space "${this.space}" requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
-        : `connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events (events: false on the start op) to launch it without one`;
+        : `connector "${connector.name}" does not publish an AG-UI event plane; omit --events to launch it without one`;
     return undefined;
   }
 
@@ -6475,9 +6475,8 @@ export class Manager {
     } catch (e) {
       return { ok: false, error: opts.resolved ? `launch agent: ${rejectionText(e)}` : `persona ${where}: ${rejectionText(e)}` };
     }
-    // The AG-UI event plane is on unless the launch explicitly opted out. A connector that cannot
-    // emit one is refused further down, before anything is minted.
-    const events = this.eventsRequired || opts.events !== false;
+    // Default events on where the connector supports them, unless the launch explicitly opts out.
+    const events = this.eventsRequired || opts.events === true || (opts.events !== false && !!connector.eventChannel);
     if (this.eventPayloadsWithheld && opts.eventPayloads === true)
       return { ok: false, error: "space policy withholds event payloads" };
     const eventPayloads = !this.eventPayloadsWithheld && (opts.eventPayloads ?? def?.eventPayloads) !== false;
