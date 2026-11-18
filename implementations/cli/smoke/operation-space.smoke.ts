@@ -26,6 +26,7 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { agentFilePath } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { recordMesh } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -35,6 +36,8 @@ if (!existsSync(BIN)) {
 
 interface Envelope {
   outcome: string;
+  completeness?: string;
+  result?: { requestedName?: string };
   target: Record<string, unknown> | null;
   error?: { code: string; message?: string; remedy?: string };
 }
@@ -272,6 +275,55 @@ const knownDirect = cotal("spawn", "--file", "pv.md", "--harness", "opencode", "
 const knownPreview = knownDirect.envelope as unknown as { result?: Preview; warnings?: unknown[] } | undefined;
 check("a known harness still previews the file's source without warnings or importing its connector",
   knownDirect.status === 0 && knownPreview?.result?.harness === "opencode" && knownPreview.result.persona?.source === "file" && same(knownPreview.warnings, []), shown(knownDirect));
+
+// The display name in a persona need not be a launch identity. Preview the effective value with
+// the same local rule as foreground launch, including the selected space's actor-token bound.
+writeFileSync(agentFilePath(root, "invalid-name"), "---\nname: bad name\n---\n");
+for (const args of [
+  ["invalid-name"],
+  ["invalid-name", "--server", "nats://127.0.0.1:34300"],
+  ["--file", "pv.md", "--name", "bad name"],
+]) {
+  for (const format of [[], ["--plain"], ["--json"]]) {
+    const invalid = cotal("spawn", ...args, "--dry-run", ...format);
+    const message = 'unsafe name "bad name" (allowed: letters, digits, _ -)';
+    check(`direct preview refuses the effective name from ${args.join(" ")} in ${format[0] ?? "text"}`,
+      invalid.status === 1 && (format[0] === "--json"
+        ? invalid.envelope?.outcome === "refused" && invalid.envelope.error?.code === "USAGE_INVALID"
+          && invalid.envelope.error.message === message && invalid.envelope.target?.space === "opsp" && invalid.stderr === ""
+        : invalid.stdout === "" && invalid.stderr.includes(message)), shown(invalid));
+  }
+}
+for (const [args, name] of [
+  [["--file", "pv.md", "--name", "good-name"], "good-name"],
+  [["invalid-name", "--name", "good_override"], "good_override"],
+] as const) {
+  const valid = cotal("spawn", ...args, "--dry-run", "--json");
+  check(`direct preview accepts effective name ${name} without validating the overridden display name`,
+    valid.status === 0 && valid.envelope?.outcome === "ok" && valid.envelope.completeness === "complete"
+      && valid.envelope.result?.requestedName === name, shown(valid));
+}
+const userRoot = join(home, "user-project");
+mkdirSync(dirname(agentFilePath(userRoot, "minimal")), { recursive: true });
+writeFileSync(agentFilePath(userRoot, "minimal"), "---\nname: minimal\n---\n");
+const priorHome = process.env.COTAL_HOME;
+try {
+  process.env.COTAL_HOME = env.COTAL_HOME;
+  recordMesh({ space: "preview-user", server: "nats://127.0.0.1:34300", root: userRoot, mode: "user", origin: "manual",
+    userAuth: { provider: "cotal", idp: { url: "https://idp.example/api/auth", issuer: "https://idp.example", audience: "https://idp.example" } }, ts: new Date().toISOString() });
+} finally {
+  if (priorHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = priorHome;
+}
+for (const [name, accepted] of [["good_user_name", true], ["a".repeat(64), true], ["bad-hyphen", false], ["a".repeat(65), false]] as const) {
+  const preview = cotal("spawn", "minimal", "--space", "preview-user", "--name", name, "--dry-run", "--json");
+  check(`user-mode direct preview ${accepted ? "accepts" : "refuses"} ${name}`,
+    accepted
+      ? preview.status === 0 && preview.envelope?.outcome === "ok" && preview.envelope.result?.requestedName === name
+      : preview.status === 1 && preview.envelope?.outcome === "refused" && preview.envelope.error?.code === "USAGE_INVALID"
+        && preview.envelope.error.message?.startsWith(`name "${name}" cannot be a mesh identity in user mode`) === true
+        && preview.envelope.target?.space === "preview-user" && preview.stderr === "", shown(preview));
+}
 writeFileSync(join(root, "pin.md"), "---\nname: pinned\nagent: nosuch\n---\n");
 const pinned = cotal("spawn", "--file", "pin.md", "--dry-run", "--json");
 check("an unknown persona harness pin is refused by a direct preview",
