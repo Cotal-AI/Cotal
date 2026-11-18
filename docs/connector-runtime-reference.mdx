@@ -232,11 +232,12 @@ and hash when it creates the fork.
 
 ## Prompt desk [#prompt-desk]
 
-`openPromptDesk(ep, { warn })` serves the agent's own `agent` endpoint, so an authorized session can read and answer the prompts its harness raises.
+`openAgentEndpoint(ep, { warn })` serves the agent's own `agent` endpoint, so an authorized session can read and answer the prompts its harness raises.
+It is the one serve of that endpoint in the process, and its `prompts` field is the desk.
 It resolves once the broker accepted the subscription.
 It rejects on an open mesh, under a static credential, without a lifecycle UID, when the broker refuses the subscription, and when the connection's `max_payload` is under 524288 bytes.
 The harness's own dialogs then answer every prompt, and presence shows no `prompts` field.
-The same checks run on every replaced connection, and a failure there closes the desk and warns.
+The same checks run on every replaced connection, and a failure there closes the endpoint and warns.
 
 The desk knows no harness. An adapter calls `open({ content, openMs, settleMs }, hooks)` for each native dialog it offers.
 `openMs` bounds how long the prompt is offered, from 1 s to 7 days.
@@ -253,7 +254,7 @@ The adapter supplies three hooks:
 The adapter reports what the harness was then seen to do with `settle` on the prompt's hold: `confirmed`, `local`, `observed` with a sighting tied to the prompt, to its subject or to nothing, or `withdrawn`.
 The desk never upgrades a report, and it ignores a report for a closed prompt with a warning.
 A value `deliver` resolves that is not a delivery result is a failed call, and no rejection of a hook escapes as an unhandled one. A `warn` that throws stops nothing.
-Stopping the endpoint ends the serve and not the prompts, so call `close()` first. It closes every prompt and answers every waiting caller, and it does not wait for a `deliver` that has not ended.
+Stopping the client endpoint ends the serve and not the prompts, so call the agent endpoint's `close()` first. It closes every prompt and answers every waiting caller, and it does not wait for a `deliver` that has not ended.
 The answer checks, the bounds and the states are in [SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
 
 ## Connector contracts
