@@ -9,6 +9,7 @@ import { assertRecordIdentity, parsePid, probeLiveness, readPidfile, type Proces
 import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
 import {
   canonicalRoot,
+  brokerUrlKey,
   findMesh,
   getCurrent,
   readCurrentSelection,
@@ -22,6 +23,8 @@ import { ProtectedRecordStore, shellPath, unsearchableFolder } from "./protected
 import { rootNamesNoSpace } from "./space.js";
 import { codeSpan } from "./text-wrap.js";
 import { tlsIntent } from "./broker-url.js";
+import { spaceFromKey } from "./auth-paths.js";
+import { readLocalRecordSource } from "./local-record-source.js";
 
 /**
  * One coherent answer to "which mesh does this command act on, and where do its creds + personas
@@ -621,11 +624,12 @@ function stackRecord(root: string): { server?: string; stackSpace?: string; home
   try { file = lstatSync(path); } catch { return undefined; }
   if (!file.isFile() || file.size > 64 * 1024) return {};
   try {
-    const journal = JSON.parse(readFileSync(path, "utf8")) as { server?: unknown; space?: unknown; members?: unknown; root?: unknown } | null;
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { server?: unknown; space?: unknown; members?: unknown; root?: unknown; recovery?: { home?: unknown } } | null;
     if (!journal) return {};
     const elsewhere = typeof journal.root === "string" && journal.root !== canonicalRoot(root) ? journal.root : undefined;
     return { ...(typeof journal.server === "string" ? { server: journal.server } : {}), ...(typeof journal.space === "string" ? { stackSpace: journal.space } : {}), ...(stackRunsUnderOtherHome(root, journal) ? { home: homeCotalDir() } : {}),
-      ...(elsewhere !== undefined ? { recordedRoot: elsewhere, stackRemedy: stackElsewhereRemedy(canonicalRoot(root), elsewhere, typeof journal.space === "string" ? journal.space : "<space>", journal.members) } : {}) };
+      ...(elsewhere !== undefined ? { recordedRoot: elsewhere, stackRemedy: stackElsewhereRemedy(canonicalRoot(root), elsewhere, typeof journal.space === "string" ? journal.space : "<space>", journal.members) } : {}),
+      ...(stackRunsUnderOtherHome(root, journal) && typeof journal.recovery?.home === "string" ? { stackRemedy: `run the command from this folder with COTAL_HOME=${shellPath(journal.recovery.home)}` } : {}) };
   } catch {
     return {};
   }
@@ -648,10 +652,15 @@ export function rootHoldsAccount(root: string): boolean {
   catch { return true; }
 }
 
-/** The broker this root's last start rendered: `.cotal/auth/server.conf` in static auth when the root
- *  holds an account, else `.cotal/server-open.conf` in open mode. Undefined when neither names one.
- *  A legacy `down` drops the registration that kept the root's broker address, or keeps one that
- *  only holds the name of a space named after its folder, and this file outlives it. */
+/** The space identity recorded by an open broker's rendered configuration. */
+export function retainedOpenSpace(root: string): string | undefined {
+  try {
+    const key = /^# space key: ([0-9a-f]+)$/m.exec(readFileSync(join(root, ".cotal", "server-open.conf"), "utf8"))?.[1];
+    return key === undefined ? undefined : spaceFromKey(key);
+  } catch { return undefined; }
+}
+
+/** The broker address and mode retained in this root's rendered configuration. */
 export function retainedLegacyBroker(root: string): { server: string; open: boolean } | undefined {
   if (rootHoldsAccount(root)) {
     const server = renderedServer(join(authDir(root), "server.conf"));
@@ -682,11 +691,18 @@ export function legacyStackElsewhere(root: string, space: string): { recordedRoo
   return { recordedRoot, remedy: existsSync(recordedRoot) ? `use the stack from ${recordedRoot}, where "${space}" is registered` : movedRootRemedy(recordedRoot) };
 }
 
-/** Why the records the folder `root` holds are not its own to act on: they are those of a stack that
- *  runs from another folder, as a copy, a moved folder and one whose name a later `up` took over keep
- *  them. It is the `not-started` refusal a command that resolves its target there gets, so a command
- *  that acts on the folder's own records, such as `clean store`, names the same folder and step.
- *  Undefined for a folder whose records are its own, and for one that holds none. */
+/** The launching home of a retained native stack, while its recorded broker still runs. */
+export function legacyStackOtherHome(root: string): string | undefined {
+  const bytes = readLocalRecordSource(join(root, ".cotal", "stack-home.json"), 4096, true);
+  if (!bytes) return undefined;
+  const record = JSON.parse(bytes.toString("utf8")) as { home?: unknown };
+  if (typeof record.home !== "string") throw new Error("the stack home record does not name its launching home");
+  if (canonicalRoot(record.home) === canonicalRoot(homeCotalDir())) return undefined;
+  const pid = parsePid(readPidfile(join(root, ".cotal", "nats.pid")) ?? "");
+  return pid !== undefined && probeLiveness(pid) !== "dead" ? record.home : undefined;
+}
+
+/** A refusal when this folder holds another folder's retained stack records. */
 export function recordsElsewhereError(root: string): MeshTargetError | undefined {
   const stack = stackRecord(root);
   if (stack !== undefined)
@@ -696,7 +712,7 @@ export function recordsElsewhereError(root: string): MeshTargetError | undefined
   const retained = retainedLegacyBroker(root);
   // A tenant count this cannot read cannot say the space runs elsewhere, as for legacyStackElsewhere.
   let named: string | undefined;
-  try { named = retained === undefined || retained.open ? undefined : soleSpaceOf(authDir(root)); } catch { return undefined; }
+  try { named = retained === undefined ? undefined : retained.open ? retainedOpenSpace(root) : soleSpaceOf(authDir(root)); } catch { return undefined; }
   const elsewhere = named === undefined ? undefined : legacyStackElsewhere(root, named);
   return elsewhere && new MeshTargetError("not-started", `the mesh "${named}" in ${root} is registered for ${elsewhere.recordedRoot}`, { root, server: retained!.server, lastRun: true, stackSpace: named, recordedRoot: elsewhere.recordedRoot, stackRemedy: elsewhere.remedy });
 }
@@ -750,9 +766,10 @@ function recordsRunElsewhere(folder: { root: string; registered: readonly string
   const stack = stackRecord(folder.root);
   if (stack !== undefined) return stack.recordedRoot !== undefined || stack.home !== undefined;
   const retained = retainedLegacyBroker(folder.root);
+  if (legacyStackOtherHome(folder.root) !== undefined) return true;
   // A tenant count this cannot read cannot say the space runs elsewhere, as for legacyStackElsewhere.
   try {
-    const named = retained === undefined || retained.open ? undefined : soleSpaceOf(authDir(folder.root));
+    const named = retained === undefined ? undefined : retained.open ? retainedOpenSpace(folder.root) : soleSpaceOf(authDir(folder.root));
     return named !== undefined && legacyStackElsewhere(folder.root, named) !== undefined;
   } catch { return false; }
 }
@@ -1035,7 +1052,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // the registry's — probing IT must never prune the recorded entry (a dead override would otherwise
     // delete a live registered mesh, and pre-pruning would block a live-override recovery). Mark it so
     // preflight classifies the failure as non-registry / no-prune.
-    const overriding = flags.server !== undefined && flags.server !== m.server;
+    const overriding = flags.server !== undefined && brokerUrlKey(flags.server) !== brokerUrlKey(m.server);
     const target = targetFromEntry(m, flags.server ?? m.server, overriding ? "flag-space-override" : "flag-space", flags.readOnly);
     return overriding ? { ...target, recordedServer: m.server } : target;
   }
@@ -1045,17 +1062,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // server URL - so "the entry on that server" is not a single thing. `.find()` would silently
     // hand back whichever sorted first, connecting the caller to an arbitrary tenant; refuse and
     // name them instead (`--space` picks one explicitly, handled above).
-    const serverKey = (server: string): string => {
-      try {
-        const url = new URL(server);
-        if (url.pathname === "/") url.pathname = "";
-        return url.href;
-      } catch {
-        return server;
-      }
-    };
-    const requestedServer = serverKey(flags.server);
-    const onServer = loadMeshes().filter((e) => serverKey(e.server) === requestedServer && !offline.has(e.space));
+    const requestedServer = brokerUrlKey(flags.server);
+    const onServer = loadMeshes().filter((e) => brokerUrlKey(e.server) === requestedServer && !offline.has(e.space));
     if (onServer.length > 1)
       throw new MeshTargetError(
         "ambiguous-target",
@@ -1125,6 +1133,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // space is left out, so no caller reads this root offline as a prepared space. A stack running
     // under another Cotal home is named before any space this home prepared here, which cannot start.
     const stack = stackRecord(root);
+    const legacyHome = legacyStackOtherHome(root);
+    if (legacyHome !== undefined) throw new MeshTargetError("not-started", `the stack in ${root} runs under another Cotal home`, { root, home: legacyHome, stackRemedy: `run the command from this folder with COTAL_HOME=${shellPath(legacyHome)}` });
     if (stack?.home !== undefined) throw new MeshTargetError("not-started", `the stack in ${root} has no member records in this Cotal home`, { root, ...stack });
     // A space prepared here and not started has no broker: the default address may be another's.
     const prepared = preparedSpaceAt(root);
@@ -1135,7 +1145,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // be handed this root's credentials.
     const retained = retainedLegacyBroker(root);
     if (retained) {
-      const named = retained.open ? undefined : soleSpaceOf(authDir(root));
+      const named = retained.open ? retainedOpenSpace(root) : soleSpaceOf(authDir(root));
       // A root whose space this machine registered for ANOTHER folder is not a root whose own stack
       // is merely stopped: the stack runs from that folder, so `cotal up` here would refuse the name
       // or take it over rather than start what the caller asked for. Name that folder instead.

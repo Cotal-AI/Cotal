@@ -658,7 +658,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         writeSecretFileAtomic(daemonManagerIntentFile(space, home), JSON.stringify({ v: 1, space }));
         rmSync(refusalFile(space), { force: true });
         l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
-        if (!l.view.connectors?.some(connector => connector.state === "available")) {
+        const retryClaudeSetup = l.view.connectors?.some(connector => connector.agent === "claude" && connector.state === "unavailable" && connector.reason?.startsWith("Claude wake channel setup failed:"));
+        if (retryClaudeSetup || !l.view.connectors?.some(connector => connector.state === "available")) {
           const child = l.child;
           const seats = await generationCall(child, randomUUID(), "inspect");
           if (seats === undefined || l.child !== child) throw new Error("the hosted Manager changed before its applications could be refreshed");

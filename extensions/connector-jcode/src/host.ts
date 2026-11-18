@@ -391,6 +391,16 @@ async function retireRelay(server: Server | undefined, endpoint: RelayEndpoint):
   if (process.platform !== "win32") rmSync(endpoint.dir, { recursive: true, force: true });
 }
 
+const SEAT_ATTRIBUTION_ENV: ReadonlySet<string> = new Set([
+  "COTAL_SPACE",
+  "COTAL_MANAGER_INSTANCE",
+  "COTAL_NAME",
+  "COTAL_ID",
+  "COTAL_LIFECYCLE_UID",
+  "COTAL_ACCEPTED_TOKEN",
+  "COTAL_HOME",
+]);
+
 function noCotalEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_")) env[key] = value;
@@ -472,9 +482,14 @@ export async function runJcodeHost(): Promise<void> {
   const relay = relayEndpoint(config.space, config.name);
 
   // The endpoint is the sole reader of Cotal material. Once it has parsed config/control, neither
-  // Jcode itself nor the MCP child can inherit the material pointer or its broker credential.
+  // Jcode itself nor the MCP child can inherit the material pointer or its broker credential; only
+  // the non-secret seat attribution variables (`cotal stop --self`) are carried into Jcode.
   scrubLaunchMaterial();
-  for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+  const seatEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && SEAT_ATTRIBUTION_ENV.has(key)) seatEnv[key] = value;
+    if (key.startsWith("COTAL_")) delete process.env[key];
+  }
 
   // The card is built from the process environment. That environment no longer has COTAL_EVENTS,
   // so the decision read above is what the card reports.
@@ -878,6 +893,7 @@ export async function runJcodeHost(): Promise<void> {
       // seat's version is the operator's choice at spawn time; it must not change under a running
       // agent.
       env: {
+        ...seatEnv,
         JCODE_DISABLE_CLAUDE_MCP: "1",
         JCODE_NO_AUTO_UPDATE: "1",
         [launchBound.key]: launchBound.value,
@@ -904,7 +920,7 @@ export async function runJcodeHost(): Promise<void> {
     const runtime = join(socketHome.jcodeHome, "run");
     tui = spawn(binary, ["--socket", join(runtime, "jcode.sock"), "--resume", sessionId!], {
       cwd,
-      env: { ...noCotalEnv(), JCODE_HOME: socketHome.jcodeHome, JCODE_RUNTIME_DIR: runtime, JCODE_SOCKET: join(runtime, "jcode.sock") },
+      env: { ...noCotalEnv(), ...seatEnv, JCODE_HOME: socketHome.jcodeHome, JCODE_RUNTIME_DIR: runtime, JCODE_SOCKET: join(runtime, "jcode.sock") },
       stdio: "inherit",
     });
     tui.once("exit", (code) => void shutdown(code ?? 0));

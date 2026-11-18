@@ -244,6 +244,43 @@ const noDefault = cotal("spawn", "--dry-run", "--plain");
 check("spawn --dry-run with no default persona previews the shipped default without writing it",
   noDefault.status === 0 && noDefault.stdout.includes("the launch writes the shipped default persona here; the preview wrote nothing") && !existsSync(agentFilePath(root, "default")), shown(noDefault));
 
+// #7526: spawning or previewing an invalid native persona preserves the field/position error without
+// echoing persona values and without recommending `cotal team deploy`, while a Mesh manifest still
+// names `cotal team deploy <file>`.
+for (const [label, body, reason] of [
+  ["a list where a string is required", "---\nname: badspawn\nmodel: [opus]\n---\nReview.\n", '"model" must be a string; got array'],
+  ["a duplicate YAML key", "---\nname: badspawn\nmodel: secret-one\nmodel: secret-two\n---\nReview.\n", "the frontmatter has a duplicate YAML key at line 4, column 1"],
+  ["an empty file", "", 'missing "---" frontmatter block'],
+  ["a blank model", '---\nname: badspawn\nmodel: "   "\n---\n', '"model" must not be empty'],
+  ["a blank variant", '---\nname: badspawn\nvariant: "   "\n---\n', '"variant" must not be empty'],
+  ["an invalid channel declaration", "---\nname: badspawn\nsubscribe: [ops]\nallowSubscribe: [general]\n---\n", 'subscribe "ops" is not within allowSubscribe [general]'],
+  ["malformed YAML with a secret value", "---\nname: badspawn\nrole: [secret-value\n---\n", "the frontmatter is not valid YAML at line 3"],
+] as const) {
+  const badSpawnPath = agentFilePath(root, "badspawn");
+  writeFileSync(badSpawnPath, body);
+  for (const [modeLabel, flags] of [["foreground", ["--foreground"]], ["dry-run", ["--dry-run"]]] as const) {
+    const r = cotal("spawn", "badspawn", ...flags, ...(modeLabel === "dry-run" ? ["--json"] : ["--server", "nats://127.0.0.1:34300"]));
+    const msg = r.envelope?.error?.message ?? r.stderr;
+    const rem = r.envelope?.error?.remedy ?? r.stderr;
+    check(`spawn ${modeLabel} with ${label} reports ${reason} without recommending team deploy (#7526)`,
+      r.status === 1 && (r.envelope?.error?.code === "SCHEMA_INVALID" || /Code:\s+SCHEMA_INVALID/.test(r.stderr))
+        && msg.includes(`invalid persona definition ${badSpawnPath}: ${reason}`)
+        && !msg.includes("secret-")
+        && rem.includes("check the agent-file frontmatter and channel declarations")
+        && !rem.includes("team deploy"), shown(r));
+  }
+  rmSync(badSpawnPath, { force: true });
+}
+const manifestAsPersona = join(root, "team-manifest.yaml");
+writeFileSync(manifestAsPersona, "apiVersion: cotal/v1\nkind: Mesh\nspace: opsp\nagents: {}\nchannels: {}\n");
+for (const [modeLabel, flags] of [["foreground", ["--foreground"]], ["dry-run", ["--dry-run"]]] as const) {
+  const r = cotal("spawn", "--file", manifestAsPersona, ...flags, ...(modeLabel === "dry-run" ? ["--json"] : ["--server", "nats://127.0.0.1:34300"]));
+  check(`spawn ${modeLabel} given a Mesh manifest still recommends cotal team deploy (#7526)`,
+    r.status === 1 && (r.envelope?.error?.code === "SCHEMA_INVALID" || /Code:\s+SCHEMA_INVALID/.test(r.stderr))
+      && (r.envelope?.error?.message ?? r.stderr).includes("--file names a Mesh manifest")
+      && (r.envelope?.error?.remedy ?? r.stderr).includes("`cotal team deploy <file>`"), shown(r));
+}
+
 // A managed preview cannot validate the execution host. A direct preview knows its effective
 // harness and refuses an unknown name before reporting success, regardless of its source.
 interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string }

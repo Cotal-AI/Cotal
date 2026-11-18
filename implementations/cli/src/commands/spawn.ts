@@ -1355,7 +1355,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (!(implicitDefault && code === "ENOENT")) {
-      if (e instanceof PersonaSourceError) throw new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, remedy: "use `cotal team deploy <file>` for a Mesh manifest; use a native persona file for spawn" });
+      if (e instanceof PersonaSourceError) throw new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, ...(e.remedy ? { remedy: e.remedy } : {}) });
       // The not-found text names the mesh's space and server, which for a handoff are its values.
       if (handoffText !== undefined) {
         stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
@@ -1462,7 +1462,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(binaryPins[bin]?.trim() || bin));
   if (missing.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${agentType} needs ${missing.join(", ")} on PATH; nothing was launched`, {
     target: { space, path },
-    remedy: `Follow ${["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/"} to install ${missing.join(", ")}, then retry: ${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}`,
+    remedy: `Follow ${["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/"} to install ${missing.join(", ")}, then retry: \`${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}\``,
   });
   if (variant && !connector.supportsModelVariant) {
     stderrLine("✗ ", `${agentType} connector does not support model variants (variant)`, c.red);
@@ -1821,36 +1821,63 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     discardLaunchArtifacts(artifacts);
     throw e;
   }
-  await new Promise<void>((resolve) => {
-    child.on("error", (e) => {
-      // The exec never started, so the just-provisioned static-auth identity is orphaned — roll it
-      // back. (User-mode revoke runs unconditionally once this promise settles, below.)
-      stderrLine("✗ ", `failed to launch ${spec.command}: ${e.message}`, (line) => line);
-      void retireProvision("exec failed").finally(() => {
-        process.exitCode = 1;
+  const FORWARDED_SIGNALS = ["SIGTERM", "SIGHUP"] as const;
+  type ForwardedSignal = (typeof FORWARDED_SIGNALS)[number];
+  let receivedSignal: ForwardedSignal | undefined;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  const onTerminate = (sig: ForwardedSignal): void => {
+    receivedSignal ??= sig;
+    if (child.exitCode === null && child.signalCode === null) {
+      try { child.kill(sig); } catch { /* already gone */ }
+      if (killTimer === undefined) {
+        killTimer = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) {
+            try { child.kill("SIGKILL"); } catch { /* already gone */ }
+          }
+        }, 5_000);
+        killTimer.unref();
+      }
+    }
+  };
+  for (const sig of FORWARDED_SIGNALS) process.on(sig, onTerminate);
+  try {
+    await new Promise<void>((resolve) => {
+      child.on("error", (e) => {
+        if (killTimer !== undefined) { clearTimeout(killTimer); killTimer = undefined; }
+        // The exec never started, so the just-provisioned static-auth identity is orphaned; roll it
+        // back. (User-mode revoke runs unconditionally once this promise settles, below.)
+        stderrLine("✗ ", `failed to launch ${spec.command}: ${e.message}`, (line) => line);
+        void retireProvision("exec failed").finally(() => {
+          process.exitCode = 1;
+          resolve();
+        });
+      });
+      child.on("exit", (code, signal) => {
+        if (killTimer !== undefined) { clearTimeout(killTimer); killTimer = undefined; }
+        // A child killed by a signal, or stopped after this foreground spawn received SIGTERM or
+        // SIGHUP, exits 128 plus the signal's number (#7043, #7633).
+        const exitSignal = receivedSignal ?? signal;
+        process.exitCode = exitSignal ? 128 + osConstants.signals[exitSignal] : (code ?? 0);
         resolve();
       });
     });
-    child.on("exit", (code, signal) => {
-      // A child killed by a signal has no exit code. Exit as a shell does, 128 plus the signal's
-      // number, so `cotal spawn ... && next` stops after a SIGKILL or SIGTERM (#7043).
-      process.exitCode = signal ? 128 + osConstants.signals[signal] : (code ?? 0);
-      resolve();
-    });
-  });
-  // STATIC MODE: the departure half of the run-scoped identity — the agent is gone and no future
-  // spawn reuses this identity, so retire its creds + broker footprint now (the manager's despawn
-  // deprovision, foregrounded). Best-effort: a SIGKILLed CLI can't run it, and that residue is the
-  // same class a crashed manager leaves.
-  await retireProvision("agent exited");
-  // USER MODE: the runtime-grant invariant applies to the foreground departure too — the agent is
-  // gone, so its standing mint authority (ledger row + secret files) goes with it. Best-effort
-  // (a SIGKILLed CLI can't run this; its retained grant needs operator recovery), loud
-  // on failure, never blocking the exit code already set above.
-  if (userCleanup) await userCleanup().catch((e) => stderrLine("✗ ", `cleaning up after ${name}: ${(e as Error).message}`, c.red));
-  // The child has exited or never started, so nothing reads the launch's private files any more
-  // (core launch-artifacts). A SIGKILLed CLI cannot run this; the child's watcher removes those.
-  discardLaunchArtifacts(spec.artifacts);
+    // STATIC MODE: the departure half of the run-scoped identity; the agent is gone and no future
+    // spawn reuses this identity, so retire its creds + broker footprint now (the manager's despawn
+    // deprovision, foregrounded). Best-effort: a SIGKILLed CLI can't run it, and that residue is the
+    // same class a crashed manager leaves.
+    await retireProvision("agent exited");
+    // USER MODE: the runtime-grant invariant applies to the foreground departure too; the agent is
+    // gone, so its standing mint authority (ledger row + secret files) goes with it. Best-effort
+    // (a SIGKILLed CLI can't run this; its retained grant needs operator recovery), loud
+    // on failure, never blocking the exit code already set above.
+    if (userCleanup) await userCleanup().catch((e) => stderrLine("✗ ", `cleaning up after ${name}: ${(e as Error).message}`, c.red));
+    // The child has exited or never started, so nothing reads the launch's private files any more
+    // (core launch-artifacts). A SIGKILLed CLI cannot run this; the child's watcher removes those.
+    discardLaunchArtifacts(spec.artifacts);
+  } finally {
+    if (killTimer !== undefined) clearTimeout(killTimer);
+    for (const sig of FORWARDED_SIGNALS) process.off(sig, onTerminate);
+  }
 }
 
 /** What a remote mesh's agent-provisioning endpoint returns (U6 §2). The client validates every

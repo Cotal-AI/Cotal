@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, oneLine } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
-import { userCotalDir } from "./mesh-registry.js";
+import { userCotalDir, homeCotalDir } from "./mesh-registry.js";
 import { shellPath } from "./protected-records.js";
 import { codeSpan } from "./text-wrap.js";
 import type { MeshTarget, MeshTargetError } from "./mesh-target.js";
@@ -54,7 +54,9 @@ export function renderWorkspaceError(e: WorkspaceError): string {
 }
 
 /** The step when the current home has no records of a root's running stack members. */
-export function stackHomeRemedy(): string {
+export function stackHomeRemedy(recordedHome?: string): string {
+  if (recordedHome !== undefined && recordedHome !== homeCotalDir())
+    return `run the command from the stack's folder with COTAL_HOME=${shellPath(recordedHome)}, the Cotal home that started it`;
   return `if the records are in another home, run it with COTAL_HOME set to the Cotal home the stack was started under${process.env.COTAL_HOME ? `, or with COTAL_HOME unset if that was the default ${userCotalDir()}` : ""}; if that home's records were removed, run \`cotal down --dry-run\` in the stack's folder, then \`cotal down --yes\` to stop its creation-pinned members`;
 }
 
@@ -75,7 +77,9 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         ? parts(`the selected space "${boundedValue(String(d.requested), SHOWN_VALUE_MAX)}" is not registered here`, "select one with `cotal use <name>` (`cotal space` lists them), or name one with `--space`")
         : parts(`no space named "${boundedValue(String(d.requested), SHOWN_VALUE_MAX)}" is registered here`, "see `cotal space`");
     case "ambiguous-target":
-      return parts(`multiple meshes running: ${(d.available ?? []).join(", ")}`, "pick one with `--space <name>` or set a default with `cotal use <name>`");
+      return d.server !== undefined
+        ? parts(`multiple spaces recorded at ${brokerAddressForDisplay(d.server) ?? "an invalid broker address"}: ${(d.available ?? []).join(", ")}`, "pick one with `--space <name>` alongside --server, or remove --server after selecting a default with `cotal use <name>`")
+        : parts(`multiple meshes running: ${(d.available ?? []).join(", ")}`, "pick one with `--space <name>` or set a default with `cotal use <name>`");
     case "default-occupied":
       return parts(`another mesh ("${d.space}") is running at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid broker address"}`, `run \`cotal up\` here to start yours, or \`--space ${d.space}\` to join it`);
     case "stale-auth-root":
@@ -125,7 +129,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       if (d.lastRun) return parts(`the mesh${d.stackSpace === undefined ? "" : ` "${d.stackSpace}"`} in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and no space is registered for it here`, `start it again with \`cotal up\` in ${d.root}`);
       return d.home === undefined
         ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with ${codeSpan(`cotal space create ${d.stackSpace ?? "<space>"} --root ${shellPath(d.root!)}`)}, then start it with \`cotal up\` there`)
-        : parts(`the stack in ${d.root} recorded ${broker}; its member records are missing from ${d.home}`, stackHomeRemedy());
+        : parts(`the stack in ${d.root} recorded ${broker}; its member records are missing from ${d.home}`, d.stackRemedy ?? stackHomeRemedy());
     }
     case "user-auth-unrecorded":
       // U11: without a TRUSTED local record of the space's IdP there is no actionable
@@ -145,6 +149,12 @@ const NOT_ANSWERING_REMEDY = "retry; if it keeps happening, check that the broke
 function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: boolean, pid?: number, heldBy?: string): WorkspaceErrorParts {
   const server = brokerAddressForDisplay(t.server) ?? "an invalid broker address";
   switch (kind) {
+    case "non-nats-listener":
+      return parts(`another non-NATS listener holds ${server} while this folder's broker is stopped`, `stop the listener at ${server} and run \`cotal up\` in ${t.root}, or start on another port with \`cotal up --server nats://127.0.0.1:<port>\` there`);
+    case "auth-unsupported":
+      return parts(`the NATS server at ${server} does not have Cotal authentication enabled for the recorded static-auth space "${t.space}"`, "stop that server and start this space's authenticated broker, or select the correct broker with --server");
+    case "jetstream-unsupported":
+      return parts(`the NATS server at ${server} does not have JetStream enabled`, "enable JetStream on this space's broker, or select the correct broker with --server");
     case "unreachable":
       // A broker address `--server` supplied that is not the one recorded for this space says nothing
       // about whether that space's mesh runs: name the address that did not answer, and the recorded

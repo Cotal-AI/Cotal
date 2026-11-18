@@ -87,4 +87,46 @@ try {
   }
   console.log(`Evidence retained at ${scratch}`);
 }
+for (const open of [false, true]) {
+  const project = join(home, open ? "nativeopen" : "nativeauth"), renamed = `${project}-renamed`;
+  check("clear the earlier explicit selection for native folder targeting", cli(home, "use", "--clear").status === 0);
+  mkdirSync(project, { mode: 0o700 });
+  mkdirSync(cotalHome, { recursive: true, mode: 0o700 });
+  let running = false;
+  try {
+    const up = cli(project, "up", ...(open ? ["--open"] : []), "--server", `nats://127.0.0.1:${await freePort()}`);
+    running = up.status === 0;
+    check(`native stack starts, open=${open}`, running);
+    if (!running) throw new Error("native stack failed to start");
+    const secondHome = join(scratch, `second-home-${open}`);
+    mkdirSync(secondHome, { mode: 0o700 });
+    for (const command of [["status", "--plain"], ["up"], ["down", "--yes"]]) {
+      const result = spawnSync(process.execPath, [bin, ...command], { cwd: project, env: { ...env, COTAL_HOME: secondHome }, encoding: "utf8", timeout: 120_000 });
+      check(`another home names ownership for ${command[0]}, open=${open}`, `${result.stdout}${result.stderr}`.includes(cotalHome) && !`${result.stdout}${result.stderr}`.includes("stopped space") && !`${result.stdout}${result.stderr}`.includes("start that launched it did not finish"));
+      if (command[0] !== "status") check("cross-home mutation refuses", result.status === 2);
+    }
+    renameSync(project, renamed);
+    for (const command of [["down", "--yes"], ["up"], ["status", "--plain"]]) {
+      const result = cli(renamed, ...command);
+      check(`renamed native records name move-back remedy for ${command[0]}, open=${open}`, `${result.stdout}${result.stderr}`.includes(project) && /move.*back/.test(`${result.stdout}${result.stderr}`));
+    }
+    const status = json(home, "status", "--space", open ? "nativeopen" : "nativeauth");
+    const show = json(home, "space", "show", open ? "nativeopen" : "nativeauth");
+    check(`outside native moved root is not an auth error, open=${open}`, status.envelope.result?.selected?.rootGone === true && status.envelope.result.selected.connection === "root-gone" && show.envelope.result?.rootGone === true);
+    const anchor = recordSmokeSandbox({ root: home, cotalHome, xdgConfigHome: config });
+    const args = ["down", "--space", open ? "nativeopen" : "nativeauth", "--yes"];
+    assertSmokeSandboxDown(anchor, args, { cwd: home, env });
+    const down = cli(home, ...args);
+    check(`missing native folder stops through retained creation pins, open=${open}`, down.status === 0 && down.stdout.includes("Stack stopped"));
+    if (down.status === 0) running = false;
+  } finally {
+    if (existsSync(renamed)) renameSync(renamed, project);
+    if (running) {
+      const anchor = recordSmokeSandbox({ root: project, cotalHome, xdgConfigHome: config });
+      const args = ["down", "--yes"];
+      assertSmokeSandboxDown(anchor, args, { cwd: project, env });
+      check(`native stack cleanup, open=${open}`, cli(project, ...args).status === 0);
+    }
+  }
+}
 finish();

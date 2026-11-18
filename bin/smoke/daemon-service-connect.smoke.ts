@@ -75,6 +75,7 @@
  * Add --renewal-only for the two-access-lifetime service renewal observation.
  * Add --renewal-resume-only for shipped restarts with an expired or removed human sign-in.
  * Service-only setup: --hosting-only --no-manager-only, optionally --account-only.
+ * Claude Code host setup: --hosting-only --claude-wake-only (stock connector, stand-in executable).
  * Add --hosting-only --updater-ownership-repro for two living updater clients' restart admission ownership.
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Manual empty-legacy admission: --hosting-only --update-repro --manual-admission-race-repro.
@@ -131,6 +132,7 @@ const desktopGapOnly = process.argv.includes("--desktop-gap-only");
 const desktopSetupOnly = process.argv.includes("--desktop-setup-only");
 const originalPath = process.env.PATH;
 const setupProgressOnly = process.argv.includes("--setup-progress-only");
+const claudeWakeOnly = process.argv.includes("--claude-wake-only");
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -270,6 +272,7 @@ let tokenGate: ((res: ServerResponse) => Promise<void>) | undefined;
 let exchangeGate: ((view: unknown, res: ServerResponse) => Promise<boolean>) | undefined;
 const exchangeReads: Array<{ view: unknown; managerInstanceId: unknown }> = [];
 let unsupportedComputerReads = 0;
+let custodyOldFails = false;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/sign-out") {
@@ -307,6 +310,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     res.end(JSON.stringify({ v: 1, machineId: req.url.split("/")[3], revision: accountRevision })); return;
   }
   if (accountOnly && req.url?.startsWith("/api/cli/machines/")) {
+    if (process.argv.includes("--account-custody-repro") && req.headers.host === new URL(idpOrigin).host && custodyOldFails) { res.writeHead(503); res.end("{}"); return; }
     const machineId = req.url.split("/")[4];
     if (req.method === "PUT" && process.argv.includes("--account-unsupported")) { res.writeHead(404); res.end("{}"); return; }
     if (req.method === "PUT") {
@@ -319,12 +323,20 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     if (accountHang && req.method === "GET") { accountHangs++; return; }
     if (accountHttp !== 200) { res.writeHead(accountHttp); res.end(accountHttp === 304 ? undefined : "{}"); return; }
     const snapshot = catalog as { account: unknown; spaces: { id: string }[] };
-    const spaces = accountDesired ? snapshot.spaces : [];
+    const spaces = accountDesired ? snapshot.spaces.map(row => {
+      if (!process.argv.includes("--account-custody-repro") || req.headers.host === new URL(idpOrigin).host) return row;
+      if (process.env.CUSTODY_RELEASE_ENTRY) return { id: row.id, slug: row.id, name: row.id, kind: "team", role: "owner", unavailable: "fixture authority unavailable" };
+      const aliasRow = JSON.parse(JSON.stringify(row));
+      const auth = aliasRow.registration.userAuth;
+      auth.idp.url = `http://${req.headers.host}/api/auth`;
+      for (const field of ["url", "agentProvisioningUrl", "managerAuthorityUrl"]) if (auth.endpoints[field]) auth.endpoints[field] = auth.endpoints[field].replace(idpOrigin, `http://${req.headers.host}`);
+      return aliasRow;
+    }) : [];
     res.setHeader("etag", JSON.stringify(accountRevision));
-    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
+    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: process.argv.includes("--account-custody-repro") ? { ...(snapshot.account as object), idpUrl: `http://${req.headers.host}/api/auth` } : snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
   }
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
-  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(catalog));
+  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(process.argv.includes("--account-custody-repro") ? { ...(catalog as object), account: { ...(catalog as { account: object }).account, idpUrl: `http://${req.headers.host}/api/auth` } } : catalog));
   const accountTarget = [...accountTargets].find(([space]) => req.url?.startsWith(`/account-space/${space}/`));
   if (accountOnly && accountTarget) {
     const [space, target] = accountTarget;
@@ -1883,7 +1895,7 @@ const cmd=JSON.parse(process.env.COTAL_BEARER_CMD); const bearer=()=>new Promise
 const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(process.env.COTAL_SENTINEL_CREDS,'utf8'),lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,card:{owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,name:process.env.COTAL_NAME,kind:'agent'}});ep.on('error',()=>{});await ep.start();`);
       writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],${process.argv.includes("--dashboard-shape-repro") ? 'eventChannel: p=>"events."+p.owner+"."+p.actor,' : ""}buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
       writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: process.argv.includes("--dashboard-shape-repro") }] }] }));
-      const cleanSeed = process.argv.includes("--hosted-seed-repro") || process.argv.includes("--daemon-seed-repro");
+      const cleanSeed = claudeWakeOnly || process.argv.includes("--hosted-seed-repro") || process.argv.includes("--daemon-seed-repro");
       if (cleanSeed) rmSync(prefix, { recursive: true });
       else if (!upgrading) {
         const seed = join(root, "config", "cotal", "seed");
@@ -1895,9 +1907,54 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
       env.PATH = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
       if (process.argv.includes("--daemon-seed-repro")) env.COTAL_ALLOW_CHECKOUT_SEED = "1";
-      if (process.argv.includes("--hosted-seed-repro")) {
+      if (claudeWakeOnly || process.argv.includes("--hosted-seed-repro")) {
         delete env.COTAL_SKIP_CONNECTOR_SEED;
         env.COTAL_ALLOW_CHECKOUT_SEED = "1";
+      }
+      if (claudeWakeOnly) {
+        const claudeBin = join(root, "claude-bin");
+        mkdirSync(claudeBin);
+        writeFileSync(join(claudeBin, "claude"), `#!${process.execPath}
+const { existsSync, readFileSync, writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+const { spawn } = require('node:child_process');
+const [family, group, action, ...tail] = process.argv.slice(2);
+const home = ${JSON.stringify(home)};
+const plugin = join(home, 'claude-plugin', 'cotal');
+if (family === '--version') { console.log('2.1.327 (Claude Code)'); return; }
+if (family === 'plugin') {
+  const enabled = existsSync(join(home, 'claude-installed'));
+  if (group === 'marketplace' && action === 'list') console.log('[]');
+  else if (group === 'install') writeFileSync(join(home, 'claude-installed'), '');
+  else if (group === 'list') console.log(JSON.stringify(enabled ? [{ id: 'cotal@cotal-mesh', scope: 'user', enabled, readFromFolder: plugin }] : []));
+  else if (group !== 'marketplace' && group !== 'update') process.exit(99);
+  return;
+}
+if (family === 'mcp' && group === 'add') {
+  if (existsSync(join(home, 'reject-claude-registration'))) { console.error('fixture registration blocked'); process.exit(1); }
+  const [command, ...args] = tail.slice(tail.indexOf('--') + 1);
+  writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { cotal: { command, args } } }));
+  return;
+}
+const argv = process.argv.slice(2);
+const config = JSON.parse(argv[argv.indexOf('--mcp-config') + 1]);
+const user = JSON.parse(readFileSync(join(home, '.claude.json'))).mcpServers.cotal;
+if (!user.args.some(arg => arg === join(plugin, 'dist', 'seat.cjs'))) process.exit(99);
+console.log('WARNING: Loading development channels');
+process.stdin.once('data', () => {
+  console.log('messages from server:cotal inject directly in this session');
+  console.log('(shift+tab to cycle)');
+  const { command, args } = config.mcpServers.cotal;
+  const seat = spawn(command, args, { stdio: ['pipe', 'ignore', 'inherit'] });
+  seat.once('exit', code => process.exit(code ?? 1));
+});
+`, { mode: 0o700 });
+        writeFileSync(join(home, "reject-claude-registration"), "");
+        env.PATH = `${claudeBin}:${env.PATH}`;
+        env.COTAL_NO_UPDATE_CHECK = "1";
+        const seeded = spawnSync(process.execPath, [join(repo, "bin/dist/cotal.js"), "ext", "seed"], { cwd: root, env, encoding: "utf8", timeout: 180_000 });
+        assert.equal(seeded.status, 0, seeded.stdout + seeded.stderr);
+        env.COTAL_SKIP_CONNECTOR_SEED = "1";
       }
       if (upgrading && !upgradeFixture) throw new Error("upgrade proofs require COTAL_DAEMON_UPGRADE_FIXTURE from build-daemon-upgrade-fixture.mjs");
       let npmRegistry: ReturnType<typeof createHttpServer> | undefined;
@@ -2019,7 +2076,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           writeFileSync(join(home, "update-attempt.json"), JSON.stringify({ version: "0.151.3", failures: 0, result: "fixture due", next: 0 }));
         }
       }
-      let cliEntry = join(repo, "bin", "dist", "cotal.js");
+      let cliEntry = process.env.CUSTODY_RELEASE_ENTRY ?? join(repo, "bin", "dist", "cotal.js");
       let cliNode = process.execPath;
       const npmRun = async (args: string[]) => {
         const child = spawn("npm", args, { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -2539,6 +2596,42 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           if (!hostedShape) await approve(host, ON, fixture.owner);
           await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.machineService === undefined), "A1 desired 200 connects real broker service");
           await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          if (process.argv.includes("--account-custody-repro")) {
+            const alias = idpUrl.replace("127.0.0.1", "[::ffff:127.0.0.1]");
+            const session = loadIdpSession(home, idpUrl)!;
+            custodyOldFails = true;
+            saveIdpSession(home, alias, { ...session, sub: undefined });
+            const refreshed = await cli("spaces", "--refresh");
+            console.log("custody alias refresh", JSON.stringify(refreshed));
+            await sleep(6500);
+            const status = await observed();
+            const custody = JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8"));
+            console.log("custody reproduction", JSON.stringify({ status: status.account, custody }));
+            if (process.env.CUSTODY_RELEASE_ENTRY) {
+              const before = await plainCommand("status");
+              console.log("UNBLOCK BEFORE\n" + before.out);
+              const disconnected = await cli("service-disconnect", "--space", ON);
+              console.log("UNBLOCK DISCONNECT", JSON.stringify(disconnected));
+              const reconnected = await cli("service-connect", "--space", ON);
+              console.log("UNBLOCK CONNECT", JSON.stringify(reconnected));
+              console.log("UNBLOCK SETUP", JSON.stringify(await cli("setup", "--space", ON, "--idp", alias)));
+              await sleep(6500);
+              console.log("UNBLOCK AFTER\n" + (await plainCommand("status")).out);
+              return;
+            }
+            const { signedInMachineAccounts } = await import("@cotal-ai/auth");
+            const accounts = signedInMachineAccounts(home);
+            const holder = accounts.find(account => account.idpUrl === idpUrl)!;
+            const current = accounts.find(account => account.idpUrl.includes("[::ffff:"))!;
+            check("fixture presents matching issuer and subject at different addresses", holder.issuer === current.issuer && holder.sub === current.sub && holder.ownerKey !== current.ownerKey);
+            check("copied identity is refused and status names the holder", status.account.spaces.some((row: any) => row.space === ON && row.lastRefusal === `The local space connection is held by ${idpUrl}.`), status.account);
+            check("copied identity leaves custody with the holder", custody.spaces[ON]?.owner === holder.ownerKey, custody);
+            check("registry ownership stays with the holder", findMesh(ON)?.catalogOwner === holder.ownerKey);
+            check("same account computer is listed once", status.account.accounts.length === 1 && status.account.accounts[0].machineId === status.account.machineId, status.account);
+            const human = await plainCommand("status");
+            check("CLI lists same account computer once and names the holder", human.code === 0 && human.out.split("Account computer:").length === 2 && human.out.includes(`The local space connection is held by ${idpUrl}.`), human);
+            return;
+          }
           const onCatalogId = (catalog as { spaces: { id: string; slug: string }[] }).spaces.find(row => row.slug === ON)!.id;
           await waitAccount(s => { const instanceId = s.managers?.find((r: any) => r.space === ON && r.state === "answering")?.instanceId; return typeof instanceId === "string" && accountRegistration?.managers?.some(row => row.spaceId === onCatalogId && row.instanceId === instanceId) === true; }, "A2r registration names the answering Manager by catalog space and instance");
           if (!process.argv.includes("--account-restart-repro")) check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === "connected" && r.lastRefusal === undefined && r.machineService === (hostedShape ? undefined : "approval-pending")));
@@ -2845,10 +2938,43 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("setup after application install restarts idle child and becomes launch-ready", recovered.code === 0 && recovered.doc.result?.launchReady === true && recovered.doc.result?.manager?.pid !== before?.pid && recovered.doc.result?.manager?.connectors?.some((connector: any) => connector.state === "available"), recovered);
           return;
         }
-        check(explicitHome ? "Explicit-home manager-start returns answering hosted Manager" : "H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
-        if (!explicitHome && !retiredAppRuntime) {
+        if (!claudeWakeOnly) check(explicitHome ? "Explicit-home manager-start returns answering hosted Manager" : "H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
+        if (!explicitHome && !claudeWakeOnly && !retiredAppRuntime) {
           check("H0 fresh setup prints device URL and code on stderr", setup.err.includes(`${idpOrigin}/approve?code=DAEMON`) && setup.err.includes("Approval code") && setup.err.includes("DAEMON"));
           check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
+        }
+        if (claudeWakeOnly) {
+          const run = async (...args: string[]) => {
+            const command = spawn(process.execPath, [cliEntry, ...args], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"], timeout: 90_000 });
+            let out = "", err = "";
+            command.stdout.on("data", (chunk) => { out += String(chunk); });
+            command.stderr.on("data", (chunk) => { err += String(chunk); });
+            const code = await new Promise<number | null>((resolve, reject) => { command.once("error", reject); command.once("close", resolve); });
+            return { code, out, err };
+          };
+          const launch = (instance: string) => run("spawn", "--space", ON, "--on", instance, "--harness", "claude", "--name", "daemon_claude_wake", "--no-events", "--detach", "--json");
+          const view = (await cli("status", "--space", ON)).doc.result.managers[0];
+          const userConfig = join(home, ".claude.json");
+          const reason = view.connectors.find((row: any) => row.agent === "claude" && row.state === "unavailable")?.reason;
+          const remedy = `cotal daemon setup --space ${ON}`;
+          check("Claude is unavailable when user MCP registration fails", reason?.includes("fixture registration blocked") && !existsSync(userConfig) && setup.code === 2, { view, setup });
+          const first = await launch(view.instanceId);
+          check("Claude spawn refusal names the daemon setup command", first.code !== 0 && first.out.includes(remedy), first);
+          const before = await run("status", "--plain");
+          check("status reports a missing wake entry with daemon guidance", before.out.includes("not registered") && before.out.includes("cotal daemon setup --space <space>"), before);
+          rmSync(join(home, "reject-claude-registration"));
+          const repaired = await cli("setup", "--space", ON);
+          const manager = repaired.doc.result?.manager;
+          check("daemon setup retries installation and reports Claude available", repaired.code === 0 && manager?.connectors.some((row: any) => row.agent === "claude" && row.state === "available"), repaired);
+          const registered = JSON.parse(readFileSync(userConfig, "utf8")).mcpServers.cotal;
+          check("Claude has the user-scope wake entry and installed plugin without a prepared project", registered.args.includes(join(home, "claude-plugin", "cotal", "dist", "seat.cjs")) && existsSync(join(home, "claude-installed")) && !existsSync(join(participant, ".mcp.json")), registered);
+          const second = await launch(manager.instanceId);
+          check("Claude launches and joins from the daemon-only computer", second.code === 0 && JSON.parse(second.out).result?.readiness === "joined", second);
+          if (second.code === 0) {
+            const stopped = await run("stop", "daemon_claude_wake", "--space", ON, "--on", manager.instanceId, "--json");
+            check("Claude seat stops through its hosted Manager", stopped.code === 0, stopped);
+          }
+          return;
         }
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;

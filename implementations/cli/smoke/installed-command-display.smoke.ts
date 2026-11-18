@@ -1,6 +1,7 @@
 /** Installed command suggestions remain runnable when the installer's launcher is off PATH. */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { resolveOnPath } from "@cotal-ai/workspace";
@@ -52,6 +53,25 @@ const installed = spawnSync("/bin/sh", [driver, library], { env, encoding: "utf8
 writeFileSync(join(sandbox, "installer.log"), installed.stdout + installed.stderr);
 if (installed.status !== 0) throw new Error(`owned installer failed: ${installed.stdout}${installed.stderr}`);
 const launcher = join(env.COTAL_BIN_DIR, "cotal");
+const installedEntry = realpathSync(join(env.XDG_DATA_HOME, "cotal/lib/node_modules/cotal-ai/dist/cotal.js"));
+const installKey = createHash("sha256").update(installedEntry).digest("hex");
+const completedSetupSeed = (config: string): boolean => {
+  const canonical = join(config, "cotal");
+  let connectorRoot = canonical;
+  if (process.platform === "linux" || process.platform === "darwin") {
+    // Installed POSIX executions retain seed state per installation and release, not canonically.
+    const set = join(canonical, "installs", installKey, "sets", version);
+    connectorRoot = join(set, "cotal");
+    const selectionPath = join(set, "selection.json");
+    if (!existsSync(selectionPath) || existsSync(join(canonical, "seed/stamp.json"))) return false;
+    const selection = JSON.parse(readFileSync(selectionPath, "utf8"));
+    if (selection.v !== 1 || selection.entry !== installedEntry || selection.version !== version || selection.root !== connectorRoot) return false;
+  }
+  const stamp = join(connectorRoot, "seed/stamp.json");
+  if (!existsSync(stamp)) return false;
+  const committed = JSON.parse(readFileSync(stamp, "utf8"));
+  return committed.generation === version && committed.writtenBy === installedEntry;
+};
 mkdirSync(env.COTAL_HOME, { recursive: true, mode: 0o700 });
 const anchor = recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME, xdgConfigHome: xdg });
 recordSmokeSandbox({ root: outside, cotalHome: env.COTAL_HOME, xdgConfigHome: xdg });
@@ -103,12 +123,12 @@ try {
     const seeded = spawnSync("/bin/sh", ["-c", `${setupCommand} --skills`], { cwd: outside, env: { ...seedEnv, XDG_CONFIG_HOME: setupConfig }, encoding: "utf8", timeout: 120_000 });
     const receipt = { code: seeded.status, output: seeded.stdout + seeded.stderr };
     writeFileSync(join(sandbox, "setup-from-hint.json"), JSON.stringify(receipt, null, 2));
-    suite.check("printed setup prefix can seed with npm absent from the parent PATH", seeded.status === 0 && existsSync(join(setupConfig, "cotal/seed/stamp.json")), receipt);
+    suite.check("printed setup prefix can seed with npm absent from the parent PATH", seeded.status === 0 && completedSetupSeed(setupConfig), receipt);
   }
   const control = spawnSync(launcher, ["setup", "--skills"], { cwd: outside, env: { ...seedEnv, XDG_CONFIG_HOME: controlConfig }, encoding: "utf8", timeout: 120_000 });
   const controlReceipt = { code: control.status, output: control.stdout + control.stderr };
   writeFileSync(join(sandbox, "setup-launcher-control.json"), JSON.stringify(controlReceipt, null, 2));
-  suite.check("fresh launcher control completes the same setup seed", control.status === 0 && existsSync(join(controlConfig, "cotal/seed/stamp.json")), controlReceipt);
+  suite.check("fresh launcher control completes the same setup seed", control.status === 0 && completedSetupSeed(controlConfig), controlReceipt);
 } finally {
   if (attempted) {
     const down = run(["down", "--yes", "--json"]);

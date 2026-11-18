@@ -329,6 +329,7 @@ async function runAccountAction(): Promise<void> {
 }
 let upgradeNeeded = false;
 let busy = false;
+let rowOperation: { space: string; label: string } | undefined;
 let loginActive = false;
 let setupActive = false;
 let approval: string | undefined;
@@ -351,6 +352,7 @@ const computerRows = new Map<string, ComputerSpace>();
 const connections = new Map<string, string>();
 let choosingSpace = false;
 let addingSpace = false;
+let selectionPending = false;
 let listOpened = false;
 const providers = new Map<string, string>();
 const catalogIds = new Map<string, string>();
@@ -387,7 +389,8 @@ function clearDetails(): void {
  *  Any other error stays until the person acts on it. */
 function refusal(error: unknown, fromStatus = false): void {
   const exact = error instanceof Error ? error.message : String(error);
-  text("refusal-detail", exact); el("details").hidden = false;
+  text("refusal-detail", error instanceof DaemonRefusal ? `${error.code}${error.native ? ` (${error.native})` : ""}\n${exact}` : exact); el("details").hidden = false;
+  el<HTMLDetailsElement>("details").open = true;
   problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
   statusProblem = fromStatus;
   notice("", true);
@@ -481,7 +484,7 @@ function showStage(next: Stage, focus = false): void {
   el("service-explanation").hidden = loginActive;
   text("step-caption", finished ? "Ready for your next agent" : `Step ${["welcome", "sign-in", "connect", "finished"].indexOf(next) + 1} of 4`);
   el("step-caption").hidden = finished;
-  if (finished) el("details").hidden = true;
+  if (finished && !problem) el("details").hidden = true;
   let title: string, description: string;
   if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
@@ -622,7 +625,7 @@ function sizeClipEdges(): void {
         bottom = Math.min(bottom, (row ? row.top + viewport.scrollTop : top));
       }
     }
-    if (bottom < edge && bottom - box.top > 36) rule.style.setProperty("max-height", `${bottom - box.top}px`, "important");
+    if (bottom < edge && bottom - box.top > 36) rule.style.setProperty("max-height", `${bottom - box.top + parseFloat(style.borderBottomWidth)}px`, "important");
   }
 }
 let listBudgetSheet: CSSStyleSheet | undefined;
@@ -687,7 +690,7 @@ function renderConnections(): void {
   const list = el("connected-spaces");
   text("spaces-heading", `Spaces using this computer (${connections.size})`);
   list.parentElement!.tabIndex = connections.size >= 4 ? 0 : -1;
-  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), busy]));
+  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), busy, rowOperation]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;
   requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
@@ -701,13 +704,40 @@ function renderConnections(): void {
     if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow, state === "launch-ready"); copy.append(detail); }
     else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
-    const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);
-    remove.addEventListener("click", () => void action(async () => { if (restore) { await request({ op: "space-intent", space, enabled: true }); await refresh(); } else await removeSpace(space); }));
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy || !!rowOperation; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);
+    remove.addEventListener("click", () => void rowAction(space, restore));
+    if (rowOperation?.space === space) {
+      row.setAttribute("aria-busy", "true");
+      const waiting = document.createElement("small"); waiting.setAttribute("role", "status"); waiting.textContent = `${rowOperation.label}… Waiting for the background service.`; copy.append(waiting);
+    }
     row.append(copy, remove); return row;
   }));
 }
-async function removeSpace(space: string): Promise<void> {
+async function rowAction(space: string, restore: boolean): Promise<void> {
+  if (busy || rowOperation) return;
+  const operation = { space, label: `${restore ? "Adding" : "Removing"} ${shownSpaceLabel(accountSpaces.get(space)?.label, space)}` };
+  rowOperation = operation; refreshGeneration++; renderConnections();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      (async () => {
+        if (restore) {
+          await request({ op: "space-intent", space, enabled: true });
+          if (rowOperation !== operation) return;
+          await refresh();
+        } else await removeSpace(space, () => rowOperation === operation);
+      })(),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${operation.label} did not finish within 15 seconds. The background service may still complete the request. Check this space’s status before trying again.`)), 15_000); }),
+    ]);
+  } catch (error) { refusal(error); }
+  finally {
+    if (timer) clearTimeout(timer);
+    rowOperation = undefined; refreshGeneration++; renderConnections(); buttons();
+  }
+}
+async function removeSpace(space: string, current: () => boolean = () => true): Promise<void> {
   const result = await request({ op: "service-disconnect", space });
+  if (!current()) return;
   if (result.state === "unavailable" || result.state === "refused") throw new Error(String(result.message ?? "The space could not be removed. Try again."));
   if (computerAccount?.hostSupport === "supported") { await refresh(); return; }
   connections.delete(space); instances.delete(space); applicationRefusals.delete(space);
@@ -719,7 +749,7 @@ function buttons(): void {
   renderAccountActions();
   el<HTMLButtonElement>("login").disabled = busy || loginActive || !isTauri();
   el<HTMLButtonElement>("other-host").disabled = busy;
-  el<HTMLButtonElement>("connect").disabled = busy || !ready || !selectedSpace() || connected();
+  el<HTMLButtonElement>("connect").disabled = busy || !ready || !selectedSpace() || connected() || selectionPending || addingSpace && connections.has(selectedSpace());
   text("connect", addingSpace ? `Add to ${shownSpaceLabel(accountSpaces.get(selectedSpace())?.label, selectedSpace() || "space")}` : applicationRefusals.has(selectedSpace()) || el("notice").classList.contains("error") ? "Check again" : "Connect this computer");
   el<HTMLButtonElement>("disconnect").disabled = busy || !ready || !selectedSpace();
   el<HTMLButtonElement>("dashboard").disabled = busy || !(connected() || computerAccount?.hostSupport === "supported");
@@ -809,6 +839,7 @@ async function refresh(): Promise<void> {
   try {
     const status = await request({ op: "status" });
     if (!current()) return;
+    selectionPending = false;
     serviceStatus = status;
     ready = status.state === "ready";
     if (statusProblem || (ready && problem === "NOT_ANSWERING")) clearDetails();
@@ -859,6 +890,7 @@ async function refresh(): Promise<void> {
     } else { state("ready", space); if (stage === "connect") showStage("connect"); }
   } catch (error) {
     if (!current()) return;
+    selectionPending = false;
     ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
     if (problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING") { buttons(); return; }
     if (!(error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
@@ -972,14 +1004,15 @@ el("another-space").addEventListener("click", () => {
   if (busy) return;
   editing = true; addingSpace = true; choosingSpace = true;
   const select = el<HTMLSelectElement>("space");
-  for (const option of select.options) option.hidden = connections.has(option.value);
+  for (const option of select.options) { option.hidden = false; option.disabled = connections.has(option.value); }
   select.value = ""; connection = undefined;
+  text("no-other-spaces", [...select.options].some(option => option.value && !option.disabled) ? "" : "Every space in this account is already connected.");
   notice(""); clearDetails(); progress = progressNames.map(() => "waiting"); showStage("finished", true); select.focus();
 });
 el("retry-login").addEventListener("click", beginSignIn);
 el("sign-in-again").addEventListener("click", () => { beginSignIn(); if (computerAccount?.mode === "sign-in-required") el<HTMLFormElement>("login-form").requestSubmit(); });
 el("connect").addEventListener("click", () => void action(async () => {
-  if (connected() || !ready || !selectedSpace()) return;
+  if (connected() || selectionPending || addingSpace && connections.has(selectedSpace()) || !ready || !selectedSpace()) return;
   const space = selectedSpace(); const idp = providers.get(space) ?? el<HTMLInputElement>("provider").value.trim();
   setupActive = true; editing = false; applications = []; clearDetails(); notice("");
   progress = ["running", "waiting", "waiting", "waiting", "waiting"]; renderProgress(); showStage("connect", true);
@@ -1011,7 +1044,11 @@ el("disconnect").addEventListener("click", () => void action(async () => {
 }));
 el("sync").addEventListener("click", () => void action(async () => { notice(""); await spaces(true); }));
 el("refresh").addEventListener("click", () => void action(refresh));
-el("space").addEventListener("change", () => { signedInProvider = undefined; connection = undefined; progress = progressNames.map(() => "waiting"); clearDetails(); notice(""); showStage(stage); void refresh(); });
+el("space").addEventListener("change", () => {
+  signedInProvider = undefined; connection = undefined; selectionPending = true;
+  progress = progressNames.map(() => "waiting"); clearDetails(); notice(""); showStage(stage); buttons();
+  void refresh();
+});
 function openDashboard(): void {
   const space = selectedSpace(); const provider = providers.get(space) ?? el<HTMLInputElement>("provider").value.trim();
   const spaceId = catalogIds.get(space), instanceId = instances.get(space);
@@ -1020,11 +1057,40 @@ function openDashboard(): void {
   else { openSettings(); notice("The dashboard needs a verified connection and the space's saved address. Refresh spaces before trying again."); }
 }
 el("dashboard").addEventListener("click", openDashboard);
+async function readServiceLog(): Promise<void> {
+  const button = el<HTMLButtonElement>("refresh-log");
+  if (button.disabled) return;
+  button.disabled = true; text("service-log-status", "Reading recent output…");
+  try {
+    const result = await request({ op: "log" });
+    if (typeof result.text !== "string") throw new Error("The background service log reply is unsupported.");
+    text("service-log-text", result.text);
+    text("service-log-status", !result.text ? "No background service log has been recorded." : result.truncated ? "Showing the most recent 8 KB." : "Recent background service output.");
+  } catch (error) {
+    text("service-log-text", "");
+    text("service-log-status", error instanceof Error ? error.message : String(error));
+  } finally { button.disabled = false; }
+}
+el("refresh-log").addEventListener("click", () => void readServiceLog());
+el("service-log").addEventListener("toggle", () => { if (el<HTMLDetailsElement>("service-log").open) void readServiceLog(); });
+el("connection-status").addEventListener("click", () => {
+  settingsOpen = false; renderSettings(); showStage(stage);
+  if (!el("details").hidden) {
+    el<HTMLDetailsElement>("details").open = true;
+    el("details").querySelector<HTMLElement>("summary")!.focus();
+  } else {
+    const issue = computerAccount && computerSpaces(computerAccount).find(row => row.lastRefusal || !["connected", "approval-pending", "removed on this computer", "starting", "connecting", "not-requested"].includes(row.observed));
+    const row = issue ? [...el("connected-spaces").querySelectorAll<HTMLElement>("li")].find(row => row.dataset.space === issue.space) : undefined;
+    if (row) row.tabIndex = -1;
+    (row ?? el("connection-title")).focus();
+    (row ?? el("connection-title")).scrollIntoView({ block: "nearest" });
+  }
+});
 function openSettings(): void {
   if (busy || loginActive) return;
   editing = false; addingSpace = false; choosingSpace = false;
   const select = el<HTMLSelectElement>("space");
-  for (const option of select.options) option.hidden = false;
+  for (const option of select.options) { option.hidden = false; option.disabled = false; }
   if (!connections.has(select.value)) select.value = connections.keys().next().value ?? select.value;
   if (connections.size || completedSetup || listOpened || computerAccount?.hostSupport === "supported") {
     listOpened = true; showStage("finished");

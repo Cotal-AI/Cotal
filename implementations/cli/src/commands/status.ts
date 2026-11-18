@@ -30,6 +30,7 @@ import {
 } from "@cotal-ai/core";
 import {
   stoppedLoopbackListener,
+  stackRunsUnderOtherHome,
   accountInventory,
   authDir,
   isCommandFailure,
@@ -86,6 +87,7 @@ import {
   readPreparedSpaces,
   stackJournalPath,
   readRenewalRecord,
+  recordOperationSpace,
   renderWorkspaceError,
   resolveMeshTarget,
   serverFlag,
@@ -178,7 +180,7 @@ export const statusFlags = [
   spaceFlag,
   serverFlag,
   { name: "on", type: "string", value: "<manager-instance>", description: "named agent: inspect one manager instance" },
-  { name: "creds", type: "string", value: "<file>", description: "named agent: use an explicit connection credential" },
+  { name: "creds", type: "string", value: "<file>", description: "explicit credential file (unsupported for status)" },
   { name: "all", type: "boolean", description: "check every recorded mesh, not only the selected one, and report every row in full" },
   { name: "wide", type: "boolean", description: "report every row in full: each known agent application, each extension, and the spaces under their broker addresses" },
   { name: "verbose", short: "v", type: "boolean", description: "include installation paths, local records and detailed diagnostics" },
@@ -432,8 +434,16 @@ export function validateStatusArguments(args: ParsedArgs): void {
   if (args.positionals.length && (args.values.all || args.values.components || args.values.wide || args.values.verbose))
     throw new CommandFailure("refused", "USAGE_INVALID", "a named agent status takes no --all, --components, --wide or --verbose");
   if (typeof args.values.on === "string") onInstance(args.values.on, onRerun("cotal status", args.values, args.positionals));
-  if (!args.positionals.length && (args.values.on !== undefined || args.values.creds !== undefined))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--on and --creds select a named agent read, not infrastructure status");
+  if (!args.positionals.length && args.values.on !== undefined)
+    throw new CommandFailure("refused", "USAGE_INVALID", "--on selects a named agent read, not infrastructure status");
+  if (!args.positionals.length && args.values.creds !== undefined) {
+    const space = typeof args.values.space === "string" && args.values.space.trim() ? args.values.space : undefined;
+    if (space !== undefined) recordOperationSpace(space);
+    throw new CommandFailure("refused", "UNSUPPORTED", "status does not accept --creds: infrastructure status reads local and registered meshes, and named agent status mints its own control caller", {
+      ...(space !== undefined ? { target: { space } } : {}),
+      remedy: "run `cotal status` or `cotal status <agent>` without --creds",
+    });
+  }
 }
 
 /** `cotal status` — detailed, read-only diagnostics for the local machine + selected mesh. */
@@ -1083,6 +1093,8 @@ function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, ga
   const { state, pid, detail } = legacy;
   const row: ProcessRow = { ...legacy, source: journal ? "owned-service" : "legacy-pidfile", legacyPidfile: { state, pid, detail }, ownedService: null };
   if (!journal) return row;
+  if (stackRunsUnderOtherHome(journal.root, journal) && journal.recovery?.home !== homeCotalDir())
+    return { ...row, state: "unknown", pid: null, detail: `stack member records belong to ${journal.recovery?.home ?? "another Cotal home"}` };
   try {
     const instances = serviceInstances(journal.space, STACK_DEFINITION.broker);
     if (instances.length === 0) {
@@ -1299,7 +1311,7 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
     if (preflight && m.space === chosen?.space && m.server === chosen.server) {
       if (preflight.ok) return "reachable";
       if (preflight.kind === "slow-link" || preflight.kind === "broker-stopped" || preflight.kind === "unreachable") return preflight.kind;
-      return preflight.kind === "tls-trust" || preflight.kind === "tls-unsupported" ? "unreachable" : "reachable";
+      return preflight.kind === "tls-trust" || preflight.kind === "tls-unsupported" || preflight.kind === "auth-unsupported" || preflight.kind === "jetstream-unsupported" || preflight.kind === "non-nats-listener" ? "unreachable" : "reachable";
     }
     return brokerCheck(m.server, m.tlsRequired);
   };
@@ -1513,6 +1525,10 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // A blocked stack refuses that `up`, and Next names the step that clears the block instead.
     if (preflight.kind === "unreachable" && (flagged || offline) && !(servedStack(folder, base) && folder.stackBlock)) {
       const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
+      hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
+    }
+    if (preflight.kind === "non-nats-listener" || preflight.kind === "auth-unsupported" || preflight.kind === "jetstream-unsupported") {
+      const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false });
       hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
     }
     return { ...base, connection: preflight.kind, ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune && !offline, snapshot: { state: "skipped", reason: "broker not connected" } };
@@ -1923,6 +1939,9 @@ function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
     "broker-stopped": `broker process ${s.brokerPid} is stopped`,
     "tls-trust": "TLS could not be verified",
     "tls-unsupported": "listener does not offer required TLS",
+    "auth-unsupported": "listener does not enforce Cotal authentication",
+    "jetstream-unsupported": "listener does not offer JetStream",
+    "non-nats-listener": "non-NATS listener holds the broker address",
     "stale-auth": "credentials need renewal",
     "auth-required": "authentication required",
     "open-wants-auth": "authentication required",
@@ -2813,6 +2832,11 @@ async function brokerHealth(target: MeshTarget): Promise<ComponentHealth> {
       const record = processRecord(NATS_PIDFILE, context);
       const verdict = processVerdict(record);
       if (verdict) return { name: "broker", verdict, facts: [`registered ${address}`, ...pidFacts(record), ...(record.kind === "dead" ? ["stale pidfile"] : [])] };
+    }
+    if (target.mode !== "user") {
+      const preflight = await preflightTarget(target);
+      if (!preflight.ok) return { name: "broker", verdict: "not-serving", facts: [`registered ${address}`, workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false }).message] };
+      return { name: "broker", verdict: "serving", facts: [`registered ${address}`, "reachable"] };
     }
     const reachable = await isReachable(target.server, target.tlsRequired ? { tls: true } : {});
     return reachable

@@ -85,8 +85,9 @@ import {
   shownSpawner,
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError, retainConnectorSeat } from "@cotal-ai/workspace";
+import { logicalExecutionEntry, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlEndpoint, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlEndpoint, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -410,6 +411,8 @@ export interface ManagerOptions {
    *  as the published binary does. A library composition leaves this off and resolves only what its
    *  composition root imported — a direct `new Manager()` never implicitly reads the machine manifest. */
   installedExtensions?: boolean;
+  /** The machine daemon's command for repairing host setup. Absent outside daemon hosting. */
+  machineSetupCommand?: string;
   /** The {@link SecretStore} for EVERY secret this manager touches — the daemon-cred renewal write side
    *  (`remintDaemonCreds`) AND the per-agent standing-secret kinds (static creds / actor tokens /
    *  sentinel creds). ONE store, so a hosted composition (KMS/Vault) can never end up with the manager
@@ -1277,6 +1280,7 @@ export class Manager {
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
   private readonly expectedConnectorGeneration: string;
+  private readonly machineSetupCommand?: string;
   private readonly executionState: { kind: "none" } | { kind: "runtime" };
   // Declared only: no own Runtime slot exists in the none arm.
   declare private readonly runtime: Runtime;
@@ -1410,9 +1414,10 @@ export class Manager {
   private readonly onceWatched = new Set<string>();
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
-  /** Connector harness paths resolved ONCE at boot. Missing binaries do not stop unrelated manager
-   * work, but they are named before the manager reports ready and remain visible in manager status. */
+  /** Connector harness inventory. Available paths stay pinned; missing binaries are retried when
+   * launch, model lookup or status asks, without stopping unrelated Manager work. */
   private connectorStatuses: ManagerConnectorStatus[] = [];
+  private connectorRequirements = new Map<string, readonly string[]>();
   /** The boot inventory's warnings, printed once start completes, so a refused start prints none. */
   private bootNotes: string[] = [];
   /** The complete boot task. stop() joins it after fencing static reconciliation, so a registration
@@ -1488,7 +1493,7 @@ export class Manager {
     setSessionPlane: (value) => { this.sessionPlane = value; },
     sessionKeyRenewTimer: () => this.sessionKeyRenewTimer,
     setSessionKeyRenewTimer: (value) => { this.sessionKeyRenewTimer = value; },
-    connectorStatuses: () => this.connectorStatuses,
+    connectorStatuses: () => { this.refreshUnavailableConnectors(); return this.connectorStatuses; },
     setGoalWriterIdentity: (value) => { this.goalWriterIdentity = value; },
     setGoalWriterCreds: (value) => { this.goalWriterCreds = value; },
     remoteStandingBudgetMs: REMOTE_STANDING_BUDGET_MS,
@@ -1821,6 +1826,7 @@ export class Manager {
     if (opts.secretStore) this.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
     this.installedExtensions = opts.installedExtensions ?? false;
     this.expectedConnectorGeneration = MANAGER_VERSION;
+    this.machineSetupCommand = opts.machineSetupCommand;
     this.pooled = opts.pooled === true;
     this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
     if (!this.remoteAuthority) {
@@ -5307,10 +5313,10 @@ export class Manager {
     this.bootNotes = [];
     if (this.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
-    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean }>;
+    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; pkg?: string }>;
     if (this.installedExtensions) {
       try {
-        declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext));
+        declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext).map((connector) => ({ ...connector, pkg: ext.pkg })));
       } catch (error) {
         const reason = rejectionText(error);
         this.bootNotes.push(`! manager boot: connector inventory unavailable - ${reason}`);
@@ -5325,8 +5331,24 @@ export class Manager {
         eventPlane: connector.eventChannel !== undefined,
       }));
     }
-    for (const { name, requires, eventPlane } of declared) {
-      const { binaries, reason } = resolveHarness(name, requires);
+    this.connectorRequirements = new Map(declared.map(({ name, requires }) => [name, requires]));
+    for (const { name, requires, eventPlane, pkg } of declared) {
+      const { binaries, reason: missing } = resolveHarness(name, requires);
+      let reason = missing;
+      if (!reason && this.machineSetupCommand && name === "claude" && pkg === OFFICIAL_CONNECTORS.claude) {
+        try {
+          const connector = await this.resolveConnector(name);
+          if (!connector.setup) throw new Error("Claude connector has no setup provider");
+          const provider = await materializeFromManifest<ConnectorSetupProvider>(connector.setup, { expectedGeneration: this.expectedConnectorGeneration });
+          if (!provider.connector) throw new Error("Claude connector has no install action");
+          const cotal = bearerEntryArgv();
+          cotal[cotal.length - 1] = logicalExecutionEntry() ?? cotal.at(-1)!;
+          await provider.connector.run({ cotal, machineHost: true });
+        } catch (error) {
+          const detail = oneLine(rejectionText(error).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 800));
+          reason = `Claude wake channel setup failed: ${detail}. Correct the cause and run \`${this.machineSetupCommand}\` on this computer.`;
+        }
+      }
       if (reason) {
         rows.push({ agent: name, state: "unavailable", binaries, eventPlane, reason });
         this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
@@ -5337,6 +5359,24 @@ export class Manager {
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
     if (!this.classSpawnEnabled())
       this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
+  }
+
+  /** Retry missing applications on the Manager's PATH without changing resolved available rows. */
+  private refreshUnavailableConnectors(name?: string): void {
+    const wasEnabled = this.classSpawnEnabled();
+    for (const row of this.connectorStatuses) {
+      if (row.state !== "unavailable" || (name !== undefined && row.agent !== name)) continue;
+      const requires = this.connectorRequirements.get(row.agent);
+      if (!requires) continue;
+      const { binaries, reason } = resolveHarness(row.agent, requires);
+      row.binaries = binaries;
+      if (reason) row.reason = reason;
+      else {
+        row.state = "available";
+        delete row.reason;
+      }
+    }
+    if (!wasEnabled && this.classSpawnEnabled()) this.servePlane.enableClassSpawn();
   }
 
   /** True when at least one declared connector is available. Empty inventory (or a failed
@@ -5364,8 +5404,10 @@ export class Manager {
   /** The harness binaries a managed launch runs, as boot resolved them, or the refusal naming what is
    *  missing. Spawn, resume and the model catalog all take it, so a seat launches from the same files
    *  whichever path starts it and the catalog never disagrees with a launch about whether the harness
-   *  is there. A connector registered after boot has no inventory row and is checked on PATH now. */
+   *  is there. Unavailable rows are checked again on PATH; available rows retain their resolved files.
+   *  A connector registered after boot has no inventory row and is checked on PATH now. */
   private launchHarness(connector: Connector): { binaries?: Readonly<Record<string, string>> } | { refusal: string } {
+    this.refreshUnavailableConnectors(connector.name);
     const row = this.connectorStatuses.find((status) => status.agent === connector.name);
     if (row?.state === "unavailable") return { refusal: row.reason ?? `${connector.name} harness is unavailable` };
     if (row) return { binaries: row.binaries };
@@ -5475,8 +5517,8 @@ export class Manager {
     const requested = String(args.agent ?? "").trim();
     const refresh = args.refresh === true;
     const one = async (connector: Connector): Promise<ConnectorModelCatalog> => {
-      if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
       const harness = this.launchHarness(connector);
+      if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
       if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
       try {
         const catalog = await connector.listModels({ refresh, resolvedBinaries: harness.binaries });
@@ -8160,6 +8202,7 @@ export class Manager {
    *  seats, as `ps` lists them ({@link psOwnerFilter}), so a person reading a shared Manager does not
    *  learn how many seats other owners hold on it. */
   private managerStatusData(ownerFilter: string | undefined): ManagerStatus {
+    this.refreshUnavailableConnectors();
     return {
       instanceId: this.managerInstanceId,
       lifecycleUid: this.managerLifecycleUid,
