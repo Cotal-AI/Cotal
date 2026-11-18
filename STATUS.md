@@ -1,6 +1,6 @@
 # macOS orphaned preserving service acceptance
 
-Updated 2026-11-18 12:31Z. Native proof head is `6884f01e88489361b506b0cffda4875273663cf1`. Current-main integration candidate is af9ea58402310a602e0f43769958f8fa61563a58, based on main 417fabfbb502863aa849c7f3230f05bae51bed9e. No owner-Mac action occurred.
+Updated 2026-11-18 12:41Z. Native proof head is `6884f01e88489361b506b0cffda4875273663cf1`. Final current-tip integration candidate is 0ce2a7afcff735febad7411ccdfae569c6d2f700, based on main 9e52bd9d2bac9fff8cbf426dc0269a2292f94be2 including target-admission 7449, standalone custody 7477 and date-filter 7577. No owner-Mac action occurred.
 
 ## Real preserving recovery passed
 
@@ -26,9 +26,11 @@ Run 44293665414 at b73c failed setup before daemon install or preserving state. 
 
 ## Current-main integration
 
-After the native pass, repair plus exact-state fixtures were integrated with actual main 417fabfbb in an isolated worktree. Only the dedicated workflow add/add conflicted, resolved byte-for-byte to main's pinned-action workflow. Main's `.internal` pointer is unchanged. Repair implementation, changed native source, fixture and operator documentation bytes match native-tested 6884. Separate diagnostic 7481 is not folded in. Independent integration review found no scoped blocker.
+After the native pass, repair plus exact-state fixtures were integrated with main 417fabfbb, then refreshed to actual push-time tip 9e52bd9d2. Only the first dedicated workflow add/add conflicted, resolved byte-for-byte to main's pinned-action workflow. Main's `.internal` pointer is unchanged. Native-tested repair helper, changed native source and fixture bytes match 6884. The latest automatic merge preserves main's rewritten staged target admission and standalone custody; the update-entry net delta against tip remains only the repair import, explicit Darwin self-update repair before the updater, and truthful foreign-service output. Separate diagnostic 7481 is not folded in. Independent first integration review found no scoped blocker.
 
 The maintained full project build and binary smoke-tree typecheck passed, repair replies passed 3 of 3, native-adapter regression passed 426 of 426 including real built public-entry chains, and generation regression passed 57 of 57. Exact-source docs voice/literals/comments and 36 comment-check controls passed, and the fixed-group changeset plan passed. The local SSH observer reached its 600-second tool cap while the actual remote validation continued under the graph lock; a read-only waiter confirmed that original process completed with both terminal passing summaries, no duplicate suite. A stale docs script-path invocation failed setup after the main tools move and was corrected, no product fix. This integration is READY for core's merge for the measured preserving zero-seat missing-program class. Remaining unrelated coordinates below are not waived.
+
+On final tip 0ce, maintained full build, binary full smoke-tree types, repair replies, execution-preinstall, execution-preinstall transport, execution transaction and generation 57 of 57 all passed. Exact-tip docs voice/literals/comments and changeset plan passed. The broader adapter suite passed 426 of 426 on first integration af9, before the main-only admission/custody changes. This READY qualification relies on native proof of 6884 plus these explicit integration checks, not a native rerun of the final merged head.
 
 ## Scoped limits
 
