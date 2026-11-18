@@ -69,7 +69,9 @@ optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cot
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.mdx).
 Boot inventory decides whether this process takes unpinned `spawn`/`launch` on the class rail:
 if every declared connector is unavailable, those commands stay on this instance rail only
-(`status` reports `classSpawn: false`). `describe` still answers on the class rail, so an
+(`status` reports `classSpawn: false`). A launch, model catalog or status read checks unavailable
+applications again. Finding the first available application enables the class rail without a restart.
+`describe` still answers on the class rail, so an
 unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. With no member
 on the class rail, an unpinned spawn is refused and names the agent application to add. A partial
 inventory keeps the class rail and names `--on` on a harness refusal, because sibling
@@ -836,9 +838,11 @@ the stock default persona in its own catalog, without replacing an existing file
 `cotal spawn --on <instance> --space <space>` can launch it. Setup succeeds when that registered
 instance answers `status` with an available connector. With no available connector it refuses with
 `no available connector` and a harness-install next step. Connector availability is read from the
-daemon-hosted Manager. Install an application named in the remedy and confirm it runs in the
-terminal that runs setup, then run the same setup command again. On Linux and macOS, when that
-terminal resolves an application the Manager cannot find, setup refreshes the service's pinned PATH.
+daemon-hosted Manager. Install an application named in the remedy. If its directory is already
+on the service's PATH, the Manager discovers it on the next launch, model catalog or status read
+without a restart. If the directory is not on the service's PATH, confirm the application runs in
+the terminal that runs setup, then run the same setup command again. On Linux and macOS, setup
+refreshes the service's pinned PATH.
 Terminal directories come first, followed by existing service directories without duplicates.
 Setup updates the recorded service source and digest, reloads it, and checks availability again.
 On macOS, reload waits up to ten seconds for the old LaunchAgent to unload before loading the plist.
