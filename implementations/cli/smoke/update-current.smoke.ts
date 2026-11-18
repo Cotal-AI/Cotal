@@ -43,4 +43,7 @@ for (const consistent of [false, true]) {
 }
 const { seedInstallationCurrent } = await import("../src/seed/reconcile.js");
 assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not proven current");
+const { registryArrivalCell } = await import("../../../bin/smoke/update-registry-arrival.smoke.mjs");
+const cacheUpdate = await registryArrivalCell({ scenario: "cache" });
+assert.equal(cacheUpdate.code, 0, "real CLI and npm update succeed with a user-owned cache that is not writable");
 emitSentinel({ passed: counted.cells(), failed: 0 });
