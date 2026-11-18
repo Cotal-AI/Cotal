@@ -452,6 +452,12 @@ included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer
 was moved to, whose stack journal names the old folder, such a command says the folder was moved and
 names the next step that `up` and `down` name there.
 
+A stopped space that `cotal up` started is handled the same way when its folder was deleted. `status`
+says the folder no longer exists instead of naming `cotal up` there, and `send` and `history`
+refuse `TARGET_UNAVAILABLE` rather than report a missing seed. Both name moving the folder back or
+`cotal space forget <space>`. Run with `--space` from the folder it was renamed to, `send` and
+`history` give the refusal they give there without `--space`, which names the move and the way back.
+
 With nothing selected, a command run in a project targets the space registered for that project's
 root. A root with no registration whose `.cotal/` holds the stack journal `cotal up` writes is
 refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorded and

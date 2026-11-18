@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync, statSync, type Stats } from "node:fs";
+import { existsSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { dirname, resolve } from "node:path";
 import {
@@ -41,8 +41,8 @@ import { c, paintFor } from "./colors.js";
 import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
-import { findMesh, movedProject, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
-import { isWorkspaceTargetError, resolveMeshTarget, resolveReadsLiveness, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
+import { canonicalRoot, findMesh, movedProject, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
+import { isWorkspaceTargetError, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type NativeCause, type RefusalCode } from "./output.js";
@@ -762,6 +762,16 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
     // A project folder moved after its stack started there keeps its seed under the new path.
     const moved = movedProject(target.space, target.root);
     if (moved) throw new ConnectRefusal(`✗ ${moved.message} - ${moved.remedy}`, undefined, { code: "CONFLICT", parts: { message: moved.message, remedy: moved.remedy }, target: moved.target });
+    // A folder renamed after a stack the retained launcher started ran there holds its records with
+    // no stack journal. Run from it, the refusal is the one the command gives there with no --space (#7315).
+    const elsewhere = recordsElsewhereError(findCotalRoot());
+    if (elsewhere?.details.stackSpace === target.space && elsewhere.details.recordedRoot !== undefined && canonicalRoot(elsewhere.details.recordedRoot) === canonicalRoot(target.root))
+      throw workspaceRefusal({ kind: "target", error: elsewhere }, { code: targetErrorCode(elsewhere.code) });
+    // The folder is gone, deleted or moved somewhere this command cannot see, so no seed is missing (#7318).
+    if (!existsSync(target.root)) {
+      const parts = { message: `mesh "${target.space}" is registered for ${target.root}, which no longer exists`, remedy: `if that folder was moved or renamed, move it back to ${target.root} and run the command again; otherwise forget the space with \`cotal space forget ${target.space}\`` };
+      throw new ConnectRefusal(`✗ ${parts.message} - ${parts.remedy}`, undefined, { code: "TARGET_UNAVAILABLE", parts, target: { space: target.space, root: target.root } });
+    }
     throw new ConnectRefusal(
       `✗ mesh "${target.space}" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,
       undefined,
