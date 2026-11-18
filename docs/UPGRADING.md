@@ -17,6 +17,9 @@ credentials and open meshes do not change.
   that space. The broker answers `Authorization Violation`, and the auth service logs a refusal that
   names a bare inbox nonce and the minimum version. Upgrade that client with
   `npm i -g cotal-ai@latest`.
+- A client older than 0.167.0 that is already connected when the auth service upgrades is not
+  disconnected. It keeps its connection until its next reconnect or bearer renewal, and that
+  connect is refused as above.
 - An auth service older than 0.167.0 accepts a connection name of at most 120 characters. A 0.167.0
   client whose actor name is longer than 55 characters connects only once the auth service is
   upgraded as well.
