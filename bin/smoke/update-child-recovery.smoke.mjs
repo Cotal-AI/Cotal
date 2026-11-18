@@ -13,7 +13,7 @@ const counted = countedAssert(assertions), assert = counted.assert;
 
 // Keep the installed entry, npm cache and logs for the interrupted command's evidence.
 const repo = resolve(import.meta.dirname, '../..');
-const { processStartToken, processGroupMembers } = await import(pathToFileURL(join(repo, 'packages/workspace/dist/index.js')).href);
+const { beginGlobalUpdateChild, claimGlobalNpmUpdateLock, processStartToken, processGroupMembers } = await import(pathToFileURL(join(repo, 'packages/workspace/dist/index.js')).href);
 const root = mkdtempSync(join(tmpdir(), 'update-child-recovery-'));
 const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
 const target = '99.0.0';
@@ -49,8 +49,9 @@ await new Promise(done => server.listen(0, '127.0.0.1', done));
 origin = `http://127.0.0.1:${server.address().port}`;
 console.log(`Retained update-child evidence: ${root}`);
 try {
-  const scenarios = process.argv.includes('--group-identity') ? ['reused-leader', 'previous-boot', 'unidentified-group', ...(process.platform === 'linux' ? ['zombie-group'] : [])]
-    : ['control', 'interrupted', 'reused-leader', 'previous-boot', 'unidentified-group', ...(process.platform === 'linux' ? ['zombie-group'] : [])];
+  const scenarios = process.argv.includes('--matching-group-only') ? ['matching-group']
+    : process.argv.includes('--group-identity') ? ['reused-leader', 'previous-boot', 'unidentified-group', ...(process.platform === 'linux' ? ['zombie-group'] : [])]
+    : ['control', 'interrupted', 'matching-group', 'reused-leader', 'previous-boot', 'unidentified-group', ...(process.platform === 'linux' ? ['zombie-group'] : [])];
   for (const scenario of scenarios) {
     const cell = join(root, scenario);
     for (const name of ['home', 'cotal', 'config', 'runtime', 'prefix', '.cotal']) mkdirSync(join(cell, name), { recursive: true, mode: 0o700 });
@@ -64,6 +65,7 @@ try {
     });
     let holder;
     let group;
+    let mutation;
     const markerPath = join(cell, 'prefix/lib/node_modules/.cotal-update-child');
     try {
     if (!['control', 'interrupted'].includes(scenario)) {
@@ -97,9 +99,21 @@ os.waitpid(pid, 0)
       }
       const boot = process.platform === 'linux' ? readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()
         : (await import(pathToFileURL(join(repo, 'packages/workspace/dist/darwin-process.js')).href)).darwinProcessBinding().hostIdentity().boot;
-      const marker = { phase: 'ambiguous', owner: process.pid, nonce: '0'.repeat(24), operation: 'global reconcile', reason: 'interrupted child', group,
-        ...(scenario === 'unidentified-group' ? {} : { groupStart: scenario === 'reused-leader' ? '0' : processStartToken(group), boot: scenario === 'previous-boot' ? '00000000-0000-0000-0000-000000000000' : boot }) };
-      writeFileSync(markerPath, JSON.stringify(marker));
+      if (scenario === 'matching-group') {
+        const release = claimGlobalNpmUpdateLock(join(cell, 'prefix/lib/node_modules'));
+        try {
+          mutation = beginGlobalUpdateChild(join(cell, 'prefix/lib/node_modules'), 'reconcile', true);
+          mutation.markLive(group);
+        } finally { release(); }
+        const record = JSON.parse(readFileSync(markerPath, 'utf8'));
+        assert.equal(record.group, group);
+        assert.equal(record.groupStart, processStartToken(group));
+        assert.equal(record.boot, boot);
+      } else {
+        const marker = { phase: 'ambiguous', owner: process.pid, nonce: '0'.repeat(24), operation: 'global reconcile', reason: 'interrupted child', group,
+          ...(scenario === 'unidentified-group' ? {} : { groupStart: scenario === 'reused-leader' ? '0' : processStartToken(group), boot: scenario === 'previous-boot' ? '00000000-0000-0000-0000-000000000000' : boot }) };
+        writeFileSync(markerPath, JSON.stringify(marker));
+      }
     }
     const command = async () => {
       const child = spawn(process.execPath, [join(repo, 'bin/dist/cotal.js'), 'update', '--self'], { cwd: cell, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -109,7 +123,7 @@ os.waitpid(pid, 0)
       const code = await new Promise((done, reject) => { child.once('error', reject); child.once('close', done); });
       return { code, output };
     };
-    const { code, output } = await command();
+    let { code, output } = await command();
     writeFileSync(join(cell, 'update.log'), output);
     console.log(`${scenario} exit ${code}\n${output}`);
     if (scenario === 'unidentified-group') {
@@ -124,6 +138,22 @@ os.waitpid(pid, 0)
       assert.equal(readFileSync(markerPath, 'utf8'), before);
       continue;
     }
+    if (scenario === 'matching-group') {
+      const before = readFileSync(markerPath, 'utf8');
+      assert.equal(code, 1, output);
+      assert.match(output, /global reconcile process group is still running/);
+      assert.equal(holder.exitCode, null, 'a matching leader is retained, not stopped');
+      holder.kill('SIGTERM');
+      await new Promise(done => holder.once('close', done));
+      mutation.complete(null, 'SIGTERM', 'reconcile child terminated by SIGTERM');
+      const record = JSON.parse(readFileSync(markerPath, 'utf8'));
+      const live = JSON.parse(before);
+      assert.equal(record.groupStart, live.groupStart);
+      assert.equal(record.boot, live.boot);
+      ({ code, output } = await command());
+      writeFileSync(join(cell, 'retry.log'), output);
+      console.log(`matching-group after exit ${code}\n${output}`);
+    }
     assert.equal(code, 0, `${scenario}: plain self-update must recover its interrupted reconcile`);
     assert.match(output, scenario === 'interrupted' ? /repaired and reconciled/ : /installed globally and reconciled/);
     assert.equal(existsSync(markerPath), false);
@@ -132,11 +162,11 @@ os.waitpid(pid, 0)
       assert.equal(existsSync(join(cell, 'cotal/interrupted-once')), true);
       assert.match(output, /Retrying reconciliation/);
     }
-    if (holder) assert.equal(holder.exitCode, null, 'the updater never signals an unrelated process or reaps its zombie');
+    if (holder && scenario !== 'matching-group') assert.equal(holder.exitCode, null, 'the updater never signals an unrelated process or reaps its zombie');
     } finally {
       if (holder) {
         if (scenario === 'zombie-group') writeFileSync(join(cell, 'release'), 'release');
-        else holder.kill('SIGTERM');
+        else if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGTERM');
         if (holder.exitCode === null && holder.signalCode === null) await new Promise(done => holder.once('close', done));
       }
     }
