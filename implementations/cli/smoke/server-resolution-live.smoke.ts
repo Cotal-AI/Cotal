@@ -97,7 +97,7 @@ try {
     ok(`equivalent broker spelling retains the registered space: ${server}`, target.space === "team-alpha", target);
     ok(`equivalent broker spelling preserves the requested transport: ${server}`, target.server === server, target);
   }
-  for (const host of ["localhost", "[::1]", "127.0.0.2"]) {
+  for (const host of ["localhost", "[::1]", "127.0.0.2", "127.1", "127.0.1", "0177.0.0.1", "0x7f000001", "2130706433"]) {
     const server = `nats://${host}:${PORT_OTHER}`;
     let mismatch: unknown;
     try {
@@ -109,6 +109,20 @@ try {
     const message = renderWorkspaceError({ kind: "target", error: mismatch as MeshTargetError });
     ok(`host mismatch names the registered space and address: ${host}`, message.includes("team-alpha") && message.includes(OTHER), message);
     ok(`host mismatch offers explicit selection without starting a new stack: ${host}`, message.includes("--space <name>") && !message.includes("cotal up"), message);
+  }
+  const { authDir, saveSpaceAuth } = await import("@cotal-ai/workspace");
+  const { createSpaceAuth } = await import("@cotal-ai/core");
+  const localAuth = await createSpaceAuth("team-alpha");
+  saveSpaceAuth(authDir(projectRoot), localAuth);
+  for (const host of ["localhost", "127.0.0.2", "127.1"]) {
+    const server = `nats://${host}:${PORT_OTHER}`;
+    const local = resolveMeshTarget(projectRoot, { server });
+    ok(`a project's own broker override keeps its space and trust: ${host}`, local.space === "team-alpha" && local.auth?.account.pub === localAuth.account.pub, { space: local.space, mode: local.mode });
+    ok(`a project's override keeps the requested and recorded addresses: ${host}`, local.server === server && local.recordedServer === OTHER, { server: local.server, recordedServer: local.recordedServer });
+  }
+  for (const host of ["127.example.invalid", "127.0.0.999"]) {
+    const target = resolveMeshTarget(cwd, { server: `nats://${host}:${PORT_OTHER}` });
+    ok(`a host that is not numeric loopback gets no registration hint: ${host}`, target.space !== "team-alpha", { space: target.space });
   }
   const { removeMesh } = await import("@cotal-ai/workspace");
   recordMesh({ space: "ipv6-only", server: `nats://[::1]:${PORT_OTHER}`, root: mismatchRoot, mode: "open", ts });

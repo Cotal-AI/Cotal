@@ -262,10 +262,12 @@ recorded broker in its place. A trailing slash or scheme case change in `--serve
 registered space. Matching preserves the URL's transport scheme and TLS intent. If equivalent
 addresses name several registered spaces, pass `--space` to choose one.
 Loopback host spellings are not interchangeable: `localhost` can resolve elsewhere, and IPv4
-and IPv6 can serve different brokers on one port. When an unmatched address differs only by a
-loopback host spelling from a registration, resolution refuses with `TARGET_NOT_FOUND`, exit 2,
-and lists those possible local registrations. It sends no credentials and does not assume `main`.
+and IPv6 can serve different brokers on one port. Outside the registered project's folder, when
+an unmatched address differs only by a loopback host spelling from a registration, resolution
+refuses with `TARGET_NOT_FOUND`, exit 2, and lists those possible local registrations. This includes
+short and numeric IPv4 spellings such as `127.1` and `0177.0.0.1`. It sends no credentials and does not assume `main`.
 Use the listed broker address, or verify the requested broker and pass `--space <name>` explicitly.
+Inside that project's folder, its space and trust still apply to the requested `--server` override.
 Target resolution given `--server` probes only records at that address,
 including when `--space` is omitted. `status --all` still checks every recorded address because
 `--all` asks for that scope. This refusal wording does not describe the infrastructure report from

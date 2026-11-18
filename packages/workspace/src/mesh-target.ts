@@ -1,5 +1,6 @@
 import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, type Stats } from "node:fs";
 import { join } from "node:path";
+import { domainToASCII } from "node:url";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { isLoopbackLiteral } from "@cotal-ai/core/loopback";
 import { parse as parseYaml } from "yaml";
@@ -1053,7 +1054,9 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       try {
         const url = new URL(server);
         if (url.pathname === "/") url.pathname = "";
-        if (localHint && (url.hostname.toLowerCase() === "localhost" || isLoopbackLiteral(url.hostname)))
+        // NATS uses a non-special URL scheme, so short, octal and integer IPv4 hosts are not
+        // canonicalized by URL. The native host parser recognizes them without a DNS lookup.
+        if (localHint && (url.hostname.toLowerCase() === "localhost" || isLoopbackLiteral(domainToASCII(url.hostname))))
           url.hostname = "127.0.0.1";
         return url.href;
       } catch {
@@ -1083,7 +1086,10 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // only to explain a miss, never to choose trust material or redirect the requested connection.
     const localHint = serverKey(flags.server, true);
     const nearby = meshes.filter((e) => serverKey(e.server) !== requestedServer && serverKey(e.server, true) === localHint);
-    if (nearby.length)
+    const root = findCotalRoot(cwd);
+    // Inside a candidate's own project, the existing local path already supplies its space and
+    // trust for an explicit broker override. A diagnostic hint must not replace that target.
+    if (nearby.length && !nearby.some((e) => canonicalRoot(e.root) === canonicalRoot(root)))
       throw new MeshTargetError(
         "server-host-mismatch",
         `no space is registered at ${flags.server}; local registrations use another host spelling`,
@@ -1091,7 +1097,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       );
     // The folder's own space may be recorded here at another address; nothing records the default
     // space a folder with no records resolves to.
-    const local = localTarget(findCotalRoot(cwd), flags.server, "flag-server", flags.readOnly);
+    const local = localTarget(root, flags.server, "flag-server", flags.readOnly);
     const recorded = findMesh(local.space);
     return recorded && canonicalRoot(recorded.root) === canonicalRoot(local.root) ? { ...local, recordedServer: recorded.server } : local;
   }
