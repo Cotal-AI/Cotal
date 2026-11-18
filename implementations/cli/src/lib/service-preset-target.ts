@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { registry, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, canonicalRoot, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, readPidfile, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
+import { CommandFailure, canonicalRoot, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, readPidfile, WEB_SERVICE_ADAPTER, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
@@ -159,9 +159,14 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   if (!changed.length) return { requested, name: row.name, preset: preset.name, saved: null };
   const shown = changed.map((name) => `--${name}`).join(", ");
   if (isStackDefinition(row.name)) throw new CommandFailure("refused", "CONFLICT", `${requested} here is ${row.name}, which \`cotal up\` saved with its own ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `start it as \`cotal up\` saved it with \`cotal service start ${row.name}\`, or pass ${shown} to \`cotal up\`` });
+  const merged = Object.fromEntries(Object.entries({ ...launch.options, ...Object.fromEntries(changed.map((name) => [name, fresh.options[name]])) }).filter(([, value]) => value !== undefined));
+  // The start's options are judged with the saved ones they keep: a --read-only start of a posting
+  // dashboard keeps its --posting-creds, a pair the dashboard's launch refuses (#7589).
+  if (launch.adapter === WEB_SERVICE_ADAPTER && changed.includes("read-only") && merged["read-only"] === true && typeof merged["posting-creds"] === "string")
+    throw new CommandFailure("refused", "CONFLICT", `--read-only would keep the saved ${row.name} definition's --posting-creds, and the dashboard posts only with --no-read-only; nothing was changed`, { target: { space, name: row.name }, remedy: `remove it with \`cotal service remove ${row.name} --space ${space} --yes\`, then run \`cotal service add ${row.name} --preset ${preset.name} --space ${space} --read-only\`` });
   if (running(space, row.name)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${row.name} is running with another ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `stop it first with \`${requested === "manager" ? "cotal manager stop" : `cotal service stop ${row.name}`}\`, then start it again with the new ${shown}` });
   removableServiceInstances(space, row.name);
-  const next: ServiceDefinitionInput = { ...row.record.value, launch: { ...launch, options: Object.fromEntries(Object.entries({ ...launch.options, ...Object.fromEntries(changed.map((name) => [name, fresh.options[name]])) }).filter(([, value]) => value !== undefined)) } };
+  const next: ServiceDefinitionInput = { ...row.record.value, launch: { ...launch, options: merged } };
   const checked = validateServiceDefinition(next, space);
   if (values["dry-run"]) return { requested, name: row.name, preset: preset.name, saved: null };
   const store = serviceDefinitionStore(space, addedDefinitionStep);

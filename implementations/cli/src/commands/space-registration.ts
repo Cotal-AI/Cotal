@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, readlinkSync, rmdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -608,26 +608,38 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   // Read before any effect: a preferences file that cannot be read refuses the forget as it is.
   const preferencesRevision = readPreferences().revision;
   const registry = readMeshRegistry();
-  if (registry.unusable.some((e) => e.file === meshFile(name))) {
-    // Its own registry record cannot be read, so it names no root to release definitions at or to
-    // check for a running stack: remove the file, as for a prepared record that cannot be read.
-    removeMesh(name);
-    return forgotten(presentation, { space: name, server: null, root: null, origin: null, releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision);
-  }
-  if (registry.unusable[0]) throw registry.unusable[0];
+  const legacy = encodeURIComponent(name);
+  const damaged = registry.unusable.filter((e) => e.file === meshFile(name)
+    || !/^space\.[0-9a-f]+$/.test(legacy) && e.file === join(homeCotalDir(), "meshes", `${legacy}.json`));
+  const unrelated = registry.unusable.find((e) => !damaged.includes(e));
+  if (unrelated) throw unrelated;
+  const removeDamaged = () => { for (const error of damaged) rmSync(error.file, { force: true }); };
   const m = registry.entries.find((entry) => entry.space === name);
   if (!m) {
+    // A damaged registration names no root, but the prepared record and instance store still do.
+    const running = runningStackRoles(name);
+    if (running.length) throw refuse("LIFECYCLE_BLOCKED", `"${name}" still has running stack members (${running.join(", ")}); nothing was forgotten`, target, `stop its stack with \`cotal down --space ${name} --yes\`, then run \`cotal space forget ${name}\` again`);
     let p: ReturnType<typeof findPreparedSpace>;
     try {
       p = findPreparedSpace(name);
     } catch (e) {
       // Its own record cannot be read, so it names no root to release definitions at: remove the file.
       if (!isMeshRegistryError(e) || preparedRecordSpace(e.file) !== name) throw e;
+      removeDamaged();
       removePreparedSpace(name);
       return forgotten(presentation, { space: name, server: null, root: null, origin: "prepared", releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision);
     }
-    if (!p) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { requested: name }, "see the registered spaces with `cotal space`");
+    if (!p) {
+      if (!damaged.length) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { requested: name }, "see the registered spaces with `cotal space`");
+      removeDamaged();
+      removeMesh(name);
+      return forgotten(presentation, { space: name, server: null, root: null, origin: null, releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision);
+    }
+    const runningOwner = liveMeshOwner(p.root, name);
+    if (runningOwner) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${p.root} (${runningOwner}); nothing was forgotten`, target, `stop it with \`cotal down\` in ${p.root}, then run \`cotal space forget ${name}\` again`);
     const release = releaseStackDefinitions(p.root, name), keptServices = savedServicesLeft(name, release.kept);
+    removeDamaged();
+    removeMesh(name);
     removePreparedSpace(name);
     return forgotten(presentation, { space: name, server: null, root: p.root, origin: "prepared", releasedDefinitions: release.released, keptServices }, preferencesRevision, keptWarnings(name, release.kept));
   }
@@ -652,6 +664,7 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     if (!existsSync(m.root)) await refuseGoneFolderStack(m);
   }
   const release = releaseStackDefinitions(m.root, name), keptServices = savedServicesLeft(name, release.kept);
+  removeDamaged();
   removeMesh(name);
   const warnings = unsettled.map((member) => ({ code: "STACK_MEMBER_UNSETTLED", target, message: `the stack member ${member} is gone but was never stopped cleanly: its record has no stop receipt` }));
   forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null, releasedDefinitions: release.released, keptServices }, preferencesRevision, [...warnings, ...keptWarnings(name, release.kept)]);

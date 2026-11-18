@@ -19,7 +19,7 @@
   "mutations": [
     {
       "name": "every ctl.delivery request is answered in its own time",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "      concurrent: (req) => ANYCAST_CONTROL_OPS.has(req.op),",
       "replace": "      concurrent: () => true,",
       "afterRestore": "pnpm --filter @cotal-ai/core build",

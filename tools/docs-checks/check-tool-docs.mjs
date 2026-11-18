@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { lexer } from 'marked';
 import { readDocument } from '@cotal-ai/docs-content';
-import { cotalToolSpecs } from '../extensions/connector-core/src/tool-specs.ts';
+import { cotalToolSpecs } from '../../extensions/connector-core/src/tool-specs.ts';
 
 const specs = cotalToolSpecs({
   space: 'main', name: 'you', servers: 'nats://127.0.0.1:4222',
   subscribe: ['general'], allowSubscribe: ['general'], allowPublish: ['general'], kind: 'agent',
 });
-const document = await readDocument(new URL('../docs/mcp-tools.mdx', import.meta.url).pathname);
+const document = await readDocument(new URL('../../docs/mcp-tools.mdx', import.meta.url).pathname);
 const tokens = lexer(document.markdown);
 const normalize = text => text.replace(/\s+/g, ' ').trim();
 const inline = tokens => tokens.map(token => {
