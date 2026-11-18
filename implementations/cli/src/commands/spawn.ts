@@ -477,12 +477,12 @@ function seatExpiry(values: { "expires-in"?: string; "expires-at"?: string }, di
   return seatExpiryAt(values);
 }
 
-/** Check the public mode and spelling before catalog preparation or identity allocation. */
 /** The spawn an `--on` refusal tells the caller to rerun: the persona and `-d` as given, with the
  *  `--space` or `--server` given (#7644). */
 const spawnRerun = (values: { detach?: unknown; space?: unknown; server?: unknown }, positionals: readonly string[]): string =>
   onRerun("cotal spawn", values, [...positionals, ...(values.detach === true ? ["-d"] : [])]);
 
+/** Check the public mode and spelling before catalog preparation or identity allocation. */
 export function validateSpawnArguments(args: ParsedArgs): void {
   const values = args.values as FlagValues<typeof spawnFlags>;
   const handoffRefusal = managedHandoffRefusal();
