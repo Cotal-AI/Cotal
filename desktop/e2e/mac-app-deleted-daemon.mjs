@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 
 assert.equal(process.platform, 'darwin');
 assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
-assert(['refs/heads/measure/mac-app-deleted-daemon', 'refs/heads/fix/macos-deleted-app-service'].includes(process.env.GITHUB_REF));
+assert(['refs/heads/measure/mac-app-deleted-daemon', 'refs/heads/fix/macos-deleted-app-service', 'refs/heads/fix/macos-missing-program-postcut'].includes(process.env.GITHUB_REF));
 const root = join(process.env.RUNNER_TEMP, 'mac-app-deleted-daemon');
 const output = join(root, 'evidence');
 mkdirSync(output, { recursive: true, mode: 0o700 });
