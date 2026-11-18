@@ -30,10 +30,10 @@ export {
  *  user-auth bearer and an open mesh present no fixed credential, so they keep re-establishing. A
  *  credential the command minted from the space's trust says to run the command again when it is
  *  rejected, because a new run mints one from the trust the space has now. */
-export async function credentialEnded(conn: Connection): Promise<ConnectRefusal | undefined> {
+export async function credentialEnded(conn: Connection, credential?: Parameters<typeof reachableOrThrow>[2]): Promise<ConnectRefusal | undefined> {
   if (conn.creds === undefined) return undefined;
   try {
-    await reachableOrThrow(conn.server, { creds: conn.creds, ...(conn.tls ? { tls: true } : {}) });
+    await reachableOrThrow(conn.server, { creds: conn.creds, ...(conn.tls ? { tls: true } : {}) }, credential);
   } catch (e) {
     if (!isConnectRefusal(e)) throw e;
     if (e.kind !== "permanent") return undefined;

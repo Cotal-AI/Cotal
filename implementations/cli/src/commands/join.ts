@@ -178,6 +178,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   let server: string;
   let userConnection: Connection | undefined;
   let mintedFrom: SpaceAuth | undefined;
+  let credentialContext: Parameters<typeof reachableOrThrow>[2];
   // A self-minted session's issuance: the token its endpoint reads its generation with, and the
   // retirement of its lifecycle's gate, which runs once when the session leaves.
   let acceptedToken: string | undefined;
@@ -212,7 +213,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
-    await reachableOrThrow(server, auth);
+    credentialContext = values.creds ? { space, path: values.creds, serverExplicit: (values.server ?? link?.servers) !== undefined, provision: true } : undefined;
+    await reachableOrThrow(server, auth, credentialContext);
     if (values.creds) checkCredentialJoin(auth.creds!, space, lifecycleUid!, channel);
   } else {
     // Self-mint: a bare `cotal join` becomes a console on the running mesh. In auth mode it self-provisions
@@ -417,7 +419,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   const checkCredential = () => {
     if (!started || checking || credential === undefined) return;
     checking = true;
-    void credentialEnded(credential).catch(() => undefined).then((refusal) => {
+    void credentialEnded(credential, credentialContext).catch(() => undefined).then((refusal) => {
       checking = false;
       if (refusal) lose(refusal);
     });
