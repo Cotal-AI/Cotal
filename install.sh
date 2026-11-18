@@ -1202,9 +1202,14 @@ main() {
   link_node_bin
 
   install_cotal
+  write_launcher
+  if ! _version_output=$(COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 "$BIN_DIR/cotal" --version 2>&1); then
+    printf '%s\n' "$_version_output" >&2
+    die "The installed Cotal could not start." \
+      "Run the installer again without --version to install the latest release."
+  fi
   ok_line "Cotal $INSTALLED_VERSION"
 
-  write_launcher
   if [ -n "$PREVIOUS_VERSION" ] || [ -e "${COTAL_HOME:-$HOME/.cotal}/daemon/service-unit.json" ]; then
     if ! COTAL_INSTALL_RECONCILE=1 "$BIN_DIR/cotal" update; then
       die "Cotal was installed, but reconciliation did not complete." \

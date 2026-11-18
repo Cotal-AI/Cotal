@@ -30,6 +30,10 @@ You can rerun it with Cotal's `nodebin` directory on PATH without replacing its 
 It installs inside your home directory and checks downloaded Node.js files against their published SHA-256 sums.
 It uses a suitable Node.js 22.10 or newer already on your machine, or installs one for Cotal.
 
+Before reporting success, the installer runs the installed launcher with `--version`.
+If it cannot start, installation exits with an error and prints the command's output.
+Run the installer again without `--version` to select the latest release.
+
 The launcher goes in `~/.local/bin/cotal`.
 The install root defaults to `${XDG_DATA_HOME:-~/.local/share}/cotal`.
 The installer updates your shell configuration to add the launcher directory to PATH.
