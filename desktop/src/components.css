@@ -36,7 +36,9 @@
 .update-banner > span { flex: 1; }
 .update-banner button { flex-shrink: 0; }
 .app.settings-open #journey { display: none; }
-.app.settings-open main { padding-block: 8px; justify-content: flex-start; }
+.app.settings-open { overflow: hidden; }
+.app.settings-open .sidebar { flex-shrink: 0; }
+.app.settings-open main { overflow: hidden; padding-block: 8px; justify-content: flex-start; }
 #move-offer { margin-top: 16px; padding-top: 16px; border-top: 2px solid var(--rule); }
 .header-control { border: 2px solid var(--ink); border-radius: 999px; padding: 4px 8px; min-height: 32px; background: var(--card); color: var(--ink); font: 600 11px/1.4 var(--mono); }
 #settings-startup { border-top: 2px solid var(--rule); padding-top: var(--s-1); }
@@ -176,7 +178,10 @@ main { flex: 1; display: flex; flex-direction: column; justify-content: safe cen
 .connection-card { flex-shrink: 0; }
 footer { flex-shrink: 0; }
 @media (max-width: 640px) { .sidebar { padding: 8px 24px; } main { padding: 8px 24px; } #journey { margin-bottom: 16px; } }
-.status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 2px solid var(--ink); border-radius: 999px; background: var(--card); }
+#settings-panel:has(#service-log[open]) > :not(.settings-heading):not(#service-log) { display: none; }
+#service-log-text { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--paper); border: 1px solid var(--rule); }
+#service-log > p, #service-log > button { margin-top: 8px; }
+.status-pill { min-height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 2px solid var(--ink); border-radius: 999px; background: var(--card); }
 #tray-label { border: 0; padding: 0; background: transparent; }
 #tray-indicator { margin: 0; position: static; }
 .primary { box-shadow: 4px 4px 0 var(--gold); }
@@ -248,7 +253,7 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 .connected-spaces-scroll, #agent-list, #connected-panel, .settings-card { scrollbar-width: none; }
 .connected-spaces-scroll, #agent-list { padding-right: 10px; }
 .connected-spaces-scroll::-webkit-scrollbar, #agent-list::-webkit-scrollbar, #connected-panel::-webkit-scrollbar, .settings-card::-webkit-scrollbar { display: none; }
-.settings-card { scroll-padding-block: 16px; transition: none; padding-bottom: 9px; }
+.settings-card { flex-shrink: 1; min-height: 0; scroll-padding-block: 16px; transition: none; padding-bottom: 9px; }
 .machine { padding: 4px; padding-left: 8px; }
 #edit-computer-name { margin: 0; }
 @media (max-width: 460px) {

@@ -387,7 +387,8 @@ function clearDetails(): void {
  *  Any other error stays until the person acts on it. */
 function refusal(error: unknown, fromStatus = false): void {
   const exact = error instanceof Error ? error.message : String(error);
-  text("refusal-detail", exact); el("details").hidden = false;
+  text("refusal-detail", error instanceof DaemonRefusal ? `${error.code}${error.native ? ` (${error.native})` : ""}\n${exact}` : exact); el("details").hidden = false;
+  el<HTMLDetailsElement>("details").open = true;
   problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
   statusProblem = fromStatus;
   notice("", true);
@@ -481,7 +482,7 @@ function showStage(next: Stage, focus = false): void {
   el("service-explanation").hidden = loginActive;
   text("step-caption", finished ? "Ready for your next agent" : `Step ${["welcome", "sign-in", "connect", "finished"].indexOf(next) + 1} of 4`);
   el("step-caption").hidden = finished;
-  if (finished) el("details").hidden = true;
+  if (finished && !problem) el("details").hidden = true;
   let title: string, description: string;
   if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
@@ -1020,6 +1021,35 @@ function openDashboard(): void {
   else { openSettings(); notice("The dashboard needs a verified connection and the space's saved address. Refresh spaces before trying again."); }
 }
 el("dashboard").addEventListener("click", openDashboard);
+async function readServiceLog(): Promise<void> {
+  const button = el<HTMLButtonElement>("refresh-log");
+  if (button.disabled) return;
+  button.disabled = true; text("service-log-status", "Reading recent output…");
+  try {
+    const result = await request({ op: "log" });
+    if (typeof result.text !== "string") throw new Error("The background service log reply is unsupported.");
+    text("service-log-text", result.text);
+    text("service-log-status", !result.text ? "No background service log has been recorded." : result.truncated ? "Showing the most recent 8 KB." : "Recent background service output.");
+  } catch (error) {
+    text("service-log-text", "");
+    text("service-log-status", error instanceof Error ? error.message : String(error));
+  } finally { button.disabled = false; }
+}
+el("refresh-log").addEventListener("click", () => void readServiceLog());
+el("service-log").addEventListener("toggle", () => { if (el<HTMLDetailsElement>("service-log").open) void readServiceLog(); });
+el("connection-status").addEventListener("click", () => {
+  settingsOpen = false; renderSettings(); showStage(stage);
+  if (!el("details").hidden) {
+    el<HTMLDetailsElement>("details").open = true;
+    el("details").querySelector<HTMLElement>("summary")!.focus();
+  } else {
+    const issue = computerAccount && computerSpaces(computerAccount).find(row => row.lastRefusal || !["connected", "approval-pending", "removed on this computer", "starting", "connecting", "not-requested"].includes(row.observed));
+    const row = issue ? [...el("connected-spaces").querySelectorAll<HTMLElement>("li")].find(row => row.dataset.space === issue.space) : undefined;
+    if (row) row.tabIndex = -1;
+    (row ?? el("connection-title")).focus();
+    (row ?? el("connection-title")).scrollIntoView({ block: "nearest" });
+  }
+});
 function openSettings(): void {
   if (busy || loginActive) return;
   editing = false; addingSpace = false; choosingSpace = false;

@@ -41,6 +41,8 @@ pub enum DesktopRequest {
     About {},
     #[serde(rename = "status")]
     Status {},
+    #[serde(rename = "log")]
+    Log {},
     #[serde(rename = "install")]
     Install {},
     #[serde(rename = "name")]

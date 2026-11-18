@@ -370,7 +370,7 @@ test("Start service starts a stopped background service and leaves no notice", a
     await a.tick();
     assert.equal(a.node("recover").textContent, "Start service");
     assert.equal(a.node("connection-description").textContent, "Start it again to continue.");
-    assert.equal(a.node("refusal-detail").textContent, "The background service is installed but stopped. Choose Start service to start it.");
+    assert.equal(a.node("refusal-detail").textContent, "NOT_RUNNING\nThe background service is installed but stopped. Choose Start service to start it.");
     assert.equal(a.node<HTMLButtonElement>("connect").disabled, true);
     const from = a.calls.length;
     await a.click("recover");
@@ -385,7 +385,7 @@ test("Start service starts a stopped background service and leaves no notice", a
 
 test("a service start that does not answer within 15 seconds keeps its refusal across NOT_RUNNING checks and clears when the service answers", async () => {
   const reason = "the native daemon source names another installation; startup refused";
-  const expectedDetail = `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: ${reason}\nNext: choose Check status.`;
+  const expectedDetail = `DEPENDENCY_UNAVAILABLE (NOT_ANSWERING)\nCotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: ${reason}\nNext: choose Check status.`;
   const a = await app({ installed: true });
   try {
     await a.click("login"); await a.login();
@@ -782,7 +782,7 @@ for (const setupCode of ["NO_AVAILABLE_CONNECTOR", "SEATS_ACTIVE"]) test(`${setu
   try {
     await a.click("connect"); await a.setup();
     assert.equal(a.node("recovery-panel").hidden, false);
-    assert.equal(a.node<HTMLDetailsElement>("details").open, false);
+    assert.equal(a.node<HTMLDetailsElement>("details").open, true);
     assert.match(a.node("refusal-detail").textContent!, new RegExp(setupCode));
     a.options.setupCode = undefined; await a.click("recover"); await a.setup();
     assert.equal(a.node("connection-title").textContent, "This computer is connected");

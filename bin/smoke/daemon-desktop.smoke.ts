@@ -77,6 +77,17 @@ try {
   check("malformed input is framed before daemon-path resolution", malformed.ok === false && malformed.error.code === "BAD_REQUEST" && !JSON.stringify(malformed).includes("PRIVATE_PATH_MARKER"));
   check("metadata and path refusals created no daemon state", !existsSync(paths.socket) && !existsSync(paths.state));
   const absent = await request({ op: "status" });
+  const emptyLog = await request({ op: "log" });
+  check("missing log is an explicit empty result without starting the service", emptyLog.ok === true && emptyLog.result.text === "" && !existsSync(paths.socket));
+  mkdirSync(paths.state, { recursive: true, mode: 0o700 });
+  const logFile = join(paths.state, "daemon.log");
+  writeFileSync(logFile, `earlier output\n${"x".repeat(9000)}\ndaemon startup refused: test reason\neyJtest.token.signature\n`, { mode: 0o600 });
+  const recentLog = await request({ op: "log" });
+  check("recent log is bounded and preserves the service reason", recentLog.ok === true && recentLog.result.truncated === true && recentLog.result.text.includes("daemon startup refused: test reason") && !recentLog.result.text.includes("earlier output") && !recentLog.result.text.includes("eyJtest"));
+  const foreignLog = await request({ op: "log", path: logFile });
+  check("log never accepts a renderer path", foreignLog.ok === false && foreignLog.error.code === "BAD_REQUEST");
+  rmSync(logFile);
+
   check("missing daemon is not reported connected", absent.ok === false);
   daemon = await serveDaemon({ paths, version, peerUid: (sock) => peerCredentials(sock).uid });
   const status = await request({ op: "status" });
