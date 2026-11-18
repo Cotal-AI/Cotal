@@ -30,6 +30,7 @@ import {
 } from "@cotal-ai/core";
 import {
   stoppedLoopbackListener,
+  stackRunsUnderOtherHome,
   accountInventory,
   authDir,
   isCommandFailure,
@@ -1070,6 +1071,8 @@ function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, ga
   const { state, pid, detail } = legacy;
   const row: ProcessRow = { ...legacy, source: journal ? "owned-service" : "legacy-pidfile", legacyPidfile: { state, pid, detail }, ownedService: null };
   if (!journal) return row;
+  if (stackRunsUnderOtherHome(journal.root, journal) && journal.recovery?.home !== homeCotalDir())
+    return { ...row, state: "unknown", pid: null, detail: `stack member records belong to ${journal.recovery?.home ?? "another Cotal home"}` };
   try {
     const instances = serviceInstances(journal.space, STACK_DEFINITION.broker);
     if (instances.length === 0) {

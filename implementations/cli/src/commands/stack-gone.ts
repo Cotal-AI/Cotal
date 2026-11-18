@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, getCurrent, isCommandFailure, localMeshesForRoot, oneLine, presentationOf,
-  readProcessCommand, recordOperationSpace, removeMeshesByRoot, renderReport, writeResult, type Report,
+  readProcessCommand, findMesh, removeMesh, recordOperationSpace, removeMeshesByRoot, renderReport, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -21,7 +21,7 @@ import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/s
 import { observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts } from "../lib/service-process.js";
 import { refuseRecordedSupervisor } from "../lib/service-supervision.js";
-import { STACK_DEFINITION, goneStackRoot, processGone, stackDefinitionsAt, type StackRole } from "../lib/stack-journal.js";
+import { STACK_DEFINITION, stackRecoveryHost, goneStackRoot, processGone, stackDefinitionsAt, type StackRole } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 /** How long a member has to exit after SIGTERM. The manager first stops its agents by its default policy. */
@@ -153,6 +153,33 @@ export async function goneRootStackDown(space: string, root: string, values: Par
   validateGoneRootDownArguments(values);
   recordOperationSpace(space);
   const presentation = presentationOf(values), target = { space, root };
+  const native = findMesh(space);
+  if (native?.origin === "up" && !stackDefinitionsAt(space, root).length) {
+    if (native.nativeHost !== stackRecoveryHost()) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the native stack registration does not pin this machine, boot and account; no process was stopped", { target, remedy: "restore the project folder, then stop its stack from the launching machine and account" });
+    const members = native.nativeMembers;
+    if (!members?.length) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's folder is gone and its registration has no creation-pinned members; no process was stopped", { target, remedy: "restore the project folder to its recorded path, then run `cotal down --yes` there" });
+    for (const member of members) {
+      const identity = assertRecordIdentity(member.process).kind;
+      if (identity !== "match" && identity !== "gone" && identity !== "mismatch") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the ${member.role}'s recorded process identity cannot be checked; nothing was stopped`, { target });
+    }
+    if (values["dry-run"] !== true) {
+      if (!values.yes) throw new ConfirmationRequired("stopping the creation-pinned members of a missing folder requires --yes", { target, remedy: `run \`cotal down --space ${space} --yes\`` });
+      for (const member of [...members].sort((a, b) => STOP_ORDER.indexOf(a.role) - STOP_ORDER.indexOf(b.role))) {
+        const before = assertRecordIdentity(member.process).kind;
+        if (before === "gone" || before === "mismatch") continue;
+        if (before !== "match") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the ${member.role}'s process identity became unavailable; later members were not stopped`, { target });
+        try { process.kill(member.process.pid, "SIGTERM"); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `SIGTERM to the ${member.role} was not confirmed; later members were not stopped`, { target }); }
+        const deadline = Date.now() + EXIT_WINDOW_MS[member.role];
+        while (assertRecordIdentity(member.process).kind === "match" && Date.now() < deadline) await delay(100);
+        const after = assertRecordIdentity(member.process).kind;
+        if (after !== "gone" && after !== "mismatch") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the ${member.role}'s exit after SIGTERM was not confirmed; later members were not stopped`, { target });
+      }
+      removeMesh(space);
+    }
+    writeResult(presentation, { command: "down", target, result: { kind: "gone-root-native-stack-stop", members, preview: values["dry-run"] === true }, noOp: values["dry-run"] === true }, () => ({ space, sections: [{ title: values["dry-run"] ? "Missing-folder stack preview" : "Stack stopped; its folder was gone", blocks: [{ kind: "lines", lines: [root, ...members.map((member) => `${member.role}: pid ${member.process.pid}`)] }] }] }));
+    return;
+  }
   const members = readMembers(space, root);
   if (values["dry-run"] === true) {
     writeResult(presentation, { command: "down", target, result: { kind: "gone-root-stack-stop-preview", ...target, members: members.map((member) => ({ role: member.role, definition: member.definition.name, instanceId: member.instance.name, pid: member.pid, process: member.live ? "running" : "gone" })) }, noOp: true }, () => {

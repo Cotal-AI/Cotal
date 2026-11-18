@@ -226,6 +226,14 @@ A command that connects to a static-auth
 space, such as `send` or `history`, is refused with `DEPENDENCY_UNAVAILABLE`, because the seed went
 with the folder, and its Next names the same `down`.
 
+A default `cotal up` stack also keeps its members' process creation pins in its local registration.
+When its project folder is gone, `status` and `space show` report that root as gone, and
+`cotal down --space <space> --yes` stops those exact members without needing the missing folder.
+A registration from an older start with no creation pins requires restoring the folder first.
+
+A controller stack reached from another Cotal home names its recorded launching `COTAL_HOME`.
+Run the command with that home rather than repeating a recovery stop under the wrong home.
+
 
 ### Missing home records
 
