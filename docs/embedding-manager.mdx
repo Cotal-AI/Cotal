@@ -56,6 +56,9 @@ old key to expire instead. A lease that could not be read or written is a plain 
 
 ### Signer custody
 
+The manager registers its control service and manages session credentials through an internal
+serve coordinator. Renewal and shutdown share the same current authority holders.
+
 Unlike delivery, the manager is **not** a pre-minted-scoped-cred daemon (auth-service is also a
 signer: it holds fewer artifacts than the full trust bundle, but its data-account signing seed still
 grants complete data-account mint authority on compromise, so this is not least-privilege). On `start()`

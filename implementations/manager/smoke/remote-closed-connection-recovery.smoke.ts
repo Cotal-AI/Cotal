@@ -70,15 +70,20 @@ const family = async (ttl: number) =>
 type Internals = {
   dial(opts: object): Promise<NatsConnection>;
   dialServeConnection(state: unknown, readCreds: () => string): Promise<{ nc: NatsConnection; handle: { stop(): Promise<void> } }>;
-  dialSessionLedgerConnection(sw: { nc: NatsConnection; creds?: string }, identity: Identity): Promise<void>;
   sessionLedgerIdentity?: Identity;
   sessionLedgerConn?: { nc: NatsConnection; creds?: string };
-  remoteSupervisorCreds?: string; remoteExecutorCreds?: string; goalWriterCreds?: string; sessionLedgerCreds?: string;
+  remoteSupervisorCreds?: string;
+  remoteExecutorCreds?: string;
+  goalWriterCreds?: string;
+  sessionLedgerCreds?: string;
   serviceServe?: { nc: NatsConnection; identity: Identity; grant: { epoch: number }; creds?: string };
   ep: { reconnect(): Promise<void> };
   remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] };
   leaseStopping: boolean;
   renewRemoteBeforeRedial(label: string, read: () => string | undefined): Promise<void>;
+  servePlane: {
+    dialSessionLedgerConnection(sw: { nc: NatsConnection; creds?: string }, identity: Identity): Promise<void>;
+  };
 };
 
 // The operator-visible reason each failed re-dial attempt logs.
@@ -138,7 +143,7 @@ try {
   };
   const sw: { nc: NatsConnection; creds?: string } = { nc: undefined as never, creds: initial.sessionLedger };
   m.sessionLedgerConn = sw;
-  await m.dialSessionLedgerConnection(sw, held.sessionLedger);
+  await m.servePlane.dialSessionLedgerConnection(sw, held.sessionLedger);
   const first = sw.nc;
 
   await cell("the manager's session-ledger connection is live under the initial JWT", async () => {
