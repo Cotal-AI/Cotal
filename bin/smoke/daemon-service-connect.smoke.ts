@@ -268,6 +268,7 @@ let tokenGate: ((res: ServerResponse) => Promise<void>) | undefined;
 let exchangeGate: ((view: unknown, res: ServerResponse) => Promise<boolean>) | undefined;
 const exchangeReads: Array<{ view: unknown; managerInstanceId: unknown }> = [];
 let unsupportedComputerReads = 0;
+let custodyOldFails = false;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/sign-out") {
@@ -305,6 +306,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     res.end(JSON.stringify({ v: 1, machineId: req.url.split("/")[3], revision: accountRevision })); return;
   }
   if (accountOnly && req.url?.startsWith("/api/cli/machines/")) {
+    if (process.argv.includes("--account-custody-repro") && req.headers.host === new URL(idpOrigin).host && custodyOldFails) { res.writeHead(503); res.end("{}"); return; }
     const machineId = req.url.split("/")[4];
     if (req.method === "PUT" && process.argv.includes("--account-unsupported")) { res.writeHead(404); res.end("{}"); return; }
     if (req.method === "PUT") {
@@ -317,12 +319,20 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     if (accountHang && req.method === "GET") { accountHangs++; return; }
     if (accountHttp !== 200) { res.writeHead(accountHttp); res.end(accountHttp === 304 ? undefined : "{}"); return; }
     const snapshot = catalog as { account: unknown; spaces: { id: string }[] };
-    const spaces = accountDesired ? snapshot.spaces : [];
+    const spaces = accountDesired ? snapshot.spaces.map(row => {
+      if (!process.argv.includes("--account-custody-repro") || req.headers.host === new URL(idpOrigin).host) return row;
+      if (process.env.CUSTODY_RELEASE_ENTRY) return { id: row.id, slug: row.id, name: row.id, kind: "team", role: "owner", unavailable: "fixture authority unavailable" };
+      const aliasRow = JSON.parse(JSON.stringify(row));
+      const auth = aliasRow.registration.userAuth;
+      auth.idp.url = `http://${req.headers.host}/api/auth`;
+      for (const field of ["url", "agentProvisioningUrl", "managerAuthorityUrl"]) if (auth.endpoints[field]) auth.endpoints[field] = auth.endpoints[field].replace(idpOrigin, `http://${req.headers.host}`);
+      return aliasRow;
+    }) : [];
     res.setHeader("etag", JSON.stringify(accountRevision));
-    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
+    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: process.argv.includes("--account-custody-repro") ? { ...(snapshot.account as object), idpUrl: `http://${req.headers.host}/api/auth` } : snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
   }
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
-  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(catalog));
+  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(process.argv.includes("--account-custody-repro") ? { ...(catalog as object), account: { ...(catalog as { account: object }).account, idpUrl: `http://${req.headers.host}/api/auth` } } : catalog));
   const accountTarget = [...accountTargets].find(([space]) => req.url?.startsWith(`/account-space/${space}/`));
   if (accountOnly && accountTarget) {
     const [space, target] = accountTarget;
@@ -2017,7 +2027,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           writeFileSync(join(home, "update-attempt.json"), JSON.stringify({ version: "0.151.3", failures: 0, result: "fixture due", next: 0 }));
         }
       }
-      let cliEntry = join(repo, "bin", "dist", "cotal.js");
+      let cliEntry = process.env.CUSTODY_RELEASE_ENTRY ?? join(repo, "bin", "dist", "cotal.js");
       const npmRun = async (args: string[]) => {
         const child = spawn("npm", args, { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let output = "";
@@ -2518,6 +2528,42 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           if (!hostedShape) await approve(host, ON, fixture.owner);
           await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.machineService === undefined), "A1 desired 200 connects real broker service");
           await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          if (process.argv.includes("--account-custody-repro")) {
+            const alias = idpUrl.replace("127.0.0.1", "[::ffff:127.0.0.1]");
+            const session = loadIdpSession(home, idpUrl)!;
+            custodyOldFails = true;
+            saveIdpSession(home, alias, { ...session, sub: undefined });
+            const refreshed = await cli("spaces", "--refresh");
+            console.log("custody alias refresh", JSON.stringify(refreshed));
+            await sleep(6500);
+            const status = await observed();
+            const custody = JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8"));
+            console.log("custody reproduction", JSON.stringify({ status: status.account, custody }));
+            if (process.env.CUSTODY_RELEASE_ENTRY) {
+              const before = await plainCommand("status");
+              console.log("UNBLOCK BEFORE\n" + before.out);
+              const disconnected = await cli("service-disconnect", "--space", ON);
+              console.log("UNBLOCK DISCONNECT", JSON.stringify(disconnected));
+              const reconnected = await cli("service-connect", "--space", ON);
+              console.log("UNBLOCK CONNECT", JSON.stringify(reconnected));
+              console.log("UNBLOCK SETUP", JSON.stringify(await cli("setup", "--space", ON, "--idp", alias)));
+              await sleep(6500);
+              console.log("UNBLOCK AFTER\n" + (await plainCommand("status")).out);
+              return;
+            }
+            const { signedInMachineAccounts } = await import("@cotal-ai/auth");
+            const accounts = signedInMachineAccounts(home);
+            const holder = accounts.find(account => account.idpUrl === idpUrl)!;
+            const current = accounts.find(account => account.idpUrl.includes("[::ffff:"))!;
+            check("fixture presents matching issuer and subject at different addresses", holder.issuer === current.issuer && holder.sub === current.sub && holder.ownerKey !== current.ownerKey);
+            check("copied identity is refused and status names the holder", status.account.spaces.some((row: any) => row.space === ON && row.lastRefusal === `The local space connection is held by ${idpUrl}.`), status.account);
+            check("copied identity leaves custody with the holder", custody.spaces[ON]?.owner === holder.ownerKey, custody);
+            check("registry ownership stays with the holder", findMesh(ON)?.catalogOwner === holder.ownerKey);
+            check("same account computer is listed once", status.account.accounts.length === 1 && status.account.accounts[0].machineId === status.account.machineId, status.account);
+            const human = await plainCommand("status");
+            check("CLI lists same account computer once and names the holder", human.code === 0 && human.out.split("Account computer:").length === 2 && human.out.includes(`The local space connection is held by ${idpUrl}.`), human);
+            return;
+          }
           const onCatalogId = (catalog as { spaces: { id: string; slug: string }[] }).spaces.find(row => row.slug === ON)!.id;
           await waitAccount(s => { const instanceId = s.managers?.find((r: any) => r.space === ON && r.state === "answering")?.instanceId; return typeof instanceId === "string" && accountRegistration?.managers?.some(row => row.spaceId === onCatalogId && row.instanceId === instanceId) === true; }, "A2r registration names the answering Manager by catalog space and instance");
           if (!process.argv.includes("--account-restart-repro")) check("A2f unapproved sibling stays pending while approved space progresses", (await observed()).account?.spaces?.some((r: any) => r.space === DENY && r.observed === "connected" && r.lastRefusal === undefined && r.machineService === (hostedShape ? undefined : "approval-pending")));

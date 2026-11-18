@@ -673,7 +673,8 @@ the damaged record and clears the warning.
 
 After sign-in, the daemon registers an account computer with hosts that support it.
 With several accounts, the status summary prefers a supported provider and breaks ties by
-provider URL, then subject. The `accounts` list retains each account's state. Catalog refresh
+provider URL, then subject. The `accounts` list reports each computer UUID once, preferring a
+supported provider when several sign-in addresses identify the same account. Catalog refresh
 replies include an optional `failedProviders` list of provider URLs. The desktop app reports
 other providers' failures as a notice when the active provider refreshed successfully.
 Each issuer and subject pair has its own protected, persisted computer UUID. It sends a metadata
@@ -719,6 +720,8 @@ the daemon's machine status service needs the space owner's approval. Until then
 nothing and the daemon asks again every 30 seconds.
 A host without the route reports account computers unsupported and keeps per-space behavior.
 Authentication refusal asks you to sign in again. Network failures retain existing connections.
+When another account holds a local space connection, the daemon refuses to transfer it.
+Status names the holding account's sign-in address when the retained identity is known.
 
 On hosts that support account computers, setup with `--space` and local connect write the
 computer's account intent with a fresh revision. A conflicting revision is read again and retried
