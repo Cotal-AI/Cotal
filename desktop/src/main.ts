@@ -1,6 +1,6 @@
 import { renderAppUpdate, appUpdateNotice, appliedUpdateSummary, type AppUpdate, type AppUpdateReceipt } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
-import { renderAgents } from "./agents";
+import { renderAgents, type AgentAction, type LocalAgent } from "./agents";
 import { updateScrollThumb } from "./scrollbars";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
@@ -644,9 +644,10 @@ function sizeSpaceList(): void {
     rule.maxHeight = '108px';
     const actions = el("another-space");
     const overflow = actions.getBoundingClientRect().bottom - panel.getBoundingClientRect().bottom;
-    if (overflow > 0 && agentList.children.length) {
-      const rows = Math.max(1, Math.floor((agentList.clientHeight - overflow) / 36));
-      rule.maxHeight = `${rows * 36}px`;
+    if (overflow > 0 && agentList.firstElementChild) {
+      const rowHeight = parseFloat(getComputedStyle(agentList.firstElementChild).height);
+      const rows = Math.max(1, Math.floor((agentList.clientHeight - overflow) / rowHeight));
+      rule.maxHeight = `${rows * rowHeight}px`;
     }
   }
   const list = el("connected-spaces");
@@ -832,6 +833,34 @@ function state(value: string, space = selectedSpace()): void {
   else showStage(stage);
   if (isTauri()) void refreshPresence(verified).catch(refusal);
 }
+const pendingAgentActions = new Map<string, AgentAction>();
+function renderAgentRows(status: Record<string, unknown>): void {
+  renderAgents(status, el("running-agents"), { pending: pendingAgentActions, act: (agent, op) => void actOnLocalAgent(agent, op) });
+}
+async function actOnLocalAgent(agent: LocalAgent, op: AgentAction): Promise<void> {
+  if (!agent.lifecycleUid) return;
+  const key = JSON.stringify([agent.space, agent.name, agent.lifecycleUid]);
+  if (pendingAgentActions.has(key)) return;
+  pendingAgentActions.set(key, op);
+  if (serviceStatus) renderAgentRows(serviceStatus);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      request({ op, space: agent.space, lifecycleUid: agent.lifecycleUid }),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(op === "agent-stop" ? "Stop did not finish within 30 seconds. Check whether the agent is still running before trying again." : "Opening the terminal did not finish within 30 seconds. Check your terminal before trying again.")), 30_000); }),
+    ]);
+    if (op === "agent-terminal") {
+      if (result.started !== true) throw new Error("The app did not confirm that it opened the terminal.");
+      notice(`Terminal opened for ${agent.name}.`);
+    }
+  } catch (error) { refusal(error); }
+  finally {
+    if (timer) clearTimeout(timer);
+    pendingAgentActions.delete(key);
+    if (serviceStatus) renderAgentRows(serviceStatus);
+    if (op === "agent-stop") void refresh();
+  }
+}
 async function refresh(): Promise<void> {
   const space = selectedSpace();
   const generation = ++refreshGeneration;
@@ -843,7 +872,7 @@ async function refresh(): Promise<void> {
     serviceStatus = status;
     ready = status.state === "ready";
     if (statusProblem || (ready && problem === "NOT_ANSWERING")) clearDetails();
-    renderAgents(status, el("running-agents"));
+    renderAgentRows(status);
     requestAnimationFrame(sizeSpaceList);
     daemonVersion = String(status.version);
     updateStatus = status.update as UpdateStatus | undefined;

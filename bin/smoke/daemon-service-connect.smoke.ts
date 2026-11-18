@@ -111,6 +111,7 @@ import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../../implementations/auth/src/lifecycle-registry.js";
 import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
+import { exchangeDesktopRequest } from "../daemon/desktop.js";
 import { daemonConnectIntentFile } from "../daemon/service.js";
 import { runSetup } from "../daemon/setup.js";
 import { serveDaemon } from "../daemon/server.js";
@@ -2750,6 +2751,54 @@ process.stdin.once('data', () => {
               check("S0b CLI JSON exposes the same real inventory", inventoryJson.doc.result?.agents?.some((row: any) => row.space === ON && row.state === "read" && row.agents.length === count), inventoryJson);
               const inventoryText = await plainCommand("status");
               check("S0c CLI text names real seat and folder", inventoryText.code === 0 && inventoryText.out.includes("shutdown_seat_0") && inventoryText.out.includes(participant), inventoryText);
+              if (process.argv.includes("--desktop-agent-attach-probe")) {
+                const lifecycleUid = inventory.agents[0].lifecycleUid;
+                assert.equal(typeof lifecycleUid, "string");
+                const request = { op: "agent-terminal", space: ON, lifecycleUid } as const;
+                const answer = await exchangeDesktopRequest({ paths }, request);
+                assert.ok(answer.ok && "result" in answer && "argv" in answer.result, JSON.stringify(answer));
+                const argv = answer.result.argv;
+                assert.deepEqual(argv, [process.execPath, cliEntry, "attach", "shutdown_seat_0", "--on", manager.instanceId, "--space", ON]);
+                assert.doesNotMatch(JSON.stringify(answer), /eyJ[A-Za-z0-9_-]{12,}|Bearer /);
+                const command = argv.map(value => `'${value.replaceAll("'", "'\\''")}'`).join(" ");
+                const attach = spawn("script", ["-qefc", command, "/dev/null"], { cwd: root, env: { ...env, TERM: "xterm" }, stdio: ["pipe", "pipe", "pipe"] });
+                let output = "";
+                let sent = false;
+                const collect = (chunk: Buffer) => {
+                  output += chunk.toString();
+                  if (!sent && /attached to/i.test(output)) {
+                    sent = true;
+                    setTimeout(() => { if (!attach.stdin.destroyed) attach.stdin.write("\x1d"); }, 100);
+                  }
+                };
+                attach.stdout.on("data", collect);
+                attach.stderr.on("data", collect);
+                const timeout = setTimeout(() => attach.kill("SIGTERM"), 45_000);
+                try {
+                  const code = await new Promise<number | null>((resolve, reject) => { attach.once("error", reject); attach.once("close", resolve); });
+                  check("CLI attach reaches the real hosted seat", sent && code === 0, output);
+                  console.log("ATTACH PROBE", JSON.stringify(output));
+                } finally { clearTimeout(timeout); }
+                const stopped = await exchangeDesktopRequest({ paths }, { ...request, op: "agent-stop" });
+                assert.equal(stopped.ok, true, JSON.stringify(stopped));
+                await waitAccount(s => s.agents?.some((row: any) => row.space === ON && row.state === "read" && !row.agents.some((seat: any) => seat.lifecycleUid === lifecycleUid && seat.state === "running")), "terminal selection exits");
+                const stale = await exchangeDesktopRequest({ paths }, request);
+                check("terminal command refuses the exited lifecycle", !stale.ok && stale.error.code === "TARGET_NOT_FOUND", stale);
+                return;
+              }
+              if (process.argv.includes("--desktop-agent-stop")) {
+                const lifecycleUid = inventory.agents[0].lifecycleUid;
+                assert.equal(typeof lifecycleUid, "string");
+                const request = { op: "agent-stop", space: ON, lifecycleUid } as const;
+                const stopped = await exchangeDesktopRequest({ paths }, request);
+                check("desktop Stop reaches the hosted Manager", stopped.ok, stopped);
+                await waitAccount(s => s.agents?.some((row: any) => row.space === ON && row.state === "read" && !row.agents.some((seat: any) => seat.lifecycleUid === lifecycleUid && seat.state === "running")), "desktop Stop removes the selected running seat");
+                const refused = await exchangeDesktopRequest({ paths }, request);
+                check("desktop Stop refuses the exited lifecycle", !refused.ok && refused.error.code === "TARGET_NOT_FOUND", refused);
+                const unknown = await exchangeDesktopRequest({ paths }, { ...request, lifecycleUid: "not-a-hosted-lifecycle" });
+                check("desktop Stop rejects a lifecycle that the local Manager did not report", !unknown.ok && unknown.error.code === "TARGET_NOT_FOUND", unknown);
+                return;
+              }
               shutdownLatency = process.argv.includes("--hosted-latency");
               if (shutdownLatency) brokerReplyDelay = 150;
               const started = Date.now();

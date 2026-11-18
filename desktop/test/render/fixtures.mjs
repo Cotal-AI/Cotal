@@ -326,6 +326,84 @@ export const scenarios = [
       ["acme-team", ...(mode === "spaces" ? ["research"] : [])].map(space => ({ space, state: "read", agents: Array.from({ length: mode === "many" ? 12 : 1 }, (_, i) => ({ name: mode === "long" ? "writer-with-a-very-long-agent-name-".repeat(3) : `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: mode === "long" ? `/projects/${"long-folder/".repeat(20)}work` : "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) })) },
     expect: async page => { assert.equal(await page.locator("#running-agents").isVisible(), true); if (mode === "unreadable") assert.match(await page.locator("#agents-unavailable").textContent(), /Could not read/); else assert.equal(await page.locator(".agent-row").count(), mode === "none" ? 0 : mode === "many" ? 12 : mode === "spaces" ? 2 : 1); },
   })),
+  ...["started", "refused"].map(outcome => ({
+    name: `agent-terminal-${outcome}`,
+    state: { installed: true, signedIn: true, connected: true, agents: [{ ...auditAgents[0], agents: auditAgents[0].agents.slice(0, 2).map((agent, index) => ({ ...agent, lifecycleUid: `test-${index}` })) }] },
+    act: async page => {
+      await page.evaluate(outcome => {
+        const invoke = window.__TAURI_INTERNALS__.invoke;
+        window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+          if (command === 'daemon_request' && args.request.op === 'agent-terminal') {
+            window.__terminalRequest = args.request;
+            return new Promise(resolve => { window.__finishTerminal = () => resolve(outcome === 'started'
+              ? { v: 1, event: 'result', ok: true, result: { started: true } }
+              : { v: 1, event: 'result', ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'The selected local agent is no longer running.' } }); });
+          }
+          const reply = await invoke(command, args);
+          if (command === 'daemon_request' && args.request.op === 'status' && reply.ok) reply.result.agentTerminal = true;
+          return reply;
+        };
+        document.dispatchEvent(new Event('visibilitychange'));
+      }, outcome);
+      await page.getByRole('button', { name: 'Open in Terminal writer-1', exact: true }).click();
+    },
+    expect: async page => {
+      assert.deepEqual(await page.evaluate(() => window.__terminalRequest), { op: 'agent-terminal', space: 'acme-team', lifecycleUid: 'test-0' });
+      assert.equal(await page.getByRole('button', { name: 'Opening terminal… writer-1' }).isDisabled(), true);
+      assert.equal(await page.getByRole('button', { name: 'Open in Terminal writer-2' }).isEnabled(), true);
+      assert.equal(await page.locator('#open-settings').isEnabled(), true);
+      await page.evaluate(() => window.__finishTerminal());
+      await page.getByRole('button', { name: 'Open in Terminal writer-1', exact: true }).waitFor();
+      if (outcome === 'refused') {
+        assert.match(await page.locator('#refusal-detail').textContent(), /The selected local agent is no longer running/);
+        assert.equal(await page.locator('#details').evaluate(el => el.open), true);
+      } else await page.getByText('Terminal opened for writer-1.', { exact: true }).first().waitFor();
+    },
+  })),
+  ...["success", "refused", "exited"].map(outcome => ({
+    name: `agent-stop-${outcome}`,
+    state: { installed: true, signedIn: true, connected: true, agents: [{ ...auditAgents[0], agents: auditAgents[0].agents.slice(0, 2).map((agent, index) => ({ ...agent, lifecycleUid: `test-${index}` })) }] },
+    act: async page => {
+      await page.evaluate(outcome => {
+        const invoke = window.__TAURI_INTERNALS__.invoke;
+        window.__TAURI_INTERNALS__.invoke = (command, args) => {
+          if (command !== 'daemon_request' || args.request.op !== 'agent-stop') return invoke(command, args);
+          window.__selectedAgent = args.request.lifecycleUid;
+          return new Promise(resolve => { window.__finishStop = () => {
+            if (outcome !== 'success') return resolve({ v: 1, event: 'result', ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'The selected local agent is no longer running.' } });
+            window.__renderState.agents[0].agents.shift();
+            resolve({ v: 1, event: 'result', ok: true, result: {} });
+          }; });
+        };
+      }, outcome);
+      await page.getByRole('button', { name: 'Stop writer-1', exact: true }).click();
+    },
+    expect: async page => {
+      assert.equal(await page.evaluate(() => window.__selectedAgent), 'test-0');
+      assert.equal(await page.getByRole('button', { name: /Open in Terminal/ }).count(), 0);
+      assert.equal(await page.getByRole('button', { name: 'Stopping… writer-1' }).isDisabled(), true);
+      assert.equal(await page.getByRole('button', { name: 'Stop writer-2' }).isEnabled(), true);
+      assert.equal(await page.locator('#open-settings').isEnabled(), true);
+      if (outcome === 'exited') {
+        await page.evaluate(() => {
+          window.__renderState.agents[0].agents.shift();
+          const remaining = window.__renderState.agents[0].agents[0];
+          remaining.model = 'updated-model';
+          document.dispatchEvent(new Event('visibilitychange'));
+        });
+        await page.getByText('Codex · updated-model').waitFor();
+        assert.equal(await page.getByRole('button', { name: 'Stopping… writer-1' }).isDisabled(), true);
+      }
+      await page.evaluate(() => window.__finishStop());
+      if (outcome !== 'success') {
+        await page.waitForFunction(() => document.querySelector('#refusal-detail').textContent.includes('The selected local agent is no longer running.'));
+        assert.equal(await page.locator('#details').evaluate(el => el.open), true);
+      }
+      if (outcome !== 'refused') {
+        await page.locator('.agent-row').filter({ hasText: 'writer-1' }).waitFor({ state: 'detached' });
+      }
+    },
+  })),
   { name: "account-disconnect-long-confirmation", state: { installed: true, signedIn: true, connected: true, accountAction: "disconnect-confirmation", catalogSpaces: longAccountSpaces, account: { idpUrl: "https://cloud.cotal.ai/api/auth", mode: "account", hostSupport: "supported", spaces: [{ space: longAccountSpaces[0].space, desired: true, observed: "connected" }] } }, act: async page => {
     await page.click("#open-settings");
     await page.evaluate(spaces => {

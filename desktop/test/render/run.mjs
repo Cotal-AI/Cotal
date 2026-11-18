@@ -292,7 +292,8 @@ try {
           if (scrolling !== !!visible(thumb)) failures.thumbs.push(`${selector}: scrolling=${scrolling}, thumb=${!!visible(thumb)}`);
           if (selector === "#agent-list" && list.children.length) {
             const height = list.clientHeight;
-            if (Math.abs(height / 36 - Math.round(height / 36)) > .03) failures.rows.push(`agent list height ${height} is not whole rows`);
+            const rowHeight = parseFloat(getComputedStyle(list.firstElementChild).height);
+            if (Math.abs(height / rowHeight - Math.round(height / rowHeight)) > .03) failures.rows.push(`agent list height ${height} is not whole rows`);
           }
           if (!list.children.length && parseFloat(getComputedStyle(list).borderBottomWidth)) failures.rhythm.push(`${selector}: empty list has rule`);
           if (box.height < 0) failures.rows.push(selector);
