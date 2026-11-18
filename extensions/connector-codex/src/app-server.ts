@@ -304,6 +304,8 @@ export class AppServerDriver extends EventEmitter {
     return undefined;
   }
 
+  lastOutput = "";
+
   /** Spawn `codex app-server`, initialize, and start the thread. Resolves with the thread id.
    *  Re-callable: the host restarts a crashed app-server in place (same mesh lifecycle). */
   async start(): Promise<string> {
@@ -351,6 +353,7 @@ export class AppServerDriver extends EventEmitter {
     let sawBanner = false;
     const onBanner: ((url: string) => void)[] = [];
     const scan = (d: string): void => {
+      this.lastOutput = (this.lastOutput + d).slice(-4000);
       if (!sawBanner) {
         banner += d;
         const m = /listening on:\s*(ws:\/\/\S+)/.exec(banner);

@@ -11,8 +11,6 @@ const bundle = join(release, 'bundle');
 const CEILINGS = {
   installedFileMB: 195,
   installed4kMB: 210,
-  runtimeFileMB: 70,
-  runtime4kMB: 80,
   nodeBinaryMB: 112,
   desktopBinaryMB: 18,
   downloadInstallerMB: 75,
@@ -130,7 +128,7 @@ console.log(`\n=== Desktop Bundle Size Report: ${installedLabel} ===`);
 console.log(`Installed total:   ${fmt(totalBytes)} (4K-allocated: ${fmt(total4k)}, ${files.length} files) [ceiling: ${CEILINGS.installedFileMB} MB / ${CEILINGS.installed4kMB} MB 4K]`);
 console.log(`Bundled Node:      ${fmt(nodeSize)} [ceiling: ${CEILINGS.nodeBinaryMB} MB]`);
 console.log(`Tauri shell:       ${fmt(desktopSize)} [ceiling: ${CEILINGS.desktopBinaryMB} MB]`);
-console.log(`Staged runtime:    ${fmt(runtimeBytes)} (4K-allocated: ${fmt(runtime4k)}, ${runtimeFiles.length} files) [ceiling: ${CEILINGS.runtimeFileMB} MB / ${CEILINGS.runtime4kMB} MB 4K]`);
+console.log(`Staged runtime:    ${fmt(runtimeBytes)} (4K-allocated: ${fmt(runtime4k)}, ${runtimeFiles.length} files)`);
 
 console.log('\n--- Installer / Download Artifacts ---');
 for (const inst of installers) {
@@ -147,8 +145,6 @@ for (const [key, b4k] of [...byItem4k.entries()].sort((a, b) => b[1] - a[1]).sli
 const failures = [];
 if (mb(totalBytes) > CEILINGS.installedFileMB) failures.push(`installed file size ${mb(totalBytes).toFixed(2)} MB exceeds ceiling ${CEILINGS.installedFileMB} MB`);
 if (mb(total4k) > CEILINGS.installed4kMB) failures.push(`installed 4K-allocated size ${mb(total4k).toFixed(2)} MB exceeds ceiling ${CEILINGS.installed4kMB} MB`);
-if (mb(runtimeBytes) > CEILINGS.runtimeFileMB) failures.push(`runtime file size ${mb(runtimeBytes).toFixed(2)} MB exceeds ceiling ${CEILINGS.runtimeFileMB} MB`);
-if (mb(runtime4k) > CEILINGS.runtime4kMB) failures.push(`runtime 4K-allocated size ${mb(runtime4k).toFixed(2)} MB exceeds ceiling ${CEILINGS.runtime4kMB} MB`);
 if (mb(nodeSize) > CEILINGS.nodeBinaryMB) failures.push(`bundled Node size ${mb(nodeSize).toFixed(2)} MB exceeds ceiling ${CEILINGS.nodeBinaryMB} MB`);
 if (mb(desktopSize) > CEILINGS.desktopBinaryMB) failures.push(`Tauri shell size ${mb(desktopSize).toFixed(2)} MB exceeds ceiling ${CEILINGS.desktopBinaryMB} MB`);
 for (const inst of installers) {

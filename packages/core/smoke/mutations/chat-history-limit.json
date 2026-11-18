@@ -118,15 +118,15 @@
     },
     {
       "name": "the client compares against the compiled 1000, as before the stamp",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "        if (limit !== null && m.info.pending >= limit - 1) this.emit(\"stored-copies-full\", { limit });",
-      "replace": "        if (m.info.pending >= PLANE3_MAX_MSGS_PER_SUBJECT - 1) this.emit(\"stored-copies-full\", { limit: PLANE3_MAX_MSGS_PER_SUBJECT });",
+      "replace": "        if (m.info.pending >= deliveryLimitOf(undefined)! - 1) this.emit(\"stored-copies-full\", { limit: deliveryLimitOf(undefined)! });",
       "expectRed": "copies stored under 5 still warn, at 5, after the count is raised to 50",
       "cell": "copies stored under 5 still warn, at 5, after the count is raised to 50"
     },
     {
       "name": "the notice fires one copy late",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "        if (limit !== null && m.info.pending >= limit - 1) this.emit(\"stored-copies-full\", { limit });",
       "replace": "        if (limit !== null && m.info.pending >= limit) this.emit(\"stored-copies-full\", { limit });",
       "expectRed": "...and the same agent's next copies, stored under 5, warn at 5",
@@ -134,7 +134,7 @@
     },
     {
       "name": "the writer stops stamping its count",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "      frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());\n",
       "replace": "",
       "expectRed": "copies stored under 5 still warn, at 5, after the count is raised to 50",
@@ -143,7 +143,7 @@
     },
     {
       "name": "the writer never reads the count again",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "const DELIVERY_LIMIT_READ_MS = 5_000;",
       "replace": "const DELIVERY_LIMIT_READ_MS = 3_600_000;",
       "expectRed": "copies stored under no count give no notice after the count drops to 5",
@@ -194,7 +194,7 @@
     },
     {
       "name": "the writer acts on its stamp read without asking the fence again",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "      frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());\n      if (!this.plane3MayAct()) return;\n",
       "replace": "      frameHeaders.set(DELIVERY_LIMIT_HEADER, await this.deliveryLimitStamp());\n",
       "expectRed": "a daemon that stands down during its count read writes no stored copy",

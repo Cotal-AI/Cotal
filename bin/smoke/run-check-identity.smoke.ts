@@ -61,14 +61,37 @@ const until = async (id: string, ready: (view: Awaited<ReturnType<typeof read>>)
 };
 let up = false;
 try {
+  for (const verb of ["check", "migrate"]) for (const flags of [["--adopt", "h1"], ["--release", "h1"], ["--discard-approvals"]]) {
+    const out = await call("run", verb, "run-missing", "good.cotal.js", ...flags);
+    check(`${verb} ${flags[0]} refuses before a mesh exists`, out.code === 1 && out.text.includes(`${flags[0]} decides what a commit does`) && !out.text.includes("no mesh"), out.text);
+  }
+  const unsupportedFile = await call("run", "resume", "run-example", "--file", "good.cotal.js", "--json");
+  const fileRefusal = JSON.parse(unsupportedFile.text);
+  check("hosted resume --file returns a structured usage refusal without a mesh", unsupportedFile.code === 1 && fileRefusal.error.code === "USAGE_INVALID" && fileRefusal.error.remedy.includes("omit --file"), unsupportedFile.text);
   await succeed("up", "--detach", "--server", `nats://127.0.0.1:${await freePort()}`);
   up = true;
+  const managers = JSON.parse(await succeed("ps", "--json")).result.managers;
+  const selection = ["--space", "project", "--on", managers[0].instanceId];
+  for (const verb of ["answer", "amend"]) for (const local of [false, true]) {
+    const flags = local ? ["--space", "project", "--local", "--by", "operator"] : selection;
+    const out = await call("run", verb, "run-missing", "/checkpoint:approve#0", "--value", "true", ...flags, "--json");
+    const refusal = JSON.parse(out.text);
+    const remedy = refusal.error.remedy as string;
+    check(`${verb}${local ? " --local" : ""} for an unknown run lists the same target`, out.code === 2 && refusal.error.code === "TARGET_NOT_FOUND" && remedy.includes("--space project") && (local ? remedy.includes("--local") : remedy.includes(`--on ${managers[0].instanceId}`)) && !remedy.includes("run show"), out.text);
+    const followup = /`([^`]+)`/.exec(remedy)![1]!.split(" ").slice(1);
+    check(`${verb}${local ? " --local" : ""} missing-run remedy succeeds`, (await call(...followup)).code === 0, remedy);
+  }
   const started = JSON.parse(await succeed("run", "start", "good.cotal.js", "--json"));
   const id = started.target.run as string;
   assert.ok(id);
   const running = await until(id, view => view.journal.some(row => row.step === "/checkpoint:approve#0" && row.state === "pending"));
   assert.equal(running.status?.state, "running");
   const current = running.programHash;
+  for (const verb of ["answer", "amend"]) {
+    const out = await call("run", verb, id, "/checkpoint:missing#0", ...selection, "--json");
+    const refusal = JSON.parse(out.text);
+    check(`${verb} for a missing step reads its existing run on the same target`, out.code === 2 && refusal.error.remedy.includes(`cotal run show ${id} --space project --on ${managers[0].instanceId}`), out.text);
+  }
   assert.match(current, /^sha256:[0-9a-f]{64}$/);
   const unchanged = await call("run", "check", id, "good.cotal.js");
   console.log(`running unchanged: exit=${unchanged.code}\n${unchanged.text}`);
