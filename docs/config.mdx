@@ -151,6 +151,10 @@ space's broker. Put it only in the operator-level file, `$XDG_CONFIG_HOME/cotal/
 (or the platform fallback listed above). A project `.cotal/config.json` carrying this key is
 refused, even if it only lowers a ceiling. Invalid values name the file and specific key.
 Startup reads this policy without validating unrelated connector, spawn or model sections.
+`cotal up` reads both operator and project config files at startup and refuses an unparseable file in either location, including in open mode.
+An operator-wide `accountLimits` setting makes every `--open` start on that machine refuse because an open mesh has no account claims.
+A project file declaring `accountLimits` is refused by `cotal up`, spawns and manager resume alike.
+Cotal enforces no minimum account limit, so a ceiling below what the mesh needs fails later as a broker error.
 
 ```json
 {

@@ -249,7 +249,7 @@ export function loadCotalConfig(root: string): CotalConfig {
 
 function refuseProjectAccountLimits(path: string, parsed: Record<string, unknown>): void {
   if (Object.hasOwn(parsed, "accountLimits"))
-    throw configError(path, `accountLimits is operator-only; move it to ${globalConfigPath()}`);
+    throw configError(path, `accountLimits is operator-only; remove accountLimits from ${path}. Set limits in the operator file ${globalConfigPath()} if wanted`);
 }
 
 /** Read only startup account policy, without validating unrelated launch sections.
