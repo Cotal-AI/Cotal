@@ -16,7 +16,7 @@ import type { MeshAgent } from "../src/agent.js";
 if (process.argv.includes("--listener")) {
   const server = startControlServer(
     {} as MeshAgent,
-    { path: process.env.COTAL_CONTROL_SOCKET!, token: process.env.COTAL_CONTROL_TOKEN!, version: CONTROL_PROTOCOL_VERSION },
+    { path: process.env.COTAL_CONTROL_SOCKET!, token: process.env.COTAL_CONTROL_KEY!, version: CONTROL_PROTOCOL_VERSION },
     async () => ({ ok: true }),
     { fatalBind: process.env.FIXTURE_FATAL !== "0" },
   );
@@ -43,7 +43,7 @@ if (process.argv.includes("--listener")) {
   const launch = (fatal = true) => {
     const child = spawn(process.execPath, ["--import", createRequire(import.meta.url).resolve("tsx"), fileURLToPath(import.meta.url), "--listener"], {
       cwd: root,
-      env: { PATH: process.env.PATH, HOME: root, COTAL_CONTROL_SOCKET: path, COTAL_CONTROL_TOKEN: token, FIXTURE_FATAL: fatal ? "1" : "0" },
+      env: { PATH: process.env.PATH, HOME: root, COTAL_CONTROL_SOCKET: path, COTAL_CONTROL_KEY: token, FIXTURE_FATAL: fatal ? "1" : "0" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     children.push(child);

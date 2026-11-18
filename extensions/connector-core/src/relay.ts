@@ -12,7 +12,6 @@
 import { connect } from "node:net";
 import { checkControlSocketDir, clientExchange, type ControlEndpoint } from "@cotal-ai/core/control-exchange";
 import { controlFromEnv, hasIdentity } from "./session-env.js";
-import { HANDOFF_RECEIPT } from "./control.js";
 
 /** Re-exported for a plugin process that must stay off the barrel, as a hook does. */
 export { hasIdentity };
@@ -175,14 +174,15 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
     drop();
     done(out);
   };
-  /** Got a proven reply: keep the socket until stdout has flushed, then send the receipt down it.
-   *  Anything that kills us first (the 1s backstop, the runtime SIGKILLing the hook) closes the
-   *  socket with no receipt, which is exactly the signal the connector needs to NOT commit the batch. */
-  const finishWithReceipt = (out: string, candidate: ReturnType<typeof connect>): void => {
+  /** Got a proven reply: keep the socket until stdout has flushed, then send its receipt (a MAC over
+   *  this connection's nonces and the reply) down it. Anything that kills us first (the 1s backstop,
+   *  the runtime SIGKILLing the hook) closes the socket with no receipt, which is exactly the signal
+   *  the connector needs to NOT commit the batch. */
+  const finishWithReceipt = (out: string, receipt: string, candidate: ReturnType<typeof connect>): void => {
     if (!settle()) return;
     done(out, (then) => {
       try {
-        candidate.write(HANDOFF_RECEIPT, () => {
+        candidate.write(receipt, () => {
           drop(candidate);
           then();
         });
@@ -222,14 +222,22 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
       if (settled || sock !== candidate) return;
       connected = true;
       try {
-        clientExchange(candidate, endpoint, { event, handoff: true }, (reply) => {
+        clientExchange(candidate, endpoint, { event, handoff: true }, (result) => {
           if (settled || sock !== candidate) return;
-          if (reply !== undefined) return finishWithReceipt(reply, candidate);
+          if (result.ok) return finishWithReceipt(result.reply, result.receipt, candidate);
+          // Once the request has been written the server may have handled it, so say so rather than
+          // claim nothing happened. Either way nothing is retried and no reply is used.
+          if (result.requestSent)
+            warnOnce(
+              "this session's control endpoint proved it holds the session's key and was sent the event, " +
+                "but no proven reply came back, so the event may have been handled. No reply was used.",
+            );
           // A stand-in on a dead server's name, or a connector from another release, both end here.
-          warnOnce(
-            "this session's control endpoint did not prove it holds the session's key, so nothing was " +
-              "relayed and no reply was used. A connector from another release looks the same as a stand-in.",
-          );
+          else
+            warnOnce(
+              "this session's control endpoint did not prove it holds the session's key, so nothing was " +
+                "relayed and no reply was used. A connector from another release looks the same as a stand-in.",
+            );
           finish("");
         });
       } catch {

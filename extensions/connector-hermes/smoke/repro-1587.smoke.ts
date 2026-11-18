@@ -155,7 +155,7 @@ print(f"CLOSE_DIAG_PRESENT {close_diag_present}")
 // The local probe needs a token to construct BridgeClient, not real launch credentials.
 const childEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
-childEnv.COTAL_CONTROL_TOKEN = "close-probe-test-only";
+childEnv.COTAL_CONTROL_KEY = "close-probe-test-only";
 const res = spawnSync(python!, ["-c", pythonScript, pkgDir], { encoding: "utf8", env: childEnv });
 assert.equal(res.status, 0, `python probe failed:\n${res.stdout}\n${res.stderr}`);
 

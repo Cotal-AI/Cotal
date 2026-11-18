@@ -1,6 +1,6 @@
 /**
  * The launch-material file - how a launcher hands a spawned session its connection material and
- * control token WITHOUT putting either into an environment every descendant process inherits.
+ * control key WITHOUT putting either into an environment every descendant process inherits.
  *
  * THE FAILURE THIS EXISTS TO CLOSE. A process environment is inherited transitively and invisibly.
  * A seat launched with `COTAL_CREDS` / `COTAL_SERVERS` / `COTAL_CONTROL_TOKEN` in its environment
@@ -45,6 +45,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { hardenPrivate, writeSecretFile } from "./secret-fs.js";
 import type { UserAuthLaunch } from "./connector.js";
+import { assertControlVersion } from "./control-exchange.js";
 
 /** The prefix {@link writeLaunchMaterial} gives its private directory, and the single filename it
  *  puts inside. Named constants because {@link discardLaunchMaterial} has to recognise this module's
@@ -58,7 +59,7 @@ export const LAUNCH_MATERIAL_ENV = "COTAL_LAUNCH_MATERIAL";
 
 /** What a launcher hands one spawned session. Every field is optional because the modes differ
  *  (open mesh has no creds; a static-auth launch has no user-mode identity; a launch with no
- *  control endpoint has no token), but an empty material file is refused at write time - an empty
+ *  control endpoint has no key), but an empty material file is refused at write time - an empty
  *  file would be a launcher bug that reads downstream as "open mode". */
 export type LaunchMaterial = {
   /** Broker URL(s) the session dials. */
@@ -68,8 +69,10 @@ export type LaunchMaterial = {
   /** Auth token (token / open modes). */
   token?: string;
   /** The session's local control endpoint key. It keys the exchange's MACs and never crosses the
-   *  socket (see `control-exchange.ts`). Always paired with {@link controlVersion}. */
-  controlToken?: string;
+   *  socket (see `control-exchange.ts`). Always paired with {@link controlVersion}. A release before
+   *  the exchange carried the key as `controlToken` and sent it to whatever listened on the control
+   *  path; the new name means such a reader finds no key in this material and refuses the launch. */
+  controlKey?: string;
   /** The control exchange version this launch speaks. Travels with the key, so a reader of another
    *  release refuses the launch instead of falling back. */
   controlVersion?: number;
@@ -158,7 +161,7 @@ export function readLaunchMaterial(path: string): LaunchMaterial {
  */
 function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
   const material: LaunchMaterial = {};
-  const str = (key: "servers" | "creds" | "token" | "controlToken"): void => {
+  const str = (key: "servers" | "creds" | "token" | "controlKey"): void => {
     const v = raw[key];
     if (v === undefined) return;
     if (typeof v !== "string" || !v.trim())
@@ -168,17 +171,24 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
   str("servers");
   str("creds");
   str("token");
-  str("controlToken");
-  if (raw.controlVersion !== undefined) {
-    if (!Number.isSafeInteger(raw.controlVersion) || (raw.controlVersion as number) < 1)
-      throw new Error(`launch material: ${path} has a controlVersion that is not a positive integer`);
-    material.controlVersion = raw.controlVersion as number;
-  }
-  // The key and its version travel together. A key with no version is a launcher from before the
-  // exchange carried one, and this reader will not guess which exchange it meant.
-  if ((material.controlToken === undefined) !== (material.controlVersion === undefined))
+  str("controlKey");
+  // `controlToken` is where a launcher from before the control exchange put the key, for a reader
+  // that sends it to whatever listens on the control path. Refused rather than read under either
+  // protocol.
+  if (raw.controlToken !== undefined)
     throw new Error(
-      `launch material: ${path} has ${material.controlToken === undefined ? "a controlVersion without a controlToken" : "a controlToken without a controlVersion"}. ` +
+      `launch material: ${path} carries controlToken, the control key field of a release before the control exchange. ` +
+        "This build reads controlKey and refuses the old field; launch with a launcher from the same release.",
+    );
+  if (raw.controlVersion !== undefined) {
+    assertControlVersion(raw.controlVersion, `launch material ${path}`);
+    material.controlVersion = raw.controlVersion;
+  }
+  // The key and its version travel together, and this reader will not guess which exchange a key
+  // without one meant.
+  if ((material.controlKey === undefined) !== (material.controlVersion === undefined))
+    throw new Error(
+      `launch material: ${path} has ${material.controlKey === undefined ? "a controlVersion without a controlKey" : "a controlKey without a controlVersion"}. ` +
         "The control key and its protocol version travel together; a launcher and connector from different releases refuse each other.",
     );
   if (raw.eventsRequired !== undefined) {

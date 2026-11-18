@@ -110,7 +110,7 @@ const stubScript = (token: string) =>
  *  argument (ignored by the server) so the sweep can find it. `--heapsnapshot-signal` only arms a
  *  signal handler, so one seat can be snapshotted without changing what any seat holds. */
 const realSeatScript = (token: string, mcp: string) =>
-  `umask 077; export COTAL_CONTROL_SOCKET="$SEAT_HOST_DIR/$COTAL_ID.sock" COTAL_CONTROL_TOKEN="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')" COTAL_CONTROL_VERSION=1; ` +
+  `umask 077; export COTAL_CONTROL_SOCKET="$SEAT_HOST_DIR/$COTAL_ID.sock" COTAL_CONTROL_KEY="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')" COTAL_CONTROL_VERSION=1; ` +
   `exec node --optimize-for-size --max-semi-space-size=1 --heapsnapshot-signal=SIGUSR2 '${mcp}' seatload-${token}`;
 const MB = 1048576;
 /** V8's view of the manager's memory, in MB. */

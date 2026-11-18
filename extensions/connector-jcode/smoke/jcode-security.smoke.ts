@@ -111,7 +111,7 @@ try {
     COTAL_JCODE_HOME: hostHome,
     COTAL_JCODE_TUI: "0",
     COTAL_CONTROL_SOCKET: join(root, "control.sock"),
-    COTAL_CONTROL_TOKEN: "jcode-security-control-token", COTAL_CONTROL_VERSION: "1",
+    COTAL_CONTROL_KEY: "jcode-security-control-token", COTAL_CONTROL_VERSION: "1",
   };
   const result = spawnSync(tsx, [host], { cwd: root, env: hostEnv, encoding: "utf8" });
   // Render failures as named assertions instead of throwing inside check's condition. mutation-proof

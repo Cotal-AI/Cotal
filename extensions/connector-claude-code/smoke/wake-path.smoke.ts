@@ -186,7 +186,7 @@ function fireHookViaRealRelay(
         ...clean,
         COTAL_NAME: "Otto", // hasIdentity() gate — the relay no-ops for an unmanaged session
         COTAL_CONTROL_SOCKET: socketPath,
-        COTAL_CONTROL_TOKEN: TOKEN,
+        COTAL_CONTROL_KEY: TOKEN,
         COTAL_CONTROL_VERSION: "1",
       },
       stdio: ["pipe", "pipe", "ignore"],
@@ -842,7 +842,7 @@ try {
   // A material file readable by every local user: the reader refuses it, which is a configuration
   // fault the operator has to be able to see.
   const looseMaterial = join(relayDir, "loose.json");
-  writeFileSync(looseMaterial, JSON.stringify({ controlToken: "warn-leg-token", controlVersion: 1 }), { mode: 0o644 });
+  writeFileSync(looseMaterial, JSON.stringify({ controlKey: "warn-leg-token", controlVersion: 1 }), { mode: 0o644 });
   chmodSync(looseMaterial, 0o644);
   const broken = await runRelay({
     COTAL_NAME: "Otto",
@@ -868,7 +868,7 @@ try {
   // Positive control: a resolvable endpoint warns about nothing, even though the socket is dead and
   // the relay still returns empty. Without this leg, a warn-on-every-run mutant would pass R1.
   const goodMaterial = join(relayDir, "good.json");
-  writeFileSync(goodMaterial, JSON.stringify({ controlToken: "warn-leg-token", controlVersion: 1 }), { mode: 0o600 });
+  writeFileSync(goodMaterial, JSON.stringify({ controlKey: "warn-leg-token", controlVersion: 1 }), { mode: 0o600 });
   chmodSync(goodMaterial, 0o600);
   const resolvable = await runRelay({
     COTAL_NAME: "Otto",

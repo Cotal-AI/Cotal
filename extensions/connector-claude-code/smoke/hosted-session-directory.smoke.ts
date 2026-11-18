@@ -80,7 +80,7 @@ async function child(): Promise<void> {
         env: {
           HOME: home, PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, COTAL_NAME: name, COTAL_SPACE: space,
           COTAL_SERVERS: servers, COTAL_WORKSPACE_ROOT: home, COTAL_CONTROL_SOCKET: seat.socket,
-          COTAL_CONTROL_TOKEN: seat.token, COTAL_CONTROL_VERSION: "1", COTAL_CHANNEL: "0",
+          COTAL_CONTROL_KEY: seat.token, COTAL_CONTROL_VERSION: "1", COTAL_CHANNEL: "0",
         },
         input, output,
       });

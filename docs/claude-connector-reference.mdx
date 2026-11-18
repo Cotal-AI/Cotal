@@ -465,7 +465,9 @@ delivers, the other only wakes:
   process's own stdout to Claude Code (which it force-exits 1s after starting to write). The relay
   sends a receipt back down the control socket from that stdout write's callback, and only on a
   clean write (a runtime whose pipe has gone away fails it), and the connector treats that receipt,
-  not its own socket write, as delivery. So a large injection killed mid-flush, or one written to a
+  not its own socket write, as delivery. The receipt is a MAC over the reply it confirms (`Mk` in the
+  [control exchange](authoring-a-connector.mdx#control-exchange)), so a process that forwards the
+  socket without the key cannot confirm a reply it dropped. So a large injection killed mid-flush, or one written to a
   broken pipe, leaves the message un-acked and JetStream redelivers it. What this does *not* prove is
   that Claude Code read or applied the reply: a payload small enough to fit the pipe buffer is
   reported written the moment the kernel takes it. That residual is why the path errs toward

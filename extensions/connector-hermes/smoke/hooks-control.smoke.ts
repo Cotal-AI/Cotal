@@ -24,12 +24,20 @@
  *       fallback is a supported path, not a deprecated one
  *   H3  a socket with NO resolvable key relays NOTHING and says so on stderr, rather than
  *       returning silently the way the defect did
- *   H4  a material file readable beyond its owner yields no key, matching the TypeScript reader
+ *   H4  a material file readable beyond its owner is refused and says so, matching the TypeScript reader
  *   H5  a key without the version this plugin speaks (no version, version 2, a direct key with no
  *       COTAL_CONTROL_VERSION) relays nothing and says so
  *   H6  a stand-in server that does not hold the key, or speaks another version, gets no request
  *       and no key, and the hook says so
  *   H7  a socket in a directory other users can enter is not dialed at all
+ *   H8  a server that holds the key but sends a challenge the TypeScript client refuses (over the
+ *       1 KiB cap in one write, a nonce with a trailing newline, a version of `true`, a MAC with a
+ *       character outside base64url) gets no request
+ *   H9  the key's carriers are read as the TypeScript readers read them: the old COTAL_CONTROL_TOKEN
+ *       and controlToken names, a controlVersion of `true`, and a direct key beside a material file
+ *       all relay nothing and say why
+ *   H10 the standalone bootstrap mints the key and its version together only when the launch carries
+ *       neither, and refuses half a pair instead of filling in the other half
  *
  * H3 is the one that turns this from a happy-path test into a cell. The defect's whole character was
  * that it produced no output; an assertion that only checks the good path would have gone green
@@ -73,8 +81,14 @@ interface Heard {
  *  bytes (smoke-kit's `controlTranscriptMac`) rather than the real control server: what is under test
  *  is whether the hook can PRODUCE a proven request at all, and a server that validates would report
  *  "no request" and "wrong key" as the same silence. `key: null` stands in for a server that does not
- *  hold the key; `version` for a server of another release. */
-function listener(path: string, key: string | null, version = 1): { heard: Heard; close: () => void } {
+ *  hold the key; `version` for a server of another release; `challenge` replaces the challenge line
+ *  (newline included) for a server that holds the key and sends one the client must refuse. */
+function listener(
+  path: string,
+  key: string | null,
+  version: unknown = 1,
+  challenge?: (nc: string, ns: string) => string,
+): { heard: Heard; close: () => void } {
   const heard: Heard = { conns: 0, raw: "", requests: [] };
   const server = createServer((sock) => {
     heard.conns++;
@@ -91,7 +105,7 @@ function listener(path: string, key: string | null, version = 1): { heard: Heard
         if (nc === undefined) {
           nc = String((JSON.parse(line) as { nonce?: unknown }).nonce);
           const proof = key ? mac(key, "server", nc, ns) : randomBytes(32).toString("base64url");
-          sock.write(JSON.stringify({ v: version, nonce: ns, mac: proof }) + "\n");
+          sock.write(challenge ? challenge(nc, ns) : JSON.stringify({ v: version, nonce: ns, mac: proof }) + "\n");
           continue;
         }
         const sp = line.indexOf(" ");
@@ -146,9 +160,15 @@ function material(name: string, fields: Record<string, unknown>, mode = 0o600): 
 }
 
 /** Fire one hook at a listener on `name` in the private work directory and collect what it heard. */
-async function relayTo(name: string, key: string | null, env: Record<string, string>, version = 1): Promise<{ heard: Heard; run: { status: number | null; stderr: string } }> {
+async function relayTo(
+  name: string,
+  key: string | null,
+  env: Record<string, string>,
+  version: unknown = 1,
+  challenge?: (nc: string, ns: string) => string,
+): Promise<{ heard: Heard; run: { status: number | null; stderr: string } }> {
   const sock = join(work, name);
-  const l = listener(sock, key, version);
+  const l = listener(sock, key, version, challenge);
   const run = await fireHook({ COTAL_CONTROL_SOCKET: sock, ...env });
   await settle();
   l.close();
@@ -157,7 +177,7 @@ async function relayTo(name: string, key: string | null, env: Record<string, str
 
 // H1 - managed launch: socket path in the env, key and version ONLY in the launch material.
 {
-  const m = material("h1.json", { controlToken: TOKEN, controlVersion: 1, servers: "nats://127.0.0.1:1" });
+  const m = material("h1.json", { controlKey: TOKEN, controlVersion: 1, servers: "nats://127.0.0.1:1" });
   const { heard, run } = await relayTo("h1.sock", TOKEN, { COTAL_LAUNCH_MATERIAL: m });
   check("H1: the hook exited cleanly", run.status === 0, run.stderr);
   check("H1: a managed launch relays one request proven with the key from the launch material", heard.requests.length === 1 && heard.requests[0]!.proven, heard.requests);
@@ -167,7 +187,7 @@ async function relayTo(name: string, key: string | null, env: Record<string, str
 
 // H2 - standalone: key and version exported directly, no material file. Still a supported path.
 {
-  const { heard, run } = await relayTo("h2.sock", "standalone-token-abc", { COTAL_CONTROL_TOKEN: "standalone-token-abc", COTAL_CONTROL_VERSION: "1" });
+  const { heard, run } = await relayTo("h2.sock", "standalone-token-abc", { COTAL_CONTROL_KEY: "standalone-token-abc", COTAL_CONTROL_VERSION: "1" });
   check("H2: standalone mode still relays with a directly exported key and version", run.status === 0 && heard.requests.length === 1 && heard.requests[0]!.proven, heard.requests);
 }
 
@@ -180,18 +200,18 @@ async function relayTo(name: string, key: string | null, env: Record<string, str
 
 // H4 - a material file other local users can read is not a source of a control key.
 {
-  const m = material("h4.json", { controlToken: TOKEN, controlVersion: 1 }, 0o644);
+  const m = material("h4.json", { controlKey: TOKEN, controlVersion: 1 }, 0o644);
   const { heard, run } = await relayTo("h4.sock", TOKEN, { COTAL_LAUNCH_MATERIAL: m });
   check("H4: a world-readable material file yields no key, so nothing is relayed", heard.conns === 0, heard);
-  check("H4: and that is reported, not silent", /presence relays are disabled/.test(run.stderr), run.stderr);
+  check("H4: and that is reported, not silent", /readable beyond its owner/.test(run.stderr) && /presence relays are disabled/.test(run.stderr), run.stderr);
 }
 
 // H5 - a key without the version this plugin speaks is refused before any dial, and says so.
 for (const [label, env] of [
-  ["material with no controlVersion", { COTAL_LAUNCH_MATERIAL: material("h5a.json", { controlToken: TOKEN }) }],
-  ["material with controlVersion 2", { COTAL_LAUNCH_MATERIAL: material("h5b.json", { controlToken: TOKEN, controlVersion: 2 }) }],
-  ["a direct key with no COTAL_CONTROL_VERSION", { COTAL_CONTROL_TOKEN: TOKEN }],
-  ["a direct key with COTAL_CONTROL_VERSION=2", { COTAL_CONTROL_TOKEN: TOKEN, COTAL_CONTROL_VERSION: "2" }],
+  ["material with no controlVersion", { COTAL_LAUNCH_MATERIAL: material("h5a.json", { controlKey: TOKEN }) }],
+  ["material with controlVersion 2", { COTAL_LAUNCH_MATERIAL: material("h5b.json", { controlKey: TOKEN, controlVersion: 2 }) }],
+  ["a direct key with no COTAL_CONTROL_VERSION", { COTAL_CONTROL_KEY: TOKEN }],
+  ["a direct key with COTAL_CONTROL_VERSION=2", { COTAL_CONTROL_KEY: TOKEN, COTAL_CONTROL_VERSION: "2" }],
 ] as const) {
   const { heard, run } = await relayTo(`h5-${label.length}.sock`, TOKEN, env);
   check(`H5: ${label} relays nothing`, heard.conns === 0, heard);
@@ -200,7 +220,7 @@ for (const [label, env] of [
 
 // H6 - a stand-in on the socket: one without the key, and one of another version.
 {
-  const m = material("h6.json", { controlToken: TOKEN, controlVersion: 1 });
+  const m = material("h6.json", { controlKey: TOKEN, controlVersion: 1 });
   const standIn = await relayTo("h6a.sock", null, { COTAL_LAUNCH_MATERIAL: m });
   check("H6: a stand-in without the key gets the hello and no request", standIn.heard.conns === 1 && standIn.heard.requests.length === 0, standIn.heard);
   check("H6: and never sees the key", !standIn.heard.raw.includes(TOKEN), standIn.heard.raw);
@@ -214,10 +234,91 @@ for (const [label, env] of [
   const open = join(work, "open");
   mkdirSync(open);
   chmodSync(open, 0o755);
-  const m = material("h7.json", { controlToken: TOKEN, controlVersion: 1 });
+  const m = material("h7.json", { controlKey: TOKEN, controlVersion: 1 });
   const { heard, run } = await relayTo("open/h7.sock", TOKEN, { COTAL_LAUNCH_MATERIAL: m });
   check("H7: a socket in a directory other users can enter is not dialed", heard.conns === 0, heard);
   check("H7: and that is reported, not silent", /not private to this user/.test(run.stderr), run.stderr);
+}
+
+// H8 - a server that holds the key and sends a challenge the TypeScript client refuses.
+{
+  const m = material("h8.json", { controlKey: TOKEN, controlVersion: 1 });
+  const nonce = (): string => randomBytes(32).toString("base64url");
+  const cases: [string, (nc: string, ns: string) => string][] = [
+    ["a challenge over the 1 KiB cap, in one write", (nc, ns) => JSON.stringify({ v: 1, nonce: ns, mac: mac(TOKEN, "server", nc, ns), pad: "p".repeat(4096) }) + "\n"],
+    ["a nonce with a trailing newline", (nc) => {
+      const odd = `${nonce()}\n`;
+      return JSON.stringify({ v: 1, nonce: odd, mac: mac(TOKEN, "server", nc, odd) }) + "\n";
+    }],
+    ["a version of true", (nc, ns) => JSON.stringify({ v: true, nonce: ns, mac: mac(TOKEN, "server", nc, ns) }) + "\n"],
+    ["a MAC with a character raised by 256", (nc, ns) => {
+      const good = mac(TOKEN, "server", nc, ns);
+      return JSON.stringify({ v: 1, nonce: ns, mac: String.fromCharCode(good.charCodeAt(0) + 256) + good.slice(1) }) + "\n";
+    }],
+  ];
+  for (const [label, challenge] of cases) {
+    const { heard } = await relayTo(`h8-${cases.findIndex((c) => c[0] === label)}.sock`, TOKEN, { COTAL_LAUNCH_MATERIAL: m }, 1, challenge);
+    check(`H8: ${label}: the server gets the hello and no request`, heard.conns === 1 && heard.requests.length === 0, heard.requests);
+  }
+}
+
+// H9 - the key's carriers, read as the TypeScript readers read them.
+{
+  const cases: [string, Record<string, string>, RegExp][] = [
+    ["the old COTAL_CONTROL_TOKEN variable", { COTAL_CONTROL_TOKEN: TOKEN, COTAL_CONTROL_VERSION: "1" }, /COTAL_CONTROL_TOKEN is the control key variable/],
+    ["the old controlToken material field", { COTAL_LAUNCH_MATERIAL: material("h9a.json", { controlToken: TOKEN, controlVersion: 1 }) }, /carries controlToken/],
+    ["a controlVersion of true", { COTAL_LAUNCH_MATERIAL: material("h9b.json", { controlKey: TOKEN, controlVersion: true }) }, /controlVersion is not/],
+    [
+      "a direct key beside a material file",
+      { COTAL_LAUNCH_MATERIAL: material("h9c.json", { controlKey: "material-key", controlVersion: 1 }), COTAL_CONTROL_KEY: TOKEN, COTAL_CONTROL_VERSION: "1" },
+      /both in COTAL_LAUNCH_MATERIAL and in COTAL_CONTROL_KEY/,
+    ],
+    ["COTAL_CONTROL_VERSION with no key", { COTAL_CONTROL_VERSION: "1" }, /without COTAL_CONTROL_KEY/],
+  ];
+  for (const [i, [label, env, says]] of cases.entries()) {
+    const { heard, run } = await relayTo(`h9-${i}.sock`, TOKEN, env);
+    check(`H9: ${label} relays nothing and says why`, heard.conns === 0 && says.test(run.stderr), { conns: heard.conns, stderr: run.stderr });
+  }
+}
+
+// H10 - the standalone bootstrap, driven through its real entry point up to the sidecar spawn.
+{
+  const bootstrap = (env: Record<string, string>) =>
+    spawnSync(
+      PY,
+      [
+        "-c",
+        [
+          "import json, os, cotal",
+          "class Stop(Exception): pass",
+          "def stop(): raise Stop()",
+          "cotal._resolve_sidecar_js = stop",
+          "try:",
+          "    cotal._bootstrap_standalone_sidecar()",
+          "except Stop:",
+          "    print(json.dumps({'key': os.environ.get('COTAL_CONTROL_KEY'), 'version': os.environ.get('COTAL_CONTROL_VERSION')}))",
+          "except RuntimeError as e:",
+          "    print(json.dumps({'refused': str(e)}))",
+        ].join("\n"),
+      ],
+      { env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", TMPDIR: work, PYTHONPATH: PLUGIN_DIR, ...env }, encoding: "utf8" },
+    );
+  const outcome = (env: Record<string, string>): { key?: string; version?: string; refused?: string } => {
+    const r = bootstrap(env);
+    try {
+      return JSON.parse(r.stdout.trim().split("\n").pop() ?? "{}");
+    } catch {
+      return { refused: `unparseable: ${r.stdout} ${r.stderr}` };
+    }
+  };
+  const fresh = outcome({});
+  check("H10: a standalone launch with no key gets a key and its version minted together", typeof fresh.key === "string" && fresh.key.length >= 43 && fresh.version === "1", fresh);
+  const keyOnly = outcome({ COTAL_CONTROL_KEY: TOKEN });
+  check("H10: a key with no version is refused, not given version 1", /COTAL_CONTROL_VERSION/.test(keyOnly.refused ?? ""), keyOnly);
+  const versionOnly = outcome({ COTAL_CONTROL_VERSION: "1" });
+  check("H10: a version with no key is refused, not given a minted key", /without COTAL_CONTROL_KEY/.test(versionOnly.refused ?? ""), versionOnly);
+  const both = outcome({ COTAL_CONTROL_KEY: TOKEN, COTAL_CONTROL_VERSION: "1" });
+  check("H10: a complete pair is used as it is", both.key === TOKEN && both.version === "1", both);
 }
 
 if (failed) {

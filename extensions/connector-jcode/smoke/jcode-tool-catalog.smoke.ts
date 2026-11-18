@@ -44,7 +44,7 @@ try {
       PATH: `${join(dir, "bin")}:${ambient.PATH ?? ""}`, JCODE_HOME: join(dir, "source"),
       COTAL_SPACE: "catalogfixture", COTAL_NAME: mode, COTAL_ID: mode, COTAL_LIFECYCLE_UID: mintLifecycleUid(),
       COTAL_SERVERS: `nats://127.0.0.1:${port}`, COTAL_SUBSCRIBE: "team", COTAL_ALLOW_SUBSCRIBE: "team", COTAL_ALLOW_PUBLISH: "team",
-      COTAL_JCODE_HOME: dir, COTAL_JCODE_TUI: "0", COTAL_CONTROL_SOCKET: join(dir, "control.sock"), COTAL_CONTROL_TOKEN: randomBytes(32).toString("base64url"), COTAL_CONTROL_VERSION: "1",
+      COTAL_JCODE_HOME: dir, COTAL_JCODE_TUI: "0", COTAL_CONTROL_SOCKET: join(dir, "control.sock"), COTAL_CONTROL_KEY: randomBytes(32).toString("base64url"), COTAL_CONTROL_VERSION: "1",
     };
     if (mode !== "open") {
       delete env.COTAL_ID;

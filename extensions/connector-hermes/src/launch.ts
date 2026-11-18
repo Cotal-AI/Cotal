@@ -19,7 +19,7 @@ import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, sta
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, discardLaunchArtifacts, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
@@ -71,10 +71,9 @@ function processTree(pid: number): number[] {
   return tree;
 }
 
-/** The bridge socket sits beside the control socket, in the private per-user directory
- *  `controlEndpoint` made, so another user can create no name for it. Its name extends the control
- *  socket's unpredictable one. Its first frame carries a token derived from the launch's control
- *  key (see `bridgeToken` in bridge.ts). */
+/** The bridge socket sits beside the control socket, in that socket's private per-launch directory,
+ *  so another user can create no name for it. Its first frame carries a token derived from the
+ *  launch's control key (see `bridgeToken` in bridge.ts). */
 function bridgeSocketPath(controlPath: string): string {
   const path = join(dirname(controlPath), `${basename(controlPath, ".sock")}.bridge.sock`);
   const bytes = Buffer.byteLength(path);
@@ -339,7 +338,9 @@ async function main(): Promise<void> {
 
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.
-  const control = controlEndpoint(config.space, config.name);
+  // This launcher owns the control socket's per-launch directory and removes it at shutdown.
+  const controlDirs: string[] = [];
+  const control = controlEndpoint(config.space, config.name, controlDirs);
   const bridgeSock = bridgeSocketPath(control.path);
   const toolsFile = join(home, "cotal-tools.json");
   // This launcher mints the control endpoint itself, so it has to hand the token onward to two
@@ -361,7 +362,7 @@ async function main(): Promise<void> {
   const inherited = process.env[LAUNCH_MATERIAL_ENV]?.trim();
   const material = writeLaunchMaterial({
     ...(inherited ? readLaunchMaterial(inherited) : {}),
-    controlToken: control.token,
+    controlKey: control.token,
     controlVersion: control.version,
   });
   process.env[LAUNCH_MATERIAL_ENV] = material;
@@ -445,6 +446,11 @@ async function main(): Promise<void> {
     const [, removed] = await Promise.allSettled([sidecar.stop(), disposable && removeManaged(disposable.root)]);
     if (removed.status === "rejected")
       log(`could not remove the managed profile ${disposable!.root}, so it is left on disk: ${(removed.reason as Error).message}`);
+    try {
+      discardLaunchArtifacts(controlDirs);
+    } catch (e) {
+      log(`could not remove the control socket directory, so it is left on disk: ${(e as Error).message}`);
+    }
     process.exit(code);
   };
 

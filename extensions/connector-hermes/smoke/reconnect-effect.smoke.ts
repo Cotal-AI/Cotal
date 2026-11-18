@@ -54,7 +54,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * still passes, which is liveness, not coverage. Pinning the floor here is what turns a smaller
  * green into a red. Raise it deliberately when you add a cell; a drop means an assertion vanished.
  */
-const EXPECTED_CELLS = 65;
+const EXPECTED_CELLS = 69;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
 
@@ -432,6 +432,14 @@ assert.equal(
   "True",
   "accept control: a healthy connect marks connected and reports no fatal, so the check is not firing on everything",
 );
+
+// ---- A BRIDGE IN A DIRECTORY OTHER USERS CAN ENTER IS REFUSED FOR GOOD, AND SAYS SO -------------
+// Before: the reader slept and retried on any directory problem, so connect() marked the platform
+// connected and every reply send() handed the bridge vanished while reporting success.
+assert.equal(subject.OPEN_BRIDGE_DIR_CONNECT_REFUSED, "True", "connect() must return False, unmarked, when the bridge socket's directory is not private");
+assert.equal(subject.OPEN_BRIDGE_DIR_FATAL_IS_PERMANENT, "True", "a non-private bridge directory must be a notified, NON-retryable fatal that names the directory problem");
+assert.equal(subject.OPEN_BRIDGE_DIR_SEND_FAILS_LOUD, "True", "send() over a refused bridge must fail, never report a reply delivered");
+assert.equal(subject.ABSENT_BRIDGE_DIR_IS_NOT_REFUSED, "True", "accept control: an absent directory is a sidecar not up yet, retried rather than refused");
 
 // ---- THE SOCKET MUST BE FENCED BY GENERATION, NOT ONLY BY THE LOCK --------------------------
 // Found by review, and the reason it was easy to miss is that the assignment in `_connect` was

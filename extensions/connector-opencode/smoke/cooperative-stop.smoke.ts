@@ -193,7 +193,7 @@ try {
     "buildLaunch attaches the control endpoint: socket path in the child env, token in the launch material",
     !!spec.control &&
       spec.env?.COTAL_CONTROL_SOCKET === spec.control.path &&
-      spec.env?.COTAL_CONTROL_TOKEN === undefined &&
+      spec.env?.COTAL_CONTROL_KEY === undefined &&
       controlFromEnv(spec.env)?.token === spec.control.token,
     spec.control,
   );

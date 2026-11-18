@@ -50,7 +50,7 @@ const ALLOW = JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse"
 
 // ---- the documented transcript, written independently of the implementation --------------------
 
-const specMac = (key: string, label: string, role: "server" | "client" | "reply", nc: string, ns: string, body?: string): string =>
+const specMac = (key: string, label: string, role: "server" | "client" | "reply" | "receipt", nc: string, ns: string, body?: string): string =>
   controlTranscriptMac(key, role, nc, ns, body, label);
 const freshNonce = (): string => randomBytes(32).toString("base64url");
 const LABEL = `cotal-control/${CONTROL_PROTOCOL_VERSION}`;
@@ -93,6 +93,9 @@ async function standIn(path: string, act: (sock: Socket, line: string, n: number
     sock.on("close", () => lifetimes.push(Date.now() - opened));
     sock.on("error", () => {});
   });
+  // Off Windows a stand-in needs the socket's directory: the real server makes it when it binds, and
+  // a stand-in that comes first makes it the same way.
+  if (!isWin && !existsSync(dirname(path))) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   server.listen(path);
   await listening(server);
   return { server, received: () => received.join(""), connections: () => connections, lifetimes };
@@ -157,7 +160,7 @@ function rawClient(path: string, script: (line: string, n: number, sock: Socket)
 
 /** Take the name of a server that has exited, as a stand-in would. */
 async function deadServerName(label: string): Promise<ControlEndpoint> {
-  const ep = controlEndpoint("ctlx", label);
+  const ep = controlEndpoint("ctlx", label, artifacts);
   const { server } = await realServer(ep);
   await closed(server);
   return ep;
@@ -166,7 +169,7 @@ async function deadServerName(label: string): Promise<ControlEndpoint> {
 try {
   // ---- the exchange between the real ends ------------------------------------------------------
   {
-    const ep = controlEndpoint("ctlx", "roundtrip");
+    const ep = controlEndpoint("ctlx", "roundtrip", artifacts);
     let delivered: boolean | undefined;
     const { server, seen } = await realServer(ep, { onReply: (_ev, d) => (delivered = d) });
     let argvHasKey: boolean | undefined;
@@ -206,7 +209,7 @@ try {
     await closed(s.server);
   }
   {
-    const ep = controlEndpoint("ctlx", "spec-client");
+    const ep = controlEndpoint("ctlx", "spec-client", artifacts);
     const { server, seen } = await realServer(ep);
     const nc = freshNonce();
     const request = JSON.stringify({ event: { hook_event_name: "Stop" } });
@@ -254,7 +257,7 @@ try {
   }
   {
     // Capture one real challenge, then replay it from a stand-in: the hook's nonce is fresh.
-    const ep = controlEndpoint("ctlx", "standin-replay");
+    const ep = controlEndpoint("ctlx", "standin-replay", artifacts);
     const { server } = await realServer(ep);
     const { got } = await rawClient(ep.path, () => {}, JSON.stringify({ v: 1, nonce: freshNonce() }) + "\n", 300);
     await closed(server);
@@ -291,7 +294,7 @@ try {
 
   // ---- a stand-in client -----------------------------------------------------------------------
   {
-    const ep = controlEndpoint("ctlx", "client-old");
+    const ep = controlEndpoint("ctlx", "client-old", artifacts);
     let shutdowns = 0;
     const { server, seen } = await realServer(ep, { onShutdown: () => shutdowns++ });
     const old = await rawClient(ep.path, () => {}, JSON.stringify({ token: ep.token, event: EVENT, handoff: true }) + "\n");
@@ -323,9 +326,161 @@ try {
     await closed(server);
   }
 
+  // ---- every line is bounded in bytes, complete or not ------------------------------------------
+  {
+    // The caps used to be checked only on a line still waiting for its newline, after any complete
+    // line in the same chunk had been parsed. So a whole oversized line, delivered in one write, went
+    // through: a 4 KiB hello got a challenge, a request over 1 MiB reached the handler, and a 20 KiB
+    // session reply passed a 16 KiB cap.
+    const ep = controlEndpoint("ctlx", "caps", artifacts);
+    const { server, seen } = await realServer(ep);
+    const bigHello = await rawClient(ep.path, () => {}, JSON.stringify({ v: 1, nonce: freshNonce(), pad: "x".repeat(4096) }) + "\n");
+    check("a 4 KiB hello in one write gets no challenge (the cap is 1 KiB)", bigHello.got === "" && bigHello.closedBy === "server", bigHello.got.slice(0, 80));
+    // 400 three-byte characters are 400 UTF-16 code units but 1200 bytes: the cap counts bytes.
+    const wideHello = await rawClient(ep.path, () => {}, JSON.stringify({ v: 1, nonce: freshNonce(), pad: "€".repeat(400) }) + "\n");
+    check("the hello cap counts bytes, not UTF-16 code units", wideHello.got === "" && wideHello.closedBy === "server", wideHello.got.slice(0, 80));
+    const nc = freshNonce();
+    const huge = JSON.stringify({ event: { hook_event_name: "Stop", pad: "y".repeat((1 << 20) + 4096) } });
+    await rawClient(ep.path, (line, n, sock) => {
+      if (n !== 0) return;
+      const ns = (JSON.parse(line) as { nonce: string }).nonce;
+      sock.write(`${specMac(ep.token, LABEL, "client", nc, ns, huge)} ${huge}\n`);
+    }, JSON.stringify({ v: 1, nonce: nc }) + "\n", 2000);
+    check("a proven request over 1 MiB in one write never reaches the handler", seen.length === 0, seen.length);
+    await closed(server);
+  }
+  for (const [label, bytes, accepted] of [
+    ["a reply over the caller's cap, in one write", 20 * 1024, false],
+    ["a reply at the caller's cap", 16 * 1024, true],
+  ] as const) {
+    const ep = await deadServerName(`reply-cap-${bytes}`);
+    const prefix = JSON.stringify({ ok: true, sessionId: "" }).length;
+    const body = JSON.stringify({ ok: true, sessionId: "s".repeat(bytes - prefix) });
+    let nc = "";
+    const ns = freshNonce();
+    const s = await standIn(ep.path, (sock, line, n) => {
+      if (n === 0) {
+        nc = (JSON.parse(line) as { nonce: string }).nonce;
+        sock.write(JSON.stringify({ v: 1, nonce: ns, mac: specMac(ep.token, LABEL, "server", nc, ns) }) + "\n");
+      } else sock.write(`${specMac(ep.token, LABEL, "reply", nc, ns, body)} ${body}\n`);
+    });
+    const got = await controlCall(ep, { op: "session" }, { timeoutMs: 2000, maxReplyBytes: 16 * 1024 }).then((r) => r.length, (e: Error) => e.message);
+    check(`${label} (${bytes} bytes against 16 KiB): ${accepted ? "accepted" : "refused"}`, accepted ? got === bytes : /oversized/.test(String(got)), got);
+    await closed(s.server);
+  }
+  {
+    const ep = await deadServerName("challenge-cap");
+    const s = await standIn(ep.path, (sock, line, n) => {
+      if (n !== 0) return;
+      const nc = (JSON.parse(line) as { nonce: string }).nonce;
+      const ns = freshNonce();
+      sock.write(JSON.stringify({ v: 1, nonce: ns, mac: specMac(ep.token, LABEL, "server", nc, ns), pad: "z".repeat(4096) }) + "\n");
+    });
+    const got = await controlCall(ep, { op: "session" }, { timeoutMs: 1500 }).then(() => "resolved", (e: Error) => e.message);
+    check("a proven but oversized challenge in one write is refused before the request is sent", /oversized/.test(got) && s.received().split("\n").filter(Boolean).length === 1, got);
+    await closed(s.server);
+  }
+
+  // ---- a MAC has one spelling ---------------------------------------------------------------------
+  {
+    // Each MAC used to be compared after a latin1 conversion that keeps only the low byte of each
+    // character, so `A` raised to U+0141 compared equal to `A`.
+    const ep = await deadServerName("mac-alias");
+    const s = await standIn(ep.path, (sock, line, n) => {
+      if (n !== 0) return;
+      const nc = (JSON.parse(line) as { nonce: string }).nonce;
+      const ns = freshNonce();
+      const mac = specMac(ep.token, LABEL, "server", nc, ns);
+      sock.write(JSON.stringify({ v: 1, nonce: ns, mac: String.fromCharCode(mac.charCodeAt(0) + 256) + mac.slice(1) }) + "\n");
+    });
+    const got = await controlCall(ep, { op: "session" }, { timeoutMs: 1500 }).then(() => "resolved", (e: Error) => e.message);
+    check("a challenge MAC with a character raised by 256 is refused and gets no request", got !== "resolved" && s.received().split("\n").filter(Boolean).length === 1, got);
+    await closed(s.server);
+  }
+  {
+    const ep = controlEndpoint("ctlx", "mac-alias-server", artifacts);
+    const { server, seen } = await realServer(ep);
+    const nc = freshNonce();
+    const req = JSON.stringify({ event: { hook_event_name: "Stop" } });
+    const aliased = await rawClient(ep.path, (line, n, sock) => {
+      if (n !== 0) return;
+      const ns = (JSON.parse(line) as { nonce: string }).nonce;
+      const mac = specMac(ep.token, LABEL, "client", nc, ns, req);
+      sock.write(`${String.fromCharCode(mac.charCodeAt(0) + 256)}${mac.slice(1)} ${req}\n`);
+    }, JSON.stringify({ v: 1, nonce: nc }) + "\n");
+    check("a request MAC with a character raised by 256 never reaches the handler", seen.length === 0 && aliased.closedBy === "server", aliased);
+    await closed(server);
+  }
+
+  // ---- the delivery receipt is proven too -----------------------------------------------------
+  {
+    // A process that forwards the connection without the key used to be able to drop the reply and
+    // answer with any newline, and the server committed the batch the hook never printed.
+    const ep = controlEndpoint("ctlx", "receipt", artifacts);
+    const verdicts: boolean[] = [];
+    const { server } = await realServer(ep, { onReply: (_ev, delivered) => verdicts.push(delivered) });
+    const front = join(scratch, "front");
+    if (!isWin) mkdirSync(front, { mode: 0o700 });
+    for (const [label, forged] of [
+      ["a bare newline", "\n"],
+      ["the old fixed receipt", '{"handoff":"ok"}\n'],
+      ["a well-formed MAC that is not this reply's receipt", `${randomBytes(32).toString("base64url")}\n`],
+    ] as const) {
+      const frontPath = isWin ? `\\\\.\\pipe\\cotal-ctlx-front-${randomBytes(6).toString("hex")}` : join(front, `${verdicts.length}.sock`);
+      const forwarder = createServer((client) => {
+        const upstream = connect(ep.path);
+        let lines = 0;
+        let buf = "";
+        client.on("error", () => {});
+        upstream.on("error", () => {});
+        client.on("data", (d) => upstream.write(d));
+        upstream.setEncoding("utf8");
+        upstream.on("data", (d: string) => {
+          buf += d;
+          for (let nl = buf.indexOf("\n"); nl >= 0; nl = buf.indexOf("\n")) {
+            const line = buf.slice(0, nl + 1);
+            buf = buf.slice(nl + 1);
+            if (lines++ === 0) client.write(line); // the challenge goes through
+            else {
+              upstream.write(forged); // the reply is dropped and "confirmed"
+              client.destroy();
+            }
+          }
+        });
+      });
+      forwarder.listen(frontPath);
+      await listening(forwarder);
+      const before = verdicts.length;
+      const r = await runRelay(relayEnv({ ...ep, path: frontPath }));
+      for (let i = 0; i < 40 && verdicts.length === before; i++) await sleep(25);
+      check(`a forwarder that drops the reply and sends ${label}: the hook prints nothing and the batch is not committed`, r.out === "" && verdicts[before] === false, { out: r.out, verdict: verdicts[before] });
+      await closed(forwarder);
+    }
+    await closed(server);
+  }
+
+  // ---- what the hook says when a proven server goes quiet ---------------------------------------
+  {
+    const ep = await deadServerName("handled-maybe");
+    const s = await standIn(ep.path, (sock, line, n) => {
+      if (n === 0) {
+        const nc = (JSON.parse(line) as { nonce: string }).nonce;
+        const ns = freshNonce();
+        sock.write(JSON.stringify({ v: 1, nonce: ns, mac: specMac(ep.token, LABEL, "server", nc, ns) }) + "\n");
+      } else sock.destroy(); // proven, handed the event, then gone before any reply
+    });
+    const r = await runRelay(relayEnv(ep));
+    check(
+      "a proven server that closes after the request: the hook says the event may have been handled, not that nothing was relayed",
+      r.out === "" && /may have been handled/.test(r.err) && !/nothing was relayed/.test(r.err),
+      r.err,
+    );
+    await closed(s.server);
+  }
+
   // ---- versions --------------------------------------------------------------------------------
   {
-    const ep = controlEndpoint("ctlx", "version-wire");
+    const ep = controlEndpoint("ctlx", "version-wire", artifacts);
     const { server, seen } = await realServer(ep);
     const v2 = await rawClient(ep.path, () => {}, JSON.stringify({ v: 2, nonce: freshNonce() }) + "\n");
     check("a client of another version is refused before any challenge", v2.got === "" && v2.closedBy === "server" && seen.length === 0, v2);
@@ -350,7 +505,7 @@ try {
     await closed(s.server);
   }
   {
-    const ep = controlEndpoint("ctlx", "version-carried");
+    const ep = controlEndpoint("ctlx", "version-carried", artifacts);
     const v2: ControlEndpoint = { ...ep, version: 2 };
     const env = relayEnv(v2);
     let refused = "";
@@ -373,30 +528,85 @@ try {
     }
     check("a server refuses to start on an endpoint of another version", /version 2/.test(threw), threw);
     await closed(s.server);
-    const bare = join(scratch, "no-version.json");
-    writeFileSync(bare, JSON.stringify({ controlToken: ep.token }), { mode: 0o600 });
-    let bareErr = "";
-    try {
-      readLaunchMaterial(bare);
-    } catch (e) {
-      bareErr = (e as Error).message;
-    }
-    check("material with a key and no version (an older launcher) is refused", /without a controlVersion/.test(bareErr), bareErr);
-    let directErr = "";
-    try {
-      controlFromEnv({ COTAL_CONTROL_SOCKET: ep.path, COTAL_CONTROL_TOKEN: ep.token } as NodeJS.ProcessEnv);
-    } catch (e) {
-      directErr = (e as Error).message;
-    }
+    const refusalOf = (fn: () => unknown): string => {
+      try {
+        fn();
+        return "";
+      } catch (e) {
+        return (e as Error).message;
+      }
+    };
+    const materialFile = (name: string, body: Record<string, unknown>): string => {
+      const file = join(scratch, name);
+      writeFileSync(file, JSON.stringify(body), { mode: 0o600 });
+      return file;
+    };
+    const bareErr = refusalOf(() => readLaunchMaterial(materialFile("no-version.json", { controlKey: ep.token })));
+    check("material with a key and no version is refused", /without a controlVersion/.test(bareErr), bareErr);
+    const v2Err = refusalOf(() => readLaunchMaterial(materialFile("v2.json", { controlKey: ep.token, controlVersion: 2 })));
+    check("material of another version is refused by the material reader itself", /version 2/.test(v2Err), v2Err);
+    const directErr = refusalOf(() => controlFromEnv({ COTAL_CONTROL_SOCKET: ep.path, COTAL_CONTROL_KEY: ep.token } as NodeJS.ProcessEnv));
     check("a hand-set key with no COTAL_CONTROL_VERSION is refused", /COTAL_CONTROL_VERSION/.test(directErr), directErr);
+
+    // A release before the exchange read the key from `controlToken` (material) or
+    // `COTAL_CONTROL_TOKEN` (environment) and sent it in its first frame. New launches carry the key
+    // under names such a reader does not know, so it finds no key and refuses; this build refuses
+    // the old names in turn.
+    const written = JSON.parse(readFileSync(materialEnv({ control: ep }, artifacts).COTAL_LAUNCH_MATERIAL!, "utf8")) as Record<string, unknown>;
+    check(
+      "new launch material carries the key as controlKey, never under the old controlToken field",
+      written.controlKey === ep.token && written.controlVersion === CONTROL_PROTOCOL_VERSION && !("controlToken" in written),
+      Object.keys(written),
+    );
+    const oldFieldErr = refusalOf(() => readLaunchMaterial(materialFile("old-field.json", { controlToken: ep.token, controlVersion: 1 })));
+    check("material carrying the old controlToken field is refused", /carries controlToken/.test(oldFieldErr), oldFieldErr);
+    const oldVarErr = refusalOf(() =>
+      controlFromEnv({ COTAL_CONTROL_SOCKET: ep.path, COTAL_CONTROL_TOKEN: ep.token, COTAL_CONTROL_VERSION: "1" } as NodeJS.ProcessEnv),
+    );
+    check("the old COTAL_CONTROL_TOKEN variable is refused by name", /COTAL_CONTROL_TOKEN is the control key variable/.test(oldVarErr), oldVarErr);
+    const keyless = refusalOf(() => startControlServer({} as MeshAgent, { ...ep, token: "" }, async () => ({})));
+    check("a server refuses an endpoint with no key when it is made, before any connection", /no key/.test(keyless), keyless);
   }
 
   // ---- the socket's directory (off Windows) ----------------------------------------------------
   if (!isWin) {
-    const ep = controlEndpoint("ctlx", "dir");
+    // The directory used to be `cotal-ctl-<uid>`, one per user: any local user who planted that name
+    // first (a symlink, or a directory open to others) made every launch of that user refuse. Now
+    // each launch gets its own directory, named from the key, which the server makes when it binds.
+    const planted = join(tmpdir(), `cotal-ctl-${process.getuid!()}`);
+    const plantedTarget = join(scratch, "planted-target");
+    mkdirSync(plantedTarget, { mode: 0o700 });
+    for (const [kind, plant] of [
+      ["a symlink", () => symlinkSync(plantedTarget, planted)],
+      ["a directory open to others", () => (mkdirSync(planted, { mode: 0o755 }), chmodSync(planted, 0o755))],
+    ] as const) {
+      plant();
+      let minted: ControlEndpoint | undefined;
+      let mintError = "";
+      try {
+        minted = controlEndpoint("ctlx", "planted", artifacts);
+      } catch (e) {
+        mintError = (e as Error).message;
+      }
+      let served = false;
+      if (minted) {
+        const real = await realServer(minted);
+        served = real.server.listening && dirname(minted.path) !== planted;
+        await closed(real.server);
+      }
+      check(`${kind} planted at the old per-user directory name does not block a launch`, served, mintError || minted?.path);
+      rmSync(planted, { recursive: true, force: true });
+    }
+
+    const ep = controlEndpoint("ctlx", "dir", artifacts);
+    const other = controlEndpoint("ctlx", "dir", artifacts);
+    check("each launch gets its own socket directory, recorded as a launch artifact", dirname(ep.path) !== dirname(other.path) && artifacts.includes(dirname(ep.path)), ep.path);
+    check("the directory name is not derived from the user alone", !dirname(ep.path).endsWith(`cotal-ctl-${process.getuid!()}`) && dirname(dirname(ep.path)) === tmpdir(), ep.path);
+    check("minting creates nothing on disk: the server makes the directory when it binds", !existsSync(dirname(ep.path)));
+    const dirServer = await realServer(ep);
     const st = statSync(dirname(ep.path));
     check("the control socket's directory is owned by this user with mode 0700", st.uid === process.getuid!() && (st.mode & 0o777) === 0o700, (st.mode & 0o777).toString(8));
-    check("the directory sits in the temp root, one per user", dirname(ep.path) === join(tmpdir(), `cotal-ctl-${process.getuid!()}`), ep.path);
+    await closed(dirServer.server);
 
     const open = join(scratch, "open");
     mkdirSync(open, { mode: 0o755 });
@@ -419,7 +629,12 @@ try {
     mkdirSync(priv, { mode: 0o700 });
     const link = join(scratch, "link");
     symlinkSync(priv, link);
-    check("a symlink in place of the directory is refused", !checkControlSocketDir(join(link, "c.sock")).ok);
+    const linked = checkControlSocketDir(join(link, "c.sock"));
+    check(
+      "a symlink in place of the directory is refused, and the refusal says so and how to recover",
+      !linked.ok && /symbolic link/.test(linked.reason) && /TMPDIR/.test(linked.reason),
+      linked,
+    );
     const root = checkControlSocketDir("/c.sock");
     check("a directory owned by another user is refused", process.getuid!() === 0 || (!root.ok && !root.absent), root);
     const absent = checkControlSocketDir(join(scratch, "missing", "c.sock"));

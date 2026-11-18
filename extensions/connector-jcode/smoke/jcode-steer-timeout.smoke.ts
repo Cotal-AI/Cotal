@@ -82,7 +82,7 @@ try {
           COTAL_SPACE: space, COTAL_SERVERS: servers, COTAL_ID: "steerseat", COTAL_NAME: "steerseat",
           COTAL_LIFECYCLE_UID: mintLifecycleUid(), COTAL_SUBSCRIBE: "team", COTAL_ALLOW_SUBSCRIBE: "team", COTAL_ALLOW_PUBLISH: "team",
           COTAL_JCODE_HOME: cell, COTAL_JCODE_TUI: "1", COTAL_JCODE_PROMPT: "Owned kickoff after native turn",
-          COTAL_JCODE_REQUEST_TIMEOUT_MS: "1000", COTAL_CONTROL_SOCKET: join(cell, "control.sock"), COTAL_CONTROL_TOKEN: "owned-control", COTAL_CONTROL_VERSION: "1",
+          COTAL_JCODE_REQUEST_TIMEOUT_MS: "1000", COTAL_CONTROL_SOCKET: join(cell, "control.sock"), COTAL_CONTROL_KEY: "owned-control", COTAL_CONTROL_VERSION: "1",
         },
         stdio: ["ignore", "ignore", "pipe"],
       });

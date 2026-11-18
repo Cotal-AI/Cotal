@@ -179,7 +179,7 @@ try {
       COTAL_JCODE_PROMPT: "FX26-KICKOFF-AFTER-BUSY-WINDOW-2029-LOSS",
       COTAL_LIFECYCLE_UID: lifecycleUid,
       COTAL_CONTROL_SOCKET: join(root, "control.sock"),
-      COTAL_CONTROL_TOKEN: "jcode-qfloss-control-token", COTAL_CONTROL_VERSION: "1",
+      COTAL_CONTROL_KEY: "jcode-qfloss-control-token", COTAL_CONTROL_VERSION: "1",
       COTAL_JCODE_REQUEST_TIMEOUT_MS: String(softInterruptTimeoutMs),
     },
     stdio: ["ignore", "ignore", "pipe"],

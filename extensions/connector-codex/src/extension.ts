@@ -163,7 +163,10 @@ export const codexConnector: Connector = {
       throw new Error("codex connector: tool-sharing (connectors.codex.mcpServers) is not implemented");
 
     // Minted before the env is built: the token goes into the launch material, the path into the env.
-    const control = controlEndpoint(opts.space, opts.name);
+    // The launch's artifact list (core launch-artifacts) starts here: the control socket's directory
+    // is the first entry, and the launcher removes every entry once the child has exited.
+    const artifacts: string[] = [];
+    const control = controlEndpoint(opts.space, opts.name, artifacts);
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: CODEX_ENV_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
@@ -278,7 +281,6 @@ export const codexConnector: Connector = {
     // host drops even that once it has read it, so a shell this seat runs inherits neither. Written
     // after every refusal above, and its directory is a launch artifact the launcher removes once the
     // child has exited (core launch-artifacts).
-    const artifacts: string[] = [];
     Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
 
     return { command: HOST_COMMAND, args: [HOST_ENTRY], env, control, ...(artifacts.length > 0 ? { artifacts } : {}) };

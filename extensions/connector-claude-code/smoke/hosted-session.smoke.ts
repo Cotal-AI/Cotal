@@ -50,7 +50,7 @@ async function child(scenario: string): Promise<void> {
     COTAL_SERVERS: serverURL,
     COTAL_WORKSPACE_ROOT: process.cwd(),
     COTAL_CONTROL_SOCKET: name === "primary" ? path : join(process.cwd(), "sibling.sock"),
-    COTAL_CONTROL_TOKEN: randomBytes(32).toString("hex"), COTAL_CONTROL_VERSION: "1",
+    COTAL_CONTROL_KEY: randomBytes(32).toString("hex"), COTAL_CONTROL_VERSION: "1",
   });
   try {
     if (scenario === "failure" || scenario === "custody" || scenario === "rebuild-stop") {

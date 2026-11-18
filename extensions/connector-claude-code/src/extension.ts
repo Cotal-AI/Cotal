@@ -307,7 +307,10 @@ export const claudeConnector: Connector = {
     // MCP server its material through the --mcp-config `env` block and giving the hooks a separate
     // control-only file, which depends on host behaviour that has to be verified against a live
     // `claude` first. Tracked separately rather than guessed at here.
-    const control = controlEndpoint(opts.space, opts.name);
+    // The launch's artifact list (core launch-artifacts) starts here: the control socket's directory
+    // is the first entry, and the launcher removes every entry once the child has exited.
+    const artifacts: string[] = [];
+    const control = controlEndpoint(opts.space, opts.name, artifacts);
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, mcpKeys: [...mcpServerEnvKeys(shared), ...nativeEnvKeys, ...CLAUDE_MCP_KEYS], envAllow: opts.envAllow }),
       ...aclEnv(opts),
@@ -397,10 +400,9 @@ export const claudeConnector: Connector = {
     const passthrough = connectorLaunchOptions("claude", opts.launchOptions).map(([k, v]) => [k, String(v)] as const);
     // The private files this launch writes. The launcher that spawns the spec removes them once the
     // child has exited (core launch-artifacts).
-    const artifacts: string[] = [];
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
     // shells, builds and third-party CLIs this session runs no longer inherit live authority. Its
-    // directory is the first artifact, so a later writeLaunchArtifact failure removes it too.
+    // directory is an artifact, so a later writeLaunchArtifact failure removes it too.
     Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
     // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
     // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude

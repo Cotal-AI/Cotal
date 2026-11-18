@@ -255,13 +255,13 @@ async function startSession(
   // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
   // cooperative shutdown. The SOCKET PATH comes from the launch env; the KEY and exchange version
   // come from the launch-material file that env points at, which is also where the hooks read them,
-  // or from COTAL_CONTROL_TOKEN and COTAL_CONTROL_VERSION in a session driven by hand. The hooks are
+  // or from COTAL_CONTROL_KEY and COTAL_CONTROL_VERSION in a session driven by hand. The hooks are
   // what advance presence and inject peer messages, so a session without the endpoint is refused,
   // naming it, rather than served with an unauthenticated (or no) control plane.
   const control = controlFromEnv(env);
   if (!control) {
     throw new Error(
-      "no control endpoint for the lifecycle hooks: set COTAL_CONTROL_SOCKET to a socket path in a private directory, COTAL_CONTROL_TOKEN to a random secret and COTAL_CONTROL_VERSION to 1",
+      "no control endpoint for the lifecycle hooks: set COTAL_CONTROL_SOCKET to a socket path in a private directory, COTAL_CONTROL_KEY to a random secret and COTAL_CONTROL_VERSION to 1",
     );
   }
   // Defined before the server so it can be the cooperative-shutdown handler; only ever CALLED after

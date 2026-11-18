@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 
 export function controlTranscriptMac(
   key: string,
-  role: "server" | "client" | "reply",
+  role: "server" | "client" | "reply" | "receipt",
   nc: string,
   ns: string,
   body?: string,

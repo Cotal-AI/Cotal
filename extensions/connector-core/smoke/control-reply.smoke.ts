@@ -12,13 +12,16 @@
  * Run: pnpm smoke:control-reply
  */
 import { strict as assert } from "node:assert";
+import { rmSync } from "node:fs";
 import { connect } from "node:net";
 import { clientExchange, type ControlEndpoint } from "@cotal-ai/core";
-import { startControlServer, HANDOFF_RECEIPT, type ControlServerOpts } from "../src/control.js";
+import { startControlServer, type ControlServerOpts } from "../src/control.js";
 import { controlEndpoint } from "../src/runtime.js";
 import type { MeshAgent } from "../src/agent.js";
 
 const stubAgent = {} as MeshAgent;
+/** The control sockets' per-launch directories, removed at the end. */
+const artifacts: string[] = [];
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
@@ -43,9 +46,9 @@ function sendFrame(ep: ControlEndpoint, frame: Record<string, unknown>, receipt 
       resolve(reply);
     };
     sock.on("connect", () =>
-      clientExchange(sock, ep, frame, (reply) => {
-        if (reply !== undefined && receipt) sock.write(HANDOFF_RECEIPT);
-        finish(reply);
+      clientExchange(sock, ep, frame, (result) => {
+        if (result.ok && receipt) sock.write(result.receipt);
+        finish(result.ok ? result.reply : "");
       }),
     );
     sock.on("error", () => finish());
@@ -55,7 +58,7 @@ function sendFrame(ep: ControlEndpoint, frame: Record<string, unknown>, receipt 
 
 /** One server per case: the endpoint path is token-derived, so cases never collide. */
 async function replyFor(label: string, opts: ControlServerOpts | undefined, handoff = false): Promise<string> {
-  const ep = controlEndpoint("ctlreply", label);
+  const ep = controlEndpoint("ctlreply", label, artifacts);
   let sawEvent = false;
   const server =
     opts === undefined
@@ -92,5 +95,6 @@ check("onReply still observes the delivery it no longer performs", observed === 
 
 check("handoff client with no onReply → reply returned", (await replyFor("handoff", {}, true)) === WANT);
 
+for (const dir of artifacts) rmSync(dir, { recursive: true, force: true });
 console.log(`\nCONTROL-REPLY TESTS PASSED ✅  (${pass} checks)`);
 process.exit(0);

@@ -60,7 +60,7 @@ try {
     ...env, PATH: `${join(root, "bin")}:${env.PATH ?? ""}`, JCODE_HOME: join(root, "source"),
     COTAL_SPACE: space, COTAL_NAME: "seat", COTAL_ID: "seat", COTAL_LIFECYCLE_UID: mintLifecycleUid(), COTAL_SERVERS: servers,
     COTAL_SUBSCRIBE: "team", COTAL_ALLOW_SUBSCRIBE: "team", COTAL_ALLOW_PUBLISH: "team", COTAL_JCODE_HOME: root,
-    COTAL_JCODE_TUI: "0", COTAL_CONTROL_SOCKET: join(root, "control.sock"), COTAL_CONTROL_TOKEN: randomBytes(32).toString("base64url"), COTAL_CONTROL_VERSION: "1",
+    COTAL_JCODE_TUI: "0", COTAL_CONTROL_SOCKET: join(root, "control.sock"), COTAL_CONTROL_KEY: randomBytes(32).toString("base64url"), COTAL_CONTROL_VERSION: "1",
   }, stdio: ["ignore", "ignore", "pipe"] });
   child.stderr!.on("data", (chunk: Buffer) => { hostLog += chunk.toString(); });
   let entry: { command: string; args: string[]; env: Record<string, string> } | undefined;

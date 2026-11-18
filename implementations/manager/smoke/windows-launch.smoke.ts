@@ -42,6 +42,8 @@ import type { Win32ProcessPin, Win32TreePin } from "@cotal-ai/workspace";
 import { createRuntime } from "../src/index.js";
 
 const isWin = process.platform === "win32";
+/** The control sockets' per-launch directories, removed at the end. */
+const controlDirs: string[] = [];
 let failures = 0;
 function check(label: string, cond: boolean): void {
   console.log(`${cond ? "✓" : "✗"} ${label}`);
@@ -362,7 +364,7 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
 }
 {
   const stubAgent = {} as unknown as MeshAgent;
-  const ep = controlEndpoint("smoke", "ctl");
+  const ep = controlEndpoint("smoke", "ctl", controlDirs);
 
   // F1: endpoint shape — a named pipe on win32 / a tmpdir .sock on POSIX, a 256-bit base64url token,
   // and a token-derived (so unguessable) path.
@@ -371,7 +373,7 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
     isWin ? ep.path.startsWith("\\\\.\\pipe\\cotal-") : ep.path.startsWith(join(tmpdir(), "cotal-")) && ep.path.endsWith(".sock"),
   );
   check("controlEndpoint token is a 43-char base64url string (32 random bytes)", /^[A-Za-z0-9_-]{43}$/.test(ep.token));
-  check("controlEndpoint path is token-derived (different token → different path)", controlEndpoint("smoke", "ctl").path !== ep.path);
+  check("controlEndpoint path is token-derived (different token → different path)", controlEndpoint("smoke", "ctl", controlDirs).path !== ep.path);
 
   const events: unknown[] = [];
   let shutdowns = 0;
@@ -424,7 +426,7 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
   eq("shutdown: wrong token → onShutdown NOT fired", shutdowns, 1);
 
   // F7: the manager's controlShutdown client round-trips to a server's onShutdown (the WS4 wire path).
-  const ep2 = controlEndpoint("smoke", "ws4");
+  const ep2 = controlEndpoint("smoke", "ws4", controlDirs);
   let ws4 = false;
   const server2 = startControlServer(stubAgent, ep2, handle, { onShutdown: () => (ws4 = true) });
   await waitListening(server2);
@@ -442,7 +444,7 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
 //    stale socket first). A managed listener must then exit(1), never serve a hijacked/no-op plane.
 // =================================================================================================
 if (isWin) {
-  const ep = controlEndpoint("squat", "test");
+  const ep = controlEndpoint("squat", "test", controlDirs);
   const squatter = createServer(() => {});
   await new Promise<void>((resolve) => squatter.listen(ep.path, () => resolve()));
   const probe = fileURLToPath(new URL("./fatal-bind-probe.ts", import.meta.url));
@@ -461,7 +463,7 @@ if (isWin) {
 // =================================================================================================
 {
   const stubAgent = {} as unknown as MeshAgent;
-  const ep = controlEndpoint("smoke", "dos");
+  const ep = controlEndpoint("smoke", "dos", controlDirs);
   let hits = 0;
   const handle = async (): Promise<Record<string, unknown>> => {
     hits++;
@@ -648,5 +650,6 @@ if (isWin) {
   eq("I4: late PID is never opened after exit", pinCalled4, false);
 }
 
+for (const dir of controlDirs) rmSync(dir, { recursive: true, force: true });
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

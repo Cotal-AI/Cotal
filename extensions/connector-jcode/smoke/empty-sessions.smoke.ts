@@ -83,7 +83,7 @@ function startHost(name: string, extra: NodeJS.ProcessEnv): { child: ChildProces
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: join(sockRoot, `${name}-control.sock`),
-      COTAL_CONTROL_TOKEN: `${name}-control-token`, COTAL_CONTROL_VERSION: "1",
+      COTAL_CONTROL_KEY: `${name}-control-token`, COTAL_CONTROL_VERSION: "1",
       ...extra,
     },
     stdio: ["ignore", "ignore", "pipe"],

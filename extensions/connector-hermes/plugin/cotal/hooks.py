@@ -7,7 +7,7 @@ the sidecar each prove they hold the launch's control key without sending it, th
 produced while turning the event into a presence change. The socket PATH comes from the launch env;
 the KEY and its version come from the launch-material file that env points at
 (``COTAL_LAUNCH_MATERIAL``), so that no descendant of the gateway inherits a control-plane secret.
-Standalone mode mints and exports ``COTAL_CONTROL_TOKEN`` and ``COTAL_CONTROL_VERSION`` itself, so
+Standalone mode mints and exports ``COTAL_CONTROL_KEY`` and ``COTAL_CONTROL_VERSION`` itself, so
 that path is read first and is not deprecated. Before each dial the hook checks that the socket's
 directory is private to this user; a directory that is not counts as no endpoint.
 
@@ -56,7 +56,7 @@ def relay(event_name: str, **fields: Any) -> None:
         # work, and presence never moves off its first value. Say so once rather than never.
         _warn_once(
             "control socket is configured but no control key could be resolved "
-            "(neither COTAL_CONTROL_TOKEN nor a readable COTAL_LAUNCH_MATERIAL with one) - "
+            "(neither COTAL_CONTROL_KEY nor COTAL_LAUNCH_MATERIAL carries one) - "
             "presence relays are disabled for this session"
         )
         return

@@ -33,19 +33,23 @@ _REOPEN_JOIN_SECONDS = 2.0
 class BridgeClient:
     def __init__(self, socket_path: str) -> None:
         self._path = socket_path
-        # Resolved once, the same key `hooks.relay` reads: standalone mode exports COTAL_CONTROL_TOKEN
+        # Resolved once, the same key `hooks.relay` reads: standalone mode exports COTAL_CONTROL_KEY
         # and COTAL_CONTROL_VERSION directly; a managed launch carries both in the launch material only.
         key = control_key()
         if not key:
             raise RuntimeError(
-                "no control key could be resolved (neither COTAL_CONTROL_TOKEN nor a readable "
-                "COTAL_LAUNCH_MATERIAL with one) — the bridge socket cannot be authenticated"
+                "no control key could be resolved (neither COTAL_CONTROL_KEY nor COTAL_LAUNCH_MATERIAL "
+                "carries one) — the bridge socket cannot be authenticated"
             )
         self._token = bridge_token(key)
         self._sock: Optional[socket.socket] = None
         self._lock = threading.Lock()
         self._pending: dict[str, tuple[threading.Event, dict]] = {}
         self._on_incoming: Optional[Callable[[dict], None]] = None
+        self._on_refused: Optional[Callable[[str], None]] = None
+        # Why this bridge refuses to dial, once its socket's directory has been found present and not
+        # private to this user. That is a configuration fault no retry repairs, so it is permanent.
+        self._refused: Optional[str] = None
         self._stop = threading.Event()
         self._reader: Optional[threading.Thread] = None
         # Generation of the CURRENT reader. Bumped by close() and reopen(); each reader captures
@@ -53,14 +57,17 @@ class BridgeClient:
         # correctness never depends on guessing whether a dying thread has finished dying.
         self._gen = 0
 
-    def start(self, on_incoming: Callable[[dict], None]) -> None:
-        """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message.
+    def start(self, on_incoming: Callable[[dict], None], on_refused: Optional[Callable[[str], None]] = None) -> None:
+        """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message, and
+        ``on_refused`` (off-loop, once) if the reader stops because the socket's directory is not
+        private to this user.
 
         A reader is started only when none is installed for the CURRENT generation. Holding the
         lock across the check and the install closes the window where two concurrent starts could
         each see None and put two readers on one socket.
         """
         self._on_incoming = on_incoming
+        self._on_refused = on_refused
         with self._lock:
             if self._reader is not None:
                 return
@@ -91,6 +98,8 @@ class BridgeClient:
                 # before this re-check: RETIRED_READER_READ_FOREIGN_SOCKET True.
                 if self._stop.is_set() or gen != self._gen:
                     return
+                if self._refused:
+                    return  # the socket's directory is not private: refusal() has reported it
                 if self._sock is None:
                     continue
                 self._send({"t": "subscribe", "token": self._token})  # (re)subscribe after every (re)connect
@@ -146,8 +155,10 @@ class BridgeClient:
         while not self._stop.is_set():
             if gen is not None and gen != self._gen:
                 return  # retired while dialing: this socket is not wanted
+            if self.refusal():
+                return  # permanent: the reader stops and the adapter reports it
             if socket_dir_problem(self._path):
-                time.sleep(_BACKOFF_S)  # not up yet, or not private: no endpoint until it is
+                time.sleep(_BACKOFF_S)  # the directory is not there yet: the sidecar is not up
                 continue
             try:
                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -165,6 +176,22 @@ class BridgeClient:
                 return
             except OSError:
                 time.sleep(_BACKOFF_S)
+
+    def refusal(self) -> Optional[str]:
+        """Why this bridge will not dial, or ``None``. Checks the socket's directory now: a directory
+        that is absent reads as a sidecar not up yet and is retried, but one that exists and is not
+        private to this user is a permanent refusal, reported once on stderr and to ``on_refused``."""
+        if self._refused:
+            return self._refused
+        problem = socket_dir_problem(self._path)
+        if not problem or problem[0]:
+            return None
+        self._refused = f"{problem[1]}, so the bridge socket {self._path} is not dialed"
+        print(f"[cotal-hermes] {self._refused}", file=sys.stderr, flush=True)
+        cb = self._on_refused
+        if cb:
+            cb(self._refused)
+        return self._refused
 
     def _dispatch(self, line: bytes) -> None:
         try:

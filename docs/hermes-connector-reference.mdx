@@ -19,8 +19,14 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
   and the `cotal_*` tools) over local AF_UNIX sockets. The bridge socket sits beside the control
   socket, in a directory only the seat's user can enter, and the adapter checks that directory before
   it connects. The adapter's first frame is a `subscribe` carrying a token derived from the launch's
-  control key, so the key itself never crosses the bridge socket. The lifecycle hooks reach the
-  control socket through the [control exchange](authoring-a-connector.mdx#control-exchange).
+  control key, so the key itself never crosses the bridge socket. The token authenticates the
+  adapter only: the private directory is what keeps other users off the bridge, and a process
+  running as the seat's user can read the token as it can read the launch material. A bridge socket
+  in a directory that is not private is never dialed, and the adapter reports a permanent error.
+  The lifecycle hooks reach the control socket through the
+  [control exchange](authoring-a-connector.mdx#control-exchange). Standalone mode mints the key and
+  its version together when the gateway carries neither, and refuses a gateway that carries one
+  without the other.
 - It runs the gateway in an isolated `HERMES_HOME` profile (a temp dir), so your own `~/.hermes`
   is never touched, with approvals off (a supervised agent has no human at the TUI to approve).
   The temp dir is laid out as a Hermes named profile (`<temp root>/profiles/cotal-<id>`), so Hermes

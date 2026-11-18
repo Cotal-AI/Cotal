@@ -43,7 +43,7 @@ function carried(home: string, source: string) {
 }
 async function hook(env: NodeJS.ProcessEnv, event: Record<string, unknown>): Promise<void> {
   // SessionStart waits the normal 10s initial-connect grace in this intentionally offline fixture.
-  const endpoint = { path: env.COTAL_CONTROL_SOCKET!, token: env.COTAL_CONTROL_TOKEN!, version: CONTROL_PROTOCOL_VERSION };
+  const endpoint = { path: env.COTAL_CONTROL_SOCKET!, token: env.COTAL_CONTROL_KEY!, version: CONTROL_PROTOCOL_VERSION };
   JSON.parse(await controlCall(endpoint, { event }, { timeoutMs: 13000 }));
 }
 
@@ -120,7 +120,7 @@ process.exitCode = 1;
     COTAL_OWNER: `u_${"a".repeat(26)}`, COTAL_ACTOR: name, COTAL_LIFECYCLE_UID: mintLifecycleUid(),
     COTAL_SENTINEL_CREDS: sentinel, COTAL_BEARER_CMD: JSON.stringify([process.execPath, helper, join(root, `${name}.json`)]),
     COTAL_SERVERS: `nats://127.0.0.1:${address.port}`, COTAL_WORKSPACE_ROOT: root,
-    COTAL_CONTROL_SOCKET: join(root, `${name}.sock`), COTAL_CONTROL_TOKEN: randomBytes(32).toString("hex"), COTAL_CONTROL_VERSION: "1",
+    COTAL_CONTROL_SOCKET: join(root, `${name}.sock`), COTAL_CONTROL_KEY: randomBytes(32).toString("hex"), COTAL_CONTROL_VERSION: "1",
     COTAL_CHANNEL: "0", FIXTURE_SESSION_MARKER: `marker_${name}`,
     COTAL_FEEDBACK_URL: `http://127.0.0.1:${feedbackAddress.port}/fixture-feedback`,
   });

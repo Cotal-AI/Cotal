@@ -289,7 +289,7 @@ export function materialEnv(
   if (opts.servers) material.servers = opts.servers;
   if (opts.token) material.token = opts.token;
   if (opts.control) {
-    material.controlToken = opts.control.token;
+    material.controlKey = opts.control.token;
     material.controlVersion = opts.control.version;
   }
   if (opts.eventsRequired) material.eventsRequired = true;

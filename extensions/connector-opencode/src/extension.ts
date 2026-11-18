@@ -238,7 +238,10 @@ export const opencodeConnector: Connector = {
     // Identity rides the process env: the plugin runs in the opencode process and inherits it.
     // Provider inputs cross only through the connector's declared allow-list; spawn.env adds names.
     // Minted before the env is built: the token goes into the launch material, the path into the env.
-    const control = controlEndpoint(opts.space, opts.name);
+    // The launch's artifact list (core launch-artifacts) starts here: the control socket's directory
+    // is the first entry, and the launcher removes every entry once the child has exited.
+    const artifacts: string[] = [];
+    const control = controlEndpoint(opts.space, opts.name, artifacts);
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
@@ -370,7 +373,6 @@ export const opencodeConnector: Connector = {
     // executes the session's tool calls, so a shell this seat runs inherits neither the material
     // nor a reference to it. The shim itself keeps the reference, because the server it starts is
     // the reader; it runs no tools of its own.
-    const artifacts: string[] = [];
     Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
 
     // Run the shim (node dist/serve.js): `opencode serve` + an attached foreground TUI.

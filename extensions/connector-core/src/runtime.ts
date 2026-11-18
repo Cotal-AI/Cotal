@@ -1,7 +1,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { CONTROL_PROTOCOL_VERSION, ensureControlSocketDir, type ControlEndpoint } from "@cotal-ai/core/control-exchange";
+import { CONTROL_PROTOCOL_VERSION, type ControlEndpoint } from "@cotal-ai/core/control-exchange";
 
 /**
  * The longest control-socket path the kernel will actually bind, in BYTES.
@@ -22,23 +22,28 @@ export const SUN_PATH_MAX_BYTES = process.platform === "darwin" ? 104 : 108;
  * cooperative-shutdown and session calls) connect to, the key both ends prove they hold without
  * sending it, and the exchange version (see `@cotal-ai/core`'s `control-exchange.ts`).
  *
- * The path id is `sha256(space\0name\0pid\0token)` (base64url, 22 characters): unguessable and
- * collision-free without leaking identity. Off Windows the socket sits in `cotal-ctl-<uid>` under
- * `tmpdir()`, a directory only this user can enter, made here with mode 0700 and checked for owner
- * and mode, as the server checks it again before it binds and every client before it connects.
- * Another user therefore cannot create a name there, even after the server has exited. Windows has
- * no filesystem socket Node can bind, so the path is a named pipe (`\\.\pipe\…`) in the global
- * namespace, where any local process can take a free name. There the exchange is the boundary: a
- * stand-in that cannot prove it holds the key gets no request and its reply is never used.
+ * The id is `sha256(space\0name\0pid\0token)` (base64url, 22 characters): unguessable and
+ * collision-free without leaking identity. Off Windows the socket is `ctl.sock` in a directory of
+ * its own for this launch, `cotal-ctl-<id>` under `tmpdir()`. The server makes it with mode 0700
+ * right before it binds and checks it for owner and mode, and every client checks it again before it
+ * connects. Another user therefore cannot create a name there, even after the server has exited, and
+ * cannot block the launch by planting the directory first, because nobody without the key can
+ * compute its name. The directory is appended to `artifacts`, so the launcher removes it with the
+ * launch's other artifacts once the child has exited; a launch that refuses after this call has
+ * created nothing to remove. Windows has no filesystem socket Node can bind, so the path is
+ * a named pipe (`\\.\pipe\…`) in the global namespace, where any local process can take a free
+ * name. There the exchange is the boundary: a stand-in that cannot prove it holds the key gets no
+ * request and its reply is never used.
  *
  * Minted ONCE at launch (in the manager's process, via the connector's `buildLaunch`). The path
  * reaches the child in `COTAL_CONTROL_SOCKET`; the key and version reach it in the launch material,
- * never in argv; the manager keeps all three in memory. (`process.pid` is just generation-time
- * entropy: the value flows by env, so it never has to match across processes.)
+ * never in argv. (`process.pid` is just generation-time entropy: the value flows by env, so it never
+ * has to match across processes.)
  */
 export function controlEndpoint(
   space: string,
   name: string,
+  artifacts: string[],
   token: string = randomBytes(32).toString("base64url"),
 ): ControlEndpoint {
   const id = createHash("sha256")
@@ -46,12 +51,13 @@ export function controlEndpoint(
     .digest("base64url")
     .slice(0, 22);
   if (process.platform === "win32") return { path: `\\\\.\\pipe\\cotal-${id}`, token, version: CONTROL_PROTOCOL_VERSION };
-  const tail = `/${controlDirName()}/${id}.sock`;
-  const path = join(tmpdir(), tail.slice(1));
-  // `id` is a fixed 22 characters, so `tmpdir()` and the uid are the only variable parts of this
-  // path. A TMPDIR pointed inside a deep working copy spends the sun_path budget silently, and the
-  // overrun then surfaces as an `EINVAL` from a bind that cannot say why. Refuse HERE, where the
-  // path, its length and the limit are all in hand.
+  const dir = join(tmpdir(), `cotal-ctl-${id}`);
+  const path = join(dir, CONTROL_SOCKET_NAME);
+  // `id` is a fixed 22 characters, so `tmpdir()` is the only variable part of this path. A TMPDIR
+  // pointed inside a deep working copy spends the sun_path budget silently, and the overrun then
+  // surfaces as an `EINVAL` from a bind that cannot say why. Refuse HERE, where the path, its length
+  // and the limit are all in hand.
+  const tail = path.slice(tmpdir().length);
   const bytes = Buffer.byteLength(path);
   if (bytes > SUN_PATH_MAX_BYTES) {
     throw new Error(
@@ -62,9 +68,9 @@ export function controlEndpoint(
         `(${tmpdir()}). Point TMPDIR at a shorter directory.`,
     );
   }
-  ensureControlSocketDir(path);
+  artifacts.push(dir);
   return { path, token, version: CONTROL_PROTOCOL_VERSION };
 }
 
-/** The per-user directory control sockets live in off Windows. */
-const controlDirName = (): string => `cotal-ctl-${process.getuid!()}`;
+/** The control socket's file name inside its per-launch directory. */
+const CONTROL_SOCKET_NAME = "ctl.sock";

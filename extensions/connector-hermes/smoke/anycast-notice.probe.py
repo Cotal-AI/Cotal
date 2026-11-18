@@ -77,7 +77,7 @@ sys.modules.update(
 # The adapter's constructor builds the bridge client singleton, which reads this path and does not
 # dial it. The probe replaces the client before any reply.
 os.environ.setdefault("COTAL_BRIDGE_SOCKET", "/nonexistent/cotal-anycast-notice.sock")
-os.environ.setdefault("COTAL_CONTROL_TOKEN", "anycast-notice-probe-token")
+os.environ.setdefault("COTAL_CONTROL_KEY", "anycast-notice-probe-token")
 os.environ.setdefault("COTAL_CONTROL_VERSION", "1")
 sys.path.insert(0, PLUGIN_PARENT)
 
@@ -92,6 +92,9 @@ class Recorder:
 
     def reply(self, target, content, answered=None, context_id=None):
         self.replies.append({"target": target, "content": content})
+
+    def refusal(self):
+        return None  # a usable bridge: its socket's directory is private
 
     def close(self):
         pass

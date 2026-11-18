@@ -11,14 +11,17 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { Server } from "node:net";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import type { ControlEndpoint } from "@cotal-ai/core";
 import { startControlServer } from "../src/control.js";
 import type { MeshAgent } from "../src/agent.js";
+
+/** The control sockets' per-launch directories, removed at the end. */
+const controlDirs: string[] = [];
 import { controlEndpoint } from "../src/runtime.js";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -56,7 +59,7 @@ function launchRelay(
       ...clean,
       COTAL_NAME: "startup-race-probe",
       COTAL_CONTROL_SOCKET: endpoint.path,
-      COTAL_CONTROL_TOKEN: endpoint.token,
+      COTAL_CONTROL_KEY: endpoint.token,
       COTAL_CONTROL_VERSION: String(endpoint.version),
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -142,9 +145,19 @@ async function close(server: Server): Promise<void> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
+/** Mint an endpoint whose socket directory already exists, as it does once the server has made it
+ *  but before it binds (a server restarting, or one between its mkdir and its listen). The relay
+ *  then really dials and really fails, which is what these cells grade. A directory that does not
+ *  exist yet is graded on its own below. */
+function mintWithDir(name: string, token: string): ControlEndpoint {
+  const endpoint = controlEndpoint("hook-relay-startup", name, controlDirs, token);
+  if (process.platform !== "win32") mkdirSync(dirname(endpoint.path), { recursive: true, mode: 0o700 });
+  return endpoint;
+}
+
 const scratch = mkdtempSync(join(tmpdir(), "cotal-hook-relay-startup-"));
 try {
-  const late = controlEndpoint("hook-relay-startup", "late", "startup-race-token");
+  const late = mintWithDir("late", "startup-race-token");
   const event = { hook_event_name: "SessionStart", source: "startup" };
   const run = launchRelay(late, event);
   await within(run.ready, 3_000, "relay test shim to start");
@@ -177,7 +190,7 @@ try {
   check("startup race: relay exits cleanly", result.code === 0 && result.stderr === "", result);
 
   const absent = launchRelay(
-    controlEndpoint("hook-relay-startup", "never-bound", "absent-race-token"),
+    mintWithDir("never-bound", "absent-race-token"),
     { hook_event_name: "SessionStart", source: "startup" },
   );
   await within(absent.ready, 3_000, "absent-socket relay to start");
@@ -193,7 +206,7 @@ try {
   );
 
   const later = launchRelay(
-    controlEndpoint("hook-relay-startup", "later-hook", "later-hook-token"),
+    mintWithDir("later-hook", "later-hook-token"),
     { hook_event_name: "UserPromptSubmit" },
   );
   await within(later.ready, 3_000, "later hook relay to start");
@@ -218,6 +231,40 @@ try {
       performance.now() - laterStart < 500,
     { ...laterResult, timedOut: laterTimedOut },
   );
+
+  // POSIX: the socket's directory does not exist yet, because the server makes it when it binds. A
+  // SessionStart relay waits for it inside its budget and delivers once the server is up; a later
+  // hook fails open at once and says nothing, as it does for a missing socket.
+  if (process.platform !== "win32") {
+    const early = controlEndpoint("hook-relay-startup", "no-dir-yet", controlDirs, "no-dir-yet-token");
+    const startEvent = { hook_event_name: "SessionStart", source: "startup" };
+    const waiting = launchRelay(early, startEvent);
+    waiting.firstDialFailed.catch(() => {}); // nothing to dial until the directory exists
+    await within(waiting.ready, 3_000, "no-directory relay to start");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const earlyFrames: unknown[] = [];
+    const earlyServer = await listen(early, earlyFrames);
+    const earlyResult = await within(waiting.done, 3_000, "relay to deliver once the server made its directory and bound");
+    await close(earlyServer.server);
+    const earlyReply = earlyResult.stdout.split("\n").filter((line) => line && line !== "RELAY_READY");
+    check(
+      "no directory yet: SessionStart waits for the server to make it and bind, then delivers",
+      earlyFrames.length === 1 && earlyReply[0] === JSON.stringify({ handled: true }) && earlyResult.stderr === "",
+      { frames: earlyFrames.length, ...earlyResult },
+    );
+
+    const quiet = launchRelay(controlEndpoint("hook-relay-startup", "no-dir-later", controlDirs, "no-dir-later-token"), { hook_event_name: "UserPromptSubmit" });
+    quiet.firstDialFailed.catch(() => {});
+    await within(quiet.ready, 3_000, "no-directory later hook to start");
+    const quietStart = performance.now();
+    const quietResult = await within(quiet.done, 1_000, "a later hook with no directory yet to fail open");
+    const quietReply = quietResult.stdout.split("\n").filter((line) => line && line !== "RELAY_READY");
+    check(
+      "no directory yet: a later hook fails open at once and warns about nothing",
+      quietResult.code === 0 && quietReply.length === 0 && quietResult.stderr === "" && performance.now() - quietStart < 1_000,
+      quietResult,
+    );
+  }
 
   // POSIX: a socket whose parent is a regular file can never be bound. The relay checks the socket's
   // directory before it dials, so this fails open at once, before any dial and without retrying for
@@ -261,5 +308,5 @@ try {
   console.log(`\nhook-relay-startup smoke: ${pass} passed, ${fail} failed`);
   process.exitCode = fail === 0 ? 0 : 1;
 } finally {
-  rmSync(scratch, { recursive: true, force: true });
+  for (const dir of [scratch, ...controlDirs]) rmSync(dir, { recursive: true, force: true });
 }

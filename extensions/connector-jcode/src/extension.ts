@@ -148,7 +148,10 @@ export const jcodeConnector: Connector = {
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("jcode connector: tool-sharing (connectors.jcode.mcpServers) is not implemented — the connector owns the private MCP configuration that carries cotal_*");
 
-    const control = controlEndpoint(opts.space, opts.name);
+    // The launch's artifact list (core launch-artifacts) starts here: the control socket's directory
+    // is the first entry, and the launcher removes every entry once the child has exited.
+    const artifacts: string[] = [];
+    const control = controlEndpoint(opts.space, opts.name, artifacts);
     const env: Record<string, string> = {
       ...launchEnv({ envAllow: opts.envAllow }),
       ...aclEnv(opts),
@@ -214,7 +217,6 @@ export const jcodeConnector: Connector = {
 
     // Creds, broker URL and the control token ride a 0600 file written after every refusal above.
     // Its directory is a launch artifact the launcher removes once the child has exited.
-    const artifacts: string[] = [];
     Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
 
     // The fork's provenance is the seat's own record of it, written when the host forks.

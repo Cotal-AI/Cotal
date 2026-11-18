@@ -207,7 +207,7 @@ try {
   const childEnv: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
   const py = spawn(python!, ["-c", script, pluginDir, socketPath], {
-    env: { ...childEnv, COTAL_CONTROL_TOKEN: TOKEN, COTAL_CONTROL_VERSION: "1" }, stdio: ["ignore", "inherit", "inherit"],
+    env: { ...childEnv, COTAL_CONTROL_KEY: TOKEN, COTAL_CONTROL_VERSION: "1" }, stdio: ["ignore", "inherit", "inherit"],
   });
   const [code] = (await once(py, "exit")) as [number | null];
   assert.equal(code, 0, "the real client subscribed and surfaced the pending item");

@@ -9,9 +9,12 @@ import { join } from "node:path";
 
 const [root, epFile] = process.argv.slice(2);
 const core = await import(pathToFileURL(join(root, "extensions/connector-core/dist/index.js")).href);
-const ep = core.controlEndpoint("standin-check", "victim");
-// Before the control exchange the launch material carried the key alone; the version travels with it now.
-const env = core.materialEnv(ep.version ? { control: ep } : { controlToken: ep.token }, []);
+// This script also runs against a build from before the control exchange, whose controlEndpoint took
+// (space, name, token?) and whose material carried the key alone. The current one takes the launch's
+// artifact list third, where its socket directory is recorded.
+const artifacts = [];
+const ep = core.controlEndpoint.length >= 3 ? core.controlEndpoint("standin-check", "victim", artifacts) : core.controlEndpoint("standin-check", "victim");
+const env = core.materialEnv(ep.version ? { control: ep } : { controlToken: ep.token }, artifacts);
 const server = core.startControlServer({}, ep, async (_agent, ev) => ({ systemMessage: `real server saw ${ev.hook_event_name}` }), { fatalBind: true });
 server.on("listening", () => {
   writeFileSync(epFile, JSON.stringify({ path: ep.path, token: ep.token, material: env.COTAL_LAUNCH_MATERIAL, user: userInfo().username }));

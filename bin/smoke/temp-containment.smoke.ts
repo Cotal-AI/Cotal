@@ -261,18 +261,21 @@ try {
   console.log("\nPART B — an over-long control socket path fails by name, not by EINVAL");
 
   // The limit the guard applies is the platform's: 108 on Linux, 104 on darwin, and the usable root
-  // budget is that minus the fixed socket tail, `/cotal-ctl-<uid>/<22-char id>.sock` (43 bytes for a
-  // four-digit uid). When this cell was written the tail was 44 bytes: 64 bytes was the last passing
-  // root and 65 CRASHED the suite mid-run. The cell reads the same figures back so a run on either
+  // budget is that minus the fixed socket tail, `/cotal-ctl-<22-char id>/ctl.sock` (42 bytes). When
+  // this cell was written the tail was 44 bytes: 64 bytes was the last passing root and 65 CRASHED
+  // the suite mid-run. The cell reads the same figures back so a run on either
   // platform grades the message it would actually get.
   const SUN_PATH_LIMIT = process.platform === "darwin" ? 104 : 108;
-  const CONTROL_TAIL_BYTES = "/cotal-ctl-".length + String(process.getuid!()).length + "/".length + 22 + ".sock".length;
+  const CONTROL_TAIL_BYTES = "/cotal-ctl-".length + 22 + "/ctl.sock".length;
+  // The control socket's directory goes on this list when it is minted; nothing here binds, so none
+  // is created, and the list is only what the call requires.
+  const controlDirs: string[] = [];
   let deep = root;
   while (Buffer.byteLength(deep) <= SUN_PATH_LIMIT - CONTROL_TAIL_BYTES) deep = join(deep, "dddddddddd");
   mkdirSync(deep, { recursive: true });
 
   process.env.TMPDIR = deep;
-  const overlong = refusal(() => controlEndpoint("space", "name"));
+  const overlong = refusal(() => controlEndpoint("space", "name", controlDirs));
   process.env.TMPDIR = originalTmp;
   check(
     "a control socket path over the sun_path limit is refused with its path, length and limit",
@@ -333,7 +336,7 @@ try {
     );
   } else {
     process.env.TMPDIR = TEMP_ROOT;
-    const minted = refusal(() => controlEndpoint("space", "name"));
+    const minted = refusal(() => controlEndpoint("space", "name", controlDirs));
     process.env.TMPDIR = originalTmp;
     check(
       "a control socket path within the limit is still minted",
@@ -343,7 +346,7 @@ try {
     // Graded separately from the refusal above, so "it did not throw" and "what it returned is
     // actually bindable" cannot pass for each other.
     process.env.TMPDIR = TEMP_ROOT;
-    const path = controlEndpoint("space", "name").path;
+    const path = controlEndpoint("space", "name", controlDirs).path;
     process.env.TMPDIR = originalTmp;
     check(
       "the minted control socket path is within the limit and is a .sock",

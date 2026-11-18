@@ -12,7 +12,7 @@
  */
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { lstatSync, unlinkSync, type Stats } from "node:fs";
-import { assertControlVersion, ensureControlSocketDir, serverExchange, type ControlEndpoint } from "@cotal-ai/core/control-exchange";
+import { assertControlEndpoint, ensureControlSocketDir, serverExchange, type ControlEndpoint, type SealedReply } from "@cotal-ai/core/control-exchange";
 import type { MeshAgent, InboxItem } from "./agent.js";
 import { fmtDeliveryItem, fmtItem } from "./framing.js";
 
@@ -32,9 +32,8 @@ type ControlFrame =
   | { event?: unknown; handoff?: unknown; op?: undefined }
   | { op?: "shutdown" | "session" };
 
-/** One line a handoff-aware client writes back once the reply has cleared ITS output to the runtime.
- *  Content is irrelevant — arrival is the signal — but a stable token keeps a transcript readable. */
-export const HANDOFF_RECEIPT = '{"handoff":"ok"}\n';
+/** Longest receipt line read: the receipt is one 43-character MAC (`Mk` in the exchange). */
+const MAX_RECEIPT_BYTES = 64;
 /** Backstop for a client that declared `handoff` and then neither confirmed nor closed. The relay's
  *  own stdout backstop is 1s, and a client that dies takes the socket with it (→ `close` → not
  *  delivered), so this only catches a wedged one. Un-delivered on expiry: never commit on a guess. */
@@ -136,11 +135,14 @@ export function formatInjection(items: InboxItem[], options: { metadata?: boolea
  *    and it is NOT the whole journey: the reply still has to cross the client's own output to the
  *    runtime, and a client that dies with it unflushed reads as delivered here.
  *  - **Confirmed handoff** (`handoff: true` in the request frame). We hold the connection open until
- *    the client writes {@link HANDOFF_RECEIPT} back, which it does only once the reply has cleared
- *    its output. A close, an error, or the deadline without that receipt is NOT delivered. This is
- *    what closes the large-reply hole: a 6 MiB injection that the relay's 1s stdout backstop kills
- *    mid-flush leaves the batch un-acked, so JetStream redelivers it. */
-function writeReply(sock: Socket, line: string, awaitHandoff: boolean): Promise<boolean> {
+ *    the client writes this reply's receipt back (`Mk`, a MAC over the connection's nonces and the
+ *    exact reply), which it does only once the reply has cleared its output. A close, an error, the
+ *    deadline, or any other line is NOT delivered. This is what closes the large-reply hole: a 6 MiB
+ *    injection that the relay's 1s stdout backstop kills mid-flush leaves the batch un-acked, so
+ *    JetStream redelivers it. And because the receipt is MAC'd, a process that forwards the
+ *    connection without the key cannot drop the reply and confirm it anyway. */
+function writeReply(sock: Socket, sealed: SealedReply, awaitHandoff: boolean): Promise<boolean> {
+  const { line } = sealed;
   return new Promise((resolve) => {
     let settled = false;
     const done = (ok: boolean): void => {
@@ -175,17 +177,22 @@ function writeReply(sock: Socket, line: string, awaitHandoff: boolean): Promise<
       done(false);
     }, HANDOFF_DEADLINE_MS);
     deadline.unref?.();
-    let receipt = "";
-    sock.on("data", (d: string) => {
-      receipt += d;
-      if (!receipt.includes("\n")) return;
+    let receipt = Buffer.alloc(0);
+    sock.on("data", (d: Buffer) => {
+      receipt = Buffer.concat([receipt, d]);
+      const nl = receipt.indexOf(0x0a);
+      if (nl < 0 && receipt.length <= MAX_RECEIPT_BYTES) return;
       clearTimeout(deadline);
+      // Anything but this reply's receipt (an oversized line, a bare newline, another reply's MAC)
+      // is not a confirmation: never commit on it.
+      const confirmed = nl >= 0 && nl <= MAX_RECEIPT_BYTES && sealed.receiptMatches(receipt.subarray(0, nl).toString("latin1"));
       try {
-        sock.end();
+        if (confirmed) sock.end();
+        else sock.destroy();
       } catch {
-        /* client already gone; the receipt is what mattered and we have it */
+        /* client already gone; the receipt (or its absence) is what mattered */
       }
-      done(true);
+      done(confirmed);
     });
     try {
       // write, not end: the client cannot send its receipt down a connection we have half-closed.
@@ -214,7 +221,7 @@ export function startControlServer(
   opts: ControlServerOpts = {},
 ): Server {
   const { path } = endpoint;
-  assertControlVersion(endpoint.version, "the control endpoint");
+  assertControlEndpoint(endpoint);
   // A host restart reuses its launch-pinned path. Probe before removing a crash leftover;
   // a live listener must still win, even when it uses a different token.
   const server = createServer((sock) => {
@@ -226,7 +233,7 @@ export function startControlServer(
     // off by its size caps and absolute deadline before anything here runs.
     serverExchange(sock, endpoint, ({ request, seal }) => void serve(sock, request, seal));
   });
-  const serve = async (sock: Socket, request: string, seal: (body: string) => string): Promise<void> => {
+  const serve = async (sock: Socket, request: string, seal: (body: string) => SealedReply): Promise<void> => {
     let frame: ControlFrame;
     try {
       frame = JSON.parse(request) as ControlFrame;
@@ -237,7 +244,7 @@ export function startControlServer(
     const op = (frame as { op?: unknown }).op;
     if (op === "shutdown") {
       try {
-        sock.end(seal(JSON.stringify({ ok: true })));
+        sock.end(seal(JSON.stringify({ ok: true })).line);
       } catch {
         /* client gone */
       }
@@ -247,7 +254,7 @@ export function startControlServer(
     if (op === "session") {
       const sessionId = opts.onSession?.();
       try {
-        sock.end(seal(JSON.stringify(sessionId ? { ok: true, sessionId } : { ok: false, error: "session not ready" })));
+        sock.end(seal(JSON.stringify(sessionId ? { ok: true, sessionId } : { ok: false, error: "session not ready" })).line);
       } catch {
         /* client gone */
       }

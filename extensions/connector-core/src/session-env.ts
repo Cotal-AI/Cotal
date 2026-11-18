@@ -18,14 +18,16 @@ const DIRECT_MATERIAL_VARS = [
   "COTAL_SENTINEL_CREDS",
   "COTAL_BEARER_CMD",
   "COTAL_EVENTS_REQUIRED",
-  // The control token belongs here for a reason that is not symmetry. Once a launcher-spawned seat
+  // The control key belongs here for a reason that is not symmetry. Once a launcher-spawned seat
   // carries a material pointer in its environment, anything that INHERITS that environment and then
-  // sets COTAL_CONTROL_TOKEN by hand has two answers for one question, and controlFromEnv would
+  // sets COTAL_CONTROL_KEY by hand has two answers for one question, and controlFromEnv would
   // silently prefer the inherited one - handing a process the OUTER seat's control endpoint while
-  // its own explicit token sat unused. That is not hypothetical: it is what a test harness spreading
+  // its own explicit key sat unused. That is not hypothetical: it is what a test harness spreading
   // `...process.env` does, and this whole change exists because that spread used to be invisible.
-  "COTAL_CONTROL_TOKEN",
+  "COTAL_CONTROL_KEY",
   "COTAL_CONTROL_VERSION",
+  // The key's name before the control exchange. controlFromEnv refuses it on its own too.
+  "COTAL_CONTROL_TOKEN",
   // A join link is connection material in one string: it carries the server, the auth and the space.
   // Left off this list, a launch with both a material file and a link resolved the conflict by
   // precedence and said nothing, which is the same silent answer to "who is this session" that the
@@ -53,19 +55,26 @@ export function readMaterial(env: NodeJS.ProcessEnv): LaunchMaterial | undefined
 /**
  * Resolve this session's local control endpoint. The socket path comes from
  * `COTAL_CONTROL_SOCKET`. The key and its exchange version come from the launch material, or from
- * `COTAL_CONTROL_TOKEN` and `COTAL_CONTROL_VERSION` when no material file is supplied.
+ * `COTAL_CONTROL_KEY` and `COTAL_CONTROL_VERSION` when no material file is supplied.
  *
  * {@link readMaterial} refuses a material file together with direct material variables,
- * including `COTAL_CONTROL_TOKEN` and `COTAL_CONTROL_VERSION`.
+ * including `COTAL_CONTROL_KEY` and `COTAL_CONTROL_VERSION`.
  *
  * Returns `undefined` when neither socket path nor key is present. Throws when only one is
  * present, and when the version is missing or is not the one this build speaks: the version
- * travels with the key, and there is no fallback.
+ * travels with the key, and there is no fallback. Also throws on `COTAL_CONTROL_TOKEN`, the key's
+ * name before the control exchange: a hook from that release reads it and sends the key in its first
+ * frame, so the key moved to a name such a hook does not read.
  */
 export function controlFromEnv(env: NodeJS.ProcessEnv = process.env): ControlEndpoint | undefined {
+  if (env.COTAL_CONTROL_TOKEN?.trim())
+    throw new Error(
+      "COTAL config: COTAL_CONTROL_TOKEN is the control key variable of a release before the control exchange. " +
+        "Set COTAL_CONTROL_KEY and COTAL_CONTROL_VERSION instead; this build refuses the old name rather than guess which protocol it meant.",
+    );
   const path = env.COTAL_CONTROL_SOCKET?.trim();
   const material = readMaterial(env);
-  const token = material ? material.controlToken : env.COTAL_CONTROL_TOKEN?.trim() || undefined;
+  const token = material ? material.controlKey : env.COTAL_CONTROL_KEY?.trim() || undefined;
   if (path && token) {
     const direct = env.COTAL_CONTROL_VERSION?.trim();
     const version = material ? material.controlVersion : direct && /^\d+$/.test(direct) ? Number(direct) : direct;
@@ -75,11 +84,11 @@ export function controlFromEnv(env: NodeJS.ProcessEnv = process.env): ControlEnd
   if (!path && !token) return undefined;
   if (path)
     throw new Error(
-      "COTAL config: COTAL_CONTROL_SOCKET is set but no control token could be resolved - neither the launch material nor COTAL_CONTROL_TOKEN carries one. " +
+      "COTAL config: COTAL_CONTROL_SOCKET is set but no control key could be resolved - neither the launch material nor COTAL_CONTROL_KEY carries one. " +
         "Half a pair is not a control endpoint, so this launch is refused rather than started without the control plane it was configured to have.",
     );
   throw new Error(
-    "COTAL config: a control token was supplied but COTAL_CONTROL_SOCKET is unset, so there is no socket to authenticate against. " +
+    "COTAL config: a control key was supplied but COTAL_CONTROL_SOCKET is unset, so there is no socket to authenticate against. " +
       "Half a pair is not a control endpoint, so this launch is refused rather than started without the control plane it was configured to have.",
   );
 }
