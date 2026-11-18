@@ -171,8 +171,9 @@ async function loadCheckedSys(target: ScanTarget, verb: string, need: "observer"
  * census of this lane's account first (`kick-authority.ts`). The sweep and its verify re-scan stay
  * this lane's, on its own observer.
  */
-export async function executeEviction(server: string, target: ScanTarget, principal: string, authority?: KickAuthority, connections?: KickTarget[]): Promise<EvictionResult> {
-  return (await executeEvictions(server, target, [principal], "evictPrincipal", authority, connections))[0]!;
+export async function executeEviction(server: string, target: ScanTarget, principal: string, authority?: KickAuthority, connections?: KickTarget[]): Promise<EvictionResult & { connections?: KickTarget[] }> {
+  const result = (await executeEvictions(server, target, [principal], "evictPrincipal", authority, connections))[0]!;
+  return { ...result, ...(connections !== undefined ? { connections: connections.map((target) => ({ ...target })) } : {}) };
 }
 
 /** {@link executeEviction} for a SET of principals in one shared sweep (`evictPrincipals`): the

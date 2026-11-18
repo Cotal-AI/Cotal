@@ -1,3 +1,4 @@
+import "./_session-build-freshness.js";
 import * as core from "../../../packages/core/dist/index.js";
 import * as auth from "../../auth/dist/index.js";
 // Live session caller controls and eviction at terminal session state, actor retirement and proof expiry.
@@ -194,6 +195,10 @@ async function main() {
     try { const bad = await connect({ servers: fx.servers, ...standaloneConnectOpts({ bearer: sc.body.token, sentinelCreds: a.sentinelCreds, tls: false }), reconnect: false }); await bad.close(); }
     catch (e) { endedDenied = /authorization|authentication/i.test((e as Error).message); }
     check("E1 ended session credential cannot reconnect", endedDenied);
+    const reconnectOptions = { servers: fx.servers, ...standaloneConnectOpts({ bearer: siblingExchange.body.token, sentinelCreds: a.sentinelCreds, tls: false }), reconnect: false };
+    const controlReconnect = await connect(reconnectOptions);
+    check("W1 same-session reconnect succeeds when receipt write works", !controlReconnect.isClosed());
+    await controlReconnect.close();
     const kvPrototype = Object.getPrototypeOf(attackKv) as { create: typeof attackKv.create };
     const createEvidence = kvPrototype.create;
     kvPrototype.create = async function (key, ...args) {
@@ -202,10 +207,13 @@ async function main() {
     };
     let recordWriteDenied = false;
     try {
-      try { const unexpected = await connect({ servers: fx.servers, ...standaloneConnectOpts({ bearer: siblingExchange.body.token, sentinelCreds: a.sentinelCreds, tls: false }), reconnect: false }); await unexpected.close(); }
+      try { const unexpected = await connect(reconnectOptions); await unexpected.close(); }
       catch (e) { recordWriteDenied = /authorization|authentication/i.test(String(e)); }
     } finally { kvPrototype.create = createEvidence; }
     check("B1 failed session evidence write refuses the real broker connection", recordWriteDenied);
+    const recoveredReconnect = await connect(reconnectOptions);
+    check("W2 same-session reconnect recovers after receipt writes resume", !recoveredReconnect.isClosed());
+    await recoveredReconnect.close();
     siblingTransport.close(); await siblingNc.close();
     await attackWriter.close();
 

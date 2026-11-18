@@ -94,7 +94,6 @@ function baseAuthorityWriterGrants(space: string, connId: string): { publish: st
       `$KV.${epAuthBucket(space)}.cred.>`,
       `$KV.${epAuthBucket(space)}.bysrc.>`,
       `$KV.${epAuthBucket(space)}.natkey.>`,
-      `$KV.${epAuthBucket(space)}.sessionconn.*`,
       `$KV.${recordsBucket(space)}.lifecycle.>`,
       `$KV.${recordsBucket(space)}.uid.>`,
     ],
@@ -107,7 +106,7 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
   const base = baseAuthorityWriterGrants(space, connId);
   // Chat admission and the chat sweep run on this writer: the holder index, the owner quota and
   // the sweep cursor, each an exact-arity family (SPEC 13.9). Derived host writers do not get them.
-  return { publish: [...base.publish, `$KV.${epAuthBucket(space)}.consent.*`, ...chatAuthorityWriteSubjects(space)], subscribe: base.subscribe };
+  return { publish: [...base.publish, `$KV.${epAuthBucket(space)}.sessionconn.*`, `$KV.${epAuthBucket(space)}.consent.*`, ...chatAuthorityWriteSubjects(space)], subscribe: base.subscribe };
 }
 
 /** Host-private environment reservation writer. It adds manager gates and multi-segment operation

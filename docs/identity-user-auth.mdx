@@ -377,11 +377,21 @@ record key and connection. A record without valid authentication never authorize
 The auth service checks these records in bounded passes, normally once a second. A terminal,
 deleted or missing session row causes eviction only with authenticated evidence that the
 session existed when access was issued. Other sessions and control connections of the same actor
-stay connected. Invalid records are quarantined with bounded purge markers and do not block
-later records. Failed reads or evictions keep evidence for retry with capped backoff.
-Closing the auth service aborts and awaits its session sweep. Connections admitted before
-these authenticated records were introduced cannot be selected this way and end at their
-existing expiry.
+stay connected. Invalid receipt records are quarantined with purge markers whose TTL is the constant
+`EP_AUTH_MARKER_TTL_MS` (3600 seconds), not a value selected by the stored record.
+Unreadable session authority retains the authenticated receipt, evicts nothing and retries
+with capped backoff. A readable session row must be at or beyond the receipt's recorded
+revision before it can authorize eviction. Later records remain eligible during a failed read.
+Closing the auth service aborts its session sweep and waits for its current broker call, bounded
+by that call's own timeout. Connections admitted before these authenticated records were
+introduced cannot be selected this way and end at their existing expiry.
+
+The auth-store receipt family contains session ids, holder principals and lifecycle ids.
+Profiles holding body-selected auth-store reads can read those values, including remote manager
+issuers, lifecycle executors, goal writers, endpoint-serve executors and issued-store profiles.
+The receipt write grant is limited to the auth mint writer and callout replica. A sustained
+stream of invalid rows can delay eviction: the sweep walks 64 sequence entries per pass and
+wraps only after reaching the end. The delay is not a fixed one-second guarantee.
 
 The session connection still lasts through its grant when the identity proof expires.
 Actor retirement uses the existing lifecycle eviction. Renewing the identity proof is required

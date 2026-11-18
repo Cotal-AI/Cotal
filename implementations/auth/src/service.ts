@@ -829,8 +829,9 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   const sessionAbort = new AbortController();
   let sessionSeq = 1, sessionTimer: ReturnType<typeof setTimeout> | undefined;
   let sessionFlight: Promise<void> = Promise.resolve();
+  const sessionRetryLogged = new Set<string>();
   let sessionBackoffMs = 1000;
-  const stopSessionSweep = async (): Promise<void> => { clearTimeout(sessionTimer); sessionAbort.abort(); await sessionFlight; };
+  const stopSessionSweep = async (): Promise<void> => { clearTimeout(sessionTimer); sessionAbort.abort(new Error("auth session sweep stopped")); await sessionFlight; };
   const scheduleSessionSweep = (): void => {
     if (closing || fatalReason !== undefined || sessionAbort.signal.aborted) return;
     sessionTimer = setTimeout(() => {
@@ -838,7 +839,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       sessionFlight = reconcileSessionConnections({
         jsm: sessionJsm, kv: registryStores(registry).authKv, space, secret: dataAccount.signingSeed, seq: sessionSeq, maxRows: 64,
         releaseWindowMs: (opts.sessionCalloutTimeoutMs ?? 2000) + 1000, signal: sessionAbort.signal, evict: sessionEvict,
-        log, transient: () => { transient = true; },
+        log, retryLogged: sessionRetryLogged, transient: () => { transient = true; },
       }).then((next) => { sessionSeq = next ?? 1; }, (e: unknown) => {
         transient = true;
         if (!closing) log(`auth-plane: session connection eviction failed: ${e instanceof Error ? e.message : String(e)}`);

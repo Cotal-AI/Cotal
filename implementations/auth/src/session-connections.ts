@@ -64,6 +64,7 @@ export async function reconcileSessionConnections(opts: {
   jsm: JetStreamManager; kv: KV; space: string; secret: string; seq: number; maxRows: number; releaseWindowMs: number; signal: AbortSignal;
   log?: (line: string) => void;
   transient?: () => void;
+  retryLogged?: Set<string>;
   evict(principal: string, connections: KickTarget[]): Promise<EvictionResult>;
 }): Promise<number | undefined> {
   const bucket = epAuthBucket(opts.space), prefix = `$KV.${bucket}.`;
@@ -98,10 +99,30 @@ export async function reconcileSessionConnections(opts: {
       catch (e) { if ((e as { code?: unknown }).code !== 10037) throw e; }
       opts.signal.throwIfAborted();
       // A verified receipt proves a real session revision was observed before access was released.
+      if (session && session.seq < row.sessionRevision) {
+        opts.transient?.();
+        continue;
+      }
       let ended = !session || !!session.header?.get("KV-Operation");
       if (!ended) {
+        let raw: SessionLedgerRow;
+        try {
+          raw = session!.json<SessionLedgerRow>();
+          if (!raw || typeof raw !== "object" || typeof raw.sessionId !== "string" ||
+            typeof raw.holder?.principal !== "string" || typeof raw.holder.lifecycleUid !== "string" ||
+            !["issuing", "active", "closed", "expired", "superseded", "retired"].includes(raw.state) || !Number.isSafeInteger(raw.exp))
+            throw new Error("invalid session authority");
+        } catch {
+          opts.transient?.();
+          if (!opts.retryLogged?.has(key)) {
+            opts.log?.("auth-plane: session authority is unreadable; authenticated evidence retained for retry");
+            opts.retryLogged?.add(key);
+          }
+          continue;
+        }
+        opts.retryLogged?.delete(key);
         let state: SessionLedgerRow;
-        try { state = sessionState(session!.json(), row); }
+        try { state = sessionState(raw, row); }
         catch {
           await opts.kv.purge(key, { previousSeq: message.seq, ttl: markerTtl });
           opts.log?.("auth-plane: quarantined mismatched session connection authority");
@@ -115,6 +136,7 @@ export async function reconcileSessionConnections(opts: {
       if (!result.verifiedGone) { opts.transient?.(); continue; }
       if (Date.now() <= row.releaseAfter + opts.releaseWindowMs) continue;
       await opts.kv.purge(key, { previousSeq: message.seq, ttl: markerTtl });
+      opts.retryLogged?.delete(key);
     } catch (e) {
       if (opts.signal.aborted) throw e;
       opts.transient?.();

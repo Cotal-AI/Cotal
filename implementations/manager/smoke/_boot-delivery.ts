@@ -87,10 +87,11 @@ export async function bootDeliveryDaemon(opts: {
   await ep.startPlane3((owner, lifecycleUid) => ep.aclForOwner(owner, lifecycleUid), {
     evictPrincipal: async (principal, connections) => {
       await opts.onEvict?.([principal]);
-      return evictDeniedPrincipalWithCreds({
+      const result = await evictDeniedPrincipalWithCreds({
         servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
         options: { maxVerifyRounds: 12, ...(connections !== undefined ? { connections } : {}) },
       });
+      return { ...result, ...(connections !== undefined ? { connections: connections.map((target) => ({ ...target })) } : {}) };
     },
     evictPrincipals: async (principals) => {
       await opts.onEvict?.(principals);

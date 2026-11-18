@@ -7043,8 +7043,19 @@ export class CotalEndpoint extends EventEmitter {
         })) return { ok: false, error: "evictPrincipal: connections must be exact serverId and positive cid pairs" };
         connections = raw as import("./evict.js").KickTarget[];
       }
+      if (connections !== undefined && this.plane3.evictPrincipal.length < 2)
+        return { ok: false, error: "evictSessionConnections: executor must receive the exact connection filter" };
       try {
-        return { ok: true, data: { ...(await this.plane3.evictPrincipal(principal, connections) as Record<string, unknown>), ...(connections !== undefined ? { connections } : {}) } };
+        const requestedConnections = connections?.map((target) => ({ ...target }));
+        const result = await this.plane3.evictPrincipal(principal, connections?.map((target) => ({ ...target }))) as Record<string, unknown>;
+        if (requestedConnections !== undefined) {
+          const selected = result?.connections;
+          if (!Array.isArray(selected) || selected.length !== requestedConnections.length || selected.some((value, i) => {
+            const target = value as { serverId?: unknown; cid?: unknown } | null;
+            return !target || target.serverId !== requestedConnections[i]!.serverId || target.cid !== requestedConnections[i]!.cid;
+          })) return { ok: false, error: "evictSessionConnections: executor did not acknowledge the exact connection filter" };
+        }
+        return { ok: true, data: result };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }

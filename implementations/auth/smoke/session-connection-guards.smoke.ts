@@ -1,5 +1,4 @@
 import { createHmac } from "node:crypto";
-import assert from "node:assert/strict";
 import { setTimeout as wait } from "node:timers/promises";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -38,7 +37,8 @@ try {
   const authority = { jsm, space: a.space, secret: dataAccount.signingSeed };
   const evict = makeDeliveryAdminEvictor({ server: fx.servers, space: a.space, dataAccount, log: () => {} });
   const logs: string[] = [];
-  const sweep = (overrides: Partial<Parameters<typeof reconcileSessionConnections>[0]> = {}) => reconcileSessionConnections({ ...authority, kv, seq: 1, maxRows: 256, releaseWindowMs: -1, signal: new AbortController().signal, evict, log: (s) => logs.push(s), ...overrides });
+  const retryLogged = new Set<string>();
+  const sweep = (overrides: Partial<Parameters<typeof reconcileSessionConnections>[0]> = {}) => reconcileSessionConnections({ ...authority, kv, seq: 1, maxRows: 256, releaseWindowMs: -1, signal: new AbortController().signal, evict, retryLogged, log: (s) => logs.push(s), ...overrides });
   const session = async () => {
     const identity = newIdentity(), sessionId = mintSessionId(), uid = mintLifecycleUid();
     const owner = core.DEV_OWNER, actor = `fixture_${passed}_${sockets.length}`;
@@ -59,6 +59,46 @@ try {
   try { await victim.nc.flush(); } catch { /* The named cell reports an evicted victim. */ }
   check("G2 a row naming another principal's connection evicts nothing", !victim.nc.isClosed());
   await kv.purge(forgedVictimKey);
+  const macControl = await session();
+  await recordSessionConnection(kv, macControl.issuance, authority);
+  const macReceipt = (await kv.get(macControl.key))!.json<any>();
+  const receiptRow = macReceipt.row ?? { sessionId: macControl.row.sessionId, principal: macControl.row.holder.principal, lifecycleUid: macControl.row.holder.lifecycleUid, connection: macControl.issuance.connection, releaseAfter: Date.now(), sessionRevision: 1 };
+  const signedControl = { v: 1, row: receiptRow, mac: createHmac("sha256", authority.secret).update(JSON.stringify(["cotal-session-connection-v1", a.space, macControl.key, receiptRow])).digest("base64url") };
+  const macRow = { ...receiptRow, sessionId: mintSessionId() };
+  const macFor = (space: string, key: string, row: unknown, secret = authority.secret) => createHmac("sha256", secret).update(JSON.stringify(["cotal-session-connection-v1", space, key, row])).digest("base64url");
+  const macCases = [
+    { name: "M1 well-formed garbage MAC cannot evict live control for nonexistent session", key: `sessionconn.${newIdentity().id}`, value: { v: 1, row: macRow, mac: Buffer.alloc(32, 7).toString("base64url") } },
+    { name: "M2 signed receipt copied to another key is refused", key: `sessionconn.${newIdentity().id}`, value: signedControl },
+    { name: "M3 receipt signed for another space is refused", key: `sessionconn.${newIdentity().id}`, value: undefined as any },
+    { name: "M4 receipt signed under another secret is refused", key: `sessionconn.${newIdentity().id}`, value: undefined as any },
+  ];
+  macCases[2]!.value = { v: 1, row: macRow, mac: macFor(`${a.space}-other`, macCases[2]!.key, macRow) };
+  macCases[3]!.value = { v: 1, row: macRow, mac: macFor(a.space, macCases[3]!.key, macRow, "different-auth-host-secret") };
+  for (const entry of macCases) {
+    await kv.create(entry.key, JSON.stringify(entry.value));
+    let rejected = false;
+    try { await sweep(); } catch { rejected = true; }
+    try { await macControl.nc.flush(); } catch { /* The named cell records loss of the control. */ }
+    check(entry.name, !rejected && !macControl.nc.isClosed() && (await kv.get(entry.key))?.operation === "PURGE");
+    if ((await kv.get(entry.key))?.operation === "PUT") await kv.purge(entry.key);
+  }
+  const authenticatedControlKey = `sessionconn.${newIdentity().id}`;
+  await kv.create(authenticatedControlKey, JSON.stringify({ v: 1, row: macRow, mac: macFor(a.space, authenticatedControlKey, macRow) }));
+  let authenticatedControlFailed = false;
+  try { await sweep(); } catch { authenticatedControlFailed = true; }
+  await wait(100);
+  check("M0 identical missing-session row with correct MAC selects the control connection", !authenticatedControlFailed && macControl.nc.isClosed() && (await kv.get(authenticatedControlKey))?.operation === "PURGE");
+  if ((await kv.get(authenticatedControlKey))?.operation === "PUT") await kv.purge(authenticatedControlKey);
+  const revision = await session();
+  await recordSessionConnection(kv, revision.issuance, authority);
+  const revisionReceipt = (await kv.get(revision.key))!.json<any>();
+  const revisionRow = { ...(revisionReceipt.row ?? { sessionId: revision.row.sessionId, principal: revision.row.holder.principal, lifecycleUid: revision.row.holder.lifecycleUid, connection: revision.issuance.connection, releaseAfter: Date.now() }), sessionRevision: 1_000_000 };
+  await kv.put(revision.key, JSON.stringify({ v: 1, row: revisionRow, mac: macFor(a.space, revision.key, revisionRow) }));
+  await revision.end();
+  let revisionTransient = 0;
+  try { await sweep({ transient: () => revisionTransient++ }); } catch { revisionTransient++; }
+  check("M8 session authority older than authenticated observed revision cannot evict", !revision.nc.isClosed() && (await kv.get(revision.key))?.operation === "PUT" && revisionTransient > 0);
+  await kv.purge(revision.key);
   const absent = await session();
   await sessions.purge(sessionLedgerKey(absent.row.sessionId));
   absent.issuance.token.act.session!.sessionId = mintSessionId();
@@ -80,10 +120,12 @@ try {
   try { await sweep(); } catch { poisoned = true; }
   await wait(100);
   check("G5 malformed and tampered rows do not block the honest ended connection", !poisoned && real.nc.isClosed() && !victim.nc.isClosed());
-  for (const key of [forgedKey, malformedKey, invalidIdKey]) if ((await kv.get(key))?.operation === "PUT") await kv.purge(key);
   const count = logs.length;
-  await sweep();
-  check("G6 quarantined records log once and do not repeat", count >= 3 && logs.length === count);
+  const quarantined = await Promise.all([forgedKey, malformedKey, invalidIdKey].map(async (key) => (await kv.get(key))?.operation === "PURGE"));
+  let repeatedBad = false;
+  try { await sweep(); } catch { repeatedBad = true; }
+  check("G6 reconciler quarantines every bad receipt and logs each only once", !repeatedBad && quarantined.every(Boolean) && count >= 3 && logs.length === count);
+  for (const key of [forgedKey, malformedKey, invalidIdKey]) if ((await kv.get(key))?.operation === "PUT") await kv.purge(key);
   const marker = await kv.get(real.key);
   check("G7 verified eviction leaves a bounded purge marker", marker?.operation === "PURGE");
   const purgeMessage = await jsm.streams.getMessage(`KV_${epAuthBucket(a.space)}`, { last_by_subj: `$KV.${epAuthBucket(a.space)}.${real.key}` });
@@ -100,21 +142,36 @@ try {
   await jsm.streams.purge(`KV_${sessionsBucket(a.space)}`, { filter: `$KV.${sessionsBucket(a.space)}.${sessionLedgerKey(missing.row.sessionId)}` });
   await sweep(); await wait(100);
   check("G11 a missing session with authenticated prior issuance evicts", missing.nc.isClosed());
-  const denied = await session();
-  const create = kv.create.bind(kv);
-  kv.create = async () => { throw new Error("fixture refused record write"); };
-  try { await assert.rejects(recordSessionConnection(kv, denied.issuance, authority), /refused record write/); }
-  finally { kv.create = create; }
-  check("G12 a failed session record write refuses issuance and writes no receipt", (await kv.get(denied.key)) === null);
   const legacy = await session();
   await recordSessionConnection(kv, legacy.issuance, authority); await legacy.end();
   await delivery.close(); delivery = undefined;
   const legacyResponder = new core.CotalEndpoint({ space: a.space, servers: fx.servers, creds: await mintCreds(a.auth, newIdentity(), "delivery"), card: { name: "legacy-fixture", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
   await legacyResponder.start();
-  const legacyReplies = legacyResponder.serveControl(core.CONTROL_DELIVERY_ADMIN, () => ({ ok: false, error: "unsupported operation" }));
-  try { await sweep(); } catch { /* The legacy refusal must retain the receipt. */ }
-  finally { legacyReplies.unsubscribe(); await legacyResponder.stop(); }
-  check("G13 older delivery refusal retains record and evicts nothing", (await kv.get(legacy.key))?.operation === "PUT" && !legacy.nc.isClosed());
+  let useHook = false;
+  const adminHandler = legacyResponder as unknown as {
+    plane3: { evictPrincipal: (principal: string, connections?: core.KickTarget[]) => Promise<unknown> };
+    handleDeliveryAdmin: (request: core.ControlRequest) => Promise<core.ControlReply>;
+  };
+  let ignoredHookCalled = false;
+  adminHandler.plane3 = { evictPrincipal: async (principal) => { ignoredHookCalled = true; return { principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true }; } };
+  const legacyReplies = legacyResponder.serveControl(core.CONTROL_DELIVERY_ADMIN, (request) => useHook ? adminHandler.handleDeliveryAdmin(request) : { ok: false, error: "unsupported operation" });
+  let adminCaller: core.CotalEndpoint | undefined;
+  try {
+    try { await sweep(); } catch { /* The legacy refusal must retain the receipt. */ }
+    check("G13 older delivery refusal retains record and evicts nothing", (await kv.get(legacy.key))?.operation === "PUT" && !legacy.nc.isClosed());
+    useHook = true;
+    adminCaller = new core.CotalEndpoint({ space: a.space, servers: fx.servers, creds: await mintCreds(a.auth, newIdentity(), "supervisor"), card: { name: "exact-hook-fixture", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
+    await adminCaller.start();
+    const coordinates = [legacy.issuance.connection!];
+    const ignored = await adminCaller.requestDeliveryAdmin("evictSessionConnections", { principal: legacy.row.holder.principal, connections: coordinates });
+    check("H1 a hook ignoring the exact filter is refused before execution", !ignored.ok && !ignoredHookCalled);
+    adminHandler.plane3.evictPrincipal = async (principal, _connections) => ({ principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true });
+    const noEcho = await adminCaller.requestDeliveryAdmin("evictSessionConnections", { principal: legacy.row.holder.principal, connections: coordinates });
+    check("H3 core refuses an executor result without its own filter echo", !noEcho.ok);
+    adminHandler.plane3.evictPrincipal = async (principal, connections) => ({ principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true, connections: connections?.map((row) => ({ ...row })) });
+    const acknowledged = await adminCaller.requestDeliveryAdmin("evictSessionConnections", { principal: legacy.row.holder.principal, connections: coordinates });
+    check("H2 executor acknowledgement of received exact filter is accepted", acknowledged.ok);
+  } finally { await adminCaller?.stop(); legacyReplies.unsubscribe(); await legacyResponder.stop(); }
   delivery = await startDeliveryService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: a.space, servers: fx.servers, stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity });
   await sweep(); await wait(100);
   check("G14 supported delivery retry evicts the ended legacy-held connection", legacy.nc.isClosed());
@@ -136,6 +193,24 @@ try {
   try { await sweep(); } catch { invalidThrew = true; }
   check("G18 invalid session identifiers are quarantined without stopping the pass", !invalidThrew && (await kv.get(invalidKey))?.operation === "PURGE");
   await kv.purge(invalidKey);
+  const unreadable = await session();
+  await recordSessionConnection(kv, unreadable.issuance, authority);
+  const unreadableReceipt = (await kv.get(unreadable.key))!.json<any>();
+  const unreadableRow = unreadableReceipt.row ?? { sessionId: unreadable.row.sessionId, principal: unreadable.row.holder.principal, lifecycleUid: unreadable.row.holder.lifecycleUid, connection: unreadable.issuance.connection, releaseAfter: Date.now(), sessionRevision: 1 };
+  await kv.put(unreadable.key, JSON.stringify({ v: 1, row: unreadableRow, mac: macFor(a.space, unreadable.key, unreadableRow) }));
+  await sessions.put(sessionLedgerKey(unreadable.row.sessionId), "not-json");
+  let retryCount = 0;
+  try { await sweep({ transient: () => retryCount++ }); } catch { retryCount++; }
+  const warnings = logs.filter((line) => line.includes("unreadable")).length;
+  try { await sweep({ transient: () => retryCount++ }); } catch { retryCount++; }
+  check("M5 unreadable session authority retains authenticated evidence without eviction", (await kv.get(unreadable.key))?.operation === "PUT" && !unreadable.nc.isClosed() && retryCount >= 2);
+  check("M6 repeated unreadable session authority logs once", warnings === 1 && logs.filter((line) => line.includes("unreadable")).length === 1);
+  await unreadable.end();
+  let recoveryFailed = false;
+  try { await sweep(); } catch { recoveryFailed = true; }
+  await wait(100);
+  check("M7 restored terminal authority retries retained receipt and evicts", !recoveryFailed && unreadable.nc.isClosed());
+  if ((await kv.get(unreadable.key))?.operation === "PUT") await kv.purge(unreadable.key);
   const streamsPrototype = Object.getPrototypeOf(jsm.streams) as { getMessage: typeof jsm.streams.getMessage };
   const getMessage = streamsPrototype.getMessage;
   let entered = false, release!: () => void;
@@ -145,6 +220,13 @@ try {
     if ((query as { next_by_subj?: string }).next_by_subj?.includes(".sessionconn.")) { entered = true; await gate; }
     return result;
   };
+  const abort = AbortController.prototype.abort;
+  let sessionAborted = false, aborted!: () => void;
+  const abortObserved = new Promise<void>((resolve) => { aborted = resolve; });
+  AbortController.prototype.abort = function (reason?: unknown) {
+    if (reason instanceof Error && reason.message === "auth session sweep stopped") { sessionAborted = true; aborted(); }
+    return abort.call(this, reason);
+  };
   let host: Awaited<ReturnType<typeof startAuthService>> | undefined;
   try {
     host = await startAuthService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: a.space, servers: fx.servers, stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity });
@@ -152,12 +234,13 @@ try {
     check("G15 session sweep enters a real broker pass before shutdown", entered);
     let closed = false;
     const closing = host.close().then(() => { closed = true; });
-    await wait(1500);
-    const awaited = !closed;
+    const boundary = await Promise.race([abortObserved.then(() => "aborted"), closing.then(() => "closed"), wait(5000).then(() => "timeout")]);
+    await Promise.resolve();
+    const awaited = boundary === "aborted" && sessionAborted && !closed;
     release();
     await closing;
-    check("G16 auth close aborts and awaits its in-flight session pass", awaited && closed);
-  } finally { release?.(); streamsPrototype.getMessage = getMessage; await host?.close(); }
+    check("G16 auth close reaches session abort and awaits that held pass", awaited && closed);
+  } finally { release?.(); streamsPrototype.getMessage = getMessage; AbortController.prototype.abort = abort; await host?.close(); }
 } finally {
   for (const nc of sockets) await nc.close();
   await delivery?.close(); await admin.close(); await fx.stopBroker();
