@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, openSync, closeSync, readFileSync, readSync, statSync } from "node:fs";
+import { existsSync, openSync, closeSync, readFileSync, readSync, statSync, rmSync } from "node:fs";
 import {
   DEFAULT_SERVER,
   LEASE_TTL_MS,
@@ -24,6 +24,8 @@ import { seedBeforeLaunch } from "../seed/launch.js";
  *  one daemon by filename; every helper below therefore takes the space it is answering about. */
 const folderSpace = (): string => resolveRuntimeSpace(process.cwd());
 const ctx = (space: string): LocalProcessContext => ({ root: cotalRoot(), space });
+/** Intentional manager omission, pinned to the broker incarnation that started without it. */
+export const MANAGER_OMITTED = "manager.{space}.not-started";
 /** READ-resolving: also names a pre-segmentation `delivery.pid` when that is what is on disk. */
 const PID_PATH = (space: string = folderSpace(), root: string = cotalRoot()): string => localProcessPath(DELIVERY_PIDFILE, { root, space });
 // The daemon's cred goes through the secret-store seam; its key comes from workspace's per-kind
@@ -436,7 +438,15 @@ export async function ensureControlPlane(
   // This phase also runs in broker-only mode; it is not a manager-start callback.
   if (afterDelivery) await afterDelivery();
   const deliveryStarted = { started: delivery.started ?? false, ...(delivery.pid !== undefined ? { pid: delivery.pid } : {}) };
-  if (o.noManager) return { running: false, delivery: deliveryStarted, responderBound: delivery.responderBound };
+  const omitted = canonicalLocalProcessPath(MANAGER_OMITTED, ctx(space));
+  if (o.noManager) {
+    const brokerPath = canonicalLocalProcessPath("nats.pid", ctx(space));
+    const brokerPid = existsSync(brokerPath) ? parsePid(readFileSync(brokerPath, "utf8")) : undefined;
+    if (brokerPid !== undefined) writePidPair(omitted, brokerPid);
+    return { running: false, delivery: deliveryStarted, responderBound: delivery.responderBound };
+  }
+  rmSync(omitted, { force: true });
+  rmSync(`${omitted}.identity`, { force: true });
   // `started`/`pid` distinguish a manager `ensureManager` just launched from one it found already
   // alive (#883) — carried through unchanged so the caller can name a restore instead of reprinting
   // the same line for both.

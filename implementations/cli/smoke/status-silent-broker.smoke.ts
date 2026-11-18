@@ -164,7 +164,7 @@ await scenario("refused", port, () => 0);
     const ps = await run(["ps", "--plain"]);
     check("plain NATS ps refuses with a remedy rather than unknown outcome", ps.code === 2 && /TARGET_UNAVAILABLE/.test(ps.output) && /Next/.test(ps.output) && /authentication/.test(ps.output));
     const components = await run(["status", "--components"]);
-    check("plain NATS broker component is not serving", /broker\s+not-serving/.test(components.output));
+    check("plain NATS substitute does not replace the absent local broker component", /broker\s+absent/.test(components.output) && /does not enforce Cotal authentication/.test(components.output));
   } finally {
     await killAndAwaitExit(nats);
     release();

@@ -175,6 +175,11 @@ const QUESTION = "Which one?";
   setCurrent("alpha");
   const explicitBeta = run(["who", "--json"], join(home, "beta"));
   check("explicit selection wins in another running project's folder", envelope(explicitBeta)?.target?.space === "alpha", shown(explicitBeta));
+  for (const command of ["status", "config"]) {
+    const report = run([command], join(home, "beta"));
+    check(`${command} follows explicit selection in a running project's folder`,
+      report.status === 0 && /^Mesh: alpha$/m.test(report.stdout) && /selected space applies here/.test(report.stdout), shown(report));
+  }
   const explicitNote = run(["who"], join(home, "beta"));
   check("explicit selection explains its target under Mesh once", /Mesh: alpha/.test(explicitNote.stdout + explicitNote.stderr) && /selected space applies here/.test(explicitNote.stdout + explicitNote.stderr), shown(explicitNote));
   const explicitWrite = run(["history", "clear", "--dry-run", "--json"], join(home, "beta"));

@@ -44,9 +44,9 @@ const check = (label: string, condition: boolean, detail: unknown) => {
   console.log(`  ${condition ? "✓" : "✗"} ${label}`);
   checks++;
 };
-const cli = async (args: string[]) => {
-  const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), ...args, "--server", server, "--space", space, "--json"], {
-    cwd: dir, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" }, stdio: ["ignore", "pipe", "pipe"],
+const cli = async (args: string[], format = "--json") => {
+  const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), ...args, "--server", server, "--space", space, format], {
+    cwd: dir, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
   });
   let out = "", err = "";
   child.stdout.on("data", data => { out += String(data); });
@@ -74,6 +74,13 @@ try {
     const status = await cli(["status", "raw-seat", ...pin]);
     check(`raw-open named status ${pin.length ? "with" : "without"} explicit owner`, status.code === 0 && status.out.includes("raw-seat") && status.out.includes("raw-pin") && status.out.includes(iid), status);
   }
+  // The text Next names the agent it found, with the --space and --server it was read with; it
+  // printed a literal <agent>, which a shell reads as a redirection (#7640).
+  const text = await cli(["status", "raw-seat"], "--plain");
+  check("status text names the agent in its Next attach and stop, with its --space and --server",
+    text.code === 0 && !text.out.includes("<agent>")
+      && text.out.includes(`cotal attach raw-seat --space ${space} --server ${server} --on ${iid}`) && text.out.includes(`cotal stop raw-seat --space ${space} --server ${server} --on ${iid}`),
+    { code: text.code, out: text.out.slice(-900), err: text.err.slice(0, 600) });
   for (const alias of ["RAW-SEAT", `local.${row.id}`, row.id]) {
     for (const pin of [[], ["--on", iid]]) {
       const status = await cli(["status", alias, ...pin]);
