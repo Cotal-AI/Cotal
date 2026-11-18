@@ -24,6 +24,7 @@ import {
   type Tone,
   recordOperationSpace,
   resolveControlTarget,
+  resolveMeshTarget,
   connectOrThrow,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
@@ -559,10 +560,10 @@ function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, rea
   };
 }
 
-/** Whether no connector is installed here, as `status` reports "Agent applications: not set up".
+/** Whether no agent application is set up here, as `status` reports "Agent applications: not set up".
  *  An inventory that cannot be read says nothing, so the Next stays the launch. */
 function noApplicationHere(): boolean {
-  try { return connectorHarnesses().length === 0; } catch { return false; }
+  try { return connectorHarnesses().every((harness) => harness.missing.length > 0); } catch { return false; }
 }
 
 export async function ps(args: ParsedArgs): Promise<void> {
@@ -664,6 +665,7 @@ async function readNamedSeat(values: FlagValues<typeof psFlags>, name: string): 
 export async function agentStatus(args: ParsedArgs): Promise<void> {
   const name = args.positionals[0]!;
   const values = args.values as FlagValues<typeof psFlags>;
+  const presentation = presentationOf(values);
   const census = await readNamedSeat(values, name);
   const rows = census.items.map((value): AgentRow => {
     if (!value || typeof value !== "object") throw new CommandFailure("failed", "OPERATION_FAILED", "a manager returned an invalid agent record", { target: census.target });
@@ -686,7 +688,7 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
     catch { managerHint = " --on <manager-instance>"; }
   }
   const projected = item ? agentStatusProjection(item, managerInstanceId) : { identity: null, execution: null, mesh: null, activity: null, details: null };
-  writeResult(presentationOf(values), {
+  writeResult(presentation, {
     command: "status",
     target: { ...census.target, name },
     result: { kind: "agent", ...projected, managers: census.managers },
@@ -757,6 +759,11 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
     return readYourManagers(v, command, managers);
   }
   recordOperationSpace(t.space);
+  if (command === "slots" && (t.mode === "open" || t.mode === "user"))
+    throw new CommandFailure("refused", "UNSUPPORTED", "--slots applies only to static-auth spaces; open and user-auth managers own no durable static slot rows", {
+      target: on !== undefined ? { space: t.space, scope: "manager", managerInstanceId: on } : { space: t.space, scope: t.auth.bearer ? "manager" : "all-managers" },
+      remedy: "run `cotal ps` without --slots to list live agents",
+    });
   // A pin the registry does not list is refused at once, as spawn refuses it; only a registered manager is waited on.
   if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
 
@@ -900,6 +907,15 @@ export class NoManagerAnswered extends CommandFailure {
 
 /** {@link readSeats} on a user-auth mesh with several of your managers live and none named. */
 async function readYourManagers(v: ConnectFlags, command: "ps" | "slots", managers: readonly ManagerCandidate[]): Promise<SeatCensus> {
+  if (command === "slots") {
+    let space: string | undefined;
+    try { space = resolveMeshTarget(process.cwd(), { server: v.server, space: v.space, readOnly: true }).space; } catch { /* unresolved stays null */ }
+    if (space !== undefined) recordOperationSpace(space);
+    throw new CommandFailure("refused", "UNSUPPORTED", "--slots applies only to static-auth spaces; open and user-auth managers own no durable static slot rows", {
+      target: { space: space ?? null, scope: "your-managers" },
+      remedy: "run `cotal ps` without --slots to list live agents",
+    });
+  }
   const { space, mode, instances } = await askYourManagers(cliControl, v, command, managers);
   if (space !== undefined) recordOperationSpace(space);
   if (space === undefined || !instances.some((i) => i.reachable))

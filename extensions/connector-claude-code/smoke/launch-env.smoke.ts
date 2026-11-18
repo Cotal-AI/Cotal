@@ -18,7 +18,7 @@
  *
  * Run: pnpm smoke:claude-launch-env
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeConnector, CLAUDE_PROVIDER_KEYS } from "../src/extension.js";
@@ -232,6 +232,41 @@ check(
   permissionModes(skippedArgs).length === 0 && skippedArgs.includes("--dangerously-skip-permissions"),
   skippedArgs.filter((a) => a.includes("permission")),
 );
+
+// A step after the mint that throws (here the carried transcript is gone when it is placed) leaves
+// none of the launch's artifacts behind: not the control socket's directory, not the launch material.
+// The stand-in `claude` only reports a version, so this runs where a shell script can.
+if (process.platform !== "win32") {
+  const work = mkdtempSync(join(managedRoot, "carried-"));
+  const claude = join(work, "claude");
+  writeFileSync(claude, "#!/bin/sh\necho '2.1.300 (Claude Code)'\n", { mode: 0o755 });
+  mkdirSync(join(work, "home"), { mode: 0o700 });
+  const token = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = "smoke-carried";
+  const before = new Set(readdirSync(tmpdir()));
+  let thrown = "";
+  try {
+    claudeConnector.buildLaunch({
+      space: "smoke",
+      name: "carried-gone",
+      events: false,
+      resolvedBinaries: { claude },
+      resume: "gone-session",
+      carried: { home: join(work, "home"), transcript: join(work, "missing.jsonl"), cwd: work },
+    } as never);
+  } catch (e) {
+    thrown = (e as Error).message;
+  }
+  if (token === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  else process.env.CLAUDE_CODE_OAUTH_TOKEN = token;
+  const left = readdirSync(tmpdir()).filter((n) => n.startsWith("cotal-") && !before.has(n));
+  check(
+    "a carried launch that fails to place its transcript leaves no control directory or launch material behind",
+    /ENOENT/.test(thrown) && left.length === 0,
+    { thrown, left },
+  );
+  for (const n of left) rmSync(join(tmpdir(), n), { recursive: true, force: true });
+}
 
 rmSync(managedRoot, { recursive: true, force: true });
 if (fail) {

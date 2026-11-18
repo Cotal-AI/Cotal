@@ -91,6 +91,11 @@ export function isNpx(): boolean {
   return /[/\\]_npx[/\\]/.test(process.argv[1] ?? "");
 }
 
+/** True when launched via `pnpm dlx` — the package is unpacked under `<cache>/pnpm/dlx/<hash>/<id>/…`. */
+export function isPnpmDlx(): boolean {
+  return /[/\\]pnpm[/\\]dlx[/\\]/.test(process.argv[1] ?? "");
+}
+
 /** Is a *durable* `cotal` executable resolvable on PATH? A pure PATH scan (no exec):
  *  {@link displayCmd} calls it for every user-facing hint, so it only resolves files, and the
  *  `--version` exec probe stays in {@link verifiedCotalExecutables} for the recovery path.
@@ -165,18 +170,19 @@ function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
     .flatMap((dir) => resolveOnPath(resolve(dir, "cotal"), env) ?? []);
 }
 
-/** A PATH entry npx (`npm exec`) injected for the current run only — its `_npx` cache
- *  `node_modules/.bin`. A `cotal` shim there disappears when npx exits, so it must not count as
- *  `cotal` being installed. Matches the `_npx` cache segment on POSIX and Windows. */
+/** A PATH entry npx (`npm exec`) or `pnpm dlx` injected for the current run only — its `_npx` or
+ *  `pnpm/dlx` cache `node_modules/.bin`. A `cotal` shim there disappears when the runner exits, so it
+ *  must not count as `cotal` being installed. Matches `_npx` and `pnpm/dlx` on POSIX and Windows. */
 function isEphemeralNpxBin(dir: string): boolean {
-  return /[/\\]_npx[/\\]/.test(dir);
+  return /[/\\](?:_npx|pnpm[/\\]dlx)[/\\]/.test(dir);
 }
 
-/** The copy-paste command prefix for user-facing hints: prefer PATH or npx, then the installed
- *  entry under this Node runtime. A dev clone uses pnpm. Re-execs use {@link selfArgv}. */
+/** The copy-paste command prefix for user-facing hints: prefer PATH, npx, or pnpm dlx, then the
+ *  installed entry under this Node runtime. A dev clone uses pnpm. Re-execs use {@link selfArgv}. */
 export function displayCmd(): string {
   if (cotalOnPath()) return "cotal";
   if (isNpx()) return "npx cotal-ai";
+  if (isPnpmDlx()) return "pnpm dlx cotal-ai";
   if (runsCliEntry() && seedWriterKind() === "released") {
     const command = [process.execPath, entryScript()].map(shellWord).join(" ");
     if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {

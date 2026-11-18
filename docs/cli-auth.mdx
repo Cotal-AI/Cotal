@@ -422,10 +422,15 @@ the report is partial (exit 4) and its next step is to run it in a space's root,
 lists. Without `--space`, in the root of a space `cotal space create` prepared and no `cotal up`
 started, the step is to start it with `cotal up`, then run the same command again. In the root of a
 space registered as open, with or without `--fix`, the report says that the space issues no
-credentials, so there are none to check, and the result is a no-op (exit 0). With `--space` naming
+credentials, so there are none to check, and the result is a no-op (exit 0). The same applies after
+`cotal down` when this root's stack journal still records that space as open, including with
+`--space` naming it. This is a local mode observation, not proof that a broker is running or accepts
+connections. With `--space` naming
 a space whose signing trust this root does not hold, it refuses `AUTH_REQUIRED` (exit 2) and reads
 no other root. Its next step names the folder that space is registered at, where the same command
-runs, or else a space's root, which `cotal space` lists. For a space `cotal space create` prepared
+runs, or else a space's root, which `cotal space` lists. If the recorded folder no longer exists,
+the step says so and names moving it back if it was renamed or `cotal space forget <space>` to
+remove its local record. For a space `cotal space create` prepared
 and no `cotal up` started, the step is to start it with `cotal up` first, then run the same command
 again. From another folder, that `cotal up` names the space's root with `--root`, quoted for a shell.
 

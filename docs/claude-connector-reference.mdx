@@ -471,7 +471,9 @@ delivers, the other only wakes:
   process's own stdout to Claude Code (which it force-exits 1s after starting to write). The relay
   sends a receipt back down the control socket from that stdout write's callback, and only on a
   clean write (a runtime whose pipe has gone away fails it), and the connector treats that receipt,
-  not its own socket write, as delivery. So a large injection killed mid-flush, or one written to a
+  not its own socket write, as delivery. The receipt is a MAC over the reply it confirms (`Mk` in the
+  [control exchange](authoring-a-connector.mdx#control-exchange)), so a process that forwards the
+  socket without the key cannot confirm a reply it dropped. So a large injection killed mid-flush, or one written to a
   broken pipe, leaves the message un-acked and JetStream redelivers it. What this does *not* prove is
   that Claude Code read or applied the reply: a payload small enough to fit the pipe buffer is
   reported written the moment the kernel takes it. That residual is why the path errs toward
@@ -656,9 +658,12 @@ roster instead of staying on it as a live peer.
 `model_not_found` to `model`; `server_error` to `server`; `max_output_tokens` to `context`; and
 `unknown` to `failed`. The native value remains in `condition.source`.
 
-Hooks are relayed over the connector's **authenticated** local control endpoint (per-user
-socket + per-launch token, constant-time checked), so a local process that finds the path
-still can't drive presence or stop the agent. Claude Code's own
+Hooks are relayed over the connector's **authenticated** local control endpoint. The hook and the
+connector each prove they hold the launch's key without sending it, and the hook prints a reply only
+when its MAC verifies (see [the control exchange](authoring-a-connector.mdx#control-exchange)). A
+local process that finds the path, or takes it after the connector exits, cannot drive presence,
+stop the agent, or answer a hook. Off Windows the socket sits in a directory only the session's user
+can enter, and a hook that finds the directory open to others connects to nothing and warns once. Claude Code's own
 [hooks reference](https://code.claude.com/docs/en/hooks) lists every hook event. The hooks the
 plugin registers, with their matchers, are listed in the
 [adapter README](../extensions/connector-claude-code/README.md#claude-code-hooks).
@@ -668,7 +673,9 @@ plugin registers, with their matchers, are listed in the
 A connected native session publishes a structured account of its activity: the messages a person
 typed, assistant replies, run boundaries, and each tool call's start and end. Tool arguments and
 results publish by default on a separately authorized payload rail (below). A turn a peer message
-started opens a run without republishing that message. Reasoning is off by default. Programs can read these events directly. The launcher
+started opens a run without republishing that message. Native wake and inline prompts attributed
+to the Cotal plugin follow the same rule, including when they arrive during an open run.
+Reasoning is off by default. Programs can read these events directly. The launcher
 sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
 space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
 private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
@@ -693,6 +700,12 @@ recovery a connector restart runs. A pending frame that the broker stored before
 acknowledgement was lost is settled as published when the broker's two-minute duplicate window
 still holds its id, or when the seat may read its own event channel and that frame is the newest
 one there. Otherwise the plane halts, because nothing proves the frame at the tip is that frame.
+Before a new thread publishes, it also settles pending frames in earlier thread logs under the
+same principal and state root. Their frozen ids and expectations are preserved. A new thread
+does not discard an ended session's pending frame or publish against its stale subject record.
+A local unacknowledged frame lets startup reach that recovery even when no acknowledgement has
+yet been recorded. A state root with no such frame and no acknowledged frontier still refuses
+when the broker retains this principal's events.
 A failed publish or a failed log write is never retried on the emitter it failed on. A turn that ends while the plane is down keeps its terminal, and so does a
 turn whose terminal's own log write failed: once the re-establish has read on, the run the log had
 open is closed with that terminal, a failure as a failure, rather than left open for the next
@@ -732,8 +745,8 @@ Claude starts each hook in its own process, so a prompt or stop relay can reach 
 supplies the source, then enqueues adopt, flush, and close in that order.
 
 `SessionStart` can also run before the connector process has bound its local control socket. The hook
-the `SessionStart` relay retries only transient pre-connect listener errors, with capped backoff
-inside its existing two-second budget. Later hooks and permanent local faults still fail open
+the `SessionStart` relay retries only transient pre-connect listener errors and a socket directory
+that does not exist yet, with capped backoff inside its existing two-second budget. Later hooks and permanent local faults still fail open
 immediately. Once a socket has connected, a broken exchange is not retried: the connector may
 already have handled the frame, so replaying it could apply one lifecycle event twice.
 That retained `SessionStart` can itself arrive before Claude creates the transcript path. A genuinely

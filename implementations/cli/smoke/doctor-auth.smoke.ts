@@ -284,6 +284,12 @@ try {
     const remote = await refusal({ space: "remote" }, ["auth"]);
     assert.equal(remote.code, "AUTH_REQUIRED", "a --space registered at another root refuses here");
     assert.equal(remote.remedy, `run \`cotal doctor auth --space remote\` in the folder space remote is registered at: ${elsewhere}`, "its step names that root");
+    rmSync(elsewhere, { recursive: true });
+    for (const fix of [false, true]) {
+      const missing = await refusal({ space: "remote", fix }, ["auth"]);
+      assert.equal(missing.code, "AUTH_REQUIRED", "a deleted registered root still refuses local credential diagnosis");
+      assert.equal(missing.remedy, `the folder space remote is recorded at, ${elsewhere}, no longer exists; if it was moved or renamed, move it back and run \`cotal doctor auth --space remote${fix ? " --fix" : ""}\` there; otherwise forget the space with \`cotal space forget remote\``, "its step names the missing folder, restoring it or forgetting the space");
+    }
   }
 } finally {
   process.chdir(startCwd);

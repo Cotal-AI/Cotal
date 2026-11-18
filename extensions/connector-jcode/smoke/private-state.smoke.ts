@@ -688,7 +688,7 @@ try {
         COTAL_JCODE_HOME: dirname(publicCase.home),
         COTAL_JCODE_TUI: "0",
         COTAL_CONTROL_SOCKET: join(dirname(publicCase.home), "control.sock"),
-        COTAL_CONTROL_TOKEN: "cursor-public-line-token",
+        COTAL_CONTROL_KEY: "cursor-public-line-token", COTAL_CONTROL_VERSION: "1",
       },
       encoding: "utf8",
       timeout: 60_000,

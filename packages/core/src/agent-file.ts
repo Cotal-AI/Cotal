@@ -173,18 +173,20 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
   const fm = parseFrontmatter(m[1], path);
   const persona = m[2].trim();
 
+  const yamlType = (v: unknown): string => v === null ? "null" : Array.isArray(v) ? "array" : typeof v === "object" ? "mapping" : typeof v;
   const str = (k: string): string | undefined => {
     const v = fm[k];
-    if (v === undefined || v === null) return undefined;
-    if (typeof v === "object") throw new Error(`agent file ${path}: "${k}" must be a scalar`);
-    return String(v);
+    if (v === undefined) return undefined;
+    if (typeof v !== "string") throw new Error(`agent file ${path}: "${k}" must be a string; got ${yamlType(v)}`);
+    return v;
   };
   const list = (k: string): string[] | undefined => {
     const v = fm[k];
-    if (v === undefined || v === null) return undefined;
-    return (Array.isArray(v) ? v : [v]).map((x) => {
-      if (x === null || typeof x === "object") throw new Error(`agent file ${path}: "${k}" list items must be scalars`);
-      return String(x);
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v)) throw new Error(`agent file ${path}: "${k}" must be an array of strings; got ${yamlType(v)}`);
+    return v.map((x, index) => {
+      if (typeof x !== "string") throw new Error(`agent file ${path}: "${k}" must be an array of strings; item ${index} got ${yamlType(x)}`);
+      return x;
     });
   };
 

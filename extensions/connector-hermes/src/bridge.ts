@@ -5,10 +5,14 @@
  * the sidecar can *push* inbound mesh messages into a live gateway turn (wake / queue / interrupt)
  * and the plugin can route turn replies + cotal_* tool calls back out over the same {@link MeshAgent}.
  *
- * Wire format: newline-delimited JSON, both directions.
+ * Wire format: newline-delimited JSON, both directions. The first frame on a connection must be a
+ * subscribe carrying the bridge token, which {@link bridgeToken} derives from the launch's control
+ * key, so the control key itself never crosses this socket. The socket sits beside the control
+ * socket, in a directory only the seat's user can enter, and the adapter checks that directory
+ * before it connects.
  *
  *   Python → sidecar
- *     {t:"subscribe"}                          adapter: start receiving inbound pushes
+ *     {t:"subscribe", token}                   adapter: start receiving inbound pushes
  *     {t:"delivered", recvKey}                 adapter: turn accepted delivery <recvKey> → ack it on the stream
  *     {t:"deferred", recvKey}                  adapter: the host would not take delivery <recvKey> →
  *                                              leave it unacked, offer it again after DEFER_MS
@@ -40,14 +44,12 @@
  */
 import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { CONTROL_SERVER_AUTH_DEADLINE_MS, MAX_CONTROL_REQUEST_BYTES, assertControlSocketDir, type ControlEndpoint } from "@cotal-ai/core";
 import {
   cotalToolSpecs,
   parseToolArgs,
   NO_TOOL_ARGS,
-  tokenMatches,
-  MAX_FRAME_BYTES,
-  AUTH_DEADLINE_MS,
   type MeshAgent,
   type AgentConfig,
   type Correlation,
@@ -106,14 +108,31 @@ function wireItem(agent: MeshAgent, i: InboxItem): Record<string, unknown> {
 }
 
 interface BridgeServer {
-  close(): void;
+  /** Stop accepting, end every accepted connection, and resolve once the server has closed. */
+  close(): Promise<void>;
 }
 
-/** Start the adapter bridge. Returns a handle whose `close()` stops the server. `token` is the
- *  launch's control token: the same shared secret {@link startControlServer} authenticates the
- *  control plane with, presented here as the first frame's `token` field. */
-export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, token: string, onSubscribe?: () => void): BridgeServer {
-  const digest = createHash("sha256").update(token).digest();
+/** The token the adapter presents in its first frame: HMAC-SHA256 keyed with the UTF-8 bytes of the
+ *  launch's control key over `cotal-hermes-bridge/<version>`, base64url without padding. Derived so
+ *  the control key never crosses the bridge socket, and versioned so an adapter of another release
+ *  is refused rather than accepted. The Python adapter computes the same value (control_exchange.py). */
+export function bridgeToken(control: Pick<ControlEndpoint, "token" | "version">): string {
+  return createHmac("sha256", Buffer.from(control.token, "utf8")).update(`cotal-hermes-bridge/${control.version}`, "utf8").digest("base64url");
+}
+
+/** Constant-time match of a presented token against the expected one's SHA-256, so a non-string or
+ *  wrong-length value can never throw `timingSafeEqual` or leak its length through timing. */
+function tokenMatches(presented: unknown, digest: Buffer): boolean {
+  if (typeof presented !== "string") return false;
+  return timingSafeEqual(createHash("sha256").update(presented).digest(), digest);
+}
+
+/** Start the adapter bridge. Returns a handle whose `close()` stops the server. `control` is the
+ *  launch's control endpoint; the first frame must carry {@link bridgeToken} of its key.
+ *  `onSubscribe` runs when an authenticated adapter subscribes. */
+export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, control: ControlEndpoint, onSubscribe?: () => void): BridgeServer {
+  const digest = createHash("sha256").update(bridgeToken(control)).digest();
+  assertControlSocketDir(socketPath);
 
   if (process.platform !== "win32" && existsSync(socketPath)) {
     try {
@@ -270,14 +289,17 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     }
   };
 
+  const accepted = new Set<Socket>();
   const server: Server = createServer((sock) => {
+    accepted.add(sock);
+    sock.once("close", () => accepted.delete(sock));
     let buf = "";
     let authenticated = false;
     sock.setEncoding("utf8");
     // ABSOLUTE deadline (not an idle timeout) on an unauthenticated connection — a slow-loris
     // dribbling one byte at a time must not camp on the socket forever. Cleared the instant the
     // first frame is in hand (successful or not: either way the connection is decided).
-    const deadline = setTimeout(() => sock.destroy(), AUTH_DEADLINE_MS);
+    const deadline = setTimeout(() => sock.destroy(), CONTROL_SERVER_AUTH_DEADLINE_MS);
     deadline.unref?.();
     const dropUnauthenticated = (): void => {
       clearTimeout(deadline);
@@ -286,7 +308,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     };
     sock.on("data", (d) => {
       buf += d;
-      if (!authenticated && buf.length > MAX_FRAME_BYTES) {
+      if (!authenticated && buf.length > MAX_CONTROL_REQUEST_BYTES) {
         // oversized pre-auth frame — drop hard, never half-close (it keeps spewing)
         dropUnauthenticated();
         return;
@@ -309,8 +331,8 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         }
         if (!authenticated) {
           // The first frame off an unauthenticated connection must be the subscribe carrying the
-          // launch's control token — anything else (a wrong/missing token, or any other frame
-          // type) is dropped before `adapter` can be assigned or `onTool` reached.
+          // bridge token — anything else (a wrong/missing token, or any other frame type) is
+          // dropped before `adapter` can be assigned or `onTool` reached.
           if (frame.t !== "subscribe" || !tokenMatches(frame.token, digest)) {
             dropUnauthenticated();
             return;
@@ -352,11 +374,12 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
 
   return {
     close() {
-      try {
-        server.close();
-      } catch {
-        /* ignore */
-      }
+      // A subscription holds its connection open for the life of the gateway, so close ends each
+      // accepted connection itself rather than waiting for the adapter to hang up.
+      return new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        for (const sock of accepted) sock.destroy();
+      });
     },
   };
 }

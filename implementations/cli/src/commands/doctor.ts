@@ -60,6 +60,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { noExpiryRecordPath, noExpiryRequestedAt } from "../lib/no-expiry-record.js";
 import { credentialExportStore } from "../lib/credential-exports.js";
+import { readStackJournal } from "../lib/stack-journal.js";
 
 export const doctorFlags = [jsonFlag, plainFlag,
   { name: "fix", type: "boolean", description: "execute the safe repairs (re-sign the manager-remintable daemon creds, or mint one again that holds no key while its broker does not answer; needs the local signer)" },
@@ -112,9 +113,11 @@ export function validateDoctorArguments(args: ParsedArgs): void {
   if (args.positionals.length !== 1 || args.positionals[0] !== "auth") throw new CommandFailure("refused", "USAGE_INVALID", "use doctor auth [--fix] [--space <space>] [--json|--plain]");
 }
 
-/** The space registered as open at this root, if any. Missing signing trust alone is never read as
- *  an open space. */
+/** The space recorded as open at this root, in its stack journal or registration. Missing signing
+ *  trust alone is never read as an open space. */
 function recordedOpenSpace(root: string, space: string | undefined): string | undefined {
+  const stack = readStackJournal(root)?.journal;
+  if (stack?.mode === "open" && (space === undefined || space === stack.space)) return stack.space;
   // Bare, the scope is the one space registered at this root, not a selection made for other
   // commands: resolving the selection names another folder's space, and the open branch is missed.
   const here = space === undefined ? [...new Set(loadMeshes().filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space))] : [];
@@ -137,12 +140,19 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean): s
   let registered: string | undefined, prepared: string | undefined;
   if (named !== undefined) {
     try { const target = resolveMeshTarget(root, { space: named, readOnly: true }); if (space !== undefined && canonicalRoot(target.root) !== canonicalRoot(root)) registered = target.root; }
-    catch (error) { if (error instanceof MeshTargetError && error.code === "not-started" && preparedNeverStarted(error.details)) prepared = error.details.root; /* else not registered here: the general step */ }
+    catch (error) {
+      if (error instanceof MeshTargetError && error.code === "not-started") {
+        if (error.details.rootMissing) registered = error.details.root;
+        else if (preparedNeverStarted(error.details)) prepared = error.details.root;
+      }
+      // Otherwise no registered root was established, so keep the general step.
+    }
   }
   if (prepared !== undefined) {
     const here = canonicalRoot(prepared) === canonicalRoot(root);
     return `"${named}" is prepared but not started; start it with ${codeSpan(upCommand(prepared, named!, ...(here ? [] : ["--root", shellWord(prepared)])))}, then run \`${command}\` ${here ? "again" : "in that folder"}`;
   }
+  if (registered && !existsSync(registered)) return `the folder space ${named} is recorded at, ${registered}, no longer exists; if it was moved or renamed, move it back and run \`${command}\` there; otherwise forget the space with \`cotal space forget ${named}\``;
   return registered ? `run \`${command}\` in the folder space ${space} is registered at: ${registered}` : `run \`${command}\` in ${space === undefined ? "a" : "that"} space's root folder; \`cotal space\` lists each space's root`;
 }
 

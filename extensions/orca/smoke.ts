@@ -37,8 +37,8 @@ const secret = "leak-canary-orca-DO-NOT-LEAK";
 const launcher = privateLauncher(
   {
     command: process.execPath,
-    args: ["-e", "process.stdout.write(process.env.COTAL_CONTROL_TOKEN ?? '')"],
-    env: { COTAL_CONTROL_TOKEN: secret },
+    args: ["-e", "process.stdout.write(process.env.COTAL_CONTROL_KEY ?? '')"],
+    env: { COTAL_CONTROL_KEY: secret },
   },
   process.cwd(),
 );

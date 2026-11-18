@@ -85,7 +85,7 @@ process.env.PI_SESSION_ID = "parent-pi-session-must-not-cross";
  *  the parent, and none may appear in the child. `COTAL_LAUNCH_MATERIAL` is the sharpest: it names a
  *  0600 file holding a credential and a control token. */
 const PER_SESSION = [
-  "COTAL_LAUNCH_MATERIAL", "COTAL_CREDS", "COTAL_SERVERS", "COTAL_CONTROL_TOKEN", "COTAL_OWNER",
+  "COTAL_LAUNCH_MATERIAL", "COTAL_CREDS", "COTAL_SERVERS", "COTAL_CONTROL_KEY", "COTAL_OWNER",
   "COTAL_ACTOR", "COTAL_SENTINEL_CREDS", "COTAL_BEARER_CMD", "COTAL_LIFECYCLE_UID", "COTAL_ID",
   "COTAL_ROLE", "COTAL_SUBSCRIBE", "COTAL_ALLOW_PUBLISH", "COTAL_CAPABILITIES", "COTAL_EVENTS",
 ] as const;

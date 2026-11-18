@@ -502,6 +502,36 @@ try {
     check(`mint: ${label} post list keeps absence distinct from empty`, JSON.stringify(grants.post) === JSON.stringify(raw === undefined ? ["default-post"] : expected));
   }
 
+  for (const [field, value, expected] of [
+    ["model", "42", '"model" must be a string; got number'],
+    ["subscribe", "true", '"subscribe" must be an array of strings; got boolean'],
+    ["tags", "[42, false]", '"tags" must be an array of strings; item 0 got number'],
+  ]) {
+    const name = `typed-${field}`, path = agentFilePath(MESH, name);
+    writeFileSync(path, `---\nname: ${name}\n${field}: ${value}\n---\nReview the project.\n`);
+    for (const args of [
+      ["persona", "show", name, "--json"],
+      ["persona", "create", `${name}-copy`, "--file", path, "--json"],
+      ["spawn", name, "--foreground", "--dry-run", "--json"],
+    ]) {
+      const result = native(args);
+      const diagnostic = args[0] === "spawn" ? "local launch persona could not be read and validated" : expected.replaceAll('"', '\\"');
+      check(`${args[0]} ${args[1]} refuses wrong YAML ${field} type`, result.status !== 0 && result.stdout.includes("SCHEMA_INVALID") && result.stdout.includes(path) && result.stdout.includes(diagnostic), result.stdout + result.stderr);
+    }
+    unlinkSync(path);
+  }
+  const validPath = agentFilePath(MESH, "typed-valid");
+  writeFileSync(validPath, '---\nname: typed-valid\nmodel: "42"\nsubscribe: ["true"]\nallowPublish: ["true"]\ntags: ["42", "false"]\n---\nReview the project.\n');
+  const validShow = native(["persona", "show", "typed-valid", "--json"]);
+  const validDefinition = JSON.parse(validShow.stdout).result?.definition;
+  check("persona show preserves quoted scalar-like strings and string lists", validShow.status === 0 && validDefinition?.model === "42" && validDefinition?.subscribe?.[0] === "true" && validDefinition?.tags?.join() === "42,false", validShow.stdout + validShow.stderr);
+  const createPath = join(MESH, "valid-create.md");
+  writeFileSync(createPath, readFileSync(validPath, "utf8").replace("name: typed-valid", "name: typed-created"));
+  const validCreate = native(["persona", "create", "typed-created", "--file", createPath, "--json"]);
+  check("persona create accepts correctly typed file", validCreate.status === 0, validCreate.stdout + validCreate.stderr);
+  const validSpawn = native(["spawn", "typed-valid", "--foreground", "--dry-run", "--json"]);
+  check("spawn dry-run accepts correctly typed file", validSpawn.status === 0 && validSpawn.stdout.includes('"42"'), validSpawn.stdout + validSpawn.stderr);
+
   // FAIL CLOSED. A completer must never throw into the operator's interactive shell, and must not
   // guess a root when none resolves. With `--space` naming a mesh that is not registered there is
   // no target, so the honest answer is no items.

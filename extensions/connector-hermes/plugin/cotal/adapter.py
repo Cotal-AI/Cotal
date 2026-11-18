@@ -97,6 +97,14 @@ class CotalAdapter(BasePlatformAdapter):
         is therefore reopened explicitly before the reader is started.
         """
         self._loop = asyncio.get_running_loop()
+        # A bridge socket in a directory that exists and is not private to this user is never dialed,
+        # and no retry repairs that. Report it as a permanent fatal instead of calling the platform
+        # connected with a reader that will never connect.
+        refused = self._client.refusal()
+        if refused:
+            self._set_fatal_error("cotal_bridge_not_private", refused, retryable=False)
+            await self._notify_fatal_error()
+            return False
         if is_reconnect:
             # Clear the latched stop and drop the dead reader, so start() below really starts one.
             #
@@ -108,7 +116,7 @@ class CotalAdapter(BasePlatformAdapter):
             # reader, which is exactly the kind of pause an operator would report as the gateway
             # hanging on reconnect. `to_thread` keeps the loop free while the join runs.
             await asyncio.to_thread(self._client.reopen)
-        self._client.start(self._on_incoming)  # reader thread → _on_incoming
+        self._client.start(self._on_incoming, self._on_bridge_refused)  # reader thread → _on_incoming
 
         # THE BRIDGE MUST BE PROVED LIVE BEFORE THE PLATFORM IS CALLED CONNECTED.
         #
@@ -136,6 +144,20 @@ class CotalAdapter(BasePlatformAdapter):
         hooks.relay("gateway_startup")  # present + free
         return True
 
+    def _on_bridge_refused(self, reason: str) -> None:
+        """The reader found the bridge socket's directory not private after connect (reader thread):
+        report the same permanent fatal on the gateway's loop, since the bridge will not dial again."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+
+        def report() -> None:
+            self._set_fatal_error("cotal_bridge_not_private", reason, retryable=False)
+            self._mark_disconnected()
+            asyncio.ensure_future(self._notify_fatal_error())
+
+        loop.call_soon_threadsafe(report)
+
     async def disconnect(self) -> None:
         hooks.relay("gateway_shutdown")
         self._client.close()
@@ -147,6 +169,9 @@ class CotalAdapter(BasePlatformAdapter):
         # The gateway delivers a turn's reply here → route it back to the message's mesh origin. A
         # reply to a message delivered here names it and copies its contextId (it belongs to the
         # asker); otherwise the sidecar pairs a DM reply with its peer's oldest unanswered message.
+        refused = self._client.refusal()
+        if refused:
+            raise RuntimeError(refused)  # never report a reply delivered over a bridge that will not dial
         answered = str(reply_to) if reply_to is not None else None
         if answered not in self._answering:
             answered = None
