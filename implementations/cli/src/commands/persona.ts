@@ -16,7 +16,7 @@ import {
 } from "../lib/persona-files.js";
 import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { yesRequired } from "../lib/confirmation-required.js";
+import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { checkHarness } from "./config.js";
 
 export const personaFlags = [
@@ -95,7 +95,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
     const seeded = name === "default";
     const question = seeded ? `Remove the seeded default persona '${name}' at ${path}? A bare \`cotal spawn\` launches it.` : `Remove '${name}' at ${path}?`;
     if (!values.yes) {
-      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with \`cotal persona remove ${name} --yes\`` });
+      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with \`cotal persona remove ${name}${targetWords(values)} --yes\`` });
       let confirmed = false;
       if (presentation === "plain") {
         confirmed = (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";

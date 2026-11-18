@@ -945,15 +945,20 @@ async function checkFolder(flags: ConnectFlags, on: string, path: string): Promi
 }
 
 /** Why no manager received an unpinned launch. A manager whose boot inventory found no agent
- *  application leaves the class queue, so when every live one that answered reports that on its own
- *  instance rail the refusal names the application to add. A manager the broker affirms gone is
- *  skipped and named in a warning, so its registration costs no deadline and hides no reason. A seat
+ *  application available leaves the class queue. When every live one that answered reports that on
+ *  its instance rail, distinguish an empty connector inventory from installed but unavailable ones.
+ *  A manager the broker affirms gone is skipped and named in a warning, so its registration costs
+ *  no deadline and hides no reason. A seat
  *  (`flags` undefined) does not read the census as the operator. `agent` is the harness this caller
  *  would choose, for the install hint. */
 async function unservedClassLaunch(flags: ConnectFlags | undefined, t: ControlTarget, agent: string | undefined, at: { target: object; native: object }): Promise<CommandFailure> {
   const census = flags ? await classLaunchCensus(flags, t).catch(() => undefined) : undefined;
   for (const instanceId of census?.gone ?? [])
     recordOperationWarning({ code: "MANAGER_SILENT", target: { space: t.space, managerInstanceId: instanceId }, message: `manager ${instanceId} was skipped: its registration is stale (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)` });
+  if (census?.noApplication && census.unavailable.length) {
+    return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no manager of yours takes unpinned launches: installed agent applications are unavailable (${census.unavailable.join("; ")}); nothing was launched`, { ...at,
+      remedy: `install or repair the reported applications and dependencies on the named manager hosts, with the required executables on the PATH used to start each manager, then restart those managers; for a stack started with \`cotal up\`, run \`cotal manager stop --yes\` then \`cotal up\` from its project folder${census.empty.length ? `; no connectors are installed on ${census.empty.join(", ")}: add one there, such as ${extAddFor(agent ?? DEFAULT_CONNECTOR)}` : ""}` });
+  }
   if (census?.noApplication) {
     return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no manager of yours takes unpinned launches: none ${census.gone.length ? "that answered " : ""}has an agent application installed${census.managers.length ? ` (${census.managers.join(", ")})` : ""}; nothing was launched`, { ...at,
       remedy: `add one where ${census.managers.length > 1 ? "one of them" : "that manager"} runs, such as ${extAddFor(agent ?? DEFAULT_CONNECTOR)}, then restart that manager; it reads its agent applications when it starts` });
@@ -977,9 +982,11 @@ function unansweredClassLaunch(t: ControlTarget, at: { target: object; native: o
  *  managers skipped because the broker affirms nothing subscribed on their rail. Status has no
  *  scatter route, so each is read pinned to its instance, racing the rail probe: whichever settles
  *  first stops the other, so neither a live manager nor a gone one is waited out. */
-async function classLaunchCensus(flags: ConnectFlags, t: ControlTarget): Promise<{ noApplication: boolean; gone: string[]; managers: string[] }> {
+async function classLaunchCensus(flags: ConnectFlags, t: ControlTarget): Promise<{ noApplication: boolean; gone: string[]; managers: string[]; unavailable: string[]; empty: string[] }> {
   const gone: string[] = [];
   const managers: string[] = [];
+  const unavailable: string[] = [];
+  const empty: string[] = [];
   for (const instanceId of await liveManagerIds(t.space, t.server, t.auth)) {
     const pinned = await resolveControlTarget(flags, "control-caller-privileged", instanceId, { onRefusal: "throw" });
     const settled = new AbortController();
@@ -991,11 +998,16 @@ async function classLaunchCensus(flags: ConnectFlags, t: ControlTarget): Promise
       gone.push(instanceId);
       continue;
     }
-    const data = status.data as { classSpawn?: unknown; execution?: unknown; host?: unknown } | undefined;
-    if (!status.ok || data?.classSpawn !== false || data.execution === "none") return { noApplication: false, gone, managers };
-    managers.push(managerAt(instanceId, data.host));
+    const data = status.data as { classSpawn?: unknown; execution?: unknown; host?: unknown; connectors?: { agent: string; state: string; reason?: string }[] } | undefined;
+    if (!status.ok || data?.classSpawn !== false || data.execution === "none") return { noApplication: false, gone, managers, unavailable, empty };
+    const manager = managerAt(instanceId, data.host);
+    managers.push(manager);
+    if (data.connectors?.length) {
+      for (const connector of data.connectors.filter(row => row.state === "unavailable"))
+        unavailable.push(`${manager}: ${connector.agent}: ${oneLine(connector.reason ?? "unavailable at manager startup")}`);
+    } else empty.push(manager);
   }
-  return { noApplication: managers.length > 0, gone, managers };
+  return { noApplication: managers.length > 0, gone, managers, unavailable, empty };
 }
 
 /** A manager as a refusal names it: its instance id, and the host its own status reports. */

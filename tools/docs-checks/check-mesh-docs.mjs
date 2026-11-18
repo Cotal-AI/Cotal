@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { lexer } from 'marked';
 import { readDocument } from '@cotal-ai/docs-content';
-import { compileContract, registryClusterDocument, REGISTRY_CONTRACTS } from '../packages/core/dist/index.js';
-import { managerClusterDocument, MANAGER_CONTRACTS } from '../implementations/manager/src/manager-service-contract.ts';
-import { authClusterDocument, AUTH_CONTRACTS } from '../implementations/auth/src/auth-service-contract.ts';
+import { compileContract, registryClusterDocument, REGISTRY_CONTRACTS } from '../../packages/core/dist/index.js';
+import { managerClusterDocument, MANAGER_CONTRACTS } from '../../implementations/manager/src/manager-service-contract.ts';
+import { authClusterDocument, AUTH_CONTRACTS } from '../../implementations/auth/src/auth-service-contract.ts';
 
-const path = new URL('../docs/mesh-commands.mdx', import.meta.url).pathname;
+const path = new URL('../../docs/mesh-commands.mdx', import.meta.url).pathname;
 assert(existsSync(path), 'built-in mesh command catalog is missing');
 const document = await readDocument(path);
 const sections = new Map();

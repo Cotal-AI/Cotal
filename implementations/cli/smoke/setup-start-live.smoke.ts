@@ -18,7 +18,7 @@ const env: Record<string, string | undefined> = { ...host, HOME: home, USERPROFI
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 Object.assign(process.env, env);
 const { check, finish } = createSuite();
-interface Receipt { outcome: string; error?: { code: string; message: string }; result?: { server?: string; next?: { command: string }; startup?: { state: string; failure?: { code: string; message?: string } } } }
+interface Receipt { outcome: string; error?: { code: string; message: string; remedy?: string }; result?: { server?: string; next?: { command: string }; startup?: { state: string; failure?: { code: string; message?: string } } } }
 const unconfirmed = new Set<string>();
 const anchors = new Map<string, SmokeSandboxAnchor>();
 const run = (cwd: string, ...args: string[]) => {
@@ -62,20 +62,30 @@ try {
     try {
       const seeded = spawnSync(process.execPath, [BIN, "ext", "seed"], { cwd: home, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "", COTAL_ALLOW_CHECKOUT_SEED: "1" }, encoding: "utf8", timeout: 300_000 });
       check("the real OpenCode connector is seeded into the isolated home", seeded.status === 0, seeded.stderr.slice(-1000));
-      const root = project("missing-opencode");
-      const setup = run(root, "setup", "--destination", "local", "--harness", "opencode", "--project", root, "--space", "missing-opencode", "--no-input");
-      check("missing OpenCode leaves setup saved with dependency repair as its next step", setup.status === 4 && setup.receipt?.result?.next?.command === "install or repair opencode, then run the same setup again", shown(setup));
+    for (const agent of ["opencode", "claude"]) {
+      const root = project(`missing-${agent}`);
+      const setup = run(root, "setup", "--destination", "local", "--harness", agent, "--project", root, "--space", `missing-${agent}`, "--no-input");
+      check(`missing ${agent} leaves setup saved with dependency repair as its next step`, setup.status === 4 && setup.receipt?.result?.next?.command === `install or repair ${agent}, then run the same setup again`, shown(setup));
       active.push(root);
       const started = run(root, "up", "--detach");
-      check("the prepared authenticated stack starts without OpenCode", started.status === 0, shown(started));
+      check(`the prepared authenticated stack starts without ${agent}`, started.status === 0, shown(started));
       const credentials = join(root, ".cotal", "auth", "creds");
       const credentialFiles = () => JSON.stringify(existsSync(credentials) ? readdirSync(credentials, { recursive: true }) : []);
       const before = credentialFiles();
       const refused = spawnSync(process.execPath, [BIN, "spawn"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
-      check("bare spawn reports the missing application without an uncaught exception", refused.status === 2 && /DEPENDENCY_UNAVAILABLE/.test(refused.stderr) && /opencode needs opencode on PATH/.test(refused.stderr) && /install or repair opencode/.test(refused.stderr) && !/ENOENT|node:internal|at launch/.test(refused.stderr), refused.stderr);
+      check("bare spawn reports the missing application without an uncaught exception", refused.status === 2 && /DEPENDENCY_UNAVAILABLE/.test(refused.stderr) && refused.stderr.includes(`${agent} needs ${agent} on PATH`) && refused.stderr.includes(`install or repair ${agent}`) && !/ENOENT|node:internal|at launch/.test(refused.stderr), refused.stderr);
       check("the refused spawn issues no credentials or connector state", credentialFiles() === before && !existsSync(join(root, ".cotal", "opencode")) && !/wrote creds|retired creds/.test(refused.stderr));
+      const detached = spawnSync(process.execPath, [BIN, "spawn", "--detach"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+      check(`detached ${agent} spawn names the missing executable, not an extension to reinstall`, detached.status === 2 && detached.stderr.includes(`${agent} harness needs ${agent} on PATH`) && /DEPENDENCY_UNAVAILABLE/.test(detached.stderr) && /manager .+ on host/.test(detached.stderr) && !/ext add|none has an agent application installed/.test(detached.stderr), detached.stderr);
+      const detachedJson = run(root, "spawn", "--detach");
+      check(`the console's JSON launch path carries ${agent}'s missing dependency and a usable stack restart`, detachedJson.status === 2 && detachedJson.receipt?.error?.code === "DEPENDENCY_UNAVAILABLE" && detachedJson.receipt.error.message.includes(`${agent} harness needs ${agent} on PATH`) && detachedJson.receipt.error.remedy?.includes("PATH used to start each manager") === true && detachedJson.receipt.error.remedy.includes("`cotal manager stop --yes` then `cotal up`") && !detachedJson.stdout.includes("ext add"), shown(detachedJson));
+      check("detached dependency refusals issue no credentials", credentialFiles() === before);
       const status = run(root, "status");
       check("the stack remains available after the dependency refusal", status.status === 0, shown(status));
+      const stopped = run(root, "down", "--yes");
+      check("the missing-application stack stops cleanly", stopped.status === 0, shown(stopped));
+      active.splice(active.indexOf(root), 1);
+    }
     } finally { env.PATH = path; }
   }
 

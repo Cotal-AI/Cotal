@@ -178,14 +178,16 @@ export const codexSetupProvider: ConnectorSetupProvider = {
     run({ cotal }: ConnectorSetupInput) {
       return withLock(() => {
         if (!hasCachedPlugin()) return "not installed";
+        let installed: string | undefined;
         try {
-          if (installedVersion() === undefined) return "not installed";
+          installed = installedVersion();
+          if (installed === undefined) return "not installed";
         } catch (error) {
           if (((error as Error).cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return "Codex not installed; cached plugin left unchanged";
           throw error;
         }
         const version = materializeCodexPlugin(cotal);
-        install(version);
+        if (installed !== version) install(version);
         return `${PLUGIN}@${MARKETPLACE} ${version}; new Codex conversations load it`;
       });
     },

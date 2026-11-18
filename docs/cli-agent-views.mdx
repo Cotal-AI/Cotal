@@ -138,6 +138,8 @@ unregistered `--space` retain the raw open-broker connection, with or without `-
 JSON has `identity`, `execution`, `mesh` and `activity` fields; missing optional observations
 are null with source annotations. The Identity Agent field shows the id when the name is missing or only whitespace. JSON `identity.name` stays the name the manager returned.
 `--on <manager-instance>` restricts the read and never redirects to a different owner.
+Its Next names the agent it read, with the `--space` and `--server` you gave and the manager's
+`--on`, so the `attach` and `stop` it suggests run as printed.
 It takes no `--all` or `--components`.
 `cotal status manager` keeps its manager diagnostic census. When a manager answers but runs
 no agent named `manager`, the refusal names the manager and points to `cotal status` and

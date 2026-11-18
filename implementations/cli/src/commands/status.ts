@@ -2165,6 +2165,10 @@ function nextActions(r: StatusResult): Section {
     const broker = exited.includes("nats"), manager = exited.includes("manager");
     const notes = [...(broker ? ["up reopens the recorded store"] : []), ...(manager ? ["pass --runtime again if the manager ran on one"] : [])];
     items.unshift({ command: `${cmd} up`, description: `Restart this folder's ${broker && manager ? "broker and manager" : broker ? "broker" : "manager"}, which exited; ${notes.join("; ")}` });
+  } else if (local && r.selected.resolved && r.selected.connection === "unreachable" && (r.folder.processes ?? []).every((row) => row.state === "stopped")) {
+    // A clean down leaves every member stopped with no pidfile. Spawn and ps need the stack, so the
+    // bare `up` that starts it again on its recorded address and store comes first.
+    items.unshift({ command: `${cmd} up`, description: "Start this folder's stopped stack again; pass --runtime again if the manager ran on one" });
   }
   // A stack whose folder was deleted stops only from this machine's records.
   if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });

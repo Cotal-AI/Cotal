@@ -109,10 +109,17 @@ export async function clean(args: ParsedArgs): Promise<void> {
   if (meshFlags.length && target !== "history")
     throw new CommandFailure("refused", "USAGE_INVALID", `${meshFlags.join(", ")} ${meshFlags.length === 1 ? "picks" : "pick"} the mesh for clean history only; clean ${target} acts on the root of the folder it runs in, so nothing was removed`, { remedy: `run \`cotal clean ${target}\` in the project folder of the root to clean, without ${meshFlags.join(" or ")}` });
   if (!values.force && !dryRun) {
-    // The restore verbs act on one attempt, so the command to run names it, as given or as a placeholder.
+    // The command to run keeps every flag that picks what is deleted; without one it deletes another
+    // target than the one asked for. The restore verbs act on one attempt, named as given or as a placeholder.
     const attempt = target === "restore-attempt" || target === "restore-fallback" ? ` --attempt ${values.attempt || "<id>"}` : "";
     const discard = target === "restore-fallback" && values["discard-history"] ? " --discard-history" : "";
-    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target}${attempt} --force${discard}`, remedyIsCommand: true });
+    const flag = (name: "store-dir" | "space" | "server" | "creds"): string => {
+      const value = values[name];
+      return value === undefined ? "" : ` --${name} ${shellWord(value)}`;
+    };
+    const picks = target === "store" || target === "all" ? flag("store-dir")
+      : target === "history" ? `${flag("space")}${flag("server")}${flag("creds")}${values.dms ? " --dms" : ""}` : "";
+    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target}${attempt}${picks} --force${discard}`, remedyIsCommand: true });
   }
   if (target === "history") return purgeHistory(values);
 

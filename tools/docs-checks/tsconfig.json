@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["*.mjs"],
+  "exclude": [
+    // 10 diagnostics: internal SourceFile.parseDiagnostics and fixture/environment inference need follow-up.
+    "check-doc-comments.smoke.mjs",
+    // 8 diagnostics: tuple inference and marked Token narrowing need follow-up.
+    "check-mesh-docs.mjs",
+    // 15 diagnostics: incomplete AgentConfig fixture, marked tokens and Zod schema API types need follow-up.
+    "check-tool-docs.mjs"
+  ]
+}
