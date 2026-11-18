@@ -173,7 +173,9 @@ local users can read. The server checks the directory's owner and mode before
 it binds and never creates it, and every client checks them again before it connects. A directory
 that is missing or fails the check counts as no endpoint, and the refusal names the problem and how
 to recover. The launcher records the directory as a launch artifact and removes it once the child has
-exited. On Windows the endpoint is a named pipe in the global namespace, and the exchange is the only
+exited. That is the lifecycle of an endpoint a TypeScript launcher mints. Hermes standalone mode
+instead makes its own private directory, `cotal-hermes-*` under the temp directory, for both
+sockets and the tools file, and nothing removes it when the gateway stops or fails to start. On Windows the endpoint is a named pipe in the global namespace, and the exchange is the only
 boundary.
 
 One connection carries four lines, and a fifth when the client asks for a delivery receipt:

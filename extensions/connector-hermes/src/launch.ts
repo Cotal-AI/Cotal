@@ -447,13 +447,21 @@ async function main(): Promise<void> {
     const forked = managed && existsSync(join(home, HERMES_FORK_RECORD)) ? managed : undefined;
     if (forked) log(`keeping the managed profile ${forked.root}: it holds this seat's --resume fork`);
     const disposable = forked ? undefined : managed;
-    const [, removed] = await Promise.allSettled([
-      sidecar.stop(),
-      drainGateway().then(() => disposable && rmSync(disposable.root, { recursive: true, force: true })),
-    ]);
-    if (removed.status === "rejected") {
-      const why = (removed.reason as Error).message;
-      log(disposable ? `could not remove the managed profile ${disposable.root}, so it is left on disk: ${why}` : `could not wait for the gateway to exit: ${why}`);
+    const [, drained] = await Promise.allSettled([sidecar.stop(), drainGateway()]);
+    // Removal needs proof that the gateway is gone. Without it (the drain failed, say because `ps`
+    // did), the gateway may still be running and using both directories, so they stay and the log
+    // says where.
+    if (drained.status === "rejected") {
+      const left = [...controlDirs, ...(disposable ? [disposable.root] : [])].join(", ");
+      log(`could not prove the gateway exited (${String((drained.reason as Error).message).replace(/\s+/g, " ").trim()}), so ${left} is left on disk; remove it once the gateway has exited`);
+      process.exit(code);
+    }
+    if (disposable) {
+      try {
+        rmSync(disposable.root, { recursive: true, force: true });
+      } catch (e) {
+        log(`could not remove the managed profile ${disposable.root}, so it is left on disk: ${(e as Error).message}`);
+      }
     }
     try {
       discardLaunchArtifacts(controlDirs);

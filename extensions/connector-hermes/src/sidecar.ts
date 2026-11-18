@@ -68,16 +68,10 @@ export function startSidecar(): Sidecar {
     agent,
     config,
     async stop() {
-      try {
-        bridge.close();
-      } catch {
-        /* ignore */
-      }
-      try {
-        controlServer.close();
-      } catch {
-        /* ignore */
-      }
+      // Both servers have closed, with every accepted connection ended, before stop resolves, so a
+      // launcher that removes their directory next leaves nothing listening or connected in it. A
+      // control connection ends on its own within the exchange's deadlines.
+      await Promise.all([bridge.close(), new Promise<void>((resolve) => controlServer.close(() => resolve()))]);
       await agent.stop();
     },
   };

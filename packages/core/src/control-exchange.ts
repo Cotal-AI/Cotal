@@ -94,6 +94,14 @@ export function assertControlVersion(version: unknown, where: string): asserts v
   );
 }
 
+/** Refuse a reply cap that bounds nothing. The type requires one, but a JavaScript caller can omit it
+ *  or pass `NaN` or `Infinity`, and every length comparison against those lets the reply through. */
+function assertReplyCap(opts: { maxReplyBytes?: unknown } | undefined): void {
+  const cap = opts?.maxReplyBytes;
+  if (typeof cap !== "number" || !Number.isSafeInteger(cap) || cap < 0)
+    throw new Error(`maxReplyBytes must be a finite, non-negative whole number of bytes, not ${typeof cap === "number" ? cap : typeof cap}`);
+}
+
 /** Refuse an endpoint this build cannot speak to, before any socket is opened or bound. */
 export function assertControlEndpoint(endpoint: ControlEndpoint): void {
   assertControlVersion(endpoint.version, "the control endpoint");
@@ -248,7 +256,8 @@ export type ClientExchangeResult =
  * {@link CONTROL_CLIENT_PROOF_DEADLINE_MS} for the server's proof, sends the MAC'd `request`, and
  * calls `done` with the reply's JSON text once its MAC verifies, plus the receipt line (`<Mk>\n`) a
  * caller writes back when it asked for one and the reply has reached its own output. Every caller
- * bounds the reply: `maxReplyBytes` caps its JSON in bytes, complete or not. `onRequestSent` runs once
+ * bounds the reply: `maxReplyBytes` caps its JSON in bytes, complete or not, and a cap that is not a
+ * finite, non-negative whole number throws before anything is sent. `onRequestSent` runs once
  * the request has been written, so a caller whose own deadline or socket error ends the exchange
  * later can say the server may have handled it.
  *
@@ -264,6 +273,7 @@ export function clientExchange(
   done: (result: ClientExchangeResult) => void,
   opts: { proofDeadlineMs?: number; maxReplyBytes: number; onRequestSent?: () => void },
 ): void {
+  assertReplyCap(opts);
   assertControlEndpoint(endpoint);
   const nc = nonce();
   let ns: string | undefined;
@@ -414,8 +424,9 @@ export function serverExchange(
 
 /**
  * One request and its proven reply over a fresh connection, for a client that needs nothing more
- * (the Manager's stop and session calls). Resolves with the reply's JSON text. Rejects when the
- * socket's directory is not private, the dial fails, the server does not prove itself, the reply's
+ * (the Manager's stop and session calls). Resolves with the reply's JSON text. Rejects before dialing
+ * when `maxReplyBytes` is not a finite, non-negative whole number, and rejects when the socket's
+ * directory is not private, the dial fails, the server does not prove itself, the reply's
  * JSON is over `maxReplyBytes`, or nothing proven arrives within `timeoutMs`. The key is never sent.
  */
 export function controlCall(
@@ -424,6 +435,7 @@ export function controlCall(
   opts: { timeoutMs: number; maxReplyBytes: number },
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    assertReplyCap(opts);
     assertControlEndpoint(endpoint);
     const dir = checkControlSocketDir(endpoint.path);
     if (!dir.ok) return reject(new Error(dir.reason));

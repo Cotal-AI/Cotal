@@ -26,7 +26,8 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
   The lifecycle hooks reach the control socket through the
   [control exchange](authoring-a-connector.mdx#control-exchange). Standalone mode mints the key and
   its version together when the gateway carries neither, and refuses a gateway that carries one
-  without the other.
+  without the other. It puts both sockets and the tools file in a private `cotal-hermes-*`
+  directory under the temp directory, which it does not remove when the gateway stops.
 - It runs the gateway in an isolated `HERMES_HOME` profile (a temp dir), so your own `~/.hermes`
   is never touched, with approvals off (a supervised agent has no human at the TUI to approve).
   The temp dir is laid out as a Hermes named profile (`<temp root>/profiles/cotal-<id>`), so Hermes
@@ -38,7 +39,9 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
   SIGTERM, kills its process tree if it is still running 1.5 seconds later, waits for it to exit,
   and then removes that root and the control socket's directory, so a seat stopped mid-turn leaves
   nothing behind either. A stop with an adopted profile or a `--resume` fork waits for the gateway
-  the same way before it removes the control socket's directory. A hard stop
+  the same way before it removes the control socket's directory. When the launcher cannot prove
+  the gateway exited (for example, because `ps` fails), it leaves the control socket's directory
+  and the managed root in place and logs their paths. A hard stop
   that kills the launcher before it can do this leaves the root in place for you to delete. The one
   profile a stop keeps is a `--resume` seat's, which holds its fork (see [Resume a session](#session-forks)).
   To put your own Hermes on the mesh instead, see [Use your own Hermes profile](#managed-profiles).

@@ -108,7 +108,8 @@ function wireItem(agent: MeshAgent, i: InboxItem): Record<string, unknown> {
 }
 
 interface BridgeServer {
-  close(): void;
+  /** Stop accepting, end every accepted connection, and resolve once the server has closed. */
+  close(): Promise<void>;
 }
 
 /** The token the adapter presents in its first frame: HMAC-SHA256 keyed with the UTF-8 bytes of the
@@ -286,7 +287,10 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     }
   };
 
+  const accepted = new Set<Socket>();
   const server: Server = createServer((sock) => {
+    accepted.add(sock);
+    sock.once("close", () => accepted.delete(sock));
     let buf = "";
     let authenticated = false;
     sock.setEncoding("utf8");
@@ -368,11 +372,12 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
 
   return {
     close() {
-      try {
-        server.close();
-      } catch {
-        /* ignore */
-      }
+      // A subscription holds its connection open for the life of the gateway, so close ends each
+      // accepted connection itself rather than waiting for the adapter to hang up.
+      return new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        for (const sock of accepted) sock.destroy();
+      });
     },
   };
 }

@@ -27,6 +27,7 @@ import {
   CONTROL_PROTOCOL_VERSION,
   CONTROL_SERVER_AUTH_DEADLINE_MS,
   checkControlSocketDir,
+  clientExchange,
   controlCall,
   readLaunchMaterial,
   type ControlEndpoint,
@@ -457,6 +458,39 @@ try {
       await closed(forwarder);
     }
     await closed(server);
+  }
+
+  // ---- a reply cap that bounds nothing is refused before anything is sent ------------------------
+  {
+    // The type requires maxReplyBytes, but a JavaScript caller can omit it, or pass NaN or Infinity,
+    // and every length comparison against those lets the reply through.
+    const ep = controlEndpoint("ctlx", "bad-cap", artifacts);
+    const s = await standIn(ep.path, () => {});
+    for (const [label, cap] of [
+      ["omitted", undefined],
+      ["NaN", Number.NaN],
+      ["Infinity", Number.POSITIVE_INFINITY],
+      ["negative", -1],
+      ["fractional", 1.5],
+      ["a string", "16384"],
+    ] as const) {
+      const opts = (cap === undefined ? { timeoutMs: 1000 } : { timeoutMs: 1000, maxReplyBytes: cap }) as { timeoutMs: number; maxReplyBytes: number };
+      const before = s.connections();
+      const call = await controlCall(ep, { op: "session" }, opts).then(() => "resolved", (e: Error) => e.message);
+      check(`a controlCall whose maxReplyBytes is ${label} is refused before it dials`, /maxReplyBytes/.test(call) && s.connections() === before, call);
+    }
+    const sock = connect(ep.path);
+    await new Promise((resolve) => sock.once("connect", resolve));
+    let thrown = "";
+    try {
+      (clientExchange as (...args: unknown[]) => void)(sock, ep, { op: "session" }, () => {});
+    } catch (e) {
+      thrown = (e as Error).message;
+    }
+    await sleep(100);
+    check("a clientExchange with no options throws before it sends its hello", /maxReplyBytes/.test(thrown) && s.received() === "", { thrown, received: s.received() });
+    sock.destroy();
+    await closed(s.server);
   }
 
   // ---- what the hook says when a proven server goes quiet ---------------------------------------
