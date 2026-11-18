@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
 import { cleanupExecutionStore } from "../execution-store.js";
-import { recoverExecutionUpdate } from "../daemon/execution-update.js";
+import { recoverExecutionUpdate, prepareExecutionUpdate } from "../daemon/execution-update.js";
+import { updateRuntime } from "@cotal-ai/cli/update";
 import { repairInstallModes } from "../../implementations/cli/src/lib/install-umask.js";
 import { assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, repairExecutionInstallModes, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
 
@@ -84,6 +85,45 @@ if (["linux", "darwin"].includes(process.platform)) {
     Reflect.set(globalThis, identityKey, Object.freeze({ logicalEntry: installedEntry, loadedEntry: installedEntry }));
     try {
       const recovery = recoverExecutionUpdate(journal);
+      writeFileSync(join(installed, "dist/cotal-program.js"), "console.log('cotal-ai 0.1.0');\n");
+      const oldExecArgv = process.execArgv.splice(0);
+      const oldArgv = process.argv[1]; process.argv[1] = installedEntry;
+      const oldHome = process.env.COTAL_HOME, oldRuntime = process.env.XDG_RUNTIME_DIR;
+      const oldSpawn = updateRuntime.spawnGlobal;
+      const state = join(scratch, "admission-state");
+      mkdirSync(join(state, "daemon"), { recursive: true, mode: 0o700 });
+      writeFileSync(join(state, "daemon/service-unit.json"), "{", { mode: 0o600 });
+      const runtime = join(scratch, "runtime"); mkdirSync(runtime, { mode: 0o700 });
+      process.env.COTAL_HOME = state; process.env.XDG_RUNTIME_DIR = runtime;
+      updateRuntime.spawnGlobal = async (_root, phase, _file, args) => {
+        assert.equal(phase, "install");
+        const staging = args[args.indexOf("--prefix") + 1]!;
+        const target = join(staging, "lib/node_modules/cotal-ai");
+        cpSync(source, target, { recursive: true });
+        writeFileSync(join(target, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.2.0", type: "module", bin: { cotal: "./dist/cotal.js" }, cotalPreinstall: { v: 1, entry: "./dist/check.js" } }));
+        writeFileSync(join(target, "dist/cotal-program.js"), "console.log('cotal-ai 0.2.0');\n");
+        writeFileSync(join(target, "dist/check.js"), "const r=JSON.parse(process.argv[2]);console.log('COTAL_PREINSTALL_RESULT '+JSON.stringify({v:1,nonce:r.nonce,installedEntry:r.installedEntry,hostedSpaces:[],occupied:null,admission:{disposition:'deferred',occupied:null,hostedSpaces:[],reason:'target permits installation without restart'}}));\n");
+        return { status: 0, stdout: "", stderr: "" };
+      };
+      try {
+        let checked = false;
+        const staged = await prepareExecutionUpdate("0.2.0", join(scratch, "prefix/lib/node_modules"), receipt => { checked = true; assert.equal(receipt.admission.disposition, "deferred"); });
+        assert.throws(() => staged.publish(), /before target checks/);
+        await staged.preflight({});
+        assert.equal(checked, true, "verified target policy decides despite an installed native preflight refusal");
+        writeFileSync(join(state, "daemon/daemon.lock"), "malformed", { mode: 0o600 });
+        assert.throws(() => staged.publish(), /identity is unreadable/);
+        assert.equal(selectExecutionProgram(installed).root, installed, "changed lifetime cannot publish target");
+        rmSync(join(state, "daemon/daemon.lock"));
+        staged.publish(); staged.verify("0.2.0");
+        staged.restore(); staged.verify("0.1.0"); staged.complete?.();
+      } finally {
+        process.execArgv.push(...oldExecArgv);
+        process.argv[1] = oldArgv;
+        updateRuntime.spawnGlobal = oldSpawn;
+        if (oldHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = oldHome;
+        if (oldRuntime === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = oldRuntime;
+      }
       writeFileSync(join(installed, "dist/cotal-program.js"), "setTimeout(() => console.log('cotal-ai 0.1.0'), 31_000);\n");
       const started = Date.now();
       recovery.verify("0.1.0");

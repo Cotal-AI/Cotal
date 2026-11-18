@@ -42,7 +42,7 @@ const textOf = (m: { parts: { kind: string; text?: string }[] }) =>
 type Drain = { start: number; ceiling: number; delivered: number };
 function instrument(ep: CotalEndpoint): Drain[] {
   const drains: Drain[] = [];
-  const proto = Object.getPrototypeOf(ep);
+  const proto = Object.getPrototypeOf((ep as unknown as { history: unknown }).history);
   const orig = proto.drainWindow as (
     js: unknown, stream: string, subjects: string[], start: number, ceiling: number,
   ) => Promise<unknown[]>;
