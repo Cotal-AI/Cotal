@@ -199,7 +199,17 @@ async function establishAttachSession(
     catch (error) {
       if (!isCommandFailure(error) || error.code !== "TARGET_NOT_FOUND") throw error;
       const info = await askManager(v.control, t.space, t.server, "status", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
-      if (!info.ok) throw managerFailure(info, "terminal attach", { space: t.space, agent: v.name, managerInstanceId: on ?? null });
+      if (!info.ok) {
+        if (!first) return { ok: false, kind: attachRefusal(info.code, info.details), message: info.error ?? "error", fromManager: true, code: info.code };
+        const manager = info.managerInstanceId ?? on;
+        if (info.code === "not-found")
+          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no managed agent "${oneLine(v.name)}" on manager ${manager ?? "instance"}`, {
+            target: { space: t.space, agent: v.name, managerInstanceId: manager ?? null },
+            native: { code: info.code, detail: { phase: "target-resolution", actionSubmitted: false } },
+            remedy: "run `cotal ps` to see the agents each manager runs",
+          });
+        throw managerFailure({ ...info, preSubmitRefusal: true }, "terminal attach", { space: t.space, agent: v.name, managerInstanceId: manager ?? null });
+      }
       const row = info.data as { id: string; lifecycleUid: string };
       v.expectedTarget = { id: row.id, lifecycleUid: row.lifecycleUid };
     }

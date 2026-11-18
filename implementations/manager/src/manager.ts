@@ -4400,7 +4400,7 @@ export class Manager {
             if (observed !== undefined && observed.slotPhase !== "retired")
               throw new EpEnvelopeError("failed-precondition", `no live agent "${name}"; durable state contradicts absence ${renderStaticSlotObservation(observed)}`, [observed]);
           }
-          throw new EpEnvelopeError("not-found", `no agent "${name}"`);
+          throw new EpEnvelopeError("not-found", `no agent "${name}"`, undefined, "not-executed");
         }
         return row;
       }),

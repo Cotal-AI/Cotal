@@ -57,8 +57,9 @@ const LOCAL =
  *  so this server cannot join a signed-in space. */
 const DESKTOP =
   "This is the Cotal server on this computer. It joins the person's local Cotal mesh. It cannot join a " +
-  "signed-in Cotal space, such as one on Cotal Cloud, from this chat: for one, use the space's hosted Cotal " +
-  "connector, which the person adds under Settings > Connectors > Add custom connector with the URL " +
+  "signed-in Cotal space, such as one on Cotal Cloud, from this chat. For a signed-in space, if the cotal " +
+  "plugin server is present in this session, use that server. Otherwise, or if the person asks for it, " +
+  "use the space's hosted Cotal connector, which the person adds under Settings > Connectors > Add custom connector with the URL " +
   "cotal_connect names. A conversation uses one Cotal path. ";
 
 /** How a Claude Code conversation hears messages through its native hooks module. */

@@ -497,7 +497,7 @@
    "current:endpoint invoke --on"
   ],
   "cli:endpoint--plain": "current:endpoint --plain",
-  "cli:endpoint--refresh": "pending:endpoint describe --refresh",
+  "cli:endpoint--refresh": "current:endpoint describe --refresh",
   "cli:endpoint--result": "pending:endpoint work commit --result",
   "cli:endpoint--self": "current:endpoint invoke --self",
   "cli:endpoint--server": [
@@ -1768,7 +1768,7 @@
   "tool:cotal_describe": "current:describe",
   "tool:cotal_describe.endpoint": "current:describe",
   "tool:cotal_describe.instance": "current:describe --on",
-  "tool:cotal_describe.refresh": "pending:endpoint describe --refresh",
+  "tool:cotal_describe.refresh": "current:endpoint describe --refresh",
   "tool:cotal_despawn": "current:stop",
   "tool:cotal_despawn.graceful": "current:stop --force",
   "tool:cotal_despawn.name": "current:stop --name",

@@ -180,8 +180,8 @@ export class EndpointHistory {
     assertValidChannel(channel);
     if (!isConcreteChannel(channel)) throw new Error("channelHistoryPage requires one concrete channel");
     const limit = opts?.limit ?? 50;
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
-      throw new Error("channelHistoryPage limit must be a whole number from 1 to 1000");
+    if (!Number.isSafeInteger(limit) || limit < 1)
+      throw new Error("channelHistoryPage limit must be a positive safe integer");
     if (!this.nc || !this.js) throw new Error(this.deps.notLiveMsg());
     const jsm = this.jsm ??= await jetstreamManager(this.nc);
     const signal = AbortSignal.any([AbortSignal.timeout(10_000), ...(opts?.signal ? [opts.signal] : [])]);
