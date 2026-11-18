@@ -760,9 +760,11 @@ try {
     check("the defining seat is cleaned up", seatStopped.reply.ok === true, seatStopped.reply);
 
     // The cells below grade a definer's ownership, so they run as a user-auth space would: there
-    // every caller's principal is stable, and what it defines is its own.
+    // every caller's principal is stable, and what it defines is its own. A user-auth definer is
+    // bounded by its ledger row, so this one's row holds every channel and no capability.
     const staticUserMode = M.userMode;
     M.userMode = true;
+    registry.register({ kind: "auth-provider", name: "smoke-every-channel", actorScope: async () => [], actorGrant: async () => ({ scope: [], allowSubscribe: [">"], allowPublish: [">"] }) } as never);
     const rDef = await A.call("define-persona", { name: "eppersona", persona: "You are the ep persona.", model: "m9" });
     check("definePersona creates the persona (content-only write)", rDef.reply.ok === true && existsSync(join(workspaceRoot, ".cotal", "agents", "eppersona.md")), rDef.reply);
     // The tool takes no scope argument by design, so a peer cannot name its own channels here. The
@@ -835,6 +837,7 @@ try {
     check("show-persona returns the owned card body",
       rShow.reply.ok === true && (rShow.reply.data as { persona?: string }).persona?.includes("widened by the operator") === true, rShow.reply);
     M.userMode = staticUserMode;
+    registry.unregister("auth-provider", "smoke-every-channel");
     const rShowMiss = await A.call("show-persona", { name: "ghost-persona" });
     check("show-persona of an unknown name is not-found",
       rShowMiss.reply.ok === false && rShowMiss.reply.error?.code === "not-found", rShowMiss.reply);
