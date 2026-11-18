@@ -12,12 +12,12 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** Runs real npm and the built public entry against a registry with a listed, initially missing archive. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
-  assert(['arrives', 'unavailable', 'integrity', 'reset'].includes(scenario));
+  assert(['arrives', 'unavailable', 'integrity', 'reset', 'orphan'].includes(scenario));
   const root = mkdtempSync(join(parent, 'registry-arrival-'));
   const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
   const target = '99.0.0', archives = new Map(), requests = [];
   const prefix = join(root, 'prefix'), home = join(root, 'home');
-  for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
+  for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   for (const version of [previous, target]) {
     writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
     writeFileSync(join(root, 'payload/package/dist/cotal.js'), '#!/usr/bin/env node\nconsole.log("fixture reconciled");\n', { mode: 0o755 });
@@ -47,11 +47,13 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   origin = `http://127.0.0.1:${server.address().port}`;
   env.npm_config_registry = origin;
+  let interrupted, orphan, abandoned;
   const run = async (file, args, timeoutMs) => {
     const child = spawn(file, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     child.stdout.on('data', bytes => output += bytes);
     child.stderr.on('data', bytes => output += bytes);
+    interrupted = child;
     const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
     try {
       const code = await new Promise((done, reject) => { child.once('error', reject); child.once('close', done); });
@@ -66,7 +68,33 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     writeFileSync(join(packageRoot, 'preserve'), 'unchanged');
     armed = true;
     const started = Date.now();
+    if (scenario === 'orphan') {
+      const first = run(process.execPath, [entry, 'update', '--self'], 60000);
+      const updater = interrupted;
+      const marker = join(prefix, 'lib/node_modules/.cotal-update-child');
+      const deadline = Date.now() + 30000;
+      let record;
+      while (Date.now() < deadline && updater.exitCode === null) {
+        if (existsSync(marker)) {
+          record = JSON.parse(readFileSync(marker, 'utf8'));
+          if (record.phase === 'live' && record.operation === 'global install') break;
+        }
+        await new Promise(done => setTimeout(done, 5));
+      }
+      assert.equal(record?.phase, 'live', 'the actual updater published its install child');
+      abandoned = first;
+      orphan = record.pid;
+      process.kill(record.pid, 'SIGSTOP');
+      updater.kill('SIGKILL');
+      if (updater.signalCode === null) await new Promise(done => updater.once('exit', done));
+      process.kill(record.pid, 0);
+      console.log(`killed updater ${updater.pid}; install child ${record.pid} survives`);
+      setTimeout(() => { try { process.kill(record.pid, 'SIGCONT'); } catch {} }, 5000);
+      // Do not await close: the detached npm child still owns the parent's output pipes.
+      first.catch(() => {});
+    }
     const update = await run(process.execPath, [entry, 'update', '--self'], 660000);
+    if (abandoned) await abandoned;
     const elapsedMs = Date.now() - started;
     const selected = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
     if (scenario === 'integrity') {
@@ -74,8 +102,12 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       assert.doesNotMatch(update.output, /Waiting for cotal-ai|Keeping cotal-ai/);
     } else {
       assert.equal(update.code, 0, update.output);
-      if (scenario !== 'reset') assert.match(update.output, /Waiting for cotal-ai@99\.0\.0 release archives/);
-      if (scenario === 'reset') {
+      if (scenario !== 'reset' && scenario !== 'orphan') assert.match(update.output, /Waiting for cotal-ai@99\.0\.0 release archives/);
+      if (scenario === 'orphan') {
+        assert.equal(selected, target, update.output);
+        assert.match(update.output, /installed globally and reconciled/);
+        assert.equal(existsSync(join(prefix, 'lib/node_modules/.cotal-update-child')), false);
+      } else if (scenario === 'reset') {
         assert.equal(selected, target);
         assert.match(update.output, /installed globally and reconciled/);
         assert(missing >= 2 && elapsedMs < 60000, `bounded transient retry: ${elapsedMs}`);
@@ -88,7 +120,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
         assert(elapsedMs >= 600000 && elapsedMs < 660000, `real wait bound: ${elapsedMs}`);
       }
     }
-    if (scenario !== 'arrives' && scenario !== 'reset') {
+    if (scenario !== 'arrives' && scenario !== 'reset' && scenario !== 'orphan') {
       assert.equal(selected, previous);
       assert.deepEqual(readFileSync(join(packageRoot, 'dist/cotal.js')), before);
       assert.equal(readFileSync(join(packageRoot, 'preserve'), 'utf8'), 'unchanged');
@@ -97,6 +129,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     assert.equal(existsSync(recovery) ? JSON.parse(readFileSync(recovery, 'utf8')) : null, null);
     return { scenario, code: update.code, elapsedMs, selected, missing, requests, output: update.output };
   } finally {
+    if (orphan) { try { process.kill(orphan, 'SIGCONT'); } catch {} }
+    if (abandoned) await abandoned.catch(() => {});
     await new Promise(done => server.close(done));
     rmSync(root, { recursive: true, force: true });
   }

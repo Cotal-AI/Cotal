@@ -1,5 +1,17 @@
 # @cotal-ai/auth
 
+## 0.168.0
+
+### Patch Changes
+
+- d164a59: Keep the auth HTTP exchange handler and face policy in a dedicated module while preserving the existing listener behavior and host-facing exports.
+- Updated dependencies [4ad482d]
+- Updated dependencies [6546892]
+- Updated dependencies [b0e70a5]
+  - @cotal-ai/core@0.168.0
+  - @cotal-ai/workspace@0.168.0
+  - @cotal-ai/lang@0.168.0
+
 ## 0.167.0
 
 ### Minor Changes

@@ -407,10 +407,6 @@
     "sha256": "ad4a96fcc417cff50a4d19ec31bcf33983b9961d62dc058bd6b41ff6204c9c05",
     "refusal": "mutation \"the teardown never reaps (the leak reintroduced)\" is missing \"cell\""
   },
-  "implementations/manager/smoke/mutations/turn-relay-auth.json": {
-    "sha256": "3500dcf981095264e9a2efdcea5966d239cdc025165c028b836897e22ad513a6",
-    "refusal": "mutation \"the operator seat-write set carries input alone; no profile mints a turn row\" targets packages/core/src/endpoint-grants.ts, which none of [implementations/manager/smoke/turn-relay-auth.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "implementations/manager/smoke/mutations/user-bearer-goal-lifetime.json": {
     "sha256": "e28847588b47878eb62c829ed5d417e3a6e63572c718e88d785573598bcb28e2",
     "refusal": "mutation \"M1 omit endpoint stop cancellation\" targets packages/core/src/endpoint.ts, which none of [implementations/manager/smoke/user-bearer-goal-lifetime.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."

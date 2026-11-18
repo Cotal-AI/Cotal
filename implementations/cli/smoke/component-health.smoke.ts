@@ -17,8 +17,9 @@
  * The dashboard cells are the exception. The shipped `web` service preset serves only a static-auth
  * target with a protected credential file, so those cells run on their own static-auth stack in a
  * second sandbox root and stop it before the open-mesh cells continue. They also check that the
- * preset refuses a posting setup with one of its two flags, and that a start names the remove and
- * add that change a saved definition it refuses.
+ * preset refuses a posting setup with one of its two flags, that a start names the remove and add
+ * that change a saved definition it refuses, and that a --read-only start of a posting definition
+ * is refused before it saves.
  *
  * Run: pnpm smoke:component-health
  */
@@ -581,6 +582,22 @@ try {
     { add: `${pairAdd.stdout}${pairAdd.stderr}`, start: `${pairStart.stdout}${pairStart.stderr}` });
   const pairRemove = cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
   webService = pairRemove.status !== 0;
+  // A start's options are saved over a stopped definition's, so --read-only on a posting dashboard
+  // would keep its --posting-creds. That start is refused before it saves anything (#7589).
+  const posting = cliIn(webRoot, [...webDefinition, "--no-read-only", "--posting-creds", creds]);
+  webService = posting.status === 0;
+  const revision = () => envelope(cliIn(webRoot, ["service", "show", "web", "--space", WEB_SPACE, "--json"])) as { result?: { revision?: unknown } } | undefined;
+  const before = revision()?.result?.revision;
+  const offStart = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--read-only", "--json"], 60_000);
+  const offError = envelope(offStart)?.error;
+  const after = revision()?.result?.revision;
+  check("a --read-only start of a stopped posting definition is refused CONFLICT, saves nothing, and names the remove and read-only add",
+    posting.status === 0 && offStart.status === 2 && offError?.code === "CONFLICT" && offError.message?.startsWith("--read-only would keep the saved web definition's --posting-creds") === true &&
+      before !== undefined && after === before &&
+      offError.remedy === `remove it with \`cotal service remove web --space ${WEB_SPACE} --yes\`, then run \`cotal service add web --preset web --space ${WEB_SPACE} --read-only\``,
+    { add: `${posting.stdout}${posting.stderr}`, start: `${offStart.stdout}${offStart.stderr}`, before, after });
+  const postingRemove = cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
+  webService = postingRemove.status !== 0;
   const webDown = cliIn(webRoot, ["down", "--yes"], 120_000);
   webStack = webDown.status !== 0;
   check("cotal down stops the dashboard's static-auth stack", webDown.status === 0, `${webDown.stdout}${webDown.stderr}`);

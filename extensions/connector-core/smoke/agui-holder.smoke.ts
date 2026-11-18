@@ -96,7 +96,7 @@
  * failure, which means a green total names nothing and cannot show that a NEW cell ran at all.
  */
 import { AguiEmitterHolder } from "../src/agui-holder.js";
-import type { AguiEmitter, HeldTerminal, ReportedTerminal } from "../src/agui-emitter.js";
+import { AguiEmitterHalted, type AguiEmitter, type HeldTerminal, type ReportedTerminal } from "../src/agui-emitter.js";
 
 let ok = 0,
   fail = 0;
@@ -527,6 +527,30 @@ const B = "/tmp/session-b.jsonl";
   await r.holder.settled();
   c("revive:the-first-retry-is-at-once-and-the-rest-are-paced-by-the-fixed-wait", r.delays.slice(0, 3).join(",") === "0,10,10", r.delays);
   c("revive:the-plane-comes-back-after-repeated-failures", r.holder.running && r.starts === 4, { running: r.holder.running, starts: r.starts });
+  await r.holder.close();
+}
+
+{
+  // A halt is not a transient fault: every start republishes the frame the broker refused, so
+  // the wait doubles from `retryMs` instead of repeating it (#7514).
+  const halt = new AguiEmitterHalted("cas-loss", "event emitter: the subject tip is no longer 1");
+  const r = rig({ fail: halt, failTimes: 4, retryMs: 10 });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  await sleep(250);
+  await r.holder.settled();
+  c("halt:a-halt-is-retried-at-a-wait-that-doubles", r.delays.join(",") === "10,20,40,80", r.delays);
+  c("halt:the-plane-comes-back-once-the-halt-clears", r.holder.running && r.starts === 5, { running: r.holder.running, starts: r.starts });
+  await r.holder.close();
+}
+
+{
+  // The doubling stops at five minutes, whatever `retryMs` says.
+  const halt = new AguiEmitterHalted("cas-loss", "event emitter: the subject tip is no longer 1");
+  const r = rig({ fail: halt, retryMs: 400_000 });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  c("halt:the-wait-stops-at-the-five-minute-ceiling", r.delays[0] === 300_000, r.delays);
   await r.holder.close();
 }
 
