@@ -755,7 +755,7 @@ const sentinelCreds = process.env.PROBE_SENTINEL_CREDS!;
 
 const pDir = mkdtempSync(join(tmpdir(), "mgr-del-"));
 process.env.COTAL_HOME = join(pDir, "home");
-mkdirSync(process.env.COTAL_HOME, { recursive: true });
+mkdirSync(process.env.COTAL_HOME, { recursive: true, mode: 0o700 });
 const ws = join(pDir, "ws");
 mkdirSync(join(ws, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(ws, ".cotal", "agents", delegatedActor + ".md"), ["---", "name: " + delegatedActor, "role: worker", "---", ""].join(String.fromCharCode(10)));
@@ -1255,7 +1255,7 @@ const spawnArgs = JSON.parse(process.env.PROBE_DELEGATED_ARGS!) as string[];
 
 const cDir = mkdtempSync(join(tmpdir(), "cli-handoff-"));
 process.env.COTAL_HOME = join(cDir, "home");
-mkdirSync(process.env.COTAL_HOME, { recursive: true });
+mkdirSync(process.env.COTAL_HOME, { recursive: true, mode: 0o700 });
 const cWs = join(cDir, "ws");
 mkdirSync(join(cWs, ".cotal", "agents"), { recursive: true });
 const bearerOk = join(cDir, "bearer-ok.mjs");
