@@ -817,6 +817,7 @@
     "smoke:seat-exit-cause": "tsx implementations/manager/smoke/seat-exit-cause.smoke.ts",
     "smoke:exit-watch": "tsx implementations/manager/smoke/exit-watch.smoke.ts",
     "smoke:lease-loss-keeps-serving": "tsx implementations/manager/smoke/lease-loss-keeps-serving.smoke.ts",
+    "smoke:instance-lease": "tsx implementations/manager/smoke/instance-lease.smoke.ts",
     "smoke:serve-stop-outage": "tsx implementations/manager/smoke/serve-stop-outage.smoke.ts",
     "smoke:preserve-state": "tsx implementations/manager/smoke/preserve-state.smoke.ts",
     "smoke:manager-console-label": "tsx implementations/manager/smoke/console-blank-label.smoke.ts",
