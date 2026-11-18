@@ -1285,7 +1285,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     "@cotal-ai/core": { peerDependencies: { "@cotal-ai/cli": ">=0.1.0" } },
     "@cotal-ai/optional": {},
   };
-  for (const scenario of ["ready", "root-404", "transitive-404", "metadata-404", "target-missing", "invalid-json", "wrong-version", "missing-integrity", "skewed-dependency", "integrity", "unauthorized", "unstructured"] as const) {
+  for (const scenario of ["ready", "ready-array", "empty-array", "multiple-array", "null-array", "nested-array", "array-wrong-version", "array-missing-integrity", "root-404", "transitive-404", "metadata-404", "target-missing", "invalid-json", "wrong-version", "missing-integrity", "skewed-dependency", "integrity", "unauthorized", "unstructured"] as const) {
     const downloaded: string[] = [], caches = new Set<string>();
     const fixture = updateRuntime({
       npm: (args) => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
@@ -1311,22 +1311,27 @@ async function completionOut(positionals: string[]): Promise<string> {
         }
         if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stdout: JSON.stringify({ error: { code: "E404" } }) };
         if (name === "@cotal-ai/core" && scenario === "invalid-json") return { status: 0, stdout: "not json" };
-        return { status: 0, stdout: JSON.stringify({
-          name, version: scenario === "wrong-version" ? "0.13.3" : requestedVersion,
-          dist: { tarball: "https://registry.example/package.tgz", ...(scenario === "missing-integrity" ? {} : { integrity: "sha512-fixture" }) },
+        const metadata = {
+          name, version: scenario === "wrong-version" || scenario === "array-wrong-version" ? "0.13.3" : requestedVersion,
+          dist: { tarball: "https://registry.example/package.tgz", ...(["missing-integrity", "array-missing-integrity"].includes(scenario) ? {} : { integrity: "sha512-fixture" }) },
           ...JSON.parse(JSON.stringify(manifests[name]).replaceAll(version, requestedVersion)),
           ...(scenario === "skewed-dependency" ? { dependencies: { "@cotal-ai/core": "0.13.1" } } : {}),
-        }) };
+        };
+        const payload = scenario === "empty-array" ? [] : scenario === "multiple-array" ? [metadata, metadata]
+          : scenario === "null-array" ? [null] : scenario === "nested-array" ? [[metadata]]
+          : scenario === "ready-array" || scenario.startsWith("array-") ? [metadata] : metadata;
+        return { status: 0, stdout: JSON.stringify(payload) };
       },
     });
     let now = 0, waits = 0;
     fixture.rt.now = () => now;
     fixture.rt.sleep = async milliseconds => { now += milliseconds; waits++; };
     const arriving = ["root-404", "transitive-404", "metadata-404", "target-missing"].includes(scenario);
-    assert.equal(await executeUpdate(true, fixture.rt), scenario === "ready" || arriving ? 0 : 1, scenario);
-    assert.ok(caches.size === (scenario === "ready" ? 2 : arriving ? 41 : 1) && [...caches].every(cache => !existsSync(cache)), "every private preflight cache is removed");
+    const ready = scenario === "ready" || scenario === "ready-array";
+    assert.equal(await executeUpdate(true, fixture.rt), ready || arriving ? 0 : 1, scenario);
+    assert.ok(caches.size === (ready ? 2 : arriving ? 41 : 1) && [...caches].every(cache => !existsSync(cache)), "every private preflight cache is removed");
     assert.equal(waits, arriving ? 40 : 0, "only structured missing release data waits, for ten minutes total");
-    if (scenario === "ready") {
+    if (ready) {
       assert.deepEqual(downloaded, [version, "0.13.1"].flatMap(release => Object.keys(manifests).map(name => `${name}@${release}`)), "target and rollback transitive and optional archives are fetched once, despite peer cycles");
       assert.equal(fixture.events.filter(event => event.startsWith("npm:cache add")).length, 2, "one bounded archive batch per four-package release replaces repeated npm startup");
       const lastFetch = fixture.events.findLastIndex(event => event.startsWith("npm:cache add"));

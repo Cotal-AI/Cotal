@@ -96,13 +96,13 @@ try {
   } else {
   check("a non-writable package refuses before creating generation storage", () => {
     chmodSync(root, 0o500);
-    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest; then run cotal update as your normal account, without sudo/); }
+    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest; then run `cotal update` as your normal account, without sudo/); }
     finally { chmodSync(root, 0o700); }
     assert.equal(existsSync(executionStore(root)), false);
   });
   check("generation store refuses a non-writable installation before creating it", () => {
     const parent = join(scratch, "prefix/lib"); chmodSync(parent, 0o500);
-    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest; then run cotal update as your normal account, without sudo/); }
+    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest; then run `cotal update` as your normal account, without sudo/); }
     finally { chmodSync(parent, 0o700); }
     assert.equal(existsSync(executionStore(root)), false);
   });

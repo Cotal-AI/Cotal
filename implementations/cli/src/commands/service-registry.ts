@@ -377,7 +377,7 @@ function recordedPresetProcessReport(resolved: PresetServiceTarget, recorded: { 
 export function recordedProcessRefusal(name: string, recorded: { pid: number; label: string }, space: string, action: string): CommandFailure {
   return new CommandFailure("refused", "UNSUPPORTED", `the ${recorded.label} running in space ${oneLine(space)} (pid ${recorded.pid}) was started by \`cotal up\` or \`cotal supervise\`, not as a saved service, so ${action} does not control it; nothing was changed`, {
     target: { space, name, executionHost: "this-machine", pid: recorded.pid },
-    remedy: "it stops with its stack through `cotal down`, or where `cotal supervise` runs it",
+    remedy: `it stops with its stack through \`cotal down\`, or where \`cotal supervise\` runs it${name === "manager" || name === STACK_DEFINITION.manager ? "; stopping that manager stops every hosted workflow run it drives, and `cotal down` also stops the broker and agents" : ""}`,
   });
 }
 

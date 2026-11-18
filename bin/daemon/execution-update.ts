@@ -25,9 +25,16 @@ export function preflightExecutionUpdate(): void {
 
 function verifySelected(root: string, version: string): void {
   const entry = join(root, "dist/cotal.js");
-  const result = spawnSync(process.execPath, [entry, "--version"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", [executionCopyModesEnv]: "explicit" }, encoding: "utf8", timeout: 30_000 });
+  const timeout = 300_000;
+  const result = spawnSync(process.execPath, [entry, "--version"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", [executionCopyModesEnv]: "explicit" }, encoding: "utf8", timeout });
+  if (result.error) {
+    const detail = (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT"
+      ? `entry verification timed out after ${timeout / 1000} seconds`
+      : `entry verification could not start: ${result.error.message}`;
+    throw new Error(`selected execution did not confirm cotal-ai@${version}: ${detail}`);
+  }
   if (result.status !== 0 || result.stdout.split(/\r?\n/, 1)[0] !== `cotal-ai ${version}`)
-    throw new Error(`selected execution did not confirm cotal-ai@${version}: ${result.stderr}`);
+    throw new Error(`selected execution did not confirm cotal-ai@${version}: ${result.stderr.trim() || `exit ${result.status}, signal ${result.signal ?? "none"}, version output ${JSON.stringify(result.stdout.split(/\r?\n/, 1)[0])}`}`);
 }
 
 /** Prepare one complete real npm package. No live package file is passed to npm for reification. */

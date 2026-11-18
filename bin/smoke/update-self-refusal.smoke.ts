@@ -34,8 +34,8 @@ try {
   check.match(refused.stderr, /installation is not writable/);
   check.match(refused.stderr, /no changes were made/);
   check.match(refused.stderr, /have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest/);
-  check.match(refused.stderr, /then run cotal update as your normal account, without sudo/);
-  const command = refused.stderr.match(/have an administrator run: (.*?); then run cotal update/)?.[1];
+  check.match(refused.stderr, /then run `cotal update` as your normal account, without sudo/);
+  const command = refused.stderr.match(/have an administrator run: (.*?); then run `cotal update`/)?.[1];
   check.ok(command, refused.stderr);
   const argumentsOnly = spawnSync("sh", ["-c", `set -- ${command}; printf '%s\\n' "$@"`], { env, encoding: "utf8", timeout: 10_000 });
   check.equal(argumentsOnly.status, 0, argumentsOnly.stderr);

@@ -1,5 +1,30 @@
 # @cotal-ai/cli
 
+## 0.166.3
+
+### Patch Changes
+
+- 5b96741: Name commands in backticks in the selection notes, the sign-in hints, the update refusals and the Manager restart line, so a wrapped line keeps each command whole. `cotal mcp --help` now shows examples.
+- c1734e0: Remove the broker's default 1,000-consumer ceiling so existing spaces can accept new agent lifecycles after a configuration reload.
+- fb871f5: Read the Linux process table directly so updates work with Alpine's BusyBox ps.
+- efa97b0: Diagnose an open space's own root with a bare `cotal doctor auth` whatever space is selected.
+  
+  With another folder's space selected, `cotal doctor auth` in an open space's root exited 4 and said to run it in a space's root folder, which is where it already ran. It now reads the space registered at that root and reports that an open space has no credentials to check, as `--space` already did.
+- 1a623d6: Explain how to stop hosted workflows on a default local stack.
+  
+  The workflow guide and issue-orchestrator example now name `cotal down --yes` for a manager started without a saved service and state its whole-stack impact. A retained manager addressed as `stack-manager` refuses stop and restart with the supported stop path instead of suggesting a service definition. Prepared controller stacks keep their manager stop followed by `cotal up` path.
+- 9bd3a9c: Name the space's folder when `cotal mcp` finds the local space stopped.
+  
+  The refusal said to start the space with `cotal up`, which starts a new space named after the current folder unless it is run in the space's own folder. It now names the command that starts this space from anywhere, `cotal up --root <the space's folder>`.
+- de1995a: Accept npm 12 release metadata arrays so self-updates can verify and install available releases.
+- Updated dependencies [5b96741]
+- Updated dependencies [c1734e0]
+- Updated dependencies [3eeb06f]
+- Updated dependencies [ec9b5cb]
+- Updated dependencies [de1995a]
+  - @cotal-ai/workspace@0.166.3
+  - @cotal-ai/core@0.166.3
+
 ## 0.166.2
 
 ### Patch Changes

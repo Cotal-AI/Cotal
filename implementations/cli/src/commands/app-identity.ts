@@ -28,6 +28,8 @@ import {
 } from "@cotal-ai/core";
 import { activateTerminalSeat, defaultPersonaRef, homeCotalDir, issueTerminalSeat, resolveTargetOrThrow, retireTerminalSeat, type MeshTarget } from "@cotal-ai/workspace";
 import { withProvisioner } from "../lib/provisioner.js";
+import { shellWord } from "../lib/endpoint-errors.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { defaultPersonaFix } from "../lib/default-persona.js";
 import { liveMeshNames } from "../lib/live-names.js";
 import { ConversationRefusal, ConversationRequestError, isUserAppDir, provisionUserApp, retireDeadUserApps, retireUserApp } from "../lib/app-user-identity.js";
@@ -186,7 +188,8 @@ async function provisionLocalLocked(t: MeshTarget, name: string, session: string
   const held = localRecords().find(({ record }) => record.session === session && alive(record.owner));
   if (held) return { ok: false, error: `this native conversation already has a live identity on "${held.record.space}"; disconnect it before connecting again` };
   const taken = await liveMeshNames(t, retired);
-  if (!taken) return { ok: false, error: `the mesh "${t.space}" at ${t.server} is not answering. Start it with \`cotal up\`.` };
+  // A bare `cotal up` starts this mesh only in its own folder; anywhere else it starts a new space.
+  if (!taken) return { ok: false, error: `the mesh "${t.space}" at ${t.server} is not answering. Start it with \`${displayCmd()} up --root ${shellWord(t.root)}\`.` };
   if (taken.has(name)) return { ok: false, taken: true };
   const persona = defaultPersonaRef();
   let def: AgentDef;

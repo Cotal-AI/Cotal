@@ -116,7 +116,7 @@ try {
     (err: { code?: string; message?: string; remedy?: string }) => {
       assert.equal(err.code, "DEPENDENCY_UNAVAILABLE");
       assert.equal(err.message, "the account's application PATH could not be read; no service was changed");
-      assert.equal(err.remedy, "choose Try again, or run cotal daemon install in a terminal for diagnostics");
+      assert.equal(err.remedy, "choose Try again, or run `cotal daemon install` in a terminal for diagnostics");
       assert.ok(!String(err.remedy).includes("login shell"), "Windows remedy must not mention a login shell");
       return true;
     },
@@ -254,9 +254,12 @@ try {
   assert.equal(ready.result?.status.pid, daemon.pid);
   checkInstallation(control);
   const before = operations(control.calls);
-  assert.deepEqual(before, ["directory-read", "linger-read", "daemon-reload", "enable", "start"]);
+  // The preceding status searches for a receipt-less source. Install searches again, then plans
+  // the new unit. Each lookup resolves the user manager's directory before any service effect.
+  assert.deepEqual(before, ["directory-read", "directory-read", "directory-read", "linger-read", "daemon-reload", "enable", "start"]);
   const alreadyRunning = await request(control, "install");
   assert.equal(alreadyRunning.ok, true);
+  // An answering daemon only needs recorded-service validation, not a new install plan.
   assert.deepEqual(operations(control.calls).slice(before.length), ["directory-read"], "an answering installation receives no native start");
   const answering = await request(control, "status");
   assert.equal(answering.ok, true, "status answers while the installed daemon runs");
@@ -276,6 +279,7 @@ const beforeStatus = operations(control.calls);
 const stopped = await request(control, "status");
 assert.equal(stopped.error?.code, "NOT_RUNNING");
 assert.equal(stopped.error?.message, "The background service is installed but stopped. Choose Start service to start it.");
+// Status validates the recorded source without planning or starting a service.
 assert.deepEqual(operations(control.calls).slice(beforeStatus.length), ["directory-read"], "a status request reads the installation and starts nothing");
 console.log("installed and stopped: status names the stopped service, not a missing installation");
 
@@ -299,7 +303,9 @@ for (const target of [isolated("timeout"), control]) {
   assert.ok(Date.now() - started >= 15_000, "real readiness window elapsed");
   checkInstallation(target);
   assert.deepEqual(operations(target.calls).slice(before.length), target === control
-    ? ["directory-read", "directory-read", "start"] : ["directory-read", "linger-read", "daemon-reload", "enable", "start"]);
+    // A recorded start validates the receipt twice; a fresh install searches for recovery then plans.
+    // Unlike the control above, this fresh target has no preceding status recovery lookup.
+    ? ["directory-read", "directory-read", "start"] : ["directory-read", "directory-read", "linger-read", "daemon-reload", "enable", "start"]);
   assert.equal(timedOut.ok, false);
   assert.equal(timedOut.error?.code, "DEPENDENCY_UNAVAILABLE");
   assert.equal(timedOut.error?.native?.code, "NOT_ANSWERING");

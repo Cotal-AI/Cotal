@@ -1,5 +1,11 @@
 # @cotal-ai/connector-codex
 
+## 0.166.3
+
+### Patch Changes
+
+- 9effdae: Allow Cotal updates after Codex is uninstalled, leaving its retained plugin cache unchanged until Codex is installed again.
+
 ## 0.166.2
 
 No changes in this release.
