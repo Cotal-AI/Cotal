@@ -612,7 +612,8 @@ words, because it serves only what it can still read. The read stays complete, a
 the broker serves. A broker whose log is not on this machine is not checked. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
 filter that window on this machine. They do not search the whole stream, and with older retained
 messages behind the window the report says that `--from` and `--grep` searched only the messages
-read. When older retained messages are not shown, raise `--limit` to read further back.
+read. Empty or whitespace-only `--from` and `--grep` values refuse with `USAGE_INVALID`, exit 1,
+before connecting. When older retained messages are not shown, raise `--limit` to read further back.
 There is no 1000-message read cap. For example, `cotal history general --limit 2000`
 reads the newest 2000 retained messages before applying filters. `result.window` says how many messages were read, whether older retained
 messages exist that the window did not reach, and whether the window goes back to `--since`. The report names the local time and the ISO instant a

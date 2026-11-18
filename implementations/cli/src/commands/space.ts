@@ -128,6 +128,13 @@ export interface SpaceDetail extends Omit<SpaceRow, "catalog"> {
   readonly catalog: (NonNullable<SpaceRow["catalog"]> & { readonly id: string | null; readonly slug: string | null; readonly kind: string | null; readonly role: string | null }) | null;
 }
 
+export function validateSpaceArguments(args: ParsedArgs): void {
+  presentationOf(args.values);
+  const [sub, name] = args.positionals;
+  if ((sub === "show" || sub === "forget") && name !== undefined && !name.trim())
+    throw usage(`space ${sub} takes a nonempty space name`);
+}
+
 /**
  * `cotal space` lists the spaces this machine can reach, and `cotal space show [<name>]` shows one in
  * full. Both read the local registry and probe brokers; neither writes anything. A broker that does
@@ -136,6 +143,7 @@ export interface SpaceDetail extends Omit<SpaceRow, "catalog"> {
  * `space forget` change what is recorded (see `space-registration.ts`).
  */
 export async function space(args: ParsedArgs): Promise<void> {
+  validateSpaceArguments(args);
   const values = args.values as FlagValues<typeof spaceFlags>;
   const presentation = presentationOf(values);
   const [sub, ...rest] = args.positionals;

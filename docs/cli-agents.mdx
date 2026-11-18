@@ -50,7 +50,8 @@ cotal spawn [<persona>] [--file <persona-file>] [-d | --foreground] [--dry-run] 
 ```
 
 A bare `spawn` runs the application in this terminal, on every kind of mesh, and no manager is
-involved unless you name one with `--on` or request `--detach`. Its exit, or the terminal's, may end the agent. A manager runs the launch only when you
+involved unless you name one with `--on` or request `--detach`. An explicit empty or whitespace-only
+persona refuses with `USAGE_INVALID`, exit 1, before resolving a target. Its exit, or the terminal's, may end the agent. A manager runs the launch only when you
 ask for one. `--detach` (`-d`) hands it to a manager, waits until the agent joins, and returns
 without attaching. `--on <instance>` hands it to that manager and attaches this terminal to the
 agent (see [Managed launch view](cli-agent-views.mdx#managed-launch-view)), when that manager's runtime streams a
@@ -420,7 +421,9 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 | `--plain` | off | The same report without color |
 
 Asks the selected manager for each application's model catalog (model ids plus their variants)
-for connectors that expose one. Claude Code, OpenCode, Codex and pi ask the installed application.
+for connectors that expose one. An empty or whitespace-only `--harness` or `-H` refuses with
+`USAGE_INVALID`, exit 1, before selecting a space or contacting a manager.
+Claude Code, OpenCode, Codex and pi ask the installed application.
 Claude Code lists the models its login can use, and pi lists the models of providers it holds
 credentials for. Jcode reads providers that enable `model_catalog = true` in the operator Jcode
 `config.toml`. Jcode's listed effort tiers render as `<tiers> (declared, not provider-verified)`,
@@ -474,7 +477,9 @@ belongs to `persona create --on`; without `--on` it refuses with `USAGE_INVALID`
 A persona name uses letters, digits, `_` and `-`, up to 128 characters, and a name refusal says
 which rule it broke.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or
-`--from` (body file, or `-` for explicit stdin). Complete files validate all supported fields,
+`--from` (body file, or `-` for explicit stdin). Empty or whitespace-only `--file` and `--from`
+paths refuse with `USAGE_INVALID`, exit 1, before reading files or resolving the catalog.
+Complete files validate all supported fields,
 must name the requested persona and keep their original bytes. A file that names another persona is
 refused with `SCHEMA_INVALID`, naming the file's own name and the `persona create` that keeps it.
 A file the agent-file rules refuse is `SCHEMA_INVALID` naming the file, the field and the reason,
