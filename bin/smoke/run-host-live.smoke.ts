@@ -34,7 +34,7 @@ const {
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
   issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel, LEASE_TTL_MS,
   instanceOnlyManagerCapabilities, runCallerCapabilities, createRunAdmission, admissionBucket,
-  activateRun, createRunSpec, recordRunProgram, readRunRecord,
+  activateRun, createRunSpec, recordRunProgram, readRunRecord, startTimerWriter,
 } = await import("../../packages/core/dist/index.js");
 const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
@@ -930,6 +930,59 @@ try {
   c("RUN_LAUNCH_DEADLINE_MS > RUN_ACTIVATION_WAIT_MS, so the manager's own \"still launching\" refusal is what a slow activation reads as",
     RUN_LAUNCH_DEADLINE_MS > RUN_ACTIVATION_WAIT_MS, { RUN_LAUNCH_DEADLINE_MS, RUN_ACTIVATION_WAIT_MS });
 
+  console.log("A9. the same manager resumes a hosted run after a broker outage");
+  {
+    const file = join(wsA, "outage.cotal.js");
+    writeFileSync(file, 'await sleep("8s", { name: "before" }); await sleep("1s", { name: "after" });');
+    const cli = async (...args: string[]) => (await execFile(process.execPath,
+      [resolve("bin/dist/cotal.js"), "run", ...args, "--space", spaceA, "--server", brokerA.servers, "--json"],
+      { cwd: wsA, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, timeout: 30_000 })).stdout;
+    const creds = await mintCreds(auth, newIdentity(), "delivery");
+    const timerConnection = () => connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: -1 });
+    let timerNc = await timerConnection();
+    try {
+      const timer = await startTimerWriter(timerNc, spaceA);
+      void timer.done.catch(() => {});
+      const start = JSON.parse(await cli("start", "--file", file));
+      const runId: string = start.result.result.runId;
+      const show = async (): Promise<RunStatusViewT> => JSON.parse(await cli("show", runId)).result.view;
+      const parked = await until(async () => {
+        const view = await show();
+        return pendingStep(view, "/sleep:before#0") !== undefined ? view : undefined;
+      }, 15_000);
+      if (!parked) throw new Error("the outage run never parked at its first sleep");
+      const errors: string[] = [];
+      const realError = console.error;
+      console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); realError(...args); };
+      try {
+        await brokerA.interrupt(async () => {
+          const interrupted = await until(async () => errors.find(line => line.includes(runId)
+            && line.includes('"released" status write did not land')), 80_000);
+          if (!interrupted) throw new Error("the outage did not interrupt a journal append");
+        });
+      } finally {
+        console.error = realError;
+        await timerNc.close();
+        await timer.stop();
+      }
+      timerNc = await timerConnection();
+      const restarted = await startTimerWriter(timerNc, spaceA);
+      void restarted.done.catch(() => {});
+      const completed = await until(async () => {
+        const view = await show().catch(() => undefined);
+        return view?.status?.state === "completed" ? view : undefined;
+      }, 45_000);
+      const activations = completed?.journal.flatMap(row => row.kind === "activation" ? [row.epoch] : []);
+      c("the original manager replays and activates exactly one successor without a resume command",
+        JSON.stringify(activations) === "[1,2]" && completed?.status?.holder.split(".")[0] === parked.status?.holder.split(".")[0], activations);
+      c("the recovered run completes both recorded sleeps", ["before", "after"].every(name =>
+        completed?.journal.some(row => row.kind === "step" && row.step === `/sleep:${name}#0` && row.outcome === "ok")), completed?.journal);
+      await restarted.stop();
+    } finally {
+      await timerNc.close();
+    }
+  }
+
   await nc.drain().catch(() => undefined);
   nc = undefined;
   await mgrB.stop({ withAgents: true });
@@ -1046,7 +1099,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 99;
+const EXPECTED_CELLS = 101;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;
