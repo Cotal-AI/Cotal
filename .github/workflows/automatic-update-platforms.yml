@@ -517,7 +517,7 @@ jobs:
           import assert from 'node:assert/strict';
           import { pathToFileURL } from 'node:url';
           import { matchKnownRefusal } from './scripts/upgrade-matrix-refusals.mjs';
-          import { mkdirSync, writeFileSync } from 'node:fs';
+          import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
           const cell = JSON.parse(process.env.CELL);
           const directory = process.env.RUNNER_TEMP + '/upgrade-evidence';
           mkdirSync(directory, { recursive: true });
@@ -525,7 +525,15 @@ jobs:
           if (cell.scenario === 'candidate-next-two-homes') {
             const { twoHomeUpgrade } = await import('./scripts/automatic-update-two-homes.mjs');
             const { verifyTwoHomeUpgrade } = await import('./scripts/automatic-update-two-homes-evidence.mjs');
-            const result = await twoHomeUpgrade({ oldDirectory: process.env.RUNNER_TEMP + '/release-candidate', targetDirectory: process.env.RUNNER_TEMP + '/release-next', root: directory + '/two-homes' });
+            // The proof's root holds both installed homes; only its three evidence files are uploaded.
+            const work = process.env.RUNNER_TEMP + '/two-homes';
+            let result;
+            try {
+              result = await twoHomeUpgrade({ oldDirectory: process.env.RUNNER_TEMP + '/release-candidate', targetDirectory: process.env.RUNNER_TEMP + '/release-next', root: work });
+            } finally {
+              mkdirSync(directory + '/two-homes');
+              for (const name of ['result.json', 'transcript.log', 'evidence.sha256']) if (existsSync(work + '/' + name)) copyFileSync(work + '/' + name, directory + '/two-homes/' + name);
+            }
             assert.equal(result.old.source, cell.sourceSHA);
             assert.equal(result.target.source, cell.sourceSHA);
             assert.equal(result.old.version, cell.sourceVersion);

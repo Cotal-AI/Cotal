@@ -14,7 +14,7 @@
   "mutations": [
     {
       "name": "every pending turn on a seat is served at once",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "      .sort((x, y) => x.acceptedAt - y.acceptedAt)\n      .slice(0, 1);",
       "replace": "      .sort((x, y) => x.acceptedAt - y.acceptedAt);",
       "afterRestore": "pnpm --filter cotal-ai... build",

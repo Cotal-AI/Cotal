@@ -684,12 +684,16 @@ A personal connection makes manager calls only with its own selected grant.
 If the event plane stops, the seat keeps running and its mesh connection, on every connector and
 on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay
 before it re-establishes the plane: at once after a failure, then every second while the plane
-stays down, a fixed wait that neither grows nor is capped, so the plane is back within a second
-of the fault clearing. The re-establish
+stays down, so the plane is back within a second of the fault clearing. A halt is a refusal that a
+retry cannot clear by itself, such as a channel tip another writer moved. After a halt the wait
+starts at one second and doubles with each further halt, up to five minutes. The re-establish
 is a fresh start: it reopens the write-ahead log, settles any frame it left pending, builds the
 mapper from the run the log has open, and reads on from the stored cursor, which is the same
-recovery a connector restart runs. A failed publish or a failed log write is never retried on the
-emitter it failed on. A turn that ends while the plane is down keeps its terminal, and so does a
+recovery a connector restart runs. A pending frame that the broker stored before its
+acknowledgement was lost is settled as published when the broker's two-minute duplicate window
+still holds its id, or when the seat may read its own event channel and that frame is the newest
+one there. Otherwise the plane halts, because nothing proves the frame at the tip is that frame.
+A failed publish or a failed log write is never retried on the emitter it failed on. A turn that ends while the plane is down keeps its terminal, and so does a
 turn whose terminal's own log write failed: once the re-establish has read on, the run the log had
 open is closed with that terminal, a failure as a failure, rather than left open for the next
 prompt to close as a finish. That holds when the next prompt was already written before the plane

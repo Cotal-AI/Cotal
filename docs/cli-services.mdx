@@ -210,7 +210,10 @@ again with another path. `add` refuses a path that does not exist the same way a
 to correct.
 
 `stop` and `restart` ask before they act in a terminal and need `--yes` in a script. Enter, Ctrl-C,
-Ctrl-D or closed input at that question leaves the service unchanged and exits 0. Without an
+Ctrl-D or closed input at that question leaves the service unchanged and exits 0. When `stop`,
+`restart`, `remove` or `uninstall` cannot ask, it refuses and prints the command that confirms it,
+with `--space` and the `--instance` and `--with-agents` you gave, so that command acts on the same
+service. Without an
 installed unit, a `restart` whose process is already gone stops nothing, so it does not ask. A
 start or stop that finds nothing to do says so and reports `no-op`.
 

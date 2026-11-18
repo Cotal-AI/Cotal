@@ -1,5 +1,23 @@
 # @cotal-ai/manager
 
+## 0.168.0
+
+### Patch Changes
+
+- 5c54061: Keep static chat sessions, credential renewal, and lifecycle reconciliation in a dedicated internal component without changing their behavior.
+- 818992b: Move the manager instance liveness lease into its own module. Behaviour and the package exports are unchanged; `ManagerInstanceLeaseHeld` is still exported from the package entry.
+- f60af89: Keep manager name reservations and capacity accounting in one internal component while preserving spawn, resume and slot-release behavior.
+- bd5b41b: The dashboard and manager console restrict browser scripts to their own assets and omit referrers.
+  
+  Both surfaces send Content-Security-Policy and X-Content-Type-Options headers. Dashboard launch links retain their single-use exchange. The manager console removes its launch token from the address bar after its page scripts load.
+- Updated dependencies [4ad482d]
+- Updated dependencies [6546892]
+- Updated dependencies [97a8f1a]
+- Updated dependencies [b0e70a5]
+  - @cotal-ai/core@0.168.0
+  - @cotal-ai/seat@0.168.0
+  - @cotal-ai/workspace@0.168.0
+
 ## 0.167.0
 
 ### Patch Changes
