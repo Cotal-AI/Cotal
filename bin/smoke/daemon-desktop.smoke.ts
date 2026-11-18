@@ -31,14 +31,27 @@ const root = mkdtempSync(join(tmpdir(), "cotal-desktop-")); chmodSync(root, 0o70
 // Restoration-only entries, never a child environment.
 const saved = Object.entries(process.env);
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
-for (const name of ["home", "runtime", "config", "data", "cache"]) mkdirSync(join(root, name), { mode: 0o700 });
+for (const name of ["home", "runtime", "config", "data", "cache", "native"]) mkdirSync(join(root, name), { mode: 0o700 });
 Object.assign(process.env, { HOME: join(root, "home"), XDG_RUNTIME_DIR: join(root, "runtime"), XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), DO_NOT_TRACK: "1" });
 process.env.COTAL_HOME = join(root, "home", ".cotal");
 const paths = daemonPaths();
+const native = join(root, "native");
+const calls = join(root, "native-calls.jsonl");
+const operations = (): string[] => existsSync(calls)
+  ? readFileSync(calls, "utf8").trim().split("\n").map(line => (JSON.parse(line) as { operation: string }).operation)
+  : [];
+const unit = "cotal-daemon.service";
+const unitPath = join(root, "config", "systemd", "user", unit);
+const nativeContext = join(root, "native-context.json");
+writeFileSync(nativeContext, JSON.stringify({ home: join(root, "home"), config: join(root, "config"), calls, units: [unit] }), { mode: 0o600 });
+const recordingTool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
+for (const tool of ["systemctl", "loginctl"]) writeFileSync(join(native, tool), `#!${process.execPath}\n${recordingTool}`, { mode: 0o700 });
+for (const profile of [".bash_profile", ".bashrc", ".zprofile", ".zshrc", ".profile"]) writeFileSync(join(root, "home", profile), `export PATH=${JSON.stringify(native)}\n`, { mode: 0o600 });
 const version = (JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")) as { version: string }).version;
 let daemon: RunningDaemon | undefined;
 async function request(value: unknown, opts: { runtime?: boolean | string; daemonHome?: string; cli?: string[]; exit?: number } = {}): Promise<Record<string, any>> {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
+  env.DAEMON_UNIT_FIXTURE = nativeContext;
   if (opts.runtime === false) delete env.XDG_RUNTIME_DIR;
   else if (typeof opts.runtime === "string") env.XDG_RUNTIME_DIR = opts.runtime;
   return await new Promise((resolve, reject) => {
@@ -154,9 +167,12 @@ try {
     check("unsupported registry name remains refused by the daemon protocol", !parseRequest(JSON.stringify({ v: 1, id: "test", op: "connect-check", space })).ok);
   }
   check("listing leaves unsupported and damaged records unchanged", records.every((file, i) => readFileSync(file, "utf8") === beforeRecords[i]) && readFileSync(broken, "utf8") === "{");
+  const callsBeforeInstall = operations().length;
   const foreignInstall = await request({ op: "install" });
-  check("an answering daemon without an owned install receipt is not adopted", foreignInstall.ok === false && foreignInstall.error.code === "CONFLICT");
-  check("refused adoption creates no service receipt", !existsSync(join(paths.state, "service-unit.json")));
+  check(`an answering daemon without an installed service is not adopted (got ${foreignInstall.error?.code ?? foreignInstall.ok})`, foreignInstall.ok === false && foreignInstall.error.code === "CONFLICT");
+  check("the conflict identifies the unowned daemon", foreignInstall.error.message === "an unowned daemon is already running; no service was installed");
+  check("refused adoption creates neither a service receipt nor a unit", !existsSync(join(paths.state, "service-unit.json")) && !existsSync(unitPath));
+  assert.deepEqual(operations().slice(callsBeforeInstall), ["directory-read"], "refused adoption reads only the native unit directory"); checks++;
   const before = daemon.counters.framesDecoded;
   const bad = await request({ op: "install", command: "foreign" });
   check("extra fields are refused before daemon effects", bad.ok === false && bad.error.code === "BAD_REQUEST" && daemon.counters.framesDecoded === before);
