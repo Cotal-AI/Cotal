@@ -795,6 +795,23 @@ export async function reportRunningManagers(
 }
 
 export async function readManagerContinuity(flags: Record<string, unknown>, options: { readOnly?: boolean; retainGraph?: boolean; installedEntry?: string } = {}): Promise<"none" | "legacy"> {
+  const { readMeshRegistry } = await import("@cotal-ai/workspace");
+  const registry = readMeshRegistry();
+  if (registry.unusable.length) throw registry.unusable[0];
+  const local = registry.entries.filter(entry => entry.mode !== "user" &&
+    (typeof flags.space !== "string" || flags.space === entry.space) &&
+    (typeof flags.server !== "string" || brokerAddressKey(flags.server) === brokerAddressKey(entry.server)));
+  const { goneStackRoot } = await import("../lib/stack-journal.js");
+  const gone = typeof flags.creds === "string" ? [] : local.filter(entry => !existsSync(entry.root) || goneStackRoot(entry.space) !== undefined);
+  for (const entry of gone) console.log(`  ${entry.space}: folder is gone; leaving its processes untouched, continuity not checked`);
+  if (gone.length && gone.length === local.length) return "none";
+  if (gone.length) {
+    let verdict: "none" | "legacy" = "none";
+    for (const entry of local.filter(entry => !gone.includes(entry))) {
+      if (await readManagerContinuity({ ...flags, space: entry.space, server: entry.server }, options) === "legacy") verdict = "legacy";
+    }
+    return verdict;
+  }
   // `--on` names the manager whose custody this install carries. An owner with several live
   // managers on a user-auth mesh (one per machine, say) gets the exchange's selection refusal
   // without it, naming `--on` as the remedy; the flag has to exist here for that remedy to be real,

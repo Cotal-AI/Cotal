@@ -60,13 +60,16 @@ try {
   check("the selected space gets the same diagnosis without --space", selected.status === 0 && implicit.envelope.result?.selected?.connection === "root-gone");
   const override = json(other, "status", "--space", space, "--server", `nats://127.0.0.1:${await freePort()}`);
   check("an explicit different server keeps its own connection failure", override.envelope.result?.selected?.connection === "unreachable");
-  const update = cli(other, "update", "--self");
-  check("self-update recovers a moved stack without asking for internal identity files", update.stdout.includes("Stack stopped; its folder was gone") && !update.stderr.includes("running manager continuity check") && !update.stderr.includes("restore its identity") && !update.stderr.includes("Restore the seed"));
-  started = false;
-  const adopted = cli(moved, "space", "create", space, "--adopt");
-  check("the moved stack records can still be adopted after update", adopted.status === 0);
-  const stopped = cli(moved, "down", "--space", space, "--yes", "--json");
-  check("the recovered space has no running stack members", stopped.status === 0);
+  // The broker can recreate its old store folder. Remove only the empty test-created
+  // placeholder by renaming it, leaving every running member alone.
+  if (existsSync(root)) renameSync(root, join(scratch, "recreated-before-update"));
+  for (const cwd of [other, moved]) {
+    const update = cli(cwd, "update");
+    check("self-update skips gone-root continuity without stopping the stack", update.stdout.includes("folder is gone") && update.stdout.includes("processes untouched") && !update.stderr.includes("running manager continuity check") && !update.stdout.includes("Stack stopped"));
+    const after = json(other, "status", "--space", space);
+    const instances = (JSON.parse(after.stdout).result?.services?.instances ?? []) as { observedProcess?: string; pid?: number }[];
+    check("the moved stack members remain running after update", instances.length === 3 && instances.every(member => member.observedProcess === "running" && typeof member.pid === "number"));
+  }
 } finally {
   if (started) {
     // Restore the root before stopping, so the ordinary stack stop owns every process it started.
@@ -79,7 +82,7 @@ try {
     assertSmokeSandboxDown(anchor, args, { cwd: root, env });
     const down = cli(root, ...args);
     const stopped = JSON.parse(down.stdout) as Envelope;
-    check("the private stack is stopped", down.status === 0 && stopped.result?.changed?.length === 2 && stopped.result.changed.every((row) => row.observedProcess === "gone"));
+    check("the private stack is stopped", down.status === 0 && stopped.result?.changed?.length === 3 && stopped.result.changed.every((row) => row.observedProcess === "gone"));
     if (down.status !== 0) throw new Error(`private stack stop failed; records retained at ${scratch}`);
   }
   console.log(`Evidence retained at ${scratch}`);

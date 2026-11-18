@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-Recover a running local stack whose project folder moved before reconciling an update, instead of asking users to restore internal identity files.
+Let updates complete when a local project's folder was renamed, leaving its running processes untouched and reporting that their continuity was not checked.

@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { endianness } from "node:os";
 import { assertLifecycleToken } from "@cotal-ai/core";
@@ -8,6 +8,7 @@ import {
   readProcessRecord, spaceKey, spaceSegment, type ProcessIdentityRecord,
   localProcessPathCandidates, verifyIdentityPin,
 } from "@cotal-ai/workspace";
+import { goneStackRoot } from "./stack-journal.js";
 import { entryScript } from "../seed/paths.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { isCliEntry, supervisorInstallScope, supervisorProcessUid } from "./manager-proc.js";
@@ -112,6 +113,10 @@ export function recordedUpdateManagers(
     result.set(key, { pid: process.pid, root, space, server, instanceId, process });
   };
   for (const entry of registry.entries) {
+    if (!existsSync(entry.root) || goneStackRoot(entry.space) !== undefined) {
+      console.log(`  ${entry.space}: folder is gone; leaving its processes untouched, continuity not checked`);
+      continue;
+    }
     if (typeof flags.space === "string" && flags.space !== entry.space || typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(entry.server)) continue;
     const paths = new Map(recordedLocalProcessPaths(MANAGER_PIDFILE, entry.root).map(row => [row.path, row]));
     for (const path of localProcessPathCandidates(MANAGER_PIDFILE, { root: entry.root, space: entry.space })) {
@@ -158,6 +163,10 @@ export function localUpdateManagers(
     (typeof flags.server !== "string" || brokerAddressKey(flags.server) === brokerAddressKey(server));
   const known = new Map<number, { root: string; space: string; server: string }>();
   for (const entry of entries) {
+    if (!existsSync(entry.root) || goneStackRoot(entry.space) !== undefined) {
+      console.log(`  ${entry.space}: folder is gone; leaving its processes untouched, continuity not checked`);
+      continue;
+    }
     if (!matches(entry.space, entry.server)) continue;
     for (const path of recordedLocalProcessPaths(MANAGER_PIDFILE, entry.root)) {
       if (path.space && typeof flags.space === "string" && path.space !== flags.space) continue;
@@ -263,6 +272,7 @@ export function localUpdateManagers(
     const space = option(argv, "space") ?? env.COTAL_SPACE ?? recorded?.space;
     if (space && typeof flags.space === "string" && flags.space !== space) continue;
     if (!root || !space) blocked(`Manager pid ${pid} has no proven root or space`);
+    if (!existsSync(root) || goneStackRoot(space) !== undefined) continue;
     const entry = entries.find(value => value.space === space);
     const server = option(argv, "server") ?? env.COTAL_SERVER ?? recorded?.server ?? entry?.server;
     if (!server) blocked(`Manager pid ${pid}, root ${root}, space ${space} has no broker address`);
