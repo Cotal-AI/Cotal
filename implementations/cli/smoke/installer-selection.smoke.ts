@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
@@ -171,6 +171,54 @@ cotal --version
   const version = spawnSync(join(pinned.newBin, "cotal"), ["--version"], { env: pinnedEnv, encoding: "utf8" });
   assert.equal(version.stdout.trim(), "cotal-ai 0.82.1", "the launcher retains the explicitly selected older release");
 
+  // Keep the real npm staging, startup check and promotion functions. Only the downloaded
+  // package bytes are offline fixtures, including a requested release that cannot start.
+  const staged = fixture("staged");
+  const npmFixture = join(root, "npm-fixture.sh");
+  writeFileSync(npmFixture, `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --prefix ]; then prefix=$2; shift; fi
+  spec=$1
+  shift
+done
+version=\${spec#*@}
+mkdir -p "$prefix/lib/node_modules/cotal-ai/dist" "$prefix/bin"
+printf '{"name":"cotal-ai","version":"%s"}\\n' "$version" > "$prefix/lib/node_modules/cotal-ai/package.json"
+if [ "$version" = 0.0.2 ]; then
+  printf '#!/usr/bin/env node\\nthrow new Error("requested release cannot start");\\n' > "$prefix/lib/node_modules/cotal-ai/dist/cotal.js"
+else
+  printf '#!/usr/bin/env node\\nif(process.argv[2]!=="update")console.log("cotal-ai %s");\\n' "$version" > "$prefix/lib/node_modules/cotal-ai/dist/cotal.js"
+fi
+chmod 755 "$prefix/lib/node_modules/cotal-ai/dist/cotal.js"
+ln -s "../lib/node_modules/cotal-ai/dist/cotal.js" "$prefix/bin/cotal"
+`);
+  chmodSync(npmFixture, 0o755);
+  const stagingDriver = join(root, "staging-driver.sh");
+  writeFileSync(stagingDriver, `. "$1"
+resolve_node() { NODE_BIN="$FIXTURE_NODE"; NPM_BIN="$FIXTURE_NPM"; NODE_LABEL="fixture runtime"; }
+main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
+`);
+  const stagingEnv = { ...staged.env, PATH: `${staged.newBin}:${toolPath}`, FIXTURE_NPM: npmFixture, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" };
+  const stageRun = (target: string) => spawnSync("/bin/sh", [stagingDriver, library], { env: { ...stagingEnv, FIXTURE_TARGET: target }, encoding: "utf8", timeout: 90_000 });
+  const working = stageRun("0.0.1");
+  assert.equal(working.status, 0, output(working));
+  const launcher = join(staged.newBin, "cotal"), prefix = join(staged.home, ".local/share/cotal");
+  const launcherBefore = readFileSync(launcher, "utf8");
+  const packageBefore = readFileSync(join(prefix, "lib/node_modules/cotal-ai/dist/cotal.js"), "utf8");
+  const nodeBefore = realpathSync(join(prefix, "nodebin/node"));
+  const refused = stageRun("0.0.2");
+  assert.equal(refused.status, 1, output(refused));
+  assert(output(refused).includes("requested release cannot start"), "requested release fails the real staged startup check");
+  assert.equal(readFileSync(launcher, "utf8"), launcherBefore, "failed staging leaves the launcher unchanged");
+  assert.equal(readFileSync(join(prefix, "lib/node_modules/cotal-ai/dist/cotal.js"), "utf8"), packageBefore, "failed staging leaves the active package unchanged");
+  assert.equal(realpathSync(join(prefix, "nodebin/node")), nodeBefore, "failed staging keeps the previous runtime pin");
+  const preserved = spawnSync(launcher, ["--version"], { env: stagingEnv, encoding: "utf8", timeout: 60_000 });
+  assert.equal(preserved.status, 0, output(preserved));
+  assert.equal(preserved.stdout.trim(), "cotal-ai 0.0.1", "previous installation still starts after refusal");
+  assert(!readdirSync(prefix).some(name => name.startsWith(".install-stage.")), "failed staging cleans its private prefix");
+  assert.equal(stageRun("0.0.3").status, 0, "a later working requested release still installs");
+  assert.equal(spawnSync(launcher, ["--version"], { env: stagingEnv, encoding: "utf8" }).stdout.trim(), "cotal-ai 0.0.3");
+
   // Real runtime discovery and linking, including relative links and nodebin on PATH.
   const runtimeHome = join(root, "runtime home's");
   const runtimeBin = join(runtimeHome, "runtime", "bin");
@@ -190,7 +238,7 @@ cotal --version
   const nodeVersion = spawnSync(join(nodebin, "node"), ["--version"], { encoding: "utf8" });
   assert.equal(nodeVersion.stdout.trim(), process.version, "the relinked runtime remains executable");
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: 43, failed: 0 });
+  emitSentinel({ passed: 54, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

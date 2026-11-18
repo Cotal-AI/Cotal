@@ -567,15 +567,19 @@ Move the file aside so Cotal can create the folder when it next saves configurat
 |---|---|
 | `config.json` | Operator-level connector config (the base layer above) |
 | `preferences.json` | Your [preferences](#preferences), private to you (`0600`), written by `cotal config` |
-| `extensions/` | `cotal ext` install prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache. Built-in connectors install here too, seeded on first run |
-| `seed/` | Built-in-connector seeding state: the `ever-seeded` authority (+ durable backup), the init witness, the version stamp, the crash cursor, and `store/<version>/<name>` (the stable payloads `ext add --install-links` reifies each seeded connector from) |
+| `installs/<sha256>/sets/<version>/cotal/extensions/` | Installed POSIX CLI's `cotal ext` prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache. Built-in connectors install here too, seeded on first run |
+| `installs/<sha256>/sets/<version>/cotal/seed/` | Installed POSIX CLI's built-in-connector seeding state: the `ever-seeded` authority (+ durable backup), the init witness, the version stamp, the crash cursor, and `store/<version>/<name>` (the stable payloads `ext add --install-links` reifies each seeded connector from) |
 
 #### Shared extension storage
 
-`extensions/` and `seed/store/` are operator-global. Every space, project, and checkout shares them.
-Their location follows the configuration directory above, including `$XDG_CONFIG_HOME` and, on
-Windows, `%APPDATA%`. A fresh project isolates `.cotal/` but does not isolate these stores.
-`COTAL_HOME` does not move them.
+On Linux and macOS, an installed CLI keeps `extensions/` and `seed/` under
+`installs/<sha256>/sets/<version>/cotal/` in the configuration directory above. The hash identifies
+the logical CLI entry path. Spaces and projects using that installation share its stores.
+`cotal ext root` prints the extension prefix, including before its first seed, without creating it.
+A new version reads its retained predecessor until reconciliation copies and selects a new set.
+An existing legacy `extensions/` or `seed/` directly under the configuration directory remains
+readable until that migration. Windows, desktop runtimes and source checkouts use the direct paths.
+A fresh project isolates `.cotal/` but does not isolate these stores. `COTAL_HOME` does not move them.
 
 A CLI from a source checkout refuses to write, stamp, or garbage-collect the seed store. Checkout
 entries include `pnpm cotal`, `tsx bin/cotal.ts`, `node bin/cotal.ts`, and their suite children. The

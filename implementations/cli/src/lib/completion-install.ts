@@ -207,7 +207,7 @@ function ownership(paths: Paths, shell: string): { record?: Ownership; snapshot?
   if (record.wiring && typeof record.wiring === "object" && typeof record.wiring.path === "string" && record.wiring.path !== paths.rc)
     throw new CommandFailure("refused", "CONFLICT", `${recordPath(paths)} records ${shell} completion wired into ${record.wiring.path}, and this environment's startup file is ${paths.rc ?? "none"}`, {
       target: { shell, path: recordPath(paths) },
-      remedy: shell === "zsh" ? `read or change it with the ZDOTDIR it was installed under: ${codeSpan(`ZDOTDIR=${dirname(record.wiring.path)} cotal completion`)}` : "read or change it from the environment it was installed in",
+      remedy: shell === "zsh" ? `read or change it with the ZDOTDIR it was installed under: ${codeSpan(`ZDOTDIR=${shellPath(dirname(record.wiring.path))} cotal completion`)}` : "read or change it from the environment it was installed in",
     });
   if (record.wiring !== null && (!record.wiring || typeof record.wiring !== "object" || Object.keys(record.wiring).some((key) => !["path", "block", "created"].includes(key)) || (record.wiring.created !== undefined && record.wiring.created !== true) || record.wiring.path !== paths.rc || typeof record.wiring.block !== "string" || ![blockFor(paths.stub, shell), "\n" + blockFor(paths.stub, shell)].includes(record.wiring.block))) throw new CommandFailure("refused", "SCHEMA_INVALID", "the completion ownership record contains unknown startup wiring; it was not used to rewrite a shell file");
   return { record, snapshot };
@@ -245,7 +245,7 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
       const dir = dirname(paths.rc), fromZdotdir = shell === "zsh" && Boolean(process.env.ZDOTDIR);
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the shell startup folder ${dir}${fromZdotdir ? ", which ZDOTDIR names," : ""} does not exist; nothing was changed`, {
         target: { shell, path: dir },
-        remedy: `create it with (umask 077 && mkdir -p ${dir})${fromZdotdir ? ", or unset ZDOTDIR to use ~/.zshrc" : ""}, then run the command again`,
+        remedy: `create it with (umask 077 && mkdir -p ${shellPath(dir)})${fromZdotdir ? ", or unset ZDOTDIR to use ~/.zshrc" : ""}, then run the command again`,
       });
     }
     // A startup file linked from elsewhere, as a dotfile manager such as stow links it, is never
@@ -256,7 +256,10 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
         remedy: operation === "install" ? `add this line to the file it points to yourself: ${LOAD_NOW[shell]}` : "remove the `cotal completion` lines from the file it points to yourself",
       });
   }
-  safeParents(dirname(paths.stub), true);
+  // With no parent there can be no stub or record to remove, and no lock directory is needed.
+  if (operation === "uninstall" && !lstatSync(dirname(paths.stub), { throwIfNoEntry: false }))
+    return { operation, shell, changed: [], noOp: true, forced: false, stub: paths.stub, startup: paths.rc ?? null, parentShellUnloaded: false };
+  safeParents(dirname(paths.stub), operation === "install");
   const held = acquireLock(`${recordPath(paths)}.lock`, { label: "shell completion ownership", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another completion writer holds this shell integration") });
   const changed: string[] = [];
   try {
