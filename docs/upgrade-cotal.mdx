@@ -57,6 +57,8 @@ reinstalling a cached pnpm package does not reactivate an earlier selection.
 Up to four validated artifact bindings support a later bootstrap transition.
 A missing or differently bound descriptor runs the installed tree in place and writes nothing.
 An invalid matching descriptor refuses with reinstall guidance rather than selecting another generation.
+The daemon's idle replacement poll reads execution metadata without scanning retained package contents.
+Starting a command, verifying a replacement and admitting a hosted Manager still verify the complete retained inventory.
 A running command reports the release of its loaded implementation, even if the canonical
 package manifest changes while it runs. Embedded CLI API callers report their entry package's
 version and provenance. A Node wrapper that imports the bootstrap calls its
@@ -257,6 +259,9 @@ A self-update inherits the extension state captured by the updating CLI, includi
 and deliberate connector removals, even when that release has an older retained connector set.
 If the connector seed store is newer than the running CLI, reconciliation refuses before creating
 or pruning retained sets. Run `cotal update --self` to upgrade the CLI to match the store.
+When no Cotal Claude plugin or Desktop integration is installed, reconciliation only reads Claude's
+installation records. It creates no Claude directories or lock files, including in a read-only
+configuration directory. Unreadable or damaged installation records still refuse the update.
 After a manual `npm install -g`, the first command that runs the launch gate also brings installed
 first-party extensions to the running CLI's release, or refuses with `cotal update --self` if an
 extension cannot be reconciled. When automatic updates are enabled, the daemon's scheduled check

@@ -10,7 +10,7 @@
   "mutations": [
     {
       "name": "the manager refuses every lease conflict without waiting",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/lease-keeper.ts",
       "find": "      if (!held || held.info.root !== info.root || (held.info.pid !== process.pid && probeLiveness(held.info.pid) !== \"dead\"))\n",
       "replace": "      if (!held || held.info.root !== info.root || process.env.COTAL_4092_NEVER_SET === undefined)\n",
       "expectRed": "M1 repair up after a manager SIGKILL exits 0",

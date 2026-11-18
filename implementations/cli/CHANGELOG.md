@@ -1,5 +1,63 @@
 # @cotal-ai/cli
 
+## 0.168.0
+
+### Patch Changes
+
+- 52e6c81: Install host-compatible optional dependencies despite npm's omit=optional setting so repeated updates do not reinstall every built-in connector.
+- cfd5730: Keep daemon services on the invoked Node path so distribution Node upgrades do not strand them on a removed versioned executable. Retain only a same-directory alias of the running runtime, avoiding version managers' transient shell directories. Provide explicit service inspection and replacement guidance for older units without hiding an absent daemon endpoint behind a service lookup failure.
+- f769fff: Explain how to install with npm as a normal user when distribution Node has a root-owned global prefix.
+- 5723f51: When `cotal up` cannot read the version of the nats-server it would start, it now reports a known failure and starts nothing, so a later `cotal down` has nothing to refuse. A first `up` under a low open-file limit on Node 24 used to fail `OPERATION_UNKNOWN` and leave an unconfirmed launch, and `down` then refused. It now fails `OPERATION_FAILED`, exit 5, with raising `ulimit -n` as the next step. Any other version check failure refuses `DEPENDENCY_UNAVAILABLE` and names its cause.
+- b31e1e8: Let updates finish when an unrelated working folder is removed, preserving the project and relative credential selection.
+- 9d5a50b: `cotal service add web --preset web` now refuses `--posting-creds` without `--no-read-only`, or `--no-read-only` without `--posting-creds`, and saves nothing. Before, it saved the definition and every start was refused. A start of a saved dashboard definition with either problem, or with a wildcard `--host`, now names the one condition that failed and the `cotal service remove` and `cotal service add` that change it. A wildcard host no longer prints the usage of `service start`. A preset refusal while `service add` builds a definition no longer prints the command's usage after a remedy that already says the whole fix.
+- Updated dependencies [4ad482d]
+- Updated dependencies [6546892]
+- Updated dependencies [b0e70a5]
+  - @cotal-ai/core@0.168.0
+  - @cotal-ai/workspace@0.168.0
+
+## 0.167.0
+
+### Patch Changes
+
+- 085280b: Adopting a renamed project folder no longer reports that its unchanged history store was replaced. Rebase the recorded store identity path with the journal while preserving the directory pins that detect replaced or missing stores.
+- 10f1d98: Retire a `cotal mcp` conversation identity that a restart of the computer ended.
+  
+  On a local space, the record a connection needs to retire such an identity was kept in the temp directory, which a reboot clears. The identity's delivery and DM durables then stayed in the space for good and kept collecting channel posts. The record is now kept in the account's Cotal folder, and it holds the host process's start token, so a host pid reused after a reboot reads as gone. The next connection retires the identity. Records an earlier version left in the temp directory are still retired.
+- 437418e: `backup create` and `up --restore` on a stack a plain `cotal down` stopped now say to start it with `cotal up` before `cotal down --preserve-state`. They used to name only `down --preserve-state`, which refuses on a stopped stack.
+- c394c2c: Let software updates complete when the selected prepared project's folder was deleted, reporting the skipped space without changing its saved selection or preparation record.
+- dc22997: Let `cotal space forget <name>` remove a registry record that cannot be read.
+  
+  One unparseable record under the mesh registry made every command refuse, `space forget` for that space included, and the refusal only said to remove the file. `space forget <name>` now removes the record whose file is named for that space, as it already did for a damaged prepared-space record, and the refusal names that command.
+- 3227911: `cotal space forget` no longer drops the record of a space whose folder was deleted while its stack still runs. A controller stack whose instance records show a member running refuses and names `cotal down --space <space> --yes`. Any other such space refuses while something still listens at its recorded broker address that no other registration names, and names the process listening there to stop.
+- ded2be1: Message frames, preview rows, wake hints and the note naming withheld senders now mark a sender's name and role as `(unverified name)`, or `(unverified role)` when the name is blank and the frame shows the sender's id. The sender writes both itself; the `sender_id` beside them is the identity the broker checked. A long sender label is cut before the marker, and a preview row caps its channel or role label, so the marker stays whole in the 40-character notes and in each preview row. The Claude channel tag's `from` attribute carries the same marked label. A peer label now turns a double quote into a space, as it does a bracket, and the console's recipient completion uses the peer's id when the shown label differs from its name.
+- ba558e0: Fail the shell installation with the startup error when the installed Cotal cannot run.
+- 7ba7ff5: Let updates complete when a local project's folder was renamed, leaving its running processes untouched and reporting that their continuity was not checked.
+- 8d3ef2f: A mistyped `--on` for `cotal stop`, `attach`, `input` or `status` now suggests a command that works. The remedy kept only the verb, such as `cotal stop --on <instance>`, which is refused for naming no agent. It now repeats the agent, the other arguments and any `--space` or `--server`, for example `cotal stop default_agent --on <instance>`.
+- 6f3c77d: Software updates leave Managers owned by another home running without requiring that home's continuity or credentials.
+  
+  The update names the proven Manager coordinates and leaves its loaded version running until it is restarted from its own home. For a Manager registered in the calling home, only missing credentials become nonblocking. Other failures remain refusals. Connector sets stay until the authenticated update collector can prove they are unused.
+- c1cf22c: Recover damaged update preferences with a private backup and documented defaults when reading or changing them through the CLI.
+- d8caff5: `cotal service start <name> --space <space>` now suggests show and stop commands for that space. It suggested `cotal service show <name>` and `cotal service stop <name>`, which from another folder act on the selected space and are refused there.
+- dfa8b78: Shared CLI installations now distinguish home-local connector reconciliation from updating the CLI itself.
+  Keep ordinary per-home reconciliation and name `cotal update` for stale local inventories. Automatic generation migration leaves a shared canonical connector graph used by an older recorded local Manager unchanged, reports that its connectors stay at their version until restart, and lets the ordinary command continue. Explicit reconciliation stays strict. A validated separate release selection can reconcile without changing that Manager's graph.
+- 61416ac: Let updates complete in projects whose refused first start or stopped explicit-space stack left broker configuration, naming the skipped project and leaving its records and processes untouched without claiming continuity.
+- Updated dependencies [186fc68]
+- Updated dependencies [ded2be1]
+- Updated dependencies [dbf310b]
+- Updated dependencies [211142b]
+- Updated dependencies [ad38504]
+- Updated dependencies [6f3c77d]
+- Updated dependencies [eead187]
+- Updated dependencies [c1cf22c]
+- Updated dependencies [6c2c27f]
+- Updated dependencies [7bf5e73]
+- Updated dependencies [70842a1]
+- Updated dependencies [d97f549]
+- Updated dependencies [3705c35]
+  - @cotal-ai/workspace@0.167.0
+  - @cotal-ai/core@0.167.0
+
 ## 0.166.3
 
 ### Patch Changes

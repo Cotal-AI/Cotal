@@ -25,7 +25,7 @@
       "cell": "environment-manager-goal-writer auth leader read denied"
     },
     {
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-jwt.ts",
       "find": "expiry <= now || expiry > admissionExpiry",
       "replace": "expiry <= now || false",
       "expectRed": "environment-bootstrap mint expiry cannot exceed admission",

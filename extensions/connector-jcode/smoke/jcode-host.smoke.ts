@@ -1533,6 +1533,14 @@ try {
   blocked.stderr?.on("data", (chunk: Buffer) => (blockedErr += chunk.toString()));
   await Promise.race([once(blocked, "exit"), sleep(10_000)]);
   check("project MCP config is refused rather than overlaid", blocked.exitCode !== 0 && /Jcode host startup failed \(project_mcp_config\)/.test(blockedErr), blockedErr);
+  // No log holds this refusal, so the public line itself names the file found and the remedy, and
+  // never the directory.
+  check(
+    "the project MCP refusal names the file and where to start the agent instead",
+    /\(project_mcp_config\): the working directory has \.mcp\.json; start the agent in another directory\n/.test(blockedErr)
+      && !blockedErr.includes("private Jcode logs") && !blockedErr.includes(root),
+    blockedErr,
+  );
 
   // The readiness turn is a provider call. A refusal there used to be collapsed to `(unknown)`,
   // forcing an external observer/UI to inspect private Jcode logs for the connector-originated

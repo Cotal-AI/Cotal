@@ -310,6 +310,9 @@ concludes nothing.
 
 ### Terminal attachment
 
+Since 0.167.1, `attach` does not install or repair local application connectors. Missing npm or a
+previous connector seed failure does not block the native manager terminal route.
+
 `attach` streams and drives an agent's terminal on the `pty` runtime; detach with the escape key
 (Ctrl-] by default; see the [`detach-key` preference](config.mdx#preferences)). The key is recognised
 as the legacy control byte and as the kitty keyboard protocol and xterm modifyOtherKeys encodings of
@@ -412,6 +415,11 @@ address down, which is what lets you reach the browser console (`cotal console`)
 remote manager regardless of the bind address. A
 bare `cotal supervise` and an embedded manager stay machine-local. Set it directly with
 `supervise --console-host <host>`.
+
+The browser console removes its launch token from the address bar after its page scripts load.
+Its page sends `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`.
+Content-Security-Policy allows scripts from its own origin, inline styles for the terminal,
+and WebSocket connections for broker sessions. Inline scripts are refused.
 
 That address is **recorded on the mesh** and carried forward, because it is a decision rather than
 something later commands can work out for themselves (a broker dial address is not a manager bind

@@ -74,7 +74,7 @@ const waitFor = async (pred: () => boolean, what: string, ms = 6000): Promise<vo
   }
   const observed = {
     inbox: agent.inboxCount(),
-    bufferedTexts: (agent as unknown as { inbox: { item: InboxItem }[] }).inbox.map((p) => p.item.text),
+    bufferedTexts: ((agent as unknown as { inboxState: unknown }).inboxState as unknown as { inbox: { item: InboxItem }[] }).inbox.map((p) => p.item.text),
     incomingFired: incoming.length,
   };
   assert.ok(pred(), `timed out waiting for ${what}: observed ${JSON.stringify(observed)}`);
@@ -223,15 +223,15 @@ try {
     // lane must be decided by ITS OWN receive-time classification, not by a's memory.
     const a = emptyDelivery("evict-a"); // pull-only (quiet classification)
     const b = emptyDelivery("evict-b"); // automatic
-    const agentInner = agent as unknown as { rememberEvicted: (p: { item: InboxItem; pullOnly: boolean }) => void };
+    const agentInner = (agent as unknown as { inboxState: unknown }).inboxState as unknown as { rememberEvicted: (p: { item: InboxItem; pullOnly: boolean }) => void };
     agentInner.rememberEvicted({ item: a, pullOnly: true }); // a's eviction memory, keyed by wire id ""
-    (agent as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] }).inbox.push({ item: b, ack: () => {}, pullOnly: false });
+    ((agent as unknown as { inboxState: unknown }).inboxState as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] }).inbox.push({ item: b, ack: () => {}, pullOnly: false });
     const lane = agent.inboxScope(b.recvKey);
     check("an evicted id-less delivery's classification does not bleed onto the next one", lane === "automatic", lane);
     // and the real ingest path for a LATER empty-id arrival reads no remembered classification:
     // emulate the ingest read the guard protects (agent.ts remembered lookup) is ""-blind.
     const later = emptyDelivery("evict-c");
-    (agent as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] }).inbox.push({ item: later, ack: () => {}, pullOnly: false });
+    ((agent as unknown as { inboxState: unknown }).inboxState as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] }).inbox.push({ item: later, ack: () => {}, pullOnly: false });
     check("a later id-less arrival inherits nothing from the evicted empty id", agent.inboxScope(later.recvKey) === "automatic");
     agent.drainInboxDeliveries([b.recvKey, later.recvKey]); // leave the buffer clean for the sweep cell
   }
@@ -251,8 +251,8 @@ try {
   {
     const quiet = emptyDelivery("scope-quiet", true);
     const auto = emptyDelivery("scope-auto", false);
-    (agent as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] }).inbox.push({ item: quiet, ack: () => {}, pullOnly: true });
-    (agent as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] }).inbox.push({ item: auto, ack: () => {}, pullOnly: false });
+    ((agent as unknown as { inboxState: unknown }).inboxState as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] }).inbox.push({ item: quiet, ack: () => {}, pullOnly: true });
+    ((agent as unknown as { inboxState: unknown }).inboxState as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] }).inbox.push({ item: auto, ack: () => {}, pullOnly: false });
     check("each id-less delivery resolves its own lane", agent.inboxScope(quiet.recvKey) === "pull-only" && agent.inboxScope(auto.recvKey) === "automatic");
     const drained9 = agent.drainInboxDeliveries([quiet.recvKey, auto.recvKey]);
     check("both id-less deliveries drain by their own keys", drained9.items.length === 2, drained9.items.map((i) => i.text));
@@ -266,7 +266,7 @@ try {
   // rememberEvicted (write side), then deliver a fresh empty-id ambient through the REAL ingest and
   // assert its lane is its own receive-time classification, not the evicted item's memory (read side).
   {
-    const agentInbox = agent as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] };
+    const agentInbox = (agent as unknown as { inboxState: unknown }).inboxState as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] };
     // The evictee must be the OLDEST entry: the valve evicts from the front, so a newest-staged
     // pull-only item is never chosen. Stage it FIRST, then overflow behind it.
     const pullEvictee = emptyDelivery("evicted-pull");

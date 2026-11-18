@@ -17,9 +17,17 @@
  *
  * The route's 26 security cells, numbered the same in `pnpm smoke:principal-route` (cell 24 needs a
  * registry-authorized serve grant and runs in `pnpm smoke:ep-serve`), a serve and call round trip,
- * a reconnect that rebinds, a reconnect whose new credential lacks the rows, and the mixed-version
- * cases that need no 0.165 release: an agent that serves nothing, a caller or an agent whose
- * credential predates the rows, and a caller pinned to a later revision.
+ * cell 27, a malformed nonce; cell 37, a cast; cells 40 and 41, a deadline over 30 s; cell 28, a stored frame a Direct Get delivers on the caller's sentinel;
+ * cell 29, a reply under another head that arrives first; cell 30, stopping the endpoint while a
+ * handler runs and while `ready` waits; cells 31 and 32, `seq` across serves and endpoint objects of
+ * one runtime, and a second server for one lifecycle in a process; cell 33, stop waits for a handler
+ * in flight only until its request's deadline; cell 34, a JetStream API answer on the caller's
+ * sentinel; cell 35, a refused reply publish is reported; cell 39, servePrincipal serves only
+ * `agent`; cell 36, a refused reply read whose flush
+ * never settles; a reconnect that rebinds, with cell 38, the handles a replaced connection leaves; a
+ * reconnect whose new credential lacks the rows, and the mixed-version cases that need no 0.165
+ * release: an agent that serves nothing, a caller or an agent whose credential predates the rows,
+ * and a caller pinned to a later revision.
  *
  * Run: pnpm smoke:principal-route:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -36,10 +44,12 @@ import {
   AGENT_CLUSTER, AGENT_CONTRACTS, AGENT_ENDPOINT, AGENT_PROMPT_DIGEST_DETAIL, AGENT_PROMPT_STATE_DETAIL, CotalEndpoint, EpEnvelopeError, ContractInvalidError,
   agentClusterArtifacts, agentPromptDigest, buildClusterDocument, canonicalJson, compileContract, createSpaceAuth, epPrincipalGrantRows,
   epPrincipalNoRespondersSubject, epPrincipalReplySubject, epPrincipalRequestSubject, epServeGrantRows, isReachable, mintCreds, mintLifecycleUid,
-  newIdentity, parseClusterDocument, permissionsFor, processRuntime, provisionAgentDurables, serverConfig, setupSpaceStreams, spacePrefix,
+  newIdentity, parseClusterDocument, permissionsFor, presenceBucket, presenceKeySubject, processRuntime, provisionAgentDurables, serverConfig, setupSpaceStreams, spacePrefix,
   type AgentPrompt, type DescribeAnswer, type EndpointReply, type EpPrincipal, type EpPrincipalCommandDef, type PrincipalServe,
   type PromptAnswerInput, type PromptContent, type PromptState, type Presence,
 } from "@cotal-ai/core";
+// The general principal serve is internal to core; this is the built file the package root loads.
+import { servePrincipalRoute } from "../../../packages/core/dist/endpoint-serve.js";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER, type AclResolver, type ValidatedUserToken } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -90,6 +100,12 @@ const W = {
   helper: who(A, "helper", "managed-agent"),
   tester: who(A, "tester", "managed-agent"),
   legacy: who(A, "legacy", "managed-agent"),
+  stopper: who(A, "stopper", "managed-agent"),
+  stopper2: who(A, "stopper2", "managed-agent"),
+  stopper3: who(A, "stopper3", "managed-agent"),
+  mute: who(A, "mute", "managed-agent"),
+  deaf: who(A, "deaf", "interactive"),
+  cycler: who(A, "cycler", "managed-agent"),
   web: who(A, "web", "interactive"),
   term: who(A, "term", "interactive"),
   oldWeb: who(A, "oldweb", "interactive"),
@@ -112,6 +128,10 @@ type Perm = { pub?: { allow?: string[]; deny?: string[] }; sub?: { allow?: strin
 const shipped = calloutPermissions(resolveAcl, async () => {});
 const grants = new Map<string, { target: Who; commands: string[] }[]>();
 const stripped = new Set<string>();
+/** Lifecycles whose serve credential keeps the subscription row and loses the reply publish row. */
+const muted = new Set<string>();
+/** Lifecycles whose caller credential keeps its request rows and loses the reply read. */
+const deaf = new Set<string>();
 const strip = (p: Perm): Perm => ({ ...p,
   pub: { ...p.pub, allow: (p.pub?.allow ?? []).filter((r) => !r.includes(".ep.prin")) },
   sub: { ...p.sub, allow: (p.sub?.allow ?? []).filter((r) => !r.includes(".ep.prin")) } });
@@ -119,6 +139,8 @@ const mintFor = async (t: ValidatedUserToken, connId: string, readerId: string):
   let p = (await shipped(t, connId, readerId)) as Perm;
   const uid = t.act.lifecycleUid!;
   if (stripped.has(uid)) p = strip(p);
+  if (deaf.has(uid)) p = { ...p, sub: { ...p.sub, allow: (p.sub?.allow ?? []).filter((r) => !r.includes(".ep.prin-reply.")) } };
+  if (muted.has(uid)) p = { ...p, pub: { ...p.pub, allow: (p.pub?.allow ?? []).filter((r) => !r.includes(".ep.prin-reply.")) } };
   for (const g of grants.get(uid) ?? []) {
     const r = epPrincipalGrantRows(space, { owner: t.owner, actor: t.act.actor, uid }, { owner: g.target.owner, actor: g.target.actor, uid: g.target.uid }, g.commands);
     p = { ...p, pub: { ...p.pub, allow: [...(p.pub?.allow ?? []), ...r.pub] }, sub: { ...p.sub, allow: [...new Set([...(p.sub?.allow ?? []), ...r.sub])] } };
@@ -231,7 +253,7 @@ function testAgent(ep: CotalEndpoint, w: Who): TestAgent {
       return { state: p.state };
     } },
   ];
-  agent.serve = ep.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers });
+  agent.serve = ep.servePrincipal({ handlers });
   return agent;
 }
 
@@ -265,7 +287,7 @@ try {
   const provisioner = own(new CotalEndpoint({ space, servers: SERVERS, creds: provisionerCreds, card: { name: "provisioner", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false }), "provisioner");
   await provisioner.start();
   // The agents that register presence prove their lifecycle with their own DM durable.
-  for (const w of [W.coder, W.legacy]) await provisionAgentDurables(provisioner, { owner: w.owner, actor: w.actor, lifecycleUid: w.uid }, { durableMembership: false });
+  for (const w of [W.coder, W.legacy, W.cycler]) await provisionAgentDurables(provisioner, { owner: w.owner, actor: w.actor, lifecycleUid: w.uid }, { durableMembership: false });
 
   calloutNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(callout.calloutCreds)) });
   startAuthCallout(calloutNc as never, {
@@ -292,7 +314,6 @@ try {
   const bobWebEp = await userEndpoint(W.bobWeb);
   const helperEp = await userEndpoint(W.helper);
   const termEp = await userEndpoint(W.term);
-  const testerEp = await userEndpoint(W.tester);
   const oldWebEp = await userEndpoint(W.oldWeb);
   check("every principal connects through the shipped callout", endpoints.every((ep) => ep !== undefined));
 
@@ -476,6 +497,34 @@ try {
     await until(() => coder.calls.length > beforeBadNonce, 1500);
     check("cell 27: the broker passes the owner's request with the nonce x, and the agent's handler runs zero times",
       !refusedNow(webRaw, "publish", badNonce) && coder.calls.length === beforeBadNonce, { ran: coder.calls.length - beforeBadNonce });
+
+    // cell 37: every command on this route is request/reply, so a cast is refused before the
+    // handler runs, and like every cast it gets no reply.
+    const beforeCast = coder.calls.length;
+    const cast = await rawCall(webRaw, "prompt", { replyExpected: false }, { waitMs: 1500 });
+    check("cell 37: a request with replyExpected false is refused: the agent's handler runs zero times, and no reply comes",
+      cast === "none" && coder.calls.length === beforeCast, { ran: coder.calls.length - beforeCast, cast });
+
+    // cell 40: a principal-route deadline is at most 30 s, so a handler that ignores its signal
+    // cannot hold a serve's stop open longer. A larger one is refused before the handler runs.
+    const beforeLong = coder.calls.length;
+    const long = await rawCall(webRaw, "prompt", { deadlineMs: 30_001 });
+    check("cell 40: a request with deadlineMs 30001 on the owner's row is answered bad-request, not-executed, and the agent's handler runs zero times",
+      long !== "none" && !long.ok && long.error.code === "bad-request" && long.error.outcome === "not-executed" && coder.calls.length === beforeLong,
+      { ran: coder.calls.length - beforeLong, long });
+    const atCap = await rawCall(webRaw, "prompt", { deadlineMs: 30_000 });
+    check("control: the same request with deadlineMs 30000 is answered ok", atCap !== "none" && atCap.ok, atCap);
+
+    // cell 41: the caller refuses the same deadline before it publishes anything.
+    const webNc = (webEp as unknown as { nc: NatsConnection }).nc;
+    const publish = webNc.publish.bind(webNc);
+    let published = 0;
+    webNc.publish = (subject, ...rest) => { if (subject.startsWith(`${P}.ep.prin.`)) published++; return publish(subject, ...rest); };
+    const refusedLong = await settle(webEp.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: coderAt, command: "prompts", authority: "owner", args: {}, deadlineMs: 30_001 }));
+    webNc.publish = publish;
+    check("cell 41: callPrincipal with deadlineMs 30001 throws bad-request, not-executed, and publishes no request",
+      !refusedLong.ok && codeOf(refusedLong.error) === "bad-request/not-executed" && published === 0,
+      { published, got: refusedLong.ok ? refusedLong.value : codeOf(refusedLong.error) });
   }
 
   // ── cell 10: the agent publishes a reply under another principal's head ──
@@ -576,8 +625,8 @@ try {
     await openEp.start();
     const handlers = (["prompts", "prompt", "prompt-answer"] as const).map((command) => ({ command, contract: AGENT_CONTRACTS[command], handler: () => undefined }));
     let staticRefusal = "", openRefusal = "";
-    try { staticEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers }); } catch (e) { staticRefusal = (e as Error).message; }
-    try { openEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers }); } catch (e) { openRefusal = (e as Error).message; }
+    try { staticEp.servePrincipal({ handlers }); } catch (e) { staticRefusal = (e as Error).message; }
+    try { openEp.servePrincipal({ handlers }); } catch (e) { openRefusal = (e as Error).message; }
     check("cell 18: servePrincipal throws on a static credential", staticRefusal.includes("static credential"), staticRefusal);
     check("cell 18: servePrincipal throws on an open mesh", openRefusal.includes("open mesh"), openRefusal);
     // Nothing subscribed the would-be subjects: the broker answers no responders for each.
@@ -637,8 +686,12 @@ try {
   {
     const plain = buildClusterDocument("ai.cotal.test", 1, [{ name: "prompts", targeted: false, capability: "agent.prompts.read", input: { type: "object", additionalProperties: false, properties: {} }, output: { type: "null" } }]);
     let refusal = "";
-    try { helperEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: plain, handlers: [] }); } catch (e) { refusal = (e as Error).message; }
-    check("cell 23: servePrincipal throws for a command without authorities, before anything is subscribed", refusal.includes("declares no authorities"), refusal);
+    try { servePrincipalRoute(helperRaw.nc, space, addressOf(W.helper, processRuntime(W.helper.uid).id), { endpoint: AGENT_ENDPOINT, cluster: plain, handlers: [] }); } catch (e) { refusal = (e as Error).message; }
+    check("cell 23: the general principal serve throws for a command without authorities, before anything is subscribed", refusal.includes("declares no authorities"), refusal);
+    // The entry point an agent uses serves `agent` with AGENT_CLUSTER and nothing else.
+    let bound = "";
+    try { helperEp.servePrincipal({ endpoint: "other", cluster: AGENT_CLUSTER, handlers: [] } as unknown as { handlers: EpPrincipalCommandDef[] }); } catch (e) { bound = (e as Error).message; }
+    check("cell 39: servePrincipal refuses an endpoint or cluster: it serves only agent with AGENT_CLUSTER", bound.includes("serves only the \"agent\" endpoint"), bound);
     console.log("    cell 24 (serveEndpoint refuses an authorities cluster) needs a registry-authorized serve grant: pnpm smoke:ep-serve");
   }
 
@@ -647,9 +700,11 @@ try {
     const ownerOnly = buildClusterDocument("ai.cotal.test", 1, [{ name: "prompts", targeted: false, authorities: ["owner"], capability: "agent.prompts.read", input: { type: "object", additionalProperties: false, properties: {} }, output: { type: "object" } }]);
     const contract = { input: compileContract({ root: { type: "object", additionalProperties: false, properties: {} } }), output: compileContract({ root: { type: "object" } }) };
     let ran = 0;
-    const tester = testerEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: ownerOnly, handlers: [{ command: "prompts", contract, handler: () => { ran++; return {}; } }] });
-    await tester.ready;
+    // A cluster other than AGENT_CLUSTER needs the general serve, which the package root does not export.
     const testerAt = addressOf(W.tester, processRuntime(W.tester.uid).id);
+    const testerRaw = await seat(W.tester);
+    const tester = servePrincipalRoute(testerRaw.nc, space, testerAt, { endpoint: AGENT_ENDPOINT, cluster: ownerOnly, handlers: [{ command: "prompts", contract, handler: () => { ran++; return {}; } }] });
+    await tester.ready;
     const asGrant = await builderEp.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: testerAt, command: "prompts", authority: "grant", args: {}, deadlineMs: 4000, contract });
     check("cell 25: the broker lets the grant row through and the command refuses permission-denied, not-executed",
       !asGrant.ok && asGrant.error.code === "permission-denied" && asGrant.error.outcome === "not-executed" && ran === 0, asGrant);
@@ -666,6 +721,250 @@ try {
       { targeted: true, modes: ["owner"], authorities: ["owner"] }, { modes: ["owner"], authorities: ["owner"] }, { authorities: [] }, { authorities: ["owner", "boss"] },
     ].filter((cmd) => { try { parseClusterDocument(docWith(cmd)); return false; } catch (e) { return e instanceof ContractInvalidError; } });
     check(`cell 26: ${bad.length}/4 documents refused contract-invalid at parse (targeted, with modes, empty, unknown word)`, bad.length === 4);
+  }
+
+  // ── cell 28: a stored frame on the caller's sentinel ──
+  // The agent's whole real credential holds Direct Get on the presence bucket, and Direct Get replies
+  // on whatever subject its requester names. Its raw connection serves another runtime id and, for
+  // each request, asks Direct Get to deliver its own stored presence on the caller's sentinel.
+  {
+    const rt = `${coderAt.runtimeId.slice(0, 30)}s`;
+    const onSentinel: Msg[] = [];
+    const watch = webRaw.nc.subscribe(`${P}.ep.prin-reply._nr._nr._nr._nr._nr.${A}.web.${W.web.uid}.*`, { callback: (_e, m) => { onSentinel.push(m); } });
+    await webRaw.nc.flush();
+    let received = 0;
+    const refusedBefore = coderRaw.refused.length;
+    const dg = coderRaw.nc.subscribe(`${P}.ep.prin.agent.${A}.coder.${W.coder.uid}.${rt}.*.*.*.*.*.*`, { callback: (_e, m) => {
+      received++;
+      const t = m.subject.split(".");
+      coderRaw.nc.publish(`$JS.API.DIRECT.GET.KV_${presenceBucket(space)}`, enc(JSON.stringify({ last_by_subj: presenceKeySubject(space, A, "coder") })),
+        { reply: epPrincipalNoRespondersSubject(space, { owner: t[11], actor: t[12], uid: t[13] }, t[14]) });
+    } });
+    await coderRaw.nc.flush();
+    const r = await settle(call(webEp, { ...coderAt, runtimeId: rt }, "prompts", "owner", {}, 2500));
+    dg.unsubscribe();
+    watch.unsubscribe();
+    const stored = onSentinel.filter((m) => m.headers?.get("Nats-Stream"));
+    check("cell 28: with the agent's own credential a Direct Get delivered its stored presence on the caller's sentinel, with stored provenance",
+      received === 1 && stored.length === 1 && coderRaw.refused.length === refusedBefore, { received, onSentinel: onSentinel.length, stored: stored.length, refused: coderRaw.refused.slice(refusedBefore) });
+    check("cell 28: the caller drops the stored frame and does not settle on it: deadline-exceeded, unknown, never internal or unavailable",
+      !r.ok && codeOf(r.error) === "deadline-exceeded/unknown", r.ok ? r.value : codeOf(r.error));
+  }
+
+  // ── cell 29: a message from another head reaches the caller's reply read first ──
+  // The agent's reply row spans the runtime id, so its raw connection, serving another runtime id,
+  // first replies under the head of the runtime the caller did not address, then the real reply.
+  {
+    const rt = `${coderAt.runtimeId.slice(0, 30)}d`;
+    let received = 0;
+    const liar = coderRaw.nc.subscribe(`${P}.ep.prin.agent.${A}.coder.${W.coder.uid}.${rt}.*.*.*.*.*.*`, { callback: (_e, m) => {
+      received++;
+      const t = m.subject.split(".");
+      const caller = { owner: t[11], actor: t[12], uid: t[13] };
+      const id = (JSON.parse(dec(m.data)) as { id: string }).id;
+      const body = (seq: number) => enc(JSON.stringify({ v: 1, id, ok: true, data: { runtime: { id: rt, startedAt: 1 }, seq, open: [], closed: [] } }));
+      coderRaw.nc.publish(epPrincipalReplySubject(space, { endpoint: AGENT_ENDPOINT, principal: coderAt, caller, nonce: t[14] }), body(6));
+      setTimeout(() => coderRaw.nc.publish(epPrincipalReplySubject(space, { endpoint: AGENT_ENDPOINT, principal: { ...coderAt, runtimeId: rt }, caller, nonce: t[14] }), body(7)), 200);
+    } });
+    await coderRaw.nc.flush();
+    const r = await settle(call(webEp, { ...coderAt, runtimeId: rt }, "prompts", "owner", {}, 3000));
+    liar.unsubscribe();
+    check("cell 29: a reply under another head is not this call's reply: the caller keeps waiting and takes the one the addressed process derives",
+      received === 1 && r.ok && r.value.ok && (r.value.data as { seq: number }).seq === 7, r.ok ? r.value : codeOf(r.error));
+  }
+
+  // ── cell 34: a JetStream API reply on the caller's sentinel ──
+  // Any client that may make a JetStream API request can name the caller's sentinel as its reply
+  // subject, and the broker answers there with plain JSON and no headers. The agent's raw
+  // connection, with its whole stock credential, serves another runtime id, sends `$JS.API.INFO`
+  // with the caller's sentinel as reply, then sends the real reply.
+  {
+    const rt = `${coderAt.runtimeId.slice(0, 30)}j`;
+    const onSentinel: Msg[] = [];
+    const watch = webRaw.nc.subscribe(`${P}.ep.prin-reply._nr._nr._nr._nr._nr.${A}.web.${W.web.uid}.*`, { callback: (_e, m) => { onSentinel.push(m); } });
+    await webRaw.nc.flush();
+    let received = 0;
+    const refusedBefore = coderRaw.refused.length;
+    const js = coderRaw.nc.subscribe(`${P}.ep.prin.agent.${A}.coder.${W.coder.uid}.${rt}.*.*.*.*.*.*`, { callback: (_e, m) => {
+      received++;
+      const t = m.subject.split(".");
+      const caller = { owner: t[11], actor: t[12], uid: t[13] };
+      coderRaw.nc.publish("$JS.API.INFO", enc(""), { reply: epPrincipalNoRespondersSubject(space, caller, t[14]) });
+      const id = (JSON.parse(dec(m.data)) as { id: string }).id;
+      const body = enc(JSON.stringify({ v: 1, id, ok: true, data: { runtime: { id: rt, startedAt: 1 }, seq: 8, open: [], closed: [] } }));
+      setTimeout(() => coderRaw.nc.publish(epPrincipalReplySubject(space, { endpoint: AGENT_ENDPOINT, principal: { ...coderAt, runtimeId: rt }, caller, nonce: t[14] }), body), 300);
+    } });
+    await coderRaw.nc.flush();
+    const r = await settle(call(webEp, { ...coderAt, runtimeId: rt }, "prompts", "owner", {}, 3000));
+    js.unsubscribe();
+    watch.unsubscribe();
+    const apiFrames = onSentinel.filter((m) => !m.headers && dec(m.data).includes("io.nats.jetstream.api.v1.account_info_response"));
+    check("cell 34: with the agent's own credential a JetStream API request put its plain JSON answer on the caller's sentinel",
+      received === 1 && apiFrames.length === 1 && coderRaw.refused.length === refusedBefore, { received, onSentinel: onSentinel.map((m) => dec(m.data).slice(0, 80)), refused: coderRaw.refused.slice(refusedBefore) });
+    check("cell 34: the caller drops it and keeps waiting: it takes the real reply, never internal",
+      r.ok && r.value.ok && (r.value.data as { seq: number }).seq === 8, r.ok ? r.value : codeOf(r.error));
+  }
+
+  // ── cell 30: stopping the endpoint ends its principal serve ──
+  const stubHandlers = (prompts?: EpPrincipalCommandDef["handler"]): EpPrincipalCommandDef[] => (["prompts", "prompt", "prompt-answer"] as const).map((command) => ({
+    command, contract: AGENT_CONTRACTS[command],
+    handler: command === "prompts" && prompts ? prompts : (ctx) => ({ runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] }),
+  }));
+  {
+    const stopperEp = await userEndpoint(W.stopper);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered = false, finished = false;
+    const serve = stopperEp.servePrincipal({ handlers: stubHandlers(async (ctx) => {
+      entered = true;
+      await gate;
+      finished = true;
+      return { runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] };
+    }) });
+    await serve.ready;
+    const reply = settle(call(webEp, addressOf(W.stopper, processRuntime(W.stopper.uid).id), "prompts", "owner", {}, 6000));
+    await until(() => entered);
+    let stopped = false;
+    const stopping = settle(stopperEp.stop().then(() => { stopped = true; }));
+    await wait(500);
+    const stoppedWhileRunning = stopped;
+    release();
+    await stopping;
+    const r = await reply;
+    check("cell 30: stop() waits for a principal-route handler in flight: it had not returned while the handler ran",
+      entered && !stoppedWhileRunning && finished && stopped, { entered, stoppedWhileRunning, finished, stopped });
+    check("cell 30: ...so its reply went out on the open connection, and the caller reads it", r.ok && r.value.ok, r.ok ? r.value : codeOf(r.error));
+    const stopper2Ep = await userEndpoint(W.stopper2);
+    const pending = stopper2Ep.servePrincipal({ handlers: stubHandlers() });
+    const stop2 = stopper2Ep.stop();
+    const readyOutcome = await Promise.race([settle(pending.ready), wait(3000).then(() => "still pending" as const)]);
+    await stop2.catch(() => {});
+    check("cell 30: stop() right after servePrincipal settles ready with a refusal that says the serve stopped, never a ready on a stopped endpoint",
+      readyOutcome !== "still pending" && !readyOutcome.ok && String((readyOutcome.error as Error).message).includes("stopped serving"),
+      readyOutcome === "still pending" ? readyOutcome : readyOutcome.ok ? "ready resolved" : (readyOutcome.error as Error).message);
+  }
+
+  // ── cell 35: a refused reply publish is reported ──
+  // The agent's credential keeps its serve row and lacks the reply row. Its handler runs and the
+  // broker refuses the reply. No call or serve awaits that refusal, so the endpoint reports it.
+  {
+    muted.add(W.mute.uid);
+    const muteEp = await userEndpoint(W.mute);
+    const serve = muteEp.servePrincipal({ handlers: stubHandlers() });
+    await serve.ready;
+    const r = await settle(call(webEp, addressOf(W.mute, processRuntime(W.mute.uid).id), "prompts", "owner", {}, 1500));
+    await until(() => warnings.some((w) => w.startsWith("alice.mute error:")), 2000);
+    const reported = warnings.filter((w) => w.startsWith("alice.mute error:"));
+    check("cell 35: the broker refused the agent's reply, the caller saw its deadline, and the agent's endpoint reported the refusal as an error naming the reply subject",
+      !r.ok && codeOf(r.error) === "deadline-exceeded/unknown" && reported.length === 1 && reported[0].includes(`${P}.ep.prin-reply.agent.${A}.mute.`),
+      { call: r.ok ? r.value : codeOf(r.error), reported });
+    await muteEp.stop();
+  }
+
+  // ── cell 36: a refused reply read whose flush never settles ──
+  // The caller's credential keeps its request rows and lacks the reply read. The broker refuses the
+  // read; the call waits one flush for a publish refusal that would say nothing ran. That flush
+  // never settles here, the case of a connection that stopped answering: the refusal still wins.
+  {
+    deaf.add(W.deaf.uid);
+    const deafEp = await userEndpoint(W.deaf);
+    const nc = (deafEp as unknown as { nc: NatsConnection }).nc;
+    const flush = nc.flush.bind(nc);
+    nc.flush = () => new Promise<void>(() => {});
+    const r = await settle(call(deafEp, coderAt, "prompts", "owner", {}, 1500));
+    nc.flush = flush;
+    check("cell 36: a refused reply read whose flush never settles is permission-denied, unknown at the deadline, never deadline-exceeded",
+      !r.ok && codeOf(r.error) === "permission-denied/unknown", r.ok ? r.value : codeOf(r.error));
+    await deafEp.stop();
+  }
+
+  // ── cells 31 and 32: seq never goes back under one runtime id, and one server per lifecycle ──
+  {
+    const cyclerSeq = () => webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.prompts?.seq;
+    const cyclerEp = await userEndpoint(W.cycler, { registerPresence: true });
+    const first = cyclerEp.servePrincipal({ handlers: stubHandlers() });
+    await first.ready;
+    await cyclerEp.setPromptsPresence({ open: 2, seq: 50 });
+    await until(() => cyclerSeq() === 50, 8000);
+    await first.stop();
+    await until(() => cyclerSeq() === undefined, 8000);
+    const again = cyclerEp.servePrincipal({ handlers: stubHandlers() });
+    await again.ready;
+    await until(() => cyclerSeq() !== undefined, 8000);
+    check("cell 31: serving agent again on the same endpoint takes a fresh seq, { open: 0, seq: 51 }: never seq 0, and never 50, which named a list with two prompts open",
+      cyclerSeq() === 51 && webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.prompts?.open === 0, webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.prompts);
+    let below = "";
+    try { await cyclerEp.setPromptsPresence({ open: 0, seq: 50 }); } catch (e) { below = (e as Error).message; }
+    check("cell 31: a seq below one this runtime already used is refused, the one the last serve showed too", below.includes("never goes back"), below);
+    const twin = await userEndpoint(W.cycler);
+    let twinRefusal = "";
+    try { twin.servePrincipal({ handlers: stubHandlers() }); } catch (e) { twinRefusal = (e as Error).message; }
+    check("cell 32: a second endpoint for the same lifecycle in this process may not serve agent while the first does: it would answer the same subject",
+      twinRefusal.includes("already serves") && twinRefusal.includes(W.cycler.uid), twinRefusal);
+    await twin.stop();
+    await cyclerEp.stop();
+    const nextEp = await userEndpoint(W.cycler, { registerPresence: true });
+    const third = nextEp.servePrincipal({ handlers: stubHandlers() });
+    await third.ready;
+    await until(() => cyclerSeq() !== undefined, 8000);
+    let next = -1;
+    try { next = nextEp.nextPromptsSeq(); } catch { /* not there */ }
+    check("cell 31: a new endpoint object for the same lifecycle, after the first stopped, serves again: same runtime id, a fresh seq 52, and the next seq 53",
+      cyclerSeq() === 52 && webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.runtime?.id === processRuntime(W.cycler.uid).id && next === 53,
+      { seq: cyclerSeq(), next });
+    await third.stop();
+  }
+
+  // ── cell 33: stop waits for a handler in flight only until its request's deadline ──
+  {
+    const ep3 = await userEndpoint(W.stopper3);
+    const at = addressOf(W.stopper3, processRuntime(W.stopper3.uid).id);
+    const replies: string[] = [];
+    const watch = webRaw.nc.subscribe(`${P}.ep.prin-reply.agent.${A}.stopper3.*.*.${A}.web.${W.web.uid}.*`, { callback: (_e, m) => { replies.push(m.subject); } });
+    await webRaw.nc.flush();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered = 0, aborted = 0;
+    const serve = ep3.servePrincipal({ handlers: stubHandlers(async (ctx) => {
+      entered++;
+      ctx.signal?.addEventListener("abort", () => { aborted++; });
+      await gate; // ignores the signal
+      return { runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] };
+    }) });
+    await serve.ready;
+    const deadlineMs = 2500;
+    const reply = settle(call(webEp, at, "prompts", "owner", {}, deadlineMs));
+    const sentAt = performance.now();
+    await until(() => entered === 1);
+    const stopAt = performance.now();
+    const stopped = await Promise.race([serve.stop().then(() => performance.now()), wait(deadlineMs + 3000).then(() => undefined)]);
+    const r = await reply;
+    check("cell 33: stop() on a handler that never settles returns once the request's deadline passed, not when the handler does",
+      stopped !== undefined && stopped - sentAt <= deadlineMs + 1000 && stopped - stopAt >= 500,
+      { stopAfterMs: stopped === undefined ? "still waiting" : Math.round(stopped - stopAt), sinceSentMs: stopped === undefined ? undefined : Math.round(stopped - sentAt) });
+    check("cell 33: the handler's signal aborted when the serve stopped", aborted === 1, { aborted });
+    const seenBefore = replies.length;
+    release();
+    await wait(500);
+    check("cell 33: the handler's late reply is dropped, and the caller saw its deadline",
+      replies.length === seenBefore && seenBefore === 0 && !r.ok && codeOf(r.error) === "deadline-exceeded/unknown", { replies: replies.length, call: r.ok ? r.value : codeOf(r.error) });
+    // A handler that ends on the signal lets stop return at once, and its reply still goes out.
+    const again = ep3.servePrincipal({ handlers: stubHandlers(async (ctx) => {
+      entered++;
+      await new Promise<void>((resolve) => ctx.signal.addEventListener("abort", () => resolve()));
+      return { runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] };
+    }) });
+    await again.ready;
+    const second = settle(call(webEp, at, "prompts", "owner", {}, 8000));
+    await until(() => entered === 2);
+    const t0 = performance.now();
+    await Promise.race([again.stop(), wait(10_000)]);
+    const tookMs = performance.now() - t0;
+    const r2 = await second;
+    check("cell 33: a handler that ends on the signal lets stop() return at once, and its reply goes out",
+      tookMs < 1000 && r2.ok && r2.value.ok, { tookMs: Math.round(tookMs), call: r2.ok ? r2.value : codeOf(r2.error) });
+    watch.unsubscribe();
+    await ep3.stop();
   }
 
   // ── mixed versions that need no 0.165 release ──
@@ -705,6 +1004,16 @@ try {
       if (r.ok && r.value.ok) after = r.value; else await wait(100);
     }
     check("a rebuilt connection subscribes again: the agent answers on the same runtime id", after?.ok === true && (after.data as { runtime: { id: string } }).runtime.id === oldRuntime, after);
+    // The serve keeps a handle per connection only until that connection is replaced.
+    const handles = () => (coderEp as unknown as { principalServes: Map<string, { handles: unknown[] }> }).principalServes.get(AGENT_ENDPOINT)?.handles.length;
+    await coderEp.reconnect();
+    for (let i = 0, done = false; i < 50 && !done; i++) {
+      const r = await settle(call(webEp, coderAt, "prompts", "owner", {}, 1500));
+      done = r.ok && r.value.ok;
+      if (!done) await wait(100);
+    }
+    await until(() => handles() === 1, 3000);
+    check("cell 38: after two rebuilt connections the serve holds one handle, the current connection's", handles() === 1, { handles: handles() });
     await until(() => webEp.getRoster().find((p) => p.card.id === `${A}.coder`)?.prompts !== undefined, 8000);
     webEp.off("presence", onPresence);
     check("on the new connection presence carried no prompts field until the broker accepted the new subscription, then the field again",
@@ -732,7 +1041,8 @@ try {
     check("a later refusal is reported on the warning channel, never as an error", warnings.some((w) => w.startsWith("alice.coder warning: stopped serving")) && !warnings.some((w) => w.startsWith("alice.coder error")),
       warnings.filter((w) => w.startsWith("alice.coder")));
   }
-  check("no endpoint emitted an error", !warnings.some((w) => w.includes(" error: ")), warnings.filter((w) => w.includes(" error: ")));
+  const unexpected = warnings.filter((w) => w.includes(" error: ") && !w.startsWith("alice.mute error:"));
+  check("no endpoint emitted an error but the reply refusal cell 35 provokes", unexpected.length === 0, unexpected);
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   for (const nc of raws) await nc.close().catch(() => {});

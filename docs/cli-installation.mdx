@@ -233,6 +233,9 @@ exists, update names the space and the gone folder, leaves its processes untouch
 continuity claim for that space. A renamed project does not block the software update or require
 restoring internal identity files. This also applies to a selected prepared space whose project
 folder was deleted before it ever started. Update keeps its saved selection and preparation record.
+Update runs from the surviving project root, or the filesystem root when no project is present.
+Removing an unrelated working folder before or during update does not block it or its npm and
+reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
 After `update --self` replaces the installation, its verified replacement waits up to 120 seconds
 for the recorded same-installation daemon to load the new version and its intended hosted Managers
@@ -406,12 +409,23 @@ used. A missing or redirected global bin link, a conflicting `npm_config_prefix`
 root that disagrees with that prefix refuses before installation. Local/npx copies and source
 checkouts still install a separate global copy; Windows keeps npm's configured global root.
 
-If that installation is not writable by your account, the update refuses before changing it.
+From 0.167.1, self-update restores owner write permission on user-owned package, `dist`,
+`node_modules` and `lib` directories before checking release archives. It leaves file modes and
+other accounts' directories unchanged. If write access still fails, it names the user-owned
+directory to repair without recommending sudo. An unwritable `node_modules` directory is checked
+before downloading archives or reserving the update lock.
+If an installation owned by another account is not writable, the update refuses before replacing it.
 For a root-owned npm installation, have an administrator run the printed
 `sudo npm install -g --prefix '<install-prefix>' cotal-ai@latest` command.
 Then run `cotal update` as your normal account, without sudo, to reconcile your connectors and
 extensions. Keep any `--space`, `--server`, `--creds` or `--on` selection from the original command.
 Do not run `sudo cotal update`: user configuration and reconciliation belong to your normal account.
+
+From 0.167.1, retrying `cotal update --self` after killing its updater waits up to ten minutes
+for its recorded live install or reconciliation child to finish. The reservation stays held during
+that wait. The command then restores the interrupted transaction and continues the requested
+self-update. An expired wait, an unpublished child PID or ambiguous descendant state still refuses
+without starting a competing replacement.
 
 Once global replacement starts, Ctrl-C waits for installation, verification and reconciliation to
 finish before returning exit code 130. SIGTERM waits the same way and returns 143. The command

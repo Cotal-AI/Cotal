@@ -1,5 +1,18 @@
 # @cotal-ai/web
 
+## 0.168.0
+
+### Patch Changes
+
+- bd5b41b: The dashboard and manager console restrict browser scripts to their own assets and omit referrers.
+  
+  Both surfaces send Content-Security-Policy and X-Content-Type-Options headers. Dashboard launch links retain their single-use exchange. The manager console removes its launch token from the address bar after its page scripts load.
+- 9d5a50b: `cotal service add web --preset web` now refuses `--posting-creds` without `--no-read-only`, or `--no-read-only` without `--posting-creds`, and saves nothing. Before, it saved the definition and every start was refused. A start of a saved dashboard definition with either problem, or with a wildcard `--host`, now names the one condition that failed and the `cotal service remove` and `cotal service add` that change it. A wildcard host no longer prints the usage of `service start`. A preset refusal while `service add` builds a definition no longer prints the command's usage after a remedy that already says the whole fix.
+
+## 0.167.0
+
+No changes in this release.
+
 ## 0.166.3
 
 No changes in this release.

@@ -121,10 +121,12 @@ try {
     agents: Map<string, { id: string; name: string; lifecycleUid: string; seed?: string; terminalizing?: boolean; secretPaths?: { creds?: string } }>;
     renewDaemonCreds(): Promise<void>;
     renewManagedStaticCred(a: unknown): Promise<void>;
-    freeSlot(a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause): void;
     retirement: {
       deprovision(a: { id: string; name: string; lifecycleUid: string; secretPaths?: { creds?: string } }): Promise<void>;
       retiring: Map<string, unknown>;
+    };
+    namesCapacity: {
+      freeSlot(a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause): void;
     };
   };
 
@@ -183,7 +185,7 @@ try {
   console.log("D. the retirement teardown deletes the credential through the injected store");
   {
     const before = store.seen.length;
-    M.freeSlot(a, false, "process-exit");
+    M.namesCapacity.freeSlot(a, false, "process-exit");
     await M.retirement.deprovision({ id: a.id, name: a.name, lifecycleUid: a.lifecycleUid, secretPaths: a.secretPaths });
     for (let i = 0; i < 150 && M.retirement.retiring.has("worker"); i++) await wait(200);
     check("the teardown really happened (the credential file is gone)", !existsSync(credsPath!));

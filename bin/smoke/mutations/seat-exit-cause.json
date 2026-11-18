@@ -57,8 +57,8 @@
   "mutations": [
     {
       "name": "the defect restored: no seat-reaped line at all",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "    this.logSeatReaped(a, cause);",
+      "file": "implementations/manager/src/names-capacity.ts",
+      "find": "    this.deps.logSeatReaped(a, cause);",
       "replace": "    void cause;",
       "expectRed": "a self-driven exit is logged, naming the seat",
       "cell": "a self-driven exit is logged, naming the seat",
@@ -93,9 +93,9 @@
     },
     {
       "name": "FreeSlotCause gains a default, so a future free path can log the wrong cause silently",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "  private freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, acceptedBeforeFence = false): void {",
-      "replace": "  private freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause = \"process-exit\", acceptedBeforeFence = false): void {\n    cause = \"process-exit\";",
+      "file": "implementations/manager/src/names-capacity.ts",
+      "find": "  freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, acceptedBeforeFence = false): void {",
+      "replace": "  freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause = \"process-exit\", acceptedBeforeFence = false): void {\n    cause = \"process-exit\";",
       "expectRed": "a requested despawn names the AUTHENTICATED principal that asked",
       "cell": "a requested despawn names the AUTHENTICATED principal that asked",
       "note": "The compiler is what currently forces each caller to name itself. With a default, a path added later inherits a label nobody chose. Re-aimed at the door-driven despawn cell when the string-driven `stopped` cell was replaced by the stop-family cells."

@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: 5
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       # Pinned rather than the runner's preinstalled shellcheck: that version moves with the
       # runner image, so the same commit can lint clean one week and fail the next on a newly
       # added check. Bump this deliberately.
@@ -97,7 +97,7 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Onboarding matrix
         run: ./install/test-matrix.sh
 
@@ -105,7 +105,7 @@ jobs:
     timeout-minutes: 15
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Dry run reports without changing anything
         run: |
           sh install.sh --dry-run

@@ -59,7 +59,7 @@ import { epPrincipalCall } from "./endpoint-call.js";
 import type { ClusterDocument } from "./endpoint-cluster.js";
 import type { EndpointReply } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
-import { AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
+import { AGENT_CLUSTER, AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
 import { processRuntime } from "./process-runtime.js";
 import { importNativeSubjectPermissions, issuedPermitsSubject, readAcceptedRow, type IssuedSubjectPermission } from "./issued-authority.js";
 import { REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsInput, type RegistryEndpointsOutput } from "./registry-contract.js";
@@ -629,12 +629,24 @@ type MembershipFeedWatch = {
   rejectStop?: (err: unknown) => void;
 };
 
+/** The highest `prompts` presence `seq` this process used under each runtime id (SPEC §6). A reader
+ *  orders lists by `seq` within one `runtime.id`, and a runtime id lives as long as the process, so
+ *  this does too: across a stopped serve, a stopped endpoint and a new endpoint for the lifecycle. */
+const promptsSeqs = new Map<string, number>();
+
+/** The principal endpoint each `{space, runtime id, endpoint}` is served by in this process. Two
+ *  would subscribe the same subject and both answer one request (SPEC 13.21). */
+const principalServers = new Map<string, PrincipalServeIntent>();
+
 /** What {@link CotalEndpoint.servePrincipal} keeps to re-bind on every replaced connection. */
 interface PrincipalServeIntent {
   readonly serve: { endpoint: string; cluster: ClusterDocument; handlers: EpPrincipalCommandDef[] };
   readonly self: EpPrincipal;
-  /** The binding on the connection it was made on, and every binding made, so `stop` awaits the
-   *  handlers each one still runs. */
+  /** Its key in {@link principalServers}. */
+  readonly serverKey: string;
+  /** The binding on the connection it was made on, and every binding not yet retired: the current
+   *  one and those on replaced connections whose handlers are still finishing, so `stop` awaits
+   *  them. */
   binding?: { nc: NatsConnection; handle: EpPrincipalServeHandle };
   readonly handles: EpPrincipalServeHandle[];
   /** The connection on which the broker last accepted the subscription. */
@@ -654,7 +666,9 @@ export interface PrincipalServe {
   /** Resolves with the refusal that ended the serve, including one that arrives on a replaced
    *  connection after `ready` resolved. Never rejects, and never resolves after `stop`. */
   readonly failed: Promise<Error>;
-  /** Unsubscribe and wait for the handlers in flight. */
+  /** Unsubscribe, abort every handler's `signal`, and wait for each handler in flight until its
+   *  request's deadline at most, which the route caps at 30 s. A reply that comes after that is
+   *  dropped. */
   stop(): Promise<void>;
 }
 
@@ -953,6 +967,8 @@ export class CotalEndpoint extends EventEmitter {
    *  now instead of awaiting the full retryMs. */
   private backoffResolve?: () => void;
   private backoffTimer?: ReturnType<typeof setTimeout>;
+  /** Wakes for the membership retry loops' pauses (see {@link membershipPause}); stop() runs them all. */
+  private readonly membershipPauses = new Set<() => void>();
   private readonly retryMs = 3000;
   /** Consecutive failed rebuilds, driving {@link nextRetryDelayMs}. Reset on every success. */
   private retryAttempt = 0;
@@ -2395,6 +2411,21 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** Capped exponential pause between membership retries. stop() ends it early, so a loop waiting
+   *  on an absent delivery daemon never holds a stopped endpoint's process open for the delay. */
+  private membershipPause(attempt: number): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const wake = (): void => {
+        clearTimeout(timer);
+        this.membershipPauses.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, Math.min(30_000, 1000 * 2 ** attempt));
+      this.membershipPauses.add(wake);
+    });
+  }
+
   /** Manual reconnect: tear down the current connection and rebuild, WITHOUT the permanent
    *  stop (stopped/stopping stay false). Serialized with the self-heal supervisor via
    *  {@link rebuild}, and interruptible — if a backoff is in flight, kick it so the attempt
@@ -2412,7 +2443,14 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  /** The presence epoch moves first: a bind still awaiting the broker must find it moved
+  /** Stop the endpoint and close its connection.
+   *
+   *  Every principal serve ends first: its handlers' `signal` aborts, and stop waits for each
+   *  handler in flight until its request's deadline at most, so a handler that never settles does
+   *  not hold stop open longer than 30 s, the route's cap on a deadline. A reply that comes after
+   *  that is dropped.
+   *
+   *  The presence epoch moves first: a bind still awaiting the broker must find it moved
    *  before any await below gives it a window to install a watch on a stopped endpoint
    *  (see {@link startPresenceWatch}). */
   stop(): Promise<void> {
@@ -2427,10 +2465,15 @@ export class CotalEndpoint extends EventEmitter {
     }
     this.activeGoalFollowers.clear();
     this.presenceEpoch++;
+    // Every principal serve ends now, so a `ready` still waiting for the broker rejects and no new
+    // request is taken. Its handlers in flight finish below, before the connection they reply on
+    // closes, or their requests' deadlines pass.
+    const principalStops = [...this.principalServes.values()].map((intent) => this.stopPrincipalServe(intent, false));
     this.presence.cancelRebind();
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
     // sleeping out retryMs; also clears the timer so it can't fire later.
     this.kickBackoff();
+    for (const wake of [...this.membershipPauses]) wake();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     this.cancelBearerRenewal?.();
@@ -2465,6 +2508,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.channelWatchIter) this.retireKvWatch(this.channelWatchIter);
     this.channelWatchIter = undefined;
     this.stopDeliveryLeaseWatch();
+    await Promise.all(principalStops);
     try {
       if (this.doRegister) {
         await this.presence.publishOffline();
@@ -2660,6 +2704,7 @@ export class CotalEndpoint extends EventEmitter {
    *
    * `expectedLastSubjectSeq` is a parameter because it is a header VALUE: sizing at 0 and publishing
    * at 123456 differ by five bytes.
+   * `expectedLastMsgId` is measured when given, so a caller that may send it can size for it.
    *
    * Residual: `ts` is re-stamped at publish, so the two differ in value — not in length until
    * epoch-millis needs a 14th digit.
@@ -2669,6 +2714,7 @@ export class CotalEndpoint extends EventEmitter {
     parts: Part[];
     id: string;
     expectedLastSubjectSeq: number;
+    expectedLastMsgId?: string;
     mentions?: string[];
     replyTo?: string;
     contextId?: string;
@@ -2688,6 +2734,10 @@ export class CotalEndpoint extends EventEmitter {
     const mh = headers();
     mh.set("Nats-Msg-Id", opts.id);
     mh.set("Nats-Expected-Last-Subject-Sequence", `${opts.expectedLastSubjectSeq}`);
+    if (opts.expectedLastMsgId !== undefined) {
+      assertIdToken(opts.expectedLastMsgId, "expected last msg id");
+      mh.set("Nats-Expected-Last-Msg-Id", opts.expectedLastMsgId);
+    }
     // `encode()` is on the client's header implementation but not on the published `MsgHdrs` type,
     // so it is reached through a cast rather than copied. If a client version drops it, this throws
     // immediately and loudly — the calibration cell would also fail — instead of returning a number
@@ -2714,6 +2764,10 @@ export class CotalEndpoint extends EventEmitter {
    *   means "the subject must be empty". A mismatch throws, and the throw stays classifiable by the
    *   already-public {@link isCasLoss} — the error is deliberately **not wrapped**, since wrapping
    *   would hide the `err_code` that classification reads.
+   * - `expectedLastMsgId`, when given, becomes `Nats-Expected-Last-Msg-Id`. The broker checks it after
+   *   its dedup cache, so a fresh value nobody has published turns a publish into a probe: an id the
+   *   cache holds answers `duplicate: true` with the stored sequence, and any other id is refused
+   *   with error 10070 before anything is stored.
    *
    * @throws if the endpoint is not live, the channel is not concrete, `id` is malformed, `parts` is
    *   empty, or `expectedLastSubjectSeq` is not a non-negative safe integer.
@@ -2723,6 +2777,7 @@ export class CotalEndpoint extends EventEmitter {
     parts: Part[];
     id: string;
     expectedLastSubjectSeq: number;
+    expectedLastMsgId?: string;
     mentions?: string[];
     replyTo?: string;
     contextId?: string;
@@ -2740,6 +2795,7 @@ export class CotalEndpoint extends EventEmitter {
       );
     if (!Array.isArray(opts.parts) || opts.parts.length === 0)
       throw new Error("multicastExpecting requires at least one part");
+    if (opts.expectedLastMsgId !== undefined) assertIdToken(opts.expectedLastMsgId, "expected last msg id");
 
     const message = this.casEnvelope(opts);
     assertPartsSerializable(message.parts);
@@ -2748,7 +2804,7 @@ export class CotalEndpoint extends EventEmitter {
     const ack = await this.js.publish(
       chatSubject(this.space, this.owner, this.actor, opts.channel),
       JSON.stringify(message),
-      { msgID: opts.id, expect: { lastSubjectSequence: expected } },
+      { msgID: opts.id, expect: { lastSubjectSequence: expected, ...(opts.expectedLastMsgId !== undefined ? { lastMsgID: opts.expectedLastMsgId } : {}) } },
     );
     return { message, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
   }
@@ -5076,9 +5132,10 @@ export class CotalEndpoint extends EventEmitter {
         }
         if (s.type !== "error") continue;
         if (s.error instanceof PermissionViolationError && this.chatSubRefusals.has(s.error)) continue;
-        // A principal-route refusal belongs to the call that throws it or the serve that ends on it
-        // (SPEC 13.21); nothing else on this private connection publishes or subscribes there.
-        if (s.error instanceof PermissionViolationError && this.isPrincipalRouteSubject(s.error.subject)) continue;
+        // A refused principal-route request publish or subscription belongs to the call that throws
+        // it or the serve that ends on it (SPEC 13.21). A refused reply publish has no owner, so it
+        // is reported below.
+        if (s.error instanceof PermissionViolationError && this.ownedPrincipalRouteRefusal(s.error)) continue;
         if (s.error instanceof PermissionViolationError && handedToRequest.has(s.error)) continue;
         // The predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
         // history reads, whose refusal can arrive after that delete timed out.
@@ -6758,23 +6815,28 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /**
-   * Serve this process's own endpoint on the principal route (SPEC 13.21): a core-defined command
-   * set about this principal, addressed by its own principal, lifecycle UID and runtime id, with no
-   * registration. Revision 1 defines one endpoint, `agent` (SPEC 13.22).
+   * Serve this process's `agent` endpoint on the principal route (SPEC 13.21, 13.22): the
+   * `AGENT_CLUSTER` command set about this principal, addressed by its own principal, lifecycle UID
+   * and runtime id, with no registration. `handlers` serves the cluster's commands with
+   * `AGENT_CONTRACTS`; `describe` is built in.
    *
    * Throws on an open mesh and on a static credential, where no row names who may call, without a
-   * lifecycle UID, before the endpoint has started, for an endpoint it already serves, and for a
-   * cluster with a command that declares no `authorities` (see {@link servePrincipalRoute}). It
-   * subscribes this process's own subject with no queue group.
+   * lifecycle UID, before the endpoint has started, while it already serves `agent`, for an
+   * `endpoint` or `cluster` field, which this entry point does not take, and for a set of handlers
+   * that is not the cluster's commands with its contracts. It subscribes this process's own subject
+   * with no queue group.
    *
    * `ready` is a positive check: it resolves only after the broker accepted the subscription
    * (subscribe, flush, and no permission violation for that subject), and rejects with the
    * refusal, which a credential minted before the rows existed gets. The serve is INTENT: every
    * replaced connection subscribes again and runs the check again, and a refusal there ends the
-   * serve, resolves `failed` and clears the presence field. `stop` unsubscribes and waits for the
-   * handlers in flight.
+   * serve, resolves `failed` and clears the presence field. `stop` unsubscribes, aborts the
+   * handlers' `signal`, and waits for each handler in flight until its request's deadline at most.
    */
-  servePrincipal(serve: { endpoint: string; cluster: ClusterDocument; handlers: EpPrincipalCommandDef[] }): PrincipalServe {
+  servePrincipal(spec: { handlers: EpPrincipalCommandDef[] }): PrincipalServe {
+    if ("endpoint" in spec || "cluster" in spec)
+      throw new Error(`servePrincipal serves only the "${AGENT_ENDPOINT}" endpoint with AGENT_CLUSTER and takes handlers alone; an endpoint or cluster is refused, never ignored (SPEC 13.22)`);
+    const serve = { endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: spec.handlers };
     if (!this.authed)
       throw new Error("the principal route is served only on an authenticated mesh: on an open mesh no row says who may call (SPEC 13.21)");
     if (!this.userMode)
@@ -6788,16 +6850,23 @@ export class CotalEndpoint extends EventEmitter {
     if (this.principalServes.has(serve.endpoint))
       throw new Error(`this endpoint already serves "${serve.endpoint}" on the principal route`);
     const self: EpPrincipal = { owner: this.owner, actor: this.actor, uid, runtimeId: assertRuntimeToken(processRuntime(uid).id) };
+    const serverKey = `${this.space}\n${self.runtimeId}\n${serve.endpoint}`;
+    if (principalServers.has(serverKey))
+      throw new Error(`another endpoint in this process already serves "${serve.endpoint}" for lifecycle ${uid}: both would subscribe the same principal-route subject and answer one request twice (SPEC 13.21); stop that one first`);
     let resolveReady!: () => void, rejectReady!: (e: Error) => void, resolveFailed!: (e: Error) => void;
     const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
     ready.catch(() => { /* the caller observes it; this keeps an unobserved refusal from being unhandled */ });
     const failed = new Promise<Error>((resolve) => { resolveFailed = resolve; });
     const intent: PrincipalServeIntent = {
-      serve, self, handles: [], ended: false, readySettled: false, resolveReady, rejectReady, resolveFailed,
+      serve, self, serverKey, handles: [], ended: false, readySettled: false, resolveReady, rejectReady, resolveFailed,
     };
     // Construction refuses an invalid cluster before anything is kept or subscribed.
     const handle = this.bindPrincipalHandle(intent, nc);
     this.principalServes.set(serve.endpoint, intent);
+    principalServers.set(serverKey, intent);
+    // A fresh `seq` per serve: the last serve may have ended with prompts open, and the pair
+    // `(runtime.id, seq)` it showed then must not name this serve's empty list (SPEC §6).
+    if (serve.endpoint === AGENT_ENDPOINT) this.promptsPresence = { open: 0, seq: this.nextPromptsSeq() };
     void this.armPrincipalServe(intent, nc, handle);
     return { ready, failed, stop: () => this.stopPrincipalServe(intent) };
   }
@@ -6807,16 +6876,24 @@ export class CotalEndpoint extends EventEmitter {
     return servePrincipalRoute(nc, this.space, intent.self, intent.serve);
   }
 
-  /** A request or reply subject (or filter) of the principal route in this space. */
-  private isPrincipalRouteSubject(subject: string): boolean {
+  /** A principal-route refusal a call or a serve reports itself: a request publish, a serve
+   *  subscription or a reply read. Only a reply publish is left, which no call or serve awaits. */
+  private ownedPrincipalRouteRefusal(err: PermissionViolationError): boolean {
     const p = `${spacePrefix(this.space)}.ep.`;
-    return subject.startsWith(`${p}prin.`) || subject.startsWith(`${p}prin-reply.`);
+    if (err.operation === "publish") return err.subject.startsWith(`${p}prin.`);
+    return err.subject.startsWith(`${p}prin.`) || err.subject.startsWith(`${p}prin-reply.`);
   }
 
   /** Track one binding: a refusal ends the serve, and an accepted subscription on the current
    *  connection shows the presence field. */
   private async armPrincipalServe(intent: PrincipalServeIntent, nc: NatsConnection, handle: EpPrincipalServeHandle): Promise<void> {
     intent.binding = { nc, handle };
+    // Every earlier binding is on a replaced connection: retire it once its handlers finish.
+    for (const old of intent.handles)
+      void old.stop().finally(() => {
+        const i = intent.handles.indexOf(old);
+        if (i >= 0) intent.handles.splice(i, 1);
+      });
     intent.handles.push(handle);
     intent.readyOn = undefined;
     void handle.refused.then((err) => {
@@ -6872,9 +6949,7 @@ export class CotalEndpoint extends EventEmitter {
   /** End a serve the broker refused: no more serving, `failed` resolves, the presence field goes. */
   private endPrincipalServe(intent: PrincipalServeIntent, err: Error): void {
     if (intent.ended) return;
-    intent.ended = true;
-    intent.readyOn = undefined;
-    if (this.principalServes.get(intent.serve.endpoint) === intent) this.principalServes.delete(intent.serve.endpoint);
+    this.forgetPrincipalServe(intent);
     const wasReady = intent.readySettled;
     if (!intent.readySettled) {
       intent.readySettled = true;
@@ -6890,18 +6965,28 @@ export class CotalEndpoint extends EventEmitter {
     if (wasReady) this.emitRecoverable(new Error(`stopped serving "${intent.serve.endpoint}" on the principal route: ${err.message}`, { cause: err }));
   }
 
-  private async stopPrincipalServe(intent: PrincipalServeIntent): Promise<void> {
+  /** Mark `intent` ended and release what it holds in this endpoint and in this process. */
+  private forgetPrincipalServe(intent: PrincipalServeIntent): void {
+    intent.ended = true;
+    intent.readyOn = undefined;
+    if (this.principalServes.get(intent.serve.endpoint) === intent) this.principalServes.delete(intent.serve.endpoint);
+    if (principalServers.get(intent.serverKey) === intent) principalServers.delete(intent.serverKey);
+  }
+
+  /** Stop serving `intent` and wait for its handlers in flight, each until its request's deadline
+   *  at most. The ending is synchronous, so a
+   *  `ready` still waiting for the broker rejects before the caller's next step. `republish` writes
+   *  presence without the `prompts` field; the endpoint's own stop writes it offline instead. */
+  private async stopPrincipalServe(intent: PrincipalServeIntent, republish = true): Promise<void> {
     if (!intent.ended) {
-      intent.ended = true;
-      intent.readyOn = undefined;
-      if (this.principalServes.get(intent.serve.endpoint) === intent) this.principalServes.delete(intent.serve.endpoint);
+      this.forgetPrincipalServe(intent);
       if (!intent.readySettled) {
         intent.readySettled = true;
         intent.rejectReady(new Error(`stopped serving "${intent.serve.endpoint}" before the broker confirmed the subscription`));
       }
       if (intent.serve.endpoint === AGENT_ENDPOINT) {
         this.promptsPresence = undefined;
-        this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+        if (republish) this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
       }
     }
     await Promise.all(intent.handles.map((handle) => handle.stop()));
@@ -6911,23 +6996,42 @@ export class CotalEndpoint extends EventEmitter {
    * Set this process's `prompts` presence field and write presence at once (SPEC §6): how many
    * prompts it holds `open` or `sent`, and a counter that goes up by one each time a prompt opens or
    * changes state. The field shows only while the `agent` endpoint is served and the broker accepted
-   * its subscription on the current connection, and it shows `{ open: 0, seq: 0 }` until this is
-   * called. Throws when the `agent` endpoint is not served.
+   * its subscription on the current connection. Until this is called it shows `open: 0` with the
+   * fresh `seq` the serve took from {@link nextPromptsSeq} when it started. Throws when the `agent`
+   * endpoint is not served, and a RangeError for a `seq` below one this runtime already used.
    */
   async setPromptsPresence(prompts: PresencePrompts): Promise<void> {
     for (const k of ["open", "seq"] as const)
       if (!Number.isSafeInteger(prompts?.[k]) || prompts[k] < 0) throw new TypeError(`prompts.${k} must be a non-negative safe integer`);
-    if (!this.principalServes.has(AGENT_ENDPOINT))
+    const intent = this.principalServes.get(AGENT_ENDPOINT);
+    if (!intent)
       throw new Error(`the prompts presence field belongs to a served "${AGENT_ENDPOINT}" endpoint: call servePrincipal first (SPEC §6)`);
+    const used = promptsSeqs.get(intent.self.runtimeId) ?? 0;
+    if (prompts.seq < used)
+      throw new RangeError(`prompts.seq ${prompts.seq} is below ${used}, which this process already used under runtime ${intent.self.runtimeId}: seq never goes back under one runtime id (SPEC §6)`);
+    promptsSeqs.set(intent.self.runtimeId, prompts.seq);
     this.promptsPresence = { open: prompts.open, seq: prompts.seq };
     await this.publishPresence();
+  }
+
+  /**
+   * Take the next `prompts` `seq` for this process's runtime (SPEC §6): 0 the first time, then one
+   * above every `seq` this process used under its runtime id, whichever endpoint object used it. A
+   * prompt desk takes every `seq` it shows from here. Throws without a lifecycle UID.
+   */
+  nextPromptsSeq(): number {
+    const runtimeId = processRuntime(this.requireLifecycleUid("nextPromptsSeq")).id;
+    const used = promptsSeqs.get(runtimeId);
+    const next = used === undefined ? 0 : used + 1;
+    promptsSeqs.set(runtimeId, next);
+    return next;
   }
 
   /** The `prompts` field this process's presence carries now, or none. */
   private servedPrompts(): PresencePrompts | undefined {
     const intent = this.principalServes.get(AGENT_ENDPOINT);
     if (!intent || intent.ended || !this.nc || intent.readyOn !== this.nc) return undefined;
-    return this.promptsPresence ?? { open: 0, seq: 0 };
+    return this.promptsPresence;
   }
 
   /**
@@ -7544,7 +7648,7 @@ export class CotalEndpoint extends EventEmitter {
       } catch (e) {
         if (attempt === 0)
           this.emitRecoverable(new Error(`channel "${channel}": Plane-3 durable membership (generation ${generation}) not yet tombstoned after a refused live sub - retrying; §7 boundary may be open until it succeeds (${(e as Error).message})`));
-        await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * 2 ** attempt)));
+        await this.membershipPause(attempt);
       }
     }
   }
@@ -7703,7 +7807,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.pendingBootJoins.has(channel)) return; // already reconciling
     this.pendingBootJoins.add(channel);
     for (let attempt = 0; ; attempt++) {
-      await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * 2 ** attempt)));
+      await this.membershipPause(attempt);
       if (this.stopped || !this.channels.includes(channel) || this.plane3Channels.has(channel)) {
         this.pendingBootJoins.delete(channel);
         return; // stopped, left, or another path established it

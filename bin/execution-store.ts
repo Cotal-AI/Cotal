@@ -34,11 +34,22 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
   }
   executionLocation(installedRoot);
   protectedExecutionEntry(verifiedSource);
-  try {
-    accessSync(installedRoot, constants.W_OK);
-    accessSync(dirname(dirname(installedRoot)), constants.W_OK);
+  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot))]) {
+    const stat = lstatSync(path);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe staged update destination: ${path}`);
+    executionLocation(path);
   }
-  catch { throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run \`cotal update\` as your normal account, without sudo`); }
+  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot))]) {
+    const stat = lstatSync(path);
+    const owned = stat.uid === process.getuid?.();
+    try {
+      if (owned && stat.isDirectory() && (stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
+      accessSync(path, constants.W_OK);
+    } catch {
+      if (owned) throw new Error(`installation directory is not writable: ${path}; restore write access to this user-owned directory, then run \`cotal update --self\` again without sudo`);
+      throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run \`cotal update\` as your normal account, without sudo`);
+    }
+  }
   const store = executionStore(installedRoot), shared = executionShared(installedRoot);
   if (!lstatSync(store, { throwIfNoEntry: false })) { mkdirSync(store, { mode: 0o700 }); if (shared) chmodSync(store, 0o755); }
   if (!lstatSync(store).isDirectory() || lstatSync(store).isSymbolicLink()) throw new Error("unsafe execution generation store");
