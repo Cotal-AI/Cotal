@@ -39,7 +39,7 @@ mkdirSync(join(machine, "daemon"), { mode: 0o700 });
 writeFileSync(join(machine, "service-unit.json"), JSON.stringify({ v: 1, unit, unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString(), daemonHome: machine }), { mode: 0o600 });
 
 type Doc = {
-  result?: { pid?: number; managers?: { state: string; next?: string; lastRefusal?: string }[]; manager?: { state: string; next?: string } };
+  result?: { computer?: string; pid?: number; managers?: { state: string; next?: string; lastRefusal?: string }[]; manager?: { state: string; next?: string } };
   error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } };
 };
 let passed = 0, failed = 0;
@@ -104,11 +104,16 @@ try {
     for (const [label, bytes] of variants) {
       writeFileSync(broken, bytes, { mode: 0o600 });
       try {
-        const refused = await cli(daemonArgs("service-status"));
-        console.log(`${label} service-status`, refused.code, refused.doc.error);
-        check(`${label}: status returns a structured refusal instead of losing the connection`, refused.code === 1 && refused.doc.error?.code === "USAGE_INVALID" && refused.doc.error.cause?.code === "MANAGER_UNAVAILABLE");
-        check(`${label}: refusal identifies the invalid registry record`, refused.doc.error?.message?.includes("unrelated-broken.json"));
-        check(`${label}: same daemon stays alive after the refusal`, daemon!.pid === pid && daemon!.exitCode === null && daemon!.signalCode === null);
+        const service = await cli(daemonArgs("service-status"));
+        check(`${label}: unrelated damage leaves local service guidance available`, service.code === 2 && service.doc.error?.code === "UNSUPPORTED" && localRemedy(service.doc.error.remedy));
+        for (const [op, flags] of [["status", []], ["status", ["--space", space]]] as const) {
+          const status = await cli(["daemon", op, "--daemon-home", machine, ...flags]);
+          console.log(`${label} ${op} ${flags.join(" ")}`, status.code, status.doc.error);
+          check(`${label}: ${op} ${flags.join(" ")} answers from the same daemon`, status.code === 0 && status.doc.result?.pid === pid);
+        }
+        const named = await cli(["daemon", "name", "--daemon-home", machine]);
+        check(`${label}: name can still return the daemon's status projection`, named.code === 0 && typeof named.doc.result?.computer === "string");
+        check(`${label}: same daemon stays alive with unrelated damage`, daemon!.pid === pid && daemon!.exitCode === null && daemon!.signalCode === null);
         check(`${label}: invalid record is not silently changed`, readFileSync(broken, "utf8") === bytes);
         noRecords(label);
       } finally {
@@ -117,6 +122,26 @@ try {
       const recovered = await cli(daemonArgs("service-status"));
       const after = await cli(["daemon", "status", "--daemon-home", machine]);
       check(`${label}: same daemon immediately restores local guidance after registry repair`, recovered.code === 2 && recovered.doc.error?.code === "UNSUPPORTED" && localRemedy(recovered.doc.error.remedy) && after.code === 0 && after.doc.result?.pid === pid && before.doc.result?.pid === pid);
+    }
+    const ownRecord = join(home, "meshes", `${spaceSegment(space)}.json`);
+    const ownBytes = readFileSync(ownRecord, "utf8");
+    for (const [label, bytes] of variants) {
+      writeFileSync(ownRecord, bytes, { mode: 0o600 });
+      try {
+        const refused = await cli(daemonArgs("service-status"));
+        console.log(`${label} requested service-status`, refused.code, refused.doc.error);
+        check(`${label}: requested damage returns a structured refusal`, refused.code === 1 && refused.doc.error?.code === "USAGE_INVALID" && refused.doc.error.cause?.code === "MANAGER_UNAVAILABLE");
+        check(`${label}: refusal identifies the requested record`, refused.doc.error?.message?.includes(ownRecord));
+        check(`${label}: requested invalid record is not silently changed`, readFileSync(ownRecord, "utf8") === bytes);
+        check(`${label}: daemon survives requested-record refusal`, daemon!.pid === pid && daemon!.exitCode === null && daemon!.signalCode === null);
+        noRecords(`requested ${label}`);
+      } finally {
+        renameSync(ownRecord, join(root, `requested-${label}.retained`));
+        writeFileSync(ownRecord, ownBytes, { mode: 0o600 });
+      }
+      const recovered = await cli(daemonArgs("service-status"));
+      const after = await cli(["daemon", "status", "--daemon-home", machine]);
+      check(`${label}: requested-record repair restores guidance on the same daemon`, recovered.code === 2 && recovered.doc.error?.code === "UNSUPPORTED" && localRemedy(recovered.doc.error.remedy) && after.code === 0 && after.doc.result?.pid === pid);
     }
   } else {
     stackStarted = true;

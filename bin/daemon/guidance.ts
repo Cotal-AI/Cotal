@@ -1,11 +1,11 @@
-import { findMesh, homeCotalDir, shellPath } from "@cotal-ai/workspace";
+import { readMesh, homeCotalDir, shellPath } from "@cotal-ai/workspace";
 
 export const NOT_USER_AUTH_MESSAGE = "this space does not use user sign-in, so the daemon cannot connect to it as its own service";
 export const NOT_USER_AUTH_REMEDY = "run `cotal up` from the folder that hosts this local space; its Manager runs under `cotal up`. The machine service hosts Managers only for user-auth participant spaces";
 
-/** Local registry facts suffice for guidance without contacting an auth provider. */
+/** Read only this space's record for guidance without contacting an auth provider. */
 export function localSpaceRemedy(space: string): string | undefined {
-  const entry = findMesh(space);
+  const entry = readMesh(space);
   return entry && (entry.mode !== "user" || !entry.userAuth) ? NOT_USER_AUTH_REMEDY : undefined;
 }
 
