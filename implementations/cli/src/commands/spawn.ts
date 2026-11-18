@@ -483,6 +483,8 @@ export function validateSpawnArguments(args: ParsedArgs): void {
   const handoffRefusal = managedHandoffRefusal();
   if (handoffRefusal) throw handoffRefusal;
   presentationOf(values);
+  if (args.positionals[0] !== undefined && !args.positionals[0].trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "persona cannot be empty", { remedy: "name a persona, or omit it to use the default persona" });
   // `runCli` has already taken the handoff into custody and deleted its variable.
   const internal = holdsManagedHandoff() || Boolean(process.env[ENROLLMENT_URL_ENV] || process.env[ENROLLMENT_FILE_ENV]);
   if (!holdsManagedHandoff() && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined))
