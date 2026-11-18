@@ -235,6 +235,8 @@ node scripts/automatic-update-platform-baseline.mjs --source <source-version> --
 node scripts/automatic-update-platform-baseline.mjs --summary ./upgrade-evidence
 ```
 
+You can also pass a symlink to the matrix driver in these commands.
+
 `--expected-target` freezes public latest at both resolutions. Omit it only for an explicitly
 runtime-latest diagnostic. A same-version result is not a version-changing upgrade. Optional shell
 completion and pre-existing PATH guidance stay in the transcript, while actual restoration,
