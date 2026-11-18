@@ -147,6 +147,20 @@ export function executionDescriptorPath(root: string): string {
 
 /** Select a verified program, or the installed first generation when no matching descriptor exists. */
 export function selectExecutionProgram(root: string): { root: string; entry: string; retained: boolean } {
+  return executionProgram(root, true);
+}
+
+/** Observe replacement metadata without walking the retained package. This does not authorize
+ *  execution: callers must still launch through the bootstrap to verify the complete inventory. */
+export function observeExecutionVersion(root: string): string {
+  const selected = executionProgram(root, false);
+  const meta = object(JSON.parse(readFileSync(join(selected.root, "package.json"), "utf8")));
+  if (meta.name !== "cotal-ai" || typeof meta.version !== "string" || !meta.version)
+    throw new Error("the installed execution artifact is not cotal-ai");
+  return meta.version;
+}
+
+function executionProgram(root: string, verifyInventory: boolean): { root: string; entry: string; retained: boolean } {
   const installed = realpathSync.native(root), descriptorPath = executionDescriptorPath(installed);
   const initial = () => ({ root: installed, entry: import.meta.url.endsWith(".ts") && installed === realpathSync.native(dirname(fileURLToPath(import.meta.url)))
     ? join(installed, "cotal-program.ts") : join(installed, "dist", "cotal-program.js"), retained: false });
@@ -194,9 +208,11 @@ export function selectExecutionProgram(root: string): { root: string; entry: str
     protectedExecutionEntry(path);
   }
   const canonicalSelected = realpathSync.native(selected);
-  const inventory = executionRecord(join(container, "inventory.json"));
-  if (!Array.isArray(inventory) || executionSha256(JSON.stringify(inventory)) !== generation.inventorySha256 ||
-      JSON.stringify(executionInventory(canonicalSelected)) !== JSON.stringify(inventory)) throw new Error("retained execution inventory differs");
+  if (verifyInventory) {
+    const inventory = executionRecord(join(container, "inventory.json"));
+    if (!Array.isArray(inventory) || executionSha256(JSON.stringify(inventory)) !== generation.inventorySha256 ||
+        JSON.stringify(executionInventory(canonicalSelected)) !== JSON.stringify(inventory)) throw new Error("retained execution inventory differs");
+  }
   const meta = object(JSON.parse(readFileSync(join(canonicalSelected, "package.json"), "utf8")));
   if (meta.name !== "cotal-ai" || meta.version !== generation.version) throw new Error("retained execution manifest differs");
   return { root: canonicalSelected, entry: join(canonicalSelected, "dist", "cotal-program.js"), retained: true };
