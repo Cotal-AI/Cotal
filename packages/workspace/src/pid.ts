@@ -779,10 +779,13 @@ export function verifyIdentityPin(pidfilePath: string, tokenAt: ProcessStartToke
  *  stop: the preserved record keeps its pin so the next attempt re-adjudicates. It holds the lock
  *  {@link writePidPair} holds and removes only while the pidfile still reads `recorded` (trimmed), the
  *  record the caller adjudicated. A publish that committed a successor meanwhile is left whole, never
- *  stripped to a pidfile with no pin (#1238). With no pidfile, a stray pin is removed. */
-export function removePidPair(pidfilePath: string, recorded: string): void {
+ *  stripped to a pidfile with no pin (#1238). When given a creation pin, also compare that pin under
+ *  the lock: a successor can publish the same numeric PID with a different start. The `gone` and
+ *  `stale` guards recheck liveness instead (`stale` also accepts a mismatched pin). Returns false
+ *  when the guard fails. With no pidfile, a stray pin is removed. */
+export function removePidPair(pidfilePath: string, recorded: string, expected?: ProcessIdentityRecord | "gone" | "stale"): boolean {
   const pinPath = identityPinPath(pidfilePath);
-  if (!existsSync(pidfilePath) && !existsSync(pinPath)) return; // nothing recorded: take no lock, create no directory
+  if (!existsSync(pidfilePath) && !existsSync(pinPath)) return true; // nothing recorded: take no lock, create no directory
   const held = lockPidRecord(pidfilePath);
   try {
     let now: string | undefined;
@@ -791,7 +794,16 @@ export function removePidPair(pidfilePath: string, recorded: string): void {
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     }
-    if (now !== undefined && now !== recorded) return; // a successor's record: not this removal's
+    if (now !== undefined && now !== recorded) return false;
+    if (now !== undefined && expected) {
+      if (typeof expected === "string") {
+        const current = verifyIdentityPin(pidfilePath).kind;
+        if (current !== "gone" && !(expected === "stale" && current === "mismatch")) return false;
+      } else {
+        const current = currentPinLine(pidfilePath);
+        if (current?.pid !== expected.pid || current.token !== expected.token) return false;
+      }
+    }
     try {
       rmSync(pinPath, { force: true });
     } catch (e) {
@@ -805,6 +817,7 @@ export function removePidPair(pidfilePath: string, recorded: string): void {
       );
     }
     rmSync(pidfilePath, { force: true });
+    return true;
   } finally {
     held.release();
   }
