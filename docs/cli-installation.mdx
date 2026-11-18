@@ -217,6 +217,9 @@ recording the failed attempt. macOS and Windows retain their separate activation
 On Linux, manual `cotal update --self` also repairs a dead owner's ambiguous global child marker
 under the global update lock. It stops only this installation's service after empty hosted admission,
 requires this account's other application processes to exit, and retains the marker before continuing.
+Without a recorded service or user bus, repair uses the same account-process census without
+requiring a systemd user manager. An advertised user bus must still authenticate its manager.
+The invoking command's ancestors are excluded from the census.
 Unreadable evidence or a live writer leaves the marker intact. It starts the enabled owned service
 again after the attempt. It does not enable a disabled service.
 

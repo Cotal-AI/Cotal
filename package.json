@@ -1000,6 +1000,7 @@
     "smoke:update-local-managers": "tsx implementations/cli/smoke/update-local-managers.smoke.ts && tsx implementations/cli/smoke/update-manager-pin-live.smoke.ts",
     "smoke:update-remote-custody": "tsx implementations/cli/smoke/update-remote-custody.smoke.ts",
     "smoke:update-refusal": "tsx implementations/cli/smoke/update-refusal.smoke.ts",
+    "smoke:update-marker-repair": "tsx bin/smoke/update-marker-repair.smoke.ts",
     "smoke:update-custody": "tsx packages/workspace/smoke/update-custody.smoke.ts",
     "smoke:update-closure-wait": "tsx packages/workspace/smoke/update-closure-wait.smoke.ts",
     "smoke:update-concurrency": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/update-concurrency.smoke.ts",

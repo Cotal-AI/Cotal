@@ -189,19 +189,24 @@ const composed: Command = { ...command, async run(args) {
   }
   const runtime = { ...updateRuntime, automaticGenerationWait: process.platform === "linux",
     claimGlobalUpdate: (root: string) => claimGlobalNpmUpdateLock(root, process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" ? { waitMs: 10 * 60_000, repairAmbiguous: () => {
+      let managerPid: number | undefined;
+      let managerStart: string | undefined;
       if (repairService) {
         const plan = planUninstall(repairService, undefined);
         if (!installedDaemonIdentity(repairService).same || plan.mechanism !== "systemd-user") throw new Error("daemon installation changed before repair");
         submitSystemdUnitControl("stop", plan.unit);
       }
+      const userBus = process.env.DBUS_SESSION_BUS_ADDRESS || existsSync(join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid!()}`, "bus"));
+      if (repairService || userBus) {
+        const native = execFileSync("busctl", ["--user", "--no-pager", "--timeout=5s", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"], { encoding: "utf8", timeout: 6000 }).trim();
+        const manager = /^u ([1-9]\d*)$/.exec(native);
+        if (!manager) throw new Error("the native user manager PID could not be authenticated for repair");
+        managerPid = Number(manager[1]);
+        managerStart = processBirth(managerPid);
+        if (!managerStart) throw new Error("the native user manager lifetime is unreadable");
+      }
       const ancestors = new Set<number>();
-      const native = execFileSync("busctl", ["--user", "--no-pager", "--timeout=5s", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"], { encoding: "utf8", timeout: 6000 }).trim();
-      const manager = /^u ([1-9]\d*)$/.exec(native);
-      if (!manager) throw new Error("the native user manager PID could not be authenticated for repair");
-      const managerPid = Number(manager[1]);
-      const managerStart = processBirth(managerPid);
-      if (!managerStart) throw new Error("the native user manager lifetime is unreadable");
-      for (let pid = process.pid; pid > 1 && !ancestors.has(pid);) {
+      for (let pid = process.pid; pid > 0 && !ancestors.has(pid);) {
         ancestors.add(pid);
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
         pid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
