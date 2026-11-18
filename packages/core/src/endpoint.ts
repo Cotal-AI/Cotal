@@ -2425,6 +2425,16 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** Run the next rebuild attempt now if the endpoint is waiting out a {@link reestablishLoop}
+   *  backoff, for a caller with work waiting on the link. After a long outage that backoff can run
+   *  for up to a minute past the broker's return, and a send made in it waited for an attempt
+   *  nobody had scheduled (#7408). Idle endpoints keep their spread-out retries. A no-op otherwise:
+   *  a rebuild in flight is already the attempt, and a link nats.js is still reconnecting keeps
+   *  its buffered publishes. */
+  retryNow(): void {
+    if (!this.stopped && this.reestablishing && !this.rebuildPromise) this.kickBackoff();
+  }
+
   /** Cut an in-flight reestablish backoff short so the next attempt runs immediately, and
    *  clear its timer so it can't fire later on a stopped/restarted loop. */
   private kickBackoff(): void {
