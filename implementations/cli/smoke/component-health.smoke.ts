@@ -736,13 +736,17 @@ try {
   const reusedLegacy = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
   check("all reused legacy PIDs read absent, never running or serving",
     reusedLegacy.status === 1 && ["manager", "delivery", "broker"].every((name) => new RegExp(`${name}\\s+absent`).test(reusedLegacy.stdout)) && !/\b(?:Manager|Delivery|Broker)\s+running/.test(reusedLegacy.stdout), `${reusedLegacy.stdout}${reusedLegacy.stderr}`);
-  const refusedDown = cliIn(webRoot, ["down", "--yes"], 120_000);
-  check("down refuses reused legacy records without stopping unrelated processes",
-    refusedDown.status !== 0 && refusedDown.stderr.includes("pid has been reused") && replacements.every((child) => child.exitCode === null && child.signalCode === null), `${refusedDown.stdout}${refusedDown.stderr}`);
+  const clearedDown = cliIn(webRoot, ["down", "--yes"], 120_000);
+  check("down clears reused legacy records and their pins without stopping unrelated processes",
+    clearedDown.status === 0 && (clearedDown.stderr.match(/was reused by another process/g)?.length ?? 0) === 3 &&
+    [MANAGER_PIDFILE, DELIVERY_PIDFILE, "nats.pid"].every((kind) => {
+      const path = canonicalLocalProcessPath(kind, { root: webRoot, space: WEB_SPACE });
+      return !existsSync(path) && !existsSync(`${path}.identity`);
+    }) && replacements.every((child) => child.exitCode === null && child.signalCode === null), `${clearedDown.stdout}${clearedDown.stderr}`);
   for (const child of replacements) await stop(child);
   const legacyDown = cliIn(webRoot, ["down", "--yes"], 120_000);
   webStack = legacyDown.status !== 0;
-  check("down clears the stale legacy records after the replacement processes exit", !webStack, `${legacyDown.stdout}${legacyDown.stderr}`);
+  check("down is still successful after the replacement processes exit", !webStack, `${legacyDown.stdout}${legacyDown.stderr}`);
   const restartController = cliIn(controllerRoot, ["up"], 120_000);
   controllerStack = restartController.status === 0;
   check("restart the controller with all components", controllerStack, `${restartController.stdout}${restartController.stderr}`);
