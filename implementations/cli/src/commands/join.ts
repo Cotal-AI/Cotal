@@ -29,7 +29,7 @@ import {
   type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, credentialReachableOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { resolveSpace } from "../lib/status.js";
@@ -208,8 +208,14 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
-    await reachableOrThrow(server, auth);
-    if (values.creds) checkCredentialJoin(auth.creds!, space, lifecycleUid!, channel);
+    if (values.creds) {
+      await credentialReachableOrThrow(server, { ...auth, creds: auth.creds! }, {
+        space, path: values.creds, explicitServer: (values.server ?? link?.servers) !== undefined, provision: true,
+      });
+      checkCredentialJoin(auth.creds!, space, lifecycleUid!, channel);
+    } else {
+      await reachableOrThrow(server, auth);
+    }
   } else {
     // Self-mint: a bare `cotal join` becomes a console on the running mesh. In auth mode it self-provisions
     // exactly like the manager does at spawn — open a short-lived `provisioner`, pre-create THIS console's

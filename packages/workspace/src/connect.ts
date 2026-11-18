@@ -606,44 +606,9 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     const creds = readCredsFile(flags.creds);
     // Keep recorded TLS policy, or require the transport the explicit URL names.
     const tls = tlsIntent(server, recorded?.tlsRequired === true);
-    try {
-      await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) });
-    } catch (e) {
-      // A rejected credential whose own permissions name another space is reported with that space.
-      const owner = isConnectRefusal(e) && e.code === "PERMISSION_DENIED" ? spaceInCreds(creds) : undefined;
-      if (owner === undefined) throw e;
-      const at = brokerAddressForDisplay(server) ?? "an invalid broker address";
-      // A `--server` other than the one the credential's space is registered at sends it to another
-      // broker, so the step back drops `--server` rather than keeping it.
-      const ownerMesh = findMesh(owner);
-      const elsewhere = flags.server !== undefined && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
-      if (owner === space) {
-        if (elsewhere === undefined) {
-          const rejection = await recordedCredentialRejection(space, creds);
-          if (rejection === undefined) throw e;
-          const claims = credsClaims(creds);
-          const mint = claims.name === "agent" ? `mint a new key with the grants it held: \`cotal auth mint <label>${grantMintFlags(agentGrants(claims.nats ?? {}, space))} --out <new file>\`` : `mint a new key: \`cotal auth mint <label>${typeof claims.name === "string" ? ` --profile ${claims.name}` : ""} --out <new file>\``;
-          if (rejection.kind === "other-account") {
-            // A local account says nothing about an unrelated broker with the same space name.
-            if (ownerMesh?.mode !== "auth" || ownerMesh.server !== server) throw e;
-            const message = `credentials rejected at ${at}: space "${space}" has a different local identity from the one that issued ${flags.creds}, as after reset space and a new up`;
-            const remedy = `the old credential cannot authenticate to this identity; from ${ownerMesh.root}, ${mint}`;
-            throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path: flags.creds } });
-          }
-          // The account here records the revocation, so the refusal says so instead of "check your creds".
-          const message = `credentials rejected at ${at}: the key ${claims.sub} in ${flags.creds} was revoked at ${new Date(rejection.at * 1000).toISOString()} with auth revoke-credential`;
-          const remedy = `a revoked key is not signed again; ${mint}`;
-          throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path: flags.creds } });
-        }
-        const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}", which is registered here at ${elsewhere}, not ${at}`;
-        const remedy = `drop --server to use ${owner}'s broker at ${elsewhere}, or point --server at it`;
-        throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, credentialSpace: owner, path: flags.creds, server: at } });
-      }
-      const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}"${named ? `, not "${space}"` : ""}`;
-      const use = elsewhere !== undefined ? `use it with --space ${owner} and without --server, which dials ${owner}'s broker at ${elsewhere}` : ownerMesh ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`;
-      const remedy = `${use}${named ? `, or mint one for "${space}" with \`cotal auth mint <label> --space ${space} --out <file>\`` : ""}`;
-      throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { ...(named ? { space } : {}), credentialSpace: owner, path: flags.creds } });
-    }
+    await credentialReachableOrThrow(server, { creds, ...(tls ? { tls } : {}) }, {
+      space, path: flags.creds, named, explicitServer: flags.server !== undefined,
+    });
     return { server, space, tls, creds };
   }
   // A raw OPEN remote mesh: explicit `--server` + a `--space` that isn't locally registered. Naming
@@ -972,6 +937,55 @@ export function readCredsFileOrExit(path: string): string {
     return readCredsFile(path);
   } catch (e) {
     exitOnRefusal(e);
+  }
+}
+
+/** Probe a supplied credential, then diagnose a broker rejection from its declared space and
+ * local account records. Metadata never substitutes for broker admission. Provisioned callers
+ * need a fresh inbox and must use the lifecycle UID the replacement mint reports. */
+export async function credentialReachableOrThrow(
+  server: string,
+  auth: RawAuth & { creds: string },
+  context: { space: string; path: string; named?: boolean; explicitServer: boolean; provision?: boolean },
+): Promise<void> {
+  const { space, path, named = true, provision = false } = context;
+  const creds = auth.creds;
+  try {
+    await reachableOrThrow(server, auth);
+  } catch (e) {
+    const owner = isConnectRefusal(e) && e.code === "PERMISSION_DENIED" ? spaceInCreds(creds) : undefined;
+    if (owner === undefined) throw e;
+    const at = brokerAddressForDisplay(server) ?? "an invalid broker address";
+    const ownerMesh = findMesh(owner);
+    // An explicitly paired broker different from the registration must not be kept in the retry.
+    const elsewhere = context.explicitServer && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
+    const provisionFlags = provision ? ` --space ${space} --provision` : "";
+    const pairing = provision ? "; join with the lifecycle UID that mint reports" : "";
+    if (owner === space) {
+      if (elsewhere === undefined) {
+        const rejection = await recordedCredentialRejection(space, creds);
+        if (rejection === undefined) throw e;
+        const claims = credsClaims(creds);
+        const mint = claims.name === "agent" ? `mint a new key with the grants it held: \`cotal auth mint <label>${provisionFlags}${grantMintFlags(agentGrants(claims.nats ?? {}, space))} --out <new file>\`${pairing}` : `mint a new key: \`cotal auth mint <label>${typeof claims.name === "string" ? ` --profile ${claims.name}` : ""} --out <new file>\``;
+        if (rejection.kind === "other-account") {
+          // A local account says nothing about an unrelated broker with the same space name.
+          if (ownerMesh?.mode !== "auth" || ownerMesh.server !== server) throw e;
+          const message = `credentials rejected at ${at}: space "${space}" has a different local identity from the one that issued ${path}, as after reset space and a new up`;
+          const remedy = `the old credential cannot authenticate to this identity; from ${ownerMesh.root}, ${mint}`;
+          throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path } });
+        }
+        const message = `credentials rejected at ${at}: the key ${claims.sub} in ${path} was revoked at ${new Date(rejection.at * 1000).toISOString()} with auth revoke-credential`;
+        const remedy = `a revoked key is not signed again; ${mint}`;
+        throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path } });
+      }
+      const message = `credentials rejected at ${at}: ${path} is a credential for space "${owner}", which is registered here at ${elsewhere}, not ${at}`;
+      const remedy = `drop --server to use ${owner}'s broker at ${elsewhere}, or point --server at it`;
+      throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, credentialSpace: owner, path, server: at } });
+    }
+    const message = `credentials rejected at ${at}: ${path} is a credential for space "${owner}"${named ? `, not "${space}"` : ""}`;
+    const use = elsewhere !== undefined ? `use it with --space ${owner} and without --server, which dials ${owner}'s broker at ${elsewhere}` : ownerMesh ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`;
+    const remedy = `${use}${named ? `, or mint one for "${space}" with \`cotal auth mint <label> --space ${space}${provision ? " --provision" : ""} --out <file>\`${pairing}` : ""}`;
+    throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { ...(named ? { space } : {}), credentialSpace: owner, path } });
   }
 }
 
