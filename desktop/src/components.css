@@ -25,7 +25,9 @@
 .settings-card.confirming-account > :not(.settings-heading):not(:has(#account-confirmation)) { display: none; }
 .confirming-account #settings-account, .confirming-account #settings-spaces, .confirming-account #account-confirmation + #account-outcome, .confirming-account .account-actions:has(#settings-signout) { display: none; }
 .settings-card { max-height: calc(100vh - 110px); overflow-y: auto; padding: 10px 24px; }
-.settings-row { padding-block: 4px; }
+.settings-row { padding-block: 2px; }
+.settings-card .settings-heading { margin-bottom: 4px; }
+.settings-card #service-log:not([open]) { margin-top: 0; }
 .settings-card.account-outcome-view > :not(.settings-heading):not(:has(#account-outcome)) { display: none; }
 .account-outcome-view #settings-account, .account-outcome-view #settings-spaces, .account-outcome-view .account-actions:has(#settings-signout) { display: none; }
 .account-outcome-view #account-outcome { max-height: 250px; color: var(--ink); }
