@@ -617,7 +617,7 @@ function heldNote(
   if (stuck.length) {
     const named = stuck
       .slice(0, NAMED_STUCK)
-      .map((i) => `${fmtFrom(i).slice(0, 40)} (${itemCost(i).toLocaleString("en-US")} chars)`)
+      .map((i) => `${fmtFrom(i, 40)} (${itemCost(i).toLocaleString("en-US")} chars)`)
       .join(", ");
     const rest = stuck.length - Math.min(NAMED_STUCK, stuck.length);
     parts.push(
@@ -694,7 +694,7 @@ function renderPart(opts: {
       : done
         ? "This was its last part, so it is now cleared."
         : "It stays buffered and uncleared until its last part goes out; call cotal_inbox again for the next part.";
-    const head = `Part of a message larger than one response, from ${fmtFrom(opts.item).slice(0, 40)}: characters ${fmt(opts.offset + 1)}-${fmt(end)} of ${fmt(total)}${opts.peek ? " (peek: nothing cleared)" : ""}. ${next}`;
+    const head = `Part of a message larger than one response, from ${fmtFrom(opts.item, 40)}: characters ${fmt(opts.offset + 1)}-${fmt(end)} of ${fmt(total)}${opts.peek ? " (peek: nothing cleared)" : ""}. ${next}`;
     const body = `${head}\n  ${full.slice(opts.offset, end)}${heldNote(opts.others, opts.peek, opts.stuck, tier)}`;
     return opts.warning ? `${body}\n\n${opts.warning}` : body;
   };
@@ -785,7 +785,7 @@ const NAMED_AHEAD = 3;
  *  silent. Not a drop: nothing was cleared and the stream still holds them. */
 export function aheadNote(items: readonly InboxItem[]): string {
   if (!items.length) return "";
-  const senders = [...new Set(items.map((i) => attributionSafe((i.fromName.trim() ? i.fromName : i.fromId.trim() ? i.fromId : "(unnamed)")).slice(0, 40)))];
+  const senders = [...new Set(items.map((i) => (i.fromName.trim() || i.fromId.trim() ? fmtFrom(i, 40) : "(unnamed)")))];
   const named = senders.slice(0, NAMED_AHEAD).join(", ");
   const rest = senders.length - Math.min(NAMED_AHEAD, senders.length);
   const one = items.length === 1;
@@ -847,10 +847,12 @@ function resolveFeedbackEmail(explicit: string | undefined, env?: NodeJS.Process
   }
 }
 
-/** Routing context for a `<channel …>` tag. Keys must be [A-Za-z0-9_] (others are dropped). */
+/** Routing context for a `<channel …>` tag. Keys must be [A-Za-z0-9_] (others are dropped). The
+ *  sender's name and role are its own claim, so `from` is the marked label the frames print and
+ *  `role` is scrubbed the same way; `from_id` is the identity the broker checked. */
 export function channelMeta(i: InboxItem): Record<string, string> {
-  const m: Record<string, string> = { kind: i.kind, from: i.fromName, from_id: i.fromId };
-  if (i.fromRole) m.role = i.fromRole;
+  const m: Record<string, string> = { kind: i.kind, from: fmtFrom(i), from_id: i.fromId };
+  if (i.fromRole) m.role = attributionSafe(i.fromRole);
   if (i.channel) m.channel = i.channel;
   if (i.service) m.to_role = i.service; // anycast: the role that was addressed
   if (i.mentions?.length) m.mentions = i.mentions.join(","); // names called out on this channel msg
