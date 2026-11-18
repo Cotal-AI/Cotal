@@ -1,17 +1,19 @@
 /** Prepared and stopped-controller projects must prove they have no live custody before update. */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { MeshTarget } from "@cotal-ai/workspace";
 import { isStoppedLocalMesh, readManagerContinuity } from "../src/commands/update.js";
-import { recordPreparedSpace, setCurrent } from "@cotal-ai/workspace";
+import { findPreparedSpace, readCurrent, recordPreparedSpace, setCurrent } from "@cotal-ai/workspace";
 import { writeStackJournal, STACK_ROLES, type StackJournal } from "../src/lib/stack-journal.js";
 import { serviceInstanceStore, processServiceHost, requireProcessIdentity } from "../src/lib/service-instances.js";
 
 const root = mkdtempSync(join(tmpdir(), "cotal-update-unstarted-"));
+const other = mkdtempSync(join(tmpdir(), "cotal-update-deleted-"));
 const prior = process.env.COTAL_HOME;
 process.env.COTAL_HOME = join(root, "home");
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
@@ -88,10 +90,37 @@ try {
     process.chdir(cwd);
     assert.equal(await readManagerContinuity({ space: target.space }), "none", "a named stopped controller is eligible from another folder");
   } finally { process.chdir(cwd); }
-  console.log("update-unstarted.smoke: 17 checks passed");
+  // Use the public CLI to prepare and select a space that never starts, then delete
+  // its project. Neither ordinary reconciliation nor repeated self-update needs it.
+  const bin = resolve(import.meta.dirname, "../../../bin/dist/cotal.js");
+  const home = join(other, "home");
+  mkdirSync(home, { mode: 0o700 });
+  const cli = (...args: string[]) => spawnSync(process.execPath, [bin, ...args], {
+    cwd: other, env: { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" },
+    encoding: "utf8", timeout: 120_000,
+  });
+  const deleted = join(other, "project"), space = `deleted-${randomUUID()}`;
+  mkdirSync(deleted, { mode: 0o700 });
+  assert.equal(cli("space", "create", space, "--root", deleted).status, 0, "the CLI prepares the project");
+  assert.equal(cli("use", space).status, 0, "the CLI selects the prepared project");
+  const prepared = findPreparedSpace(space);
+  rmSync(deleted, { recursive: true });
+  for (const args of [["update"], ["update", "--self"], ["update", "--self"]]) {
+    const run = cli(...args);
+    assert.equal(run.status, 0, `${args.join(" ")} completes with a deleted selected project: ${run.stdout}\n${run.stderr}`);
+    assert.equal(run.stdout.split("\n").filter(line => line.includes(`${space}: folder is gone`)).length, 1, "one line names the skipped space");
+    assert.ok(run.stdout.includes("processes untouched, continuity not checked"), "update makes no continuity claim");
+    assert.equal(readCurrent(), space, "update preserves the saved selection");
+    assert.deepEqual(findPreparedSpace(space), prepared, "update preserves the prepared record");
+    assert.equal(existsSync(deleted), false, "update does not recreate the project");
+  }
+  assert.equal(await readManagerContinuity({ space }, { readOnly: true, retainGraph: true }), "none", "staged pre-install skips the deleted prepared root too");
+  await assert.rejects(readManagerContinuity({ space, creds: join(other, "missing.creds") }), "explicit credentials still refuse");
+  console.log("update-unstarted.smoke: 39 checks passed");
 } finally {
   if (listener.listening) await new Promise<void>((resolve) => listener.close(() => resolve()));
   if (prior === undefined) delete process.env.COTAL_HOME;
   else process.env.COTAL_HOME = prior;
   rmSync(root, { recursive: true, force: true });
+  rmSync(other, { recursive: true, force: true });
 }

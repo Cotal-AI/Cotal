@@ -836,6 +836,12 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       peek = resolveMeshTarget(process.cwd(), { server, space, offline });
     } catch (e) {
       if (!isWorkspaceTargetError(e)) throw e;
+      // Prepared-only spaces have no registry entry for the gone-root check above.
+      // As with a registered gone root, leave its records and processes untouched.
+      if (e.code === "not-started" && e.details.rootMissing === true) {
+        console.log(`  ${e.details.space}: folder is gone; leaving its processes untouched, continuity not checked`);
+        return "none";
+      }
       // A space prepared here that never started (`cotal setup --configure-only`, `space create`)
       // has no broker, no stack journal and no manager: a supervisor serves a started stack, and
       // this one never launched a member, so there is nothing this update could interrupt. Run from
