@@ -426,10 +426,12 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     // A background child reports how to reach it, such as the dashboard's bootstrap file, in its own log.
     if (values.foreground) return view;
     // One instance of a definition needs no instance or space on the line that reads it. A space named
-    // with --space stays on the stop line, since a bare one from this folder can resolve to another (#7346).
+    // with --space stays on the stop line and the manager's lines, since a bare one from this folder can
+    // resolve to another (#7346, #7642).
     const only = serviceInstances(space, name).length === 1;
-    const logs = commandName === "manager" ? "cotal manager logs" : only && !args.values.space ? `cotal service logs ${row.definition}` : `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`;
-    const stop = commandName === "manager" ? "cotal manager stop" : `cotal service stop ${row.definition}${args.values.space ? ` --space ${oneLine(row.space)}` : ""}`;
+    const named = args.values.space ? ` --space ${oneLine(row.space)}` : "";
+    const logs = commandName === "manager" ? `cotal manager logs${named}` : only && !args.values.space ? `cotal service logs ${row.definition}` : `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`;
+    const stop = commandName === "manager" ? `cotal manager stop${named}` : `cotal service stop ${row.definition}${named}`;
     return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: logs, description: "Read the service's own startup output, including how to reach it when it reports that" }, { command: stop, description: "Stop it" }] }] }] };
   });
   if (values.foreground && started.child && started.exit) {
