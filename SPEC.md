@@ -6738,10 +6738,12 @@ The desk holds at most 32 prompts that are `open` or `sent` and opens no more; t
 dialog answers the next one. It remembers the last 32 of its prompts to close, and forgets an older
 one. It opens no prompt whose canonical content is over 262144 bytes, and none whose tool input
 is `omitted` while an option proceeds, so an omitted input can be refused remotely and approved only
-at the harness. A summary's JSON encoding is at most 4096 bytes of UTF-8 in every state its prompt can
-reach: when a prompt opens, the desk encodes its summary in every state, with the answerer's owner,
-actor and lifecycle UID, the option id and `seen` at their longest legal values, and does not open the
-prompt when the largest is over 4096 bytes. The desk serves only on a connection whose `max_payload` is
+at the harness. Nor does it open one with two options that share an id, an option that submits a form
+the content does not have, a form no option submits, or a form schema whose `required` names a
+property it does not declare. The schemas cannot express these. A summary's JSON encoding is at most
+4096 bytes of UTF-8 in every state its prompt can reach: when a prompt opens, the desk encodes its
+summary in every state, with the answerer's owner, actor and lifecycle UID, the option id and `seen`
+at their longest legal values, and does not open the prompt when the largest is over 4096 bytes. The desk serves only on a connection whose `max_payload` is
 at least 524288 bytes, which holds the largest `prompts` reply (64 summaries) and the largest `prompt`
 reply with their envelopes. It checks this again on every replaced connection, and closes when the
 check fails there, as it does when the broker refuses its subscription. A reply that still does not
@@ -6810,7 +6812,8 @@ harness, whatever arrives while the receipt is pending.
 
 **Reader rules.**
 
-- A reader MUST drop a value that does not match the closed schemas.
+- A reader MUST drop a value that does not match the closed schemas, and a prompt with two options
+  that share an id.
 - A reader MUST recompute the digest of the content it received and MUST NOT render or answer on a
   mismatch, and MUST send back the digest of the content it rendered.
 - A renderer MUST neutralise direction-override and invisible characters, MUST NOT cut the end of a
@@ -7901,6 +7904,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-18 | **Principal-route and prompt-desk corrections (§6, §13.14, §13.21, §13.22), additive.** A caller drops a stored message that reaches its reply read, one a JetStream read such as a Direct Get delivers on any subject its requester names, the sentinel included, and keeps waiting past a message under another head. Stopping a client ends its principal serves and waits for their handlers before the connection closes, and a process serves an endpoint once for its lifecycle. Under one `runtime.id` the presence `prompts.seq` never goes back, also across a stopped serve. The desk's admission refusals the schemas cannot express are now stated, and a reader drops a prompt with two options that share an id. No subject or schema changes. |
 | 2026-11-17 | **The agent's prompt desk (§13.22), additive.** An agent serves the `agent` endpoint from one prompt desk per process, the only writer of its prompts' states, which applies every event in one step in the order it arrives. §13.22 now states the two bounds every prompt has (offered for 1 s to 7 days, and settled 1 s to 24 h after an accepted answer), the desk's limits (32 prompts open or sent, the last 32 closed, 262144 bytes of content, 4096 bytes per summary in every state the prompt can reach, and a 524288-byte `max_payload` floor checked on every connection), the eleven `prompt-answer` checks in their order, when two answers are the same, the reply's 10 s bound and what state it carries, what else moves a prompt from each state, and that a caller waits at least 15 s for an answer's reply. No subject or schema changes. |
 | 2026-11-17 | **The principal route and the `agent` endpoint (§6, §13.2, §13.7, §13.9, §13.14, §13.21, §13.22, Appendix B), additive.** A principal serves a core-defined command set about itself on `cotal.<space>.ep.prin.<endpoint>.<pOwner>.<pActor>.<pUid>.<runtimeId>.<command>.<authority>.<cOwner>.<cActor>.<cUid>.<nonce>`, with replies on `ep.prin-reply` and a no-responders sentinel with `_nr` in its five head positions. It needs no registration: the principal's own credential serves it. The authority word is `owner` (the caller's own owner's principals) or `grant` (one granted lifecycle). A cluster command declares the words it admits in `authorities`; such a command is never served on a service route. The auth callout mints serve rows into every agent credential of a ledger row and `owner` rows into those of an interactive row, from the row's kind; grant issuance is not defined yet. Serving is ready only after the broker accepted the subscription, and it binds again on every replaced connection. Revision 1 of the `agent` endpoint (`ai.cotal.agent`) has `prompts`, `prompt` and `prompt-answer` for an agent's harness prompts, with the prompt, form profile, states and reader rules of §13.22, and presence gains `prompts: { open, seq }`. Also corrected: §13.2 counted six authorization-mode tokens where there are seven. |
 | 2026-11-17 | **Harness permission requests are withdrawn (§3, §6, §8, §8.2, §9, §13.7, Appendix B), breaking.** The 2026-11-13 revision below is removed in full: the `perm` answer subject, the `cotal_permissions_<space>` bucket and its per-lifecycle readers, the permission record and its state table, the interactive answer rows, the `request` field on a presence condition and the Manager's `permissionRequests` connector field. A connector no longer holds a harness permission prompt for a remote answer, and the harness's own dialog is the only way to answer one. A space provisioned while that revision was current keeps an unused `cotal_permissions_<space>` bucket, which nothing reads or writes. |

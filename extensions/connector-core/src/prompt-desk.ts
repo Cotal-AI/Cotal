@@ -14,7 +14,8 @@
  * step, in the order it reaches the desk, and no step waits for anything. An event that reaches the
  * desk while a step runs, such as an adapter report made from inside `check`, `deliver` or `end`, is
  * applied after that step. The first event applied wins, and each later one meets the state the
- * first one left.
+ * first one left. Opening a prompt is not such an event: `open` called from inside a hook takes
+ * effect at once.
  */
 import { randomBytes } from "node:crypto";
 import {

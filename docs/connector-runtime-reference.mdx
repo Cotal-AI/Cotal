@@ -238,6 +238,7 @@ The desk knows no harness. An adapter calls `open({ content, openMs, settleMs },
 `openMs` bounds how long the prompt is offered, from 1 s to 7 days.
 `settleMs` bounds how long a prompt with an accepted answer waits for evidence, from 1 s to 24 h.
 `open` throws `PromptRefused` with the reason `full`, `too-large`, `invalid` or `closed`, and the adapter then leaves that dialog to the harness.
+`open` takes effect at once, also from inside a hook: unlike a report, it is not applied after the step that runs the hook.
 
 The adapter supplies three hooks:
 

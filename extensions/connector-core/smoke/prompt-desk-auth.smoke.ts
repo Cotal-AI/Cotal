@@ -48,7 +48,7 @@ import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallo
 import { SMOKE_BROKER_TOKEN, createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   PROMPT_DESK_MIN_MAX_PAYLOAD, PROMPT_SUMMARY_MAX_BYTES, PromptRefused, openPromptDesk,
-  type Delivery, type PromptDesk, type PromptHold, type PromptHooks, type PromptSpec, type PromptVerdict,
+  stepPrompt, type Delivery, type PromptDesk, type PromptEvent, type PromptHold, type PromptHooks, type PromptSpec, type PromptVerdict,
 } from "../src/prompt-desk.js";
 import { contentOfBytes, contentWithLargestSummary, permission, question } from "./_prompt-fixtures.js";
 import { pickFreePort } from "./_free-port.js";
@@ -256,9 +256,23 @@ function show(s: PromptState | undefined): string {
   const o = s.outcome as { kind: string; seen?: { tie: string; effect?: string }; late?: unknown };
   return `closed/${o.kind}${o.seen ? `/${o.seen.tie}${o.seen.effect ? `:${o.seen.effect}` : ""}` : ""}${o.late ? "+late" : ""}`;
 }
-/** A reader's rule for the states it holds of one prompt: keep the one further along. */
-const rank = (s: PromptState) => (s.kind === "open" ? 0 : s.kind === "sent" ? (s.delivery === "unconfirmed" ? 1 : 2) : 3);
-const furthest = (states: PromptState[]) => states.reduce((a, b) => (rank(b) > rank(a) ? b : a));
+/** The state the desk's own table moves `from` to on `event`, or `from` when it does not move it. */
+const tableStep = (from: PromptState, event: PromptEvent): PromptState => {
+  const step = stepPrompt(from, event, new Date().toISOString());
+  return step.kind === "move" ? step.next : from;
+};
+/** Every event the desk can feed its table. */
+const EVERY_EVENT: PromptEvent[] = [
+  { kind: "delivery", result: "confirmed" }, { kind: "delivery", result: "delivered" }, { kind: "delivery", result: "gone" }, { kind: "delivery", result: "failed" },
+  { kind: "settle", evidence: { kind: "confirmed" } }, { kind: "settle", evidence: { kind: "withdrawn" } },
+  { kind: "settle", evidence: { kind: "local", seen: { tie: "none" } } }, { kind: "settle", evidence: { kind: "observed", seen: { tie: "prompt", effect: "proceed" } } },
+  { kind: "expiry" }, { kind: "settle-time" }, { kind: "close" },
+];
+/** Two replies about one prompt that cross: the later one is the state the desk's table moves the
+ *  earlier one to on `event`, and no event moves the later one, so a reader that holds both, in either
+ *  order, holds the state the prompt ended in. */
+const crossing = (earlier: PromptState, later: PromptState, event: PromptEvent): boolean =>
+  show(tableStep(earlier, event)) === show(later) && EVERY_EVENT.every((e) => tableStep(later, e) === later);
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 /** A request from a raw connection, with the nonce and envelope `callPrincipal` would use. With
@@ -566,10 +580,17 @@ try {
         await until(async () => show(await stateOf(f)) === "closed/answered") && same(f.ends, [true]), f.ends);
     }),
     scenario(async (ok) => {
-      const f = openFake(desk1, "10 s bound racing T, T first", { settleMs: 10_000 });
-      const r = await ((await accept(f)).reply);
-      ok("the 10 s bound racing T at the same instant: T was armed first, so the reply reads closed, unconfirmed, nothing seen",
-        show(stateIn(r)) === "closed/unconfirmed/none" && same(f.ends, [true]), verdictOf(r));
+      const together = openFake(desk1, "10 s bound and T due together", { settleMs: 10_000 });
+      const boundFirst = openFake(desk1, "10 s bound due 1 ms before T", { settleMs: 10_001 });
+      const [a, b] = await Promise.all([accept(together), accept(boundFirst)]);
+      // Hold the loop across both due times: the timers phase then runs every due timer of the two
+      // prompts in one tick, in the order they are due, and armed order among those due together.
+      await inOneTick(Date.now() + 9_800, "check", () => {}, 600);
+      const [ra, rb] = [await a.reply, await b.reply];
+      const after = await answer(boundFirst, "allow");
+      ok("the 10 s bound and T in one tick: due together, T was armed first and the reply reads closed, unconfirmed, nothing seen; due 1 ms before T, the bound answers sent, unconfirmed, and T then closes it",
+        show(stateIn(ra)) === "closed/unconfirmed/none" && show(stateIn(rb)) === "sent/unconfirmed" && show(stateIn(after)) === "closed/unconfirmed/none"
+        && same(together.ends, [true]) && same(boundFirst.ends, [true]), [verdictOf(ra), verdictOf(rb), verdictOf(after)]);
     }),
     scenario(async (ok) => {
       const f = openFake(desk1, "10 s bound racing T, bound first", { settleMs: 10_500 });
@@ -580,9 +601,8 @@ try {
       await until(async () => (await stateOf(f))?.kind === "closed", 3000);
       const late = await answer(f, "allow");
       ok("...then T closes it, and a retry reads closed, unconfirmed, nothing seen", show(stateIn(late)) === "closed/unconfirmed/none", verdictOf(late));
-      const held = [stateIn(orig)!, stateIn(late)!];
-      ok("crossing replies, the 10 s bound then T: each names a state the prompt was in, and keeping the one further along ends closed in either order",
-        show(furthest(held)) === "closed/unconfirmed/none" && show(furthest([...held].reverse())) === "closed/unconfirmed/none");
+      ok("crossing replies, the 10 s bound then T: the desk's table moves the first reply's state to the later one on T and moves the later one on no event, so either order ends closed",
+        crossing(stateIn(orig)!, stateIn(late)!, { kind: "settle-time" }), [verdictOf(orig), verdictOf(late)]);
     }),
     scenario(async (ok) => {
       const f = openFake(desk1, "gone after the 10 s reply");
@@ -617,12 +637,15 @@ try {
     }),
     scenario(async (ok) => {
       const f = openFake(desk1, "settle time, evidence first", { settleMs: 1000 });
-      const orig = (await accept(f)).reply;
+      const beside = openFake(desk1, "settle time, no evidence, beside it", { settleMs: 1000 });
+      const [orig, besideOrig] = await Promise.all([accept(f), accept(beside)]);
       f.hold.settle({ kind: "observed", seen: { tie: "subject", effect: "proceed" } });
-      const r = await orig;
+      const r = await orig.reply;
+      const rb = await besideOrig.reply;
       await wait(1300);
-      ok("evidence that arrives first wins: closed, unconfirmed with the sighting, and the settle time changes nothing after",
-        show(stateIn(r)) === "closed/unconfirmed/subject:proceed" && show(await stateOf(f)) === "closed/unconfirmed/subject:proceed" && same(f.ends, [true]), verdictOf(r));
+      ok("evidence that arrives first wins: closed, unconfirmed with the sighting; the settle time, which closed the prompt answered beside it with nothing seen, changes nothing after",
+        show(stateIn(r)) === "closed/unconfirmed/subject:proceed" && show(await stateOf(f)) === "closed/unconfirmed/subject:proceed" && same(f.ends, [true])
+        && show(stateIn(rb)) === "closed/unconfirmed/none" && same(beside.ends, [true]), [verdictOf(r), verdictOf(rb)]);
     }),
     scenario(async (ok) => {
       const f = openFake(desk1, "A, T, D", { settleMs: 1000 });
@@ -649,9 +672,8 @@ try {
       ok("A then D then T, with a retry between each: sent, unconfirmed; the reply reads sent, delivered; then closed, unconfirmed after T",
         show(stateIn(r1)) === "sent/unconfirmed" && show(stateIn(o)) === "sent/delivered" && show(stateIn(r2)) === "sent/delivered"
         && show(stateIn(r3)) === "closed/unconfirmed/none" && same(f.ends, [true]), [r1, o, r2, r3].map(verdictOf));
-      const held = [stateIn(o)!, stateIn(r3)!];
-      ok("crossing replies, D then T: each names a state the prompt was in, and keeping the one further along ends closed in either order",
-        show(furthest(held)) === "closed/unconfirmed/none" && show(furthest([...held].reverse())) === "closed/unconfirmed/none");
+      ok("crossing replies, D then T: the desk's table moves the receipt's state to the later one on T and moves the later one on no event, so either order ends closed",
+        crossing(stateIn(o)!, stateIn(r3)!, { kind: "settle-time" }), [verdictOf(o), verdictOf(r3)]);
     }),
     scenario(async (ok) => {
       const f = openFake(desk1, "deliver resolves something else", { settleMs: 1000, deliver: async () => ({ kind: "applied" }) as unknown as Delivery });
@@ -684,7 +706,7 @@ try {
   console.log("\ndesk 1: open's refusals");
   {
     const content = permission();
-    const refusal = (spec: Record<string, unknown>) => { try { desk1.open(spec as never, { deliver: () => new Promise(() => {}), end: () => {} }); return "opened"; } catch (e) { return e instanceof PromptRefused ? e.reason : `threw ${(e as Error).message}`; } };
+    const refusal = (spec: Record<string, unknown>) => { try { openFake(desk1, "open's refusals", { spec }); return "opened"; } catch (e) { return e instanceof PromptRefused ? e.reason : `threw ${(e as Error).message}`; } };
     const bad = [
       { content, settleMs: 1000 }, { content, openMs: 1000 }, { content, openMs: 999, settleMs: 1000 }, { content, openMs: 7 * 86_400_000 + 1, settleMs: 1000 },
       { content, openMs: 1000, settleMs: 0 }, { content, openMs: 1000, settleMs: 86_400_000 + 1 }, { content, openMs: 1500.5, settleMs: 1000 },
