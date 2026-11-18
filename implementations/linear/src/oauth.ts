@@ -18,7 +18,7 @@ import { auth, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client
 import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
-import { assertPrivateFile, linearDir, oauthStatePath, readAccountToken, saveAccount, type LinearAccount } from "./account.js";
+import { assertAccountWritable, assertPrivateFile, linearDir, oauthStatePath, readAccountToken, saveAccount, type LinearAccount } from "./account.js";
 import { LINEAR_MCP_ORIGIN, linearMcpUrl, OriginRefusedError, ResponseTooLargeError, type LinearMode } from "./origin.js";
 
 /** How an upstream session gets its bearer. `prepare` runs before discovery and before dispatch. */
@@ -139,6 +139,7 @@ class FileOAuthProvider implements OAuthClientProvider {
   }
 
   saveTokens(tokens: OAuthTokens): void {
+    if (this.redirect !== undefined) assertAccountWritable(this.name);
     this.store({ tokens, obtainedAt: Date.now() });
   }
 
@@ -168,6 +169,7 @@ class FileOAuthProvider implements OAuthClientProvider {
 
 /** Interactive login: loopback redirect, PKCE, dynamic registration. Saves an `oauth` account. */
 export async function loginAccount(name: string, mode: LinearMode): Promise<void> {
+  assertAccountWritable(name);
   const serverUrl = linearMcpUrl(mode);
   const scope = scopeFor(mode);
   const http = createServer();
@@ -208,6 +210,7 @@ export async function loginAccount(name: string, mode: LinearMode): Promise<void
     try {
       if ((await auth(provider, { serverUrl, scope, fetchFn: oauthFetch })) !== "AUTHORIZED") {
         const authorizationCode = await code;
+        assertAccountWritable(name);
         if ((await auth(provider, { serverUrl, scope, authorizationCode, fetchFn: oauthFetch })) !== "AUTHORIZED")
           throw new Error("Linear did not issue tokens for this authorization");
       }

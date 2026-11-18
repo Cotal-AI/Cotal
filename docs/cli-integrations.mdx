@@ -50,7 +50,9 @@ array. Edit that record to list the upstream tool names this account may call, f
 `"allowedTools": ["get_issue", "list_issues"]`. Names are case-sensitive literals, not patterns.
 An empty array refuses all tool calls. With the field absent, every tool the upstream account and
 mode permit remains callable. Invalid lists refuse account loading. `account show` reports the
-list, and account add/login preserve it when replacing credentials. To remove a restriction,
+list, and account add/login preserve it when replacing credentials. Re-adding or logging in over an
+invalid record is refused with the file, reason and a remedy to repair it while preserving the
+intended policy. Login checks before token exchange or token persistence. To remove a restriction,
 remove the field from the record. Restart a running Linear service after editing it.
 
 This policy applies to both direct `linear call` and endpoint `call-tool` requests. An unlisted

@@ -3,7 +3,7 @@ import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { acquireLock, credsClaims, resolveAuthProvider, writeSecretFileCreateOnly, type ParsedArgs, type SpaceAuth } from "@cotal-ai/core";
 import { CommandFailure, recordOperationSpace, assertExternalCredentialExport, getSpaceAuth, hasUserAuthState, inputDisabledByFlag, isCommandFailure, presentationOf, protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource, resolveMeshTarget, resolveNativeServiceTarget, userAuthStateDir, workspaceSecretStore, writeResult, type MeshTarget, type Report } from "@cotal-ai/workspace";
-import { accountMissing, assertAccountName, loadAccount, saveAccount, storedTokenPath } from "./account.js";
+import { AccountRecordError, accountMissing, assertAccountName, assertAccountWritable, loadAccount, saveAccount, storedTokenPath } from "./account.js";
 import { loginAccount } from "./oauth.js";
 import { isLinearMode } from "./origin.js";
 import { DEFAULT_LIMITS, LinearUpstream } from "./upstream.js";
@@ -292,6 +292,13 @@ export async function linear(args: ParsedArgs): Promise<void> {
       if (action === "show") {
         emitAccount(args, accountForRead(name), false);
         return;
+      }
+      if (action === "login" || action === "add") {
+        try { assertAccountWritable(name); }
+        catch (error) {
+          if (error instanceof AccountRecordError) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", error.message, { target: { account: name, path: error.path }, remedy: "repair the named account record while preserving its intended allowedTools policy, then repeat the account operation" });
+          throw error;
+        }
       }
       if (action === "login") {
         const mode = v.mode;

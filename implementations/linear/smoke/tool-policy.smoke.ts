@@ -1,13 +1,13 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { LinearUpstream, loadAccount, registerLinearEndpoint, provisionLinearCaller, runLinearEndpoint } from "../src/index.js";
 import { linear } from "../src/cli.js";
-import { linearDir, saveAccount } from "../src/account.js";
+import { linearDir, oauthStatePath, saveAccount } from "../src/account.js";
 import { LINEAR_MCP_ORIGIN } from "../src/origin.js";
 
 const home = mkdtempSync(join(tmpdir(), "linear-policy-"));
@@ -64,7 +64,7 @@ const tokenFile = join(home, "control.token");
 writeFileSync(tokenFile, "local-control\n", { mode: 0o600 });
 const record = join(linearDir(), "limited.json");
 
-async function login(name: string, noise: boolean): Promise<void> {
+async function login(name: string, noise: boolean, invalidRecord = false): Promise<void> {
   const log = console.log;
   let authorize!: (url: URL) => void;
   const ready = new Promise<URL>(resolve => { authorize = resolve; });
@@ -73,9 +73,26 @@ async function login(name: string, noise: boolean): Promise<void> {
     if (match) authorize(new URL(match[0]));
   };
   let settled = false;
+  let loginError: unknown;
+  const beforeTokens = tokenExchanges;
+  const statePath = oauthStatePath(name);
+  const beforeState = existsSync(statePath) ? readFileSync(statePath, "utf8") : undefined;
   const done = linear({ raw: [], positionals: ["account", "login", name], values: { mode: "write", plain: true } })
-    .then(() => { settled = true; return true; }, () => { settled = true; return false; });
+    .then(() => { settled = true; return true; }, error => { loginError = error; settled = true; return false; });
+  const loginRefusal = () => {
+    console.log = log;
+    check("invalid account login refuses before token exchange", tokenExchanges === beforeTokens);
+    check("invalid account login leaves OAuth state untouched", (existsSync(statePath) ? readFileSync(statePath, "utf8") : undefined) === beforeState);
+    check("invalid account login names record, policy and remedy", String(loginError).includes(`${name}.json`) && String(loginError).includes("allowedTools") && /repair|correct/i.test(String(loginError)));
+  };
   try {
+    if (invalidRecord) {
+      const outcome = await Promise.race([ready.then(() => "authorize"), done.then(() => "refused")]);
+      if (outcome === "refused") {
+        loginRefusal();
+        return;
+      }
+    }
     const url = await Promise.race([ready, done.then(() => { throw new Error("login ended before authorization"); })]);
     console.log = log;
     const redirect = new URL(url.searchParams.get("redirect_uri")!);
@@ -84,24 +101,36 @@ async function login(name: string, noise: boolean): Promise<void> {
     valid.searchParams.set("code", "local-code");
     if (noise) {
       const beforeTokens = tokenExchanges;
-      for (const state of [undefined, "not-the-login-state"]) {
+      for (const state of ["not-the-login-state", undefined]) {
         const bad = new URL(redirect);
         if (state !== undefined) bad.searchParams.set("state", state);
-        bad.searchParams.set("error", "access_denied");
+        bad.searchParams.set("code", "local-code");
         let status = 0;
         try { const response = await nativeFetch(bad); status = response.status; await response.text(); } catch { /* listener closure is checked below */ }
-        check("bad OAuth state gets HTTP 400", status === 400);
+        check(state === undefined ? "missing state code callback gets HTTP 400 after wrong-state callback" : "preexisting control: wrong-state code callback gets HTTP 400", status === 400);
       }
       await wait(40);
       check("bad OAuth state leaves login pending", !settled);
-      check("bad OAuth state exchanges no token", tokenExchanges === beforeTokens);
+      check("preexisting control: bad OAuth state with code exchanges no token", tokenExchanges === beforeTokens);
+    }
+    if (noise && settled) {
+      await done;
+      check("valid OAuth callback succeeds after bad state", false);
+      check("OAuth account saved after bad state", false);
+      check("OAuth login preserves existing tool policy", false);
+      return;
     }
     let status = 0;
     try { const response = await nativeFetch(valid); status = response.status; await response.text(); } catch { /* a stopped callback server is the observed failure */ }
     const saved = await done;
-    check(noise ? "valid OAuth callback succeeds after bad state" : "control: valid OAuth callback succeeds", status === 200 && saved);
+    if (invalidRecord) {
+      loginRefusal();
+      console.log(`  OBSERVED invalid login: token exchanges=${tokenExchanges - beforeTokens}, state written=${existsSync(statePath)}, error=${(loginError as { code?: string })?.code ?? "none"}`);
+      return;
+    }
+    check(noise ? "valid OAuth callback succeeds after bad state" : "preexisting control: valid OAuth callback succeeds", status === 200 && saved);
     if (saved) {
-      check(noise ? "OAuth account saved after bad state" : "control: OAuth account saved", loadAccount(name).auth === "oauth");
+      check(noise ? "OAuth account saved after bad state" : "preexisting control: OAuth account saved", loadAccount(name).auth === "oauth");
       if (noise) check("OAuth login preserves existing tool policy", loadAccount(name).allowedTools?.join(",") === "read_issue");
     }
   } finally { console.log = log; await done; }
@@ -123,7 +152,7 @@ try {
   check("credential replacement preserves existing tool policy", loadAccount("limited").allowedTools?.join(",") === "read_issue");
   upstreams.push(restricted);
   const inv = await restricted.inventory();
-  check("inventory remains complete under a tool allowlist", inv.tools.length === 2);
+  check("preexisting control: inventory remains complete under a tool allowlist", inv.tools.length === 2);
   registration = await registerLinearEndpoint({ auth, servers, space, tls: false, endpoint });
   running = await runLinearEndpoint(registration.bundle, restricted);
   const minted = await provisionLinearCaller(auth, { servers, space, tls: false }, endpoint);
@@ -133,7 +162,7 @@ try {
   await caller.start();
   const invoke = (name: string) => caller!.invokeService(endpoint, "call-tool", { name, inventoryDigest: inv.digest }, { deadlineMs: 5000 });
   const positive = await invoke("read_issue");
-  check("control: allowed tool executes through registered endpoint", positive.reply.ok && calls.includes("read_issue"));
+  check("preexisting control: allowed tool executes through registered endpoint", positive.reply.ok && calls.includes("read_issue"));
   const before = calls.length;
   const denied = await invoke("delete_issue");
   check("unlisted tool returns permission-denied not-executed", !denied.reply.ok && denied.reply.error?.code === "permission-denied" && denied.reply.error.outcome === "not-executed");
@@ -141,9 +170,9 @@ try {
   const unrestricted = new LinearUpstream({ name: "default", mode: "write", auth: "token", tokenFile });
   upstreams.push(unrestricted);
   const ordinary = await unrestricted.callTool({ name: "delete_issue" });
-  check("control: omitted allowlist retains upstream access", ordinary.kind === "result");
+  check("preexisting control: omitted allowlist retains upstream access", ordinary.kind === "result");
   const originalRecord = readFileSync(record, "utf8");
-  for (const invalid of [null, "read_issue", [""], [" read_issue"], ["read_issue", "read_issue"], [42], ["read\nissue"]]) {
+  for (const invalid of [null, "read_issue", [""], [" read_issue"], ["read_issue", "read_issue"], [42], ["read\nissue"], ["read\u0001issue"]]) {
     writeFileSync(record, JSON.stringify({ ...JSON.parse(originalRecord), allowedTools: invalid }));
     let refused = false;
     try { loadAccount("limited"); } catch { refused = true; }
@@ -156,6 +185,11 @@ try {
     const result = await blocked.callTool({ name: "read_issue" });
     check("empty and nonmatching literal allowlists refuse before credential access", result.kind === "refused" && result.reason === "tool-not-allowed" && result.outcome === "not-executed");
   }
+  const oauthBlocked = new LinearUpstream({ name: "absent-oauth", mode: "write", auth: "oauth", allowedTools: [] });
+  upstreams.push(oauthBlocked);
+  const beforeOAuth = tokenExchanges;
+  const oauthDenied = await oauthBlocked.callTool({ name: "read_issue" });
+  check("OAuth tool refusal precedes missing credential read and exchange", oauthDenied.kind === "refused" && oauthDenied.reason === "tool-not-allowed" && tokenExchanges === beforeOAuth && !existsSync(oauthStatePath("absent-oauth")));
   let report = "";
   const stdout = process.stdout.write.bind(process.stdout);
   try {
@@ -170,6 +204,25 @@ try {
     cliCode = process.exitCode as number | undefined;
   } finally { process.stdout.write = stdout; process.exitCode = undefined; }
   check("direct CLI refuses disallowed tool with exit 2", cliCode === 2);
+  for (const [name, contents] of [["invalid-readd", JSON.stringify({ name: "invalid-readd", mode: "write", auth: "oauth", allowedTools: [42] })], ["corrupt-readd", "{"]] as const) {
+    const path = join(linearDir(), `${name}.json`);
+    writeFileSync(path, contents);
+    let addError: unknown;
+    try { await linear({ raw: [], positionals: ["account", "add", name], values: { mode: "write", "token-file": tokenFile, plain: true } }); } catch (error) { addError = error; }
+    check("re-add over invalid record refuses with path, reason and remedy", String(addError).includes(path) && /allowedTools|JSON/i.test(String(addError)) && /repair|correct/i.test(String(addError)));
+    check("refused re-add preserves invalid policy bytes", readFileSync(path, "utf8") === contents);
+    writeFileSync(path, contents);
+    const tokenBeforeSave = readFileSync(tokenFile, "utf8");
+    let saveError: unknown;
+    try { saveAccount({ name, mode: "write", auth: "token", tokenFile }, "replacement-token"); } catch (error) { saveError = error; }
+    check("saveAccount refuses invalid existing record before credential write", String(saveError).includes(path) && /repair/i.test(String(saveError)) && readFileSync(tokenFile, "utf8") === tokenBeforeSave);
+    check("refused direct save preserves invalid record bytes", readFileSync(path, "utf8") === contents);
+    console.log(`  OBSERVED re-add ${name}: error=${(addError as { code?: string })?.code ?? "none"}, preserves record=${readFileSync(path, "utf8") === contents}`);
+  }
+  writeFileSync(join(linearDir(), "invalid-login.json"), JSON.stringify({ name: "invalid-login", mode: "write", auth: "oauth", allowedTools: [42] }));
+  await login("invalid-login", false, true);
+  writeFileSync(join(linearDir(), "corrupt-login.json"), "{");
+  await login("corrupt-login", false, true);
   await login("clean-login", false);
   saveAccount({ name: "noisy-login", mode: "write", auth: "oauth", allowedTools: ["read_issue"] });
   await login("noisy-login", true);

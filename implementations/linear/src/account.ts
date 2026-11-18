@@ -63,8 +63,20 @@ function allowedTools(value: unknown): string[] | undefined {
   return [...value] as string[];
 }
 
+export class AccountRecordError extends Error {
+  constructor(readonly path: string, reason: string) {
+    super(`${path}: ${reason}. Repair this record while preserving the intended allowedTools policy, then repeat the account add or login`);
+  }
+}
+
+/** Validate an existing record before any credential replacement or OAuth authorization. */
+export function assertAccountWritable(name: string): void {
+  if (existsSync(accountPath(name))) loadAccount(name);
+}
+
 export function saveAccount(account: LinearAccount, token?: string): void {
   assertAccountName(account.name);
+  assertAccountWritable(account.name);
   const tools = allowedTools(account.allowedTools) ?? (existsSync(accountPath(account.name)) ? loadAccount(account.name).allowedTools : undefined);
   const saved = { ...account, ...(tools === undefined ? {} : { allowedTools: tools }) };
   if (!isLinearMode(account.mode)) throw new Error(`mode must be "write" or "readonly"`);
@@ -86,15 +98,20 @@ export function loadAccount(name: string): LinearAccount {
   try {
     raw = JSON.parse(readFileSync(path, "utf8"));
   } catch (e) {
-    throw new Error(`no Linear account "${name}" (${path}): ${(e as Error).message}. Add one with \`cotal linear account add\``, { cause: e });
+    if ((e as NodeJS.ErrnoException).code === "ENOENT")
+      throw new Error(`no Linear account "${name}" (${path}); add one with \`cotal linear account add\``, { cause: e });
+    throw new AccountRecordError(path, e instanceof SyntaxError ? "invalid JSON in account record" : "account record cannot be read");
   }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new AccountRecordError(path, "account record must be an object");
   const a = raw as { name?: unknown; mode?: unknown; auth?: unknown; tokenFile?: unknown; allowedTools?: unknown };
-  if (a.name !== name || !isLinearMode(a.mode)) throw new Error(`${path} is not a valid Linear account record`);
-  const tools = allowedTools(a.allowedTools);
+  if (a.name !== name || !isLinearMode(a.mode)) throw new AccountRecordError(path, "invalid name or mode in account record");
+  let tools: string[] | undefined;
+  try { tools = allowedTools(a.allowedTools); }
+  catch { throw new AccountRecordError(path, "allowedTools must be an array of distinct nonempty tool names without surrounding whitespace or terminal controls"); }
   const policy = tools === undefined ? {} : { allowedTools: tools };
   if (a.auth === "token" && typeof a.tokenFile === "string") return { name, mode: a.mode, auth: "token", tokenFile: a.tokenFile, ...policy };
   if (a.auth === "oauth") return { name, mode: a.mode, auth: "oauth", ...policy };
-  throw new Error(`${path} is not a valid Linear account record`);
+  throw new AccountRecordError(path, "invalid authentication fields in account record");
 }
 
 /** Whether a {@link loadAccount} failure means no record exists under that name. */
