@@ -533,8 +533,8 @@ try {
       check(`${args[0]} keeps move-back or forget advice when the gone folder has no running stack members`,
         refused.status === 2 && refused.env?.error?.code === "TARGET_UNAVAILABLE"
           && refused.env.error.message.includes(`${elsewhere}, which no longer exists`)
-          && refused.env.error.remedy?.includes(`cotal space forget ${space}`)
-          && !refused.env.error.remedy.includes("cotal down"), shown(refused));
+          && Boolean(refused.env.error.remedy?.includes(`cotal space forget ${space}`))
+          && !refused.env.error.remedy?.includes("cotal down"), shown(refused));
     }
   }
 
