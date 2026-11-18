@@ -247,6 +247,15 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const both = cotal(["help"], undefined, { ...noSeed, FORCE_COLOR: "1", NO_COLOR: "1", NODE_OPTIONS: `--import=${join(probeDir, "probe.mjs")}` });
   check("FORCE_COLOR with NO_COLOR prints no Node color warning, and another warning still prints",
     both.status === 0 && !both.stderr.includes("'NO_COLOR' env is ignored") && both.stderr.includes("Warning: probe-warning"), shown(both));
+  // Node 22.10 and 22.11 emit ExperimentalWarning on `import ... with { type: "json" }`, so shipped
+  // workspace and CLI dist files must read JSON assets via fs rather than JSON module attributes (#7637).
+  writeFileSync(
+    join(probeDir, "json-hook.mjs"),
+    'import { register } from "node:module";\nregister("data:text/javascript," + encodeURIComponent(\'export async function load(url, ctx, next) { if (ctx.importAttributes?.type === "json") process.emitWarning("Importing JSON modules is an experimental feature and might change at any time", "ExperimentalWarning"); return next(url, ctx); }\'));\n',
+  );
+  const jsonCheck = cotal(["--version"], undefined, { ...noSeed, NODE_OPTIONS: `--import=${join(probeDir, "json-hook.mjs")}` });
+  check("--version loads no experimental JSON module imports (clean stderr on Node 22.10)",
+    jsonCheck.status === 0 && jsonCheck.stderr === "", shown(jsonCheck));
 }
 
 // ── Maglev off from the entry (#5498) ─────────────────────────────────────────────────────────────

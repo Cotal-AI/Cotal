@@ -135,6 +135,12 @@ export function pruneRetainedConnectorConfig(holders: readonly (string | undefin
 }
 
 interface Selection { readonly v: 1; readonly entry: string; readonly version: string; readonly root: string }
+function retentionEntryKey(logicalEntry: string): string {
+  // pnpm dlx unpacks into `<cache>/pnpm/dlx/<pkg-hash>/<instance-id>/node_modules/...` and replaces
+  // `<instance-id>` whenever its dlx cache refreshes. Keying across that transient segment keeps
+  // seeded built-ins and added extensions visible across refreshes instead of leaking a new set tree.
+  return logicalEntry.replace(/([/\\]pnpm[/\\]dlx[/\\][^/\\]+[/\\])[^/\\]+(?=[/\\]node_modules[/\\])/, "$1*");
+}
 function identity(): { entry: string; version: string; path: string } | undefined {
   if (process.platform !== "linux" && process.platform !== "darwin") return;
   const execution = executionIdentity();
@@ -145,7 +151,7 @@ function identity(): { entry: string; version: string; path: string } | undefine
   if (existsSync(join(loaded, "desktop-runtime.json")) || existsSync(join(logical, "desktop-runtime.json"))) return;
   const meta = JSON.parse(readFileSync(join(loaded, "package.json"), "utf8")) as { version?: unknown };
   if (typeof meta.version !== "string" || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(meta.version)) throw new Error("connector selection has no valid loaded version");
-  const entry = execution.logicalEntry;
+  const entry = retentionEntryKey(execution.logicalEntry);
   const key = createHash("sha256").update(entry).digest("hex");
   return { entry, version: meta.version, path: join(globalConfigDir(), "installs", key, "sets", meta.version) };
 }
