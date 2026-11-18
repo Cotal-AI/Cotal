@@ -36,7 +36,7 @@ import { InspectionJournal, inspectionExit } from "./inspection.js";
 import type { EngineCtx } from "./ctx.js";
 import type { WorkerFailure, WorkerRunRequest, WorkerRunResult } from "./worker.js";
 import { PACKAGE_VERSION } from "./package-version.js";
-import { ENGINE_HEAP_LIMITS, ENGINE_HEAP_WINDOW_MB } from "../limits.js";
+import { ENGINE_HEAP_LIMITS, ENGINE_HEAP_MAX_MB } from "../limits.js";
 
 // Refuse before lockdown installs SES's uncaught-exception handler, so Worker reports the cause.
 if (parentPort === null) throw new Error("cotal-lang engine worker: no parent port; this module is a worker entry, not a library");
@@ -50,17 +50,18 @@ if (hostPackageVersion !== PACKAGE_VERSION) {
 }
 // A V8 heap flag on the process replaces the limits this thread was created with, and a run held to
 // no limit can take the whole process down, so a thread that was not created with the engine's
-// limits, or whose heap limit is outside the engine's window, refuses before any run exists.
+// limits, or whose heap limit is over the engine's, refuses before any run exists. A tighter limit
+// still holds a run and is accepted.
 const heapLimitMb = Math.round(getHeapStatistics().heap_size_limit / 1048576);
 if (
   resourceLimits.maxOldGenerationSizeMb !== ENGINE_HEAP_LIMITS.maxOldGenerationSizeMb
   || resourceLimits.maxYoungGenerationSizeMb !== ENGINE_HEAP_LIMITS.maxYoungGenerationSizeMb
-  || heapLimitMb < ENGINE_HEAP_WINDOW_MB.min || heapLimitMb > ENGINE_HEAP_WINDOW_MB.max
+  || heapLimitMb > ENGINE_HEAP_MAX_MB
 ) {
   throw new EngineUnavailable(
-    `this engine thread's heap limit is ${heapLimitMb} MB, outside the ${ENGINE_HEAP_WINDOW_MB.min} to ${ENGINE_HEAP_WINDOW_MB.max} MB a run is held to; ` +
-    `a V8 heap flag on this process (--max-old-space-size, --max-semi-space-size or similar, on the command line or in NODE_OPTIONS) replaces it. ` +
-    `Start the process without that flag to run workflows`,
+    `this engine thread's heap limit is ${heapLimitMb} MB, over the ${ENGINE_HEAP_MAX_MB} MB a run is held to; ` +
+    `a V8 heap flag on this process (--max-old-space-size, --max-semi-space-size or similar, on the command line or in NODE_OPTIONS) raised it. ` +
+    `Start the process without that flag to run workflows; the run is released and a correctly started host can take it back`,
   );
 }
 // Once per admitted thread, before the run exists.

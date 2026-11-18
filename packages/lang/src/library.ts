@@ -27,11 +27,11 @@ import { parseDuration } from "./duration.js";
 import type { ScopeFrame } from "./keys.js";
 import { scopePathString } from "./keys.js";
 import { NotCrossable, Prng, assertCrossable, born, deepFreeze } from "./values.js";
-import { assertArrayFits, assertJsonFits, assertRecordFits, assertStringFits, flatElements, joinedUnits, replacedUnits, sized, splitParts } from "./limits.js";
+import { assertArrayFits, assertJsonContainersFit, assertRecordFits, assertStringFits, canonicalUnits, flatElements, joinedUnits, numberArg, replacedUnits, sized, splitParts } from "./limits.js";
 
 /** A JSON text checked against the size bounds before the host parses it. A non-string goes to the host as before. */
 function assertedJson(v: unknown): string {
-  if (typeof v === "string") assertJsonFits(v);
+  if (typeof v === "string") assertJsonContainersFit(v);
   return v as string;
 }
 
@@ -336,9 +336,9 @@ export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Metho
     },
     // pure, no callback
     includes: (_f, xs, a) => xs.includes(a[0]),
-    indexOf: (_f, xs, a) => xs.indexOf(a[0], a[1] as number | undefined),
-    lastIndexOf: (_f, xs, a) => (a.length >= 2 ? xs.lastIndexOf(a[0], a[1] as number) : xs.lastIndexOf(a[0])),
-    slice: (frame, xs, a) => born(xs.slice(a[0] as number | undefined, a[1] as number | undefined), frame.depth),
+    indexOf: (_f, xs, a) => xs.indexOf(a[0], numberArg("indexOf", a[1])),
+    lastIndexOf: (_f, xs, a) => (a.length >= 2 ? xs.lastIndexOf(a[0], numberArg("lastIndexOf", a[1]) as number) : xs.lastIndexOf(a[0])),
+    slice: (frame, xs, a) => born(xs.slice(numberArg("slice", a[0]), numberArg("slice", a[1])), frame.depth),
     concat: (frame, xs, a) => {
       assertArrayFits("concat", a.reduce<number>((n, v) => n + (Array.isArray(v) ? v.length : 1), xs.length));
       return born(xs.concat(...a), frame.depth);
@@ -350,11 +350,11 @@ export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Metho
       return xs.join(a[0] as string | undefined);
     },
     flat: (frame, xs, a) => {
-      const depth = a[0] === undefined ? 1 : Number(a[0]);
+      const depth = numberArg("flat", a[0]) ?? 1;
       assertArrayFits("flat", flatElements(xs, Number.isNaN(depth) ? 0 : depth));
-      return born(xs.flat(a[0] as number | undefined), frame.depth);
+      return born(xs.flat(depth), frame.depth);
     },
-    at: (_f, xs, a) => xs.at(a[0] as number),
+    at: (_f, xs, a) => xs.at(numberArg("at", a[0]) as number),
     toReversed: (frame, xs) => born([...xs].reverse(), frame.depth),
     // mutators
     push: (frame, xs, a) => {
@@ -378,7 +378,7 @@ export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Metho
     splice: (frame, xs, a) => {
       write(xs, frame);
       assertArrayFits("splice", xs.length + Math.max(0, a.length - 2));
-      const removed = a.length >= 2 ? xs.splice(a[0] as number, a[1] as number, ...a.slice(2)) : xs.splice(a[0] as number);
+      const removed = a.length >= 2 ? xs.splice(numberArg("splice", a[0]) as number, numberArg("splice", a[1]) as number, ...a.slice(2)) : xs.splice(numberArg("splice", a[0]) as number);
       return born(removed, frame.depth);
     },
   };
@@ -408,18 +408,22 @@ export function stringMethods(): Readonly<Record<string, Method>> {
     trimEnd: (_f, s) => s.trimEnd(),
     toLowerCase: (_f, s) => sized("toLowerCase", s.toLowerCase()),
     toUpperCase: (_f, s) => sized("toUpperCase", s.toUpperCase()),
-    startsWith: (_f, s, a) => s.startsWith(str("startsWith", a[0]), a[1] as number | undefined),
-    endsWith: (_f, s, a) => s.endsWith(str("endsWith", a[0]), a[1] as number | undefined),
-    includes: (_f, s, a) => s.includes(str("includes", a[0]), a[1] as number | undefined),
-    indexOf: (_f, s, a) => s.indexOf(str("indexOf", a[0]), a[1] as number | undefined),
-    lastIndexOf: (_f, s, a) => (a.length >= 2 ? s.lastIndexOf(str("lastIndexOf", a[0]), a[1] as number) : s.lastIndexOf(str("lastIndexOf", a[0]))),
-    slice: (_f, s, a) => s.slice(a[0] as number | undefined, a[1] as number | undefined),
-    substring: (_f, s, a) => s.substring(a[0] as number, a[1] as number | undefined),
+    startsWith: (_f, s, a) => s.startsWith(str("startsWith", a[0]), numberArg("startsWith", a[1])),
+    endsWith: (_f, s, a) => s.endsWith(str("endsWith", a[0]), numberArg("endsWith", a[1])),
+    includes: (_f, s, a) => s.includes(str("includes", a[0]), numberArg("includes", a[1])),
+    indexOf: (_f, s, a) => s.indexOf(str("indexOf", a[0]), numberArg("indexOf", a[1])),
+    lastIndexOf: (_f, s, a) => (a.length >= 2 ? s.lastIndexOf(str("lastIndexOf", a[0]), numberArg("lastIndexOf", a[1]) as number) : s.lastIndexOf(str("lastIndexOf", a[0]))),
+    slice: (_f, s, a) => s.slice(numberArg("slice", a[0]), numberArg("slice", a[1])),
+    substring: (_f, s, a) => s.substring(numberArg("substring", a[0]) as number, numberArg("substring", a[1])),
     split: (frame, s, a) => {
       if (a.length === 0) return born([s], frame.depth);
       const sep = str("split", a[0]);
-      if (a[1] === undefined) assertArrayFits("split", splitParts(s, sep));
-      return born(s.split(sep, a[1] as number | undefined), frame.depth);
+      const limit = numberArg("split", a[1]);
+      // The host reads a limit as an unsigned 32-bit count (-1 is 4,294,967,295), so the parts are
+      // the smaller of the limit so read and the parts the separator makes.
+      const parts = splitParts(s, sep);
+      assertArrayFits("split", limit === undefined ? parts : Math.min(parts, limit >>> 0));
+      return born(s.split(sep, limit), frame.depth);
     },
     // The replacement string means what JavaScript says it means, `$$`/`$&`/`$\``/`$'` included
     // (measured before the fix: the function form made every `$` literal, a meaning JavaScript
@@ -435,19 +439,22 @@ export function stringMethods(): Readonly<Record<string, Method>> {
       return s.replaceAll(from, String(a[1]));
     },
     repeat: (_f, s, a) => {
-      if (typeof a[0] === "number" && a[0] > 0) assertStringFits("repeat", s.length * Math.floor(a[0]));
-      return s.repeat(a[0] as number);
+      const count = numberArg("repeat", a[0]);
+      if (count !== undefined && count > 0) assertStringFits("repeat", s.length * Math.floor(count));
+      return s.repeat(count as number);
     },
     padStart: (_f, s, a) => {
-      if (typeof a[0] === "number") assertStringFits("padStart", a[0]);
-      return s.padStart(a[0] as number, a[1] as string | undefined);
+      const length = numberArg("padStart", a[0]);
+      if (length !== undefined) assertStringFits("padStart", length);
+      return s.padStart(length as number, a[1] as string | undefined);
     },
     padEnd: (_f, s, a) => {
-      if (typeof a[0] === "number") assertStringFits("padEnd", a[0]);
-      return s.padEnd(a[0] as number, a[1] as string | undefined);
+      const length = numberArg("padEnd", a[0]);
+      if (length !== undefined) assertStringFits("padEnd", length);
+      return s.padEnd(length as number, a[1] as string | undefined);
     },
-    at: (_f, s, a) => s.at(a[0] as number),
-    charAt: (_f, s, a) => s.charAt(a[0] as number),
+    at: (_f, s, a) => s.at(numberArg("at", a[0]) as number),
+    charAt: (_f, s, a) => s.charAt(numberArg("charAt", a[0]) as number),
     concat: (_f, s, a) => {
       const parts = a.map(String);
       assertStringFits("concat", parts.reduce((n, p) => n + p.length, s.length));
@@ -462,9 +469,9 @@ export function stringMethods(): Readonly<Record<string, Method>> {
 /** The number methods, JavaScript's meaning. */
 export function numberMethods(): Readonly<Record<string, Method>> {
   const table: Record<string, (frame: LibFrame, n: number, args: unknown[]) => unknown> = {
-    toFixed: (_f, n, a) => n.toFixed(a[0] as number | undefined),
-    toString: (_f: LibFrame, n: number, a: unknown[]) => n.toString(a[0] as number | undefined),
-    toPrecision: (_f, n, a) => n.toPrecision(a[0] as number | undefined),
+    toFixed: (_f, n, a) => n.toFixed(numberArg("toFixed", a[0])),
+    toString: (_f: LibFrame, n: number, a: unknown[]) => n.toString(numberArg("toString", a[0])),
+    toPrecision: (_f, n, a) => n.toPrecision(numberArg("toPrecision", a[0])),
   };
   return Object.freeze(
     Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, gate(k, impl)) as unknown as Method])),
@@ -520,7 +527,8 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
         if (e instanceof NotCrossable) throw new RuntimeFault("L4016", e.message);
         throw e;
       }
-      return sized("json.stringify", canonicalize(a[0]));
+      assertStringFits("json.stringify", canonicalUnits(a[0]));
+      return canonicalize(a[0]);
     }, { any: [0] }),
   });
 
@@ -620,7 +628,7 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
         );
       }, { any: [0, 1] }),
     ],
-    ["slice", fn("slice", (frame, a) => born(listArg("slice", a[0]).slice(a[1] as number, a[2] as number | undefined), frame.depth), { any: [0] })],
+    ["slice", fn("slice", (frame, a) => born(listArg("slice", a[0]).slice(numberArg("slice", a[1]), numberArg("slice", a[2])), frame.depth), { any: [0] })],
     ["concat", fn("concat", (frame, a) => {
       const xs = listArg("concat", a[0]);
       assertArrayFits("concat", xs.length + (Array.isArray(a[1]) ? a[1].length : 1));
@@ -635,8 +643,9 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
     ["reverse", fn("reverse", (frame, a) => born([...listArg("reverse", a[0])].reverse(), frame.depth), { any: [0] })],
     ["unique", fn("unique", (frame, a) => born([...new Set(listArg("unique", a[0]))], frame.depth), { any: [0] })],
     ["range", fn("range", (frame, a) => {
-      if (typeof a[0] === "number") assertArrayFits("range", a[0]);
-      return born(Array.from({ length: a[0] as number }, (_, i) => i), frame.depth);
+      const n = numberArg("range", a[0]);
+      if (n !== undefined) assertArrayFits("range", n);
+      return born(Array.from({ length: n as number }, (_, i) => i), frame.depth);
     })],
     ["sum", fn("sum", (_f, a) => {
       const xs = listArg("sum", a[0]);
@@ -696,7 +705,7 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
     // over the effects this point actually awaited: time advances at effect boundaries as a
     // property of the design rather than a rule anyone has to follow.
     ["random", fn("random", (frame) => ctx.prng.next(frame.keys.path))],
-    ["randomInt", fn("randomInt", (frame, a) => Math.floor(ctx.prng.next(frame.keys.path) * (a[0] as number)))],
+    ["randomInt", fn("randomInt", (frame, a) => Math.floor(ctx.prng.next(frame.keys.path) * (numberArg("randomInt", a[0]) as number)))],
     [
       "pick",
       fn("pick", (frame, a) => {

@@ -58,7 +58,31 @@ teardownOnSignal(broker);
 const servers = `nats://127.0.0.1:${PORT}`;
 const root = mkdtempSync(join(tmpdir(), "cotal-wmem-root-"));
 
-const DECLARED = 9;
+
+/** One value over a bound through each operation, or a count that is not a number: [name, program, code, words in the failure]. */
+const REFUSALS: readonly (readonly [string, string, string, string])[] = [
+  ["repeat with a string count", 'const s = "\u0436".repeat("300000000");\n', "L4018", "repeat:"],
+  ["padStart with a string length", 'const s = "x".padStart("300000000");\n', "L4018", "padStart:"],
+  ["padEnd with a string length", 'const s = "x".padEnd("300000000");\n', "L4018", "padEnd:"],
+  ["range with a string count", 'const xs = range("40000000");\n', "L4018", "range:"],
+  ["replaceAll growing past the bound", 'const r = "a".repeat(3999999).replaceAll("a", "aa");\n', "L4016", "replaceAll: a string of"],
+  ["the free replace growing past the bound", 'const r = replace("a".repeat(3999999), "a", "aa");\n', "L4016", "replace: a string of"],
+  ["split with a large limit", 'const xs = "x".repeat(4000000).split("", 1000000000);\n', "L4016", "split: an array of"],
+  ["split with a negative limit", 'const xs = "x".repeat(4000000).split("", -1);\n', "L4016", "split: an array of"],
+  ["split with a string limit", 'const xs = "x".repeat(400).split("", "10");\n', "L4018", "split:"],
+  ["a json.parse text longer than a string may be", 'const y = "y".repeat(2000001);\nconst t = "\\"" + y + y + "\\"";\nconst s = json.parse(t);\n', "L4016", "`+`: a string of"],
+  ["json.parse of a long array", 'const t = "[" + "0,".repeat(1000000) + "0]";\nconst xs = json.parse(t);\n', "L4016", "json.parse: an array of"],
+  ["json.stringify past the bound", 'const s = "y".repeat(3000000);\nconst t = json.stringify([s, s]);\n', "L4016", "json.stringify: a string of"],
+  ["merge past the bound", 'const a = json.parse(json.stringify(merge({}, {})));\nconst ka = {};\nconst kb = {};\nconst xs = range(200000);\nconst big = json.parse("{" + join(map(xs, (i) => `"a${i}":0`), ",") + "}");\nconst big2 = json.parse("{" + join(map(xs, (i) => `"b${i}":0`), ",") + "}");\nconst m = merge(big, big2);\n', "L4016", "merge:"],
+  ["an array spread past the bound", 'const a = range(600000);\nconst b = [...a, ...a];\n', "L4016", "this spread: an array of 1200000"],
+  ["a call spread past the bound", 'const a = range(600000);\nconst f = (...r) => len(r);\nconst n = f(...a, ...a);\n', "L4016", "this spread: an array of 1200000"],
+  ["a record spread past the bound", 'const xs = range(200000);\nconst a = json.parse("{" + join(map(xs, (i) => `"a${i}":0`), ",") + "}");\nconst b = json.parse("{" + join(map(xs, (i) => `"b${i}":0`), ",") + "}");\nconst c = { ...a, ...b };\n', "L4016", "this record spread:"],
+  ["a template past the bound by its trailing text", 'const s = "y".repeat(3999999);\nconst t = `${s}zz`;\n', "L4016", "this template: a string of 4000001"],
+  ["+ past the bound", 'const s = "y".repeat(3999999);\nconst t = s + "zz";\n', "L4016", "`+`: a string of 4000001"],
+  ["an index write past the bound", 'const xs = range(1000000);\nxs[1000000] = 1;\n', "L4016", "this index write:"],
+  ["push past the bound", 'const xs = range(1000000);\nxs.push(1);\n', "L4016", "push:"],
+]; 
+const DECLARED = 9 + REFUSALS.length * 2 + 3;
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.error("  ✗ FAIL:", n, extra ?? ""); } };
 const done = () => {
@@ -133,8 +157,8 @@ const failureOf = async (r: Started) => (r.runId === "" ? "" : (await record(r.r
 // ── 4) doubling by spread ────────────────────────────────────────────────────────────────────
 {
   const r = await start("doubling", "let xs = [1];\nconst keep = [];\nwhile (true) {\n  xs = [...xs, ...xs];\n  keep.push(xs);\n}\n");
-  c("doubling an array by spread is refused L4016 at the array literal, and the process exits on its own",
-    r.code !== 0 && r.out.includes("L4016") && /this array literal: an array of \d+ elements/.test(await failureOf(r)) && exitedOnItsOwn(r), { code: r.code, signal: r.signal, out: r.out.slice(-400) });
+  c("doubling an array by spread is refused L4016 at the spread, and the process exits on its own",
+    r.code !== 0 && r.out.includes("L4016") && /this spread: an array of \d+ elements/.test(await failureOf(r)) && exitedOnItsOwn(r), { code: r.code, signal: r.signal, out: r.out.slice(-400) });
 }
 
 // ── 5) a string over the bound ───────────────────────────────────────────────────────────────
@@ -151,7 +175,7 @@ let lastLimited = "";
     r.code !== 0 && r.out.includes("memory limit of 512 MB") && exitedOnItsOwn(r), { code: r.code, signal: r.signal, out: r.out.slice(-400) });
 }
 {
-  const r = await start("max-string", 'const keep = [];\nlet i = 0;\nwhile (true) {\n  keep.push("\\u0101".repeat(3999990) + `${i}`);\n  i += 1;\n}\n');
+  const r = await start("max-string", 'const keep = [];\nlet i = 0;\nwhile (true) {\n  const s = "\\u0101".repeat(3999990) + `${i}`;\n  if (s.includes("q")) {\n    log("never");\n  }\n  keep.push(s);\n  i += 1;\n}\n');
   lastLimited = r.runId;
   c("the largest allowed two-byte string, repeated, fails the run at the memory limit and the process exits on its own",
     r.code !== 0 && r.out.includes("memory limit of 512 MB") && exitedOnItsOwn(r), { code: r.code, signal: r.signal, out: r.out.slice(-400) });
@@ -169,6 +193,51 @@ let lastLimited = "";
   const r = await start("fields", 'const o = {};\nlet i = 0;\nwhile (true) {\n  o[`k${i}`] = i;\n  i += 1;\n}\n');
   c("a record built field by field is stopped by the step budget (L4013), and the process exits on its own",
     r.code !== 0 && r.out.includes("L4013") && exitedOnItsOwn(r), { code: r.code, signal: r.signal, out: r.out.slice(-400) });
+}
+
+// ── 10) every refusal, on both engines ───────────────────────────────────────────────────────
+// Each program builds one value over a bound through one operation, or passes a non-number count.
+// The compiled engine runs it through the binary; the walker runs it in a child process. Both must
+// refuse with the named code and operation, and neither process may end on a V8 abort.
+const WALKER = fileURLToPath(new URL("./_walker-run.ts", import.meta.url));
+const TSX = fileURLToPath(new URL("../../../node_modules/.bin/tsx", import.meta.url));
+const onWalker = (name: string, source: string): Promise<{ code: number | null; signal: NodeJS.Signals | null; out: string }> => {
+  const file = join(sd, `${name}.walker.cotal.js`);
+  writeFileSync(file, source);
+  const child = spawn(TSX, [WALKER, file], { cwd: root, env: { ...process.env, NODE_OPTIONS: "" }, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+  child.stderr.on("data", (d: Buffer) => { out += d.toString(); });
+  return new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal, out })));
+};
+for (const [name, source, code, words] of REFUSALS) {
+  const r = await start(`refuse-${name}`, source);
+  const failure = await failureOf(r);
+  c(`engine: ${name} is refused ${code} naming ${words}`, r.code !== 0 && failure.startsWith(code) && failure.includes(words) && exitedOnItsOwn(r), { code: r.code, signal: r.signal, failure: failure.slice(0, 200), out: r.out.slice(-200) });
+  const w = await onWalker(name, source);
+  const result = JSON.parse(/RESULT (.*)/.exec(w.out)?.[1] ?? "{}") as { ok?: boolean; code?: string; message?: string };
+  c(`walker: ${name} is refused ${code} naming ${words}`, w.signal === null && result.ok === false && result.code === code && (result.message ?? "").includes(words), { code: w.code, signal: w.signal, result, out: w.out.slice(-200) });
+}
+
+// ── 11) values a program cannot reach past the bound through repetition ───────────────────────
+{
+  // The replace result the earlier estimate missed, flattened, then the heap filled: the run must end
+  // at the memory limit or the bound, never with the process.
+  const r = await start("replace-flatten", 'const r = "a".repeat(3990100).replaceAll("a", "\\u0436".repeat(100));\nconst k = [];\nlog(r.includes("q"));\nfor (let i = 0; i < 900; i += 1) {\n  k.push(range(100000));\n}\n');
+  c("a replace whose result would be over the bound is refused before it is built, and the process exits on its own",
+    r.code !== 0 && /replaceAll: a string of \d+ units/.test(await failureOf(r)) && exitedOnItsOwn(r), { code: r.code, signal: r.signal, out: r.out.slice(-300) });
+}
+
+// ── 12) the heap refusal releases the run instead of failing it ──────────────────────────────
+{
+  const r = await start("heap-release", 'log("ran");\n', "--max-old-space-size=4096");
+  const status = (await record(r.runId))?.status?.value;
+  c("a run whose host carries a raising heap flag is released, not failed, so a correctly started host can take it back",
+    status?.state === "released" && !r.out.includes("log ran") && exitedOnItsOwn(r), { status, out: r.out.slice(-300) });
+}
+{
+  const r = await start("heap-tighter", 'log("ran");\n', "--max-old-space-size=256");
+  c("a tighter heap flag still runs the program", r.code === 0 && r.out.includes("log ran"), { code: r.code, out: r.out.slice(-300) });
 }
 
 console.log(`worker-memory: ${ok} ok, ${fail} failed`);

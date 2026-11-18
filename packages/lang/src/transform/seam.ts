@@ -58,6 +58,10 @@ export const SEAM_MEMBERS: Readonly<Record<string, readonly [number, number]>> =
   // answers a host TypeError. Emitted behind a `typeof` fast path, so a call to a real function
   // never reaches the host.
   callee: [1, 1],
+  // Member 15: the value-size bound for a literal, call or rest that spreads. Its operands are
+  // evaluated in source order first, then counted here, so an over-bound spread is refused before
+  // the host builds it: (kind, operands, plain count, the operation the refusal names).
+  spread: [4, 4],
 });
 
 /** The member NAMES the seam grants. Derived from the table above, so the two cannot disagree. */

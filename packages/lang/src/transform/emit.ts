@@ -516,7 +516,7 @@ class Emitter {
             const rest = this.temp();
             out += `${rest} = { ...${s} };\n`;
             for (const k of taken) out += `delete ${rest}[${k}];\n`;
-            out += this.bindPattern(p.argument as AnyNode, this.seam("born", rest), mode);
+            out += this.bindPattern(p.argument as AnyNode, `(${this.seam("spread", `"record", [${rest}], 0, "this rest element"`)}, ${this.seam("born", rest)})`, mode);
             continue;
           }
           const key = this.propertyKey(p);
@@ -535,7 +535,7 @@ class Emitter {
           const el = els[i];
           if (el === null || el === undefined) continue;
           if (el.type === "RestElement") {
-            out += this.bindPattern(el.argument as AnyNode, this.seam("born", `${items}.slice(${i})`), mode);
+            out += this.bindPattern(el.argument as AnyNode, this.restArray(`${items}.slice(${i})`, "this rest element"), mode);
             break;
           }
           out += this.bindPattern(el, `${items}[${i}]`, mode);
@@ -585,7 +585,7 @@ class Emitter {
     for (let i = 0; i < params.length; i += 1) {
       const p = params[i] as AnyNode;
       if (p.type === "RestElement") {
-        binds += this.bindPattern(p.argument as AnyNode, this.seam("born", `${args}.slice(${i})`), "let");
+        binds += this.bindPattern(p.argument as AnyNode, this.restArray(`${args}.slice(${i})`, "these rest parameters"), "let");
         break;
       }
       binds += this.bindPattern(p, `${args}[${i}]`, "let");
@@ -621,21 +621,19 @@ class Emitter {
         return this.seam("template", `[${quasis.join(", ")}], [${exprs.join(", ")}]`);
       }
       case "ArrayExpression": {
-        const parts = ((node.elements as (AnyNode | null)[]) ?? []).map((el) => {
-          if (el === null || el === undefined) throw new Error("transform: an array hole is not a value this language has");
-          return el.type === "SpreadElement" ? `...${this.seam("iter", this.expr(el.argument as AnyNode))}` : this.expr(el);
-        });
-        return this.seam("born", `[${parts.join(", ")}]`);
+        const elements = (node.elements as (AnyNode | null)[]) ?? [];
+        if (elements.some((el) => el === null || el === undefined)) throw new Error("transform: an array hole is not a value this language has");
+        if (elements.some((el) => el!.type === "SpreadElement")) return this.seam("born", this.spreadContainer(elements as AnyNode[], "array"));
+        return this.seam("born", `[${(elements as AnyNode[]).map((el) => this.expr(el)).join(", ")}]`);
       }
       case "ObjectExpression": {
         // Every key is emitted COMPUTED. A literal `__proto__:` key sets a prototype in JavaScript
         // and names an own field in this language; the validator refuses the literal spelling
         // (L1028, measured), and a computed key never reaches the prototype at all, so the emitted
         // form cannot express the hazard whatever the validator does later.
-        const parts = ((node.properties as AnyNode[]) ?? []).map((p) =>
-          p.type === "SpreadElement" ? `...${this.expr(p.argument as AnyNode)}` : `[${this.propertyKey(p)}]: ${this.expr(p.value as AnyNode)}`,
-        );
-        return this.seam("born", `{ ${parts.join(", ")} }`);
+        const properties = (node.properties as AnyNode[]) ?? [];
+        if (properties.some((p) => p.type === "SpreadElement")) return this.seam("born", this.spreadContainer(properties, "record"));
+        return this.seam("born", `{ ${properties.map((p) => `[${this.propertyKey(p)}]: ${this.expr(p.value as AnyNode)}`).join(", ")} }`);
       }
       case "MemberExpression":
       case "ChainExpression":
@@ -956,9 +954,51 @@ class Emitter {
   }
 
   private args(node: AnyNode): string {
-    return ((node.arguments as AnyNode[]) ?? [])
-      .map((a) => (a.type === "SpreadElement" ? `...${this.seam("iter", this.expr(a.argument as AnyNode))}` : this.expr(a)))
-      .join(", ");
+    const elements = (node.arguments as AnyNode[]) ?? [];
+    if (!elements.some((el) => el.type === "SpreadElement")) return elements.map((el) => this.expr(el)).join(", ");
+    return `...${this.spreadContainer(elements, "array")}`;
+  }
+
+  /** A rest array, bounded and named by the `spread` seam before it is stamped. */
+  private restArray(sliced: string, where: string): string {
+    const t = this.temp();
+    return `((${t} = ${sliced}), ${this.seam("spread", `"array", [${t}], 0, ${q(where)}`)}, ${this.seam("born", t)})`;
+  }
+
+  /**
+   * An array or record literal, or an argument list, that spreads, as one expression building it.
+   *
+   * Every element is evaluated into a temporary in source order, the spread operands are counted by
+   * the `spread` seam, and only then is the native container written from the temporaries, so one
+   * over the value-size bound is refused before the host builds it.
+   */
+  private spreadContainer(elements: readonly AnyNode[], kind: "array" | "record"): string {
+    const evals: string[] = [];
+    const parts: string[] = [];
+    const spreads: string[] = [];
+    let plain = 0;
+    for (const el of elements) {
+      if (el.type === "SpreadElement") {
+        const t = this.temp();
+        evals.push(`${t} = ${kind === "array" ? this.seam("iter", this.expr(el.argument as AnyNode)) : this.expr(el.argument as AnyNode)}`);
+        spreads.push(t);
+        parts.push(`...${t}`);
+      } else if (kind === "record") {
+        const k = this.temp();
+        const v = this.temp();
+        evals.push(`${k} = ${this.propertyKey(el)}`, `${v} = ${this.expr(el.value as AnyNode)}`);
+        parts.push(`[${k}]: ${v}`);
+        plain += 1;
+      } else {
+        const t = this.temp();
+        evals.push(`${t} = ${this.expr(el)}`);
+        parts.push(t);
+        plain += 1;
+      }
+    }
+    const check = this.seam("spread", `${q(kind)}, [${spreads.join(", ")}], ${plain}, ${q(kind === "array" ? "this spread" : "this record spread")}`);
+    const built = kind === "array" ? `[${parts.join(", ")}]` : `{ ${parts.join(", ")} }`;
+    return `(${[...evals, check, built].join(", ")})`;
   }
 
   /**

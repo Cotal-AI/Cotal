@@ -275,13 +275,20 @@ program's values and every journal entry the run has recorded, settled results i
 whose effects return large results can reach the limit after many steps. A run that reaches it is
 stopped and recorded failed with a message naming the limit, and the process carries on. A V8 heap
 flag on the process, such as `--max-old-space-size` on the command line or in `NODE_OPTIONS`,
-replaces the thread's limit, so a thread created under one refuses to run any program and names
-the heap limit it found.
+replaces the thread's limit. A flag that raises it makes the thread refuse to run any program,
+naming the heap limit it found, and the run is released rather than failed, so a host started
+without the flag can take it back. A flag that lowers it is accepted.
 
 **One value has a size bound.** An array holds at most 1,000,000 elements, a string at most
-4,000,000 UTF-16 units, and a record built by `json.parse`, `merge` or a record literal at most
-250,000 fields. A larger value is refused (**L4016**) before it is built. The bound keeps each
-allocation small enough that reaching the heap limit stops the run rather than the process.
+4,000,000 UTF-16 units, and a record at most 250,000 fields. A larger value is refused (**L4016**)
+naming the operation, before it is built. The bound keeps each allocation small enough that
+reaching the heap limit stops the run rather than the process. Two operations are checked on the
+value they built, because only the host knows its size in advance: case mapping (`lower`, `upper`,
+`toLowerCase`, `toUpperCase`), whose result is at most three times a bounded input. A string
+literal is bounded by the program text. A count, length or position argument must be a number
+(**L4018**). Values that enter a program from an effect or a replayed journal entry are bounded by
+the journal's result bound (the broker's `max_payload` less 4096 bytes), which keeps them under
+all three bounds; a journal built with no result bound does not bound them.
 
 ### Foreign error text
 

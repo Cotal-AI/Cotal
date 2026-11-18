@@ -24,7 +24,7 @@ import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, ty
 import type { Journal } from "../journal.js";
 import type { RunPins } from "../pins.js";
 import { NotCrossable, Prng, assertNoCode, assertWritable, born as stampBirth, deepFreeze, setOwn } from "../values.js";
-import { assertArrayFits, assertRecordFits, assertStringFits } from "../limits.js";
+import { assertArrayFits, assertRecordFits, assertSpreadFits, assertStringFits } from "../limits.js";
 import { digest, type ScopeKind } from "../keys.js";
 import { currentFrame, withFrame, type EngineFrame } from "./frame.js";
 import { agentHandles, dispatchPrimitive, freeConstructors, onceBodyNotCallable, option, performScope, runScope, type EffectHost, type Frame as ScopeFrame } from "../perform.js";
@@ -110,6 +110,8 @@ export interface EngineCtx {
   unary(op: string, v: unknown): unknown;
   /** The iterability law (L4015): arrays and strings, nothing else. */
   iter(v: unknown): unknown[];
+  /** The value-size bound for a literal, call or rest that spreads, from its evaluated operands, before it is built. */
+  spread(kind: "array" | "record", operands: readonly unknown[], plain: number, where: string): void;
   /** The L4011 refusal at a non-function callee. Emitted behind a `typeof`, so only the refusal runs. */
   callee(v: unknown): unknown;
   /** At the head of every emitted catch: rethrow the uncatchable, else the program-visible error. */
@@ -824,8 +826,8 @@ function buildCtx(run: EngineRun): CtxWithSteps {
 
     born(v) {
       refuseThenable(v, "this value");
-      if (Array.isArray(v)) assertArrayFits("this array literal", v.length);
-      else if (v !== null && typeof v === "object") assertRecordFits("this record literal", Object.keys(v).length);
+      if (Array.isArray(v)) assertArrayFits("this array", v.length);
+      else if (v !== null && typeof v === "object") assertRecordFits("this record", Object.keys(v).length);
       return stampBirth(v, currentFrame().depth);
     },
 
@@ -882,11 +884,13 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       let out = "";
       for (let i = 0; i < parts.length; i += 1) {
         out += parts[i] ?? "";
+        assertStringFits("this template", out.length);
         if (i < values.length) {
           const v = values[i];
           refuseCoercion("${...}", v);
-          out += String(v);
-          assertStringFits("this template", out.length);
+          const text = String(v);
+          assertStringFits("this template", out.length + text.length);
+          out += text;
         }
       }
       return out;
@@ -986,6 +990,10 @@ function buildCtx(run: EngineRun): CtxWithSteps {
         "L4015",
         `${v === null ? "null" : typeof v === "object" ? "a record" : typeof v} is not iterable: only arrays and strings can be spread or looped over. For a record, iterate \`keys(record)\` or \`entries(record)\`.`,
       );
+    },
+
+    spread(kind, operands, plain, where) {
+      assertSpreadFits(kind, where, operands, plain);
     },
 
     callee(v) {

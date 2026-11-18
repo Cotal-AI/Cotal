@@ -30,7 +30,7 @@ export { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from
 import { KeyScope, digest, programHashOf, type PathKind, type ScopeKind } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock } from "./journal.js";
 import { Prng, assertWritable, born, crossedWrite, deepFreeze, setOwn, type WritingFrame } from "./values.js";
-import { assertArrayFits, assertRecordFits, assertStringFits } from "./limits.js";
+import { assertArrayFits, assertRecordFits, assertSpreadFits, assertStringFits, sized } from "./limits.js";
 import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "./library.js";
 import { bindPins, resolvePins, WALKER_LANGUAGE_VERSION, type RunPins } from "./pins.js";
@@ -639,6 +639,7 @@ class Interpreter {
         let out = "";
         for (let i = 0; i < quasis.length; i += 1) {
           out += ((quasis[i] as AnyNode).value as { cooked: string }).cooked;
+          assertStringFits("this template", out.length);
           if (i < exprs.length) {
             // Primitives interpolate as JavaScript interpolates them; a container or a function is
             // refused (L4018). Measured before the refusal: `${o}` on a record with its own
@@ -646,36 +647,46 @@ class Interpreter {
             // INTERPRETER'S OWN COMPILED CLOSURE — an implementation detail leaking into a value.
             const v = await this.evaluate(exprs[i] as AnyNode, env, frame);
             refuseCoercion("${...}", v);
-            out += String(v);
-            assertStringFits("this template", out.length);
+            const text = String(v);
+            assertStringFits("this template", out.length + text.length);
+            out += text;
           }
         }
         return out;
       }
       case "ArrayExpression": {
+        // Every element is evaluated first, in order, and the spreads counted before anything is
+        // built, as the compiled engine does, so both refuse at the same point.
+        const parts = await this.spreadParts((node.elements as AnyNode[]) ?? [], env, frame);
+        assertSpreadFits("array", "this spread", parts.filter((p) => p.spread).map((p) => p.value), parts.filter((p) => !p.spread).length);
         const out: unknown[] = [];
-        for (const el of (node.elements as AnyNode[]) ?? []) {
-          if (el.type === "SpreadElement") out.push(...this.spreadable(await this.evaluate(el.argument as AnyNode, env, frame)));
-          else out.push(await this.evaluate(el, env, frame));
+        for (const p of parts) {
+          if (p.spread) out.push(...(p.value as unknown[]));
+          else out.push(p.value);
         }
-        assertArrayFits("this array literal", out.length);
+        assertArrayFits("this array", out.length);
         return born(out, frame.depth);
       }
       case "ObjectExpression": {
-        const out: Record<string, unknown> = {};
-        for (const p of (node.properties as AnyNode[]) ?? []) {
+        const props = (node.properties as AnyNode[]) ?? [];
+        const parts: { spread: boolean; key: string; value: unknown }[] = [];
+        for (const p of props) {
           if (p.type === "SpreadElement") {
-            const src = await this.evaluate(p.argument as AnyNode, env, frame);
-            if (src !== null && src !== undefined) {
-              for (const [k, v] of Object.entries(src as Record<string, unknown>)) setRecordMember(out, k, v);
-            }
+            parts.push({ spread: true, key: "", value: await this.evaluate(p.argument as AnyNode, env, frame) });
             continue;
           }
           const key = p.key as AnyNode;
-          const name = key.type === "Identifier" ? (key.name as string) : String(key.value);
-          setRecordMember(out, name, await this.evaluate(p.value as AnyNode, env, frame));
+          parts.push({ spread: false, key: key.type === "Identifier" ? (key.name as string) : String(key.value), value: await this.evaluate(p.value as AnyNode, env, frame) });
         }
-        assertRecordFits("this record literal", Object.keys(out).length);
+        if (parts.some((p) => p.spread)) assertSpreadFits("record", "this record spread", parts.filter((p) => p.spread).map((p) => p.value), parts.filter((p) => !p.spread).length);
+        const out: Record<string, unknown> = {};
+        for (const p of parts) {
+          if (!p.spread) setRecordMember(out, p.key, p.value);
+          else if (p.value !== null && p.value !== undefined) {
+            for (const [k, v] of Object.entries(p.value as Record<string, unknown>)) setRecordMember(out, k, v);
+          }
+        }
+        assertRecordFits("this record", Object.keys(out).length);
         return born(out, frame.depth);
       }
       case "MemberExpression": {
@@ -823,6 +834,16 @@ class Interpreter {
     return v;
   }
 
+  /** Evaluate a list's elements in order, each spread operand turned into its elements' array (L4015 otherwise). */
+  private async spreadParts(nodes: readonly AnyNode[], env: Env, frame: Frame): Promise<{ spread: boolean; value: unknown }[]> {
+    const parts: { spread: boolean; value: unknown }[] = [];
+    for (const n of nodes) {
+      if (n.type === "SpreadElement") parts.push({ spread: true, value: this.spreadable(await this.evaluate(n.argument as AnyNode, env, frame)) });
+      else parts.push({ spread: false, value: await this.evaluate(n, env, frame) });
+    }
+    return parts;
+  }
+
   /** What `...x` and `for (const v of x)` may iterate: an array or a string, and nothing else (L4015). */
   private spreadable(v: unknown): unknown[] {
     if (Array.isArray(v)) return v;
@@ -851,7 +872,7 @@ class Interpreter {
       for (let i = 0; i < params.length; i += 1) {
         const param = params[i] as AnyNode;
         if (param.type === "RestElement") {
-          await this.bindPattern(param.argument as AnyNode, born(args.slice(i), frame.depth), env, frame, "let");
+          await this.bindPattern(param.argument as AnyNode, born(sized("these rest parameters", args.slice(i)), frame.depth), env, frame, "let");
           break;
         }
         await this.bindPattern(param, args[i], env, frame, "let");
@@ -904,6 +925,7 @@ class Interpreter {
           if (p.type === "RestElement") {
             const rest: Record<string, unknown> = {};
             for (const [k, v] of Object.entries(src)) if (!taken.includes(k)) setRecordMember(rest, k, v);
+            assertRecordFits("this rest element", Object.keys(rest).length);
             await this.bindPattern(p.argument as AnyNode, born(rest, frame.depth), env, frame, mode);
             continue;
           }
@@ -924,7 +946,7 @@ class Interpreter {
           const el = els[i];
           if (el === null || el === undefined) continue;
           if (el.type === "RestElement") {
-            await this.bindPattern(el.argument as AnyNode, born(src.slice(i), frame.depth), env, frame, mode);
+            await this.bindPattern(el.argument as AnyNode, born(sized("this rest element", src.slice(i)), frame.depth), env, frame, mode);
             break;
           }
           await this.bindPattern(el, src[i], env, frame, mode);
@@ -960,10 +982,12 @@ class Interpreter {
       fn = await this.evaluate(callee, env, frame);
     }
     if ((fn === null || fn === undefined) && node.optional === true) throw SHORT_CIRCUIT;
+    const parts = await this.spreadParts(argNodes, env, frame);
+    if (parts.some((p) => p.spread)) assertSpreadFits("array", "this spread", parts.filter((p) => p.spread).map((p) => p.value), parts.filter((p) => !p.spread).length);
     const args: unknown[] = [];
-    for (const a of argNodes) {
-      if (a.type === "SpreadElement") args.push(...this.spreadable(await this.evaluate(a.argument as AnyNode, env, frame)));
-      else args.push(await this.evaluate(a, env, frame));
+    for (const p of parts) {
+      if (p.spread) args.push(...(p.value as unknown[]));
+      else args.push(p.value);
     }
     if (typeof fn !== "function") {
       throw new RuntimeFault("L4011", `this value is not a function, so it cannot be called`);
