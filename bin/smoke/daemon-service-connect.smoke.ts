@@ -75,6 +75,7 @@
  * Add --renewal-only for the two-access-lifetime service renewal observation.
  * Add --renewal-resume-only for shipped restarts with an expired or removed human sign-in.
  * Service-only setup: --hosting-only --no-manager-only, optionally --account-only.
+ * Claude Code host setup: --hosting-only --claude-wake-only (stock connector, stand-in executable).
  * Add --hosting-only --updater-ownership-repro for two living updater clients' restart admission ownership.
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Manual empty-legacy admission: --hosting-only --update-repro --manual-admission-race-repro.
@@ -129,6 +130,7 @@ const desktopGapOnly = process.argv.includes("--desktop-gap-only");
 const desktopSetupOnly = process.argv.includes("--desktop-setup-only");
 const originalPath = process.env.PATH;
 const setupProgressOnly = process.argv.includes("--setup-progress-only");
+const claudeWakeOnly = process.argv.includes("--claude-wake-only");
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -1881,7 +1883,7 @@ const cmd=JSON.parse(process.env.COTAL_BEARER_CMD); const bearer=()=>new Promise
 const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(process.env.COTAL_SENTINEL_CREDS,'utf8'),lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,card:{owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,name:process.env.COTAL_NAME,kind:'agent'}});ep.on('error',()=>{});await ep.start();`);
       writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],${process.argv.includes("--dashboard-shape-repro") ? 'eventChannel: p=>"events."+p.owner+"."+p.actor,' : ""}buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
       writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: process.argv.includes("--dashboard-shape-repro") }] }] }));
-      const cleanSeed = process.argv.includes("--hosted-seed-repro") || process.argv.includes("--daemon-seed-repro");
+      const cleanSeed = claudeWakeOnly || process.argv.includes("--hosted-seed-repro") || process.argv.includes("--daemon-seed-repro");
       if (cleanSeed) rmSync(prefix, { recursive: true });
       else if (!upgrading) {
         const seed = join(root, "config", "cotal", "seed");
@@ -1893,9 +1895,54 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
       env.PATH = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
       if (process.argv.includes("--daemon-seed-repro")) env.COTAL_ALLOW_CHECKOUT_SEED = "1";
-      if (process.argv.includes("--hosted-seed-repro")) {
+      if (claudeWakeOnly || process.argv.includes("--hosted-seed-repro")) {
         delete env.COTAL_SKIP_CONNECTOR_SEED;
         env.COTAL_ALLOW_CHECKOUT_SEED = "1";
+      }
+      if (claudeWakeOnly) {
+        const claudeBin = join(root, "claude-bin");
+        mkdirSync(claudeBin);
+        writeFileSync(join(claudeBin, "claude"), `#!${process.execPath}
+const { existsSync, readFileSync, writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+const { spawn } = require('node:child_process');
+const [family, group, action, ...tail] = process.argv.slice(2);
+const home = ${JSON.stringify(home)};
+const plugin = join(home, 'claude-plugin', 'cotal');
+if (family === '--version') { console.log('2.1.327 (Claude Code)'); return; }
+if (family === 'plugin') {
+  const enabled = existsSync(join(home, 'claude-installed'));
+  if (group === 'marketplace' && action === 'list') console.log('[]');
+  else if (group === 'install') writeFileSync(join(home, 'claude-installed'), '');
+  else if (group === 'list') console.log(JSON.stringify(enabled ? [{ id: 'cotal@cotal-mesh', scope: 'user', enabled, readFromFolder: plugin }] : []));
+  else if (group !== 'marketplace' && group !== 'update') process.exit(99);
+  return;
+}
+if (family === 'mcp' && group === 'add') {
+  if (existsSync(join(home, 'reject-claude-registration'))) { console.error('fixture registration blocked'); process.exit(1); }
+  const [command, ...args] = tail.slice(tail.indexOf('--') + 1);
+  writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { cotal: { command, args } } }));
+  return;
+}
+const argv = process.argv.slice(2);
+const config = JSON.parse(argv[argv.indexOf('--mcp-config') + 1]);
+const user = JSON.parse(readFileSync(join(home, '.claude.json'))).mcpServers.cotal;
+if (!user.args.some(arg => arg === join(plugin, 'dist', 'seat.cjs'))) process.exit(99);
+console.log('WARNING: Loading development channels');
+process.stdin.once('data', () => {
+  console.log('messages from server:cotal inject directly in this session');
+  console.log('(shift+tab to cycle)');
+  const { command, args } = config.mcpServers.cotal;
+  const seat = spawn(command, args, { stdio: ['pipe', 'ignore', 'inherit'] });
+  seat.once('exit', code => process.exit(code ?? 1));
+});
+`, { mode: 0o700 });
+        writeFileSync(join(home, "reject-claude-registration"), "");
+        env.PATH = `${claudeBin}:${env.PATH}`;
+        env.COTAL_NO_UPDATE_CHECK = "1";
+        const seeded = spawnSync(process.execPath, [join(repo, "bin/dist/cotal.js"), "ext", "seed"], { cwd: root, env, encoding: "utf8", timeout: 180_000 });
+        assert.equal(seeded.status, 0, seeded.stdout + seeded.stderr);
+        env.COTAL_SKIP_CONNECTOR_SEED = "1";
       }
       if (upgrading && !upgradeFixture) throw new Error("upgrade proofs require COTAL_DAEMON_UPGRADE_FIXTURE from build-daemon-upgrade-fixture.mjs");
       let npmRegistry: ReturnType<typeof createHttpServer> | undefined;
@@ -2824,10 +2871,43 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("setup after application install restarts idle child and becomes launch-ready", recovered.code === 0 && recovered.doc.result?.launchReady === true && recovered.doc.result?.manager?.pid !== before?.pid && recovered.doc.result?.manager?.connectors?.some((connector: any) => connector.state === "available"), recovered);
           return;
         }
-        check(explicitHome ? "Explicit-home manager-start returns answering hosted Manager" : "H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
-        if (!explicitHome) {
+        if (!claudeWakeOnly) check(explicitHome ? "Explicit-home manager-start returns answering hosted Manager" : "H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
+        if (!explicitHome && !claudeWakeOnly) {
           check("H0 fresh setup prints device URL and code on stderr", setup.err.includes(`${idpOrigin}/approve?code=DAEMON`) && setup.err.includes("Approval code") && setup.err.includes("DAEMON"));
           check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
+        }
+        if (claudeWakeOnly) {
+          const run = async (...args: string[]) => {
+            const command = spawn(process.execPath, [cliEntry, ...args], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"], timeout: 90_000 });
+            let out = "", err = "";
+            command.stdout.on("data", (chunk) => { out += String(chunk); });
+            command.stderr.on("data", (chunk) => { err += String(chunk); });
+            const code = await new Promise<number | null>((resolve, reject) => { command.once("error", reject); command.once("close", resolve); });
+            return { code, out, err };
+          };
+          const launch = (instance: string) => run("spawn", "--space", ON, "--on", instance, "--harness", "claude", "--name", "daemon_claude_wake", "--no-events", "--detach", "--json");
+          const view = (await cli("status", "--space", ON)).doc.result.managers[0];
+          const userConfig = join(home, ".claude.json");
+          const reason = view.connectors.find((row: any) => row.agent === "claude" && row.state === "unavailable")?.reason;
+          const remedy = `cotal daemon setup --space ${ON}`;
+          check("Claude is unavailable when user MCP registration fails", reason?.includes("fixture registration blocked") && !existsSync(userConfig) && setup.code === 2, { view, setup });
+          const first = await launch(view.instanceId);
+          check("Claude spawn refusal names the daemon setup command", first.code !== 0 && first.out.includes(remedy), first);
+          const before = await run("status", "--plain");
+          check("status reports a missing wake entry with daemon guidance", before.out.includes("not registered") && before.out.includes("cotal daemon setup --space <space>"), before);
+          rmSync(join(home, "reject-claude-registration"));
+          const repaired = await cli("setup", "--space", ON);
+          const manager = repaired.doc.result?.manager;
+          check("daemon setup retries installation and reports Claude available", repaired.code === 0 && manager?.connectors.some((row: any) => row.agent === "claude" && row.state === "available"), repaired);
+          const registered = JSON.parse(readFileSync(userConfig, "utf8")).mcpServers.cotal;
+          check("Claude has the user-scope wake entry and installed plugin without a prepared project", registered.args.includes(join(home, "claude-plugin", "cotal", "dist", "seat.cjs")) && existsSync(join(home, "claude-installed")) && !existsSync(join(participant, ".mcp.json")), registered);
+          const second = await launch(manager.instanceId);
+          check("Claude launches and joins from the daemon-only computer", second.code === 0 && JSON.parse(second.out).result?.readiness === "joined", second);
+          if (second.code === 0) {
+            const stopped = await run("stop", "daemon_claude_wake", "--space", ON, "--on", manager.instanceId, "--json");
+            check("Claude seat stops through its hosted Manager", stopped.code === 0, stopped);
+          }
+          return;
         }
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
