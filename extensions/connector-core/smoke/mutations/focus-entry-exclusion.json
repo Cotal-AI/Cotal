@@ -15,7 +15,7 @@
   "mutations": [
     {
       "name": "ingest no longer records messages arriving during focus entry",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "      if (this.enteringFocus) this.excludeFromFocus(item);\n",
       "replace": "",
       "expectRed": "focus-entry normal buffer is excluded from recall",
@@ -23,7 +23,7 @@
     },
     {
       "name": "recall no longer filters ids retained during focus entry",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "if (underway.has(m.id) || !this.focusExcludedIds.has(m.id)) items.push(this.toInboxItem(m, \"channel\", true));",
       "replace": "items.push(this.toInboxItem(m, \"channel\", true));",
       "expectRed": "focus-entry normal buffer is excluded from recall",

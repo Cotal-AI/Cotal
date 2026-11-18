@@ -229,7 +229,7 @@
     },
     {
       "name": "K17 the fresh filter compares timestamps only, so a tie is skipped",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "  return a.ts !== b.ts ? a.ts > b.ts : a.id > b.id;",
       "replace": "  return a.ts > b.ts;",
       "cell": "a recall twin sharing a millisecond with a delivered item is not filtered out for good",
@@ -265,7 +265,7 @@
     },
     {
       "name": "K22 a sender's clock is allowed to order the walk again",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    return item.ts > Date.now();",
       "replace": "    return false;",
       "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
@@ -400,7 +400,7 @@
     },
     {
       "name": "K37 the recall mark outlives the frontier it was walking",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "  private resetRecallWalk(): void {\n    this._recallCursor = { ts: 0, id: \"\" };\n    this.aheadDelivered.clear();",
       "replace": "  private resetRecallWalk(): void {\n    if (this._recallCursor.ts < 0) this.aheadDelivered.clear();",
       "cell": "...and leaving focus forgets where that walk had read",
