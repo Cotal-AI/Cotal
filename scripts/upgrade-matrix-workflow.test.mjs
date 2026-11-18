@@ -263,7 +263,7 @@ function followOnEvidence(data, directory, route = 'in-place') {
   if (data.cell.followOnAction === 'self') {
     data.report.calls.push({ label: 'candidate follow-on self update under test', startedAt: '2026-11-14T11:00:01.000Z', finishedAt: '2026-11-14T11:00:02.000Z', argv: ['/owned/dist/cotal.js', 'update', '--self'], ...followUpdate });
   } else if (data.cell.followOnAction === 'npm') {
-    const bareVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n  Reconciliation pending: Run \`cotal update --self\` to reconcile this installation.\n`, stderr: '' };
+    const bareVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n  Reconciliation pending: Run \`cotal update\` to reconcile this home's extensions.\n`, stderr: '' };
     const reconciledVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n`, stderr: '' };
     const bareRuntimes = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { items: [{ name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: null, error: `@cotal-ai/tmux is ${b} and this cotal is ${c} - run \`cotal update --self\` to reconcile this installation` }] } }), stderr: '' };
     const reconciledRuntimes = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { items: [{ name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: true, error: null }] } }), stderr: '' };
