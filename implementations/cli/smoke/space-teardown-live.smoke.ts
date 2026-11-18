@@ -49,6 +49,9 @@
  *     it. `status` says the space was deleted under the running stack and leads its Next with
  *     `cotal down --yes`, then `cotal up`; history, send and `run ps` refuse with that cause and
  *     remedy. `down --yes` and `up` give the space its streams back.
+ *     After `down`, `doctor auth` still identifies the recorded open stack, including with `--fix`
+ *     or `--space`. An overriding auth broker names the address mismatch, not a new `up` here.
+ *     A stopped auth space whose folder is deleted names moving it back or forgetting the space.
  * 12. Reset targets with nothing to reset. `reset store` and `reset space` of a name no space has
  *     refuse TARGET_NOT_FOUND saying so, naming `cotal space` first. Of a prepared space no stack
  *     has run for, they refuse TARGET_NOT_FOUND naming its root, `cotal up` and `cotal space forget`.
@@ -569,6 +572,56 @@ try {
     check("down --yes, then up, gives the space its streams back", stopped.status === 0 && restarted.status === 0 && sent.status === 0, { down: shown(stopped), up: shown(restarted), send: shown(sent) });
     const last = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
+    for (const flags of [[], ["--fix"], ["--space", space], ["--space", space, "--fix"]]) {
+      const diagnosed = cli(root, "doctor", "auth", ...flags, "--json");
+      check(`doctor auth ${flags.join(" ")} on a stopped open stack is a root-local no-op`,
+        diagnosed.status === 0 && diagnosed.env?.outcome === "no-op" && diagnosed.env.target?.root === root
+          && diagnosed.env.result?.space === space && diagnosed.env.result?.credentialScope === "open-space"
+          && diagnosed.env.result?.brokerAuthorization === "not-checked"
+          && (diagnosed.env.result?.repair as { attempted?: boolean } | undefined)?.attempted === false, shown(diagnosed));
+      const plain = cli(root, "doctor", "auth", ...flags, "--plain");
+      check("the stopped open stack's text report says there are no credentials, with no root-folder remedy",
+        plain.status === 0 && plain.stdout.includes("No credentials to check") && !`${plain.stdout}${plain.stderr}`.includes("root folder"), shown(plain));
+    }
+    const wrongSpace = cli(root, "doctor", "auth", "--space", "not-this-stack", "--json");
+    check("an open stack does not establish open mode for another named space",
+      wrongSpace.status === 2 && wrongSpace.env?.error?.code === "AUTH_REQUIRED", shown(wrongSpace));
+
+    const authSpace = "tear9auth";
+    const openUp = cli(root, "up", "--json");
+    check("the open stack starts again at its recorded broker", openUp.status === 0, shown(openUp));
+    const authRoot = folder(authSpace);
+    const authServer = `nats://127.0.0.1:${await freePort()}`;
+    const authCreated = cli(home, "space", "create", authSpace, "--root", authRoot, "--json");
+    check("space create prepares the second auth stack's root", authCreated.status === 0, shown(authCreated));
+    const authUp = cli(authRoot, "up", "--server", authServer, "--json");
+    check("a second stack starts an authenticated broker", authUp.status === 0, shown(authUp));
+    anchor(authRoot);
+    const caller = folder("doctor-caller");
+    mkdirSync(join(caller, ".cotal"), { mode: 0o700 });
+    {
+      const mismatch = cli(caller, "send", "-c", "general", "hi", "--space", space, "--server", authServer, "--json");
+      check("an open space with an overriding auth broker names both addresses and dropping --server, never up here",
+        mismatch.status === 2 && mismatch.env?.error?.code === "AUTH_REQUIRED"
+          && mismatch.env.error.message.includes(authServer) && mismatch.env.error.message.includes(`"${space}" is recorded as an open mesh at ${server}`)
+          && mismatch.env.error.remedy === `check that address, or drop --server to reach "${space}" at ${server}, where it is recorded`
+          && !mismatch.env.error.remedy.includes("cotal up"), shown(mismatch));
+    }
+    const openDown = cli(root, "down", "--yes", "--json");
+    check("the open stack stops after the mismatched broker refusal", openDown.status === 0, shown(openDown));
+    const authDown = cli(authRoot, "down", "--yes", "--json");
+    check("the auth stack stops cleanly before its folder is deleted", authDown.status === 0, shown(authDown));
+    anchors.delete(authRoot);
+    rmSync(authRoot, { recursive: true, force: true });
+    for (const flags of [[], ["--fix"]]) {
+      const missing = cli(caller, "doctor", "auth", "--space", authSpace, ...flags, "--json");
+      check("doctor auth for the deleted auth root names moving it back or forgetting it, not rerunning in that folder",
+        missing.status === 2 && missing.env?.error?.code === "AUTH_REQUIRED"
+          && Boolean(missing.env.error.remedy?.includes(`${authRoot}, no longer exists`))
+          && Boolean(missing.env.error.remedy?.includes("move it back"))
+          && Boolean(missing.env.error.remedy?.includes(`cotal space forget ${authSpace}`))
+          && !missing.env.error.remedy?.startsWith("run `"), shown(missing));
+    }
   }
 
   // 12. A mistyped name and a prepared space no stack ran for have nothing to reset.
