@@ -480,11 +480,31 @@ try {
   const added = cliIn(webRoot, ["service", "add", "web", "--preset", "web", "--space", WEB_SPACE, "--root", webRoot, "--creds", creds, "--read-only", "--port", String(webPort)]);
   webService = added.status === 0;
   check("service add saves the web preset for this stack", webService, `${added.stdout}${added.stderr}`);
+  const webPid = canonicalLocalProcessPath(WEB_PIDFILE, { root: webRoot, space: WEB_SPACE });
+  // #7632: A dashboard start that fails before publishing its session record (e.g., port already bound)
+  // releases web.pid, and a stale web.pid whose PID was reused by a live process with another start
+  // token is cleared on the next start without signaling that process.
+  const portBlocker = await new Promise<import("node:net").Server>((resolveServer, rejectServer) => {
+    const srv = import("node:net").then(({ createServer }) => {
+      const s = createServer();
+      s.once("error", rejectServer);
+      s.listen(webPort, "127.0.0.1", () => resolveServer(s));
+    });
+    void srv;
+  });
+  try {
+    const failedStart = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--json"], 60_000);
+    check("a failed dashboard start releases web.pid and its identity pin",
+      failedStart.status !== 0 && !existsSync(webPid) && !existsSync(`${webPid}.identity`), `${failedStart.stdout}${failedStart.stderr}`);
+  } finally {
+    await new Promise<void>((resolveClose) => portBlocker.close(() => resolveClose()));
+  }
+  writeFileSync(webPid, `${process.pid}\n`, { mode: 0o600 });
+  writeFileSync(`${webPid}.identity`, `${process.pid} stale-start-token\n`, { mode: 0o600 });
   const webStart = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--json"], 120_000);
   const instance = webStart.status === 0 ? (JSON.parse(webStart.stdout) as { result?: { instanceId?: string; pid?: number } }).result : undefined;
-  const webPid = canonicalLocalProcessPath(WEB_PIDFILE, { root: webRoot, space: WEB_SPACE });
   const web = existsSync(webPid) ? Number(readFileSync(webPid, "utf8").trim()) || undefined : undefined;
-  check("the dashboard starts as a service whose process holds web.pid",
+  check("the dashboard starts as a service whose process holds web.pid after clearing a reused-PID slot",
     webStart.status === 0 && web !== undefined && instance?.pid === web, `${webStart.stdout}${webStart.stderr}`);
   const anonymousMeta = await fetch(`http://127.0.0.1:${webPort}/api/meta`);
   check("the dashboard refuses an anonymous /api/meta", anonymousMeta.status === 401, anonymousMeta.status);

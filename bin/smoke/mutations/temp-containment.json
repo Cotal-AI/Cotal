@@ -58,8 +58,8 @@
     {
       "name": "the sun_path length check is disarmed, so an over-long socket path is returned for the bind to reject with EINVAL",
       "file": "extensions/connector-core/src/runtime.ts",
-      "find": "  if (process.platform !== \"win32\" && bytes > SUN_PATH_MAX_BYTES) {",
-      "replace": "  if (process.platform !== \"win32\" && bytes > SUN_PATH_MAX_BYTES && false) {",
+      "find": "  if (bytes > SUN_PATH_MAX_BYTES) {",
+      "replace": "  if (bytes > SUN_PATH_MAX_BYTES && false) {",
       "expectRed": "✗ FAIL: a control socket path over the sun_path limit is refused with its path, length and limit",
       "cell": "✗ FAIL: a control socket path over the sun_path limit is refused with its path, length and limit"
     },

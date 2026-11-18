@@ -254,19 +254,17 @@ async function startSession(
   events = plane?.events;
 
   // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
-  // cooperative shutdown. The SOCKET PATH comes from the launch env; the first-frame TOKEN comes
-  // from the launch-material file that env points at, which is also where the hooks read it, or from
-  // COTAL_CONTROL_TOKEN in a session driven by hand. The hooks are what advance presence and inject
-  // peer messages, so a session without the pair is refused, naming it, rather than served with an
-  // unauthenticated (or no) control plane.
+  // cooperative shutdown. The SOCKET PATH comes from the launch env; the KEY and exchange version
+  // come from the launch-material file that env points at, which is also where the hooks read them,
+  // or from COTAL_CONTROL_KEY and COTAL_CONTROL_VERSION in a session driven by hand. The hooks are
+  // what advance presence and inject peer messages, so a session without the endpoint is refused,
+  // naming it, rather than served with an unauthenticated (or no) control plane.
   const control = controlFromEnv(env);
   if (!control) {
     throw new Error(
-      "no control endpoint for the lifecycle hooks: set COTAL_CONTROL_SOCKET to a socket path and COTAL_CONTROL_TOKEN to a random secret",
+      "no control endpoint for the lifecycle hooks: set COTAL_CONTROL_SOCKET to a socket path in a private directory, COTAL_CONTROL_KEY to a random secret and COTAL_CONTROL_VERSION to 1",
     );
   }
-  const controlPath = control.path;
-  const controlToken = control.token;
   // Defined before the server so it can be the cooperative-shutdown handler; only ever CALLED after
   // `controlServer` is assigned (on a signal or an authed `{op:"shutdown"}`), so the forward ref is safe.
   // `wake` is likewise assigned later, so a shutdown frame arriving before the MCP server exists
@@ -308,7 +306,7 @@ async function startSession(
   setClose(close);
   controlServer = startControlServer(
     agent,
-    { path: controlPath, token: controlToken },
+    control,
     claude.handle,
     { fatalBind: opts.fatalBind ?? false, onShutdown: () => void shutdown(), onReply: claude.onReply },
   );

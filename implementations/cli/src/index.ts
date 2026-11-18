@@ -27,7 +27,7 @@ import { watch, watchComplete, watchFlags, validateWatchArguments } from "./comm
 import { persona, personaComplete, personaFlags, validatePersonaArguments } from "./commands/persona.js";
 import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, completionFlags, complete, validateCompletionArguments } from "./commands/completion.js";
-import { config, configComplete, configFlags, configSubcommands } from "./commands/config.js";
+import { config, configComplete, configFlags, configSubcommands, validateConfigArguments } from "./commands/config.js";
 import { telemetry, telemetryFlags, validateTelemetryArguments } from "./commands/telemetry.js";
 import { mint } from "./commands/mint.js";
 import { revokeCredential } from "./commands/revoke-credential.js";
@@ -38,7 +38,7 @@ import { reset, resetComplete, resetFlags, validateResetArguments } from "./comm
 import { feedback, feedbackFlags, validateFeedbackArguments } from "./commands/feedback.js";
 import { send, sendComplete, sendFlags, sendArguments } from "./commands/send.js";
 import { chat, chatArguments, chatComplete, chatFlags } from "./commands/chat.js";
-import { ext, extFlags } from "./commands/ext.js";
+import { ext, extFlags, validateExtArguments } from "./commands/ext.js";
 import { help, helpFlags, version, versionFlags } from "./commands/help.js";
 import { topology } from "./commands/topology.js";
 import { team, teamComplete, teamFlags, validateTeamArguments } from "./commands/team.js";
@@ -116,9 +116,11 @@ const baseCommands: Command[] = [
       { name: "__stage-verify", summary: "verify one extension in its parent's staged prefix", hidden: true },
     ],
     flags: extFlags,
+    flagNames: ["json", "plain"],
     outputs: ["json", "plain"],
     examples: [{ command: "cotal ext", note: "list installed extensions" }, { command: "cotal ext add @cotal-ai/tmux", note: "add the tmux runtime" }, { command: "cotal ext remove <name>", note: "uninstall an extension" }],
     reads: true,
+    validate: validateExtArguments,
     run: ext,
   },
   {
@@ -134,6 +136,7 @@ const baseCommands: Command[] = [
     outputs: ["json", "plain"],
     examples: [{ command: "cotal config", note: "show your preferences and their sources" }, { command: "cotal config set harness opencode", note: "make OpenCode your default application" }, { command: "cotal config get harness", note: "show one preference and its source" }],
     reads: true,
+    validate: validateConfigArguments,
     run: config,
     complete: configComplete,
   },
