@@ -1051,7 +1051,7 @@ function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
   try {
     const result = rt.npm(["install", "--prefix", staging, "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
-    if (result.status !== 0) throw new Error(`installed extension dependency closure is unavailable: ${failure(result)}`);
+    if (result.status !== 0) throw releaseReadError(result, `installed extension dependency closure is unavailable: ${failure(result)}`);
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
   }
@@ -1116,6 +1116,15 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
 
 class ReleaseNotAvailable extends Error {}
 class ReleaseDateExcluded extends Error {}
+class RegistryUnavailable extends Error {}
+
+const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND)$/;
+
+function registryNetworkFailure(error: unknown): boolean {
+  if (error instanceof RegistryUnavailable) return true;
+  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(message(error))?.[1];
+  return code !== undefined && NETWORK_ERROR_CODE.test(code);
+}
 
 function releaseReadError(result: CommandResult, detail: string): Error {
   if (result.status !== null && !result.error) {
@@ -1123,6 +1132,8 @@ function releaseReadError(result: CommandResult, detail: string): Error {
       const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown; detail?: unknown } }).error;
       if (error?.code === "ETARGET" && [error.summary, error.detail].some(text => typeof text === "string" && /with a date before\b/i.test(text)))
         return new ReleaseDateExcluded(`${detail}: npm's min-release-age or before setting excludes this release. Adjust that date filter and run \`cotal update --self\` again`);
+      // A first-party scoped read can fail while the public registry still answers.
+      if (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code)) return new RegistryUnavailable(detail);
       if (error?.code === "E404" || error?.code === "ETARGET") return new ReleaseNotAvailable(detail);
       if (typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code)) {
         const registry = detail.includes("@cotal-ai/") ? "the @cotal-ai:registry setting in .npmrc" : "your npm registry settings";
@@ -1130,7 +1141,7 @@ function releaseReadError(result: CommandResult, detail: string): Error {
       }
     } catch { /* An unstructured failure is not evidence of registry propagation. */ }
   }
-  return new Error(detail);
+  return registryNetworkFailure(new Error(failure(result))) ? new RegistryUnavailable(detail) : new Error(detail);
 }
 
 async function waitForReleaseArchives(version: string, current: string, rt: UpdateRuntime): Promise<boolean> {
@@ -1208,6 +1219,11 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       rt.err(c.red(`✗ ${message(e)}. No global install was attempted.`));
       return 1;
     }
+    if (registryNetworkFailure(e)) {
+      recordUpdateDeferral(targetVersion, "waiting for registry access", true);
+      rt.out("The registry cannot be reached; nothing was changed.");
+      return 0;
+    }
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
     rt.err(c.red(`✗ cotal-ai@${targetVersion} update preflight failed: ${message(e)}. No global install was attempted. ${e instanceof ReleaseNotAvailable ? "The release is still reaching the registry; run `cotal update --self` again in a few minutes." : "Correct the reported failure, then run `cotal update --self` again."}`));
     return 1;
@@ -1282,6 +1298,11 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     } catch (error) {
       try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
       releaseGlobal();
+      if (!execution && message(error).startsWith("target staging failed: ") && registryNetworkFailure(error)) {
+        recordUpdateDeferral(targetVersion, "waiting for registry access", true);
+        rt.out("The registry cannot be reached; nothing was changed.");
+        return 0;
+      }
       recordUpdateDeferral(targetVersion, `staged pre-install check refused: ${preflightDetail(error)}`);
       rt.err(`staged pre-install check refused: ${message(error)}; no installed packages or connector state were changed`);
       return 1;
