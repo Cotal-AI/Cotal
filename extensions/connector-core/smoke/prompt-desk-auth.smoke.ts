@@ -40,7 +40,7 @@ import {
   AGENT_CONTRACTS, AGENT_ENDPOINT, AGENT_PROMPT_CONTENT_MAX_BYTES, AGENT_PROMPT_DIGEST_DETAIL, AGENT_PROMPT_STATE_DETAIL,
   CotalEndpoint, EpEnvelopeError, agentPromptDigest, createSpaceAuth, epPrincipalCallerReplyFilter, epPrincipalGrantRows,
   epPrincipalNoRespondersSubject, epPrincipalReplySubject, epPrincipalRequestSubject, isReachable, mintCreds, mintLifecycleUid,
-  newIdentity, processRuntime, provisionAgentDurables, serverConfig, setupSpaceStreams,
+  newIdentity, processRuntime, provisionAgentDurables, reconcileSpaceMemoryBuckets, serverConfig, setupSpaceStreams,
   type AgentPrompt, type EndpointReply, type EpCaller, type EpPrincipal, type Presence, type PromptContent, type PromptState,
   type PromptsOutput,
 } from "@cotal-ai/core";
@@ -1101,7 +1101,7 @@ try {
 
   const errors = () => events.filter((e) => e.includes(" error: "));
   check("no endpoint emitted an error before the broker restart", errors().length === 0, errors());
-  const errorsBeforeRestart = errors().length;
+  const restartAt = events.length;
 
   // ── a reconnect that lands on a smaller max_payload ──
   {
@@ -1127,10 +1127,24 @@ try {
     fakes.filter((f) => f.ends.length !== 1).map((f) => `${f.label}: ${JSON.stringify(f.ends)}`));
   check("the desk never reported a row that cannot happen, an end twice, or another bug", !warns.some((w) => w.includes("bug")), warns.filter((w) => w.includes("bug")));
   // While the restarted broker waits for the auth callout's own connection to come back, a client's
-  // first reconnect is refused; that is the restart, and the only error it may leave.
-  const restartErrors = errors().slice(errorsBeforeRestart);
-  check("across the restart the endpoints reported only the broker's refusal while the auth callout reconnected",
-    restartErrors.every((e) => e.endsWith(" error: Authorization Violation")), restartErrors);
+  // first reconnect is refused. The restart also drops the space's Memory buckets, presence among
+  // them, until the host reconciles them, so alice.web's presence watch rebind reports `timeout`
+  // while it is disconnected and `stream not found` once it is back. That window closes when the
+  // host has reconciled and alice.web's watch reports a presence change written after it.
+  await reconcileSpaceMemoryBuckets({ servers: SERVERS, space, creds: provisionerCreds });
+  const activity = `back after the restart ${randomUUID()}`;
+  let windowEnd = -1;
+  webEp.on("presence", (e: { presence: Presence }) => {
+    if (windowEnd < 0 && e.presence.card.id === `${W.coder.owner}.${W.coder.actor}` && e.presence.activity === activity) windowEnd = events.length;
+  });
+  await coderEp.setActivity(activity);
+  const watchBack = await until(() => windowEnd >= 0, 30_000);
+  const inWindow = events.slice(restartAt, watchBack ? windowEnd : events.length).filter((e) => e.includes(" error: "));
+  const afterWindow = watchBack ? events.slice(windowEnd).filter((e) => e.includes(" error: ")) : [];
+  check("across the restart the endpoints reported only the broker's refusal while the auth callout reconnected, and JetStream's timeout or stream not found until the host restored the presence bucket",
+    watchBack && inWindow.every((e) => /^\S+ error: (Authorization Violation|stream not found|timeout)$/.test(e))
+      && afterWindow.every((e) => e.endsWith(" error: Authorization Violation")),
+    { watchBack, inWindow, afterWindow });
 } finally {
   for (const d of desks) await d.close().catch(() => {});
   for (const ep of endpoints) await ep.stop().catch(() => {});
