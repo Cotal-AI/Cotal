@@ -542,11 +542,13 @@ without treating an option's value as another command word.
 Daemon command discovery does not load the Manager implementation. Computer vitals sampling and
 hosted Manager registration cleanup load their Manager helpers when those operations run.
 
-When a hosted Manager starts with Claude Code on its `PATH`, it installs Cotal's Claude Code plugin
-and registers the user-scope `cotal` MCP entry if the entry is missing. It leaves existing `cotal`
-entries alone and does not prepare a local space. If registration fails, the Manager reports Claude
-Code as unavailable. Correct the cause, let any seats on that Manager stop, and run
-`cotal daemon setup --space <space>` on that computer to retry.
+A hosted Manager that finds Claude Code on its `PATH` installs Cotal's Claude Code plugin and
+registers the user-scope `cotal` MCP entry if the entry is missing. This also works when Claude Code
+appears in a directory already on the running Manager's `PATH`. The Manager leaves existing `cotal`
+entries alone and does not prepare a local space. Claude Code stays unavailable until registration
+succeeds. If it fails, correct the cause reported by `cotal daemon status --space <space>` and
+retry the launch. If you need to refresh the daemon's `PATH`, let any seats on that Manager stop
+and run `cotal daemon setup --space <space>` on that computer.
 
 A recorded native machine daemon checks for updates daily with up to one hour of jitter.
 A newly seen release waits one hour before installation. Automatic installation uses
