@@ -5,6 +5,10 @@
     "packages/core/smoke/prototypes/issued-accepted-row.ts",
     "packages/core/src/endpoint-subjects.ts",
     "packages/core/src/provision.ts",
+    "packages/core/src/provision-permissions.ts",
+    "packages/core/src/provision-jwt.ts",
+    "packages/core/src/provision-resources.ts",
+    "packages/core/src/provision-server-config.ts",
     "packages/core/smoke/prototypes/CLAIMS.md",
     "implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
     "implementations/auth/smoke/issued-callout-binding.smoke.ts"
@@ -49,7 +53,7 @@
     },
     {
       "name": "production operator publication is widened",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "if (profile === \"operator\") return operatorPermissions(space, pr);",
       "replace": "if (profile === \"operator\") return { ...operatorPermissions(space, pr), pub: { allow: [\">\"] } };",
       "expectRed": "current profile excludes issued namespace: operator/default",
@@ -186,7 +190,7 @@
     },
     {
       "name": "a peer-held profile is granted a stream-update door",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "      `$JS.ACK.${CHAT}.>`,\n      `$JS.API.CONSUMER.CREATE.${KV}.>`,",
       "replace": "      `$JS.ACK.${CHAT}.>`,\n      `$JS.API.STREAM.UPDATE.${KV}`,\n      `$JS.API.CONSUMER.CREATE.${KV}.>`,",
       "expectRed": "every broker grant a peer can hold has a decided delivery class",
@@ -195,7 +199,7 @@
     },
     {
       "name": "a second peer profile is granted the push-consumer door",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "    pub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"in\")] },\n    sub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"out\"), `_INBOX_${pr.connId}.>`] },",
       "replace": "    pub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"in\"), `$JS.API.CONSUMER.CREATE.KV_cotal_presence_${space}.>`] },\n    sub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, \"out\"), `_INBOX_${pr.connId}.>`] },",
       "expectRed": "peers hold the push-consumer door and none of the republish doors",

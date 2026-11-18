@@ -3,7 +3,7 @@
   "mutations": [
     {
       "name": "P1 the observer's presence-bucket consumer delete is restored, so a rebuild deletes its predecessor and any observer can again delete another principal's presence watch cursor",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "\n      `$JS.API.CONSUMER.INFO.${KV}.>`,\n",
       "replace": "\n      `$JS.API.CONSUMER.INFO.${KV}.>`,\n      `$JS.API.CONSUMER.DELETE.${KV}.>`,\n",
       "expectRed": "1.4 the rebuild's delete of its predecessor was REFUSED",
@@ -11,7 +11,7 @@
     },
     {
       "name": "P2 an account-wide consumer delete is added, which reaches the presence bucket without naming it",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "\n      `$JS.API.CONSUMER.INFO.${KV}.>`,\n",
       "replace": "\n      `$JS.API.CONSUMER.INFO.${KV}.>`,\n      \"$JS.API.CONSUMER.DELETE.>\",\n",
       "expectRed": "1.4 the rebuild's delete of its predecessor was REFUSED",

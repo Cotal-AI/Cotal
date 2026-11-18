@@ -16,7 +16,7 @@
   "mutations": [
     {
       "name": "the provisioner loses its chat stream update grant",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
       "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, INBOX, DLV, DM]\n",
       "expectRed": "the provisioner may set the chat stream's limit",
@@ -25,7 +25,7 @@
     },
     {
       "name": "the provisioner loses its INBOX update grant",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
       "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, DLV, DM]\n",
       "expectRed": "the provisioner may set the inbox stream's limit",
@@ -33,7 +33,7 @@
     },
     {
       "name": "the provisioner loses its DM update grant",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
       "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV]\n",
       "expectRed": "the provisioner may set the dm stream's limit",
@@ -41,7 +41,7 @@
     },
     {
       "name": "the grant is widened to the TASK stream",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
       "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM, TASK]\n",
       "expectRed": "the provisioner may not update TASK_",
