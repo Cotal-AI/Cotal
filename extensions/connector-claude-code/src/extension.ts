@@ -355,9 +355,18 @@ export const claudeConnector: Connector = {
     // so a driving session can greet the operator the moment it joins.
     // A prompt with no text in it cannot be submitted as a turn: refuse the launch rather than start
     // a seat that quietly ignores what the operator passed (same rule as the other connectors).
+    // `claude` reads a leading positional that starts with `-` as an option, so such a prompt is
+    // refused rather than delivered as something other than the first turn. `--` is no carrier:
+    // after it `claude` still runs a subcommand whose name the prompt matches.
     const prompt = opts.prompt === undefined ? undefined : opts.prompt.trim();
     if (prompt === "")
       throw new Error("claude connector: an initial prompt was given but it is empty, there is no first turn to submit");
+    if (prompt?.startsWith("-"))
+      throw new Error("claude connector: an initial prompt cannot start with '-' (claude reads it as an option); reword it");
+    // `--resume` takes an optional value, so `claude` reads an id that starts with `-` as the next
+    // option and resumes nothing. A Claude session id never starts with one.
+    if (opts.resume?.startsWith("-"))
+      throw new Error(`claude connector: cannot resume ${JSON.stringify(opts.resume)}: a session id cannot start with '-' (claude reads it as an option)`);
     // A managed seat (the manager marks one with its `cwd`) has nobody at its terminal to notice a
     // channel that did not bind. A carried home declares the server itself (placeCarried); a
     // foreground launch keeps Claude's own notice.
