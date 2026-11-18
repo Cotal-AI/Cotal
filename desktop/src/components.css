@@ -178,6 +178,7 @@ main { flex: 1; display: flex; flex-direction: column; justify-content: safe cen
 .connection-card { flex-shrink: 0; }
 footer { flex-shrink: 0; }
 @media (max-width: 640px) { .sidebar { padding: 8px 24px; } main { padding: 8px 24px; } #journey { margin-bottom: 16px; } }
+#service-log:not([open]) > :not(summary) { display: none; }
 #settings-panel:has(#service-log[open]) > :not(.settings-heading):not(#service-log) { display: none; }
 #service-log-text { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--paper); border: 1px solid var(--rule); }
 #service-log > p, #service-log > button { margin-top: 8px; }

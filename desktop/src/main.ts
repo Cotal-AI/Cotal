@@ -351,6 +351,7 @@ const computerRows = new Map<string, ComputerSpace>();
 const connections = new Map<string, string>();
 let choosingSpace = false;
 let addingSpace = false;
+let selectionPending = false;
 let listOpened = false;
 const providers = new Map<string, string>();
 const catalogIds = new Map<string, string>();
@@ -720,7 +721,7 @@ function buttons(): void {
   renderAccountActions();
   el<HTMLButtonElement>("login").disabled = busy || loginActive || !isTauri();
   el<HTMLButtonElement>("other-host").disabled = busy;
-  el<HTMLButtonElement>("connect").disabled = busy || !ready || !selectedSpace() || connected();
+  el<HTMLButtonElement>("connect").disabled = busy || !ready || !selectedSpace() || connected() || selectionPending || addingSpace && connections.has(selectedSpace());
   text("connect", addingSpace ? `Add to ${shownSpaceLabel(accountSpaces.get(selectedSpace())?.label, selectedSpace() || "space")}` : applicationRefusals.has(selectedSpace()) || el("notice").classList.contains("error") ? "Check again" : "Connect this computer");
   el<HTMLButtonElement>("disconnect").disabled = busy || !ready || !selectedSpace();
   el<HTMLButtonElement>("dashboard").disabled = busy || !(connected() || computerAccount?.hostSupport === "supported");
@@ -973,14 +974,15 @@ el("another-space").addEventListener("click", () => {
   if (busy) return;
   editing = true; addingSpace = true; choosingSpace = true;
   const select = el<HTMLSelectElement>("space");
-  for (const option of select.options) option.hidden = connections.has(option.value);
+  for (const option of select.options) { option.hidden = false; option.disabled = connections.has(option.value); }
   select.value = ""; connection = undefined;
+  text("no-other-spaces", [...select.options].some(option => option.value && !option.disabled) ? "" : "Every space in this account is already connected.");
   notice(""); clearDetails(); progress = progressNames.map(() => "waiting"); showStage("finished", true); select.focus();
 });
 el("retry-login").addEventListener("click", beginSignIn);
 el("sign-in-again").addEventListener("click", () => { beginSignIn(); if (computerAccount?.mode === "sign-in-required") el<HTMLFormElement>("login-form").requestSubmit(); });
 el("connect").addEventListener("click", () => void action(async () => {
-  if (connected() || !ready || !selectedSpace()) return;
+  if (connected() || selectionPending || addingSpace && connections.has(selectedSpace()) || !ready || !selectedSpace()) return;
   const space = selectedSpace(); const idp = providers.get(space) ?? el<HTMLInputElement>("provider").value.trim();
   setupActive = true; editing = false; applications = []; clearDetails(); notice("");
   progress = ["running", "waiting", "waiting", "waiting", "waiting"]; renderProgress(); showStage("connect", true);
@@ -1012,7 +1014,13 @@ el("disconnect").addEventListener("click", () => void action(async () => {
 }));
 el("sync").addEventListener("click", () => void action(async () => { notice(""); await spaces(true); }));
 el("refresh").addEventListener("click", () => void action(refresh));
-el("space").addEventListener("change", () => { signedInProvider = undefined; connection = undefined; progress = progressNames.map(() => "waiting"); clearDetails(); notice(""); showStage(stage); void refresh(); });
+el("space").addEventListener("change", () => {
+  signedInProvider = undefined; connection = undefined; selectionPending = true;
+  progress = progressNames.map(() => "waiting"); clearDetails(); notice(""); showStage(stage); buttons();
+  const selected = selectedSpace();
+  const pending = refresh(); const generation = refreshGeneration;
+  void pending.finally(() => { if (generation === refreshGeneration && selected === selectedSpace()) selectionPending = false; buttons(); });
+});
 function openDashboard(): void {
   const space = selectedSpace(); const provider = providers.get(space) ?? el<HTMLInputElement>("provider").value.trim();
   const spaceId = catalogIds.get(space), instanceId = instances.get(space);
@@ -1054,7 +1062,7 @@ function openSettings(): void {
   if (busy || loginActive) return;
   editing = false; addingSpace = false; choosingSpace = false;
   const select = el<HTMLSelectElement>("space");
-  for (const option of select.options) option.hidden = false;
+  for (const option of select.options) { option.hidden = false; option.disabled = false; }
   if (!connections.has(select.value)) select.value = connections.keys().next().value ?? select.value;
   if (connections.size || completedSetup || listOpened || computerAccount?.hostSupport === "supported") {
     listOpened = true; showStage("finished");

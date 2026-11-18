@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { nativeStub, scenarios } from './fixtures.mjs';
+import { scenarios } from './fixtures.mjs';
 // Reuse the production-renderer harness, with native replies held at its existing boundary.
 scenarios.splice(0, scenarios.length,
   ...['content', 'empty', 'error'].map(mode => ({ name: `service-log-${mode}`, state: { installed: true, signedIn: true, connected: true, logText: mode === 'content' ? 'daemon startup refused: local test reason\n' : '', logTruncated: mode === 'content', logError: mode === 'error' }, act: async page => {
@@ -35,6 +35,10 @@ scenarios.splice(0, scenarios.length,
     const disabled = await page.locator('#connect').isDisabled();
     console.log('REPRO Add disabled during selected-space status read:', disabled);
     assert.equal(disabled, true, 'Add must stay disabled while selected-space status is pending');
+  } },
+  { name: 'all-spaces-connected', state: { installed: true, signedIn: true, connected: true }, act: page => page.click('#another-space'), expect: async page => {
+    assert.match(await page.locator('#no-other-spaces').textContent(), /Every space in this account is already connected/);
+    assert.equal(await page.locator('#connect').isDisabled(), true);
   } },
   { name: 'connected-picker-choice', state: { installed: true, signedIn: true, connected: true, multiple: true }, act: async page => { await page.click('#another-space'); }, expect: async page => {
     const option = await page.locator('#space option[value="acme-team"]').evaluate(el => ({ hidden: el.hidden, disabled: el.disabled }));
