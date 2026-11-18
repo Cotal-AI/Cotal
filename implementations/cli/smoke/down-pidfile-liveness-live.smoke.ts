@@ -6,12 +6,12 @@
  * REAL broker on a free port. Sandboxes COTAL_HOME and the project root. Needs nats-server on PATH.
  * Run: pnpm smoke:down-pidfile-liveness:live
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createConnection } from "node:net";
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { canonicalLocalProcessPath, MANAGER_PIDFILE, parsePid } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, parsePid } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const PORT = await freePort();
@@ -100,6 +100,28 @@ try {
     if (!gone) await sleep(250);
   }
   ok("the restored down stops the manager and the broker", gone, { manager: alive(managerPid), port: await portOpen(PORT) });
+  const restarted = cli("up", "-f", manifest, "--detach");
+  ok("legacy stack starts for reused pid cleanup", restarted.status === 0, restarted.stdout + restarted.stderr);
+  const unrelated = [spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" }), spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" })];
+  try {
+    for (const [index, file] of [MANAGER_PIDFILE, DELIVERY_PIDFILE].entries()) {
+      const path = canonicalLocalProcessPath(file, { root, space: SPACE });
+      if (!existsSync(path)) continue;
+      const pid = readPid(path)!;
+      const token = readFileSync(`${path}.identity`, "utf8").trim().split(" ")[1]!;
+      process.kill(pid, "SIGKILL");
+      for (let i = 0; i < 100 && alive(pid); i++) await sleep(50);
+      writeFileSync(path, String(unrelated[index]!.pid));
+      writeFileSync(`${path}.identity`, `${unrelated[index]!.pid} ${token}`);
+    }
+    const cleared = cli("down", "--yes");
+    const text = cleared.stdout + cleared.stderr;
+    ok("down clears reused pid records and stops the later broker", cleared.status === 0 && !(await portOpen(PORT)), text);
+    ok("the unrelated processes remain untouched", unrelated.every((child) => alive(child.pid)));
+    ok("the stale records and pins are removed without escaped newlines", !existsSync(pidPath()) && !existsSync(`${pidPath()}.identity`) && !text.includes("\\u000a"), text);
+  } finally {
+    for (const child of unrelated) child.kill("SIGKILL");
+  }
   console.log(`\ndown-pidfile-liveness live: ${pass} checks passed`);
   emitSentinel({ passed: pass, failed: 0 });
 } finally {

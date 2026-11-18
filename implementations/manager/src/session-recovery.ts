@@ -4,6 +4,7 @@ import {
   discardLaunchArtifacts, EpEnvelopeError, rejectionText,
   type AttachSession, type Connector, type CotalEndpoint, type LaunchOpts, type LaunchSpec, type RuntimeReference,
 } from "@cotal-ai/core";
+import type { ControlEndpoint } from "@cotal-ai/core";
 import type { ForkProvenance, FreeSlotCause, ManagedAgent, ManagerResumeAgent } from "./manager.js";
 import type { AgentHandle, Runtime } from "./runtime/index.js";
 import { writeContinuityAssignment } from "./launch.js";
@@ -216,7 +217,7 @@ export class SessionRecovery {
     a: ManagedAgent,
     expected: string,
     handle: AgentHandle = a.handle,
-    control: { path: string; token: string } | undefined = a.control,
+    control: ControlEndpoint | undefined = a.control,
   ): Promise<void> {
     const deadline = Date.now() + 15_000;
     let last = "control endpoint not ready";

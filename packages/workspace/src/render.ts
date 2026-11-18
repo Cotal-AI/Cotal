@@ -190,6 +190,8 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
         return parts(`credentials for "${t.space}" were rejected at ${server}, the broker address --server named; a different mesh may be running there`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
       return parts(`credentials for "${t.space}" were rejected at ${server}; a different mesh may be running there`, "run `cotal meshes` to check, or `cotal up` here to start yours");
     case "open-wants-auth":
+      if ((t.source === "flag-server" || t.source === "flag-space-override") && t.recordedServer !== undefined && t.recordedServer !== t.server)
+        return parts(`broker at ${server}, the address --server named, requires auth, but "${t.space}" is recorded as an open mesh at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
       return parts(`broker at ${server} requires auth, but this mesh is open (no trust material)`, "use `--space <name>` for an auth mesh, or run `cotal up` here without `--open`");
     case "stale-auth":
       return parts(`credentials for "${t.space}" have EXPIRED; this mesh enforces bounded credential lifetimes`, `run \`cotal doctor auth\` in ${t.root} for the diagnosis + exact repair (the mesh itself is up)`);

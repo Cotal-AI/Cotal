@@ -15,6 +15,7 @@ import {
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { emitSentinel, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { bootBroker } from "../../manager/smoke/_boot-broker.js";
+import { cotalPty, clean, type Pty } from "./_console-pty.js";
 
 const tree = resolve(import.meta.dirname, "../../..");
 const dir = mkdtempSync(join(tmpdir(), "join-creds-grants-"));
@@ -28,6 +29,7 @@ Object.assign(env, { COTAL_HOME: join(dir, "home"), XDG_CONFIG_HOME: join(dir, "
 process.env.COTAL_HOME = env.COTAL_HOME;
 const tsxLoader = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
 const children = new Set<ChildProcess>();
+const terminals = new Set<Pty>();
 function cli(...args: string[]) {
   const proc = spawn(process.execPath, ["--import", tsxLoader, join(tree, "bin/cotal.ts"), ...args], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
   children.add(proc);
@@ -111,8 +113,59 @@ try {
   const unpaired = cli("join", "--space", space, "--creds", allowed.file);
   await until(() => unpaired.proc.exitCode !== null);
   check("missing lifecycle explains pairing and the provisioning mint", await unpaired.exited === 1 && /lifecycle-paired/.test(unpaired.output()) && /--lifecycle-uid/.test(unpaired.output()) && /auth mint.*--provision/.test(unpaired.output()), unpaired.output());
+
+  const unprovisioned = join(dir, "unprovisioned.creds");
+  const mintOnly = cli("auth", "mint", "unprovisioned", "--space", space, "--allow-subscribe", "general", "--allow-publish", "general", "--out", unprovisioned);
+  check("mint without provisioning succeeds", await mintOnly.exited === 0, mintOnly.output());
+  const uid = /^\s*Lifecycle:\s+(\S+)/m.exec(mintOnly.output())?.[1];
+  assert.ok(uid, "mint did not report its lifecycle UID");
+  const missing = cli("join", "--space", space, "--creds", unprovisioned, "--lifecycle-uid", uid, "--name", "unprovisioned");
+  const missingCode = await missing.exited;
+  check("unprovisioned join names lifecycle and provisioning remedy", missingCode === 2 && /TARGET_NOT_FOUND/.test(missing.output()) && missing.output().includes(uid) && /auth mint.*--provision/.test(missing.output()), missing.output());
+  check("unprovisioned join hides raw durable error", !/dm-durable-missing|DmDurableMissingError/.test(missing.output()), missing.output());
+
+  function terminal(name: string, file: string, uid: string) {
+    const terminalEnv = { ...env };
+    delete terminalEnv.COTAL_NO_PROMPT;
+    const proc = cotalPty(["join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name], {
+      cwd: project, env: Object.fromEntries(Object.entries(terminalEnv).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+    });
+    terminals.add(proc);
+    let text = "", code: number | undefined;
+    proc.onData((chunk) => { text += chunk; });
+    proc.onExit((result) => { code = result.exitCode; terminals.delete(proc); });
+    return { proc, output: () => clean(text), code: () => code };
+  }
+  const readOnly = await mint("read_only", "--allow-subscribe", "general");
+  const reader = terminal("reader", readOnly.file, readOnly.uid);
+  await until(() => reader.output().includes("Commands:") || reader.code() !== undefined);
+  check("read-only join does not invite broadcasting", /read-only.*#general/i.test(reader.output()) && !reader.output().includes("Type to broadcast"), reader.output());
+  reader.proc.write("read-only forbidden post\r");
+  await until(() => reader.output().includes("nothing was sent") || reader.code() !== undefined);
+  check("read-only broadcast names missing publish grant and mint remedy", /--allow-subscribe general.*--allow-publish general/.test(reader.output()) && !/Permissions Violation/.test(reader.output()), reader.output());
+  reader.proc.write("/who\r");
+  await until(() => reader.output().includes("Roster:"));
+  check("read-only session keeps roster command available", reader.code() === undefined, reader.output());
+
+  const writer = terminal("writer", allowed.file, allowed.uid);
+  await until(() => writer.output().includes("Commands:") || writer.code() !== undefined);
+  check("publish-capable join advertises broadcasting", writer.output().includes("Type to broadcast"), writer.output());
+  writer.proc.write("permitted writer post\r");
+  await until(() => reader.output().includes("permitted writer post"));
+  check("writer post reaches read-only reader", /#general writer.*permitted writer post/.test(reader.output()), reader.output());
+  const history = cli("history", "general", "--space", space);
+  check("history read succeeds", await history.exited === 0, history.output());
+  check("only authorized broadcast is stored", history.output().includes("permitted writer post") && !history.output().includes("read-only forbidden post"), history.output());
+  reader.proc.write("/dm writer hello privately\r");
+  await until(() => writer.output().includes("hello privately"));
+  check("read-only reader can still send a DM", /\(DM\).*reader.*hello privately/.test(writer.output()), writer.output());
+  reader.proc.write("/quit\r");
+  writer.proc.write("/quit\r");
+  await until(() => reader.code() !== undefined && writer.code() !== undefined);
+  check("both interactive sessions quit successfully", reader.code() === 0 && writer.code() === 0);
   emitSentinel({ passed, failed: 0 });
 } finally {
+  for (const terminal of terminals) terminal.kill();
   for (const child of children) await killAndAwaitExit(child);
   await daemon?.stop();
   await broker.stop();

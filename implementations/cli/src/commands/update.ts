@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -10,6 +10,7 @@ import {
   processStartToken,
   claimUpdateClosureAccess,
   updateClosureOwner,
+  homeCotalDir,
   readUpdateRecovery,
   clearUpdateRecovery,
   writeUpdateRecovery,
@@ -240,16 +241,65 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   if (args.values.auto || args.values.notify) {
     const key = args.values.auto ? "auto" : "notify";
     const value = args.positionals[0];
-    const current = readUpdateSettings(backup => rt.err(`Damaged update settings saved to ${backup}; using defaults (automatic updates and notices on).`));
+    let recoveredBackup: string | undefined;
+    const current = readUpdateSettings(backup => {
+      recoveredBackup = backup;
+      if (!args.values.json) rt.err(`Damaged update settings saved to ${backup}; using defaults (automatic updates and notices on).`);
+    });
     const settings = value === undefined ? current : setUpdateSetting(key, value === "on");
-    rt.out(`${key === "auto" ? "Automatic updates" : "Update notices"}: ${settings[key] ? "on" : "off"}${rt.env.COTAL_NO_UPDATE_CHECK === "1" ? " (disabled by COTAL_NO_UPDATE_CHECK=1)" : ""}`);
-    if (key === "auto" && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) rt.out("This runtime belongs to the desktop app. Automatic npm updates have no effect here; update the desktop app with its signed platform installer.");
-    else if (key === "auto" && settings.auto && ["linux", "darwin", "win32"].includes(process.platform) && rt.env.COTAL_NO_UPDATE_CHECK !== "1") {
-      const advice = await rt.automaticUpdateAdvice();
+    const disabledByEnv = rt.env.COTAL_NO_UPDATE_CHECK === "1";
+    const desktop = key === "auto" && existsSync(join(cliPackageRoot(), "desktop-runtime.json"));
+    const advice = desktop
+      ? "This runtime belongs to the desktop app. Automatic npm updates have no effect here; update the desktop app with its signed platform installer."
+      : key === "auto" && settings.auto && ["linux", "darwin", "win32"].includes(process.platform) && !disabledByEnv
+        ? await rt.automaticUpdateAdvice()
+        : undefined;
+    const line = `${key === "auto" ? "Automatic updates" : "Update notices"}: ${settings[key] ? "on" : "off"}${disabledByEnv ? " (disabled by COTAL_NO_UPDATE_CHECK=1)" : ""}`;
+    if (!args.values.json && !args.values.plain) {
+      rt.out(line);
       if (advice) rt.out(advice);
+      return;
     }
+    const file = join(homeCotalDir(), "update-settings.json");
+    const warnings: OutputWarning[] = recoveredBackup
+      ? [{ code: "SETTINGS_RECOVERED", target: { file, backup: recoveredBackup }, message: `Damaged update settings saved to ${recoveredBackup}; using defaults (automatic updates and notices on).` }]
+      : [];
+    const noOp = value !== undefined && recoveredBackup === undefined && current[key] === settings[key];
+    writeResult(presentationOf(args.values), {
+      command: "update",
+      target: null,
+      result: { kind: "update-preference", preference: key, enabled: settings[key], effective: !disabledByEnv && !desktop && settings[key], disabledByEnv, advice: advice ?? null, file },
+      warnings,
+      noOp,
+    }, () => ({ sections: [{ blocks: [{ kind: "lines", lines: advice ? [line, advice] : [line] }] }] }));
     return;
   }
+  // npm and reconciliation children need the same writable private scratch as the updater.
+  // Select it before recovery or installation work so failure is a definite refusal.
+  let scratch: string | undefined;
+  const failures: string[] = [];
+  for (const parent of new Set([tmpdir(), ...(process.platform === "win32" ? [] : ["/tmp"]), homedir()])) {
+    try { scratch = mkdtempSync(join(parent, "cotal-update-")); break; }
+    catch (error) { failures.push(message(error)); }
+  }
+  if (!scratch) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `cannot create a private temporary directory for the update: ${failures.join("; ")}; no changes were made`, {
+    native: { outcome: "not-executed" }, remedy: "set TMPDIR to an existing writable folder, then run the update again",
+  });
+  const environments = [...new Set([process.env, rt.env])];
+  const previous = environments.map(env => ({ env, values: { TMPDIR: env.TMPDIR, TMP: env.TMP, TEMP: env.TEMP } }));
+  try {
+    for (const env of environments) Object.assign(env, { TMPDIR: scratch, TMP: scratch, TEMP: scratch });
+    await updateInstallation(args, rt);
+  } finally {
+    for (const { env, values } of previous) for (const [key, value] of Object.entries(values)) {
+      if (value === undefined) delete env[key];
+      else env[key] = value;
+    }
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
+async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<void> {
   if (args.values.check === true) return checkUpdate(args, rt);
   if (args.values.self === true && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) {
     throw new CommandFailure("refused", "UNSUPPORTED", "this Cotal runtime belongs to the desktop app; npm self-update would separate it from its bundled runtime", {
@@ -400,7 +450,7 @@ export function validateUpdateArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (args.values["stop-agents"] && args.values.self !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--stop-agents requires `cotal update --self`");
   if (args.values.auto || args.values.notify) {
-    if (args.values.auto && args.values.notify || args.values.self || args.values.check || args.values.json || args.values.plain || args.values.space || args.values.server || args.values.creds || args.values.on || args.positionals.length > 1 || args.positionals.some(value => value !== "on" && value !== "off"))
+    if (args.values.auto && args.values.notify || args.values.self || args.values.check || args.values.space || args.values.server || args.values.creds || args.values.on || args.positionals.length > 1 || args.positionals.some(value => value !== "on" && value !== "off"))
       throw new CommandFailure("refused", "USAGE_INVALID", "use `cotal update --auto [off|on]` or `cotal update --notify [off|on]` without other update flags");
     return;
   }
@@ -886,6 +936,10 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       // As with a registered gone root, leave its records and processes untouched.
       if (e.code === "not-started" && e.details.rootMissing === true) {
         console.log(`  ${e.details.space}: folder is gone; leaving its processes untouched, continuity not checked`);
+        return "none";
+      }
+      if (e.code === "not-started" && e.details.recordedRoot !== undefined) {
+        console.log(c.dim(`  ${e.details.stackSpace ?? e.details.root}: stack records in ${e.details.root} belong to ${e.details.recordedRoot}; leaving its records and processes untouched, continuity not checked`));
         return "none";
       }
       // A refused legacy start can leave a rendered broker config without ever starting a member.

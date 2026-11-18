@@ -1050,7 +1050,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     try { artifact = stageArtifact(artifactPath, stageParent); }
     catch (error) {
       if (!(error instanceof ArtifactFileFault)) throw error;
-      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: "this copy cannot be restored as it is: check it with `cotal backup verify`, or restore another copy of the same artifact; the preserved cut is unchanged" });
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${codeSpan(`cotal backup verify ${shellPath(artifactPath)}`)}, or restore another copy of the same artifact; the preserved cut is unchanged` });
     }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);

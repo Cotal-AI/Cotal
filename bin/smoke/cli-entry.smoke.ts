@@ -247,6 +247,15 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const both = cotal(["help"], undefined, { ...noSeed, FORCE_COLOR: "1", NO_COLOR: "1", NODE_OPTIONS: `--import=${join(probeDir, "probe.mjs")}` });
   check("FORCE_COLOR with NO_COLOR prints no Node color warning, and another warning still prints",
     both.status === 0 && !both.stderr.includes("'NO_COLOR' env is ignored") && both.stderr.includes("Warning: probe-warning"), shown(both));
+  // Node 22.10 and 22.11 emit ExperimentalWarning on `import ... with { type: "json" }`, so shipped
+  // workspace and CLI dist files must read JSON assets via fs rather than JSON module attributes (#7637).
+  writeFileSync(
+    join(probeDir, "json-hook.mjs"),
+    'import { register } from "node:module";\nregister("data:text/javascript," + encodeURIComponent(\'export async function load(url, ctx, next) { if (ctx.importAttributes?.type === "json") process.emitWarning("Importing JSON modules is an experimental feature and might change at any time", "ExperimentalWarning"); return next(url, ctx); }\'));\n',
+  );
+  const jsonCheck = cotal(["--version"], undefined, { ...noSeed, NODE_OPTIONS: `--import=${join(probeDir, "json-hook.mjs")}` });
+  check("--version loads no experimental JSON module imports (clean stderr on Node 22.10)",
+    jsonCheck.status === 0 && jsonCheck.stderr === "", shown(jsonCheck));
 }
 
 // ── Maglev off from the entry (#5498) ─────────────────────────────────────────────────────────────
@@ -522,6 +531,15 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("persona edit saves the seeded default persona", editedDefault.status === 0 && editedDefault.stdout.includes("Persona saved"), shown(editedDefault));
   const unchanged = cotal(["persona", "edit", "default"], seeded, editor);
   check("persona edit of a draft left as it was says the persona is unchanged and saves nothing", unchanged.status === 0 && unchanged.stdout.includes("default is unchanged, so nothing was saved") && !unchanged.stdout.includes("Persona saved"), shown(unchanged));
+  const unchangedJson = cotal(["persona", "edit", "default", "--json"], seeded, editor);
+  const unchangedEnvelope = (() => { try { return JSON.parse(unchangedJson.stdout) as { outcome?: string; result?: { kind?: string; name?: string } }; } catch { return {}; } })();
+  check("persona edit --json emits a structured persona-unchanged receipt on stdout", unchangedJson.status === 0 && unchangedEnvelope.outcome === "no-op" && unchangedEnvelope.result?.kind === "persona-unchanged" && unchangedEnvelope.result.name === "default" && unchangedJson.stderr === "", shown(unchangedJson));
+  const noisyEditor = `sh -c 'printf "editor-banner\\n"; printf "more\\n" >> "$1"' sh`;
+  const savedJson = cotal(["persona", "edit", "default", "--json"], seeded, { ...noSeed, VISUAL: noisyEditor, EDITOR: noisyEditor });
+  const savedEnvelope = (() => { try { return JSON.parse(savedJson.stdout) as { outcome?: string; result?: { kind?: string; action?: string; name?: string } }; } catch { return {}; } })();
+  check("persona edit --json routes editor stdout to stderr and emits the saved JSON receipt on stdout", savedJson.status === 0 && savedEnvelope.outcome === "ok" && savedEnvelope.result?.kind === "persona-written" && savedEnvelope.result.action === "saved" && savedJson.stderr.includes("editor-banner"), shown(savedJson));
+  const noInputJson = cotal(["persona", "edit", "default", "--json", "--no-input"], seeded, editor);
+  check("persona edit --json --no-input still refuses to open an editor", noInputJson.status === 1 && /--no-input forbids one/.test(noInputJson.stdout), shown(noInputJson));
   // A catalog file saved as UTF-16 is named by its encoding, with the step to save it as UTF-8.
   const utf16 = (home: string) => {
     seeded(home);
@@ -1020,7 +1038,7 @@ for (const { alias, cmd } of aliases) {
   refused("an alias's unknown flag writes no seed store", cotal(["sp", "--bogus"]), /Unknown option '--bogus'/);
   refused("an undeclared subcommand writes no seed store", cotal(["ext", "bogus"]), /cotal ext has no subcommand "bogus"/);
   refused("a missing flag value writes no seed store", cotal(["spawn", "--space"]), /--space/);
-  const control = cotal(["sync"]);
+  const control = cotal(["config", "unset", "color", "--user"]);
   check("control: a valid command that is not a read seeds the same sandbox shape", control.status === 0 && control.wrote.length > 0, shown(control));
   // `manager start` replaces `supervise`, which seeds on first run, so it seeds too; the group's
   // other verbs keep the native-maintenance rule and seed nothing.
