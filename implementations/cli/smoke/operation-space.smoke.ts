@@ -141,15 +141,37 @@ for (const [argv, rerun] of [
   [["persona", "create", "h1", "--prompt", "x", "--on", "bad"], "cotal persona create h1 --on <instance>"],
   // #7322: a verb that targets an agent keeps the agent, its other positionals and the space it named.
   [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --on <instance>"],
-  [["input", "default_agent", "hello", "--on", "bad"], "cotal input default_agent <text> --on <instance>"],
+  // #7644: input gives its text again, quoted for a shell, rather than a `<text>` a shell reads as a redirection.
+  [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --on <instance>"],
   [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
   [["stop", "default_agent", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --space elsewhere --on <instance>"],
+  // #7644: ps and models keep the --space and filter they were given.
+  [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --space elsewhere --on <instance>"],
+  [["models", "--harness", "claude", "--on", "bad"], "cotal models --harness claude --on <instance>"],
+  [["spawn", "default", "-d", "--on", "bad"], "cotal spawn default -d --on <instance>"],
 ] as const) {
   const pinned = cotal(...argv, "--json");
   const said = `${pinned.envelope?.error?.message ?? ""} ${pinned.envelope?.error?.remedy ?? ""}`;
   check(`${argv.slice(0, -2).join(" ")} --on bad names ${rerun} and never --on twice`,
     pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as \`${rerun}\``) && !said.includes("--on --on"), shown(pinned));
 }
+// #7644: a principal id, an empty value and an endpoint's malformed --on are refused while the
+// arguments are read, with the command to rerun in the message. It keeps the command's words and
+// the --space it was given; it used to keep only the verb.
+for (const [argv, rerun] of [
+  [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --space elsewhere --on <instance>"],
+  [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --on <instance>"],
+  [["stop", "default_agent", "--on", ""], "cotal stop default_agent --on <instance>"],
+  [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance>"],
+  [["endpoint", "invoke", "ai.cotal.manager", "ps", "--on", "bad"], "cotal endpoint invoke ai.cotal.manager ps --on <instance>"],
+] as const) {
+  const refused = cotal(...argv, "--json");
+  check(`${argv.join(" ")} names ${rerun}`,
+    refused.status === 1 && refused.envelope?.error?.code === "USAGE_INVALID" && (refused.envelope.error.message ?? "").includes(`\`${rerun}\``), shown(refused));
+}
+const attachPrincipal = cotal("attach", "default_agent", "--on", "local.U123");
+check("attach default_agent --on local.U123 names cotal attach default_agent --on <instance> (#7644)",
+  attachPrincipal.status === 1 && attachPrincipal.stderr.includes("`cotal attach default_agent --on <instance>`"), shown(attachPrincipal));
 // attach has no structured output, so its refusal is read from the terminal text.
 const attachPinned = cotal("attach", "default_agent", "--on", "bad");
 check("attach default_agent --on bad names cotal attach default_agent --on <instance> (#7322)",
