@@ -410,11 +410,12 @@ root that disagrees with that prefix refuses before installation. Local/npx copi
 checkouts still install a separate global copy; Windows keeps npm's configured global root.
 
 If that installation is not writable by your account, the update refuses before changing it.
-For a root-owned npm installation, have an administrator run the printed
-`sudo npm install -g --prefix '<install-prefix>' cotal-ai@latest` command.
-Then run `cotal update` as your normal account, without sudo, to reconcile your connectors and
-extensions. Keep any `--space`, `--server`, `--creds` or `--on` selection from the original command.
-Do not run `sudo cotal update`: user configuration and reconciliation belong to your normal account.
+For a root-owned npm installation, have an administrator run the printed npm install command.
+The command uses `sudo` when it is executable on PATH, otherwise `doas` when available. With
+neither tool, it says to run npm as root.
+Then run `cotal update` as your normal account, without elevated privileges, to reconcile your
+connectors and extensions. Keep any `--space`, `--server`, `--creds` or `--on` selection from the
+original command. User configuration and reconciliation belong to your normal account.
 
 Once global replacement starts, Ctrl-C waits for installation, verification and reconciliation to
 finish before returning exit code 130. SIGTERM waits the same way and returns 143. The command

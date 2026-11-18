@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { claimGlobalNpmUpdateLock, readUpdateRecovery } from "@cotal-ai/workspace";
 import { inspectLock, processStartToken } from "@cotal-ai/core";
 import { executionBinding, executionDescriptorPath, executionInventory, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
@@ -10,6 +10,21 @@ export interface RetainedExecutionGeneration {
   root: string;
   version: string;
   inventorySha256: string;
+}
+
+/** Render administrator guidance without invoking a privilege tool. */
+export function executionInstallRemedy(installed: string): string {
+  const tool = ["sudo", "doas"].find(name => (process.env.PATH ?? "").split(delimiter).some(directory => {
+    const path = join(directory, name);
+    try {
+      accessSync(path, constants.X_OK);
+      return statSync(path).isFile();
+    } catch { return false; }
+  }));
+  const command = tool ? `${tool} ` : "as root: ";
+  const normal = tool ? `without ${tool}` : "not as root";
+  const prefix = dirname(dirname(dirname(installed))).replace(/'/g, "'\\''");
+  return `installation is not writable; have an administrator run: ${command}npm install -g --prefix '${prefix}' cotal-ai@latest; then run \`cotal update\` as your normal account, ${normal}`;
 }
 
 /** Remove group and other write from a tree this process just created. Node before 24.22 applies the
@@ -38,7 +53,7 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
     accessSync(installedRoot, constants.W_OK);
     accessSync(dirname(dirname(installedRoot)), constants.W_OK);
   }
-  catch { throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run \`cotal update\` as your normal account, without sudo`); }
+  catch { throw new Error(executionInstallRemedy(installedRoot)); }
   const store = executionStore(installedRoot), shared = executionShared(installedRoot);
   if (!lstatSync(store, { throwIfNoEntry: false })) { mkdirSync(store, { mode: 0o700 }); if (shared) chmodSync(store, 0o755); }
   if (!lstatSync(store).isDirectory() || lstatSync(store).isSymbolicLink()) throw new Error("unsafe execution generation store");
