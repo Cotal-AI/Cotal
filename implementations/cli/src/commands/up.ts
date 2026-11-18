@@ -31,6 +31,10 @@ import {
   CONTRACT_ARTIFACT_MAX_BYTES,
   MANAGER_START_PAYLOAD_FLOOR,
   createSpaceAuth,
+  applyAccountLimits,
+  decodeNatsJwt,
+  type AccountLimits,
+  loadAccountLimits,
   serverConfig,
   openServerConfig,
   validateTlsMaterial,
@@ -990,6 +994,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // `space create` and `down` refuse a root other local accounts can write, so `up` refuses it too,
   // before anything is written: a stack started there could not be stopped from it.
   protectedLocalDirectory(canonicalRoot(cotalRoot()), "the project root");
+  const accountLimits = loadAccountLimits(cotalRoot());
+  if (accountLimits !== undefined) {
+    if (values.open) throw new Error("accountLimits requires an authenticated broker; open mode has no data-account JWT");
+    const stored = await getSpaceAuth(workspaceSecretStore(cotalRoot()), values.space ?? folderSpace());
+    if (stored && await applyAccountLimits(stored, accountLimits) !== stored) await assertRootBrokerStopped(cotalRoot(), "accountLimits");
+  }
   if (values.restore) {
     if (values.file || values.channels)
       throw new Error("--restore cannot be combined with --file/-f or --channels");
@@ -3637,6 +3647,8 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
       remedy: opts.server !== undefined ? `pass --server ${tlsAddress(server)}` : `set broker.servers to ${tlsAddress(server)} in ${file}`,
     });
   const open = m.broker?.auth === false; // default is auth
+  if (open && loadAccountLimits(cotalRoot()) !== undefined)
+    throw new Error("accountLimits requires an authenticated broker; open mode has no data-account JWT");
   const userAuth = m.broker?.auth === "user" ? { idpUrl: m.broker.idp } : undefined;
   const runtime = m.runtime ?? "pty";
   if (open && (m.defaults?.deliveryClass === "durable" || m.channels.some((channel) => channel.deliveryClass === "durable")))
@@ -4294,6 +4306,8 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
   refuseStartOverUserState(Boolean(opts.open), opts.userAuth !== undefined, space);
   const root = cotalRoot();
+  if (!useAuth && loadAccountLimits(root) !== undefined)
+    throw new Error("accountLimits requires an authenticated broker; open mode has no data-account JWT");
   const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
   if (opts.storeDir) warnForeignStoreEntries(storeDir);
   if (opts.existingStore) {
@@ -5678,9 +5692,10 @@ async function authSetup(
 ): Promise<{ brokerBinary: NatsServer; confPath: string; creds: string; wsPort: number; moveWebsocketPort: () => Promise<number>; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number; maxPayload?: number; accountResolver: "memory" | "full" }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());
+  const limits = loadAccountLimits(cotalRoot());
   let auth: SpaceAuth | undefined = await getSpaceAuth(store, space).catch((error: unknown) => { throw unreadableTrust(error); });
   if (!auth) {
-    auth = await createSpaceAuth(space);
+    auth = await createSpaceAuth(space, limits);
     // The trust record is written last. Until it exists the next up treats the space as fresh and
     // mints all of this again, so an up stopped partway never leaves a space without its $SYS creds.
     await provisionMembershipCreds(auth, cotalRoot(), space); // the observer is minted while the $SYS seed is in memory (fresh-space only)
@@ -5721,6 +5736,15 @@ async function authSetup(
     // now a routine 30-day act rather than a once-per-space event. Say it at the moment it becomes
     // true, not in a doc the operator reads after the restore has already failed.
     console.log(c.dim("  NOTE: full backups taken before this rotation can no longer be restored (they are bound to the retired trust chain) - take a fresh `cotal backup` once the mesh is up."));
+  }
+  const limited = await applyAccountLimits(auth, limits);
+  if (limited !== auth) {
+    await assertRootBrokerStopped(cotalRoot(), "accountLimits");
+    const before = decodeNatsJwt<{ nats: { limits?: AccountLimits } }>(auth.account.jwt).nats.limits ?? {};
+    const changed = Object.entries(limits ?? {}).filter(([key, value]) => before[key as keyof typeof before] !== value);
+    auth = limited;
+    await putSpaceAuth(store, auth);
+    console.error(c.green(`✓ applied accountLimits for "${space}": ${changed.map(([key, value]) => `${key}=${value}`).join(", ")}`));
   }
   // The DATA half of the membership bundle, on EVERY path — see healMembershipDataCreds.
   await healMembershipDataCreds(auth, cotalRoot(), space, quietBoot);
@@ -5843,18 +5867,18 @@ async function authSetup(
  * Not a general `up` guard: an ordinary boot adopting or replacing a listener is a supported flow with
  * its own claim machinery. This is specifically the precondition for retiring an authority.
  */
-async function assertRootBrokerStopped(root: string): Promise<void> {
+async function assertRootBrokerStopped(root: string, operation = "--rotate-sys"): Promise<void> {
   const pidPath = join(root, ".cotal", NATS_PIDFILE);
   if (existsSync(pidPath)) {
     let raw: string;
     try {
       raw = readFileSync(pidPath, "utf8").trim();
     } catch (e) {
-      throw new Error(`--rotate-sys: ${pidPath} exists but cannot be read (${(e as Error).message}) - refusing to rotate while a broker for this root may still be running; \`cotal down\` first`);
+      throw new Error(`${operation}: ${pidPath} exists but cannot be read (${(e as Error).message}) - refusing to change ${operation === "--rotate-sys" ? "trust" : "account limits"} while a broker for this root may still be running; \`cotal down\` first`);
     }
     const pid = Number(raw);
     if (!Number.isInteger(pid) || pid <= 0)
-      throw new Error(`--rotate-sys: ${pidPath} does not hold a pid (${JSON.stringify(raw)}) - refusing to rotate while a broker for this root may still be running; \`cotal down\` first`);
+      throw new Error(`${operation}: ${pidPath} does not hold a pid (${JSON.stringify(raw)}) - refusing to change ${operation === "--rotate-sys" ? "trust" : "account limits"} while a broker for this root may still be running; \`cotal down\` first`);
     let live: boolean;
     try {
       process.kill(pid, 0); // signal 0 is a liveness probe, it signals nothing
@@ -5864,13 +5888,13 @@ async function assertRootBrokerStopped(root: string): Promise<void> {
       live = (e as NodeJS.ErrnoException).code === "EPERM";
     }
     if (live)
-      throw new Error(`--rotate-sys: this root's broker is still running (pid ${pid}) - it would keep serving the retired system account, and a second broker would share its JetStream store. Stop it first: \`cotal down\``);
+      throw new Error(`${operation}: this root's broker is still running (pid ${pid}) - stop it before changing broker trust or account limits: \`cotal down\``);
   }
   // A broker recorded for this root at ANY address, still answering. The rotate refusal earlier in
   // `up` only sees the URL this invocation asked for; this sees the ones it did not.
   for (const m of meshesForRoot(root)) {
     if (await isReachable(m.server))
-      throw new Error(`--rotate-sys: mesh "${m.space}" for this root is still reachable at ${m.server} - stop it first (\`cotal down\`), then rotate`);
+      throw new Error(`${operation}: mesh "${m.space}" for this root is still reachable at ${m.server} - stop it first (\`cotal down\`), then change broker trust or account limits`);
   }
 }
 

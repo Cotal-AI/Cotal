@@ -67,9 +67,34 @@ export interface RoleModelPolicy {
 /** The parsed cotal config file: a section per connector, keyed by connector name ("claude", …),
  *  plus machine-local spawn policy and the per-role model allowlist. */
 export interface CotalConfig {
+  /** Operator-only native NATS data-account ceilings applied at an authenticated broker start. */
+  accountLimits?: AccountLimits;
   connectors?: Record<string, ConnectorConfig>;
   spawn?: SpawnConfig;
   modelPolicy?: Record<string, RoleModelPolicy>;
+}
+
+/** Optional native NATS data-account ceilings. Storage and payload are bytes; -1 is unlimited. */
+export interface AccountLimits {
+  conn?: number;
+  subs?: number;
+  payload?: number;
+  mem_storage?: number;
+  disk_storage?: number;
+  consumer?: number;
+}
+
+/** Refuse malformed account ceilings before any provisioning or configuration effects. */
+export function assertAccountLimits(value: unknown, where = "accountLimits"): asserts value is AccountLimits {
+  if (!isRecord(value)) throw new Error(`${where} must be an object`);
+  for (const [key, limit] of Object.entries(value)) {
+    if (!["conn", "subs", "payload", "mem_storage", "disk_storage", "consumer"].includes(key))
+      throw new Error(`${where}.${key} is not a supported account limit`);
+    if (typeof limit !== "number" || !Number.isSafeInteger(limit) || (limit !== -1 && limit <= 0))
+      throw new Error(`${where}.${key} must be -1 or a positive safe integer`);
+    if (["conn", "subs", "payload"].includes(key) && limit > 2147483647)
+      throw new Error(`${where}.${key} must be at most 2147483647`);
+  }
 }
 
 /** Operator-level config dir: `$XDG_CONFIG_HOME/cotal`; else `%APPDATA%\Cotal` on Windows (the
@@ -101,7 +126,7 @@ const configError = (path: string, what: string): Error => new Error(`cotal conf
 
 /** Parse one config file. A missing file is empty (no config is a valid state); malformed JSON or a
  *  non-object top level throws — a typo in your settings should be loud, not silently ignored. */
-export function readCotalConfigFile(path: string): CotalConfig {
+function readConfigObject(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
   let parsed: unknown;
   try {
@@ -110,6 +135,13 @@ export function readCotalConfigFile(path: string): CotalConfig {
     throw configError(path, `invalid JSON - ${(e as Error).message}`);
   }
   if (!isRecord(parsed)) throw configError(path, "top level must be a JSON object");
+  return parsed;
+}
+
+/** Read all config sections, validating each declared section. */
+export function readCotalConfigFile(path: string): CotalConfig {
+  const parsed = readConfigObject(path);
+  if (parsed.accountLimits !== undefined) assertAccountLimits(parsed.accountLimits, `cotal config ${path}: accountLimits`);
   if (parsed.modelPolicy !== undefined) checkModelPolicy(path, parsed.modelPolicy);
   if (parsed.connectors !== undefined) checkConnectors(path, parsed.connectors);
   if (parsed.spawn !== undefined) checkSpawn(path, parsed.spawn);
@@ -202,13 +234,33 @@ function mergeConfig(base: CotalConfig, over: CotalConfig): CotalConfig {
   // role, and a role named in only one file keeps its entry. Replacing the whole map instead would
   // let a space-local file that constrains one role silently unconstrain every other.
   const modelPolicy = base.modelPolicy || over.modelPolicy ? { ...base.modelPolicy, ...over.modelPolicy } : undefined;
-  return { connectors, ...(spawn === undefined ? {} : { spawn }), ...(modelPolicy === undefined ? {} : { modelPolicy }) };
+  const accountLimits = base.accountLimits;
+  return { connectors, ...(accountLimits === undefined ? {} : { accountLimits }), ...(spawn === undefined ? {} : { spawn }), ...(modelPolicy === undefined ? {} : { modelPolicy }) };
 }
 
 /** Load the merged cotal config: the operator-level file as the base, the space-local file layered
  *  on top (more specific wins, per connector + server name). */
 export function loadCotalConfig(root: string): CotalConfig {
-  return mergeConfig(readCotalConfigFile(globalConfigPath()), readCotalConfigFile(spaceConfigPath(root)));
+  const localPath = spaceConfigPath(root);
+  const local = readConfigObject(localPath);
+  refuseProjectAccountLimits(localPath, local);
+  return mergeConfig(readCotalConfigFile(globalConfigPath()), readCotalConfigFile(localPath));
+}
+
+function refuseProjectAccountLimits(path: string, parsed: Record<string, unknown>): void {
+  if (Object.hasOwn(parsed, "accountLimits"))
+    throw configError(path, `accountLimits is operator-only; remove accountLimits from ${path}. Set limits in the operator file ${globalConfigPath()} if wanted`);
+}
+
+/** Read only startup account policy, without validating unrelated launch sections.
+ * Project declarations are refused, never merged, even when the operator has no setting. */
+export function loadAccountLimits(root: string): AccountLimits | undefined {
+  const localPath = spaceConfigPath(root);
+  refuseProjectAccountLimits(localPath, readConfigObject(localPath));
+  const operatorPath = globalConfigPath();
+  const value = readConfigObject(operatorPath).accountLimits;
+  if (value !== undefined) assertAccountLimits(value, `cotal config ${operatorPath}: accountLimits`);
+  return value as AccountLimits | undefined;
 }
 
 /** The MCP servers a connector should share with an agent it spawns, after applying an optional

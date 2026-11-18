@@ -14,6 +14,7 @@
  * Every credential kind is classified in {@link CREDENTIAL_LIFETIMES}: its lifetime class, default
  * expiry and renewal owner.
  */
+import { assertAccountLimits, type AccountLimits } from "./connector-config.js";
 import { eventPayloadReadSubjects, eventPayloadStream, eventPayloadSubject } from "./event-payloads.js";
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
 import { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
@@ -581,7 +582,8 @@ export async function createBrokerAuth(label: string): Promise<BrokerAuth> {
  *  the per-tenant half of provisioning: call it once per space against the same {@link BrokerAuth}
  *  to put many spaces on one broker, each in its own NATS account. Key generation and JWT
  *  construction stay with NATS; the existing native signer derives public keys and signs. */
-export async function createSpaceAccountAuth(broker: BrokerAuth, space: string): Promise<SpaceAccountAuth> {
+export async function createSpaceAccountAuth(broker: BrokerAuth, space: string, limits?: AccountLimits): Promise<SpaceAccountAuth> {
+  if (limits !== undefined) assertAccountLimits(limits);
   if (!broker.operator.seed)
     throw new Error("createSpaceAccountAuth: the broker operator seed is required - a stripped broker cannot sign a new space account");
   const okp = nativeNkeySigner(new TextEncoder().encode(broker.operator.seed));
@@ -590,7 +592,7 @@ export async function createSpaceAccountAuth(broker: BrokerAuth, space: string):
   const accountJwt = await encodeAccount(
     token(space),
     akp,
-    { signing_keys: [askp.getPublicKey()], limits: DATA_LIMITS },
+    { signing_keys: [askp.getPublicKey()], limits: { ...DATA_LIMITS, ...limits } },
     { signer: okp },
   );
   const dec = (u: Uint8Array) => new TextDecoder().decode(u);
@@ -609,10 +611,33 @@ export async function createSpaceAccountAuth(broker: BrokerAuth, space: string):
 /** Generate a fresh operator → account(+signing key) → system-account chain for a space.
  *  The single-space composition of {@link createBrokerAuth} + {@link createSpaceAccountAuth}: one
  *  broker whose only tenant is this space. */
-export async function createSpaceAuth(space: string): Promise<SpaceAuth> {
+export async function createSpaceAuth(space: string, limits?: AccountLimits): Promise<SpaceAuth> {
+  if (limits !== undefined) assertAccountLimits(limits);
   const broker = await createBrokerAuth(space);
-  const spaceAccount = await createSpaceAccountAuth(broker, space);
+  const spaceAccount = await createSpaceAccountAuth(broker, space, limits);
   return { ...broker, ...spaceAccount };
+}
+
+/** Re-sign only the configured data-account ceilings, retaining identity, grants and revocations.
+ * Absence changes nothing. The broker must load the returned claim before the limits take effect. */
+export async function applyAccountLimits(auth: SpaceAuth, limits?: AccountLimits): Promise<SpaceAuth> {
+  if (limits === undefined) return auth;
+  assertAccountLimits(limits);
+  const claims = decode<Account>(auth.account.jwt);
+  const current = claims.nats.limits ?? {};
+  if (Object.entries(limits).every(([key, value]) => current[key as keyof AccountLimits] === value)) return auth;
+  if (!auth.operator.seed) throw new Error("accountLimits requires the broker operator seed to re-sign the account");
+  const signer = nativeNkeySigner(new TextEncoder().encode(auth.operator.seed));
+  try {
+    if (claims.iss !== signer.getPublicKey() || claims.sub !== auth.account.pub)
+      throw new Error("accountLimits refuses an account not signed by this broker operator");
+    const unsupported = Object.keys(claims).filter(key => !["aud", "exp", "iat", "iss", "jti", "name", "nats", "nbf", "sub"].includes(key));
+    if (unsupported.length) throw new Error(`accountLimits cannot preserve JWT fields: ${unsupported.join(", ")}`);
+    const jwt = await encodeAccount(claims.name, auth.account.pub, { ...claims.nats, limits: { ...current, ...limits } }, {
+      signer, aud: claims.aud, exp: claims.exp, nbf: claims.nbf,
+    });
+    return { ...auth, account: { ...auth.account, jwt } };
+  } finally { signer.clear(); }
 }
 
 /** An issuance's binding on a mint (SPEC 13.15): the generation, the token naming its accepted

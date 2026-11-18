@@ -1,4 +1,5 @@
 {
+  "implementations/cli/smoke/account-limits.smoke.ts": 9,
   "bin/daemon/manager.ts": 1,
   "bin/smoke/backup-conservation-live.smoke.ts": 1,
   "bin/smoke/connection-cleanup.smoke.ts": 4,
