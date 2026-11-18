@@ -3,10 +3,11 @@ import strictAssert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { extensionsManifestPath, homeCotalDir } from "@cotal-ai/workspace";
+import { extensionsManifestPath, homeCotalDir, processStartToken } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { readUpdatePending, type UpdatePending } from "../src/lib/update-pending.js";
-import { reconcileCursorPath, reconcileRecoveryPath } from "../src/seed/paths.js";
+import { reconcileChildPath, reconcileCursorPath, reconcileRecoveryPath } from "../src/seed/paths.js";
+import { acquireReconcileLock } from "../src/seed/lock.js";
 import { update, updateRuntime } from "../src/commands/update.js";
 
 const counted = countedAssert(strictAssert);
@@ -33,7 +34,7 @@ function read(): UpdatePending {
   const before = hashes();
   const result = readUpdatePending("0.164.0");
   assert.deepEqual(hashes(), before, "diagnostic creates no files and changes no file hashes");
-  if (result.kind !== "none") assert.match(result.instruction, result.kind === "seed" || result.kind === "unreadable" && result.source === "seed" ? /cotal ext seed --repair/ : /cotal update --self/);
+  if (result.kind !== "none") assert.match(result.instruction, result.kind === "seed-active" ? /Wait.*cotal update --check/ : result.kind === "seed" || result.kind === "unreadable" && result.source === "seed" ? /cotal ext seed/ : /cotal update --self/);
   return result;
 }
 
@@ -64,7 +65,7 @@ mkdirSync(join(cursorPath, ".."), { recursive: true, mode: 0o700 });
 writeFileSync(manifest, JSON.stringify({ extensions: [{ pkg: "@cotal-ai/tmux", version: "0.164.0", spec: "@cotal-ai/tmux@0.164.0", commands: [] }] }));
 assert.equal(read().kind, "none", "matching inventory is complete without a seed journal");
 
-async function report(json: boolean): Promise<string> {
+async function report(json: boolean, active = false, remedy = /cotal ext seed --repair/): Promise<string> {
   let stdout = "", stderr = "";
   const out = process.stdout.write, err = process.stderr.write, code = process.exitCode;
   const before = hashes();
@@ -82,7 +83,7 @@ async function report(json: boolean): Promise<string> {
       reconcile: async () => { assert.fail("check never reconciles"); },
       refreshConnectors: async () => { assert.fail("check never refreshes connectors"); },
     });
-    assert.equal(process.exitCode, 4, "pending or unreadable seed metadata makes the check partial");
+    assert.equal(process.exitCode, active ? 0 : 4, "live seeding is informational, pending or unreadable repair is partial");
   } finally {
     process.stdout.write = out;
     process.stderr.write = err;
@@ -92,7 +93,8 @@ async function report(json: boolean): Promise<string> {
   if (json) assert.equal(stderr, "", "JSON is a single envelope");
   else {
     assert.match(stdout, /Reconciliation/);
-    assert.match(stdout + stderr, /cotal ext seed --repair/);
+    assert.match(stdout + stderr, active ? /Wait.*cotal update --check/ : remedy);
+    if (active) assert.doesNotMatch(stdout + stderr, /ext seed --repair/);
   }
   return stdout;
 }
@@ -114,8 +116,52 @@ for (const cursor of [
   assert.equal(output.result.installationChanged, false);
   assert.equal(output.result.processesRestarted, false);
   assert.deepEqual(output.warnings.map((warning: { code: string }) => warning.code), ["SEED_RECONCILIATION_PENDING"]);
-  await report(false);
+  const plain = await report(false);
+  if (cursor.failed) {
+    assert.match(plain, /npm install failed - fix that, then run/);
+    assert.match(output.error.remedy, /npm install failed - fix that, then run/);
+  }
 }
+
+const childPath = reconcileChildPath();
+const held = acquireReconcileLock();
+try {
+  const active = read();
+  assert.equal(active.kind, "seed-active", "a live reconcile lock means wait, even with an old failed cursor");
+  if (active.kind === "seed-active") assert.doesNotMatch(active.instruction, /ext seed --repair/);
+  const output = JSON.parse(await report(true, true));
+  assert.equal(output.outcome, "ok");
+  assert.equal(output.completeness, "complete");
+  assert.equal(output.result.reconciliation.kind, "seed-active");
+  assert.deepEqual(output.warnings, []);
+  await report(false, true);
+  rmSync(cursorPath);
+  writeFileSync(recoveryPath, JSON.stringify({ rebuildFromDisk: true }));
+  assert.equal(read().kind, "seed-active", "live custody also covers a cursorless maintenance obligation");
+  rmSync(recoveryPath);
+} finally {
+  held.release();
+}
+writeFileSync(cursorPath, JSON.stringify({ nonce: "child", package: "claude", phase: "add" }));
+writeFileSync(childPath, JSON.stringify({ state: "live", parentPid: process.pid, childPid: process.pid, childStart: processStartToken(process.pid), nonce: "child", ts: Date.now() }));
+assert.equal(read().kind, "seed-active", "a live seed child still means wait after its parent lock is gone");
+assert.equal(JSON.parse(await report(true, true)).result.reconciliation.kind, "seed-active");
+await report(false, true);
+writeFileSync(childPath, JSON.stringify({ state: "live", parentPid: process.pid, childPid: process.pid, childStart: "not-this-process", nonce: "child", ts: Date.now() }));
+assert.equal(read().kind, "seed", "a recycled child identity does not hide interrupted repair");
+writeFileSync(childPath, JSON.stringify({ state: "pending", parentPid: process.pid, nonce: "child", ts: 0 }));
+const stale = read();
+assert.equal(stale.kind, "seed");
+if (stale.kind === "seed") assert.match(stale.instruction, /cotal ext seed` to resume/);
+assert.match(JSON.parse(await report(true)).error.remedy, /cotal ext seed` to resume/);
+await report(false, false, /cotal ext seed` to resume/);
+writeFileSync(childPath, "{broken");
+const ambiguous = read();
+assert.equal(ambiguous.kind, "seed");
+if (ambiguous.kind === "seed") assert.match(ambiguous.instruction, /may be mid-flight.*Check whether a seed process/);
+await report(false);
+rmSync(childPath);
+
 writeFileSync(receipt, JSON.stringify(recovery));
 assert.equal(read().kind, "receipt", "update recovery retains precedence over seed repair");
 rmSync(receipt);
