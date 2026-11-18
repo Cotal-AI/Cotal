@@ -200,10 +200,10 @@ function currentConfig(id: { entry: string; version: string; path: string }): st
   return record.root;
 }
 
-/** Read this execution's selected state, or its validated predecessor until reconciliation selects a new copy. */
+/** Read selected or predecessor state, legacy state when present, or the fresh installation's future root. */
 export function connectorConfigDir(): string {
   const id = identity();
-  return id ? currentConfig(id) ?? previousConfig(id) ?? globalConfigDir() : globalConfigDir();
+  return id ? currentConfig(id) ?? previousConfig(id) ?? (["extensions", "seed"].some(name => existsSync(join(globalConfigDir(), name))) ? globalConfigDir() : join(id.path, "cotal")) : globalConfigDir();
 }
 
 /** Implicit recovery may mutate current or canonical state, never a predecessor exposed only for reads. */

@@ -18,6 +18,23 @@ const childEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
 let passed = 0;
 try {
+  const freshConfig = join(root, "fresh");
+  mkdirSync(freshConfig, { mode: 0o700 });
+  const fresh = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+import assert from 'node:assert/strict';
+import {existsSync,readdirSync} from 'node:fs';
+Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});
+const {connectorConfigDir,inheritConnectorConfig}=await import(${JSON.stringify(module)});
+const before=connectorConfigDir();
+assert(before.endsWith('/sets/0.165.4/cotal') && before.includes('/installs/'));
+assert.equal(existsSync(before),false,'root reads must not create retained state');
+assert.deepEqual(readdirSync(process.env.XDG_CONFIG_HOME),[],'fresh root reads must not create config files');
+inheritConnectorConfig();
+assert.equal(connectorConfigDir(),before,'initial inheritance keeps the advertised root');
+assert.equal(existsSync(before),true);
+`], { env: { ...childEnv, XDG_CONFIG_HOME: freshConfig, COTAL_HOME: join(root, "fresh-home") }, encoding: "utf8", timeout: 30_000 });
+  assert.equal(fresh.status, 0, `${fresh.stdout}${fresh.stderr}`);
+  passed++;
   for (const scenario of ["unfinished-root", "unfinished-holders", "unfinished-seat", "unfinished-live-seat", "unfinished-dead-seat", "unfinished-link", "unselected-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "pnpm-dlx-refresh", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "initial-inherit", "checkout", "desktop", "windows"] as const) {
     const config = join(root, scenario);
     mkdirSync(join(config, "cotal/seed/store/0.162.0"), { recursive: true, mode: 0o700 });
