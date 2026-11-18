@@ -10,7 +10,8 @@
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
- * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
+ * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM. An external `down` releases
+ * the foreground terminal without a crash diagnostic or a claim about the mesh registration.
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -184,11 +185,12 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.equal(down.code, 0, "own-root public down --with-agents succeeds after resume and serving readiness"); passed++;
       await until(() => state.exited, 20_000, () => err.slice(-3000));
       await waitForOwnedChild(() => state.closed, 3_000, `${root}: external down streams drained`);
-      assert.equal(state.code, 0, "observed N4: external down propagates clean broker exit0 despite unexpected diagnostic"); passed++;
-      assert.match(err, /exited unexpectedly/, "known N4 unexpected-exit diagnostic retained"); passed++;
+      assert.equal(state.code, 0, "external down releases the foreground terminal with exit 0"); passed++;
+      assert.match(err, /Foreground stack released: nats-server exited cleanly\./); passed++;
+      assert.doesNotMatch(err, /exited unexpectedly|stays recorded|repair:/); passed++;
       assert.equal(await portOpen(port), false, "own-root down closed listener"); passed++;
       assert.equal([...owned.values()].some(live), false, "own-root down removed exact owned births"); passed++;
-      console.log(`${refusalBoundary ? "PASS" : "INCONCLUSIVE"} foreground-up-signals ${name}: native startup-capability refusal=${refusalBoundary}, resumed serving, explicit private down, N4 unexpected diagnostic with exit${state.code}`);
+      console.log(`${refusalBoundary ? "PASS" : "INCONCLUSIVE"} foreground-up-signals ${name}: native startup-capability refusal=${refusalBoundary}, resumed serving, external down released foreground with exit ${state.code}`);
       return refusalBoundary;
     }
     ownRecords();
@@ -210,8 +212,9 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: successful owner streams drained`);
     assert.equal(await portOpen(port), false, "the owned broker listener closed"); passed++;
     if (options.crash) {
-      assert.notEqual(state.code, 0, "unexpected broker loss remains a nonzero CLI exit"); passed++;
+      assert.equal(state.code, 5, "unexpected broker loss remains a failed run"); passed++;
       assert.match(err, /exited unexpectedly/); passed++;
+      assert.doesNotMatch(err, /Foreground stack released/); passed++;
     } else {
       const signalExit = options.signal === "SIGTERM" ? 143 : 130;
       assert.equal(state.code, signalExit, `guarded shutdown exits ${signalExit} (${state.signal ?? "no signal"}): ${err}`); passed++;
