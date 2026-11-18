@@ -8,7 +8,7 @@
   "mutations": [
     {
       "name": "an unsettled leftover ages off the original deadline, not the latch-drop stamp",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "      const at = e.settled?.at ?? e.leftoverSince;",
       "replace": "      const at = e.settled?.at ?? e.acceptance.deadlineAt;",
       "expectRed": "the sweep drops a stale unsettled acceptance once its retry window has passed",
