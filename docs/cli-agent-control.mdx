@@ -550,7 +550,8 @@ its message.
 `stop --self` uses only a verified managed seat caller and its attributed manager. It accepts no
 other target or credential. Missing, mismatched and unsupported user-auth seat context refuses
 without switching to the operator. JSON and plain modes show the acknowledged native result,
-not a separate measurement of process exit. Stop and input do not seed connector installations.
+not a separate measurement of process exit. Stop, attach and input do not seed connector
+installations. A missing npm executable or a recorded connector seed failure does not block them.
 
 Failed name resolution refuses before a stop, terminal input or first attach is submitted. The
 receipt retains the inspect error and responding manager. It records local pre-submission proof
