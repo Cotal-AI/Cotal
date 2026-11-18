@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import type { Writable } from "node:stream";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -1556,18 +1557,25 @@ async function runGlobalProcess(
   inherit = false,
   windowsVerbatimArguments = false,
 ): Promise<CommandResult> {
-  const mutation = beginGlobalUpdateChild(root, operation);
+  const gated = process.platform === "linux" || process.platform === "darwin";
+  const mutation = beginGlobalUpdateChild(root, operation, gated);
   let published = false;
   let preservePending = false;
   try {
-    const child = withInstallUmask(() => spawn(file, args, {
+    // The shell becomes the actual child with exec, preserving the parent binding and group ID.
+    // EOF before permission (including parent death) exits without starting the mutator.
+    const child = withInstallUmask(() => spawn(gated ? "/bin/sh" : file, gated ? [
+      "-c", 'IFS= read -r permit <&3 && [ "$permit" = go ] || exit 125\nexec 3<&-\nexec "$@"',
+      "cotal-update-child", file, ...args,
+    ] : args, {
       env,
       // A separate process group keeps terminal interrupts out of npm's live replacement.
       // Keep the ChildProcess referenced and await close; this is not a background update.
       detached: true,
       windowsHide: true,
       windowsVerbatimArguments,
-      ...(inherit ? { stdio: "inherit" as const } : {}),
+      ...(gated ? { stdio: [inherit ? "inherit" : "pipe", inherit ? "inherit" : "pipe", inherit ? "inherit" : "pipe", "pipe"] as const }
+        : inherit ? { stdio: "inherit" as const } : {}),
     }));
     let error = "";
     let stdout = "";
@@ -1575,13 +1583,17 @@ async function runGlobalProcess(
     child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
     child.once("error", (e) => { error = e.message; });
+    const gate = gated ? child.stdio[3] as Writable : undefined;
+    gate?.on("error", (e: Error) => { error = `could not release ${operation} child: ${e.message}`; });
     if (child.pid !== undefined) {
       try {
         mutation.markLive(child.pid);
         published = true;
+        gate?.end("go\n");
       } catch (e) {
         error = `could not journal ${operation} child ${child.pid}: ${(e as Error).message}`;
         preservePending = true;
+        gate?.end();
       }
     }
     const closed = await new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolveClose) =>

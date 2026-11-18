@@ -431,6 +431,12 @@ keeps its original-host refusal rather than guessing a shutdown command.
 
 ## Recover an interrupted update
 
+On Linux and macOS, global update children wait for their process group to be recorded before
+running. A plain retry can clear an abandoned preparatory marker or a signalled child's marker
+after its whole recorded group has exited. A live group still blocks installation and rollback.
+Older pending and ambiguous markers without this custody evidence remain fail-closed and retain
+their inspection guidance. Windows keeps its existing child-custody checks.
+
 `cotal update --self` restores an interrupted update when its snapshot is a valid directory of
 this installation. If the snapshot is absent, outside this configuration, or not a plain directory,
 the command checks the recorded owner. A dead or reused owner lets it retain the unusable records

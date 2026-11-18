@@ -1336,7 +1336,7 @@
     "smoke:auto-update-log": "tsx bin/smoke/auto-update-log.smoke.ts",
     "smoke:auto-update-report": "tsx bin/smoke/auto-update-report.smoke.ts",
     "smoke:auto-update-doctor": "tsx bin/smoke/auto-update-doctor.smoke.ts",
-    "smoke:auto-update-repair": "node bin/smoke/auto-update-repair.smoke.mjs",
+    "smoke:auto-update-repair": "node bin/smoke/auto-update-repair.smoke.mjs && node bin/smoke/update-child-recovery.smoke.mjs && node bin/smoke/update-child-custody.smoke.mjs",
     "smoke:auto-update-snapshot": "tsx bin/smoke/auto-update-snapshot.smoke.ts",
     "smoke:daemon-install-native": "tsx bin/smoke/daemon-ownership-imports.smoke.ts && tsx bin/smoke/daemon-ownership-win32.smoke.ts && tsx bin/smoke/daemon-install-native.smoke.ts && tsx bin/smoke/daemon-install-entry.smoke.ts && tsx bin/smoke/daemon-ownership-responsive.smoke.ts && tsx bin/smoke/daemon-ownership-responsive.smoke.ts --retry && tsx bin/smoke/daemon-ownership-responsive.smoke.ts --pending && tsx bin/smoke/daemon-owned-uninstall.smoke.ts && tsx bin/smoke/auto-update-snapshot.smoke.ts",
     "smoke:daemon-desktop": "pnpm --filter cotal-ai... build && tsx bin/smoke/desktop-setup.smoke.ts && tsx bin/smoke/daemon-desktop.smoke.ts && tsx bin/smoke/daemon-desktop-install.smoke.ts && tsx bin/smoke/daemon-desktop-setup.smoke.ts && tsx bin/smoke/daemon-startup-context.smoke.ts",
