@@ -223,6 +223,13 @@ export function storeWriteProblem(storeDir: string): { path: string; message: st
   return undefined;
 }
 
+/** Why the broker at `root` cannot start on its recorded store, or the default `.cotal/nats`. */
+export function rootStoreProblem(root: string): ReturnType<typeof storeWriteProblem> {
+  let recorded: string | undefined;
+  try { recorded = readStackJournal(root)?.journal.broker?.storeDir; } catch { recorded = undefined; }
+  try { return storeWriteProblem(recorded ?? join(root, ".cotal", "nats")); } catch { return undefined; }
+}
+
 /** The `store_dir` a broker configuration names for `storeDir`: relative to `root` when the store
  *  lies inside it, since the broker runs from the root. A project folder renamed while its broker runs
  *  then keeps that broker writing into the renamed folder, and nothing creates the old path again. A
