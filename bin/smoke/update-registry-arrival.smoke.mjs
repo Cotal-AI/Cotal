@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,11 +12,12 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** Runs real npm and the built public entry against a registry with a listed, initially missing archive. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
-  assert(['arrives', 'unavailable', 'integrity', 'reset', 'orphan', 'min-release-age', 'before'].includes(scenario));
+  assert(['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'min-release-age', 'before'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const root = mkdtempSync(join(parent, 'registry-arrival-'));
   const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
   const target = '99.0.0', archives = new Map(), requests = [];
+  const extension = '@cotal-ai/cache-fixture';
   const prefix = join(root, 'prefix'), home = join(root, 'home');
   for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   for (const version of [previous, target]) {
@@ -40,6 +41,11 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
         if (scenario === 'integrity') return response.end(Buffer.from('corrupt archive'));
       }
       return response.end(archives.get(version));
+    }
+    if (decodeURIComponent(request.url?.split('?')[0] ?? '') === `/${extension}`) {
+      const bytes = archives.get(target);
+      response.setHeader('content-type', 'application/json');
+      return response.end(JSON.stringify({ name: extension, 'dist-tags': { latest: target }, versions: { [target]: { name: extension, version: target, dist: { tarball: `${origin}/${target}.tgz`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` } } } }));
     }
     const versions = Object.fromEntries([...archives].map(([version, bytes]) => [version, { name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' }, dist: { tarball: `${origin}/${version}.tgz`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` } }]));
     response.setHeader('content-type', 'application/json');
@@ -71,6 +77,15 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     // The real npm archive reads, global install and target reconcile child must
     // receive writable scratch even when the caller's TMPDIR cannot be used.
     if (scenario === 'reset') env.TMPDIR = join(root, 'missing-temp');
+    const configuredCache = join(root, 'configured-cache');
+    if (scenario === 'cache') {
+      delete env.npm_config_cache;
+      mkdirSync(configuredCache, { mode: 0o500 });
+      writeFileSync(join(home, '.npmrc'), `cache=${configuredCache}\n`);
+      const extensions = join(root, 'config/cotal/extensions');
+      mkdirSync(extensions, { recursive: true });
+      writeFileSync(join(extensions, 'extensions.json'), JSON.stringify({ extensions: [{ pkg: extension, version: previous, spec: `${extension}@${previous}`, provides: [], commands: [] }] }));
+    }
     const filterConfig = scenario === 'before' ? 'before=2020-01-01\n' : 'min-release-age=365\n';
     if (dateFiltered) writeFileSync(join(home, '.npmrc'), filterConfig);
     const started = Date.now();
@@ -115,8 +130,17 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       assert.doesNotMatch(update.output, /Waiting for cotal-ai|Keeping cotal-ai/);
     } else {
       assert.equal(update.code, 0, update.output);
-      if (scenario !== 'reset' && scenario !== 'orphan') assert.match(update.output, /Waiting for cotal-ai@99\.0\.0 release archives/);
-      if (scenario === 'orphan') {
+      if (!['reset', 'cache', 'orphan'].includes(scenario)) assert.match(update.output, /Waiting for cotal-ai@99\.0\.0 release archives/);
+      if (scenario === 'cache') {
+        assert.equal(selected, target, update.output);
+        assert.match(update.output, /installed globally and reconciled/);
+        assert.doesNotMatch(update.output, /EACCES|sudo chown|root-owned files/);
+        assert.equal(statSync(configuredCache).mode & 0o777, 0o500);
+        assert.deepEqual(readdirSync(configuredCache), []);
+        assert.equal(readFileSync(join(home, '.npmrc'), 'utf8'), `cache=${configuredCache}\n`);
+        assert.deepEqual(readdirSync(join(root, 'tmp')).filter(name => name.startsWith('cotal-')), [], 'all private update caches and closure staging are removed');
+        assert(requests.some(request => decodeURIComponent(request.path).startsWith(`/${extension}`)), 'the installed extension closure was downloaded');
+      } else if (scenario === 'orphan') {
         assert.equal(selected, target, update.output);
         assert.match(update.output, /installed globally and reconciled/);
         assert.equal(existsSync(join(prefix, 'lib/node_modules/.cotal-update-child')), false);
@@ -135,7 +159,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
         assert(elapsedMs >= 600000 && elapsedMs < 660000, `real wait bound: ${elapsedMs}`);
       }
     }
-    if (scenario !== 'arrives' && scenario !== 'reset' && scenario !== 'orphan') {
+    if (!['arrives', 'reset', 'cache', 'orphan'].includes(scenario)) {
       assert.equal(selected, previous);
       assert.deepEqual(readFileSync(join(packageRoot, 'dist/cotal.js')), before);
       assert.equal(readFileSync(join(packageRoot, 'preserve'), 'utf8'), 'unchanged');
@@ -155,6 +179,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     if (orphan) { try { process.kill(orphan, 'SIGCONT'); } catch {} }
     if (abandoned) await abandoned.catch(() => {});
     await new Promise(done => server.close(done));
+    if (existsSync(join(root, 'configured-cache'))) chmodSync(join(root, 'configured-cache'), 0o700);
     rmSync(root, { recursive: true, force: true });
   }
 }

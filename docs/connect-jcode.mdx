@@ -131,6 +131,8 @@ Each seat has a private Jcode instance and home under `<manager-workspace>/.cota
 The connector never attaches to your operator-run bridge or its live session inventory.
 It refreshes provider credentials for the seat and gives Jcode a stdio MCP entry for the shared `cotal_*` tools.
 
+Startup failures name the seat's private connector diagnostic log, which retains the underlying Jcode error.
+Raw startup output stays private because provider failures can contain credentials.
 See the [Jcode connector reference](jcode-connector-reference.mdx) for process cleanup, credential copying, startup checks, and recovery.
 
 ## Watch events [#event-plane]

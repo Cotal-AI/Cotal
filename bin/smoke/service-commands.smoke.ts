@@ -251,7 +251,8 @@ try {
     try { return (JSON.parse(run.stdout) as { result: { services: { name: string; next: string }[] } }).result.services.find((row) => row.name === "broker")?.next; }
     catch { return out(run); }
   })();
-  check("bare service offers the broker with --server <url> when the space has no registered broker", brokerRow === "cotal service start broker --config <file> --binary <file> --server <url>", brokerRow);
+  // The list was given --space, so its Next names it too (#7642).
+  check("bare service offers the broker with --server <url> when the space has no registered broker", brokerRow === `cotal service start broker --config <file> --binary <file> --server <url> --space ${PREPARED}`, brokerRow);
   const unready = cotal(["service", "add", "b0", "--preset", "broker", "--space", PREPARED]);
   const printed = out(unready).split("\n").map((line) => line.trim()).find((line) => line.startsWith("cotal service add b0 --preset broker")) ?? "";
   check("a broker add missing its options names --server too, and prints a line with all three",

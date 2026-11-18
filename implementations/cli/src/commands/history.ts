@@ -260,6 +260,9 @@ export function validateHistoryArguments(args: ParsedArgs): void {
   if (args.positionals[0] !== undefined && values.dms) throw usage("name a channel or request --dms, not both");
   const problem = args.positionals[0] === undefined ? undefined : concreteChannelProblem(channelOf(args.positionals[0]));
   if (problem) throw usage(problem);
+  for (const flag of ["from", "grep"] as const) {
+    if (values[flag] !== undefined && !values[flag]!.trim()) throw usage(`--${flag} takes a nonempty filter`);
+  }
   parseLimit(values.limit);
   const since = parseSince(values.since, Date.now());
   if (since?.kind === "seq" && values.dms) throw usage("DM history has no chat-stream sequence; use --since with a time");

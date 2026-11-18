@@ -69,7 +69,7 @@
     },
     {
       "name": "M14 the daemon serves the shard while it works out whether the shard is still its own",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "  async quiescePlane3(): Promise<void> {\n    this.plane3Quiesced = true;\n",
       "replace": "  async quiescePlane3(): Promise<void> {\n    this.plane3Quiesced = true;\n    if (Date.now() > 0) return;\n",
       "expectRed": "G7d the overlap ENDED while the loser was still alive, not by the loser exiting",
