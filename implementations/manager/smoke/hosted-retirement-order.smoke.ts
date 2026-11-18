@@ -39,8 +39,10 @@ const base = {
 };
 type Family = { actorToken: string; sentinelCreds: string; health: string };
 type Internals = {
-  driveDeprovision(agent: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: Family }): Promise<void>;
-  requestRetirement(agent: { id: string; name: string; lifecycleUid: string }): Promise<void>;
+  retirement: {
+    driveDeprovision(agent: { id: string; name: string; lifecycleUid: string; userOwner?: string; secretPaths?: Family }): Promise<void>;
+    requestRetirement(agent: { id: string; name: string; lifecycleUid: string }): Promise<void>;
+  };
 };
 const agent = { id: `${owner}.worker`, name: "worker", lifecycleUid: targetUid, userOwner: owner };
 // A scratch workspace for every cell: teardown removes this seat's local family, and a Manager given
@@ -57,8 +59,8 @@ try {
         prepareAgentRetirement: async (args) => { calls.push({ step: "prepare", ...args }); },
       },
     }) as unknown as Internals;
-    manager.requestRetirement = async (a) => { calls.push({ step: "request", agent: a }); };
-    await manager.driveDeprovision(agent);
+    manager.retirement.requestRetirement = async (a) => { calls.push({ step: "request", agent: a }); };
+    await manager.retirement.driveDeprovision(agent);
     assert.deepEqual(calls.map((call) => call.step), ["prepare", "request"]);
     assert.deepEqual(calls[0]?.target, { owner, actor: "worker", lifecycleUid: targetUid });
     assert.equal(calls[0]?.opId, managedRetirementOpId(targetUid));
@@ -73,8 +75,8 @@ try {
         prepareAgentRetirement: async () => { throw new Error("host release incomplete"); },
       },
     }) as unknown as Internals;
-    manager.requestRetirement = async () => { requested = true; };
-    await assert.rejects(manager.driveDeprovision(agent), /host release incomplete/);
+    manager.retirement.requestRetirement = async () => { requested = true; };
+    await assert.rejects(manager.retirement.driveDeprovision(agent), /host release incomplete/);
     assert.equal(requested, false);
   });
 
@@ -104,8 +106,8 @@ try {
       space: "demo", runtime: "pty", workspaceRoot: workspace, secretStore: store,
       remoteAuthority: { ...base, prepareAgentRetirement: async () => { atPrepare = await left(); } },
     }) as unknown as Internals;
-    manager.requestRetirement = async () => { requested = true; };
-    await manager.driveDeprovision({ ...agent, secretPaths: family });
+    manager.retirement.requestRetirement = async () => { requested = true; };
+    await manager.retirement.driveDeprovision({ ...agent, secretPaths: family });
     assert.equal(atPrepare.length, 5, "the family is still there when the host release runs");
     assert.deepEqual(await left(), []);
     assert.equal(requested, true);
@@ -124,8 +126,8 @@ try {
       },
       remoteAuthority: { ...base, prepareAgentRetirement: async () => {} },
     }) as unknown as Internals;
-    manager.requestRetirement = async () => { requested = true; };
-    await assert.rejects(manager.driveDeprovision({ ...agent, secretPaths: family }), /could not shred "worker": secret .*actor-token.*store refused/);
+    manager.retirement.requestRetirement = async () => { requested = true; };
+    await assert.rejects(manager.retirement.driveDeprovision({ ...agent, secretPaths: family }), /could not shred "worker": secret .*actor-token.*store refused/);
     // The workspace store keeps each entry at the file it materializes, so the file removal that
     // follows the refused store delete still takes the token off disk.
     assert.deepEqual(await left(), []);

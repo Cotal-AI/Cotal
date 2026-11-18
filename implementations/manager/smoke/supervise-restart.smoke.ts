@@ -299,7 +299,11 @@ try {
   // store-identity challenge. Unbind it first so start sees an absent rail, which
   // is not a named store, and the cell can still grade the user-mode accept
   // refusal. Later cells do not need the daemon.
-  await waitFor(() => (manager as unknown as { retiring: Map<string, unknown> }).retiring.size === 0,
+  await waitFor(() => (manager as unknown as {
+    retirement: {
+      retiring: Map<string, unknown>;
+    };
+  }).retirement.retiring.size === 0,
     "fixture retirements completed before delivery teardown");
   await delivery?.stop().catch(() => {});
   delivery = undefined;

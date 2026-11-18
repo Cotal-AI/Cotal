@@ -135,7 +135,11 @@ try {
   check("lifecycle path is DISJOINT from the colliding standing alias's path (grammar, not entropy)", credsA !== collidingAliasCred, { credsA, collidingAliasCred });
 
   // Replay A's TERMINAL teardown (the detached deprovision, targeted at A's retired incarnation).
-  await (mgr as unknown as { deprovision: (a: { id: string; name: string; lifecycleUid: string; secretPaths?: { creds?: string } }) => Promise<void> }).deprovision({
+  await (mgr as unknown as {
+    retirement: {
+      deprovision: (a: { id: string; name: string; lifecycleUid: string; secretPaths?: { creds?: string } }) => Promise<void>;
+    };
+  }).retirement.deprovision({
     id: spawnA.ok ? (spawnA.data as { id: string }).id : "",
     name: "worker",
     lifecycleUid: uidA!,
@@ -152,7 +156,11 @@ try {
   // must address only `worker.<uidA>.*`, never the standing `worker-<uidA>` family: the reverse
   // negative — a standing name that LOOKS like a flattened name-uid is not addressable as anyone's
   // lifecycle family.
-  await (mgr as unknown as { deprovision: (a: { id: string; name: string; lifecycleUid: string }) => Promise<void> }).deprovision({
+  await (mgr as unknown as {
+    retirement: {
+      deprovision: (a: { id: string; name: string; lifecycleUid: string }) => Promise<void>;
+    };
+  }).retirement.deprovision({
     id: spawnA.ok ? (spawnA.data as { id: string }).id : "",
     name: "worker",
     lifecycleUid: uidA!,

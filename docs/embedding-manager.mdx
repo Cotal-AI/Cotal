@@ -104,6 +104,10 @@ when it has none, and keeps serving. A value it cannot read reports as `an unrea
 
 ### Managed lifecycle retirement
 
+The manager keeps retirement holds, exact-lifecycle teardown requests and confirmed predecessor
+coordinates in an internal retirement coordinator. Its public methods and host callbacks keep the
+same contract.
+
 The typed remote-manager authority contract includes a one-shot terminal phase. A host implements
 `remoteAuthority.prepareAgentRetirement` to revoke the managed grant and finish its resumable
 release while preserving the UID, then `remoteAuthority.mintRetirementRequester` returns the

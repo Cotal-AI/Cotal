@@ -392,9 +392,11 @@ try {
   // ================================================================================================
   const mAny = manager as unknown as {
     opStop: (a: Record<string, unknown>, c: string, admin: boolean) => Promise<ControlReply>;
-    deprovision: (a: { id: string; name: string; lifecycleUid: string; userOwner?: string }) => Promise<void>;
     ep: { ref: () => { id: string } };
-    retiring: Map<string, { target: { id: string; lifecycleUid: string; userOwner?: string }; standingAuthorityLive?: boolean; lastError?: string }>;
+    retirement: {
+      deprovision: (a: { id: string; name: string; lifecycleUid: string; userOwner?: string }) => Promise<void>;
+      retiring: Map<string, { target: { id: string; lifecycleUid: string; userOwner?: string }; standingAuthorityLive?: boolean; lastError?: string }>;
+    };
   };
   const listNames = (): string[] => psList(manager!).map((a) => a.name);
 
@@ -449,7 +451,7 @@ try {
   check("GREEN: after the rail retirement, the manager HELD the name (NOT 'free for reuse' = the RED/pristine face)",
     heldFace && !freedFace, { terminal });
   // GREEN 3: the hold carries standingAuthorityLive + the revoke-failure operator copy.
-  const hold = mAny.retiring.get(AGENT);
+  const hold = mAny.retirement.retiring.get(AGENT);
   check("GREEN: the retiring hold keeps standingAuthorityLive=true with the revoke-failure operator copy",
     hold?.standingAuthorityLive === true && /standing mint authority could not be revoked/i.test(hold?.lastError ?? ""),
     hold ? { standingAuthorityLive: hold.standingAuthorityLive, lastError: hold.lastError } : "(no hold)");
@@ -458,15 +460,15 @@ try {
   // hold must be UNCHANGED (same lifecycleUid) and NO successor managed record may appear under the
   // alias — a refusal that quietly kept a replacement, or an ABA hold swap, would both read as ok here
   // without these checks.
-  const heldUidBeforeRespawn = mAny.retiring.get(AGENT)?.target.lifecycleUid;
+  const heldUidBeforeRespawn = mAny.retirement.retiring.get(AGENT)?.target.lifecycleUid;
   const respawn = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
   check("GREEN: a same-name spawn is REFUSED while the mint authority stands (alias not reassigned)",
     respawn.ok === false, respawn);
   check("GREEN: no successor managed record took the alias (the manager lists no live agent under the held name)",
     !psList(manager).some((a) => a.name === AGENT), listNames());
   check("GREEN: the SAME hold is still in place after the refused respawn (unchanged lifecycleUid, no ABA swap)",
-    mAny.retiring.get(AGENT)?.target.lifecycleUid === heldUidBeforeRespawn && heldUidBeforeRespawn !== undefined,
-    { before: heldUidBeforeRespawn, after: mAny.retiring.get(AGENT)?.target.lifecycleUid });
+    mAny.retirement.retiring.get(AGENT)?.target.lifecycleUid === heldUidBeforeRespawn && heldUidBeforeRespawn !== undefined,
+    { before: heldUidBeforeRespawn, after: mAny.retirement.retiring.get(AGENT)?.target.lifecycleUid });
   check("GREEN: the refusal reads as the operator face (reserved pending retirement + standing-authority revoke + retry NEXT)",
     /reserved pending retirement/i.test(respawn.error ?? "") && /standing-authority revoke/i.test(respawn.error ?? "") && /retry/i.test(respawn.error ?? ""),
     respawn.error);
@@ -503,13 +505,13 @@ try {
     while (Date.now() < end) {
       await manager!.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false }); // public nudge (refused while held)
       nudges++;
-      if (mAny.retiring.get(AGENT) === undefined) return true;
+      if (mAny.retirement.retiring.get(AGENT) === undefined) return true;
       await wait(500);
     }
-    return mAny.retiring.get(AGENT) === undefined;
+    return mAny.retirement.retiring.get(AGENT) === undefined;
   })();
   check("GREEN: the public same-name-spawn nudge re-drove the revoke and CLEARED the hold (the alias is reusable)",
-    cleared && mAny.retiring.get(AGENT) === undefined, { nudges });
+    cleared && mAny.retirement.retiring.get(AGENT) === undefined, { nudges });
   // The PREDECESSOR's standing-authority row was revoked: its uid no longer backs the alias (the row is
   // either absent, or already replaced by a successor's FRESH uid — the predecessor's is gone either way).
   const rowAfter = existsSync(managedRowPath(OWNER)) ? readFileSync(managedRowPath(OWNER), "utf8") : "";
