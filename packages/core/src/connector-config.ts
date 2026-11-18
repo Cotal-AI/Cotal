@@ -67,9 +67,32 @@ export interface RoleModelPolicy {
 /** The parsed cotal config file: a section per connector, keyed by connector name ("claude", …),
  *  plus machine-local spawn policy and the per-role model allowlist. */
 export interface CotalConfig {
+  /** Native NATS data-account ceilings applied at an authenticated broker start. */
+  accountLimits?: AccountLimits;
   connectors?: Record<string, ConnectorConfig>;
   spawn?: SpawnConfig;
   modelPolicy?: Record<string, RoleModelPolicy>;
+}
+
+/** Optional native NATS data-account ceilings. Storage and payload are bytes; -1 is unlimited. */
+export interface AccountLimits {
+  conn?: number;
+  subs?: number;
+  payload?: number;
+  mem_storage?: number;
+  disk_storage?: number;
+  consumer?: number;
+}
+
+/** Refuse malformed account ceilings before any provisioning or configuration effects. */
+export function assertAccountLimits(value: unknown, where = "accountLimits"): asserts value is AccountLimits {
+  if (!isRecord(value)) throw new Error(`${where} must be an object`);
+  for (const [key, limit] of Object.entries(value)) {
+    if (!["conn", "subs", "payload", "mem_storage", "disk_storage", "consumer"].includes(key))
+      throw new Error(`${where}.${key} is not a supported account limit`);
+    if (typeof limit !== "number" || !Number.isSafeInteger(limit) || (limit !== -1 && limit <= 0))
+      throw new Error(`${where}.${key} must be -1 or a positive safe integer`);
+  }
 }
 
 /** Operator-level config dir: `$XDG_CONFIG_HOME/cotal`; else `%APPDATA%\Cotal` on Windows (the
@@ -110,6 +133,7 @@ export function readCotalConfigFile(path: string): CotalConfig {
     throw configError(path, `invalid JSON - ${(e as Error).message}`);
   }
   if (!isRecord(parsed)) throw configError(path, "top level must be a JSON object");
+  if (parsed.accountLimits !== undefined) assertAccountLimits(parsed.accountLimits, `cotal config ${path}: accountLimits`);
   if (parsed.modelPolicy !== undefined) checkModelPolicy(path, parsed.modelPolicy);
   if (parsed.connectors !== undefined) checkConnectors(path, parsed.connectors);
   if (parsed.spawn !== undefined) checkSpawn(path, parsed.spawn);
@@ -202,7 +226,8 @@ function mergeConfig(base: CotalConfig, over: CotalConfig): CotalConfig {
   // role, and a role named in only one file keeps its entry. Replacing the whole map instead would
   // let a space-local file that constrains one role silently unconstrain every other.
   const modelPolicy = base.modelPolicy || over.modelPolicy ? { ...base.modelPolicy, ...over.modelPolicy } : undefined;
-  return { connectors, ...(spawn === undefined ? {} : { spawn }), ...(modelPolicy === undefined ? {} : { modelPolicy }) };
+  const accountLimits = base.accountLimits || over.accountLimits ? { ...base.accountLimits, ...over.accountLimits } : undefined;
+  return { connectors, ...(accountLimits === undefined ? {} : { accountLimits }), ...(spawn === undefined ? {} : { spawn }), ...(modelPolicy === undefined ? {} : { modelPolicy }) };
 }
 
 /** Load the merged cotal config: the operator-level file as the base, the space-local file layered

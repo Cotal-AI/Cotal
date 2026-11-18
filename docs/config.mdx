@@ -32,6 +32,7 @@ means no settings. Invalid JSON, a non-object top level, or an invalid shared se
 | `connectors.<name>.mcpServers` | Named MCP servers available to a connector's spawned agents | Per connector and server name |
 | `spawn.env` | Extra environment names available to spawned agents | The space-local `spawn` object replaces the operator-level object |
 | `modelPolicy` | Allowed models and variants for each role | Per role |
+| `accountLimits` | Native NATS data-account resource ceilings | Per field |
 
 The [launcher environment](#launcher-variables) describes `spawn.env`. [Model policy](#model-policy)
 describes model restrictions.
@@ -142,6 +143,47 @@ with an error naming the file.
 Each spawn reads one config snapshot for its policy, shared servers, and `spawn.env`. Edits apply to
 the next spawn without a restart. Running seats, supervised restarts, and preserved seats resumed
 after maintenance are not re-checked.
+
+### Account limits
+
+`accountLimits` sets native NATS ceilings when `cotal up` creates or starts an authenticated
+space's broker. The operator-level and space-local objects merge per field, with the local value
+winning. Invalid values stop config loading and name the file and key.
+
+```json
+{
+  "accountLimits": {
+    "conn": 256,
+    "subs": 4096,
+    "payload": 4194304,
+    "mem_storage": 268435456,
+    "disk_storage": 1073741824,
+    "consumer": 4096
+  }
+}
+```
+
+| Field | Native ceiling |
+|---|---|
+| `conn` | Connections across the data account, including trusted services |
+| `subs` | Subscriptions per connection |
+| `payload` | Message payload bytes, also bounded by the broker-wide limit |
+| `mem_storage` | Total memory-backed JetStream storage bytes |
+| `disk_storage` | Total file-backed JetStream storage bytes |
+| `consumer` | JetStream consumers across the data account |
+
+Every field is optional and accepts a positive safe integer or `-1` for unlimited. Unknown fields,
+zero, other negative numbers, fractions, strings and null are refused. With no setting, a new
+account has unlimited ceilings. An existing account keeps its saved limits for omitted fields,
+including when the whole setting is absent. To remove a saved ceiling, set that field to `-1`
+and start the broker again.
+
+Stop the stack with `cotal down --yes` before changing these ceilings, then run `cotal up`.
+A running broker does not reload config edits. Changing limits while its owned broker runs is
+refused. Low limits can prevent services, subscriptions or provisioning from starting, or refuse
+new stored messages. Choose enough capacity for the whole space. Account limits do not add a
+per-agent rate limit or set any stream's `max_bytes`. The system and auth-callout accounts are
+unchanged. Open brokers have no data-account JWT and refuse this setting.
 
 ## Preferences
 
