@@ -31,9 +31,12 @@ try {
     if (expected) await assert.rejects(run, expected, label);
     else assert.equal((await run()).occupied, 0);
   }
-  writeFileSync(check, `${prefix}receipt.occupied=null;receipt.admission={disposition:'deferred',occupied:null,hostedSpaces:[],reason:'Manager state is unknown; restart deferred'};${receipt}`);
-  assert.equal((await targetExecutionPreinstall(root, installed, [process.execPath, installed, "daemon", "serve"], {})).occupied, null, "unknown occupancy remains null");
+  writeFileSync(check, `${prefix}receipt.admission={disposition:'deferred',occupied:null,hostedSpaces:[],reason:'Manager state is unknown; restart deferred'};${receipt}`);
+  const unknown = await targetExecutionPreinstall(root, installed, [process.execPath, installed, "daemon", "serve"], {});
+  assert.equal(unknown.admission.occupied, null, "unknown occupancy remains null in the admission");
+  assert.equal(unknown.occupied, 0, "the count released updaters validate stays an integer");
   for (const code of [
+    "receipt.occupied=null;receipt.admission={disposition:'deferred',occupied:null,hostedSpaces:[],reason:'unknown'}",
     "receipt.admission={disposition:'restart-empty',occupied:null,hostedSpaces:[]}",
     "receipt.admission={disposition:'deferred',occupied:0,hostedSpaces:[],reason:''}",
     "receipt.occupied=1;receipt.admission={disposition:'consent-stop',occupied:1,hostedSpaces:[],inventory:[]}",
