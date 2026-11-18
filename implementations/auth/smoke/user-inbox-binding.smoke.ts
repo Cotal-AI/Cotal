@@ -2,19 +2,18 @@
  * A per-user-auth connection's private reply inbox is bound to its bearer's principal.
  *
  * Under the auth callout a client names its own inbox, `<owner>-<actor>-<nonce>`, as its connection
- * name, and the callout grants `_INBOX_<name>.>` on it. That name is not secret: a channel post is a
- * JetStream publish, whose reply subject reaches every subscriber of the channel. The callout admits
- * the name only for a bearer of that owner and actor, and refuses a bare nonce, the form older
- * clients send, with the minimum client version.
+ * name, and the callout grants `_INBOX_<name>.>` on it. The callout admits the name only for a bearer
+ * of that owner and actor, and refuses a bare nonce, the form older clients send, with the minimum
+ * client version.
  *
  * The suite runs the shipped auth service in this process (exchange, callout, permission builder)
  * against a real operator-mode nats-server, with two principals under two IdP subjects:
  *
  *   B1  alice's stock user-mode endpoint connects under her own principal-bound name, and a DM to
  *       her is pulled and handed to her handler.
- *   B2  mallory, reading the channel with her own bearer, learns alice's inbox name from the reply
- *       subject of alice's post. Connecting with her own bearer under that name is refused, the
- *       callout's refusal names the bearer's own prefix, and no copy of a later DM reaches her.
+ *   B2  mallory holds alice's inbox name, as seen on the channel. Connecting with her own bearer
+ *       under that name is refused, the callout's refusal names the bearer's own prefix, and no copy
+ *       of a later DM reaches her.
  *   B3  a bare inbox nonce under alice's own bearer is refused, and the refusal names the version.
  *   B4  alice's endpoint reconnects under her own principal-bound name, and DMs still arrive.
  *

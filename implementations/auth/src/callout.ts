@@ -491,9 +491,8 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       // The private reply inbox (`_INBOX_<connId>.>`) must scope on a token the CLIENT knows
       // pre-connect, and the connection nkey (`req.user_nkey`) is minted per-connect by NATS. So the
       // client names its own inbox as `<owner>-<actor>-<nonce>` and passes it as the connection `name`.
-      // The name is not secret: replies under it cross the wire to other subscribers. What makes the
-      // grant private is that it is admitted only under the bearer's own owner and actor, so a
-      // connection can never be granted another principal's inbox. Checked HERE, where client input
+      // The name is admitted only under the bearer's own owner and actor, so whatever name a
+      // connection presents, it is granted no other principal's inbox. Checked HERE, where client input
       // enters and before either arm reads a ledger, rather than inside an injected permissionsFor
       // hook. A bare nonce, a missing name or another principal's prefix throws, and the catch below
       // turns it into a signed deny (fail-closed).
