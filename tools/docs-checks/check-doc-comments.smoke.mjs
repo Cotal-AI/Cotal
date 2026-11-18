@@ -10,21 +10,29 @@ import ts from "typescript";
 const root = mkdtempSync(join(tmpdir(), "doc-comments-"));
 const checker = fileURLToPath(new URL("./check-doc-comments.mjs", import.meta.url));
 const input = "packages/probe/src/example.tsx";
+/** @type {NodeJS.ProcessEnv} */
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null" };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
 for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]) delete env[key];
 let passed = 0;
 let failed = 0;
+/** @param {string} name @param {boolean} condition */
 function check(name, condition) {
   console.log(`  ${condition ? "✓" : "x FAIL:"} ${name}`);
   if (condition) passed++;
   else failed++;
 }
+/** @param {string[]} args */
 function git(...args) {
   const result = spawnSync("git", ["-C", root, ...args], { env, encoding: "utf8" });
   if (result.error || result.status !== 0) throw new Error("fixture git setup failed", { cause: result.error });
 }
 
+/**
+ * @typedef {{ name: string, text: string, syntaxError?: boolean, line?: number } &
+ *   ({ accept: true } | { accept: false, reason: string })} Fixture
+ */
+/** @type {Fixture[]} */
 const cases = [
   { name: "one closed doc block", text: "/** Main documentation. */\nexport const value = 1;", accept: true },
   { name: "adjacent closed blocks", text: "/** Stale. */\n/** Real. */\nexport const value = 1;", accept: false, reason: "followed by another doc block" },
@@ -36,7 +44,7 @@ const cases = [
   { name: "inline swallowed opener", text: '/** Stale. /** Real. */\nexport const value = 1;', accept: false, reason: "contains another doc opener" },
   { name: "literal example opener follows the documented rule", text: '/** @example\n * ```ts\n * /** quoted opener\n * ```\n */\nexport const value = 1;', accept: false, reason: "contains another doc opener" },
   { name: "unterminated at EOF", text: '/** Missing closing delimiter', accept: false, reason: "is not closed", syntaxError: true },
-  ...["\n", "\r\n", "\r", " ", " "].map((newline) => ({
+  ...["\n", "\r\n", "\r", " ", " "].map(/** @returns {Fixture} */ (newline) => ({
     name: `swallowed opener with ${JSON.stringify(newline)} and nonbreaking-space indentation`,
     text: `/** Stale.${newline} /** Real. */${newline}export const value = 1;`,
     accept: false,
@@ -58,7 +66,12 @@ try {
   for (const cell of cases) {
     writeFileSync(join(root, input), cell.text);
     const source = ts.createSourceFile(input, cell.text, ts.ScriptTarget.Latest);
-    check(`${cell.name}: syntax control`, (source.parseDiagnostics.length > 0) === (cell.syntaxError === true));
+    // Keep the exact TSX parser input, but ask the public Program API for its syntax diagnostics.
+    const options = { noLib: true, noResolve: true };
+    const host = ts.createCompilerHost(options);
+    host.getSourceFile = name => name === input ? source : undefined;
+    const program = ts.createProgram([input], options, host);
+    check(`${cell.name}: syntax control`, (program.getSyntacticDiagnostics(source).length > 0) === (cell.syntaxError === true));
     const result = spawnSync(process.execPath, [join(root, "tools/docs-checks/check-doc-comments.mjs")], { cwd: root, env, encoding: "utf8", timeout: 10_000 });
     const expected = cell.accept ? 0 : 1;
     check(`${cell.name}: checker ${cell.accept ? "accepts" : "refuses"}`, !result.error && result.status === expected &&
