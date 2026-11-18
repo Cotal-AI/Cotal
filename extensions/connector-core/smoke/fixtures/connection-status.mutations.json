@@ -4,7 +4,7 @@
   ],
   "guard": "cotal_connection_status reports MeshAgent's live state, and its five states stay distinct",
   "command": "pnpm smoke:connection-status",
-  "progressPattern": "  ✓ ",
+  "progressPattern": "  \u2713 ",
   "completionMarker": "SUITE COMPLETE:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/fixtures/connection-status.mutations.json",
   "why": [
@@ -80,7 +80,7 @@
     },
     {
       "name": "the stall clock resets on ANY automatic commit rather than on the queue head (#1526)",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    const since = Math.max(oldest, this._lastAutomaticHeadDrainedAt ?? 0);",
       "replace": "    const since = Math.max(oldest, this._lastAutomaticDrainedAt ?? 0);",
       "expectRed": "committing fresh arrivals over an undelivered head is NOT progress, so the session still refuses ready",
@@ -89,7 +89,7 @@
     },
     {
       "name": "head progress is recorded for any automatic entry in the batch, not the head itself",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    if (selected.some((p) => !p.pullOnly && p.item.recvKey === head)) this._lastAutomaticHeadDrainedAt = Date.now();",
       "replace": "    if (selected.some((p) => !p.pullOnly)) this._lastAutomaticHeadDrainedAt = Date.now();",
       "expectRed": "committing fresh arrivals over an undelivered head is NOT progress, so the session still refuses ready",
@@ -104,7 +104,7 @@
       "expectRed": "daemon gone + lease residue still ready ⇒ deliveryHealth degraded, NEVER active (#445)",
       "cell": "daemon gone + lease residue still ready ⇒ deliveryHealth degraded, NEVER active (#445)",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:channel-attention:auth",
-      "note": "This restores the exact pre-#445 measure: health from the lease and the session-local membership map alone, the two conjuncts a SIGKILLed daemon satisfies for a whole lease TTL. The suite stages a daemon that stops without a lease release, so its KV row still reads ready:true, and the FIRST cell this mutant reddens is the daemon-gone one named above — a killed daemon again certifying itself active. The per-mutation command runs the auth suite that stages the daemon; the config-level command still grades this file's own suite. The auth suite runs every cell and prints `SUITE COMPLETE:` on pass and fail alike, so the config-level completionMarker applies to it and a red run is graded by count."
+      "note": "This restores the exact pre-#445 measure: health from the lease and the session-local membership map alone, the two conjuncts a SIGKILLed daemon satisfies for a whole lease TTL. The suite stages a daemon that stops without a lease release, so its KV row still reads ready:true, and the FIRST cell this mutant reddens is the daemon-gone one named above \u2014 a killed daemon again certifying itself active. The per-mutation command runs the auth suite that stages the daemon; the config-level command still grades this file's own suite. The auth suite runs every cell and prints `SUITE COMPLETE:` on pass and fail alike, so the config-level completionMarker applies to it and a red run is graded by count."
     }
   ]
 }

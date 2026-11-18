@@ -171,10 +171,12 @@ const envelopeOf = (r: Run): Envelope | undefined => {
 type MgrPriv = {
   managerInstanceId: string;
   agents: Map<string, { name: string; userOwner?: string }>;
-  reserved: Map<string, string>;
   ownerSeats(owner: string): number;
   startAgent(opts: { name: string; agent?: string; events?: boolean }): Promise<ControlReply>;
   opStop(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply>;
+  namesCapacity: {
+    reserved: Map<string, string>;
+  };
 };
 const managers: InstanceType<typeof Manager>[] = [];
 async function bootManager(workspaceRoot: string, seatCap?: number | typeof SEAT_CAP_UNLIMITED): Promise<InstanceType<typeof Manager>> {
@@ -230,7 +232,7 @@ try {
 
   // ---- 3. THE REFUSAL LEFT NOTHING BEHIND ----------------------------------------------------
   console.log("\n3. the refusal is not a half-launch");
-  check("no name was reserved for it", !M.reserved.has(CAPPED[2]!), [...M.reserved.keys()]);
+  check("no name was reserved for it", !M.namesCapacity.reserved.has(CAPPED[2]!), [...M.namesCapacity.reserved.keys()]);
   check("no seat was added", !M.agents.has(CAPPED[2]!), [...M.agents.keys()]);
   check("and the owner's count is what it was before the attempt", M.ownerSeats(DEV_OWNER) === CAP, M.ownerSeats(DEV_OWNER));
 

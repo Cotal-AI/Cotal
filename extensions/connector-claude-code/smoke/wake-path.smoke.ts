@@ -41,7 +41,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey } from "@cotal-ai/core";
 import { connect as rawConnect } from "@nats-io/transport-node";
-import { MeshAgent, startControlServer, cotalToolSpecs, type InboxItem } from "@cotal-ai/connector-core";
+import { MeshAgent, startControlServer, cotalToolSpecs, type InboxItem } from "../../connector-core/dist/index.js";
 import { createClaudeHandle, createWakePolicy } from "../src/hooks.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, controlTranscriptMac, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -456,7 +456,7 @@ try {
   await dmOtto("dm-five-a: acks cleanly");
   await dmOtto("dm-five-b: ack throws");
   await waitFor("both DMs buffered", () => stillPending("dm-five-a") && stillPending("dm-five-b"));
-  const pendings = (agent as unknown as { inbox: { item: InboxItem; ack: () => void }[] }).inbox;
+  const pendings = ((agent as unknown as { inboxState: unknown }).inboxState as unknown as { inbox: { item: InboxItem; ack: () => void }[] }).inbox;
   const doomed = pendings.find((p) => p.item.text.includes("dm-five-b"));
   check("the fault target is buffered and reachable, so the fault is really wired", !!doomed, {
     buffered: pendings.map((p) => p.item.text),

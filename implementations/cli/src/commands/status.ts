@@ -133,7 +133,7 @@ import { c } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { agentStatus } from "./agents.js";
 import { invalidEnvironmentValues } from "./config.js";
-import { cliControl, onInstance } from "../lib/control.js";
+import { cliControl, onInstance, onRerun } from "../lib/control.js";
 import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/service-definitions.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readinessAddressSurvivors } from "../lib/service-process.js";
@@ -428,7 +428,7 @@ export function validateStatusArguments(args: ParsedArgs): void {
     throw new CommandFailure("refused", "USAGE_INVALID", "status takes at most one agent name");
   if (args.positionals.length && (args.values.all || args.values.components))
     throw new CommandFailure("refused", "USAGE_INVALID", "a named agent status takes no --all or --components");
-  if (typeof args.values.on === "string") onInstance(args.values.on, "cotal status");
+  if (typeof args.values.on === "string") onInstance(args.values.on, onRerun("cotal status", args.values, args.positionals));
   if (!args.positionals.length && (args.values.on !== undefined || args.values.creds !== undefined))
     throw new CommandFailure("refused", "USAGE_INVALID", "--on and --creds select a named agent read, not infrastructure status");
 }
@@ -2165,6 +2165,10 @@ function nextActions(r: StatusResult): Section {
     const broker = exited.includes("nats"), manager = exited.includes("manager");
     const notes = [...(broker ? ["up reopens the recorded store"] : []), ...(manager ? ["pass --runtime again if the manager ran on one"] : [])];
     items.unshift({ command: `${cmd} up`, description: `Restart this folder's ${broker && manager ? "broker and manager" : broker ? "broker" : "manager"}, which exited; ${notes.join("; ")}` });
+  } else if (local && r.selected.resolved && r.selected.connection === "unreachable" && (r.folder.processes ?? []).every((row) => row.state === "stopped")) {
+    // A clean down leaves every member stopped with no pidfile. Spawn and ps need the stack, so the
+    // bare `up` that starts it again on its recorded address and store comes first.
+    items.unshift({ command: `${cmd} up`, description: "Start this folder's stopped stack again; pass --runtime again if the manager ran on one" });
   }
   // A stack whose folder was deleted stops only from this machine's records.
   if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });

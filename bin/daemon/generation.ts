@@ -2,8 +2,8 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { connectorConfigDir, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
-import { selectExecutionProgram } from "../cotal.js";
+import { connectorConfigDir, deferredUpdateActivation, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
+import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 import { fileURLToPath } from "node:url";
 
 export function installedGenerationVersion(): string {
@@ -81,9 +81,13 @@ export function watchDaemonGeneration(version: string, changed: (version: string
     try { if (updateActivationBlocked()) return; } catch { return; }
     let next: string;
     try {
-      next = installedGenerationVersion();
+      next = observeExecutionVersion(dirname(file));
     } catch { return; }
     if (next === version) { candidate = undefined; retryAt = 0; delay = 5000; pending(undefined); return; }
+    try {
+      const deferred = deferredUpdateActivation(join(dirname(file), "dist", "cotal.js"), next);
+      if (deferred) { pending(next, deferred); announce(`daemon: installed CLI ${next} activation deferred: ${deferred}; current generation remains loaded`); return; }
+    } catch { pending(next, "activation authority is unreadable; current generation remains loaded"); return; }
     if (candidate !== next) {
       candidate = next; retryAt = 0; delay = 5000;
       const reason = activate ? "verifying the installed entry" : "no verified native launch marker; automatic activation is unavailable; use the installed CLI to restart this daemon";
@@ -104,6 +108,7 @@ export function watchDaemonGeneration(version: string, changed: (version: string
       if (settled || closed) return;
       if (code !== 0 || output.split(/\r?\n/, 1)[0] !== `cotal-ai ${next}`) { failed(next, `entry verification did not confirm its version (exit ${code})`); return; }
       try { if (updateActivationBlocked()) { busy = false; return; } } catch { busy = false; return; }
+      try { if (deferredUpdateActivation(join(dirname(file), "dist", "cotal.js"), next)) { busy = false; return; } } catch { busy = false; return; }
       void changed(next).catch((error: unknown) => { if (!closed) failed(next, error instanceof Error ? error.message : "the replacement could not be activated"); });
     });
   }, 1000);

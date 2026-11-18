@@ -1,7 +1,7 @@
 import { type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
 import { jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section, resolveControlTarget } from "@cotal-ai/workspace";
 import { extensionNames } from "../ext-loader.js";
-import { cliControl, onFlag } from "../lib/control.js";
+import { cliControl, onFlag, onRerun } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { askManager, readFailure, refuseUnregisteredManager, refuseWithoutLiveManager } from "@cotal-ai/workspace/control";
@@ -39,7 +39,7 @@ export interface ModelsResult {
 export async function models(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof modelsFlags>;
   const presentation = presentationOf(v);
-  const on = await managerPin(v, "cotal models");
+  const on = await managerPin(v, onRerun("cotal models", v, v.harness === undefined ? [] : ["--harness", v.harness]));
   const t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
   const target = { space: t.space, harness: v.harness ?? null, requestedInstanceId: on ?? null };
   const live = on === undefined && t.auth.bearer === undefined ? await refuseWithoutLiveManager(t.space, t.server, t.auth, target, "list its model catalogs") : undefined;

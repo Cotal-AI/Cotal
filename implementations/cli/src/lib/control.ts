@@ -3,6 +3,7 @@ import { c, CommandFailure, staleStoreHint, stderrLine } from "@cotal-ai/workspa
 import type { ControlClient } from "@cotal-ai/workspace/control";
 import { compareSemver } from "../seed/reconcile.js";
 import { cliVersion } from "./version.js";
+import { shellWord } from "./endpoint-errors.js";
 
 /** What this CLI hands every manager control call: its own release, for a refusal of an argument the
  *  manager's contract does not declare, and the roster read that names your managers. */
@@ -46,6 +47,17 @@ export function onInstance(on: string | undefined, verb: string): string | undef
   if (on.startsWith("local."))
     throw new CommandFailure("refused", "USAGE_INVALID", `"${on}" is a principal id. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it): \`${verb} --on <instance>\``, { selfContained: true });
   return on;
+}
+
+/** The command an `--on` refusal tells the caller to rerun: the verb, then the words it was given,
+ *  each quoted for a shell, then the `--space` or `--server` given, so following it changes only
+ *  `--on` (#7322, #7644). */
+export function onRerun(verb: string, values: { space?: unknown; server?: unknown }, words: readonly string[] = []): string {
+  return [
+    verb, ...words.map(shellWord),
+    ...(typeof values.space === "string" ? ["--space", shellWord(values.space)] : []),
+    ...(typeof values.server === "string" ? ["--server", shellWord(values.server)] : []),
+  ].join(" ");
 }
 
 /** {@link onInstance} for an `--on` that takes only an instance id: an endpoint's instance, or a

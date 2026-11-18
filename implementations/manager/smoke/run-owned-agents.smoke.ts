@@ -31,7 +31,10 @@ if (subcommand === "seat") {
     space: e.COTAL_SPACE!, servers: e.COTAL_SERVERS!, bearer,
     sentinelCreds: readFileSync(e.COTAL_SENTINEL_CREDS!, "utf8"), lifecycleUid: e.COTAL_LIFECYCLE_UID!,
     channels: [], consume: false, watchChannels: false,
-    card: { owner: e.COTAL_OWNER!, actor: e.COTAL_ACTOR!, name: e.COTAL_NAME!, kind: "agent" },
+    card: {
+      owner: e.COTAL_OWNER!, actor: e.COTAL_ACTOR!, name: e.COTAL_NAME!, kind: "agent",
+      ...(e.COTAL_MANAGER_INSTANCE ? { meta: { "ai.cotal.manager.instance": e.COTAL_MANAGER_INSTANCE } } : {}),
+    },
   });
   endpoint.on("error", () => {});
   await endpoint.start();
@@ -97,6 +100,7 @@ if (subcommand === "tool-seat") {
       const other = process.env.MC_OTHER_INSTANCE!;
       const personas = cotalToolSpecs(config).find((s) => s.name === "cotal_personas")!;
       const persona = cotalToolSpecs(config).find((s) => s.name === "cotal_persona")!;
+      const invoke = cotalToolSpecs(config).find((s) => s.name === "cotal_invoke")!;
       const call = async (spec: typeof tool, args: Record<string, unknown>) => {
         try { return await spec.run(mesh, config, parseToolArgs(spec, args)); }
         catch (error) { return { isError: true, text: error instanceof Error ? error.message : String(error) }; }
@@ -111,9 +115,25 @@ if (subcommand === "tool-seat") {
       trace({ kind: "pin-run-ps", ...await call(tool, { verb: "ps" }) });
       trace({ kind: "pin-cli-run-ps", ...await shell(["run", "ps", "--space", config.space]) });
       trace({ kind: "pin-cli-models-on", ...await shell(["models", "--space", config.space, "--harness", "u4-seat", "--on", other]) });
+      // #6520: named manager.inspect selects the holding manager from live presence and obtains a
+      // manager-call bearer for that instance, never anycasting across two user-auth managers.
+      await waitFor(async () => (await mesh.readRoster()).roster.some((p) => p.card.name === "despawnee" && p.status !== "offline"));
+      const inspectSpawner: Array<Awaited<ReturnType<typeof call>>> = [];
+      const inspectOther: Array<Awaited<ReturnType<typeof call>>> = [];
+      for (let i = 0; i < 4; i++) {
+        inspectSpawner.push(await call(invoke, { endpoint: "manager", command: "inspect", args: { name: "toolpin" } }));
+        inspectOther.push(await call(invoke, { endpoint: "manager", command: "inspect", args: { name: "despawnee" } }));
+      }
+      trace({
+        kind: "pin-inspect-both",
+        spawnerOk: inspectSpawner.every((r) => r.isError !== true && typeof r.text === "string" && r.text.includes(`instance ${config.managerInstanceId}`)),
+        otherOk: inspectOther.every((r) => r.isError !== true && typeof r.text === "string" && r.text.includes(`instance ${other}`)),
+      });
+      trace({ kind: "pin-inspect-missing", ...await call(invoke, { endpoint: "manager", command: "inspect", args: { name: "absent_peer" } }) });
       // What a user-mode seat launched without COTAL_MANAGER_INSTANCE (a foreground spawn) holds.
       const spawner = config.managerInstanceId;
       config.managerInstanceId = undefined;
+      trace({ kind: "unbound-inspect-other", ...await call(invoke, { endpoint: "manager", command: "inspect", args: { name: "despawnee" } }) });
       trace({ kind: "unbound-run-ps", ...await call(tool, { verb: "ps" }) });
       // #4037: the same seat's own `cotal agent-bearer --manager-call`, with its launch flags and no instance.
       const bearerCmd = config.userAuth!.bearerCmd!;
@@ -490,6 +510,12 @@ try {
   cell("#3959 a managed seat's MCP cotal_run ps succeeds with two live managers", answered("pin-run-ps"), seat("pin-run-ps"));
   cell("#3959 a managed seat's own `cotal run ps` defaults to its spawner", seat("pin-cli-run-ps").code === 0, seat("pin-cli-run-ps"));
   cell("#3959 an explicit --on from a managed seat wins over its spawner", seat("pin-cli-models-on").code === 0 && onB.models === before.b.models + 1, { call: seat("pin-cli-models-on"), before, onB });
+  cell("#6520 a managed user-auth seat's named cotal_invoke manager inspect reaches each peer's holding manager across two managers",
+    seat("pin-inspect-both").spawnerOk === true && seat("pin-inspect-both").otherOk === true, seat("pin-inspect-both"));
+  cell("#6520 named cotal_invoke manager inspect on a user-auth seat refuses an absent peer from live presence",
+    seat("pin-inspect-missing").isError === true && String(seat("pin-inspect-missing").text).includes("is held in live presence"), seat("pin-inspect-missing"));
+  cell("#6520 an unbound user-auth seat's named cotal_invoke manager inspect reaches the peer's holding manager",
+    answered("unbound-inspect-other") && String(seat("unbound-inspect-other").text).includes(`instance ${stateB.instanceId}`), seat("unbound-inspect-other"));
   cell("#3959 an unbound seat's cotal_run ps refuses, lists both and names the instance argument", seat("unbound-run-ps").isError === true && namesBoth(seat("unbound-run-ps").text, "instance argument"), seat("unbound-run-ps"));
   cell("#4037 an unbound seat's `cotal agent-bearer --manager-call` refuses, lists both and names --manager-instance", seat("unbound-cli-bearer").code === 1 && namesBoth(seat("unbound-cli-bearer").stderr, "--manager-instance <instanceId>"), seat("unbound-cli-bearer"));
   cell("#3959 MCP cotal_run ps with instance succeeds against the named instance", answered("unbound-run-ps-on"), seat("unbound-run-ps-on"));
@@ -616,8 +642,14 @@ try {
   }
   const directForeign = await manager.startAgent({ name: "b_content", config: join(root, ".cotal", "agents", "b_content.md") }, `${owner}.cli`);
   check("U4 persona direct config path refuses foreign content without owner disclosure", !directForeign.ok && directForeign.error === 'no persona "b_content"');
-  const held = manager as unknown as { agents: Map<string, unknown>; reserved: Set<string>; goalAcceptances: Map<string, { name: string }> };
-  check("U4 persona foreign refusal precedes connector enrollment goal acceptance and reservation", connectorResolutions === beforeForeign.connectorResolutions && enrollments === beforeForeign.enrollments && !held.agents.has("b_content") && !held.reserved.has("b_content") && ![...held.goalAcceptances.values()].some((a) => a.name === "b_content"));
+  const held = manager as unknown as {
+    agents: Map<string, unknown>;
+    goalAcceptances: Map<string, { name: string }>;
+    namesCapacity: {
+      reserved: Set<string>;
+    };
+  };
+  check("U4 persona foreign refusal precedes connector enrollment goal acceptance and reservation", connectorResolutions === beforeForeign.connectorResolutions && enrollments === beforeForeign.enrollments && !held.agents.has("b_content") && !held.namesCapacity.reserved.has("b_content") && ![...held.goalAcceptances.values()].some((a) => a.name === "b_content"));
   const sameOwnerDefined = await endpoint.invokeService("manager", "define-persona", { name: "a_content", persona: "A's private content", agent: "u4-seat" });
   check("U4 persona same-principal definition stays launchable to its admitted non-admin run", sameOwnerDefined.reply.ok);
   const sameOwnerRun = await start('await spawn("a_content");');

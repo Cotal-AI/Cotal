@@ -466,8 +466,8 @@ try {
   const coreRoot = join(import.meta.dirname, "..");
   const repoRoot = join(coreRoot, "..", "..");
   const provisionSurfaces = [
-    join(coreRoot, "src/provision.ts"),
-    ...(existsSync(join(coreRoot, "dist/provision.js")) ? [join(coreRoot, "dist/provision.js")] : []),
+    join(coreRoot, "src/provision-jwt.ts"),
+    ...(existsSync(join(coreRoot, "dist/provision-jwt.js")) ? [join(coreRoot, "dist/provision-jwt.js")] : []),
   ].map((p) => readFileSync(p, "utf8"));
   const serviceSurfaces = [
     join(coreRoot, "src/endpoint-service.ts"),
@@ -478,7 +478,7 @@ try {
     ...(existsSync(join(repoRoot, "implementations/manager/dist/manager.js")) ? [join(repoRoot, "implementations/manager/dist/manager.js")] : []),
   ].map((p) => readFileSync(p, "utf8"));
 
-  c("provision.ts and dist/provision.js omit the false fresh exp/iat per-issuance uniqueness claim and name the epoch-pinned grant and same-second active retry",
+  c("provision-jwt.ts and dist/provision-jwt.js omit the false fresh exp/iat per-issuance uniqueness claim and name the epoch-pinned grant and same-second active retry",
     provisionSurfaces.every((t) =>
       !t.includes("has distinct bytes (fresh exp/iat)")
       && t.includes("epoch-pinned serve grant (`endpointServe.epoch` in the permission rows)")
