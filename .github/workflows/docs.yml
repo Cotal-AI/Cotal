@@ -108,6 +108,11 @@ jobs:
   docs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # The condition above lives in this file, so a pull request that edits the file can remove
+    # it. The lasting boundary is this environment: once the Cloudflare secrets are stored on it
+    # with a deployment rule that admits only `main` and release tags, no pull request run can
+    # read them, whatever its copy of this file says.
+    environment: docs-deploy
     steps:
       # A release builds the tagged commit with the deploy credentials in this job, so the tag
       # must point at a commit that is already on main. Checked before anything is checked out.
