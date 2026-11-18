@@ -1,7 +1,7 @@
 import { readAuthResponseJson } from "./response-json.js";
 import { agentBearerCommand } from "./agent-bearer.js";
 import { authCalloutOnlyFlag, authServiceFlags, authSpacesFlag } from "./daemon-flags.js";
-import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-host-client.js";
+import { SERVICE_ENDPOINT_USAGE, serviceEndpointHostCall, type ServiceEndpointValues } from "./service-host-client.js";
 /**
  * Self-registering `login` / `logout` commands (the delivery-daemon pattern): importing
  * `@cotal-ai/auth` registers them into the core `Registry`, and the `cotal` binary pulls the
@@ -10,7 +10,7 @@ import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-h
  * logged in as YOU across every repo on this box.
  */
 import * as prompts from "@clack/prompts";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type FlagSpec, type ParsedArgs, type SecretStore, type Subcommand } from "@cotal-ai/core";
 import { CommandFailure, resolvePreference, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, writeResult, findCotalRoot, getSpaceAuth, homeCotalDir, keptCatalogCredentials, loadMeshes, removeCatalogAccount, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
 import {
   type DeviceLoginPrompt,
@@ -440,6 +440,47 @@ function grantView(space: string, rows: readonly ReturnType<typeof publicActor>[
   ] }] };
 }
 
+const serviceEndpointSubcommands = [
+  { name: "approve", flagNames: ["space", "caller-ceiling", "request-id", "json", "plain"], outputs: ["json", "plain"], summary: "approve a proposed service endpoint registration as its owner", usage: "cotal service-endpoint approve <proposalId> [--caller-ceiling <a,b> | --request-id <hex32>] [--space <s>] [--json|--plain]", examples: [{ command: "cotal service-endpoint approve <proposalId>", note: "approve a service's registration" }] },
+  { name: "refuse", flagNames: ["space", "request-id", "json", "plain"], outputs: ["json", "plain"], summary: "refuse a proposed service endpoint registration as its owner", usage: "cotal service-endpoint refuse <proposalId> [--request-id <hex32>] [--space <s>] [--json|--plain]", examples: [{ command: "cotal service-endpoint refuse <proposalId>", note: "refuse a service's registration" }] },
+  { name: "proposal", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], reads: true, summary: "read a service endpoint registration proposal as its owner", usage: "cotal service-endpoint proposal <proposalId> [--space <s>] [--json|--plain]", examples: [{ command: "cotal service-endpoint proposal <proposalId>", note: "read a request before deciding" }] },
+  { name: "operation", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], reads: true, summary: "read a recorded service endpoint host operation", usage: "cotal service-endpoint operation <operationId> [--space <s>] [--json|--plain]", examples: [{ command: "cotal service-endpoint operation <operationId>", note: "read a recorded host operation" }] },
+  { name: "name", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], reads: true, summary: "read an endpoint name's recorded owner binding", usage: "cotal service-endpoint name <endpoint> [--space <s>] [--json|--plain]", examples: [{ command: "cotal service-endpoint name <endpoint>", note: "read an endpoint name's binding" }] },
+  { name: "name-bind", flagNames: ["space", "owner", "claim", "request-id", "json", "plain"], outputs: ["json", "plain"], summary: "bind an endpoint name to an owner on the local auth service", usage: "cotal service-endpoint name-bind <endpoint> (--owner <u_…> --claim <ref> | --request-id <hex32>) [--space <s>] [--json|--plain]", examples: [{ command: "cotal service-endpoint name-bind <name> --owner <u_…> --claim <ref>", note: "bind an endpoint name to an owner" }] },
+  { name: "callers", flagNames: ["space", "cursor", "json", "plain"], outputs: ["json", "plain"], reads: true, summary: "list caller grants on an approved service registration", usage: "cotal service-endpoint callers <proposalId> [--cursor <c>] [--space <s>] [--json|--plain]", examples: [{ command: "cotal service-endpoint callers <proposalId>", note: "list who may call it" }] },
+  { name: "grant", flagNames: ["space", "to", "lifecycle", "commands", "json", "plain"], outputs: ["json", "plain"], summary: "grant one caller lifecycle commands on an approved service", usage: "cotal service-endpoint grant <proposalId> --to <owner.actor> --lifecycle <uid> --commands <a,b> [--space <s>] [--json|--plain]", examples: [{ command: "cotal service-endpoint grant <id> --to <u.a> --lifecycle <uid> --commands <c>", note: "grant a caller commands on an approved service" }] },
+  { name: "revoke", flagNames: ["space", "to", "lifecycle", "json", "plain"], outputs: ["json", "plain"], summary: "revoke a caller grant on a service endpoint", usage: "cotal service-endpoint revoke <grantId> --to <owner.actor> --lifecycle <uid> [--space <s>] [--json|--plain]", examples: [{ command: "cotal service-endpoint revoke <grantId> --to <owner.actor> --lifecycle <uid>", note: "revoke a caller grant" }] },
+] as const satisfies readonly Subcommand[];
+
+function validateServiceEndpointArguments(args: ParsedArgs): void {
+  presentationOf(args.values);
+  const [sub, subject, ...extra] = args.positionals;
+  const mode = serviceEndpointSubcommands.find((item) => item.name === sub);
+  if (!mode || !subject || extra.length) throw new CommandFailure("refused", "USAGE_INVALID", SERVICE_ENDPOINT_USAGE);
+  const allowed = new Set<string>(["no-color", "no-input", ...mode.flagNames]);
+  for (const key of Object.keys(args.values)) {
+    if (!allowed.has(key)) throw new CommandFailure("refused", "USAGE_INVALID", `--${key} does not belong to \`cotal service-endpoint ${sub}\``);
+  }
+  const values = args.values as ServiceEndpointValues;
+  const replayId = values["request-id"];
+  if (replayId !== undefined) {
+    if (!/^[0-9a-f]{32}$/.test(replayId)) throw new CommandFailure("refused", "USAGE_INVALID", "--request-id is the 32 lowercase hex characters an earlier run printed");
+    if (values["caller-ceiling"] !== undefined || values.owner !== undefined || values.claim !== undefined)
+      throw new CommandFailure("refused", "USAGE_INVALID", "--request-id sends the recorded request as it was; it takes no --caller-ceiling, --owner or --claim");
+  } else if (sub === "name-bind" && (!values.owner || !values.claim)) {
+    throw new CommandFailure("refused", "USAGE_INVALID", SERVICE_ENDPOINT_USAGE);
+  }
+  if (sub === "grant") {
+    const commands = [...new Set((values.commands ?? "").split(",").map((c) => c.trim()).filter(Boolean))];
+    if (!commands.length) throw new CommandFailure("refused", "USAGE_INVALID", "grant needs --commands <a,b>: the commands the grantee may invoke; nothing was sent");
+  }
+  if (sub === "grant" || sub === "revoke") {
+    const to = values.to ?? "", dot = to.indexOf("."), lifecycleUid = values.lifecycle;
+    if (dot <= 0 || dot === to.length - 1 || !lifecycleUid)
+      throw new CommandFailure("refused", "USAGE_INVALID", `${sub} needs --to <owner.actor> and --lifecycle <uid>: a caller grant names one exact lifecycle; nothing was sent`);
+  }
+}
+
 /** `cotal service-endpoint`: one host request ({@link serviceEndpointHostCall}) at the resolved
  *  local authority root, and its answer rendered. */
 async function runServiceEndpoint(args: ParsedArgs, target: AuthTarget): Promise<void> {
@@ -653,6 +694,7 @@ const authCommands: Command[] = [
     examples: [{ command: "cotal service-endpoint proposal <proposalId>", note: "read a request before deciding" }, { command: "cotal service-endpoint approve <proposalId>", note: "approve a service's registration" }, { command: "cotal service-endpoint callers <proposalId>", note: "list who may call it" }],
     usage: "cotal service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref> | callers <proposalId> | grant <proposalId> --to <owner.actor> --lifecycle <uid> --commands <a,b> | revoke <grantId> --to <owner.actor> --lifecycle <uid>> [--caller-ceiling a,b] [--request-id <hex32>] [--cursor <c>] [--space <s>] [--json|--plain]",
     positionals: "<approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> | callers <proposalId> | grant <proposalId> | revoke <grantId>>",
+    subcommands: serviceEndpointSubcommands,
     outputs: ["json", "plain"],
     flags: [
       jsonFlag, plainFlag, spaceFlag,
@@ -665,7 +707,11 @@ const authCommands: Command[] = [
       { name: "commands", type: "string", value: "<a,b>", description: "grant: the commands the caller may invoke, within the approval's caller ceiling" },
       { name: "cursor", type: "string", value: "<c>", description: "callers: the next page, as the previous page's nextCursor" },
     ],
-    run: (args) => runServiceEndpoint(args, localAuthTarget(args.values as { space?: string })),
+    validate: validateServiceEndpointArguments,
+    run: (args) => {
+      validateServiceEndpointArguments(args);
+      return runServiceEndpoint(args, localAuthTarget(args.values as { space?: string }));
+    },
   },
   {
     kind: "command",
