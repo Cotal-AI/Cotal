@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type AuthProvider, type CompletionResult, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import {
@@ -29,6 +29,7 @@ import {
   removeMeshesByRoot,
   resolveRuntimeSpace,
   resolveSpace,
+  soleSpaceOf,
   STORE_ENTRY_NAMES,
   SYSTEM_CREDS_FILES,
   spaceRootTarget,
@@ -55,6 +56,7 @@ import { MissingFlags } from "../lib/missing-flags.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import { foreignEntriesRefusal, lastServedStore, listEntries, oldStoreForeignEntries, refuseSharedStoreRemoval } from "../lib/store-dir.js";
+import { retainedOpenSpace } from "../lib/legacy-start.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 
 const TARGETS = ["history", "store", "all", "restore-fallback", "restore-attempt"] as const;
@@ -437,7 +439,7 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
   // Trust removal always derives its space from the root's local authority. A named
   // store-only reset may supply the recorded open space, which has no auth record.
   if (opts.includeAuth && opts.space !== undefined) throw new Error("identity cleanup cannot take a caller-selected space");
-  const space = opts.space ?? resolveSpace(root);
+  const space = opts.space ?? soleSpaceOf(authDir(root)) ?? retainedOpenSpace(root) ?? resolveSpace(root);
   const store = safeStoreCleanupPath(root, opts.storeDir);
   if (store.identity) refuseSharedStoreRemoval(store.path, space);
   if (opts.expectedStore && (store.path !== opts.expectedStore.path || Boolean(store.identity) !== Boolean(opts.expectedStore.identity) || store.identity && (store.identity.dev !== opts.expectedStore.identity?.dev || store.identity.ino !== opts.expectedStore.identity?.ino)))
@@ -615,6 +617,19 @@ export function safeStoreCleanupPath(root: string, override: string | undefined)
     if (!hasGeneration && !hasJetStream)
       throw new Error(`refusing custom cleanup target without a Cotal or JetStream store marker: ${target}`);
   }
+  // Check every physical directory before the rename: unlinking a child needs write and search
+  // access on its parent. Symlinks are removed as entries, never followed by this preflight.
+  const checkRemoval = (path: string): void => {
+    try { accessSync(path, constants.R_OK | constants.W_OK | constants.X_OK); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!["EACCES", "EPERM", "EROFS"].includes(code ?? "")) throw error;
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the store directory ${path} is not readable, writable and searchable by this account (${code}), so its contents cannot be removed; nothing was moved or removed`, { target: { storeDir: target, path }, remedy: `make the store removable by you with chmod -R u+rwX ${shellWord(target)}, then run this command again` });
+    }
+    for (const entry of readdirSync(path, { withFileTypes: true }))
+      if (entry.isDirectory()) checkRemoval(join(path, entry.name));
+  };
+  checkRemoval(target);
   refuseForeignStoreEntries(target, foreignStoreEntries(target));
   return { path: target, identity: { dev: stat.dev, ino: stat.ino } };
 }

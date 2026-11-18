@@ -228,7 +228,12 @@ registration names, and names the process listening there to stop. A member whos
 is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
 that it was never stopped cleanly. A prepared space is forgotten the same way, and the `.cotal/`
 that `space create` made stays. A prepared record that cannot be read names no folder, so forgetting
-its space removes only that file, and the result's `root` is null. Forgetting the selected space clears the selection. Forget also
+its space removes only that file, and the result's `root` is null. A damaged registration is removed
+with any prepared record of the same name in one forget. The prepared root still names stopped
+stack definitions to release, and recorded running stack members still block the forget before
+anything is removed. This also covers an unreadable pre-hex registration whose filename names the
+space unambiguously. `meshes rm --force` names `space forget` for such a record rather than skipping
+its stack checks. Forgetting the selected space clears the selection. Forget also
 removes the per-space preferences saved under that name, so a later space with the same name starts
 without them, and the receipt lists each removed key and value so you can set them again. If that
 removal fails after the record is gone, the run is `partial` and names the `config unset` to finish it,

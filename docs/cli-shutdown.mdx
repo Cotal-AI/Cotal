@@ -682,7 +682,11 @@ root state.
   store's `jetstream` directory, its `.cotal-store-id` marker and the broker's `ocsp` folder, then
   the empty store directory. A
   store directory that holds anything else refuses `CONFLICT` (exit 2), names those entries and
-  removes nothing; move them out and run it again.
+  removes nothing; move them out and run it again. Cleanup and reset check that the store root and
+  each directory inside it are readable, writable and searchable before moving or removing the store.
+  A permission failure refuses `PERMISSION_DENIED` (exit 2), keeps the store in place and names
+  `chmod -R u+rwX` on its root. A stopped named open space is identified by its retained broker
+  configuration, so its own streams do not count as another space's data.
 - `all` is `store` plus the space identity (`.cotal/auth`), the local creds and markers tied to
   it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
   registry entry; the next `cotal up` mints a fresh identity. On a root deployed with `up -f`, plain
