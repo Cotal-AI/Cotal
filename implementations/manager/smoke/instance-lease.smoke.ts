@@ -16,7 +16,7 @@
  * (`unknown`, `gone`, `taken`) are `smoke:lease-loss-keeps-serving`.
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ManagerLeaseInfo } from "@cotal-ai/core";
@@ -240,5 +240,9 @@ console.log("\n-- the stop fence and late binding --");
   const r = await captured(() => m.acquireInstanceLease(info()));
   check("binding: the refusal names this manager's space", r.error instanceof ManagerInstanceLeaseHeld && r.error.message.includes(`space "${SPACE}"`), r);
 }
+
+// The two roots are only paths the lease rows name; nothing outside this process holds them.
+rmSync(root, { recursive: true, force: true });
+rmSync(otherRoot, { recursive: true, force: true });
 
 finish();

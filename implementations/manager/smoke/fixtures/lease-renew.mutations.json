@@ -7,14 +7,16 @@
       "file": "implementations/manager/src/lease-keeper.ts",
       "find": "    if (this.leaseRenewInFlight) return;\n",
       "replace": "    if (!this.leaseRenewInFlight) return;\n",
-      "expectRed": "[acklost] the child manager started, acquired its own per-instance lease, and renewed it at least once"
+      "expectRed": "[acklost] the child manager started, acquired its own per-instance lease, and renewed it at least once",
+      "cell": "[${tag}] the child manager started, acquired its own per-instance lease, and renewed it at least once"
     },
     {
       "name": "PREDICTED KILLED (1 red) - D3: the next tick may start a second renew while one is in flight, on the same cached revision",
       "file": "implementations/manager/src/lease-keeper.ts",
       "find": "    if (this.leaseRenewInFlight) return;\n",
       "replace": "",
-      "expectRed": "NO SELF-INFLICTED CAS CONFLICT"
+      "expectRed": "NO SELF-INFLICTED CAS CONFLICT",
+      "cell": "NO SELF-INFLICTED CAS CONFLICT: only one renew is ever in flight, so the manager never CASes against a sequence it moved itself"
     },
     {
       "name": "PREDICTED KILLED (1 red) - D2a: the renew period goes back to TTL/2, so a single attempt fills the window again",
@@ -22,7 +24,8 @@
       "find": "export const MANAGER_LEASE_RENEW_MS = MANAGER_LEASE_TTL_MS / 4;\n",
       "replace": "export const MANAGER_LEASE_RENEW_MS = MANAGER_LEASE_TTL_MS / 2;\n",
       "expectRed": "THE RENEW BUDGET HAS SLACK",
-      "afterRestore": "pnpm --filter @cotal-ai/core build"
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "cell": "THE RENEW BUDGET HAS SLACK: at least three renew periods fit inside the lease TTL, and no attempt can outlive its own period"
     },
     {
       "name": "PREDICTED KILLED (1 red) - D2b: the attempt deadline goes back to the library default, so an attempt can outlive its own period",
@@ -30,7 +33,8 @@
       "find": "export const MANAGER_LEASE_ATTEMPT_MS = 2_000;\n",
       "replace": "export const MANAGER_LEASE_ATTEMPT_MS = 5_000;\n",
       "expectRed": "THE RENEW BUDGET HAS SLACK",
-      "afterRestore": "pnpm --filter @cotal-ai/core build"
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "cell": "THE RENEW BUDGET HAS SLACK: at least three renew periods fit inside the lease TTL, and no attempt can outlive its own period"
     }
   ],
   "_note": "THE SUITE LOADS dist FOR CORE. It imports `@cotal-ai/core`, whose exports point at ./dist/index.js, so mutating packages/core/src leaves the module the run actually uses untouched; the command rebuilds core from the mutated source, and `afterRestore` rebuilds it from the restored source so dist is not left carrying the last mutant. The manager mutations need no build: the child loads ../src/manager.js through tsx. The positive control inverts the in-flight guard so every ordinary timer tick returns before renewing; the first child-start cell must therefore redden, proving this suite executes the same manager.ts lease path that D3 mutates. D2a and D2b are graded on the numbers rather than on behaviour ON PURPOSE: each leaves the reconcile in place, so the manager still survives the stall and every behavioural cell still passes while the slack needed for several timely attempts is gone. Arithmetic is the only thing that catches that. The old fail-close and unconfirmed-TTL-budget mutations were removed with the behaviour they graded: lease loss no longer ends this process or consumes a local serving budget.",
