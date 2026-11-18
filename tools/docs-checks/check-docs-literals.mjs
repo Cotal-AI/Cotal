@@ -32,7 +32,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: repoRoot, encoding: "utf8", maxBuffer: 1 << 28 })
   .split("\0")
   .filter(Boolean);
@@ -54,6 +54,7 @@ const commands = new Set(["cotal", "pnpm", "npm", "npx", "node", "tsx", "git", "
 
 // The parser's top-level blocks concatenate back to the page, so a span's line is found by locating
 // its raw text inside the block that holds it.
+/** @type {{ page: string, line: number, text: string }[]} */
 const spans = [];
 for (const page of pages) {
   const text = (page.endsWith(".mdx")
@@ -84,7 +85,9 @@ const candidates = spans.filter(({ text }) => {
 
 // U+0001 marks a substituted value. No candidate can contain it, so only a placeholder matches it.
 const hole = "\u0001";
+/** @type {string[]} */
 const strings = [];
+/** @param {ts.Node} node @returns {string | undefined} */
 const joined = (node) => {
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
   if (ts.isTemplateExpression(node)) return node.head.text + node.templateSpans.map((s) => hole + s.literal.text).join("");
@@ -101,6 +104,7 @@ for (const file of sources) {
   const code = readFileSync(join(repoRoot, file), "utf8");
   const js = /\.[cm]?tsx?$/.test(file) ? ts.transpileModule(code, { fileName: file, compilerOptions }).outputText : code;
   const sf = ts.createSourceFile(file, js, ts.ScriptTarget.ESNext);
+  /** @param {ts.Node} node */
   const visit = (node) => {
     const text = joined(node);
     if (text !== undefined) strings.push(text);
@@ -109,7 +113,9 @@ for (const file of sources) {
   visit(sf);
 }
 
+/** @param {string} s */
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** @param {string} text */
 const pattern = (text) =>
   new RegExp(
     text

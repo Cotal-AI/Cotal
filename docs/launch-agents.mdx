@@ -160,6 +160,10 @@ Launches and preserved-state resumes use those recorded paths.
 `cotal models` reports the same unavailable reason, so installing or removing an application after boot does not silently change the manager's answer.
 Catalog reads run the same recorded absolute binary as a launch. `COTAL_OPENCODE_BIN` and `COTAL_CODEX_BIN` override it.
 Restart the manager to repeat its startup checks, after accounting for its running seats.
+Since 0.167.1, a detached launch that no manager can take reports the installed connectors' unavailable reasons, including missing executables.
+Install or repair those applications on the named manager hosts and make them available on the PATH used to start the managers.
+The refusal suggests adding a connector only on managers whose connector inventory is empty.
+For a stack started with `cotal up`, stop its manager with `cotal manager stop --yes` from the project folder, then run `cotal up` with the repaired PATH.
 A connector registered after startup has no recorded row, so launch, resume, and model lookup check PATH when called.
 
 ## Manage local personas [#personas-from-the-cli]

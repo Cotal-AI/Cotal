@@ -69,14 +69,14 @@ import {
   localProcessPath,
   localProcessVisible,
   MANAGER_PIDFILE,
+  NATS_PIDFILE,
   oneLine,
   PREFERENCE_KEYS,
-  parsePid,
   plainFlag,
   preflightTarget,
   presentationOf,
   principalFromBearer,
-  probeLiveness,
+  verifyIdentityPin,
   probeWebReadiness,
   readCurrent,
   readMeshRegistry,
@@ -119,6 +119,7 @@ import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
+import { MANAGER_OMITTED } from "../lib/delivery-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_STALE_TEXT, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
@@ -133,7 +134,7 @@ import { c } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { agentStatus } from "./agents.js";
 import { invalidEnvironmentValues } from "./config.js";
-import { cliControl, onInstance } from "../lib/control.js";
+import { cliControl, onInstance, onRerun } from "../lib/control.js";
 import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/service-definitions.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readinessAddressSurvivors } from "../lib/service-process.js";
@@ -180,7 +181,7 @@ export const statusFlags = [
   { name: "all", type: "boolean", description: "check every recorded mesh, not only the selected one, and report every row in full" },
   { name: "wide", type: "boolean", description: "report every row in full: each known agent application, each extension, and the spaces under their broker addresses" },
   { name: "verbose", short: "v", type: "boolean", description: "include installation paths, local records and detailed diagnostics" },
-  { name: "components", type: "boolean", description: "probe manager, delivery, web, and registered broker component health (exit: 0 serving, or the optional dashboard not installed or not started; 1 absent; 2 present but not serving; 3 probe refused)" },
+  { name: "components", type: "boolean", description: "probe manager, delivery, web, and registered broker component health (exit: 0 serving, an intentionally omitted manager, or the optional dashboard not installed or not started; 1 absent; 2 present but not serving; 3 probe refused)" },
   jsonFlag,
   plainFlag,
 ] as const;
@@ -428,7 +429,7 @@ export function validateStatusArguments(args: ParsedArgs): void {
     throw new CommandFailure("refused", "USAGE_INVALID", "status takes at most one agent name");
   if (args.positionals.length && (args.values.all || args.values.components))
     throw new CommandFailure("refused", "USAGE_INVALID", "a named agent status takes no --all or --components");
-  if (typeof args.values.on === "string") onInstance(args.values.on, "cotal status");
+  if (typeof args.values.on === "string") onInstance(args.values.on, onRerun("cotal status", args.values, args.positionals));
   if (!args.positionals.length && (args.values.on !== undefined || args.values.creds !== undefined))
     throw new CommandFailure("refused", "USAGE_INVALID", "--on and --creds select a named agent read, not infrastructure status");
 }
@@ -524,7 +525,7 @@ export async function status(args: ParsedArgs): Promise<void> {
     },
     (result) => statusView(result, Boolean(values.verbose), Boolean(values.all) || Boolean(values.wide)),
   );
-  if (values.components) await printComponentHealth(cwd, values);
+  if (values.components) await printComponentHealth(selected);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -828,7 +829,12 @@ async function readResponderAxis(selected: Selected, preflight: SelectedPrefligh
       // A daemon killed before it could release shard 0 leaves its ready row, which names this
       // folder's credential, until the bucket TTL removes it. When this folder's delivery pidfile
       // names a process that is gone, that row is the dead daemon's, the same rule `up` waits on.
-      return { state: state === "bound" && holder !== undefined && processRecord(DELIVERY_PIDFILE, { root: target.root, space: target.space }).kind === "dead" ? "stale" : state, leased };
+      const deadLocal = processRecord(DELIVERY_PIDFILE, { root: target.root, space: target.space }).kind === "dead";
+      const journal = readStackJournal(target.root)?.journal;
+      const member = journal?.space === target.space ? journal.members.find((row) => row.role === "delivery") : undefined;
+      const instance = member?.instanceId && serviceInstances(target.space, STACK_DEFINITION.delivery).find((row) => row.name === member.instanceId);
+      const deadInstance = instance && ["gone", "foreign-pid", "previous-boot"].includes(instanceProjection(instance).observedProcess);
+      return { state: state === "bound" && holder !== undefined && (deadLocal || deadInstance) ? "stale" : state, leased };
     } finally {
       await ep.stop().catch(() => {});
     }
@@ -2113,7 +2119,7 @@ function nextActions(r: StatusResult): Section {
   // own records. One whose last operation a member keeps unsettled is named the way out that
   // `up` and `down` name instead. A stack started with --no-manager leaves its manager out by choice,
   // so a manager record an earlier up left is not a stopped member, and the restart keeps the flag.
-  const memberGone = r.services?.instances?.some((row) => row.definition.startsWith("stack-") && row.observedProcess === "gone" && !(r.folder.noManager && row.definition === STACK_DEFINITION.manager)) === true;
+  const memberGone = r.services?.instances?.some((row) => row.definition.startsWith("stack-") && ["gone", "foreign-pid", "previous-boot"].includes(row.observedProcess) && !(r.folder.noManager && row.definition === STACK_DEFINITION.manager)) === true;
   // A connection to a `--server` address other than the recorded one does not say whether the stack
   // answers; the hint `readSelected` adds names that address. A user-auth space is probed on its own path.
   const dialed = r.selected.resolved ? r.selected : undefined;
@@ -2165,6 +2171,10 @@ function nextActions(r: StatusResult): Section {
     const broker = exited.includes("nats"), manager = exited.includes("manager");
     const notes = [...(broker ? ["up reopens the recorded store"] : []), ...(manager ? ["pass --runtime again if the manager ran on one"] : [])];
     items.unshift({ command: `${cmd} up`, description: `Restart this folder's ${broker && manager ? "broker and manager" : broker ? "broker" : "manager"}, which exited; ${notes.join("; ")}` });
+  } else if (local && r.selected.resolved && r.selected.connection === "unreachable" && (r.folder.processes ?? []).every((row) => row.state === "stopped")) {
+    // A clean down leaves every member stopped with no pidfile. Spawn and ps need the stack, so the
+    // bare `up` that starts it again on its recorded address and store comes first.
+    items.unshift({ command: `${cmd} up`, description: "Start this folder's stopped stack again; pass --runtime again if the manager ran on one" });
   }
   // A stack whose folder was deleted stops only from this machine's records.
   if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });
@@ -2325,18 +2335,15 @@ function componentExit(components: readonly ComponentHealth[]): number {
 }
 
 function processRecord(template: string, context: LocalProcessContext): { kind: "absent" } | { kind: "unreadable"; error: string } | { kind: "dead"; pid: number } | { kind: "unattributable"; raw: string } | { kind: "live"; pid: number } | { kind: "unknown"; pid: number } {
-  let raw: string | undefined;
   try {
-    raw = readPidfile(localProcessPath(template, context));
+    const path = localProcessPath(template, context);
+    const state = pidfileState(path);
+    if (state.pid === undefined) return state.liveness === "dead" ? { kind: "absent" } : { kind: "unattributable", raw: readPidfile(path) ?? "" };
+    return { kind: state.liveness === "alive" ? "live" : state.liveness === "dead" ? "dead" : "unknown", pid: state.pid };
   } catch (e) {
     // An ambiguous record or any failed read refuses this component's row, never the whole pass.
     return { kind: "unreadable", error: (e as Error).message };
   }
-  if (!raw) return { kind: "absent" };
-  const pid = parsePid(raw);
-  if (pid === undefined) return { kind: "unattributable", raw };
-  const liveness = probeLiveness(pid);
-  return liveness === "alive" ? { kind: "live", pid } : liveness === "dead" ? { kind: "dead", pid } : { kind: "unknown", pid };
 }
 
 function pidFacts(record: ReturnType<typeof processRecord>): string[] {
@@ -2519,7 +2526,7 @@ async function managerServiceHealth(
   }
 }
 
-async function managerHealth(target: MeshTarget, context: LocalProcessContext, credential: ComponentCredential): Promise<ComponentHealth> {
+async function managerHealth(target: MeshTarget, context: LocalProcessContext, credential: ComponentCredential, broker: ComponentHealth): Promise<ComponentHealth> {
   const record = processRecord(MANAGER_PIDFILE, context);
   const facts = pidFacts(record);
   // A corrupt or kernel-unreadable LOCAL record is neither evidence that the manager is absent nor
@@ -2607,9 +2614,22 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
     // lease still identifies an extant component; any other failed probe remains a refusal.
     const noService = managerNoService(e);
     facts.push(noService ? "serve no answer" : `serve probe refused: ${(e as Error).message}`);
+    if (broker.verdict === "absent" && processVerdict(record) === "absent") return { name: "manager", verdict: "absent", facts };
     if (!noService) return { name: "manager", verdict: "refused", facts };
     const liveRecord = record.kind === "live";
     const hasLease = facts.some((fact) => fact.startsWith("lease holder "));
+    if (!liveRecord && !hasLease) {
+      try {
+        const journal = readStackJournal(context.root)?.journal;
+        const pin = verifyIdentityPin(localProcessPath(MANAGER_OMITTED, context));
+        const brokerRecord = processRecord(NATS_PIDFILE, context);
+        const omitted = journal?.space === context.space ? stackStartedWithoutManager(journal)
+          : pin.kind === "match" && brokerRecord.kind === "live" && pin.record.pid === brokerRecord.pid;
+        if (omitted) return { name: "manager", verdict: "not-started", facts: [...facts, "started with --no-manager"] };
+      } catch (error) {
+        return { name: "manager", verdict: "refused", facts: [...facts, `startup intent unreadable: ${(error as Error).message}`] };
+      }
+    }
     return { name: "manager", verdict: liveRecord || (record.kind !== "dead" && hasLease) ? "not-serving" : "absent", facts };
   } finally {
     await close?.();
@@ -2703,6 +2723,12 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
   const facts = pidFacts(record);
   const stopped = processVerdict(record);
   if (record.kind === "absent") {
+    try {
+      const unsettled = serviceInstances(context.space, "web").map(instanceProjection).find((row) => row.recordedState !== "stopped" && ["gone", "foreign-pid", "previous-boot"].includes(row.observedProcess));
+      if (unsettled) return { name: "web", verdict: "absent", facts: [`service instance ${unsettled.instanceId}`, `recorded ${unsettled.recordedState}`, unsettled.observedProcess] };
+    } catch (e) {
+      return { name: "web", verdict: "refused", facts: [`service instance records unreadable: ${(e as Error).message}`] };
+    }
     // An installation that cannot be read keeps the absent verdict rather than a clean zero.
     let installed: boolean | undefined;
     try { installed = webInstalled(); } catch { installed = undefined; }
@@ -2752,6 +2778,20 @@ async function brokerHealth(target: MeshTarget): Promise<ComponentHealth> {
   if (address === undefined)
     return { name: "broker", verdict: "refused", facts: ["registered address unavailable", "invalid broker address"] };
   try {
+    const context = { root: target.root, space: target.space };
+    const journal = readStackJournal(target.root)?.journal;
+    if (journal?.space === target.space && journal.server === target.server) {
+      const member = journal.members.find((row) => row.role === "broker");
+      const instance = serviceInstances(target.space, STACK_DEFINITION.broker).find((row) => row.name === member?.instanceId);
+      const observed = instance && instanceProjection(instance).observedProcess;
+      if (!instance || observed && ["gone", "foreign-pid", "previous-boot"].includes(observed))
+        return { name: "broker", verdict: "absent", facts: [`registered ${address}`, observed ?? "no local instance"] };
+      if (observed !== "running") return { name: "broker", verdict: "refused", facts: [`registered ${address}`, `local process ${observed}`] };
+    } else if (target.origin === "up" && target.mode !== "user" && (target.recordedServer === undefined || target.recordedServer === target.server)) {
+      const record = processRecord(NATS_PIDFILE, context);
+      const verdict = processVerdict(record);
+      if (verdict) return { name: "broker", verdict, facts: [`registered ${address}`, ...pidFacts(record), ...(record.kind === "dead" ? ["stale pidfile"] : [])] };
+    }
     const reachable = await isReachable(target.server, target.tlsRequired ? { tls: true } : {});
     return reachable
       ? { name: "broker", verdict: "serving", facts: [`registered ${address}`, "reachable"] }
@@ -2761,35 +2801,35 @@ async function brokerHealth(target: MeshTarget): Promise<ComponentHealth> {
   }
 }
 
-async function printComponentHealth(cwd: string, values: FlagValues<typeof statusFlags>): Promise<void> {
+async function printComponentHealth(selected: Selected): Promise<void> {
   section("Component Health");
-  let target: MeshTarget;
-  try {
-    target = resolveMeshTarget(cwd, { server: values.server, space: values.space });
-  } catch (e) {
+  if (!selected.ok) {
+    const e = selected.error;
     if (isWorkspaceTargetError(e)) {
-      printComponent({ name: "target", verdict: "refused", facts: [e.code, renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "")] });
+      const verdict = e.code === "not-started" ? "absent" : "refused";
+      printComponent({ name: "target", verdict, facts: [e.code, renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "")] });
+      process.exitCode = COMPONENT_EXIT[verdict];
+      return;
+    }
+    if (e instanceof UnregisteredRoot) {
+      printComponent({ name: "target", verdict: "refused", facts: ["unregistered-root", `no space is registered or prepared here for ${e.root}`] });
       process.exitCode = COMPONENT_EXIT.refused;
       return;
     }
     throw e;
   }
-  // The report's own rule: an unregistered project root is given no broker to probe.
-  if (target.source === "local-space") {
-    printComponent({ name: "target", verdict: "refused", facts: ["unregistered-root", `no space is registered or prepared here for ${target.root}`] });
-    process.exitCode = COMPONENT_EXIT.refused;
-    return;
-  }
+  const target = selected.target;
   const context: LocalProcessContext = { root: target.root, space: target.space, userAuth: target.mode === "user" };
   // ONE credential read for the whole pass (user mode resolves the signed-in login once; the
   // static shape is just the target's own auth material), shared by the manager and delivery
   // probes so the two rows cannot disagree about whose credential they probed with.
   const credential = await componentCredential(target);
+  const broker = await brokerHealth(target);
   const components = await Promise.all([
-    managerHealth(target, context, credential),
+    managerHealth(target, context, credential, broker),
     deliveryHealth(target, context, credential),
     webHealth(context),
-    brokerHealth(target),
+    broker,
   ]);
   for (const component of components) printComponent(component);
   process.exitCode = componentExit(components);

@@ -90,7 +90,7 @@ import {
 import { localProcessSurface } from "../ext-loader.js";
 import { c, stderrLine } from "../ui.js";
 import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
-import { parsePid, probeLiveness, readPidfile } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, readPidfile, verifyIdentityPin } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { interruptedStartBroker } from "../lib/legacy-start.js";
 import { downManifest } from "./down-manifest.js";
@@ -1378,6 +1378,10 @@ export function pidfileState(path: string): PidfileState {
   if (raw.startsWith("removing:")) return { liveness: "unknown", note: "extension removal in progress" };
   const pid = parsePid(raw);
   if (!pid) return { liveness: raw ? "unknown" : "dead", note: "bad pidfile" };
+  const pin = verifyIdentityPin(path);
+  if (pin.kind === "mismatch") return { pid, liveness: "dead", note: "foreign pid" };
+  if (pin.kind === "gone" || pin.kind === "no-pid") return { pid, liveness: "dead", note: "stale pidfile" };
+  if (pin.kind !== "match" && pin.kind !== "legacy") return { pid, liveness: "unknown", note: `identity ${pin.kind}` };
   const liveness = probeLiveness(pid);
   if (liveness === "alive") return { pid, liveness };
   return { pid, liveness, note: liveness === "dead" ? "stale pidfile" : "liveness unknown" };

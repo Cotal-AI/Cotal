@@ -23,7 +23,7 @@ function group(pid: number): string {
 const pause = () => new Promise(resolve => setTimeout(resolve, 50));
 
 /** The old parent retains all restart, result, and rollback decisions. */
-export async function adoptAutomaticUpdateChild(): Promise<void> {
+export async function adoptAutomaticUpdateChild(): Promise<boolean | void> {
   if (process.env.COTAL_AUTO_UPDATE !== "1" || process.platform !== "linux") return;
   const parent = process.ppid;
   const self = process.pid;
@@ -63,6 +63,15 @@ export async function adoptAutomaticUpdateChild(): Promise<void> {
   const receipt = readFileSync(unitReceiptFile(paths), "utf8");
   const plan = planUninstall(paths, process.env.COTAL_DAEMON_HOME);
   if (plan.mechanism !== "systemd-user" || !installedDaemonIdentity(paths, process.env.COTAL_DAEMON_HOME).same) throw new Error("automatic update does not own this systemd installation");
+  const token = createHash("sha256").update(`${receipt}\0${parent}\0${births[1]}\0${process.env.COTAL_UPDATE_CLOSURE_NONCE}`).digest("hex");
+  const scope = `cotal-update-${token.slice(0, 32)}.scope`;
+  const description = `Cotal update ${token}`;
+  // A rollback child inherits the authenticated scope even when the target daemon cannot start.
+  if (group(parent).endsWith(`/${scope}`) && property(scope, "Description") === description && property(scope, "Transient") === "yes"
+    && property(scope, "ActiveState") === "active" && group(parent) === property(scope, "ControlGroup") && group(self) === group(parent)) {
+    if (!authenticate()) throw new Error("live child marker changed after scope inheritance");
+    return true;
+  }
   const daemon = await queryDaemon({ paths });
   const lifetime = readLifetimeRecord(paths.lock);
   if (!daemon.ok || !lifetime?.start || daemon.result.pid !== lifetime.pid || processBirth(lifetime.pid) !== lifetime.start || statSync(`/proc/${lifetime.pid}`).uid !== process.getuid!() || [self, parent].includes(lifetime.pid)) throw new Error("daemon lifetime does not authenticate the native MainPID");
@@ -72,9 +81,6 @@ export async function adoptAutomaticUpdateChild(): Promise<void> {
   }
   nativeIdentity();
   if (!serviceGroup || property(plan.unit, "FragmentPath") !== plan.unitPath) throw new Error("loaded native unit does not match its recorded service");
-  const token = createHash("sha256").update(`${receipt}\0${parent}\0${births[1]}\0${process.env.COTAL_UPDATE_CLOSURE_NONCE}`).digest("hex");
-  const scope = `cotal-update-${token.slice(0, 32)}.scope`;
-  const description = `Cotal update ${token}`;
   const parentGroup = group(parent);
   const childGroup = group(self);
   if (parentGroup === serviceGroup && childGroup === serviceGroup) {
@@ -93,7 +99,7 @@ export async function adoptAutomaticUpdateChild(): Promise<void> {
       if (!authenticate()) throw new Error("live child marker changed after scope completion");
       nativeIdentity();
       console.log(`automatic update custody: parent ${parent} and child ${self} in ${scope}`);
-      return;
+      return true;
     }
     if (Date.now() >= deadline) throw new Error("scope job completion and stable updater membership were not established");
     await pause();

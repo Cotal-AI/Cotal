@@ -11,9 +11,9 @@ import { MANAGER_PROCESS } from "./lib/manager-proc.js";
 import { upCommand, upComplete, upFlags, validateUpArguments } from "./commands/up.js";
 import { runtimes, runtimesFlags } from "./commands/runtimes.js";
 import { down, downComplete, validateDownArguments } from "./commands/down.js";
-import { use, useComplete, useFlags } from "./commands/use.js";
+import { use, useComplete, useFlags, validateUseArguments } from "./commands/use.js";
 import { meshes, meshesComplete, meshesFlags } from "./commands/meshes.js";
-import { space, spaceComplete, spaceFlags } from "./commands/space.js";
+import { space, spaceComplete, spaceFlags, validateSpaceArguments } from "./commands/space.js";
 import { setup, setupFlags, validateSetupArguments } from "./commands/setup.js";
 import { setupStartEntry } from "./commands/setup-start.js";
 import { join } from "./commands/join.js";
@@ -21,10 +21,10 @@ import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions, validateSpawnArguments } from "./commands/spawn.js";
 import { appIdentity, appIdentityFlags } from "./commands/app-identity.js";
 import { attach, attachFlags, input, inputFlags, inputArguments, managedAgentComplete, managedTarget, ps, psFlags, stop, stopFlags, validateStopArguments } from "./commands/agents.js";
-import { models, modelsComplete, modelsFlags } from "./commands/models.js";
+import { models, modelsComplete, modelsFlags, validateModelsArguments } from "./commands/models.js";
 import { c } from "./ui.js";
 import { watch, watchComplete, watchFlags, validateWatchArguments } from "./commands/watch.js";
-import { persona, personaComplete, personaFlags } from "./commands/persona.js";
+import { persona, personaComplete, personaFlags, validatePersonaArguments } from "./commands/persona.js";
 import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, completionFlags, complete, validateCompletionArguments } from "./commands/completion.js";
 import { config, configComplete, configFlags, configSubcommands } from "./commands/config.js";
@@ -52,7 +52,7 @@ import { describeCmd, describeComplete, describeFlags, invokeCmd, invokeFlags, v
 import { backup, backupComplete, backupFlags, validateBackupArguments } from "./commands/backup.js";
 import { update, updateFlags, validateUpdateArguments } from "./commands/update.js";
 import { service, serviceComplete, serviceFlags, validateServiceArguments } from "./commands/service-registry.js";
-import { sync, syncFlags } from "./commands/sync.js";
+import { sync, syncFlags, validateSyncArguments } from "./commands/sync.js";
 import { AUTH_PROCESS } from "./lib/auth-proc.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
@@ -379,6 +379,7 @@ const baseCommands: Command[] = [
       { name: "delete", flagNames: ["dry-run", "yes", "json", "plain"], summary: "preview native impact or delete the exact space after confirmation; local records stay", examples: [{ command: "cotal space delete <name> --dry-run", note: "show what deleting a space would remove" }, { command: "cotal space delete <name>", note: "delete it after you type its name" }], usage: "cotal space delete <name> [--dry-run] [-y|--yes] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
     ],
     flags: spaceFlags,
+    validate: validateSpaceArguments,
     outputs: ["json", "plain"],
     examples: [{ command: "cotal space", note: "list the spaces on this machine" }, { command: "cotal space show <name>", note: "show one space in full" }, { command: "cotal space add <name> --server <url> --root <dir>", note: "register a space that runs elsewhere" }],
     reads: true,
@@ -393,6 +394,7 @@ const baseCommands: Command[] = [
     examples: [{ command: "cotal sync", note: "refresh the spaces your sign-in gives you" }, { command: "cotal sync --json", note: "the same, as one JSON document" }],
     usage: "cotal sync [--idp <auth base URL>] [--json|--plain]",
     flags: syncFlags,
+    validate: validateSyncArguments,
     outputs: ["json", "plain"],
     run: sync,
   },
@@ -435,6 +437,7 @@ const baseCommands: Command[] = [
     usage: "cotal use [<space> | --clear] [--json|--plain]",
     positionals: "[<space>]",
     flags: useFlags,
+    validate: validateUseArguments,
     outputs: ["json", "plain"],
     examples: [{ command: "cotal use <space>", note: "select the space commands use" }, { command: "cotal use", note: "show the selected space" }, { command: "cotal use --clear", note: "clear the selection" }],
     run: use,
@@ -610,6 +613,7 @@ const baseCommands: Command[] = [
     summary: "list connector model catalogs and variants from the manager",
     usage: "cotal models [--json|--plain] [-H|--harness <connector>] [--refresh] [--on <manager-instance>]",
     flags: modelsFlags,
+    validate: validateModelsArguments,
     outputs: ["json", "plain"],
     examples: [{ command: "cotal models", note: "list the models each application offers" }, { command: "cotal models -H claude", note: "list one application's models" }, { command: "cotal models --refresh", note: "ask the applications to read their catalogs again" }],
     reads: true,
@@ -718,6 +722,7 @@ const baseCommands: Command[] = [
       { name: "remove", flagNames: ["space", "server", "yes", "json", "plain"], aliases: ["rm"], summary: "remove a named local definition after confirmation", examples: [{ command: "cotal persona remove <name>", note: "remove a persona after you confirm" }], usage: "cotal persona remove <name> [-y|--yes] [--json|--plain]", outputs: ["json", "plain"] },
     ],
     flags: personaFlags,
+    validate: validatePersonaArguments,
     outputs: ["json", "plain"],
     reads: true,
     prepareMeshTarget: false,

@@ -39,6 +39,19 @@ const digest = (directory: string): string => {
   };
   walk(directory); return hash.digest('hex');
 };
+// Local downloads can disappear after add because extensions are installed as copies.
+const missing = ['hello-ext', '@fixture/missing-ext'];
+for (const pkg of [...missing, 'kept-ext']) {
+  const source = join(root, pkg.replace('/', '-'));
+  mkdirSync(source);
+  writeFileSync(join(source, 'package.json'), JSON.stringify({ name: pkg, version: '1.0.0', type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } }));
+  writeFileSync(join(source, 'index.js'), `import { registry } from '@cotal-ai/core'; registry.register({ kind: 'command', name: '${pkg.split('/').pop()}', summary: 'fixture', async run() {} });\n`);
+  const added = run(['ext', 'add', source]);
+  assert.equal(added.status, 0, added.stderr);
+  rmSync(source, { recursive: true });
+}
+for (const pkg of missing) rmSync(join(prefix, 'node_modules', pkg), { recursive: true });
+const keptBefore = digest(join(prefix, 'node_modules/kept-ext'));
 const before = digest(prefix);
 const npm = spawnSync('which', ['npm'], { encoding: 'utf8' }).stdout.trim();
 assert(npm);
@@ -55,8 +68,30 @@ assert.equal(repaired.status, 0, repaired.stderr);
 assert(!readFileSync(join(prefix, 'extensions.json'), 'utf8').includes('undefined'));
 for (const pkg of ['connector-claude-code', 'connector-opencode']) assert(!readdirSync(join(prefix, 'node_modules/@cotal-ai', pkg)).includes('damage.txt'));
 console.log('whole-set successful update repairs every selected package');
+for (const pkg of missing) {
+  assert.match(repaired.stderr, new RegExp(`${pkg} is in the extensions manifest but not installed`));
+  assert(!existsSync(join(prefix, 'node_modules', pkg)), 'update must not resurrect a missing third-party extension');
+  const manifest = JSON.parse(readFileSync(join(prefix, 'extensions.json'), 'utf8')) as { extensions: { pkg: string }[] };
+  assert(manifest.extensions.some(entry => entry.pkg === pkg), 'missing extension remains available for explicit repair or removal');
+  const lock = JSON.parse(readFileSync(join(prefix, 'package-lock.json'), 'utf8')) as { packages: Record<string, { dependencies?: Record<string, string> }> };
+  assert.equal(lock.packages['']?.dependencies?.[pkg], undefined);
+  assert.equal(lock.packages[`node_modules/${pkg}`], undefined);
+}
+assert.equal(digest(join(prefix, 'node_modules/kept-ext')), keptBefore, 'an installed local copy survives even when its source is gone');
+for (let attempt = 0; attempt < 2; attempt++) {
+  const repeated = run(['update', '--self']);
+  assert.equal(repeated.status, 0, repeated.stderr);
+}
+for (const pkg of missing) {
+  const removed = run(['ext', 'remove', pkg]);
+  assert.equal(removed.status, 0, removed.stderr);
+  assert(!readFileSync(join(prefix, 'extensions.json'), 'utf8').includes(`"${pkg}"`));
+}
+const repairSeed = run(['ext', 'seed', '--repair']);
+assert.equal(repairSeed.status, 0, repairSeed.stderr);
+console.log('deleted local extensions do not block update retries, removal or seed repair');
 const packageRecord = JSON.parse(readFileSync(join(prefix, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
 assert.equal(packageRecord.dependencies['@cotal-ai/connector-claude-code'], `file:../seed/store/${generation}/claude`);
-emitSentinel({ passed: 2, failed: 0 });
+emitSentinel({ passed: 3, failed: 0 });
 } finally { rmSync(root, { recursive: true, force: true }); }
 }
