@@ -2552,29 +2552,16 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               return;
             }
             const { signedInMachineAccounts } = await import("@cotal-ai/auth");
-            const current = signedInMachineAccounts(home).find(account => account.idpUrl.includes("[::ffff:"))!;
-            check("same issuer and subject moves custody to signed-in address", custody.spaces[ON]?.owner === current.ownerKey, status.account);
-            await waitAccount(s => s.account?.spaces?.some((row: any) => row.space === ON && row.observed === "connected" && !row.lastRefusal) && s.managers?.some((row: any) => row.space === ON && row.state === "answering"), "migrated alias account admits a launch-ready Manager");
+            const accounts = signedInMachineAccounts(home);
+            const holder = accounts.find(account => account.idpUrl === idpUrl)!;
+            const current = accounts.find(account => account.idpUrl.includes("[::ffff:"))!;
+            check("fixture presents matching issuer and subject at different addresses", holder.issuer === current.issuer && holder.sub === current.sub && holder.ownerKey !== current.ownerKey);
+            check("copied identity is refused and status names the holder", status.account.spaces.some((row: any) => row.space === ON && row.lastRefusal === `The local space connection is held by ${idpUrl}.`), status.account);
+            check("copied identity leaves custody with the holder", custody.spaces[ON]?.owner === holder.ownerKey, custody);
+            check("registry ownership stays with the holder", findMesh(ON)?.catalogOwner === holder.ownerKey);
             check("same account computer is listed once", status.account.accounts.length === 1 && status.account.accounts[0].machineId === status.account.machineId, status.account);
             const human = await plainCommand("status");
-            check("CLI lists same account computer once", human.code === 0 && human.out.split("Account computer:").length === 2, human);
-            const { createAccountReconciler } = await import("../daemon/account-reconcile.js");
-            const guarded = createAccountReconciler(home, { status: () => ({ state: "not-requested" }) } as any, { status: () => ({ state: "stopped" }) } as any);
-            const desired = { v: 1, account: current, spaces: [{ id: ON, slug: ON, name: ON, kind: "team", role: "owner", unavailable: "fixture unavailable" }] } as any;
-            for (const foreign of [{ ...current, ownerKey: "foreign-sub", sub: "other" }, { ...current, ownerKey: "foreign-issuer", issuer: "https://different.example" }]) {
-              await guarded.apply(foreign, desired, 1, { [ON]: 1 });
-              check("different issuer or subject refuses custody", guarded.view().some(row => row.space === ON && row.lastRefusal?.includes(current.idpUrl)) && JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8")).spaces[ON].owner === current.ownerKey);
-            }
-            const cacheFile = join(home, "space-catalogs.json");
-            const cacheBytes = readFileSync(cacheFile, "utf8");
-            try {
-              const cache = JSON.parse(cacheBytes);
-              delete cache.accounts[current.ownerKey].sub;
-              writeFileSync(cacheFile, JSON.stringify(cache));
-              const missing = createAccountReconciler(home, { status: () => ({ state: "not-requested" }) } as any, { status: () => ({ state: "stopped" }) } as any);
-              await missing.apply({ ...current, ownerKey: "missing-sub", sub: undefined } as any, desired, 1, { [ON]: 1 });
-              check("two missing subjects do not prove the same owner", missing.view().some(row => row.space === ON && row.lastRefusal?.includes(current.idpUrl)) && JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8")).spaces[ON].owner === current.ownerKey);
-            } finally { writeFileSync(cacheFile, cacheBytes); }
+            check("CLI lists same account computer once and names the holder", human.code === 0 && human.out.split("Account computer:").length === 2 && human.out.includes(`The local space connection is held by ${idpUrl}.`), human);
             return;
           }
           const onCatalogId = (catalog as { spaces: { id: string; slug: string }[] }).spaces.find(row => row.slug === ON)!.id;

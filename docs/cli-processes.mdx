@@ -718,12 +718,8 @@ the daemon's machine status service needs the space owner's approval. Until then
 nothing and the daemon asks again every 30 seconds.
 A host without the route reports account computers unsupported and keeps per-space behavior.
 Authentication refusal asks you to sign in again. Network failures retain existing connections.
-When a space's retained holding account and a signed-in account both have nonempty, matching
-issuer and subject values, the daemon moves local custody and matching catalog registration
-ownership to that sign-in address without another confirmation. The
-issuer and subject identify the owner, not the address used to sign in. A different issuer or
-subject does not receive custody. Status names the holding account's sign-in address when the
-retained identity is known.
+When another account holds a local space connection, the daemon refuses to transfer it.
+Status names the holding account's sign-in address when the retained identity is known.
 
 On hosts that support account computers, setup with `--space` and local connect write the
 computer's account intent with a fresh revision. A conflicting revision is read again and retried

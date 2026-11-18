@@ -3,4 +3,4 @@
 "@cotal-ai/auth": patch
 ---
 
-Keep local space custody with the same issuer and subject after a sign-in address changes, and list each account computer once.
+List each account computer once and show which sign-in address holds a local space connection when another account is refused.
