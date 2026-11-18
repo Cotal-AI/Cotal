@@ -1,6 +1,6 @@
 /** A live stack must report a missing or replaced store before a restart loses its history. */
 import { spawnSync } from "node:child_process";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -74,6 +74,31 @@ try {
   suite.check("adopted restart retains the original post", movedHistory.status === 0 && movedHistory.text.includes("retained-before-replacement"), movedHistory.text);
   const movedStatus = run("status", "--space", space, "--json");
   suite.check("adopted restart has clean status", movedStatus.status === 0 && !warning(movedStatus, "STORE_REPLACED"), movedStatus.text);
+
+  if (!custom) {
+    const beforeCopyDown = run("down", "--yes", "--json");
+    if (beforeCopyDown.status !== 0) throw new Error(`pre-copy stop failed: ${beforeCopyDown.text}`);
+    started = false;
+    const forgot = run("space", "forget", space, "--json");
+    if (forgot.status !== 0) throw new Error(`pre-copy forget failed: ${forgot.text}`);
+    const copied = join(sandbox, "copied-project");
+    cpSync(root, copied, { recursive: true });
+    rmSync(root, { recursive: true, force: true });
+    root = copied;
+    journalPath = join(root, ".cotal", "stack-controller.json");
+    anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: xdg });
+    const copyAdopted = run("space", "create", space, "--adopt", "--json");
+    if (copyAdopted.status !== 0) throw new Error(`copied-folder adoption failed: ${copyAdopted.text}`);
+    const copyPlain = run("status", "--plain");
+    suite.check("adopted copy has clean folder status before starting", copyPlain.status === 0 && !/recorded store.*replaced/.test(copyPlain.text), copyPlain.text);
+    const copySelected = run("status", "--space", space, "--json");
+    suite.check("adopted copy has clean selected status before starting", copySelected.status === 0 && !warning(copySelected, "STORE_REPLACED"), copySelected.text);
+    const copyUp = run("up", ...(managed ? [] : ["--no-manager"]), "--json");
+    started = true;
+    if (copyUp.status !== 0) throw new Error(`copied-folder restart failed: ${copyUp.text}`);
+    const copyHistory = run("history", "general", "--space", space, "--json");
+    suite.check("adopted copy restart retains the original post", copyHistory.status === 0 && copyHistory.text.includes("retained-before-replacement"), copyHistory.text);
+  }
 
   const store = journal().broker.storeDir;
   const before = lstatSync(store, { bigint: true });

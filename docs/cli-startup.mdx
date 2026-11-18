@@ -747,10 +747,12 @@ stores. Pass `--store-dir <dir>` to reopen it, or remove it with
 `--store-dir` that does not exist is taken for a mistyped path, and the start refuses `CONFLICT`
 (exit 2) and names both. Create the directory first to start a new empty store there.
 
-When the broker or manager of a static-auth stack that `up` started in a folder exits, its pidfile
-stays. `cotal status` in that folder shows the row as `stale pidfile` and puts `cotal up` first under
-Next, which starts it again on the recorded address and store. `up` does not record `--runtime`, so
-pass it again when the manager ran on one.
+When the broker or manager of a static-auth stack that `up` started in a folder exits and leaves its
+pidfile, `cotal status` in that folder shows the row as `stale pidfile` and puts `cotal up` first under
+Next, which starts it again on the recorded address and store. A manager stopped by SIGTERM removes
+its pidfile. When its retained manager records belong to this broker start, status shows `stopped`
+and offers the same restart. A stack started with `--no-manager` still shows `not started`.
+`up` does not record `--runtime`, so pass it again when the manager ran on one.
 While such a stopped folder's broker store remains, Next also names the step for a stale store:
 `cotal reset store <space>` when that reset reaches this folder's store, and `cotal clean store --force`
 when no registration lets a reset reach it, as after `down` in a legacy root started under another name.
