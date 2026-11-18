@@ -94,7 +94,9 @@ function check(name: string, cond: boolean, extra?: unknown): void {
 // windows-setup-proof.yml runs on pull requests or dispatch only.
 // control-exchange-windows.yml also runs on a push to main that touches the exchange core, and
 // declares a concurrency group, so it adds one to each of the three counts.
-const EXPECTED_WORKFLOWS = 19;
+// mac-app-deleted-daemon.yml starts on a dispatch or a push to its own measurement branches, so
+// only the total moves.
+const EXPECTED_WORKFLOWS = 20;
 const EXPECTED_PUSH_TO_MAIN = 9;
 /** Of those, the ones that declare a concurrency group and therefore CAN evict. Every push-to-main
  *  workflow but `windows-identity.yml` and `remotion.yml` carries one: `docs.yml` and `mutation-reproof.yml` were groupless until 2026-09-10,
