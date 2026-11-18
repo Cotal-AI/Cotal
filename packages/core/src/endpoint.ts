@@ -644,8 +644,9 @@ interface PrincipalServeIntent {
   readonly self: EpPrincipal;
   /** Its key in {@link principalServers}. */
   readonly serverKey: string;
-  /** The binding on the connection it was made on, and every binding made, so `stop` awaits the
-   *  handlers each one still runs. */
+  /** The binding on the connection it was made on, and every binding not yet retired: the current
+   *  one and those on replaced connections whose handlers are still finishing, so `stop` awaits
+   *  them. */
   binding?: { nc: NatsConnection; handle: EpPrincipalServeHandle };
   readonly handles: EpPrincipalServeHandle[];
   /** The connection on which the broker last accepted the subscription. */
@@ -6850,6 +6851,12 @@ export class CotalEndpoint extends EventEmitter {
    *  connection shows the presence field. */
   private async armPrincipalServe(intent: PrincipalServeIntent, nc: NatsConnection, handle: EpPrincipalServeHandle): Promise<void> {
     intent.binding = { nc, handle };
+    // Every earlier binding is on a replaced connection: retire it once its handlers finish.
+    for (const old of intent.handles)
+      void old.stop().finally(() => {
+        const i = intent.handles.indexOf(old);
+        if (i >= 0) intent.handles.splice(i, 1);
+      });
     intent.handles.push(handle);
     intent.readyOn = undefined;
     void handle.refused.then((err) => {

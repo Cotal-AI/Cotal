@@ -15,3 +15,5 @@ A principal-route reply the broker refuses to publish is now reported on the end
 A principal-route call whose reply read the broker refused now throws `permission-denied` even when the flush it waits on never settles. It used to throw `deadline-exceeded` in that case.
 
 A principal-route request with `replyExpected: false` is now refused before its handler runs. Every command on that route is request/reply, and such a request used to run the handler and send nothing.
+
+A principal serve no longer keeps a subscription handle for every connection it was ever bound on. It retires the handle of a replaced connection once that handle's handlers finish.

@@ -23,7 +23,7 @@
  * one runtime, and a second server for one lifecycle in a process; cell 33, stop waits for a handler
  * in flight only until its request's deadline; cell 34, a JetStream API answer on the caller's
  * sentinel; cell 35, a refused reply publish is reported; cell 36, a refused reply read whose flush
- * never settles; a reconnect that rebinds, a
+ * never settles; a reconnect that rebinds, with cell 38, the handles a replaced connection leaves; a
  * reconnect whose new credential lacks the rows, and the mixed-version cases that need no 0.165
  * release: an agent that serves nothing, a caller or an agent whose credential predates the rows,
  * and a caller pinned to a later revision.
@@ -975,6 +975,16 @@ try {
       if (r.ok && r.value.ok) after = r.value; else await wait(100);
     }
     check("a rebuilt connection subscribes again: the agent answers on the same runtime id", after?.ok === true && (after.data as { runtime: { id: string } }).runtime.id === oldRuntime, after);
+    // The serve keeps a handle per connection only until that connection is replaced.
+    const handles = () => (coderEp as unknown as { principalServes: Map<string, { handles: unknown[] }> }).principalServes.get(AGENT_ENDPOINT)?.handles.length;
+    await coderEp.reconnect();
+    for (let i = 0, done = false; i < 50 && !done; i++) {
+      const r = await settle(call(webEp, coderAt, "prompts", "owner", {}, 1500));
+      done = r.ok && r.value.ok;
+      if (!done) await wait(100);
+    }
+    await until(() => handles() === 1, 3000);
+    check("cell 38: after two rebuilt connections the serve holds one handle, the current connection's", handles() === 1, { handles: handles() });
     await until(() => webEp.getRoster().find((p) => p.card.id === `${A}.coder`)?.prompts !== undefined, 8000);
     webEp.off("presence", onPresence);
     check("on the new connection presence carried no prompts field until the broker accepted the new subscription, then the field again",
