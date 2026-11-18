@@ -275,7 +275,7 @@ while (n < 50) {
   }
   ok("a pinned effect ceiling is what stops the run", caught instanceof Error && caught.message.includes("L4009"), String(caught));
   ok("and the message quotes the PINNED ceiling, not the default",
-    caught instanceof Error && caught.message.includes("more than 5 effects"));
+    caught instanceof Error && caught.message.includes("ceiling of 5 effects"));
 }
 
 // ---- 9) A RESUME MAY NOT DECLINE TO SAY WHICH RUN IT IS RESUMING ------------------------------

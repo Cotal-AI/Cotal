@@ -88,6 +88,20 @@ window, after it opens the channel under the run's read admission. A `waitUntil`
 while its `deadline` allows. None of them creates a past-due checkpoint. An existing pause keeps its
 recorded deadline and settlement, and cancellation still rejects the step.
 
+A `waitUntil` has a one-second cadence floor. Its key pays for the first observation, and each
+later recorded observation spends one more effect from the run's ceiling, 10,000 by default.
+A deadline check or handler failure that records no observation spends no extra look. Previously
+spent effects and effects performed by the probe share that ceiling. The remaining ceiling times
+`every` therefore bounds how long polling can continue, even with a later deadline: every 5 s for
+24 h needs 17,280 observations, over the default 10,000 before any probe effects are counted.
+No CLI or hosted start surface raises this ceiling today. Only an embedder can set `effectCeiling`
+in the run's pins. Each observation rewrites the entry with its history, so total journal writes
+grow quadratically with the observation count. Keep `every` as slow as the wait allows.
+
+A run already in flight with a sub-second cadence raises L3047 when it reaches that call on resume.
+L3047 is catchable, so a program that catches it takes its catch branch on resume instead of
+continuing the old cadence. A literal cadence is also rejected before execution by validation.
+
 A step that writes to a far side that honors no idempotency key (posting a comment, sending a mail)
 belongs in `once`. A resume that finds a step inside `once` begun and never settled does not
 dispatch it again: it opens a hold, a checkpoint under a token derived from the step's recorded

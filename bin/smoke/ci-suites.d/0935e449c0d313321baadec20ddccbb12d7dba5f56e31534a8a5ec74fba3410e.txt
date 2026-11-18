@@ -1,0 +1,3 @@
+# A waitUntil cadence under 1s is refused L3047, and every observation counts toward the effect
+# ceiling on a fresh run and on a resume.
+smoke:runtime-wait-until-bounds
