@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, copyFileSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
@@ -88,7 +89,7 @@ test('durable events preserve immutable heads without privileged PR execution or
   assert.equal(workflow.jobs['release-cells'].strategy['fail-fast'], false);
 });
 function fixture(change = () => {}, { scenario = 'configured', channel = 'npm', sourceVersion = '0.164.6', targetVersion = '0.164.7', phase = 'candidate', corrupt = false } = {}) {
-  const root = mkdtempSync('/var/tmp/upgrade-matrix/census-guard-');
+  const root = mkdtempSync(join(tmpdir(), 'census-guard-'));
   const base = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: targetVersion, profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion });
   base.phase = phase;
   for (const cell of base.cells) cell.phase = phase;
