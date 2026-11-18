@@ -200,6 +200,9 @@ Using a display label as a target refuses and names the bare name to use.
 A managed lifecycle UID distinguishes an incarnation from a later reuse of its name or principal.
 The manager's internal session recovery component checks connector state and control-socket proof,
 retains fork provenance, and records exact-session continuity across process restarts.
+An internal managed-static lifecycle component owns chat-session expiry and retirement flights,
+credential renewal orchestration, and static reconciliation retries and shutdown drains.
+The separate static lifecycle adapter keeps durable slot reads and terminal saga operations.
 Despawn retires that lifecycle before releasing its name. A supervised restart can preserve the same
 lifecycle, credentials, and durable inbox. A host conversation's `contextId` is a separate correlation
 value, so a new host context does not by itself define a new wire identity.

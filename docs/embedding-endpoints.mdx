@@ -165,20 +165,25 @@ The complete reply, responder-state, grant, reply-target validation, and rebindi
 `servePrincipal({ endpoint, cluster, handlers })` serves a core-defined command set about this
 process on the principal route. Revision 1 defines one endpoint, `agent`, whose cluster and compiled
 contracts are `AGENT_CLUSTER` and `AGENT_CONTRACTS`. It throws on an open mesh, under a static
-credential, without a lifecycle UID, and for a cluster command that declares no `authorities`.
+credential, without a lifecycle UID, for a cluster command that declares no `authorities`, and when
+another endpoint in the process already serves that endpoint for the lifecycle.
 The returned `ready` resolves only after the broker accepted the subscription. It rejects when the
 credential holds no serve row, which a credential minted before this release does not. The serve
 subscribes again after every reconnect, and a refusal there resolves `failed` and is reported on
-`warning`. `stop()` unsubscribes and waits for the handlers in flight.
+`warning`. `stop()` unsubscribes and waits for the handlers in flight, and the endpoint's own
+`stop()` does the same for every serve before it closes the connection.
 
 `setPromptsPresence({ open, seq })` sets the presence field above and writes presence at once. It
-throws while the `agent` endpoint is not served.
+throws while the `agent` endpoint is not served, and for a `seq` below one this process already used
+under its runtime id. `nextPromptsSeq()` hands out the next `seq` for that runtime id: the process
+keeps the highest it used across serves and endpoints of the lifecycle, so `seq` never goes back.
 
 `callPrincipal({ endpoint, principal, command, authority, args, deadlineMs })` calls one command as
 this endpoint's caller. `principal` is the addressed process: owner, actor, lifecycle UID and the
 `runtime.id` its presence publishes. `authority` is `owner` or `grant`, the word this credential's
 row covers. The `agent` contracts and `describe` are built in; another endpoint needs `contract`.
-The agent's own refusal comes back as a reply with `ok: false`. The call throws `unavailable` when
+The agent's own refusal comes back as a reply with `ok: false`. A message from another head and a
+stored message on the reply read are not the reply, and the call keeps waiting. It throws `unavailable` when
 no process serves that address, `permission-denied` when this credential holds no row, and
 `deadline-exceeded` when no reply came. The subjects, rows and refusals are in
 [SPEC §13.21](../SPEC.md#1321-principal-route), and the commands in

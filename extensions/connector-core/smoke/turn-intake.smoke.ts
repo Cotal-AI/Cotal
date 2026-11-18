@@ -755,7 +755,7 @@ const sentinelCreds = process.env.PROBE_SENTINEL_CREDS!;
 
 const pDir = mkdtempSync(join(tmpdir(), "mgr-del-"));
 process.env.COTAL_HOME = join(pDir, "home");
-mkdirSync(process.env.COTAL_HOME, { recursive: true });
+mkdirSync(process.env.COTAL_HOME, { recursive: true, mode: 0o700 });
 const ws = join(pDir, "ws");
 mkdirSync(join(ws, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(ws, ".cotal", "agents", delegatedActor + ".md"), ["---", "name: " + delegatedActor, "role: worker", "---", ""].join(String.fromCharCode(10)));
@@ -814,7 +814,7 @@ CotalEndpoint.prototype.stop = async function () {};
 const stubPostLeaseBoot = (m: unknown) => {
   const internal = m as Record<string, unknown>;
   internal.registerManagerService = async () => {
-    internal.staticReconcileStopping = true;
+    (internal.staticLifecycle as { staticReconcileStopping: boolean }).staticReconcileStopping = true;
   };
 };
 
@@ -872,7 +872,7 @@ const mgr = new Manager({
 
 stubPostLeaseBoot(mgr);
 await mgr.start();
-(mgr as unknown as { staticReconcileStopping: boolean }).staticReconcileStopping = false;
+(mgr as unknown as { staticLifecycle: { staticReconcileStopping: boolean } }).staticLifecycle.staticReconcileStopping = false;
 if ((mgr as unknown as { credRenewTimer?: ReturnType<typeof setInterval> }).credRenewTimer) {
   clearInterval((mgr as unknown as { credRenewTimer?: ReturnType<typeof setInterval> }).credRenewTimer);
 }
@@ -950,7 +950,7 @@ const localMgr = new Manager({
 });
 stubPostLeaseBoot(localMgr);
 await localMgr.start();
-(localMgr as unknown as { staticReconcileStopping: boolean }).staticReconcileStopping = false;
+(localMgr as unknown as { staticLifecycle: { staticReconcileStopping: boolean } }).staticLifecycle.staticReconcileStopping = false;
 if ((localMgr as unknown as { leaseTimer?: ReturnType<typeof setInterval> }).leaseTimer) {
   clearInterval((localMgr as unknown as { leaseTimer?: ReturnType<typeof setInterval> }).leaseTimer);
 }
@@ -1255,7 +1255,7 @@ const spawnArgs = JSON.parse(process.env.PROBE_DELEGATED_ARGS!) as string[];
 
 const cDir = mkdtempSync(join(tmpdir(), "cli-handoff-"));
 process.env.COTAL_HOME = join(cDir, "home");
-mkdirSync(process.env.COTAL_HOME, { recursive: true });
+mkdirSync(process.env.COTAL_HOME, { recursive: true, mode: 0o700 });
 const cWs = join(cDir, "ws");
 mkdirSync(join(cWs, ".cotal", "agents"), { recursive: true });
 const bearerOk = join(cDir, "bearer-ok.mjs");

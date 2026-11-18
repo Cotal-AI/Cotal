@@ -9,8 +9,10 @@ audience: integrators
 
 The auth service implements manager authority, manager instance listing and lifecycle HTTP
 handlers in [`service-manager-routes.ts`](../implementations/auth/src/service-manager-routes.ts).
-The listener policy and authority context stay in `service.ts`. Existing host-facing exports
-remain available from `@cotal-ai/auth`.
+The exchange handler, per-face refusal budgets and authenticated selection windows live in
+[`service-exchange-routes.ts`](../implementations/auth/src/service-exchange-routes.ts). Listener
+composition and the authority context stay in `service.ts`, which re-exports `ExchangePolicy`.
+Existing host-facing exports remain available from `@cotal-ai/auth`.
 
 A trusted composition can pass `{ interactiveManagerSelection: "local-primary" }` as the third
 argument of `runAuthService(args, store, options)`. `AuthServiceRuntimeOptions` is exported by

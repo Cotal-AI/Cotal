@@ -474,7 +474,7 @@ test('candidate evidence binds captured artifacts, public command receipts and d
     if (followOnAction === 'self') {
       follow.calls.push({label: 'candidate follow-on self update under test', argv: source.argv, ...okCall, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt});
     } else if (followOnAction === 'npm') {
-      const bareVersion = {exit: 0, signal: null, timeout: false, stdout: 'cotal-ai 1.2.3\n  Reconciliation pending: Run `cotal update --self` to reconcile this installation.\n', stderr: ''};
+      const bareVersion = {exit: 0, signal: null, timeout: false, stdout: 'cotal-ai 1.2.3\n  Reconciliation pending: Run `cotal update` to reconcile this home\'s extensions.\n', stderr: ''};
       const reconciledVersion = {exit: 0, signal: null, timeout: false, stdout: 'cotal-ai 1.2.3\n', stderr: ''};
       const bareRuntimes = {exit: 0, signal: null, timeout: false, stdout: JSON.stringify({result: {items: [{name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: null, error: `@cotal-ai/tmux is ${follow.candidateNext.targetVersion} and this cotal is 1.2.3 - run \`cotal update --self\` to reconcile this installation`}]}}), stderr: ''};
       const reconciledRuntimes = {exit: 0, signal: null, timeout: false, stdout: JSON.stringify({result: {items: [{name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: true, error: null}]}}), stderr: ''};

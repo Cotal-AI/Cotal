@@ -629,10 +629,21 @@ type MembershipFeedWatch = {
   rejectStop?: (err: unknown) => void;
 };
 
+/** The highest `prompts` presence `seq` this process used under each runtime id (SPEC §6). A reader
+ *  orders lists by `seq` within one `runtime.id`, and a runtime id lives as long as the process, so
+ *  this does too: across a stopped serve, a stopped endpoint and a new endpoint for the lifecycle. */
+const promptsSeqs = new Map<string, number>();
+
+/** The principal endpoint each `{space, runtime id, endpoint}` is served by in this process. Two
+ *  would subscribe the same subject and both answer one request (SPEC 13.21). */
+const principalServers = new Map<string, PrincipalServeIntent>();
+
 /** What {@link CotalEndpoint.servePrincipal} keeps to re-bind on every replaced connection. */
 interface PrincipalServeIntent {
   readonly serve: { endpoint: string; cluster: ClusterDocument; handlers: EpPrincipalCommandDef[] };
   readonly self: EpPrincipal;
+  /** Its key in {@link principalServers}. */
+  readonly serverKey: string;
   /** The binding on the connection it was made on, and every binding made, so `stop` awaits the
    *  handlers each one still runs. */
   binding?: { nc: NatsConnection; handle: EpPrincipalServeHandle };
@@ -953,6 +964,8 @@ export class CotalEndpoint extends EventEmitter {
    *  now instead of awaiting the full retryMs. */
   private backoffResolve?: () => void;
   private backoffTimer?: ReturnType<typeof setTimeout>;
+  /** Wakes for the membership retry loops' pauses (see {@link membershipPause}); stop() runs them all. */
+  private readonly membershipPauses = new Set<() => void>();
   private readonly retryMs = 3000;
   /** Consecutive failed rebuilds, driving {@link nextRetryDelayMs}. Reset on every success. */
   private retryAttempt = 0;
@@ -2395,6 +2408,21 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** Capped exponential pause between membership retries. stop() ends it early, so a loop waiting
+   *  on an absent delivery daemon never holds a stopped endpoint's process open for the delay. */
+  private membershipPause(attempt: number): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const wake = (): void => {
+        clearTimeout(timer);
+        this.membershipPauses.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, Math.min(30_000, 1000 * 2 ** attempt));
+      this.membershipPauses.add(wake);
+    });
+  }
+
   /** Manual reconnect: tear down the current connection and rebuild, WITHOUT the permanent
    *  stop (stopped/stopping stay false). Serialized with the self-heal supervisor via
    *  {@link rebuild}, and interruptible — if a backoff is in flight, kick it so the attempt
@@ -2427,10 +2455,14 @@ export class CotalEndpoint extends EventEmitter {
     }
     this.activeGoalFollowers.clear();
     this.presenceEpoch++;
+    // Every principal serve ends now, so a `ready` still waiting for the broker rejects and no new
+    // request is taken. Its handlers in flight finish below, before the connection they reply on closes.
+    const principalStops = [...this.principalServes.values()].map((intent) => this.stopPrincipalServe(intent, false));
     this.presence.cancelRebind();
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
     // sleeping out retryMs; also clears the timer so it can't fire later.
     this.kickBackoff();
+    for (const wake of [...this.membershipPauses]) wake();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     this.cancelBearerRenewal?.();
@@ -2465,6 +2497,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.channelWatchIter) this.retireKvWatch(this.channelWatchIter);
     this.channelWatchIter = undefined;
     this.stopDeliveryLeaseWatch();
+    await Promise.all(principalStops);
     try {
       if (this.doRegister) {
         await this.presence.publishOffline();
@@ -6788,16 +6821,20 @@ export class CotalEndpoint extends EventEmitter {
     if (this.principalServes.has(serve.endpoint))
       throw new Error(`this endpoint already serves "${serve.endpoint}" on the principal route`);
     const self: EpPrincipal = { owner: this.owner, actor: this.actor, uid, runtimeId: assertRuntimeToken(processRuntime(uid).id) };
+    const serverKey = `${this.space}\n${self.runtimeId}\n${serve.endpoint}`;
+    if (principalServers.has(serverKey))
+      throw new Error(`another endpoint in this process already serves "${serve.endpoint}" for lifecycle ${uid}: both would subscribe the same principal-route subject and answer one request twice (SPEC 13.21); stop that one first`);
     let resolveReady!: () => void, rejectReady!: (e: Error) => void, resolveFailed!: (e: Error) => void;
     const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
     ready.catch(() => { /* the caller observes it; this keeps an unobserved refusal from being unhandled */ });
     const failed = new Promise<Error>((resolve) => { resolveFailed = resolve; });
     const intent: PrincipalServeIntent = {
-      serve, self, handles: [], ended: false, readySettled: false, resolveReady, rejectReady, resolveFailed,
+      serve, self, serverKey, handles: [], ended: false, readySettled: false, resolveReady, rejectReady, resolveFailed,
     };
     // Construction refuses an invalid cluster before anything is kept or subscribed.
     const handle = this.bindPrincipalHandle(intent, nc);
     this.principalServes.set(serve.endpoint, intent);
+    principalServers.set(serverKey, intent);
     void this.armPrincipalServe(intent, nc, handle);
     return { ready, failed, stop: () => this.stopPrincipalServe(intent) };
   }
@@ -6872,9 +6909,7 @@ export class CotalEndpoint extends EventEmitter {
   /** End a serve the broker refused: no more serving, `failed` resolves, the presence field goes. */
   private endPrincipalServe(intent: PrincipalServeIntent, err: Error): void {
     if (intent.ended) return;
-    intent.ended = true;
-    intent.readyOn = undefined;
-    if (this.principalServes.get(intent.serve.endpoint) === intent) this.principalServes.delete(intent.serve.endpoint);
+    this.forgetPrincipalServe(intent);
     const wasReady = intent.readySettled;
     if (!intent.readySettled) {
       intent.readySettled = true;
@@ -6890,18 +6925,27 @@ export class CotalEndpoint extends EventEmitter {
     if (wasReady) this.emitRecoverable(new Error(`stopped serving "${intent.serve.endpoint}" on the principal route: ${err.message}`, { cause: err }));
   }
 
-  private async stopPrincipalServe(intent: PrincipalServeIntent): Promise<void> {
+  /** Mark `intent` ended and release what it holds in this endpoint and in this process. */
+  private forgetPrincipalServe(intent: PrincipalServeIntent): void {
+    intent.ended = true;
+    intent.readyOn = undefined;
+    if (this.principalServes.get(intent.serve.endpoint) === intent) this.principalServes.delete(intent.serve.endpoint);
+    if (principalServers.get(intent.serverKey) === intent) principalServers.delete(intent.serverKey);
+  }
+
+  /** Stop serving `intent` and wait for its handlers in flight. The ending is synchronous, so a
+   *  `ready` still waiting for the broker rejects before the caller's next step. `republish` writes
+   *  presence without the `prompts` field; the endpoint's own stop writes it offline instead. */
+  private async stopPrincipalServe(intent: PrincipalServeIntent, republish = true): Promise<void> {
     if (!intent.ended) {
-      intent.ended = true;
-      intent.readyOn = undefined;
-      if (this.principalServes.get(intent.serve.endpoint) === intent) this.principalServes.delete(intent.serve.endpoint);
+      this.forgetPrincipalServe(intent);
       if (!intent.readySettled) {
         intent.readySettled = true;
         intent.rejectReady(new Error(`stopped serving "${intent.serve.endpoint}" before the broker confirmed the subscription`));
       }
       if (intent.serve.endpoint === AGENT_ENDPOINT) {
         this.promptsPresence = undefined;
-        this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+        if (republish) this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
       }
     }
     await Promise.all(intent.handles.map((handle) => handle.stop()));
@@ -6911,23 +6955,42 @@ export class CotalEndpoint extends EventEmitter {
    * Set this process's `prompts` presence field and write presence at once (SPEC §6): how many
    * prompts it holds `open` or `sent`, and a counter that goes up by one each time a prompt opens or
    * changes state. The field shows only while the `agent` endpoint is served and the broker accepted
-   * its subscription on the current connection, and it shows `{ open: 0, seq: 0 }` until this is
-   * called. Throws when the `agent` endpoint is not served.
+   * its subscription on the current connection. Until this is called it shows `open: 0` with the
+   * highest `seq` this process used under its runtime id, or 0. Throws when the `agent` endpoint is
+   * not served, and a RangeError for a `seq` below one this runtime already used.
    */
   async setPromptsPresence(prompts: PresencePrompts): Promise<void> {
     for (const k of ["open", "seq"] as const)
       if (!Number.isSafeInteger(prompts?.[k]) || prompts[k] < 0) throw new TypeError(`prompts.${k} must be a non-negative safe integer`);
-    if (!this.principalServes.has(AGENT_ENDPOINT))
+    const intent = this.principalServes.get(AGENT_ENDPOINT);
+    if (!intent)
       throw new Error(`the prompts presence field belongs to a served "${AGENT_ENDPOINT}" endpoint: call servePrincipal first (SPEC §6)`);
+    const used = promptsSeqs.get(intent.self.runtimeId) ?? 0;
+    if (prompts.seq < used)
+      throw new RangeError(`prompts.seq ${prompts.seq} is below ${used}, which this process already used under runtime ${intent.self.runtimeId}: seq never goes back under one runtime id (SPEC §6)`);
+    promptsSeqs.set(intent.self.runtimeId, prompts.seq);
     this.promptsPresence = { open: prompts.open, seq: prompts.seq };
     await this.publishPresence();
+  }
+
+  /**
+   * Take the next `prompts` `seq` for this process's runtime (SPEC §6): 0 the first time, then one
+   * above every `seq` this process used under its runtime id, whichever endpoint object used it. A
+   * prompt desk takes every `seq` it shows from here. Throws without a lifecycle UID.
+   */
+  nextPromptsSeq(): number {
+    const runtimeId = processRuntime(this.requireLifecycleUid("nextPromptsSeq")).id;
+    const used = promptsSeqs.get(runtimeId);
+    const next = used === undefined ? 0 : used + 1;
+    promptsSeqs.set(runtimeId, next);
+    return next;
   }
 
   /** The `prompts` field this process's presence carries now, or none. */
   private servedPrompts(): PresencePrompts | undefined {
     const intent = this.principalServes.get(AGENT_ENDPOINT);
     if (!intent || intent.ended || !this.nc || intent.readyOn !== this.nc) return undefined;
-    return this.promptsPresence ?? { open: 0, seq: 0 };
+    return this.promptsPresence ?? { open: 0, seq: promptsSeqs.get(intent.self.runtimeId) ?? 0 };
   }
 
   /**
@@ -7544,7 +7607,7 @@ export class CotalEndpoint extends EventEmitter {
       } catch (e) {
         if (attempt === 0)
           this.emitRecoverable(new Error(`channel "${channel}": Plane-3 durable membership (generation ${generation}) not yet tombstoned after a refused live sub - retrying; §7 boundary may be open until it succeeds (${(e as Error).message})`));
-        await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * 2 ** attempt)));
+        await this.membershipPause(attempt);
       }
     }
   }
@@ -7703,7 +7766,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.pendingBootJoins.has(channel)) return; // already reconciling
     this.pendingBootJoins.add(channel);
     for (let attempt = 0; ; attempt++) {
-      await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * 2 ** attempt)));
+      await this.membershipPause(attempt);
       if (this.stopped || !this.channels.includes(channel) || this.plane3Channels.has(channel)) {
         this.pendingBootJoins.delete(channel);
         return; // stopped, left, or another path established it

@@ -74,20 +74,20 @@ test('the fixed output upload has no wildcard and refuses missing output', () =>
   const acquisition = workflow.jobs['validator-lock-acquisition'];
   assert.ok(acquisition);
   assert.deepEqual(acquisition.permissions, { contents: 'read' });
-  const uploads = acquisition.steps.filter(step => step.uses === 'actions/upload-artifact@v4');
+  const uploads = acquisition.steps.filter(step => step.uses === 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
   assert.equal(uploads.length, 1);
   const prefix = '${{ runner.temp }}/validator-lock-${{ github.run_id }}-${{ github.run_attempt }}';
   assert.deepEqual(uploads[0].with.path.trim().split('\n'),
     ['core-package.json', 'pnpm-lock.yaml', 'source.diff', 'receipt.json'].map(file => `${prefix}/${file}`));
   assert.equal(uploads[0].with['if-no-files-found'], 'error');
-  const checkout = acquisition.steps.filter(step => step.uses === 'actions/checkout@v6');
+  const checkout = acquisition.steps.filter(step => step.uses === 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803');
   assert.equal(checkout.length, 1);
   assert.equal(checkout[0].with['persist-credentials'], false);
-  const pnpm = acquisition.steps.filter(step => step.uses === 'pnpm/action-setup@v6.0.8');
+  const pnpm = acquisition.steps.filter(step => step.uses === 'pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093');
   assert.equal(pnpm.length, 1);
   assert.equal(pnpm[0].with.run_install, false);
   assert.equal(pnpm[0].with.version, '11.28.2');
-  const node = acquisition.steps.filter(step => step.uses === 'actions/setup-node@v6');
+  const node = acquisition.steps.filter(step => step.uses === 'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38');
   assert.equal(node.length, 1);
   assert.equal(node[0].with['node-version'], 22);
   const runs = acquisition.steps.filter(step => Object.hasOwn(step, 'run'));
@@ -317,18 +317,22 @@ test('shipped preflight refuses missing symlink directory and uncertain workspac
 test('the real acquisition entry calls preflight before any pnpm or git child', t => {
   const f = preflightFixture(t);
   const event = join(f.base, 'event.json');
+  // The entry prepares its private resolve workspace before checking external config.
+  const runnerTemp = join(f.base, 'runner-temp');
+  fs.mkdirSync(runnerTemp, { mode: 0o700 });
   fs.writeFileSync(event, JSON.stringify({ inputs: { acquisition: 'validators-0155' } }));
   fs.writeFileSync(join(f.xdg, 'pnpm', 'config.yaml'), '{}\n');
   const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch', ACQUISITION_MODE: 'validators-0155',
     GITHUB_SHA: '1'.repeat(40), GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1',
     GITHUB_JOB: 'validator-lock-acquisition', GITHUB_EVENT_PATH: event, GITHUB_WORKSPACE: f.root,
-    XDG_CONFIG_HOME: f.xdg, HOME: f.home, PATH: '' };
+    RUNNER_TEMP: runnerTemp, XDG_CONFIG_HOME: f.xdg, HOME: f.home, PATH: '' };
   const result = spawnSync(process.execPath, [script], { env, cwd: f.root, encoding: 'utf8', timeout: 10_000 });
   assert.equal(result.error, undefined);
   assert.notEqual(result.status, 0);
   assert.equal(result.stderr.includes('External pnpm configuration is not admitted'), true,
     'Must reach the real preflight before an unavailable git or pnpm can run');
   assert.equal(result.stdout, '', 'No tool observation or output claim before admission');
+  assert.deepEqual(fs.readdirSync(runnerTemp), [], 'Preflight refusal removes the private resolve workspace');
   assert.equal(source.match(/^assertAcquisitionPreflight\(resolve\);$/gm)?.length, 1);
   assert.ok(source.indexOf('assertAcquisitionPreflight(resolve);') < source.indexOf("assert.equal(run('pnpm', ['--version'])"));
 });

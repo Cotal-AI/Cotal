@@ -945,23 +945,25 @@ try {
       attempts: number; maxAttempts: number; disposition: string; remedy?: string; lastError?: string;
     };
     const mStatic = manager as unknown as {
+      staticLifecycle: {
       staticReconcileKey: (row: { owner: string; alias: string; actor: string; lifecycleUid: string }) => string;
       staticReconcileItems: Map<string, StaticReconcileItem>;
       driveStaticReconcileRetry: (key: string, item: StaticReconcileItem) => Promise<void>;
       reconcileStaticLifecycles: (postAdoption?: boolean) => Promise<void>;
+      };
       retirement: {
         retiredPrincipals: Set<string>;
       };
     };
 
     const liveSlotFresh = await readStaticSlot(staticTransport, DEV_OWNER, liveAlias);
-    const liveKey = mStatic.staticReconcileKey(liveSlotFresh!.row);
+    const liveKey = mStatic.staticLifecycle.staticReconcileKey(liveSlotFresh!.row);
     const liveItem: StaticReconcileItem = {
       owner: DEV_OWNER, alias: liveAlias, actor: liveActor, lifecycleUid: liveUid,
       phase: "active", attempts: 0, maxAttempts: 5, disposition: "retrying",
     };
-    mStatic.staticReconcileItems.set(liveKey, liveItem);
-    await mStatic.driveStaticReconcileRetry(liveKey, liveItem);
+    mStatic.staticLifecycle.staticReconcileItems.set(liveKey, liveItem);
+    await mStatic.staticLifecycle.driveStaticReconcileRetry(liveKey, liveItem);
 
     check("RECONCILE 8344: static reconciliation refuses to terminalize an adopted live managed agent",
       liveItem.disposition === "refused" && /adopted live managed agent/.test(liveItem.lastError ?? ""), liveItem);
@@ -971,7 +973,7 @@ try {
       await inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), "general", livePrincipal.key, liveUid)) !== undefined));
 
     // 4. Drive startup/static reconciliation sweep: reconciles unadopted orphan to terminal
-    await mStatic.reconcileStaticLifecycles(true);
+    await mStatic.staticLifecycle.reconcileStaticLifecycles(true);
 
     const orphanSlotAfter = await readStaticSlot(staticTransport, DEV_OWNER, orphanAlias);
     check("RECONCILE: unadopted orphan static slot is retired", orphanSlotAfter?.row.phase === "retired", orphanSlotAfter);
@@ -1031,7 +1033,7 @@ try {
         }
         return nativePurge.call(this, key, options);
       };
-      try { await mStatic.reconcileStaticLifecycles(true); }
+      try { await mStatic.staticLifecycle.reconcileStaticLifecycles(true); }
       finally { proto.purge = nativePurge; }
     });
     const racedResources = (manager as unknown as { staticReconcileLastSweepResources?: { deprovision?: import("@cotal-ai/core").DeprovisionResourceAccounting } }).staticReconcileLastSweepResources?.deprovision;

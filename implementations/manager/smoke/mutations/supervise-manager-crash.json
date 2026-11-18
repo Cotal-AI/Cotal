@@ -13,9 +13,9 @@
   "mutations": [
     {
       "name": "the successor retires a supervised seat instead of restarting it",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "          const record = this.seatRecordFor(row);\n          if (record) {",
-      "replace": "          const record = this.seatRecordFor(row);\n          if (false) {",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
+      "find": "          const record = this.deps.seatRecordFor(row);\n          if (record) {",
+      "replace": "          const record = this.deps.seatRecordFor(row);\n          if (false) {",
       "expectRed": "the successor restarts the supervised seat as one restart of its policy",
       "cell": "the successor restarts the supervised seat as one restart of its policy"
     },

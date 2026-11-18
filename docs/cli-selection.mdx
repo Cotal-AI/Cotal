@@ -220,7 +220,11 @@ its catalog keeps it. A stack `cotal up` started stays a prepared space at its r
 the record, and the refusal says so, unless the space is named after its folder: that `down` keeps the
 record, and the refusal names `space forget` again. A space whose root holds its stack journal counts as
 running while any stack member's process may still run. The refusal names one such member and
-writes nothing: the registration, the selection and the root's files stay. A member whose process
+writes nothing: the registration, the selection and the root's files stay. A space whose folder was
+deleted while it ran also refuses with `LIFECYCLE_BLOCKED` and keeps its record. A controller stack
+whose instance records show a member still running names `cotal down --space <space> --yes`. Any
+other such space refuses while something still listens at its recorded broker address that no other
+registration names, and names the process listening there to stop. A member whose process
 is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
 that it was never stopped cleanly. A prepared space is forgotten the same way, and the `.cotal/`
 that `space create` made stays. A prepared record that cannot be read names no folder, so forgetting
@@ -447,6 +451,12 @@ included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer
 `space show` names the same forget and create steps in place of `cotal up`. Run from the folder it
 was moved to, whose stack journal names the old folder, such a command says the folder was moved and
 names the next step that `up` and `down` name there.
+
+A stopped space that `cotal up` started is handled the same way when its folder was deleted. `status`
+says the folder no longer exists instead of naming `cotal up` there, and `send` and `history`
+refuse `TARGET_UNAVAILABLE` rather than report a missing seed. Both name moving the folder back or
+`cotal space forget <space>`. Run with `--space` from the folder it was renamed to, `send` and
+`history` give the refusal they give there without `--space`, which names the move and the way back.
 
 With nothing selected, a command run in a project targets the space registered for that project's
 root. A root with no registration whose `.cotal/` holds the stack journal `cotal up` writes is

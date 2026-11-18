@@ -206,19 +206,19 @@ const shardCountFromWorkflow = (yml: string, requireCommittedInputs = true, requ
   if (requireToolPrelude) {
     const expectedPrelude = [
       [
-        "      - uses: actions/checkout@v6",
+        "      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6",
         "        with:",
         // The shards need real history: egress-guard-differential resolves the egress
         // classifier's predecessor commit, which a depth-1 clone does not reach.
         "          fetch-depth: 0",
       ],
       [
-        "      - uses: pnpm/action-setup@v6.0.8",
+        "      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8",
         "        with:",
         "          standalone: true",
       ],
       [
-        "      - uses: actions/setup-node@v6",
+        "      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6",
         "        with:",
         "          node-version: 22",
         "          cache: pnpm",

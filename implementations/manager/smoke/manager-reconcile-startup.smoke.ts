@@ -233,10 +233,10 @@ try {
   });
 
   manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
-  const retirement = manager as unknown as {
+  const retirement = (manager as unknown as { staticLifecycle: {
     driveStaticRetirement(agent: { id: string; name: string; lifecycleUid: string }, orphan: boolean): Promise<void>;
-  };
-  const driveStaticRetirement = retirement.driveStaticRetirement.bind(manager);
+  } }).staticLifecycle;
+  const driveStaticRetirement = retirement.driveStaticRetirement.bind(retirement);
   let heldAfterFirst = false;
   retirement.driveStaticRetirement = async (agent, orphan) => {
     await driveStaticRetirement(agent, orphan);

@@ -974,13 +974,13 @@ interface SessionsFile {
 
 function readSessionsFile(dir: string): SessionsFile {
   const f = join(dir, SESSIONS_FILE);
-  if (!existsSync(f)) return { ver: SESSIONS_VER, sessions: {} };
   // A torn write or a hand-edit must not reach requireIdpSession (the no-fallback gate) as a raw
   // "SyntaxError: Unexpected token" — say what's wrong and how to recover, like everywhere else.
   let parsed: SessionsFile;
   try {
     parsed = JSON.parse(readFileSync(f, "utf8")) as SessionsFile;
   } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { ver: SESSIONS_VER, sessions: {} };
     throw new Error(`${f}: the session cache is not valid JSON (${e instanceof Error ? e.message : String(e)}) - delete it and run \`cotal login\` again`);
   }
   if (parsed === null || typeof parsed !== "object")

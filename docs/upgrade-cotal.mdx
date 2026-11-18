@@ -18,13 +18,13 @@ the installed version and exits successfully. Invalid release metadata, failed i
 and other installation errors still refuse the update.
 
 On an installed POSIX CLI, reconciling the installed release can keep a standalone Manager
-and its seats running. The command authenticates their inventory before selecting a separate
+and its seats running. The command reads the inventory it can authenticate before selecting a separate
 connector and seed prefix for this installation and release. The earlier prefix stays in place
 for the processes that already loaded it. This does not restore files a prior manual npm install
 already replaced. Source checkouts, Windows and version-changing update checks are unchanged.
 Later releases inherit the selected prefix, including when its publication was interrupted.
 A recorded extension npm child must finish before its source prefix can be copied.
-After the complete new prefix is selected, unused earlier release sets are removed on a best-effort basis.
+After a successful update selects the complete new prefix, unused earlier release sets are removed on a best-effort basis.
 A successful update authenticates every recorded local Manager and the daemon before collecting sets, and keeps each release they still use.
 An unreadable inventory or a holder without a known release keeps all sets. Removal failure does not fail the update.
 Each newly created set records its launched seats in private holder files. A seat keeps its set after its Manager exits until its recorded child identity is proved gone or its Manager observes its exit. A holder without a child identity, an unreadable holder, or a set created before holder support keeps the set. No process-list search is used to infer a seat's release.
@@ -74,6 +74,7 @@ restart obtains fresh zero-seat admission instead of reusing that earlier lifeti
 Rollback restores captured connector configuration before verifying the previous execution.
 It releases its own admission fences even when the daemon still runs the target generation.
 The updater pins recorded local Managers on Linux, macOS and Windows and continues with a mesh-naming notice if no local instance can be identified and the exchange refuses because several Managers are live.
+From 0.167.0, an update names and leaves untouched a Manager from an unregistered home, or one this home has no credentials to read, keeping its loaded version until it is restarted from its own home; on 0.166.3 or earlier, wait for or stop the other home's Manager from its own home, then run the same update.
 A successful manual update waits for the target daemon generation, not its updater's loaded version.
 If no machine daemon is installed, successful reconciliation completes the update without querying a daemon endpoint.
 An unwritable installation refuses before staging and names the owning install command.
@@ -252,6 +253,9 @@ cotal update
 ```
 
 This reconciles installed extensions and connector integrations with the running CLI's release.
+When no Cotal Claude plugin or Desktop integration is installed, reconciliation only reads Claude's
+installation records. It creates no Claude directories or lock files, including in a read-only
+configuration directory. Unreadable or damaged installation records still refuse the update.
 After a manual `npm install -g`, the first command that runs the launch gate also brings installed
 first-party extensions to the running CLI's release, or refuses with `cotal update --self` if an
 extension cannot be reconciled. When automatic updates are enabled, the daemon's scheduled check

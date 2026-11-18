@@ -226,11 +226,14 @@ for (const s of NON_REGISTRY)
       );
 
 // ── preflightMessage: one canonical sentence per kind, surface-agnostic (plain text, no colour) ───
+// The recorded root exists, as a stopped space's does; a deleted one has its own sentence (#7318).
+const projRoot = join(home, "proj");
+mkdirSync(projRoot);
 const T: MeshTarget = {
-  root: "/tmp/proj",
+  root: projRoot,
   server: DEAD,
   space: "alpha",
-  personaRoot: "/tmp/proj/.cotal/agents",
+  personaRoot: join(projRoot, ".cotal", "agents"),
   source: "registry",
   mode: "open",
   tlsRequired: false,
@@ -242,6 +245,9 @@ check("message: unreachable keeps `no mesh running at` and names the recorded ro
 check("message: unreachable + pruned still names the recorded root (liveness no longer deletes)",
   preflightMessage("unreachable", T, true).includes(`recorded at ${T.root}`) && preflightMessage("unreachable", T, true).includes(`no mesh running at ${DEAD}`) && !preflightMessage("unreachable", T, true).includes("stale registry entry - removed"));
 check("message: prune flag does not change the unreachable sentence (record is kept)", preflightMessage("unreachable", T, true) === preflightMessage("unreachable", T, false));
+check("message: an unreachable up record whose folder is gone says so and names moving it back or space forget, never a restart there",
+  preflightMessage("unreachable", { ...T, root: join(home, "deleted-proj"), origin: "up" }, false) === `✗ no mesh running at ${DEAD}; mesh "alpha" is recorded at ${join(home, "deleted-proj")}, which no longer exists - if that folder was moved or renamed, move it back and run \`cotal up\` there; otherwise forget the space with \`cotal space forget alpha\``,
+  preflightMessage("unreachable", { ...T, root: join(home, "deleted-proj"), origin: "up" }, false));
 // A broker address `--server` supplied that is not the recorded one says nothing about the recorded
 // mesh: the sentence names that address, and the recorded broker only where one is recorded.
 check("message: an unreachable overriding --server names that address and the space's recorded broker", (() => {
@@ -395,7 +401,7 @@ check("unreachable catalog copy names provider removal and sync, not locally ref
 })());
 // A user-mode target never reaches preflightTarget, so this arm has to throw the same refusal.
 {
-  const userBase = { ...T, mode: "user" as const, space: "hosted", root: "/tmp/hosted-root" };
+  const userBase = { ...T, mode: "user" as const, space: "hosted", root: projRoot };
   const manualUser = await preflightOrThrow({ ...userBase, origin: "manual" }).then(() => undefined, (e: unknown) => e);
   check("user-mode preflight of a hand-registered mesh refuses through the shared unreachable sentence",
     manualUser instanceof ConnectRefusal && manualUser.kind === "transient" && manualUser.code === "TARGET_UNAVAILABLE"

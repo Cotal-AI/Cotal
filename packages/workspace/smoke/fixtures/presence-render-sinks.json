@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1068,
+    "total": 1084,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 846
+    "non-render/control": 862
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -6224,6 +6224,118 @@
       "kind": "derived-output",
       "anchor": "JSON.stringify(structuredContent)",
       "class": "non-render/control"
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "nameTakenRefusal(response.status, response.body, record.requestId)",
+      "class": "non-render/control",
+      "rationale": "Checks an HTTP name-conflict answer against this creation request before reporting a terminal refusal; the status is not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "legacyNameTakenRefusal(response.status, response.body)",
+      "class": "non-render/control",
+      "rationale": "Builds name-conflict recovery guidance from a legacy HTTP refusal while retaining the saved request; it makes no work-progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "ord.remote?.material && trust(target) !== record.trust) {\n   ",
+      "class": "non-render/control",
+      "rationale": "Compares the selected registration's trust hash with saved ownership pins to decide whether original-authority discovery is needed; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "discoveryDocumentUrl(address)",
+      "class": "non-render/control",
+      "rationale": "Derives the original registration's discovery URL from the saved exchange URL for a pinned fetch, not display output."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "checkDiscoveryDocument(response)",
+      "class": "non-render/control",
+      "rationale": "Validates an HTTP discovery response before accepting original registration pins; response status is transport evidence, not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "trust(original)",
+      "class": "non-render/control",
+      "rationale": "Hashes the reconstructed original registration and adopts it only when it matches saved trust; this is an authority comparison without rendered text."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "ord.retirementTarget && trust(target) !== record.trust)\n     ",
+      "class": "non-render/control",
+      "rationale": "Guards retirement by comparing explicit retirement pins with the saved trust hash and refuses a mismatch before sending; it does not render presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "was not sent\");\n    if (trust(target) !== record.trust) {\n   ",
+      "class": "non-render/control",
+      "rationale": "Checks whether legacy recovery still has matching registration trust before preserving the record separately; this controls custody, not human progress text."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "try { authority = await discoverConversationAuthority(target); }\n        catch (error",
+      "class": "non-render/control",
+      "rationale": "Discovers the retirement authority and marks it unavailable on failure so credentials stay recoverable; the call renders no peer status."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "creationOutcome(record, authority, replay, \"recovery\")",
+      "class": "non-render/control",
+      "rationale": "Interprets an exact creation replay as refused, pending approval, or issued material before retirement; these are issuance outcomes rather than work progress."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "record.remote.material = material",
+      "class": "non-render/control",
+      "rationale": "Stores recovered issued credentials in the saved identity record before persisting them; this member assignment has no rendering effect."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "checkConversationMaterial(material, authority, record.requestId, record.selection, approvalExpectation(record.remote))",
+      "class": "non-render/control",
+      "rationale": "Revalidates recovered credentials, request binding, selection and approval against the retirement authority; no presence or progress text is produced."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "`${authority.url}/${material.actor}`",
+      "class": "non-render/control",
+      "rationale": "Constructs the expected actor-specific retirement URL for exact lifecycle validation and the DELETE request, not a displayed work-status string."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "trust(current)",
+      "class": "non-render/control",
+      "rationale": "Compares the current registration with saved trust after unavailable retirement to decide whether to retain state separately or rethrow; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "    const infra = await getSpaceAuth(store, target.space);\n      if (!infra) thro",
+      "class": "non-render/control",
+      "rationale": "Loads the exact space's local authority for conversation retirement and refuses if it is absent; it reads auth state rather than rendering peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "mintCreds(infra, newIdentity(), \"deprovisioner\", { deprovisionTarget: {\n        principal: principalKey(local.owner, local.actor).key, lifecycleUid: local.lifecycleUid } })",
+      "class": "non-render/control",
+      "rationale": "Mints narrowly targeted deprovisioner credentials for the saved local principal and lifecycle; credential issuance is control data, not rendered work progress."
     },
     {
       "path": "implementations/cli/src/lib/app-user-identity.ts",

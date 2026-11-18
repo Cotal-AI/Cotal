@@ -15,11 +15,11 @@ jobs:
       DO_NOT_TRACK: "1"
       COTAL_TELEMETRY: "off"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
       - run: pnpm install --frozen-lockfile
@@ -59,14 +59,14 @@ jobs:
         run: node bin/smoke/daemon-install-real.smoke.mjs
       - name: Upload real public uninstall evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: daemon-uninstall-darwin
           path: ${{ runner.temp }}/daemon-service-result.json
           if-no-files-found: error
       - name: Upload peer-close reproduction evidence
         if: always() && steps.peer-close.outputs.scratch != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: daemon-peer-close-darwin
           path: |
@@ -79,7 +79,7 @@ jobs:
           if-no-files-found: error
       - name: Upload second-read peer-close evidence
         if: always() && steps.peer-pid-close.outputs.scratch != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: daemon-peer-pid-close-darwin
           path: |
@@ -95,7 +95,7 @@ jobs:
         env:
           COTAL_STARTUP_RESULTS: ${{ runner.temp }}/cli-startup-result.json
         run: pnpm exec tsx bin/smoke/startup-native.smoke.ts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: cli-startup-macos
@@ -112,11 +112,11 @@ jobs:
       DO_NOT_TRACK: "1"
       COTAL_TELEMETRY: "off"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
       - name: Compile the Windows process binding
@@ -146,7 +146,7 @@ jobs:
         env:
           COTAL_STARTUP_RESULTS: ${{ runner.temp }}/cli-startup-result.json
         run: pnpm exec tsx bin/smoke/startup-native.smoke.ts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: cli-startup-windows

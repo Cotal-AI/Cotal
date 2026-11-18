@@ -106,7 +106,9 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
   // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
   // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
   // line (shared with the manager's PtyRuntime launch).
-  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
+  // The prefix verifier requires every host-compatible dependency, including native optional
+  // packages. CLI inclusion wins over an ambient omit=optional, also when npm removes a sibling.
+  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", [...args, "--include=optional"]);
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
   const mutation = beginExtensionNpmMutation();

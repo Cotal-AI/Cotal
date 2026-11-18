@@ -14,7 +14,7 @@ if (process.platform === 'win32') {
 const root = mkdtempSync(join(tmpdir(), 'update-set-'));
 try {
 const home = join(root, 'home'), config = join(root, 'config'), tools = join(root, 'tools');
-for (const dir of [home, config, tools]) mkdirSync(dir, { mode: 0o700 });
+for (const dir of [home, config, tools, join(root, '.cotal')]) mkdirSync(dir, { mode: 0o700 });
 const bin = resolve('bin/dist/cotal.js');
 const generation = (JSON.parse(readFileSync(resolve('bin/package.json'), 'utf8')) as { version: string }).version;
 const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))), HOME: home, COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: config,

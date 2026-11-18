@@ -1801,5 +1801,5 @@
       }
     }
   },
-  "x-source": "implementations/auth/src/service.ts ROUTES and loopback handlers"
+  "x-source": "implementations/auth/src/service.ts ROUTES; implementations/auth/src/service-manager-routes.ts lifecycle handlers; implementations/auth/src/service-exchange-routes.ts exchange and face policy"
 }

@@ -30,8 +30,8 @@ for (const built of [CLI, MCP, MONITOR, HOOK]) assert(existsSync(built), `build 
 const dir = mkdtempSync(join(tmpdir(), "cotal-claude-local-"));
 const home = join(dir, "home"), config = join(dir, "config"), tmp = join(dir, "tmp");
 mkdirSync(tmp, { mode: 0o700 });
-// Every process here, this one included, keeps its sockets, session records and credential
-// directories in the suite's own temp directory.
+// Every process here, this one included, keeps its sockets and session records in the suite's own
+// temp directory, and its credential directories under the suite's own Cotal home.
 process.env.TMPDIR = tmp;
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && !k.startsWith("CLAUDE")));
 Object.assign(env, { HOME: dir, COTAL_HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache"),
@@ -50,13 +50,14 @@ const check = (name: string, condition: unknown, observed?: string) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
-/** The credential directories local provisions made for `space`, with their records. */
-const identities = (space?: string) => readdirSync(tmp).filter((n) => n.startsWith("cotal-app-identity-")).flatMap((n) => {
+/** The credential directories local provisions made for `space`, with their records: under the Cotal
+ *  home, where provision makes them, or in the temp dir, where earlier versions did. */
+const identities = (space?: string) => [join(home, "app-identities"), tmp].flatMap((parent) => (existsSync(parent) ? readdirSync(parent) : []).filter((n) => n.startsWith("cotal-app-identity-")).flatMap((n) => {
   try {
-    const record = JSON.parse(readFileSync(join(tmp, n, "identity.json"), "utf8")) as { space: string; id: string; owner: number; session?: string };
-    return space === undefined || record.space === space ? [{ dir: join(tmp, n), ...record }] : [];
+    const record = JSON.parse(readFileSync(join(parent, n, "identity.json"), "utf8")) as { space: string; id: string; owner: number; session?: string };
+    return space === undefined || record.space === space ? [{ dir: join(parent, n), ...record }] : [];
   } catch { return []; }
-});
+}));
 const secretShaped = /BEGIN NATS|NKEY SEED|-----BEGIN|\bSU[A-Z2-7]{50,}|agent\.creds/;
 const plugin = (name: string, recorded: boolean) => {
   const dist = join(dir, name, "dist");

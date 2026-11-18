@@ -16,7 +16,9 @@
  *
  * The dashboard cells are the exception. The shipped `web` service preset serves only a static-auth
  * target with a protected credential file, so those cells run on their own static-auth stack in a
- * second sandbox root and stop it before the open-mesh cells continue.
+ * second sandbox root and stop it before the open-mesh cells continue. They also check that the
+ * preset refuses a posting setup with one of its two flags, and that a start names the remove and
+ * add that change a saved definition it refuses.
  *
  * Run: pnpm smoke:component-health
  */
@@ -50,7 +52,7 @@ import {
   serveIssuanceGateKv,
   writeServiceStatus,
 } from "@cotal-ai/core";
-import { MANAGER_PIDFILE, WEB_PIDFILE, WEB_SESSION_FILE, canonicalLocalProcessPath, renewalRecordPath, writeRenewalRecord } from "@cotal-ai/workspace";
+import { MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, renewalRecordPath, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -541,6 +543,44 @@ try {
   const webRemove = cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
   webService = webRemove.status !== 0;
   check("service remove forgets the stopped dashboard", webRemove.status === 0, `${webRemove.stdout}${webRemove.stderr}`);
+
+  // The dashboard posts only with --no-read-only and a separate --posting-creds file, so saving one of
+  // the two flags alone is refused and saves nothing. A wildcard host is refused when it starts, and the
+  // refusal names the remove and add that change a saved definition.
+  const webDefinition = ["service", "add", "web", "--preset", "web", "--space", WEB_SPACE, "--root", webRoot, "--creds", creds, "--port", String(webPort)];
+  const envelope = (run: { stdout: string }) => { try { return JSON.parse(run.stdout) as { error?: { code?: string; message?: string; remedy?: string } }; } catch { return undefined; } };
+  for (const [given, needs] of [[["--posting-creds", creds], "--no-read-only"], [["--no-read-only"], "--posting-creds <file>"]] as const) {
+    const lone = cliIn(webRoot, [...webDefinition, ...given, "--json"]);
+    const shown = cliIn(webRoot, ["service", "show", "web", "--space", WEB_SPACE]);
+    const error = envelope(lone)?.error;
+    check(`service add web with ${given[0]} alone refuses USAGE_INVALID naming ${needs}, and saves nothing`,
+      lone.status === 1 && error?.code === "USAGE_INVALID" && error.message?.startsWith(`${given[0]} requires ${needs}:`) === true && error.remedy === "cotal service add web --preset web --no-read-only --posting-creds <file>" && shown.status !== 0,
+      { add: `${lone.stdout}${lone.stderr}`, show: `${shown.stdout}${shown.stderr}` });
+  }
+  const wildcard = cliIn(webRoot, [...webDefinition, "--read-only", "--host", "0.0.0.0"]);
+  webService = wildcard.status === 0;
+  const wildStart = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--json"], 60_000);
+  const wildError = envelope(wildStart)?.error;
+  check("a saved wildcard --host is refused at start CONFLICT, exit 2, naming the remove and add that change it",
+    wildcard.status === 0 && wildStart.status === 2 && wildError?.code === "CONFLICT" && wildError.message?.includes("--host is a wildcard") === true &&
+      wildError.remedy === `remove it with \`cotal service remove web --space ${WEB_SPACE} --yes\`, then run \`cotal service add web --preset web --space ${WEB_SPACE} --host <address>\``,
+    { add: `${wildcard.stdout}${wildcard.stderr}`, start: `${wildStart.stdout}${wildStart.stderr}` });
+  const wildRemove = cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
+  webService = wildRemove.status !== 0;
+  check("...and the refused definition is removed as the remedy says", wildRemove.status === 0, `${wildRemove.stdout}${wildRemove.stderr}`);
+  // A definition file is checked against the adapter's schema only, so it can still save the pair apart.
+  const pairFile = join(credsDir, "web-read-only-posting.json");
+  writeFileSync(pairFile, JSON.stringify({ schemaVersion: 1, space: WEB_SPACE, launch: { type: "adapter", adapter: WEB_SERVICE_ADAPTER, options: { root: webRoot, creds, "read-only": true, "posting-creds": creds, port: webPort } }, readiness: { type: "adapter", timeoutMs: 40000 } }), { mode: 0o600 });
+  const pairAdd = cliIn(webRoot, ["service", "add", "web", "--file", pairFile, "--space", WEB_SPACE]);
+  webService = pairAdd.status === 0;
+  const pairStart = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--json"], 60_000);
+  const pairError = envelope(pairStart)?.error;
+  check("a saved read-only definition with --posting-creds is refused at start CONFLICT, naming that condition and the re-add with --no-read-only",
+    pairAdd.status === 0 && pairStart.status === 2 && pairError?.code === "CONFLICT" && pairError.message?.includes("has --posting-creds but is read-only") === true &&
+      pairError.remedy?.endsWith(`then run \`cotal service add web --preset web --space ${WEB_SPACE} --no-read-only --posting-creds <file>\``) === true,
+    { add: `${pairAdd.stdout}${pairAdd.stderr}`, start: `${pairStart.stdout}${pairStart.stderr}` });
+  const pairRemove = cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
+  webService = pairRemove.status !== 0;
   const webDown = cliIn(webRoot, ["down", "--yes"], 120_000);
   webStack = webDown.status !== 0;
   check("cotal down stops the dashboard's static-auth stack", webDown.status === 0, `${webDown.stdout}${webDown.stderr}`);
