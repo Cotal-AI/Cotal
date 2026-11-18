@@ -2682,12 +2682,12 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
   }
   if (renewal?.adoption === undefined) facts.push("renewal adoption not reported");
   else facts.push(renewal.adoption.ok ? "renewal adoption accepted" : `renewal adoption refused${renewal.adoption.error ? `: ${renewal.adoption.error}` : ""}`);
-  if (renewal?.adoption?.ok === false) return { name: "delivery", verdict: "refused", facts };
+  const renewalRefused = renewal?.adoption?.ok === false;
   if (stopped) {
     if (record.kind === "dead") facts.push("stale pidfile");
     if (record.kind === "unattributable") facts.push("unattributable pidfile");
     if (record.kind === "unknown") facts.push("pid liveness unestablishable");
-    return { name: "delivery", verdict: stopped, facts };
+    return { name: "delivery", verdict: renewalRefused ? "refused" : stopped, facts };
   }
 
   let close: (() => Promise<void>) | undefined;
@@ -2713,7 +2713,7 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
     const state = deliveryResponderFromLease(lease, await expectedDeliveryHolder(target));
     if (!lease) {
       facts.push("ready lease absent", `responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
-      return { name: "delivery", verdict: "not-serving", facts };
+      return { name: "delivery", verdict: renewalRefused ? "refused" : "not-serving", facts };
     }
     facts.push(`lease holder ${lease.holder}`);
     if (state === "stale") {
@@ -2721,11 +2721,11 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
       // operator cannot derive from the other facts on the line.
       facts.push("ready, but held by a DIFFERENT daemon than this workspace launched (a dead holder's record expires on its own)");
       facts.push(`responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
-      return { name: "delivery", verdict: "not-serving", facts };
+      return { name: "delivery", verdict: renewalRefused ? "refused" : "not-serving", facts };
     }
     facts.push(state === "bound" ? "ready" : "starting (lease not ready)");
     if (state !== "bound") facts.push(`responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
-    return { name: "delivery", verdict: state === "bound" ? "serving" : "not-serving", facts };
+    return { name: "delivery", verdict: renewalRefused ? "refused" : state === "bound" ? "serving" : "not-serving", facts };
   } catch (e) {
     // A live recorded daemon with no delivery lease bucket cannot be serving this build's delivery
     // control surface.  A denied/timed-out read is different: it is a refusal and must never read
@@ -2733,7 +2733,7 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
     const noLeaseSurface = deliveryLeaseAbsent(e);
     const msg = e instanceof Error ? e.message : String(e);
     facts.push(noLeaseSurface ? "ready lease absent" : `lease probe refused: ${msg}`);
-    return { name: "delivery", verdict: noLeaseSurface ? "not-serving" : "refused", facts };
+    return { name: "delivery", verdict: renewalRefused || !noLeaseSurface ? "refused" : "not-serving", facts };
   } finally {
     await close?.();
   }
