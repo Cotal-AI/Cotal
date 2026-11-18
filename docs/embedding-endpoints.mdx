@@ -193,6 +193,22 @@ A copy already received by the client cannot reach a new handler after stop begi
 That copy stays unacknowledged and can redeliver after the durable's acknowledgement wait.
 An acknowledgement, negative acknowledgement, or in-progress signal from a handler on a closed connection throws.
 
+## Delivery lease [#delivery-lease]
+
+`acquireDeliveryLease(shardIndex)` atomically claims a shard as not ready.
+`markDeliveryLeaseReady` and `markDeliveryLeaseNotReady` change readiness without releasing the claim.
+`renewDeliveryLease` retains readiness and returns the new revision.
+Readiness updates, renewal and release use the broker's revision as their compare-and-swap token.
+`releaseDeliveryLease(shardIndex, revision)` deletes only that revision. An explicit `undefined` releases nothing.
+
+`ownsDeliveryLease(info)` requires both this endpoint's principal and its per-instance incarnation.
+`readDeliveryLeaseEntry` returns the row with its revision, returns `undefined` for an absent or deleted row, and throws for an unreadable row.
+`deliveryLeaseHolder` returns `undefined` when the holder cannot be determined.
+
+`watchDeliveryLease` reports puts and deletions for one shard and returns a stop handle.
+Its intent survives a connection replacement. Stop and reconnect settle in-flight watch binds and retire owned consumers before closing their connection.
+The watch reports state changes. The caller decides whether it still owns the shard.
+
 ## Watch cleanup [#watch-cleanup]
 
 Presence and channel-registry watch cleanup first disarms local delivery. A known excluded consumer-delete subject causes no delete request. Unknown credential context still asks the broker, and refused deletes leave the consumer to inactivity expiry. Permitted deletes reclaim immediately. Endpoint stop, silent-watch rebind, and manual reconnect retire their owned watches, including an in-flight bind. A connection that closes on its own leaves the watch to the broker threshold. SDK-internal ordered-consumer recovery remains unchanged.
