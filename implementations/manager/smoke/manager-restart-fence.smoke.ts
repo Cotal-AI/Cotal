@@ -65,7 +65,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-mrf-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 
 const kids: ChildProcess[] = [];
-type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext }; renewLease: () => Promise<void>; renewLeaseAttempt: () => Promise<void>; ep: SourceCotalEndpoint };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext }; renewLease: () => Promise<void>; lease: { renewLeaseAttempt: () => Promise<void> }; ep: SourceCotalEndpoint };
 // THE FIXTURE'S HARNESS. `spawn` on the class rail needs a manager whose boot inventory holds an
 // AVAILABLE connector (#1724): a manager with none declines the class `one` rail for spawn/launch,
 // so an unpinned `manager.spawn` has no responder at all — `unavailable no responder` — and the
@@ -236,7 +236,7 @@ try {
   // Fired here, BEFORE stop(): untracked (not through `renewLease()`'s entry fence, and not joined
   // by stop's `leaseRenewTask`), so stop cannot wait it out. Its broker call is gated above and does
   // not actually run until the release below has completed.
-  const lateRenewSettled = M1.renewLeaseAttempt();
+  const lateRenewSettled = M1.lease.renewLeaseAttempt();
   // stop() closes the endpoint last (`await this.ep.stop()`); keep it open until the late renew has
   // fully settled, so its verdict (gone, not unknown-from-a-closed-connection) is always reached.
   m1ep.stop = async () => { await lateRenewSettled.catch(() => {}); await realEpStop(); };

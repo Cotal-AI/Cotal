@@ -4,14 +4,14 @@
   "mutations": [
     {
       "name": "PREDICTED KILLED (1 red) - POSITIVE CONTROL: an idle renew tick returns before doing any work, so the manager never renews its lease once",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/lease-keeper.ts",
       "find": "    if (this.leaseRenewInFlight) return;\n",
       "replace": "    if (!this.leaseRenewInFlight) return;\n",
       "expectRed": "[acklost] the child manager started, acquired its own per-instance lease, and renewed it at least once"
     },
     {
       "name": "PREDICTED KILLED (1 red) - D3: the next tick may start a second renew while one is in flight, on the same cached revision",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/lease-keeper.ts",
       "find": "    if (this.leaseRenewInFlight) return;\n",
       "replace": "",
       "expectRed": "NO SELF-INFLICTED CAS CONFLICT"
