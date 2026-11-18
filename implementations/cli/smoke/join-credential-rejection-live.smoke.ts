@@ -11,8 +11,8 @@ const tree = resolve(import.meta.dirname, "../../..");
 const entry = join(tree, "bin/dist/cotal.js");
 const dir = mkdtempSync(join(tmpdir(), "join-credential-rejection-"));
 const home = join(dir, "home"), alpha = join(dir, "alpha"), beta = join(dir, "beta"), keys = join(dir, "keys");
-const config = join(dir, "config"), runtime = join(dir, "runtime"), cotal = join(dir, "cotal");
-for (const path of [home, alpha, beta, keys, config, runtime, cotal]) mkdirSync(path, { mode: 0o700 });
+const config = join(dir, "config"), runtime = join(dir, "runtime"), cotal = join(dir, "cotal"), neutral = join(dir, "neutral");
+for (const path of [home, alpha, beta, keys, config, runtime, cotal, neutral, join(neutral, ".cotal")]) mkdirSync(path, { mode: 0o700 });
 const env: Record<string, string> = Object.fromEntries(Object.entries(process.env).filter((row): row is [string, string] => row[1] !== undefined && !row[0].startsWith("COTAL_")));
 Object.assign(env, { HOME: home, COTAL_HOME: cotal, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" });
 const { check, finish } = createSuite();
@@ -103,6 +103,27 @@ try {
   const foreign = mint(beta, "beta", "foreign");
   ok(beta, "down", "--yes", "--json");
   ok(alpha, "up", "--no-manager", "--server", alphaServer, "--json");
+  const credentialArgs = ["--creds", foreign.file, "--lifecycle-uid", foreign.uid];
+  const unnamed = cli(neutral, "join", "--server", alphaServer, ...credentialArgs);
+  console.log(`OBSERVED unnamed explicit server: exit ${unnamed.status}\n${unnamed.stderr}`);
+  check("an unnamed explicit-server join identifies only the credential's space", unnamed.status === 2 && /Code: +PERMISSION_DENIED/.test(unnamed.stderr) && unnamed.stderr.includes('is a credential for space "beta"') && !/Space:|not "main"|--space main|cotal auth mint/.test(unnamed.stderr), unnamed.stderr);
+  const unnamedControl = cli(neutral, "send", "-c", "general", "control", "--server", alphaServer, "--creds", foreign.file, "--json");
+  check("unnamed join and one-shot control give the same diagnosis and recovery", unnamedControl.status === 2 && unnamedControl.envelope?.target?.space === undefined && unnamed.stderr.includes(unnamedControl.envelope?.error?.message ?? "missing message") && unnamed.stderr.includes(unnamedControl.envelope?.error?.remedy ?? "missing remedy"), unnamedControl.envelope);
+  for (const [label, cwd, flags, expected] of [
+    ["explicit default", neutral, ["--space", "main", "--server", alphaServer], "main"],
+    ["folder", alpha, [], "alpha"],
+    ["link", neutral, ["--link", `${alphaServer.replace("nats://", "cotal://")}/alpha`], "alpha"],
+  ] as const) {
+    const run = cli(cwd, "join", ...flags, ...credentialArgs);
+    check(`${label} space remains named in rejection and provisioning recovery`, run.status === 2 && run.stderr.includes(`not "${expected}"`) && new RegExp(`Space: +${expected}`).test(run.stderr) && run.stderr.includes(`--space ${expected}`) && run.stderr.includes("--provision"), run.stderr);
+  }
+  ok(alpha, "use", "alpha", "--json");
+  try {
+    const selected = cli(neutral, "join", ...credentialArgs);
+    check("selected space remains named in rejection and provisioning recovery", selected.status === 2 && /Space: +alpha/.test(selected.stderr) && selected.stderr.includes('not "alpha"') && selected.stderr.includes("--space alpha") && selected.stderr.includes("--provision"), selected.stderr);
+  } finally {
+    ok(neutral, "use", "--clear", "--json");
+  }
   await rejected("cross-space", foreign, 'is a credential for space "beta", not "alpha"');
   await valid(mint(alpha, "alpha", "valid"));
   const revoked = mint(alpha, "alpha", "revoked");

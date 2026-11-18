@@ -941,14 +941,14 @@ export function readCredsFileOrExit(path: string): string {
 interface CredentialContext {
   space: string;
   path: string;
-  named?: boolean;
+  named: boolean;
   serverExplicit?: boolean;
   provision?: boolean;
 }
 
 /** Classify only a broker-rejected credential, using its own grants and recorded local trust. */
 async function rejectCredential(e: ConnectRefusal, server: string, creds: string, context: CredentialContext): Promise<never> {
-  const { space, path, named = true, serverExplicit = false, provision = false } = context;
+  const { space, path, named, serverExplicit = false, provision = false } = context;
   const owner = spaceInCreds(creds);
   if (owner === undefined) throw e;
   const at = brokerAddressForDisplay(server) ?? "an invalid broker address";

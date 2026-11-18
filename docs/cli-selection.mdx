@@ -552,6 +552,8 @@ address, and the Next is to drop `--server` or point it at that broker.
 reconnect. A credential issued before a local `reset space` names the changed space identity when
 that space is still registered at the broker being dialed. The replacement agent mint for a join
 adds `--provision`, and the next join uses the lifecycle UID that mint reports.
+With `--server` and no named space, a cross-space refusal identifies the credential's space without
+presenting a default as the target or suggesting a mint for it.
 
 A manifest's `space:` is the target of native `up -f` and the new team
 check/boot/deploy routes. A `--space` that names another space is refused before

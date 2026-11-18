@@ -194,7 +194,9 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   if (link || values.token || values.creds) {
     if (expiresAt !== undefined) throw expiryRefusal("this join connects with a credential it was given");
     // With no space or broker named, the credential goes to the selected space or this folder's.
-    space = values.space ?? link?.space ?? ((values.server ?? link?.servers) === undefined ? credsSpace(process.cwd())?.space : undefined) ?? resolveSpace(process.cwd());
+    const resolved = values.space === undefined && link?.space === undefined && (values.server ?? link?.servers) === undefined ? credsSpace(process.cwd()) : undefined;
+    space = values.space ?? link?.space ?? resolved?.space ?? resolveSpace(process.cwd());
+    const named = values.space !== undefined || link?.space !== undefined || resolved !== undefined;
     // The credential goes only to a broker the caller paired it with: `--server`, the link's own
     // address, or the address the space is registered at. The default address is never assumed for it.
     const recorded = (values.server ?? link?.servers) === undefined ? findMesh(space) : undefined;
@@ -213,7 +215,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
-    credentialContext = values.creds ? { space, path: values.creds, serverExplicit: (values.server ?? link?.servers) !== undefined, provision: true } : undefined;
+    credentialContext = values.creds ? { space, path: values.creds, named, serverExplicit: (values.server ?? link?.servers) !== undefined, provision: true } : undefined;
     await reachableOrThrow(server, auth, credentialContext);
     if (values.creds) checkCredentialJoin(auth.creds!, space, lifecycleUid!, channel);
   } else {
