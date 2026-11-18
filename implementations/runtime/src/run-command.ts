@@ -54,6 +54,8 @@ import {
   readRunRecord,
   renderLifecycleBlocked,
   replayRunJournal,
+  lastActivation,
+  type RunJournalActivation,
   resolveService,
   runDriverCaller,
   RUN_LAUNCH_DEADLINE_MS,
@@ -393,9 +395,11 @@ async function resume(values: RunValues, runId: string | undefined): Promise<voi
   const endpoint = values.endpoint ?? "manager";
   // The record and the recorded program are READ under a one-shot operator credential, since the
   // driver's own credential is minted for an epoch the record decides.
-  const reader = await openPlanes(values, "run-operator", { runOperator: { endpoint, runId, takeoverId: newTakeoverId() } });
+  const readerTakeover = newTakeoverId();
+  const reader = await openPlanes(values, "run-operator", { runOperator: { endpoint, runId, takeoverId: readerTakeover } });
   let source: string;
   let status: RunStatusValue | undefined;
+  let activation: RunJournalActivation | undefined;
   let admission: RunAdmissionView;
   try {
     const record = await readRunRecord(reader.kv, endpoint, runId);
@@ -405,6 +409,7 @@ async function resume(values: RunValues, runId: string | undefined): Promise<voi
     }
     source = await resumeSource(values, reader, endpoint, runId);
     status = record.status?.value;
+    activation = lastActivation((await replayRunJournal(reader.js, reader.jsm, reader.space, runId, readerTakeover)).records);
     // The ORIGINAL admission (SPEC 14.8): a resume continues under it, never under a new one.
     admission = await readRunAdmission(reader.jsm, reader.space, endpoint, runId);
     if (admission.revoked !== undefined) {
@@ -415,11 +420,11 @@ async function resume(values: RunValues, runId: string | undefined): Promise<voi
     await reader.close();
   }
   const who = cliHolder();
-  const epoch = (status?.epoch ?? 0) + 1;
+  const epoch = Math.max(status?.epoch ?? 0, activation?.epoch ?? 0) + 1;
   const takeoverId = newTakeoverId();
   const planes = await openPlanes(values, "run-driver", { runDriver: { endpoint, runId, takeoverId, instanceId: who.instanceId, epoch } });
   try {
-    await drive(values, planes, { endpoint, runId, source, who, epoch, fencingToken: (status?.fencingToken ?? 0) + 1, takeoverId, mode: "existing", admission });
+    await drive(values, planes, { endpoint, runId, source, who, epoch, fencingToken: Math.max(status?.fencingToken ?? 0, activation?.fencingToken ?? 0) + 1, takeoverId, mode: "existing", admission });
   } finally {
     await planes.close();
   }
@@ -517,7 +522,7 @@ async function answer(values: RunValues, reader: Planes, runId: string | undefin
     { runId, stepKey, takeoverId },
   ).catch((e: unknown) => {
     // Locating writes nothing, so a pause it does not find is refused as the hosted answer refuses it.
-    if (e instanceof CheckpointNotOpen) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: `read the run's open requests with \`cotal run show ${runId} --local\`` });
+    if (e instanceof CheckpointNotOpen) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: e.why === "no-run" ? `list the recorded runs with \`cotal run --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` : `read the run's open requests with \`cotal run show ${runId} --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` });
     throw e;
   });
   // Resume is holder-bound (SPEC 13.10) and the CLI is not the driver: the resolver presents as
@@ -560,7 +565,7 @@ async function amend(values: RunValues, reader: Planes, runId: string | undefine
     { runId, stepKey, takeoverId },
   ).catch((e: unknown) => {
     // Locating writes nothing, so an answer it does not find is refused as the hosted amend refuses it.
-    if (e instanceof CheckpointNotAmendable) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: `read the run's answers with \`cotal run show ${runId} --local\`` });
+    if (e instanceof CheckpointNotAmendable) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: e.why === "no-run" ? `list the recorded runs with \`cotal run --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` : `read the run's answers with \`cotal run show ${runId} --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` });
     throw e;
   });
   const writer = await openPlanes(values, "run-operator", { runOperator: { endpoint, takeoverId: newTakeoverId(), answers: { token: accepted.token } } });
@@ -602,18 +607,6 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
     console.error(USAGE);
     console.error("run check: <runId> and <program> are required");
     process.exit(1);
-  }
-  // Commit-side overrides, refused by name: each one records a person's decision on a report the
-  // commit would file, and a check that accepted one would be reporting a decision nobody filed.
-  for (const [flag, what] of [
-    ["adopt", "--adopt <handle>"],
-    ["release", "--release <handle>"],
-    ["discard-approvals", "--discard-approvals"],
-  ] as const) {
-    if (values[flag] !== undefined) {
-      console.error(`run check: ${what} decides what a COMMIT does with an orphan, and this verb only checks; nothing was written`);
-      process.exit(1);
-    }
   }
   const endpoint = values.endpoint ?? "manager";
   const record = await readRunRecord(planes.kv, endpoint, runId);
@@ -743,9 +736,11 @@ export function managerRefusal(command: string, space: string, args: Record<stri
   // A resume refused as a precondition, such as of a completed or failed run, appended nothing, so
   // the run's recorded state is what to read next.
   const resumeBlocked = command === "run-resume" && err?.code === "failed-precondition" && typeof args?.runId === "string";
+  const selection = ` --space ${space}${on ? ` --on ${on}` : ""}${typeof args?.endpoint === "string" ? ` --endpoint ${args.endpoint}` : ""}`;
+  const missingRun = err?.message?.endsWith(": no run is recorded under that id") === true;
   const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; \`cotal run\` lists a run once it has` }
-    : resumeBlocked ? { remedy: `read the run's recorded state with \`cotal run show ${args.runId}${on ? ` --on ${on}` : ""}\`` }
-    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with \`cotal run show ${args.runId}\`` : "list the recorded runs with `cotal run`" };
+    : resumeBlocked ? { remedy: `read the run's recorded state with \`cotal run show ${args.runId}${selection}\`` }
+    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" && !missingRun ? `read the run's ${args.amend === true ? "answers" : "open requests"} with \`cotal run show ${args.runId}${selection}\`` : `list the recorded runs with \`cotal run${selection}\`` };
   if (code) return new CommandFailure("refused", err!.details?.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND) ? "SCHEMA_INVALID" : code, message, { ...options, ...remedy });
   // A reply too large for the broker changed nothing; the local read takes no reply.
   if (command === "run-status" && err?.code === "resource-exhausted")
@@ -960,10 +955,6 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
   }
   if (verb === "resume") {
     if (a === undefined) { console.error(USAGE); process.exit(1); }
-    if (values.file !== undefined) {
-      console.error(`run resume: the manager resumes a run from its recorded program, so --file is not taken; a run with no recorded program is resumed with \`cotal run resume ${a} --local --file <program>\``);
-      process.exit(1);
-    }
     const resumed = await ask("run-resume", { runId: a, ...(values.timeout !== undefined ? { timeout: values.timeout } : {}) }) as { runId: string };
     runReceipt("resume", space, resumed, values);
     return;
@@ -1039,7 +1030,7 @@ export async function withMatchingKeys(error: unknown, runId: string, stepKey: s
   // A step name comes from the program, so it is escaped and quoted before the terminal shows it.
   const quoted = (key: string) => `'${oneLine(key).replaceAll("'", `'\\''`)}'`;
   const remedy = matches.length === 1
-    ? `the open request ${quoted(matches[0]!)} matches; answer it with \`cotal run answer ${runId} ${quoted(matches[0]!)} --value '<json>'${values.on ? ` --on ${values.on}` : ""}\``
+    ? `the open request ${quoted(matches[0]!)} matches; answer it with \`cotal run answer ${runId} ${quoted(matches[0]!)} --value '<json>'${values.space ? ` --space ${values.space}` : ""}${values.on ? ` --on ${values.on}` : ""}\``
     : `the open requests that match are ${matches.map(quoted).join(", ")}; pass one of them as the step`;
   return new CommandFailure(error.outcome, error.code, error.message, { remedy, target: error.target, ...(error.native ? { native: error.native } : {}) });
 }
@@ -1155,8 +1146,11 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns; run `cotal run yield <turn-id>`" : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],
-    "admit-read": ["start"], "admit-publish": ["start"], adopt: ["migrate"], release: ["migrate"], "discard-approvals": ["migrate"],
+    "admit-read": ["start"], "admit-publish": ["start"], adopt: [], release: [], "discard-approvals": [],
   };
+  for (const flag of ["adopt", "release", "discard-approvals"] as const)
+    if (verb === "migrate" && values[flag] !== undefined)
+      usage(`run check: --${flag} decides what a commit does with an orphan, and this verb only checks; nothing was written`, `run the check without --${flag}`);
   for (const [flag, modes] of Object.entries(scopes)) if (args.values[flag] !== undefined && !modes.includes(verb)) usage(`--${flag} is not taken by this run command`);
   // The limit of every checkpoint, ask and turn that sets none of its own, so a zero expires each at once.
   if (values.timeout !== undefined && !(isDuration(values.timeout) && parseDuration(values.timeout) > 0))
@@ -1196,6 +1190,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     usage(`run ${verb} --local requires --by <who>; nothing was written`, "add --by <who> to name the local answerer");
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
   if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");
+  if (verb === "resume" && values.file !== undefined && values.local !== true)
+    usage("run resume: the manager resumes a run from its recorded program, so --file is not taken", `omit --file to resume the recorded program with \`cotal run resume ${a}${values.space ? ` --space ${values.space}` : ""}${values.on ? ` --on ${values.on}` : ""}\`; a run with no recorded program uses \`cotal run resume ${a} --local --file <program>\``);
   if (values.value !== undefined) checkAnswerValue(values.value, usage);
   if (values.artifact !== undefined && !values.artifact.trim()) usage("--artifact names the artifact the answer cites, so it cannot be empty");
   if (values.handler !== undefined && verb !== "simulate") usage("--handler belongs to run simulate");

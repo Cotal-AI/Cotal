@@ -56,7 +56,7 @@ import { openSetupLog, type SetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
-import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
+import { cotalOnPath, displayCmd, isNpx, isPnpmDlx, selfArgv } from "../lib/self-exec.js";
 import { addExtension, ExtensionAddInterrupted, exitOnInterruptedAdd } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { ManagedLaunchResult } from "@cotal-ai/workspace/launch";
@@ -186,6 +186,7 @@ interface SetupResult {
     readonly name: string;
     /** Host tools the harness needs that are not on PATH; its own setup did not run. */
     readonly missing: readonly string[];
+    readonly unavailable: boolean;
     readonly failed: ActionFailure | null;
   };
   /** Every connector-owned setup action that ran, in order. */
@@ -697,7 +698,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     space: inputs.space,
     project: inputs.project,
     spaceState,
-    harness: { name: candidate.value, missing: candidate.missing, failed },
+    harness: { name: candidate.value, missing: candidate.missing, unavailable: candidate.unavailable && (candidate.connector.requires ?? []).every((bin) => !!resolveOnPath(bin)), failed },
     actions: actions.ran,
     runtimes: runtimes.rows,
     written,
@@ -892,7 +893,9 @@ function setupView(r: SetupResult): Report {
         ? { text: `set up ${r.space} for ${r.harness.name}`, tone: "ok", mark: "✓" }
         : { text: `${r.space} is already set up for ${r.harness.name}`, tone: "ok", mark: "✓" };
   const leftOut = r.runtimes.filter((x) => !x.selected && x.state === "left-out").map((x) => x.name);
-  const application: Cell = r.harness.missing.length > 0
+  const application: Cell = r.harness.unavailable
+    ? { text: `${r.harness.name} · unavailable`, tone: "failed" }
+    : r.harness.missing.length > 0
     ? { text: `${r.harness.name} · ${r.harness.missing.join(", ")} not on PATH`, tone: "failed" }
     : r.harness.failed
       ? { text: `${r.harness.name} · ${r.harness.failed.title} did not finish`, tone: "failed" }
@@ -987,19 +990,20 @@ function isDir(path: string): boolean {
   }
 }
 
-/** When run via `npx` without a global `cotal`, offer to install it so the user can just type
- *  `cotal`. Interactive: a Y/n prompt (default yes). Non-interactive (`--yes` / no TTY): takes the
- *  default and installs. Best-effort — `npm i -g` fails a lot (EACCES, nvm/fnm/volta), so on failure
- *  we warn with the manual command and continue; setup never aborts over a PATH convenience. */
+/** When run via `npx` or `pnpm dlx` without a global `cotal`, offer to install it so the user can
+ *  just type `cotal`. Interactive: a Y/n prompt (default yes). Non-interactive (`--yes` / no TTY):
+ *  takes the default and installs. Best-effort — `npm i -g` fails a lot (EACCES, nvm/fnm/volta), so on
+ *  failure we warn with the manual command and continue; setup never aborts over a PATH convenience. */
 export async function offerGlobalInstall(yes: boolean): Promise<void> {
-  if (!isNpx() || cotalOnPath()) return; // already have `cotal`, or not an npx run
+  if ((!isNpx() && !isPnpmDlx()) || cotalOnPath()) return; // already have `cotal`, or not an ephemeral runner
+  const runnerCmd = isPnpmDlx() ? "pnpm dlx cotal-ai" : "npx cotal-ai";
 
   if (!yes && process.stdin.isTTY && !inputDisabledByFlag()) {
     const go = abortIfCancel(
       await p.confirm({ message: "Install `cotal` globally so you can just type `cotal`?", initialValue: true }),
     );
     if (!go) {
-      p.log.info(`No problem - keep using ${dim("npx cotal-ai")}. Install later with ${dim("npm i -g cotal-ai")}.`);
+      p.log.info(`No problem - keep using ${dim(runnerCmd)}. Install later with ${dim("npm i -g cotal-ai")}.`);
       return;
     }
   }
@@ -1014,7 +1018,7 @@ export async function offerGlobalInstall(yes: boolean): Promise<void> {
     s.stop("Couldn't install globally");
     const tail = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-3).join("\n");
     p.log.warn(
-      `${tail ? `${tail}\n\n` : ""}Install it yourself with ${dim("npm i -g cotal-ai")}, or keep using ${dim("npx cotal-ai")}.`,
+      `${tail ? `${tail}\n\n` : ""}Install it yourself with ${dim("npm i -g cotal-ai")}, or keep using ${dim(runnerCmd)}.`,
     );
   }
 }

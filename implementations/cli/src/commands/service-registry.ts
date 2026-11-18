@@ -163,7 +163,8 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     const presetWarnings = presets.filter((row) => row.problem).map((row) => ({ ...row.problem!, target: { space, name: row.name, adapter: row.adapter } }));
     const supervisorWarnings = instances.filter((row) => ["missing", "modified", "unreadable", "foreign-host"].includes(row.supervisorRecord.fileObservation)).map((row) => ({ code: "SUPERVISOR_OBSERVATION_UNAVAILABLE", target: { space, instanceId: row.instanceId, unit: row.supervisorRecord.unit }, message: "The recorded supervisor file is missing, modified, unreadable or on another host. It was not treated as uninstalled, stopped or safe for direct process control." }));
     const warnings = [...unread, ...presetWarnings, ...supervisorWarnings, ...(catalogFailure ? [catalogFailure] : []), ...(attempts.length ? [{ code: "RETAINED_NATIVE_ATTEMPT", target: { space, count: attempts.length }, message: "Retained native attempts may have changed service state; inspect their exact instance IDs before any new action." }] : [])];
-    const services = serviceRows(space, root, catalog.map((row) => row.preset), store.list(), instances);
+    const onSpace = args.values.space !== undefined ? ` --space ${oneLine(space)}` : "";
+    const services = serviceRows(space, root, catalog.map((row) => row.preset), store.list(), instances, onSpace);
     writeResult(presentation, { command: "service", target, result: { kind: "service-inventory", services, definitions, instances, attempts, processes, presets, presetCompleteness: catalogFailure ? "unavailable" : presetWarnings.length ? "partial" : "complete-cached-inventory", presetCatalogUnavailable: catalogFailure?.message ?? null, instanceCompleteness: "complete-local-process-records", remoteRegistrations: "not-checked" }, ...(warnings.length ? { completeness: "partial", partial: { message: "Some local component records, preset metadata or supervisor-file observations were unavailable, or a native attempt remains unsettled. The inventory is not a settled service state." } } : {}), warnings: [...warnings, ...await readinessAddressSurvivors(space)] }, (result): Report => ({ sections: [
       { title: "Services", blocks: [
         { kind: "fields", rows: [["Space", space], ["Folder", root]] },
@@ -175,7 +176,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       ...(result.attempts.length ? [{ title: "Retained native attempts", blocks: [{ kind: "table" as const, columns: [{ key: "kind", label: "Action" }, { key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "step", label: "Step" }, { key: "position", label: "Position" }, { key: "record", label: "Instance record" }], rows: result.attempts.slice(0, 100).map((row) => ({ kind: row.kind, definition: row.definition, instance: row.instanceId, step: row.step, position: row.position, record: row.instanceRecordPresent ? "present" : "absent" })) }, { kind: "lines" as const, lines: [...(result.attempts.length > 100 ? ["Additional retained attempts are in JSON."] : []), "A submitted or unknown step may have affected the original unit. An absent instance record does not settle its attempt. No native action was retried or reconciled."] }] }] : []),
       ...(recordedOnly(result.processes, result.instances).length ? [{ title: "Processes `cotal up` recorded by PID", blocks: [{ kind: "table" as const, columns: [{ key: "name", label: "Component" }, { key: "process", label: "PID observation" }], rows: recordedOnly(result.processes, result.instances).map((row) => ({ name: row.component, process: { text: row.processState === "alive" ? `PID present · ${row.pid}` : row.processState, tone: row.processState === "unreadable" || row.processState === "unattributable" ? "failed" as const : "waiting" as const } })) }, { kind: "lines" as const, lines: [{ text: "These are not saved services: `cotal down` stops them with their stack. A PID record proves neither ownership nor a serving endpoint.", tone: "hint" as const }] }] }] : []),
       ...(result.presets.some((row) => row.problem) ? [{ title: "Preset problems", blocks: [{ kind: "lines" as const, lines: result.presets.filter((row) => row.problem).map((row) => `${row.name}: ${row.problem!.message}`) }] }] : []),
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal manager start", description: "Start the manager that runs your agents here" }, { command: "cotal service start <service>", description: "Start a built-in service from its defaults" }, { command: "cotal service add <name> --exec \"<command>\"", description: "Save your own program as a service, then start it by name" }] }] },
+      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal manager start${onSpace}`, description: "Start the manager that runs your agents here" }, { command: `cotal service start <service>${onSpace}`, description: "Start a built-in service from its defaults" }, { command: `cotal service add <name> --exec "<command>"${onSpace}`, description: "Save your own program as a service, then start it by name" }] }] },
     ] }));
     return;
   }
@@ -286,8 +287,11 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const record = store.commit(name, undefined, checked)!;
   // The executable as saved: a bare name in the input is saved as the absolute path add found for it.
   const executable = definition.launch.type === "process" ? definition.launch.executable : null;
+  // A space named with --space stays on the lines it suggests, since a bare one from this folder can
+  // resolve to another (#7642).
+  const onSpace = args.values.space !== undefined ? ` --space ${oneLine(space)}` : "";
   writeResult(presentation, { command: "service", target: { ...target, name }, result: { kind: "service-definition-added", name, revision: record.revision, space, preset: chosenPreset ?? null, executable, started: false, authorityGranted: false } }, (): Report => ({ sections: [{ title: "Service definition saved", blocks: [{ kind: "fields", rows: [["Name", name], ["Space", space], ["Execution host", "this machine"], ...(executable ? [["Executable", executable] as [string, string]] : []), ["Revision", record.revision], ["Process", "not started"], ["Authority", "not granted"]] }, { kind: "lines", lines: [{ text: "Only the owner-private definition was saved. Referenced credential contents were not read. This declaration is not a process sandbox.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal svc start ${name}`, description: "Start it; dependencies are not started for it" }, { command: `cotal svc show ${name}`, description: "Read its saved launch and readiness policy" }] }] }] }));
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal svc start ${name}${onSpace}`, description: "Start it; dependencies are not started for it" }, { command: `cotal svc show ${name}${onSpace}`, description: "Read its saved launch and readiness policy" }] }] }] }));
   /** The definition `show` or `remove` acts on: the one of this name, else the space's one service
    *  built on the preset of this name, said on stderr as the other actions say it. */
   function savedService(requested: string): ServiceDefinitionSnapshot | undefined {
@@ -306,8 +310,9 @@ function recordedOnly<T extends { processState: string; pid?: number }>(processe
 }
 
 /** One row per service a person can name here: each saved definition, and each built-in preset no
- *  saved definition of this folder runs yet. `next` is the one command that moves it forward. */
-function serviceRows(space: string, root: string, catalog: readonly ServicePreset[], saved: readonly ServiceDefinitionSnapshot[], instances: readonly ReturnType<typeof instanceProjection>[]) {
+ *  saved definition of this folder runs yet. `next` is the one command that moves it forward, with
+ *  `onSpace`, the `--space` the list was given, on its service and manager commands (#7642). */
+function serviceRows(space: string, root: string, catalog: readonly ServicePreset[], saved: readonly ServiceDefinitionSnapshot[], instances: readonly ReturnType<typeof instanceProjection>[], onSpace: string) {
   const byAdapter = new Map(catalog.map((preset) => [preset.adapter, preset.name] as const));
   const rows: { name: string; preset: string | null; definition: string | null; state: string; needs: string[]; next: string }[] = [];
   const presetOf = (row: ServiceDefinitionSnapshot) => row.record.value.launch.type === "adapter" ? byAdapter.get(row.record.value.launch.adapter) ?? null : null;
@@ -327,7 +332,7 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
     }
     // A stack member starts and stops with the stack. Starting one by itself leaves its process
     // running and the space unregistered, which no command except down then accepts.
-    const next = !running && isStackMember(space, row.name) ? "cotal up" : preset === "manager" && managers === 1 ? `cotal manager ${action}` : `cotal service ${action} ${row.name}`;
+    const next = !running && isStackMember(space, row.name) ? "cotal up" : preset === "manager" && managers === 1 ? `cotal manager ${action}${onSpace}` : `cotal service ${action} ${row.name}${onSpace}`;
     rows.push({ name: row.name, preset, definition: row.name, state, needs: [], next });
   }
   for (const preset of catalog) {
@@ -344,7 +349,7 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
     // A preset that runs many instances is added under a name of your own; any other starts by its name.
     const line = several ? `cotal service add <name> --preset ${preset.name}` : preset.name === "manager" ? "cotal manager start" : `cotal service start ${preset.name}`;
     rows.push({ name: preset.name, preset: preset.name, definition: null, state: recorded ? `running, pid ${recorded.pid}, started by \`cotal up\`` : "not started", needs,
-      next: recorded ? "cotal status" : [line, ...needs].join(" ") });
+      next: recorded ? "cotal status" : `${[line, ...needs].join(" ")}${onSpace}` });
   }
   return rows;
 }

@@ -187,16 +187,22 @@ export function assertStoreDirArgument(value: string, root: string): void {
  *  folder it writes first, `jetstream` inside the store once a broker made it, or else the store
  *  itself. A store this account cannot search hides its `jetstream`, so the store is that folder.
  *  nats-server tests that folder when it starts and exits, naming the cause only in its log.
- *  The sentence and the next step, or undefined when the write target is writable and the store root
- *  readable, or neither exists. A folder without read or search access needs those back too, which
+ *  The sentence and the next step, or undefined when the write target and store root are writable,
+ *  the store root readable, or neither exists. A folder without read or search access needs those back too, which
  *  `u+w` leaves out. */
 export function storeWriteProblem(storeDir: string): { path: string; message: string; remedy: string } | undefined {
   const jetstream = join(storeDir, "jetstream");
   let inner: Stats | undefined;
   try { inner = statIfPresent(jetstream); }
   catch (error) { if (!["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error; }
-  const path = inner?.isDirectory() ? jetstream : statIfPresent(storeDir)?.isDirectory() ? storeDir : undefined;
+  let path = inner?.isDirectory() ? jetstream : statIfPresent(storeDir)?.isDirectory() ? storeDir : undefined;
   if (path === undefined) return undefined;
+  // A remedy for the child alone leaves a read-only store root impossible to clean or reset.
+  try { accessSync(storeDir, constants.W_OK | constants.X_OK); }
+  catch (error) {
+    if (!["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    path = storeDir;
+  }
   try { accessSync(path, constants.W_OK | constants.X_OK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;

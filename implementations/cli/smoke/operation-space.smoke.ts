@@ -26,6 +26,7 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { agentFilePath } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { recordMesh } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -35,6 +36,8 @@ if (!existsSync(BIN)) {
 
 interface Envelope {
   outcome: string;
+  completeness?: string;
+  result?: { requestedName?: string };
   target: Record<string, unknown> | null;
   error?: { code: string; message?: string; remedy?: string };
 }
@@ -141,15 +144,37 @@ for (const [argv, rerun] of [
   [["persona", "create", "h1", "--prompt", "x", "--on", "bad"], "cotal persona create h1 --on <instance>"],
   // #7322: a verb that targets an agent keeps the agent, its other positionals and the space it named.
   [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --on <instance>"],
-  [["input", "default_agent", "hello", "--on", "bad"], "cotal input default_agent <text> --on <instance>"],
+  // #7644: input gives its text again, quoted for a shell, rather than a `<text>` a shell reads as a redirection.
+  [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --on <instance>"],
   [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
   [["stop", "default_agent", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --space elsewhere --on <instance>"],
+  // #7644: ps and models keep the --space and filter they were given.
+  [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --space elsewhere --on <instance>"],
+  [["models", "--harness", "claude", "--on", "bad"], "cotal models --harness claude --on <instance>"],
+  [["spawn", "default", "-d", "--on", "bad"], "cotal spawn default -d --on <instance>"],
 ] as const) {
   const pinned = cotal(...argv, "--json");
   const said = `${pinned.envelope?.error?.message ?? ""} ${pinned.envelope?.error?.remedy ?? ""}`;
   check(`${argv.slice(0, -2).join(" ")} --on bad names ${rerun} and never --on twice`,
     pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as \`${rerun}\``) && !said.includes("--on --on"), shown(pinned));
 }
+// #7644: a principal id, an empty value and an endpoint's malformed --on are refused while the
+// arguments are read, with the command to rerun in the message. It keeps the command's words and
+// the --space it was given; it used to keep only the verb.
+for (const [argv, rerun] of [
+  [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --space elsewhere --on <instance>"],
+  [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --on <instance>"],
+  [["stop", "default_agent", "--on", ""], "cotal stop default_agent --on <instance>"],
+  [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance>"],
+  [["endpoint", "invoke", "ai.cotal.manager", "ps", "--on", "bad"], "cotal endpoint invoke ai.cotal.manager ps --on <instance>"],
+] as const) {
+  const refused = cotal(...argv, "--json");
+  check(`${argv.join(" ")} names ${rerun}`,
+    refused.status === 1 && refused.envelope?.error?.code === "USAGE_INVALID" && (refused.envelope.error.message ?? "").includes(`\`${rerun}\``), shown(refused));
+}
+const attachPrincipal = cotal("attach", "default_agent", "--on", "local.U123");
+check("attach default_agent --on local.U123 names cotal attach default_agent --on <instance> (#7644)",
+  attachPrincipal.status === 1 && attachPrincipal.stderr.includes("`cotal attach default_agent --on <instance>`"), shown(attachPrincipal));
 // attach has no structured output, so its refusal is read from the terminal text.
 const attachPinned = cotal("attach", "default_agent", "--on", "bad");
 check("attach default_agent --on bad names cotal attach default_agent --on <instance> (#7322)",
@@ -250,6 +275,55 @@ const knownDirect = cotal("spawn", "--file", "pv.md", "--harness", "opencode", "
 const knownPreview = knownDirect.envelope as unknown as { result?: Preview; warnings?: unknown[] } | undefined;
 check("a known harness still previews the file's source without warnings or importing its connector",
   knownDirect.status === 0 && knownPreview?.result?.harness === "opencode" && knownPreview.result.persona?.source === "file" && same(knownPreview.warnings, []), shown(knownDirect));
+
+// The display name in a persona need not be a launch identity. Preview the effective value with
+// the same local rule as foreground launch, including the selected space's actor-token bound.
+writeFileSync(agentFilePath(root, "invalid-name"), "---\nname: bad name\n---\n");
+for (const args of [
+  ["invalid-name"],
+  ["invalid-name", "--server", "nats://127.0.0.1:34300"],
+  ["--file", "pv.md", "--name", "bad name"],
+]) {
+  for (const format of [[], ["--plain"], ["--json"]]) {
+    const invalid = cotal("spawn", ...args, "--dry-run", ...format);
+    const message = 'unsafe name "bad name" (allowed: letters, digits, _ -)';
+    check(`direct preview refuses the effective name from ${args.join(" ")} in ${format[0] ?? "text"}`,
+      invalid.status === 1 && (format[0] === "--json"
+        ? invalid.envelope?.outcome === "refused" && invalid.envelope.error?.code === "USAGE_INVALID"
+          && invalid.envelope.error.message === message && invalid.envelope.target?.space === "opsp" && invalid.stderr === ""
+        : invalid.stdout === "" && invalid.stderr.includes(message)), shown(invalid));
+  }
+}
+for (const [args, name] of [
+  [["--file", "pv.md", "--name", "good-name"], "good-name"],
+  [["invalid-name", "--name", "good_override"], "good_override"],
+] as const) {
+  const valid = cotal("spawn", ...args, "--dry-run", "--json");
+  check(`direct preview accepts effective name ${name} without validating the overridden display name`,
+    valid.status === 0 && valid.envelope?.outcome === "ok" && valid.envelope.completeness === "complete"
+      && valid.envelope.result?.requestedName === name, shown(valid));
+}
+const userRoot = join(home, "user-project");
+mkdirSync(dirname(agentFilePath(userRoot, "minimal")), { recursive: true });
+writeFileSync(agentFilePath(userRoot, "minimal"), "---\nname: minimal\n---\n");
+const priorHome = process.env.COTAL_HOME;
+try {
+  process.env.COTAL_HOME = env.COTAL_HOME;
+  recordMesh({ space: "preview-user", server: "nats://127.0.0.1:34300", root: userRoot, mode: "user", origin: "manual",
+    userAuth: { provider: "cotal", idp: { url: "https://idp.example/api/auth", issuer: "https://idp.example", audience: "https://idp.example" } }, ts: new Date().toISOString() });
+} finally {
+  if (priorHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = priorHome;
+}
+for (const [name, accepted] of [["good_user_name", true], ["a".repeat(64), true], ["bad-hyphen", false], ["a".repeat(65), false]] as const) {
+  const preview = cotal("spawn", "minimal", "--space", "preview-user", "--name", name, "--dry-run", "--json");
+  check(`user-mode direct preview ${accepted ? "accepts" : "refuses"} ${name}`,
+    accepted
+      ? preview.status === 0 && preview.envelope?.outcome === "ok" && preview.envelope.result?.requestedName === name
+      : preview.status === 1 && preview.envelope?.outcome === "refused" && preview.envelope.error?.code === "USAGE_INVALID"
+        && preview.envelope.error.message?.startsWith(`name "${name}" cannot be a mesh identity in user mode`) === true
+        && preview.envelope.target?.space === "preview-user" && preview.stderr === "", shown(preview));
+}
 writeFileSync(join(root, "pin.md"), "---\nname: pinned\nagent: nosuch\n---\n");
 const pinned = cotal("spawn", "--file", "pin.md", "--dry-run", "--json");
 check("an unknown persona harness pin is refused by a direct preview",

@@ -35,6 +35,8 @@
     "gen:conformance": "tsx scripts/generate-conformance-corpus.ts",
     "smoke:callout-load-result": "tsx implementations/auth/smoke/callout-load-result.smoke.ts",
     "check:doc-comments": "node tools/docs-checks/check-doc-comments.mjs && node tools/docs-checks/check-doc-comments.smoke.mjs",
+    "check:comment-history": "node scripts/check-comment-history.mjs && node scripts/check-comment-history.smoke.mjs",
+    "check:comment-history:update": "node scripts/check-comment-history.mjs --update-allowlist",
     "check:docs-voice": "node tools/docs-checks/check-docs-voice.mjs",
     "check:docs-literals": "node tools/docs-checks/check-docs-literals.mjs",
     "check:docs-site": "node website/scripts/sync-docs.mjs",

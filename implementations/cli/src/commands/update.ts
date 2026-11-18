@@ -10,6 +10,7 @@ import {
   processStartToken,
   claimUpdateClosureAccess,
   updateClosureOwner,
+  homeCotalDir,
   readUpdateRecovery,
   clearUpdateRecovery,
   writeUpdateRecovery,
@@ -135,7 +136,9 @@ export interface UpdateRuntime {
   isCurrent?(): boolean;
   reconcile(): Promise<void>;
   /** Preserve native custody of an authenticated automatic update child before reconciliation. */
-  adoptUpdateChild?(): Promise<void>;
+  adoptUpdateChild?(): Promise<boolean | void>;
+  /** The native updater can survive its daemon's restart and verify automatic activation. */
+  automaticGenerationWait?: boolean;
   /** Bring what connectors installed in their harnesses to this release; one line per connector. */
   refreshConnectors(): Promise<readonly string[]>;
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
@@ -238,14 +241,37 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   if (args.values.auto || args.values.notify) {
     const key = args.values.auto ? "auto" : "notify";
     const value = args.positionals[0];
-    const current = readUpdateSettings(backup => rt.err(`Damaged update settings saved to ${backup}; using defaults (automatic updates and notices on).`));
+    let recoveredBackup: string | undefined;
+    const current = readUpdateSettings(backup => {
+      recoveredBackup = backup;
+      if (!args.values.json) rt.err(`Damaged update settings saved to ${backup}; using defaults (automatic updates and notices on).`);
+    });
     const settings = value === undefined ? current : setUpdateSetting(key, value === "on");
-    rt.out(`${key === "auto" ? "Automatic updates" : "Update notices"}: ${settings[key] ? "on" : "off"}${rt.env.COTAL_NO_UPDATE_CHECK === "1" ? " (disabled by COTAL_NO_UPDATE_CHECK=1)" : ""}`);
-    if (key === "auto" && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) rt.out("This runtime belongs to the desktop app. Automatic npm updates have no effect here; update the desktop app with its signed platform installer.");
-    else if (key === "auto" && settings.auto && ["linux", "darwin", "win32"].includes(process.platform) && rt.env.COTAL_NO_UPDATE_CHECK !== "1") {
-      const advice = await rt.automaticUpdateAdvice();
+    const disabledByEnv = rt.env.COTAL_NO_UPDATE_CHECK === "1";
+    const desktop = key === "auto" && existsSync(join(cliPackageRoot(), "desktop-runtime.json"));
+    const advice = desktop
+      ? "This runtime belongs to the desktop app. Automatic npm updates have no effect here; update the desktop app with its signed platform installer."
+      : key === "auto" && settings.auto && ["linux", "darwin", "win32"].includes(process.platform) && !disabledByEnv
+        ? await rt.automaticUpdateAdvice()
+        : undefined;
+    const line = `${key === "auto" ? "Automatic updates" : "Update notices"}: ${settings[key] ? "on" : "off"}${disabledByEnv ? " (disabled by COTAL_NO_UPDATE_CHECK=1)" : ""}`;
+    if (!args.values.json && !args.values.plain) {
+      rt.out(line);
       if (advice) rt.out(advice);
+      return;
     }
+    const file = join(homeCotalDir(), "update-settings.json");
+    const warnings: OutputWarning[] = recoveredBackup
+      ? [{ code: "SETTINGS_RECOVERED", target: { file, backup: recoveredBackup }, message: `Damaged update settings saved to ${recoveredBackup}; using defaults (automatic updates and notices on).` }]
+      : [];
+    const noOp = value !== undefined && recoveredBackup === undefined && current[key] === settings[key];
+    writeResult(presentationOf(args.values), {
+      command: "update",
+      target: null,
+      result: { kind: "update-preference", preference: key, enabled: settings[key], effective: !disabledByEnv && !desktop && settings[key], disabledByEnv, advice: advice ?? null, file },
+      warnings,
+      noOp,
+    }, () => ({ sections: [{ blocks: [{ kind: "lines", lines: advice ? [line, advice] : [line] }] }] }));
     return;
   }
   if (args.values.check === true) return checkUpdate(args, rt);
@@ -398,7 +424,7 @@ export function validateUpdateArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (args.values["stop-agents"] && args.values.self !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--stop-agents requires `cotal update --self`");
   if (args.values.auto || args.values.notify) {
-    if (args.values.auto && args.values.notify || args.values.self || args.values.check || args.values.json || args.values.plain || args.values.space || args.values.server || args.values.creds || args.values.on || args.positionals.length > 1 || args.positionals.some(value => value !== "on" && value !== "off"))
+    if (args.values.auto && args.values.notify || args.values.self || args.values.check || args.values.space || args.values.server || args.values.creds || args.values.on || args.positionals.length > 1 || args.positionals.some(value => value !== "on" && value !== "off"))
       throw new CommandFailure("refused", "USAGE_INVALID", "use `cotal update --auto [off|on]` or `cotal update --notify [off|on]` without other update flags");
     return;
   }
@@ -454,7 +480,8 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       rt.err(c.red(`✗ global update child is cotal-ai ${current}, expected ${child.target}; refusing to mutate extensions`));
       return 1;
     }
-    try { await rt.adoptUpdateChild?.(); }
+    let independent = false;
+    try { independent = await rt.adoptUpdateChild?.() === true; }
     catch (error) {
       rt.err(c.red(`✗ automatic update custody: ${refusal(error)}; package replacement already occurred; reconciliation was not started and the parent may retry or restore`));
       return 1;
@@ -466,11 +493,9 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     if (journaled) {
       const result = await reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
       if (result !== 0) return result;
-      // The daemon's own update runs inside the daemon's service control group. The restart that
-      // activates this generation stops every process in that group, so this child cannot outlive
-      // it. The journal stays unverified, which holds the daemon on its old generation until the
-      // parent has finished and cleared it.
-      if (rt.env.COTAL_AUTO_UPDATE === "1") return 0;
+      // Only a child whose native custody survived the service boundary can verify activation.
+      // Other automatic helpers retain their existing post-exit activation path.
+      if (rt.env.COTAL_AUTO_UPDATE === "1" && !independent) return 0;
     }
     try {
       const recovery = readUpdateRecovery();
@@ -1050,7 +1075,7 @@ function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
   if (!names.length) return;
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
   try {
-    const result = rt.npm(["install", "--prefix", staging, "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
+    const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
     if (result.status !== 0) throw new Error(`installed extension dependency closure is unavailable: ${failure(result)}`);
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
@@ -1389,7 +1414,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.err(c.red(`✗ cotal-ai@${targetVersion} installed globally, but its reconcile failed: ${failure(child)}`));
     return await repairReplacement(`reconcile failed: ${failure(child)}`, child.status ?? 1, readUpdateRecovery()?.phase === "verified-ready");
   }
-  if (rt.env.COTAL_AUTO_UPDATE !== "1") {
+  if (rt.env.COTAL_AUTO_UPDATE !== "1" || rt.automaticGenerationWait) {
     try {
       const recovery = readUpdateRecovery();
       if (recovery && recovery.phase !== "verified-ready") writeUpdateRecovery({ ...recovery, installed: targetVersion, phase: "verified-ready" });
@@ -1419,7 +1444,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     if (result.stdout) rt.stdout(result.stdout);
     if (result.status !== 0) return false;
     execution?.verify(version);
-    if (rt.env.COTAL_AUTO_UPDATE !== "1") {
+    if (rt.env.COTAL_AUTO_UPDATE !== "1" || rt.automaticGenerationWait) {
       const recovery = readUpdateRecovery();
       if (recovery && recovery.phase !== "verified-ready") writeUpdateRecovery({ ...recovery, installed: version, phase: "verified-ready" });
       await rt.waitForInstalledGeneration?.(version);
@@ -1623,11 +1648,13 @@ async function runGlobalProcess(
   windowsVerbatimArguments = false,
 ): Promise<CommandResult> {
   const mutation = beginGlobalUpdateChild(root, operation);
+  let cache: string | undefined;
   let published = false;
   let preservePending = false;
   try {
+    cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
     const child = withInstallUmask(() => spawn(file, args, {
-      env,
+      env: { ...env, npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
       // A separate process group keeps terminal interrupts out of npm's live replacement.
       // Keep the ChildProcess referenced and await close; this is not a background update.
       detached: true,
@@ -1665,6 +1692,7 @@ async function runGlobalProcess(
     return { status: null, stdout: "", stderr: "", error: message(e) };
   } finally {
     if (!published && !preservePending) mutation.clear();
+    if (cache) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 

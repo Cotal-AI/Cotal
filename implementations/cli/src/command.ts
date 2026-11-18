@@ -91,7 +91,7 @@ function asksForHelp(args: readonly string[]): boolean {
 function takeGlobalFlag(word: string): boolean {
   if (!GLOBAL_FLAG_WORDS.has(word)) return false;
   if (word === "--no-color") disableColor();
-  else if (word === "--no-input") disableInput();
+  else if (word === "--no-input") disableInput(true);
   else return false;
   return true;
 }
@@ -231,6 +231,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (cmd && readsOnly(cmd, sub)) return true;
   if (name === "login") return true; // device approval does not launch or install a connector
   if (name === "logout") return true; // signing out does not install a connector, and a seed refusal must not keep the cached login
+  if (name === "sync") return true; // refreshing account catalogs does not install connectors
   if (name === "use" && sub === undefined) return true; // bare `use` shows the selection: a read
   // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
   // mutation of the operator-global seed store, manifest and npm prefix — it ran BEFORE the command

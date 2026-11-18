@@ -19,7 +19,7 @@
  * Run: pnpm smoke:service-commands:live
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -134,6 +134,10 @@ try {
       row(started.services, "manager")?.state === "running" && row(started.services, "manager")?.next === "cotal manager status" && started.definitions.includes("manager"), started.services);
     const again = cotal(["manager", "start"]);
     check("a second cotal manager start starts nothing", again.status === 0 && out(again).includes("Already running; nothing was started") && inventory().running.filter((name) => name === "manager").length === 1, out(again));
+    // #7642: a start that named its space suggests the logs and stop in that space.
+    const named = cotal(["manager", "start", "--space", SPACE]);
+    check("a cotal manager start with --space suggests cotal manager logs and stop with the same --space",
+      named.status === 0 && new RegExp(`cotal manager logs --space ${SPACE}\\s+Read`).test(out(named)) && new RegExp(`cotal manager stop --space ${SPACE}\\s+Stop it`).test(out(named)), out(named));
     const status = cotal(["manager", "status"]);
     check("cotal manager status reads it", status.status === 0 && /Recorded state:\s+running/.test(out(status)), out(status));
     const logs = cotal(["manager", "logs", "--tail", "20"]);
@@ -166,6 +170,15 @@ try {
     if (helloCode === "timeout") helloFollow.child.kill("SIGINT");
     check("  and a plain service logs hello --follow ends with a sentence, not a raw end record",
       helloCode === 0 && lastLine(helloFollow.text) === "hello is no longer running, so the follow ended." && !/^end: /m.test(helloFollow.text), { helloCode, text: helloFollow.text });
+
+    const helloLog = JSON.parse(cotal(["service", "logs", "hello", "--json"]).stdout) as { result: { path: string } };
+    const helloPath = helloLog.result.path;
+    writeFileSync(`${helloPath}.1`, "previous output\n");
+    check("stopping a service keeps its current log and rotation", existsSync(helloPath) && existsSync(`${helloPath}.1`));
+    const removedHello = cotal(["service", "remove", "hello", "--yes"]);
+    check("removing the definition deletes its stopped instance's log and rotation",
+      removedHello.status === 0 && !existsSync(helloPath) && !existsSync(`${helloPath}.1`) &&
+        out(removedHello).includes("Deleted logs:") && out(removedHello).includes(helloPath), out(removedHello));
 
     const stop = cotal(["manager", "stop", "--yes"]);
     managerUp = stop.status !== 0;
@@ -253,9 +266,12 @@ try {
     check("space create prepares a space for a preset broker", presetSpace.status === 0, out(presetSpace));
     const custom = cotal(["service", "add", "stack-broker", "--exec", "/bin/sleep 600", "--space", PRESET_SPACE]);
     check("a never-started space accepts a process service named stack-broker", custom.status === 0, out(custom));
+    // #7642: an add that named its space suggests the start and show in that space.
+    check("  and its Next starts and shows it with the same --space",
+      new RegExp(`cotal svc start stack-broker --space ${PRESET_SPACE}\\s+Start it`).test(out(custom)) && new RegExp(`cotal svc show stack-broker --space ${PRESET_SPACE}\\s+Read`).test(out(custom)), out(custom));
     const customList = cotal(["service", "--space", PRESET_SPACE, "--json"]);
     const customRows = (JSON.parse(customList.stdout) as { result: { services: Row[] } }).result.services;
-    check("that custom service's Next starts the service rather than a controller stack", row(customRows, "stack-broker")?.next === "cotal service start stack-broker", customRows);
+    check("that custom service's Next starts the service rather than a controller stack, in the space the list named", row(customRows, "stack-broker")?.next === `cotal service start stack-broker --space ${PRESET_SPACE}`, customRows);
     customBrokerUp = true;
     const customStart = cotal(["service", "start", "stack-broker", "--space", PRESET_SPACE]);
     check("a matching stack name does not refuse a direct-process start", customStart.status === 0 && /Recorded state:\s+running/.test(out(customStart)), out(customStart));

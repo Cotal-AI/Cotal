@@ -34,6 +34,7 @@ const {
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
   issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel, LEASE_TTL_MS,
   instanceOnlyManagerCapabilities, runCallerCapabilities, createRunAdmission, admissionBucket,
+  activateRun, createRunSpec, recordRunProgram, readRunRecord,
 } = await import("../../packages/core/dist/index.js");
 const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
@@ -635,6 +636,11 @@ try {
     // sparing stop is refused. The restart takes the predecessor's seats down with it.
     await mgr.stop({ withAgents: true });
     mgr = undefined;
+    const interruptedTakeover = newTakeoverId();
+    const interruptedNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-driver", { runDriver: { endpoint: "manager", runId, takeoverId: interruptedTakeover, instanceId: mintLifecycleUid(), epoch: 2 } }), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      await activateRun(jetstream(interruptedNc), await jetstreamManager(interruptedNc), { space: spaceA, runId, holder: `stopped.${interruptedTakeover}`, epoch: 2, fencingToken: 2, takeoverId: interruptedTakeover, at: Date.now(), expect: "existing" });
+    } finally { await interruptedNc.close(); }
     const leftBehind = await awaitSeatsExited(ownedSeats, 5_000);
     c("the stopped predecessor took its own seat processes down with it",
       ownedSeats.length === 2 && ownedSeats.every((s) => s.token !== undefined)
@@ -659,19 +665,19 @@ try {
         deadlineMs: 30_000, currentEpoch: async () => serviceB.responder.epoch,
         ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
       })).reply;
-    const taken = await until(async () => { const v = await statusB(runId); return v?.status?.epoch === 2 ? v : undefined; }, 15_000);
-    c("the successor takes the parked run back: still running, now under epoch 2, the pause still open",
-      taken?.status?.epoch === 2 && stateOf(taken) === "running" && pending(taken, "Ship it?") !== undefined, { status: taken?.status, ms: Date.now() - t0 });
+    const taken = await until(async () => { const v = await statusB(runId); return v?.status?.epoch === 3 ? v : undefined; }, 15_000);
+    c("the successor takes the parked run back beyond an unnoted activation: epoch 3, the pause still open",
+      taken?.status?.epoch === 3 && stateOf(taken) === "running" && pending(taken, "Ship it?") !== undefined, { status: taken?.status, ms: Date.now() - t0 });
     const busy = await callB("run-resume", { runId });
     c("and holds it: a resume is a conflict on the successor too", busy.ok === false && busy.error?.code === "conflict", busy.error);
     const activations = (taken?.journal ?? []).filter((row): row is Extract<RunJournalRowT, { kind: "activation" }> => row.kind === "activation");
     const holders = activations.map((row) => row.holder);
     c("each attempt activated under ITS OWN holder id (the manager's id plus the takeover id), so no two attempts share the tuple the barrier admits as one process",
-      activations.length === 2 && holders[0] !== holders[1] && holders.every((h) => /\.[0-9a-f]{16}$/.test(h)), holders);
+      activations.length === 3 && new Set(holders).size === 3 && holders.every((h) => /\.[0-9a-f]{16}$/.test(h)), holders);
     const answered = await callB("run-answer", { runId, stepKey: "/checkpoint:approve#0", value: "go" });
     c("the answer lands on the taken-back run", answered.ok === true, answered);
     const done = await until(async () => { const v = await statusB(runId); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
-    c("and it completes under the successor", stateOf(done) === "completed" && done?.status?.epoch === 2, done?.status);
+    c("and it completes under the successor", stateOf(done) === "completed" && done?.status?.epoch === 3, done?.status);
     const ps = await callB("run-ps");
     c("run-ps on the successor shows all three runs completed",
       ps.ok === true && [pureId, cpId, runId].every((x) => (ps.data as RunListRowT[]).find((row) => row.runId === x)?.state === "completed"), ps.data);
@@ -737,6 +743,36 @@ try {
     const done = await until(async () => { const v = await hosting.status({ runId }).catch(() => undefined); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
     c("and the run completes there", stateOf(done) === "completed", done?.status);
     c("the program's log line is written to the hosting manager's log", hostLog.includes(`run ${runId}: log resolved resolved`), hostLog.filter((line) => line.startsWith(`run ${runId}`)));
+    // A fresh attempt may record its program and activation without ever noting running.
+    const freshId = `run-${newTakeoverId()}${newTakeoverId()}`;
+    const freshTakeover = newTakeoverId();
+    const readerNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: "manager", runId, takeoverId: newTakeoverId() } }), tls: false }), maxReconnectAttempts: 0 });
+    let original: Awaited<ReturnType<typeof readRunAdmission>>;
+    let pins: NonNullable<Awaited<ReturnType<typeof readRunRecord>>>["spec"]["value"]["pins"];
+    try {
+      original = await readRunAdmission(await jetstreamManager(readerNc), spaceA, "manager", runId);
+      pins = (await readRunRecord(await openRecordsBucket(readerNc, spaceA), "manager", runId))!.spec.value.pins;
+    } finally { await readerNc.close(); }
+    const admitNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId: freshId } }), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const js = jetstream(admitNc);
+      const createOnly = { create: async (key: string, data: Uint8Array) => {
+        const h = headers();
+        h.set("Nats-Expected-Last-Subject-Sequence", "0");
+        return (await js.publish(`$KV.${admissionBucket(spaceA)}.${key}`, data, { headers: h })).seq;
+      } } as unknown as Parameters<typeof createRunAdmission>[0];
+      await createRunAdmission(createOnly, { ...original.admission, runId: freshId });
+    } finally { await admitNc.close(); }
+    const freshNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-driver", { runDriver: { endpoint: "manager", runId: freshId, takeoverId: freshTakeover, instanceId: mintLifecycleUid(), epoch: 1 } }), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      await activateRun(jetstream(freshNc), await jetstreamManager(freshNc), { space: spaceA, runId: freshId, holder: `stopped.${freshTakeover}`, epoch: 1, fencingToken: 1, takeoverId: freshTakeover, at: Date.now(), expect: "new" });
+      const kv = await openRecordsBucket(freshNc, spaceA);
+      await createRunSpec(kv, "manager", freshId, { pins, createdAt: Date.now() });
+      await recordRunProgram(kv, "manager", { v: 1, run: freshId, source: PURE, at: Date.now() });
+    } finally { await freshNc.close(); }
+    await hosting.resume({ runId: freshId });
+    const fresh = await until(async () => { const v = await hosting.status({ runId: freshId }); return v.status?.state === "completed" ? v : undefined; }, 15_000);
+    c("hosted resume recovers a fresh run with no first running note under epoch 2", fresh?.status?.epoch === 2 && fresh.status.fencingToken === 2, fresh?.status);
     // Revocation through the host (SPEC 14.8): the marker is written under a per-run admitter and a
     // hosted resume refuses by name, before any slot is spent on a drive.
     await hosting.revoke(runId, "operator", "withdrawn after review");
@@ -1010,7 +1046,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 98;
+const EXPECTED_CELLS = 99;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

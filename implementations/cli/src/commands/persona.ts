@@ -39,8 +39,19 @@ type Values = PersonaValues;
 const usage = (message: string) => new CommandFailure("refused", "USAGE_INVALID", message);
 const createOnly = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
 
+export function validatePersonaArguments(args: ParsedArgs): void {
+  presentationOf(args.values);
+  if (args.positionals[0] !== "create") return;
+  const values = args.values as Values;
+  for (const flag of ["file", "from"] as const) {
+    if (values[flag] !== undefined && !values[flag]!.trim())
+      throw new CommandFailure("refused", "USAGE_INVALID", `--${flag} takes a nonempty path`, { remedy: `provide a path with --${flag} <path>, or use --${flag} - to read standard input` });
+  }
+}
+
 /** Local files only: no enrollment, broker connection, catalog refresh or manager authority. */
 export async function persona(args: ParsedArgs): Promise<void> {
+  validatePersonaArguments(args);
   const values = args.values as Values;
   const presentation = presentationOf(values);
   const [sub, name, ...extra] = args.positionals;

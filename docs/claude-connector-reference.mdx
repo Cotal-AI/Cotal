@@ -668,7 +668,9 @@ plugin registers, with their matchers, are listed in the
 A connected native session publishes a structured account of its activity: the messages a person
 typed, assistant replies, run boundaries, and each tool call's start and end. Tool arguments and
 results publish by default on a separately authorized payload rail (below). A turn a peer message
-started opens a run without republishing that message. Reasoning is off by default. Programs can read these events directly. The launcher
+started opens a run without republishing that message. Native wake and inline prompts attributed
+to the Cotal plugin follow the same rule, including when they arrive during an open run.
+Reasoning is off by default. Programs can read these events directly. The launcher
 sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
 space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
 private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
