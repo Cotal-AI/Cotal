@@ -51,7 +51,10 @@ cotal spawn [<persona>] [--file <persona-file>] [-d | --foreground] [--dry-run] 
 
 A bare `spawn` runs the application in this terminal, on every kind of mesh, and no manager is
 involved unless you name one with `--on` or request `--detach`. An explicit empty or whitespace-only
-persona refuses with `USAGE_INVALID`, exit 1, before resolving a target. Its exit, or the terminal's, may end the agent. A manager runs the launch only when you
+persona refuses with `USAGE_INVALID`, exit 1, before resolving a target. Its exit, or the terminal's,
+may end the agent. On `SIGTERM` or `SIGHUP`, a spawn in this terminal forwards the signal to its
+child process, waits for it to stop, retires the seat's provisioned credentials and launch files,
+and exits with the signal's status. A manager runs the launch only when you
 ask for one. `--detach` (`-d`) hands it to a manager, waits until the agent joins, and returns
 without attaching. `--on <instance>` hands it to that manager and attaches this terminal to the
 agent (see [Managed launch view](cli-agent-views.mdx#managed-launch-view)), when that manager's runtime streams a
@@ -66,7 +69,7 @@ checks its persona and connector before it starts the application: a missing per
 with `TARGET_NOT_FOUND` and a missing connector with `DEPENDENCY_UNAVAILABLE`, both with exit 2,
 and the connector refusal names the `cotal ext add` that installs it. `--file` (`-f`) names a
 persona file, never a manifest: manifests deploy with `cotal team deploy <file>`, and a manifest
-passed to `--file` is refused with that command.
+passed to `--file` is refused with that command. An invalid persona file is refused with `SCHEMA_INVALID` (exit 1), naming the field or YAML position without echoing YAML source excerpts.
 
 On a terminal, a bare `spawn` uses this terminal without asking where to run. When several of
 your Managers are live, one line lists them with the `--on <name>` selectors that launch there.
