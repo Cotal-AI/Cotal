@@ -213,9 +213,16 @@ try {
     if (row.actor === "payload_broad") {
       const logStart = brokerLog.length;
       await assert.rejects(read(), /permission/i);
-      const refused = brokerLog.slice(logStart).split("\n").find(line => line.includes("Publish Violation")
-        && line.includes(`$JS.API.CONSUMER.CREATE.${PAYLOAD}.hist_`) && line.includes(`.evp.${OWNER}.${PAYLOAD_ACTOR}`));
-      assert.ok(refused, "the broker logs the foreign payload history permission violation");
+      // The permission reply and the broker's stderr pipe arrive independently.
+      let refused: string | undefined;
+      const logDeadline = Date.now() + 5000;
+      do {
+        refused = brokerLog.slice(logStart).split("\n").find(line => line.includes("Publish Violation")
+          && line.includes(`$JS.API.CONSUMER.CREATE.${PAYLOAD}.hist_`) && line.includes(`.evp.${OWNER}.${PAYLOAD_ACTOR}`));
+        if (refused || Date.now() >= logDeadline) break;
+        await wait(20);
+      } while (true);
+      assert.ok(refused, `the broker logs the foreign payload history permission violation; broker log tail:\n${brokerLog.slice(-8000)}`);
       console.log(refused);
       console.log("PASS participant foreign payload history denied despite chat and event wildcards, with broker permission violation");
     } else {
