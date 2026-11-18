@@ -373,6 +373,8 @@ keeps a single attempt. Missing archives or invalid
 metadata refuse before global installation or connector reconciliation, with a registry propagation
 hint and a request to check registry access and try again in a few minutes. This preflight does not
 guarantee later registry requests or third-party dependency downloads will succeed.
+Entry version verification allows up to five minutes for a busy or slow machine. A verification
+timeout is reported separately from a wrong version or an entry that exits unsuccessfully.
 Cotal then installs the exact version it validated, resolves and verifies that
 package in npm's global root, then launches that binary with the same `--space` / `--server` /
 `--creds` selection to reconcile connectors and first-party extensions to the new generation. An npx

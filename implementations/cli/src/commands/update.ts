@@ -1004,7 +1004,8 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
         if (manifest.status !== 0) throw releaseReadError(manifest, `metadata for ${spec} is unavailable`);
         let meta: Record<string, unknown>;
         try {
-          const parsed: unknown = JSON.parse(manifest.stdout);
+          const payload: unknown = JSON.parse(manifest.stdout);
+          const parsed = Array.isArray(payload) && payload.length === 1 ? payload[0] : payload;
           if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
           meta = parsed as Record<string, unknown>;
           if (meta.name !== name || meta.version !== version) throw new Error();

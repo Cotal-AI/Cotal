@@ -99,7 +99,7 @@ function codex(...args: string[]): { status: number | null; output: string } {
   if (r.error) {
     const code = (r.error as NodeJS.ErrnoException).code;
     if (code === "ENOBUFS") throw new Error(`codex ${args.join(" ")} printed more than ${CODEX_OUTPUT_LIMIT} bytes`);
-    throw new Error(`codex ${args.join(" ")} could not run: ${r.error.message}`);
+    throw new Error(`codex ${args.join(" ")} could not run: ${r.error.message}`, { cause: r.error });
   }
   return { status: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}`.split("\n").filter((l) => l && !/^WARNING: proceeding/.test(l)).join("\n") };
 }
@@ -177,7 +177,13 @@ export const codexSetupProvider: ConnectorSetupProvider = {
     context: [DOCS_URL],
     run({ cotal }: ConnectorSetupInput) {
       return withLock(() => {
-        if (!hasCachedPlugin() || installedVersion() === undefined) return "not installed";
+        if (!hasCachedPlugin()) return "not installed";
+        try {
+          if (installedVersion() === undefined) return "not installed";
+        } catch (error) {
+          if (((error as Error).cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return "Codex not installed; cached plugin left unchanged";
+          throw error;
+        }
         const version = materializeCodexPlugin(cotal);
         install(version);
         return `${PLUGIN}@${MARKETPLACE} ${version}; new Codex conversations load it`;
