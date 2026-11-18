@@ -1,8 +1,8 @@
 /** Per-space stock Manager children. Only an answered instance records a hosting intent. */
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   assertLifecycleToken, BASELINE_LIFECYCLE_ENDPOINT, controlReplyFrom, dialerFor, drainAndClose,
   invokeRepairingSplit, issuedUserCaller, jwtFromCreds, mkSecretDir, parseRemoteEndpointDeregisterResult,
@@ -15,16 +15,61 @@ import { loadIdpSession, retainManagerAuthorityRoute, withIdpSessionDir } from "
 import { controlCaller, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, epRailFailure, notAdmittedRefusal } from "@cotal-ai/workspace/control";
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
-import { daemonPaths, daemonPathsFor } from "./endpoint.js";
+import { checkDir, daemonPaths, daemonPathsFor, ensureDir } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
 import type { HostedManager, HostedAgents } from "./protocol.js";
 import { readHostedAgents } from "./agents.js";
 import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile } from "./manager-cleanup.js";
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
+import { executionInventory, executionSha256, protectedExecutionEntry } from "../cotal.js";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
+
+/** The app can disappear while the Manager is serving. Both its lazy peers and the bearer
+ *  commands it gives seats must resolve against the same complete runtime it starts with. */
+function retainAppManagerArgv(home: string, argv: string[]): string[] {
+  if (process.platform !== "darwin" && process.platform !== "linux") return argv;
+  const entry = argv.at(-1)!;
+  const source = dirname(dirname(entry));
+  if (!existsSync(join(source, "desktop-runtime.json"))) return argv;
+  const inventory = (root: string) => {
+    if (!lstatSync(root).isDirectory()) throw new Error("the Cotal app runtime is not a real directory");
+    return JSON.stringify(executionInventory(root));
+  };
+  const expected = inventory(source);
+  protectedExecutionEntry(process.execPath);
+  const nodeHash = executionSha256(readFileSync(process.execPath));
+  const store = join(home, "daemon", "app-manager-runtimes");
+  checkDir(dirname(store));
+  ensureDir(store);
+  const retained = join(store, executionSha256(`${nodeHash}\n${expected}`));
+  const verify = (root: string): void => {
+    checkDir(root);
+    const node = join(root, "cotal-node");
+    protectedExecutionEntry(node);
+    if (!lstatSync(node).isFile() || executionSha256(readFileSync(node)) !== nodeHash || inventory(join(root, "runtime")) !== expected)
+      throw new Error("the retained Cotal app runtime differs from the installed app");
+  };
+  if (!existsSync(retained)) {
+    const staging = mkdtempSync(join(store, ".copy-"));
+    try {
+      cpSync(source, join(staging, "runtime"), { recursive: true, verbatimSymlinks: true });
+      const node = join(staging, "cotal-node");
+      copyFileSync(process.execPath, node);
+      chmodSync(node, 0o700);
+      verify(staging);
+      // A seat may still use this bearer command. Never replace a published copy.
+      try { renameSync(staging, retained); }
+      catch (error) {
+        if (!["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+        verify(retained);
+      }
+    } finally { rmSync(staging, { recursive: true, force: true }); }
+  } else verify(retained);
+  return [join(retained, "cotal-node"), ...argv.slice(1, -1), join(retained, "runtime", "dist", "cotal.js")];
+}
 
 /** Forget only the daemon's per-space hosting records after its owned service was removed. */
 export function forgetHostedManagerIntents(home: string): void {
@@ -453,7 +498,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       appendFileSync(logFile, safe, { mode: 0o600 });
       chmodSync(logFile, 0o600);
     };
-    const [node, ...argv] = daemonArgv();
+    const [node, ...argv] = retainAppManagerArgv(home, daemonArgv());
     closeProbeSession(l);
     l.exchangeFailedUntil = undefined;
     l.lastExchangeError = undefined;
