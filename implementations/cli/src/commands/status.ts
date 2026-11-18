@@ -1299,7 +1299,7 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
     if (preflight && m.space === chosen?.space && m.server === chosen.server) {
       if (preflight.ok) return "reachable";
       if (preflight.kind === "slow-link" || preflight.kind === "broker-stopped" || preflight.kind === "unreachable") return preflight.kind;
-      return preflight.kind === "tls-trust" || preflight.kind === "tls-unsupported" ? "unreachable" : "reachable";
+      return preflight.kind === "tls-trust" || preflight.kind === "tls-unsupported" || preflight.kind === "auth-unsupported" || preflight.kind === "jetstream-unsupported" || preflight.kind === "non-nats-listener" ? "unreachable" : "reachable";
     }
     return brokerCheck(m.server, m.tlsRequired);
   };
@@ -1513,6 +1513,10 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // A blocked stack refuses that `up`, and Next names the step that clears the block instead.
     if (preflight.kind === "unreachable" && (flagged || offline) && !(servedStack(folder, base) && folder.stackBlock)) {
       const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
+      hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
+    }
+    if (preflight.kind === "non-nats-listener" || preflight.kind === "auth-unsupported" || preflight.kind === "jetstream-unsupported") {
+      const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false });
       hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
     }
     return { ...base, connection: preflight.kind, ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune && !offline, snapshot: { state: "skipped", reason: "broker not connected" } };
@@ -1923,6 +1927,9 @@ function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
     "broker-stopped": `broker process ${s.brokerPid} is stopped`,
     "tls-trust": "TLS could not be verified",
     "tls-unsupported": "listener does not offer required TLS",
+    "auth-unsupported": "listener does not enforce Cotal authentication",
+    "jetstream-unsupported": "listener does not offer JetStream",
+    "non-nats-listener": "non-NATS listener holds the broker address",
     "stale-auth": "credentials need renewal",
     "auth-required": "authentication required",
     "open-wants-auth": "authentication required",
@@ -2813,6 +2820,11 @@ async function brokerHealth(target: MeshTarget): Promise<ComponentHealth> {
       const record = processRecord(NATS_PIDFILE, context);
       const verdict = processVerdict(record);
       if (verdict) return { name: "broker", verdict, facts: [`registered ${address}`, ...pidFacts(record), ...(record.kind === "dead" ? ["stale pidfile"] : [])] };
+    }
+    if (target.mode !== "user") {
+      const preflight = await preflightTarget(target);
+      if (!preflight.ok) return { name: "broker", verdict: "not-serving", facts: [`registered ${address}`, workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false }).message] };
+      return { name: "broker", verdict: "serving", facts: [`registered ${address}`, "reachable"] };
     }
     const reachable = await isReachable(target.server, target.tlsRequired ? { tls: true } : {});
     return reachable

@@ -132,9 +132,9 @@ try {
   chmodSync(journalPath, 0);
   try {
     const unreadable = run("status", "--space", space, "--json");
-    suite.check("status reports an unreadable stack journal", Boolean(warning(unreadable, "STACK_JOURNAL_UNREADABLE")), unreadable.text);
+    suite.check("status reports an unreadable stack journal", unreadable.status === 4 && Boolean(unreadable.envelope?.result) && warning(unreadable, "STACK_JOURNAL_UNREADABLE")?.target?.root === root, unreadable.text);
     const outsideUnreadable = selectedStatus("--json");
-    suite.check("outside-project status names the selected unreadable journal", outsideUnreadable.status === 4 && Boolean(warning(outsideUnreadable, "STACK_JOURNAL_UNREADABLE")), outsideUnreadable.text);
+    suite.check("outside-project status names the selected unreadable journal", outsideUnreadable.status === 4 && outsideUnreadable.envelope?.result?.selected?.root === root && warning(outsideUnreadable, "STACK_JOURNAL_UNREADABLE")?.target?.root === root, outsideUnreadable.text);
   } finally { chmodSync(journalPath, 0o600); }
 
   const absent = `${store}.absent`;

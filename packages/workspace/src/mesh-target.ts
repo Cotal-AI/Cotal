@@ -9,6 +9,7 @@ import { assertRecordIdentity, parsePid, probeLiveness, readPidfile, type Proces
 import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
 import {
   canonicalRoot,
+  brokerUrlKey,
   findMesh,
   getCurrent,
   readCurrentSelection,
@@ -1035,7 +1036,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // the registry's — probing IT must never prune the recorded entry (a dead override would otherwise
     // delete a live registered mesh, and pre-pruning would block a live-override recovery). Mark it so
     // preflight classifies the failure as non-registry / no-prune.
-    const overriding = flags.server !== undefined && flags.server !== m.server;
+    const overriding = flags.server !== undefined && brokerUrlKey(flags.server) !== brokerUrlKey(m.server);
     const target = targetFromEntry(m, flags.server ?? m.server, overriding ? "flag-space-override" : "flag-space", flags.readOnly);
     return overriding ? { ...target, recordedServer: m.server } : target;
   }
@@ -1045,17 +1046,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // server URL - so "the entry on that server" is not a single thing. `.find()` would silently
     // hand back whichever sorted first, connecting the caller to an arbitrary tenant; refuse and
     // name them instead (`--space` picks one explicitly, handled above).
-    const serverKey = (server: string): string => {
-      try {
-        const url = new URL(server);
-        if (url.pathname === "/") url.pathname = "";
-        return url.href;
-      } catch {
-        return server;
-      }
-    };
-    const requestedServer = serverKey(flags.server);
-    const onServer = loadMeshes().filter((e) => serverKey(e.server) === requestedServer && !offline.has(e.space));
+    const requestedServer = brokerUrlKey(flags.server);
+    const onServer = loadMeshes().filter((e) => brokerUrlKey(e.server) === requestedServer && !offline.has(e.space));
     if (onServer.length > 1)
       throw new MeshTargetError(
         "ambiguous-target",
