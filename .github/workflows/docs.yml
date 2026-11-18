@@ -109,6 +109,20 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      # A release builds the tagged commit with the deploy credentials in this job, so the tag
+      # must point at a commit that is already on main. Checked before anything is checked out.
+      - name: Refuse a release whose commit is not on main
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          status=$(gh api "repos/$REPO/compare/main...$SHA" --jq .status)
+          case "$status" in
+            identical|behind) echo "release commit $SHA is on main ($status)" ;;
+            *) echo "::error::release commit $SHA is not on main (compare status: ${status:-unknown}); refusing to build it with the deploy credentials"; exit 1 ;;
+          esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
@@ -133,7 +147,14 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           if [ "$EVENT" = "release" ]; then
-            echo "branch=$(echo "$TAG" | tr -c 'a-zA-Z0-9-' '-' | sed 's/-*$//')" >> "$GITHUB_OUTPUT"
+            branch=$(echo "$TAG" | tr -c 'a-zA-Z0-9-' '-' | sed 's/-*$//')
+            # The production branch is deployed only by a push to main. A tag that sanitizes to
+            # it, or to nothing, is refused.
+            if [ -z "$branch" ] || [ "$(printf %s "$branch" | tr '[:upper:]' '[:lower:]')" = "main" ]; then
+              echo "::error::release tag '$TAG' maps to the Pages branch '${branch}', which a release may not deploy"
+              exit 1
+            fi
+            echo "branch=$branch" >> "$GITHUB_OUTPUT"
           else
             echo "branch=main" >> "$GITHUB_OUTPUT"
           fi
