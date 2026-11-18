@@ -1,15 +1,15 @@
 /** Silent listeners stay distinct from refused ports across the shipped CLI's space reports. */
 import assert from "node:assert/strict";
-import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { emitSentinel, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const bin = join(import.meta.dirname, "../../../bin/dist/cotal.js");
 process.umask(0o077);
-const root = mkdtempSync(join(tmpdir(), "cotal-silent-broker-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}silent-broker-`));
 const hostEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
 let passed = 0;
 const failures: string[] = [];
@@ -153,7 +153,10 @@ await scenario("refused", port, () => 0);
       await close(listener);
     }
   }
-  const nats = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port)], { stdio: "ignore" });
+  const config = join(root, "substitute.conf");
+  writeFileSync(config, `host: 127.0.0.1\nport: ${port}\n`);
+  const nats = spawn("nats-server", ["-c", config], { stdio: "ignore" });
+  const release = teardownOnSignal(nats);
   try {
     await new Promise(resolve => setTimeout(resolve, 500));
     const status = await run(["status", "--plain"]);
@@ -163,8 +166,8 @@ await scenario("refused", port, () => 0);
     const components = await run(["status", "--components"]);
     check("plain NATS broker component is not serving", /broker\s+not-serving/.test(components.output));
   } finally {
-    nats.kill("SIGTERM");
-    await new Promise(resolve => nats.once("close", resolve));
+    await killAndAwaitExit(nats);
+    release();
   }
 }
 console.log(`Retained sandbox: ${root}`);

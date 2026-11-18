@@ -7,6 +7,7 @@ import { stoppedLoopbackListener, parsePid, probeLiveness, readPidfile, assertRe
 import { localProcessPath, NATS_PIDFILE } from "./local-process.js";
 import { stackJournalPath } from "./auth-paths.js";
 import { readLocalRecordSource, decodeLocalJson } from "./protected-records.js";
+import { isCommandFailure } from "./output.js";
 
 /**
  * Liveness verification for a resolved mesh target — the companion to {@link resolveMeshTarget}
@@ -130,10 +131,16 @@ export async function preflightTarget(
   if (plain && target.origin === "up") {
     let brokerGone = false;
     if (existsSync(stackJournalPath(target.root))) {
-      const bytes = readLocalRecordSource(stackJournalPath(target.root), 64 * 1024);
-      const journal = bytes === undefined ? undefined : decodeLocalJson(bytes) as { space?: string; root?: string; members?: { role?: string; state?: string; process?: { pid: number; token: string } }[] };
-      const broker = journal?.space === target.space && journal.root === target.root && Array.isArray(journal.members) ? journal.members.find(member => member.role === "broker") : undefined;
-      brokerGone = broker !== undefined && (broker.state === "stopped" || broker.state === "already-stopped" || broker.process !== undefined && assertRecordIdentity(broker.process).kind === "gone");
+      try {
+        const bytes = readLocalRecordSource(stackJournalPath(target.root), 64 * 1024);
+        const journal = bytes === undefined ? undefined : decodeLocalJson(bytes) as { space?: string; root?: string; members?: { role?: string; state?: string; process?: { pid: number; token: string } }[] };
+        const broker = journal?.space === target.space && journal.root === target.root && Array.isArray(journal.members) ? journal.members.find(member => member.role === "broker") : undefined;
+        brokerGone = broker !== undefined && (broker.state === "stopped" || broker.state === "already-stopped" || broker.process !== undefined && assertRecordIdentity(broker.process).kind === "gone");
+      } catch (error) {
+        if (!isCommandFailure(error) || !["PERMISSION_DENIED", "SCHEMA_INVALID", "CONFLICT"].includes(error.code)) throw error;
+        // Unusable local evidence does not prove the broker is gone. Keep the live probe below;
+        // status reports the journal's read failure separately as a warning.
+      }
     } else {
       const rawPid = readPidfile(localProcessPath(NATS_PIDFILE, { root: target.root, space: target.space }));
       const pid = rawPid === undefined ? undefined : parsePid(rawPid);
