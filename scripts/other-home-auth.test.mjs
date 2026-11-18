@@ -6,7 +6,7 @@ import { planRelease, verifyResults } from './upgrade-matrix-plan.mjs';
 function fixture() {
   const cell = { otherHomeAuth: true, platform: 'linux', sourceVersion: '0.166.3' };
   const home = '/private/b', project = home + '/project', installedRoot = '/private/prefix/lib/node_modules/cotal-ai';
-  const before = { pid: 123, birth: '456', instanceId: 'instance', root: project, cwd: project, loadedRoot: installedRoot, reportedVersion: cell.sourceVersion, loadedVersion: cell.sourceVersion, argv: [process.execPath, installedRoot + '/dist/cotal.js', 'supervise'], graph: ['package.json', 'dist/cotal-program.js', 'node_modules/core/index.js'].map(path => ({ path, sha256: 'a'.repeat(64) })) };
+  const before = { pid: 123, birth: '456', instanceId: 'instance', root: project, cwd: project, loadedRoot: installedRoot, reportedVersion: cell.sourceVersion, loadedVersion: cell.sourceVersion, argv: [process.execPath, '--max-semi-space-size=1', installedRoot + '/dist/cotal.js', '--no-color', '__service-manager'], graph: ['package.json', 'dist/cotal-program.js', 'node_modules/core/index.js'].map(path => ({ path, sha256: 'a'.repeat(64) })) };
   const connectorRoot = '/private/b/extensions';
   Object.assign(before, { connectorRoot, connectorGraph: ['extensions.json', 'node_modules/connector/index.js'].map(path => ({ path, sha256: 'b'.repeat(64) })) });
   const e = { connectorRoot, mode: 'second-private-home-static-auth', space: 'other-home-proof', home, project, updaterHome: '/private/a', installedRoot, sourceVersion: cell.sourceVersion, before, after: structuredClone(before), descriptorBefore: false };

@@ -14,10 +14,10 @@ export function verifyOtherHomeAuthEvidence({ report, cell, requireCleanup = tru
   assert(Number.isSafeInteger(e.before.pid) && e.before.pid > 0);
   assert.equal(typeof e.before.birth, 'string'); assert(e.before.birth);
   assert.equal(typeof e.before.instanceId, 'string'); assert(e.before.instanceId);
-  assert.equal(e.before.argv[1], e.installedRoot + '/dist/cotal.js');
+  assert.equal(e.before.argv.slice(1).find(arg => !arg.startsWith('-')), e.installedRoot + '/dist/cotal.js');
   assert.equal(e.before.reportedVersion, cell.sourceVersion);
   assert.equal(e.before.argv[0], process.execPath);
-  assert(e.before.argv.includes('supervise'));
+  assert(e.before.argv.includes('__service-manager'));
   assert.equal(e.before.cwd, e.project);
   assert(e.before.graph.length > 0);
   assert.equal(e.descriptorBefore, false);
