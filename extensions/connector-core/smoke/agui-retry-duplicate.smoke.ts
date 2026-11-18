@@ -68,9 +68,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, nanos } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, nanos } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { CotalEndpoint, chatStream, isReachable, mintLifecycleUid, type Part } from "@cotal-ai/core";
+import { CotalEndpoint, chatStream, isReachable, mintLifecycleUid, createSpaceAuth, newIdentity, mintCreds, setupSpaceStreams, serverConfig, DEV_OWNER, type Part } from "@cotal-ai/core";
 import { aguiFrame, runFinished, runStarted } from "../src/agui.js";
 import { AguiEmitter, AguiEmitterHalted } from "../src/agui-emitter.js";
 import { JsonlFileSource } from "../src/durable-source.js";
@@ -253,8 +253,8 @@ type Seed = "none" | "decoy" | "landed" | "landed-window-closed" | "moved-tip" |
 
 /** Close the chat stream's duplicate window behind a stored frame: the broker purges its dedup
  *  cache at once when the window shrinks, which is what two minutes of waiting would do. */
-const closeDuplicateWindow = async (url: string, space: string): Promise<void> => {
-  const nc = await connect({ servers: dial(url) });
+const closeDuplicateWindow = async (url: string, space: string, creds?: string, inboxPrefix?: string): Promise<void> => {
+  const nc = await connect({ servers: dial(url), ...(creds ? { authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix } : {}) });
   try {
     const jsm = await jetstreamManager(nc);
     await jsm.streams.update(chatStream(space), { duplicate_window: nanos(100) });
@@ -362,6 +362,56 @@ const arm = async (opts: { config: string; url: string; seed: Seed; read?: boole
 };
 
 try {
+  // The recovery must also work when a real broker, rather than a structural endpoint, confines
+  // the seat to publishing its own events and reading no declared channel.
+  {
+    const space = `auth${randomUUID().slice(0, 8).replace(/-/g, "")}`;
+    const auth = await createSpaceAuth(space);
+    const port = await freePort();
+    const conf = join(root, "history-auth.conf");
+    writeFileSync(conf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(root, "history-auth-js") }));
+    const broker = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
+    procs.push(broker);
+    releases.push(teardownOnSignal(broker));
+    const url = dial(`nats://127.0.0.1:${port}`);
+    for (let i = 0; i < 200 && !await isReachable(url); i++) await wait(100);
+    const manager = newIdentity();
+    const managerCreds = await mintCreds(auth, manager, "provisioner");
+    await setupSpaceStreams({ servers: url, space, creds: managerCreds });
+    const identity = newIdentity();
+    const principal = `${DEV_OWNER}.${identity.id}`;
+    const channel = `events.${principal}`;
+    const lifecycleUid = mintLifecycleUid();
+    const creds = await mintCreds(auth, identity, "agent", { allowSubscribe: [], allowPublish: [channel], lifecycleUid });
+    const ep = new CotalEndpoint({ space, servers: url, creds, lifecycleUid,
+      card: { name: "old-frame", id: identity.id, kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false });
+    ep.on("error", () => {});
+    try {
+      await ep.start();
+      // The preflight uses the endpoint's JetStream manager, initialized by a history read for
+      // a non-consuming endpoint. Production consuming seats initialize it during their start.
+      await ep.channelHistoryPage(channel, { limit: 1 });
+      const dir = join(root, "history-auth", "thread");
+      const { mkdirSync } = await import("node:fs");
+      mkdirSync(dir, { recursive: true });
+      const wal = await EventWal.open(join(dir, "wal.json"), { space, principal, threadId: "thread-1", subjectMayExist: false });
+      const sf = memorySubjectFrontier();
+      await wal.bindSubjectFrontier(sf);
+      const id = randomUUID();
+      const body = frameBody(wal.epoch);
+      await wal.beginSend({ id, E: 0, seq: 1, sourceCursor: "old", body, brackets: BR });
+      const stored = await ep.multicastExpecting({ channel, parts: body, id, expectedLastSubjectSeq: 0 });
+      await closeDuplicateWindow(url, space, managerCreds, `_INBOX_${manager.id}`);
+      const sourcePath = join(dir, "session.jsonl");
+      writeFileSync(sourcePath, "");
+      let error: Error | undefined;
+      try { await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: sf, source: new JsonlFileSource(sourcePath), map: () => null }); }
+      catch (e) { error = e as Error; }
+      c("auth-R1: an expired lost-ack frame settles with no declared channel-read grant", error === undefined && wal.pending === null && wal.frontier.lastSubjectSeq === stored.ack.seq && sf.tip === stored.ack.seq, error?.message);
+      const page = await ep.channelHistoryPage(channel, { limit: 2 }).catch((e: Error) => e);
+      c("auth-R1: recovery reads only the retained original and stores no duplicate", !(page instanceof Error) && page.items.length === 1 && page.items[0]?.id === id, page instanceof Error ? page.message : page);
+    } finally { await ep.stop(); }
+  }
   for (const [config, boot] of [
     ["standalone-R1", startStandalone],
     ["cluster-R1", startCluster],

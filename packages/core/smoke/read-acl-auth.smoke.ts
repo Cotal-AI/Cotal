@@ -43,6 +43,7 @@ import {
   chatHistDurable,
   mintLifecycleUid,
   DEV_OWNER,
+  eventChannel,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -111,6 +112,40 @@ try {
   const id = newIdentity();
   const uid = mintLifecycleUid();
   const agentCreds = await provisionAgent(noop, auth, id, { subscribe: ["allowed"], allowSubscribe: ["allowed", "other", "quiet"], allowPublish: ["allowed"], lifecycleUid: uid });
+
+  // Event publishers need to prove an old lost acknowledgement from their own retained frame.
+  // This is history authority only, not a live subscription or a payload-rail read.
+  {
+    const writer = newIdentity();
+    const lifecycleUid = mintLifecycleUid();
+    const own = eventChannel({ owner: DEV_OWNER, actor: writer.id });
+    const creds = await provisionAgent(noop, auth, writer, { subscribe: [], allowSubscribe: [], allowPublish: [own], lifecycleUid });
+    const ep = new CotalEndpoint({ space, servers: SERVERS, creds, lifecycleUid,
+      card: { name: "event-history", id: writer.id, kind: "endpoint" }, channels: [], consume: false,
+      registerPresence: false, watchPresence: false });
+    ep.on("error", () => {});
+    try {
+      await ep.start();
+      const sent = await ep.multicast("own retained frame", { channel: own });
+      const page = await ep.channelHistoryPage(own, { limit: 1 }).catch((e: Error) => e);
+      check("own-event: a publisher with no declared channel reads can read its own retained frame",
+        !(page instanceof Error) && page.items[0]?.id === sent.id, page instanceof Error ? page.message : page);
+      const foreign = eventChannel({ owner: DEV_OWNER, actor: id.id });
+      const denied = await ep.channelHistoryPage(foreign).then(() => false, (e: Error) => /permission/i.test(e.message));
+      check("own-event: the implicit history read does not reach another principal's event channel", denied);
+    } finally { await ep.stop(); }
+    const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(creds)), inboxPrefix: `_INBOX_${writer.id}` });
+    try {
+      const filter = chatSubject(space, "*", "*", own);
+      const sub = nc.subscribe(filter);
+      await nc.flush();
+      await wait(50);
+      check("own-event: history authority adds no live channel subscription", sub.isClosed());
+      const raw = await jsApi(nc, `$JS.API.DIRECT.GET.${CHAT}`, { seq: 1 });
+      check("own-event: unfiltered CHAT reads remain blocked", raw.kind === "blocked", raw);
+      sub.unsubscribe();
+    } finally { await nc.close(); }
+  }
   const chatHistD = chatHistDurable(DEV_OWNER, id.id, uid);
   const ag = await connect({
     servers: SERVERS,
