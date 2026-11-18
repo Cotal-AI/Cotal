@@ -1,6 +1,6 @@
 # macOS repair acceptance status
 
-Updated 2026-11-18 at 03:12Z.
+Updated 2026-11-18 at 04:09Z.
 
 ## Prepared first native run
 
@@ -24,6 +24,6 @@ Concurrent-operation assertions cover the actual suspended repair child, protect
 
 ## Serialized publication authority
 
-Core `176546fd` authorized one PR 7392 push after PR 6411 run `44222918870` ends. Core `37c57459` subsequently tightened this gate: the Intel cancellation was a lost runner, core will rerun failed jobs once, and PR 7392 must wait for that rerun to end as well. Initial attempt 1 is now terminal cancelled, with render, Linux, Windows, Mac15 ARM and Mac26 ARM successful, and only Intel cancelled before capture. Core was notified at 03:08Z. At 03:11Z the API still showed attempt 1, with no retry started.
+Core `176546fd` authorized one PR 7392 push after PR 6411 run `44222918870` ends. Core `37c57459` subsequently tightened this gate: the Intel cancellation was a lost runner, core will rerun failed jobs once, and PR 7392 must wait for that rerun to end as well. Initial attempt 1 ended cancelled with only Intel lost before capture. Core's retry, attempt 2 on exact desktop head `ebe88aded09bf646bde51b7228d733944a2b8829`, is now terminal SUCCESS, confirmed at 04:06Z. New Intel launch, account and presence originals were independently SHA-256 verified before grading. The serialized publication prerequisite is met.
 
-No repair push, workflow dispatch, rerun or native mode execution has occurred. Only after the core-owned retry is terminal may the validated repair head be pushed once. Core `86074c80` instructs the lane to report both automatic run IDs immediately: the dedicated builder workflow and the ordinary Desktop apps workflow. Core, not this lane, will cancel the ordinary Desktop workflow to preserve capacity. No duplicate dispatch or agent cancellation is authorized. Taskbar naming remains unproven and unwaived.
+No repair push, workflow dispatch, rerun or native mode execution has occurred as of this status commit. Core's retry has ended, so the validated repair head is authorized for its one push. All new repair modes remain unrun. Core `86074c80` instructs the lane to report both automatic run IDs immediately: the dedicated builder workflow and the ordinary Desktop apps workflow. Core, not this lane, will cancel the ordinary Desktop workflow to preserve capacity. No duplicate dispatch or agent cancellation is authorized. Taskbar naming remains unproven and unwaived.
