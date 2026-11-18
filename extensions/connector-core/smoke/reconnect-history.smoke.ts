@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid,
-  newIdentity, provisionAgent, serverConfig, setupSpaceStreams,
+  newIdentity, provisionAgent, seedChannelRegistry, serverConfig, setupSpaceStreams,
 } from "@cotal-ai/core";
 import { awaitBrokerReady, emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { MeshAgent, fmtItem } from "@cotal-ai/connector-core";
@@ -28,6 +28,14 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 async function until(test: () => boolean, label: string): Promise<void> {
   for (let n = 0; n < 100; n++) { if (test()) return; await sleep(50); }
   throw new Error(label);
+}
+
+// Only the publisher's synchronous envelope construction sees this clock. Restore it before
+// any broker callback or receiver runs, so the receiver and broker still use their real clocks.
+function withSenderClock<T>(offset: number, send: () => T): T {
+  const now = Date.now;
+  Date.now = () => now() + offset;
+  try { return send(); } finally { Date.now = now; }
 }
 
 try {
@@ -79,12 +87,12 @@ try {
   assert(first.ep.hasDurableMembership(channel), "the returning seat must have a durable membership");
   await first.stop();
   const old = [
-    await publisher.multicast("offline ambient one", { channel }),
-    await publisher.multicast("offline mention", { channel, mentions: ["bob"] }),
-    await publisher.multicast("offline ambient two", { channel }),
+    await withSenderClock(-8 * 24 * 60 * 60_000, () => publisher.multicast("offline ambient one", { channel })),
+    await withSenderClock(-8 * 24 * 60 * 60_000, () => publisher.multicast("offline mention", { channel, mentions: ["bob"] })),
+    await withSenderClock(-8 * 24 * 60 * 60_000, () => publisher.multicast("offline ambient two", { channel })),
   ];
   const ids = new Set(old.map((msg) => msg.id));
-  const offlineDm = await publisher.unicast(first.id, "offline direct request");
+  const offlineDm = await withSenderClock(-8 * 24 * 60 * 60_000, () => publisher.unicast(first.id, "offline direct request"));
   const returned = await seat("bob", bob);
   await until(() => returned.peekInbox("all").filter((item) => ids.has(item.id)).length === old.length, "returning seat missed durable copies");
   const fresh = await seat("fresh", await identity());
@@ -128,10 +136,38 @@ try {
   assert((await returned.reconnect()).ok);
   assert(returned.peekInbox("automatic").some((item) => item.id === current.id && !item.historical), "a reconnect must not demote already buffered live mail");
   console.log("PASS coalescing control: buffered live mail keeps its classification across reconnect");
+  const skewed = await withSenderClock(-5_000, () => publisher.multicast("current mention with five seconds clock skew", { channel, mentions: ["bob"] }));
+  await until(() => returned.peekInbox("all").some((item) => item.id === skewed.id), "skewed current mention was lost");
+  const skewedAutomatic = returned.peekInbox("automatic").some((item) => item.id === skewed.id && !item.historical);
+  let duringGap: ReturnType<CotalEndpoint["multicast"]> | undefined;
+  const publishInGap = (state: { connected: boolean }) => {
+    if (!state.connected && !duringGap) duringGap = publisher.multicast("current mention during short transport gap", { channel, mentions: ["bob"] });
+  };
+  returned.on("transport", publishInGap);
+  try { assert((await returned.reconnect()).ok); } finally { returned.off("transport", publishInGap); }
+  assert(duringGap, "the test must publish during an actual transport-disconnected edge");
+  const gapMessage = await duringGap;
+  await until(() => returned.peekInbox("all").some((item) => item.id === gapMessage.id), "gap mention was lost");
+  const gapAutomatic = returned.peekInbox("automatic").some((item) => item.id === gapMessage.id && !item.historical);
+  const afterReconnect = await withSenderClock(-5_000, () => publisher.multicast("current skewed mention after reconnect", { channel, mentions: ["bob"] }));
+  await until(() => returned.peekInbox("all").some((item) => item.id === afterReconnect.id), "post-reconnect mention was lost");
+  const afterAutomatic = returned.peekInbox("automatic").some((item) => item.id === afterReconnect.id && !item.historical);
+  console.log(JSON.stringify({ skewedAutomatic, gapAutomatic, afterAutomatic, gapAgeMs: Date.now() - gapMessage.ts }));
+  assert(skewedAutomatic && gapAutomatic && afterAutomatic, "current mentions must stay automatic despite modest sender clock skew or a short transport gap");
+  console.log("PASS reconnect controls: five-second sender skew and short-gap mentions stay automatic");
+  await fresh.stop();
+  await returned.stop();
+  await seedChannelRegistry({ servers, space, creds, file: { defaults: { replay: false }, channels: {} } });
+  const replayOffPost = await withSenderClock(-8 * 24 * 60 * 60_000, () => publisher.multicast("aged replay-off mention", { channel, mentions: ["bob"] }));
+  const replayOffSeat = await seat("bob", bob);
+  await until(() => replayOffSeat.peekInbox("all").some((item) => item.id === replayOffPost.id), "replay-off durable backlog was lost");
+  assert(replayOffSeat.peekInbox("pull-only").some((item) => item.id === replayOffPost.id && item.historical));
+  assert(!replayOffSeat.peekInbox("automatic").some((item) => item.id === replayOffPost.id));
+  console.log("PASS replay-off control: aged durable mentions remain available as pull-only history");
 } finally {
   for (const agent of agents.reverse()) await agent.stop();
   for (const endpoint of endpoints.reverse()) await endpoint.stop();
   await killAndAwaitExit(broker);
   release();
 }
-emitSentinel({ passed: 4, failed: 0 });
+emitSentinel({ passed: 6, failed: 0 });

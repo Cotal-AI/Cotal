@@ -43,7 +43,7 @@ agent.on("incoming", (item) => incoming.set(item.id, (incoming.get(item.id) ?? 0
 const meta: MessageMeta = { historical: false, kind: "channel" };
 const msg = (id: string, channel = "ch"): CotalMessage => ({
   id,
-  ts: 1,
+  ts: Date.now(),
   space: cfg.space,
   from: { id: "peer", name: "Peer" },
   channel,

@@ -77,6 +77,9 @@ export const SPAWN_TIMEOUT_MS = 40_000;
  *  control connection opened with it outlives the longest call it carries ({@link SPAWN_TIMEOUT_MS}). */
 const MANAGER_BEARER_MARGIN_MS = 120_000;
 
+/** A short reconnect or modest sender-clock skew must not turn a current request into history. */
+const CHANNEL_CATCHUP_AGE_MS = 5 * 60_000;
+
 /** Grace for a mesh op issued while the link is still coming up. `start()` deliberately returns
  *  immediately so the connector's MCP surface boots while the broker is absent — which means a
  *  host that auto-submits a prompt (`cotal spawn --prompt`) can call a mesh tool a second or two
@@ -594,8 +597,6 @@ export class MeshAgent extends EventEmitter {
   private _connected = false;
   /** Raw NATS transport liveness, separate from `_connected` (the full Cotal bind/readiness). */
   private _transportConnected = false;
-  /** Sender-time boundary for channel catch-up, refreshed on each transport connection. */
-  private channelLiveSince?: number;
   /** Wall-clock time of the latest inbox drain that actually committed at least one delivery.
    *  This is measured only after the backing acknowledgements succeed, never inferred from a read
    *  attempt or from an empty inbox. */
@@ -809,7 +810,6 @@ export class MeshAgent extends EventEmitter {
       if (this._stopping) return;
       if (this._transportConnected === e.connected) return;
       this._transportConnected = e.connected;
-      if (e.connected) this.channelLiveSince = Date.now();
       if (!e.connected) {
         this.transportDrops++;
         // This reader cannot vouch for a copy across a drop, so a role request taken and not yet
@@ -1343,10 +1343,10 @@ export class MeshAgent extends EventEmitter {
     }
     if (!meta)
       throw new Error(`message ${m.id} delivered without MessageMeta — its class is unauthenticated`);
-    // The durable backstop can deliver an offline conversation after this seat returns, even
-    // when join replay is disabled or the delivery daemon transfers the copies late. Apply the
-    // same pull-only policy as join history. DMs and role requests remain actionable after a gap.
-    const historical = meta.historical || (meta.kind === "channel" && this.channelLiveSince !== undefined && m.ts < this.channelLiveSince);
+    // Only an aged durable channel copy is catch-up. Live copies and brief transport gaps must
+    // still wake, even when the sender's clock is a few seconds behind. Already buffered copies
+    // retain their classification through the dedupe above. DMs and role requests are unchanged.
+    const historical = meta.historical || (meta.kind === "channel" && delivery.durable && Date.now() - m.ts > CHANNEL_CATCHUP_AGE_MS);
     const item = this.toInboxItem(m, meta.kind, historical);
     if (notice) item.notice = notice;
     // A notice asks for nothing and answers nothing. A role request awaiting its take is recorded
