@@ -2693,6 +2693,7 @@ export class CotalEndpoint extends EventEmitter {
    *
    * `expectedLastSubjectSeq` is a parameter because it is a header VALUE: sizing at 0 and publishing
    * at 123456 differ by five bytes.
+   * `expectedLastMsgId` is measured when given, so a caller that may send it can size for it.
    *
    * Residual: `ts` is re-stamped at publish, so the two differ in value — not in length until
    * epoch-millis needs a 14th digit.
@@ -2702,6 +2703,7 @@ export class CotalEndpoint extends EventEmitter {
     parts: Part[];
     id: string;
     expectedLastSubjectSeq: number;
+    expectedLastMsgId?: string;
     mentions?: string[];
     replyTo?: string;
     contextId?: string;
@@ -2721,6 +2723,10 @@ export class CotalEndpoint extends EventEmitter {
     const mh = headers();
     mh.set("Nats-Msg-Id", opts.id);
     mh.set("Nats-Expected-Last-Subject-Sequence", `${opts.expectedLastSubjectSeq}`);
+    if (opts.expectedLastMsgId !== undefined) {
+      assertIdToken(opts.expectedLastMsgId, "expected last msg id");
+      mh.set("Nats-Expected-Last-Msg-Id", opts.expectedLastMsgId);
+    }
     // `encode()` is on the client's header implementation but not on the published `MsgHdrs` type,
     // so it is reached through a cast rather than copied. If a client version drops it, this throws
     // immediately and loudly — the calibration cell would also fail — instead of returning a number
@@ -2747,6 +2753,10 @@ export class CotalEndpoint extends EventEmitter {
    *   means "the subject must be empty". A mismatch throws, and the throw stays classifiable by the
    *   already-public {@link isCasLoss} — the error is deliberately **not wrapped**, since wrapping
    *   would hide the `err_code` that classification reads.
+   * - `expectedLastMsgId`, when given, becomes `Nats-Expected-Last-Msg-Id`. The broker checks it after
+   *   its dedup cache, so a fresh value nobody has published turns a publish into a probe: an id the
+   *   cache holds answers `duplicate: true` with the stored sequence, and any other id is refused
+   *   with error 10070 before anything is stored.
    *
    * @throws if the endpoint is not live, the channel is not concrete, `id` is malformed, `parts` is
    *   empty, or `expectedLastSubjectSeq` is not a non-negative safe integer.
@@ -2756,6 +2766,7 @@ export class CotalEndpoint extends EventEmitter {
     parts: Part[];
     id: string;
     expectedLastSubjectSeq: number;
+    expectedLastMsgId?: string;
     mentions?: string[];
     replyTo?: string;
     contextId?: string;
@@ -2773,6 +2784,7 @@ export class CotalEndpoint extends EventEmitter {
       );
     if (!Array.isArray(opts.parts) || opts.parts.length === 0)
       throw new Error("multicastExpecting requires at least one part");
+    if (opts.expectedLastMsgId !== undefined) assertIdToken(opts.expectedLastMsgId, "expected last msg id");
 
     const message = this.casEnvelope(opts);
     assertPartsSerializable(message.parts);
@@ -2781,7 +2793,7 @@ export class CotalEndpoint extends EventEmitter {
     const ack = await this.js.publish(
       chatSubject(this.space, this.owner, this.actor, opts.channel),
       JSON.stringify(message),
-      { msgID: opts.id, expect: { lastSubjectSequence: expected } },
+      { msgID: opts.id, expect: { lastSubjectSequence: expected, ...(opts.expectedLastMsgId !== undefined ? { lastMsgID: opts.expectedLastMsgId } : {}) } },
     );
     return { message, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
   }
