@@ -54,7 +54,11 @@ reads that list and refuses the same way. Named `cotal status <agent>` instead r
 peer's holding manager, as the [agent view reference](cli-agent-views.mdx#named-agent-status) describes.
 The refusal does not show that no manager process runs, because a manager that is still starting or cannot register is not listed.
 The registry's own answer stays under `error.cause`. A registry that could not be read is reported
-as it was.
+as it was. When a default local stack's manager PID record proves its process died, `ps` and
+`ps --slots` instead say no manager runs and name bare `cotal up`. When that recorded process is
+still alive but does not answer, they name its PID and, if it stays unresponsive, the step to end
+that process with `kill -KILL <pid>` before starting it again with bare `cotal up`. Neither command
+stops or restarts the manager.
 
 When no manager runs or is registered, the refusal's Next names the root of this machine's own stack
 for the space, as bare `cotal up` in that folder, because bare `up` in another project acts on that
@@ -545,8 +549,9 @@ reports `classSpawn: false`, the refusal is `DEPENDENCY_UNAVAILABLE`: it names e
 host, says none has an agent application installed, and names the `cotal ext add` that adds one.
 A registered manager whose rail the broker reports empty is skipped without waiting and named
 in a `MANAGER_SILENT` warning; the reason comes from the managers that answered.
-Both refusals say to add the application where the manager runs, not on your machine. A manager
-reads its applications when it starts, so restart it after adding one. A failure after the manager reserved
+Both refusals say to add the application where the manager runs, not on your machine. If you install
+it in a directory already on the manager's PATH, a status read can discover it without a restart.
+A failure after the manager reserved
 the name or wrote a launch file keeps its native outcome, and the CLI never reclassifies it from
 its message.
 

@@ -129,7 +129,7 @@ try {
   check("inherits explicitly allowed operator env", allowed.env?.UNRELATED_JCODE_ENV_CANARY === "inherited");
   check("resets inherited Cotal material", base.env?.COTAL_CREDS === undefined && base.env?.COTAL_LIFECYCLE_UID === undefined);
   check("mints a manager control endpoint", Boolean(base.control?.path && base.control?.token));
-  check("keeps the control token out of the environment", base.env?.COTAL_CONTROL_TOKEN === undefined);
+  check("keeps the control token out of the environment", base.env?.COTAL_CONTROL_KEY === undefined);
   check("control token round-trips through launch material", controlFromEnv(base.env)?.token === base.control?.token);
 
   const rooted = launch({ space: "space", name: "seat", workspaceRoot: dir, events: undefined });

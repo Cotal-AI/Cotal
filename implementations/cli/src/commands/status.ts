@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, lstatSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, statSync } from "node:fs";
 import { drainAndClose } from "@cotal-ai/core";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -72,6 +72,7 @@ import {
   MANAGER_PIDFILE,
   NATS_PIDFILE,
   oneLine,
+  spaceKey,
   PREFERENCE_KEYS,
   plainFlag,
   preflightTarget,
@@ -119,7 +120,7 @@ import {
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
-import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
+import { managerHasDeliveryMarker, managerLogPath } from "../lib/manager-proc.js";
 import { MANAGER_OMITTED } from "../lib/delivery-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
@@ -426,10 +427,11 @@ function displayStatusBroker(server: string, space: string, gaps: Gaps): string 
 
 /** Named-agent and infrastructure inputs choose different reads. */
 export function validateStatusArguments(args: ParsedArgs): void {
+  presentationOf(args.values as FlagValues<typeof statusFlags>);
   if (args.positionals.length > 1 || args.positionals.length && !args.positionals[0]?.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "status takes at most one agent name");
-  if (args.positionals.length && (args.values.all || args.values.components))
-    throw new CommandFailure("refused", "USAGE_INVALID", "a named agent status takes no --all or --components");
+  if (args.positionals.length && (args.values.all || args.values.components || args.values.wide || args.values.verbose))
+    throw new CommandFailure("refused", "USAGE_INVALID", "a named agent status takes no --all, --components, --wide or --verbose");
   if (typeof args.values.on === "string") onInstance(args.values.on, onRerun("cotal status", args.values, args.positionals));
   if (!args.positionals.length && (args.values.on !== undefined || args.values.creds !== undefined))
     throw new CommandFailure("refused", "USAGE_INVALID", "--on and --creds select a named agent read, not infrastructure status");
@@ -967,6 +969,11 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   }
   const brokerIndex = processes.findIndex((row) => row.name === "nats");
   if (brokerIndex !== -1) processes[brokerIndex] = brokerProcess(processes[brokerIndex]!, controllerStack ? journal : undefined, gaps);
+  const managerIndex = !controllerStack && (nats?.liveness === "alive" || nats?.liveness === "dead")
+    ? processes.findIndex((row) => row.name === "manager" && row.state === "stopped" && row.pid === null)
+    : -1;
+  if (managerIndex !== -1 && legacyManagerStopped(root, space))
+    processes[managerIndex] = { ...processes[managerIndex]!, detail: "stopped" };
   const noManager = journal !== undefined && controllerStack && stackStartedWithoutManager(journal);
   // An operation cut off with no recorded outcome can keep up and down from settling it; status names
   // why and the way out their refusal names. A refusal of another kind is left to them.
@@ -1162,6 +1169,21 @@ function localManagerInstanceId(root: string, space: string): string | undefined
   } catch {
     return undefined;
   }
+}
+
+/** Whether the legacy stack whose broker pidfile is in `root` started a manager that has since
+ *  exited and removed its pidfile (as SIGTERM does), rather than running with `--no-manager`. */
+function legacyManagerStopped(root: string, space: string): boolean {
+  const id = localManagerInstanceId(root, space);
+  if (id === undefined) return false;
+  let brokerMtime: bigint;
+  try { brokerMtime = statSync(join(root, ".cotal", NATS_PIDFILE), { bigint: true }).mtimeNs; }
+  catch { return false; }
+  for (const path of [managerLogPath(space, root), join(root, ".cotal", `manager-execution.${spaceKey(space)}.${id}.json`)]) {
+    try { if (statSync(path, { bigint: true }).mtimeNs >= brokerMtime) return true; }
+    catch { /* absent or unreadable candidate */ }
+  }
+  return false;
 }
 
 /** User-mode manager status goes through the same control call `cotal spawn` uses. `instanceId`
@@ -2046,7 +2068,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
       columns: [{ key: "name", label: "Service" }, { key: "state", label: "State" }],
       rows: r.folder.processes.map((item) => ({
         name: item.name === "nats" ? "Broker" : item.name === "manager" ? "Manager" : item.name === "delivery" ? "Delivery" : item.name === "web" ? "Web" : item.name,
-        state: item.state === "running" || item.state === "not-serving" || item.state === "unreadable" ? processCell(item) : stateCell(item.pid === null ? "not started" : item.detail ?? "stopped", "hint"),
+        state: item.state === "running" || item.state === "not-serving" || item.state === "unreadable" ? processCell(item) : stateCell(item.pid === null && item.detail !== "stopped" ? "not started" : item.detail ?? "stopped", "hint"),
       })),
     });
   } else blocks.push({ kind: "lines", lines: [cell("Legacy process records not checked here · the selected space has a different or unresolved local process scope", "hint")] });
@@ -2095,7 +2117,7 @@ function nextActions(r: StatusResult): Section {
   const cmd = displayCmd();
   const items: { command: string; description: string }[] = [];
   const extra: string[] = [];
-  const noApplication = !r.machine.connectors?.length;
+  const noApplication = !setUpApplications(r.machine).length;
   if (!r.selected.resolved && !r.meshes.items.length && !r.meshes.unreadable.length) {
     items.push({ command: `${cmd} login`, description: "Sign in to Cotal Cloud" });
   }
@@ -2133,7 +2155,7 @@ function nextActions(r: StatusResult): Section {
   // refresh restarts no manager, and an open or user-auth broker needs its mode flag again.
   const local = r.selected.resolved && r.selected.mode === "auth" && !r.folder.controllerStack && r.folder.root === r.selected.root && r.folder.processSpace === r.selected.space
     && !["manual", "catalog"].includes(r.meshes.items.find((m) => m.space === r.selected.space)?.origin ?? "up");
-  const exited = local ? (r.folder.processes ?? []).filter((row) => (row.name === "nats" || row.name === "manager") && row.state === "stopped" && row.pid !== null).map((row) => row.name) : [];
+  const exited = local ? (r.folder.processes ?? []).filter((row) => (row.name === "nats" || row.name === "manager") && row.state === "stopped" && (row.pid !== null || row.detail === "stopped")).map((row) => row.name) : [];
   const storeBlocked = !elsewhere && r.selected.resolved && r.selected.connection === "unreachable" && rootStoreProblem(r.selected.root) !== undefined;
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
   else if (block && blocked) {

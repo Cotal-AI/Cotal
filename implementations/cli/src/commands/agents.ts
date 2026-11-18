@@ -564,10 +564,10 @@ function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, rea
   };
 }
 
-/** Whether no connector is installed here, as `status` reports "Agent applications: not set up".
+/** Whether no agent application is set up here, as `status` reports "Agent applications: not set up".
  *  An inventory that cannot be read says nothing, so the Next stays the launch. */
 function noApplicationHere(): boolean {
-  try { return connectorHarnesses().length === 0; } catch { return false; }
+  try { return connectorHarnesses().every((harness) => harness.missing.length > 0); } catch { return false; }
 }
 
 export async function ps(args: ParsedArgs): Promise<void> {
@@ -674,6 +674,7 @@ function managerItselfRemedy(name: string): string {
 export async function agentStatus(args: ParsedArgs): Promise<void> {
   const name = args.positionals[0]!;
   const values = args.values as FlagValues<typeof psFlags>;
+  const presentation = presentationOf(values);
   const census = await readNamedSeat(values, name);
   const rows = census.items.map((value): AgentRow => {
     if (!value || typeof value !== "object") throw new CommandFailure("failed", "OPERATION_FAILED", "a manager returned an invalid agent record", { target: census.target });
@@ -696,7 +697,7 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
     catch { managerHint = " --on <manager-instance>"; }
   }
   const projected = item ? agentStatusProjection(item, managerInstanceId) : { identity: null, execution: null, mesh: null, activity: null, details: null };
-  writeResult(presentationOf(values), {
+  writeResult(presentation, {
     command: "status",
     target: { ...census.target, name },
     result: { kind: "agent", ...projected, managers: census.managers },

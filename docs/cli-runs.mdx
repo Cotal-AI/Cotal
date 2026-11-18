@@ -21,7 +21,7 @@ cotal run show <runId> [--endpoint <ep>] [--limit <n>] [--json] [--on <instance>
 cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
 cotal run amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
 cotal run revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>]
-cotal run check <runId> <program> [--endpoint <ep>]
+cotal run check <runId> (<program> | --file <program>) [--local] [--endpoint <ep>]
 ```
 
 `ps` (or `list`), `journal` and `migrate` still work as compatibility aliases of bare `run`, `show`

@@ -24,7 +24,7 @@ const clean = { ...process.env };
 for (const key of Object.keys(clean)) if (key.startsWith("COTAL_")) delete clean[key];
 const MANAGED = { COTAL_NAME: "otto" };
 // A control endpoint that answers nothing: the refusal must not wait on, or depend on, the socket.
-const DEAD_SOCKET = { ...MANAGED, COTAL_CONTROL_SOCKET: join(dir, "absent.sock"), COTAL_CONTROL_TOKEN: "t".repeat(32) };
+const DEAD_SOCKET = { ...MANAGED, COTAL_CONTROL_SOCKET: join(dir, "absent.sock"), COTAL_CONTROL_KEY: "t".repeat(32), COTAL_CONTROL_VERSION: "1" };
 
 function runHook(env: Record<string, string>, event: Record<string, unknown>): Promise<{ stdout: string; code: number | null; ms: number }> {
   return new Promise((resolve) => {
