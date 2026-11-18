@@ -898,6 +898,11 @@ A Manager that exits before readiness reports its exit code or signal and its la
 A stopped user-auth row keeps its instance and last observation, clears the PID, and names setup
 as its next step. Local static-auth and open spaces instead name `cotal up`.
 Status emits a PID only for a retained child, never from a saved refusal record.
+Older saved refusals on local static-auth and open spaces also name `cotal up` when read,
+without rewriting the refusal record. If the mesh registry cannot be read, recovery guidance
+names the damaged record instead of suggesting a command for an unknown auth mode.
+That guidance failure does not prevent disconnect from clearing a local refusal with no
+Manager registration to remove. Service status reports registry failures without stopping the daemon.
 An expired or revoked daemon session names `cotal daemon login --idp <url>` in both the refusal
 and its next step. Hosted repair commands carry `--daemon-home <dir>` when the daemon has an
 explicit home. Status also includes `logError` if logging fails. The daemon checks the child's

@@ -1,7 +1,7 @@
 /** Non-user-auth spaces stay under their local stack, without machine-service hosting intent. */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +28,7 @@ const env = { PATH: [native, ...(process.env.PATH ?? "").split(":").filter(entry
   XDG_STATE_HOME: join(root, "state"), XDG_CACHE_HOME: join(root, "cache"), TMPDIR: root,
   COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1" };
 const open = process.argv.includes("--open");
+const recoveryOnly = process.argv.includes("--recovery-only");
 const space = open ? "open-service-proof" : "static-service-proof";
 let sequence = 0, failed = 0;
 function check(label: string, condition: boolean, detail?: unknown): void {
@@ -93,6 +94,36 @@ try {
   await startDaemon();
   const checkResult = await daemonCommand("connect-check", "--space", space, "--json");
   assert.equal(checkResult.doc.error.cause.code, "NOT_USER_AUTH");
+  if (recoveryOnly) {
+    const state = join(daemonHome, "daemon", spaceSegment(space));
+    mkdirSync(state, { recursive: true, mode: 0o700 });
+    const refusal = join(state, "manager-refusal.json");
+    const saved = JSON.stringify({ space, state: "refused", restarts: 0,
+      reason: "hosted Managers require a registered user-auth participant space",
+      next: "use `cotal manager start` from the folder that hosts the space" });
+    writeFileSync(refusal, saved, { mode: 0o600 });
+    for (const phase of ["before restart", "after restart"]) {
+      if (phase === "after restart") { await killAndAwaitExit(daemon!, "SIGTERM"); daemon = undefined; await startDaemon(); }
+      for (const presentation of ["--json", "--plain"]) {
+        const status = await daemonCommand("status", "--space", space, presentation);
+        const next = presentation === "--json" ? status.doc?.result?.managers?.find((row: { space: string }) => row.space === space)?.next : status.out;
+        check(`legacy refusal ${phase} ${presentation} names local stack`, status.code === 0 && next?.includes("cotal up") && !next.includes("cotal manager start"), next);
+      }
+      check("status preserves original saved refusal", readFileSync(refusal, "utf8") === saved);
+    }
+    const bad = join(home, "meshes", "unrelated-damaged.json");
+    writeFileSync(bad, JSON.stringify({ space: "unrelated-damaged" }), { mode: 0o600 });
+    const disconnect = await daemonCommand("service-disconnect", "--space", space, "--json");
+    check("damaged registry cannot prevent local refusal retirement", disconnect.code === 0 && !existsSync(refusal), disconnect.doc);
+    check("disconnect reports unknown recovery guidance rather than guessing", disconnect.code === 0 && JSON.stringify(disconnect.doc).includes("unrelated-damaged.json"), disconnect.doc);
+    const status = await daemonCommand("service-status", "--space", space, "--json");
+    check("damaged registry service-status returns a refusal document", status.code === 2 && status.doc?.outcome === "refused" && JSON.stringify(status.doc).includes("unrelated-damaged.json"), status.doc);
+    // Keep the damaged bytes as evidence, but take them out of the registry for the live control.
+    renameSync(bad, join(root, "unrelated-damaged.retained.json"));
+    const alive = await daemonCommand("status", "--json");
+    check("same daemon answers after damaged registry status", alive.code === 0 && alive.doc?.result?.pid === daemon?.pid, alive.doc);
+    await localManager("positive control: same local Manager survives recovery refusals", instance);
+  } else {
   for (const presentation of ["--json", "--plain"]) {
     for (const extra of [[], ["--no-manager"]]) {
       const setup = await daemonCommand("setup", "--space", space, ...extra, presentation);
@@ -134,6 +165,7 @@ try {
   await localManager("positive control: same local Manager answers after private daemon restart", instance);
   const calls = existsSync(nativeLog) ? readFileSync(nativeLog, "utf8").trim().split("\n") : [];
   check("native recorder saw no service mutation", calls.every(line => line === "systemctl --user show-environment"), calls);
+  }
 } finally {
   if (daemon) await killAndAwaitExit(daemon, "SIGTERM");
   if (stackStarted) {

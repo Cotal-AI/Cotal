@@ -12,7 +12,7 @@ import {
 import { daemonArgv } from "@cotal-ai/cli/self-exec";
 import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
 import { loadIdpSession, retainManagerAuthorityRoute, withIdpSessionDir } from "@cotal-ai/auth";
-import { controlCaller, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { controlCaller, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, isMeshRegistryError, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, epRailFailure, notAdmittedRefusal } from "@cotal-ai/workspace/control";
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
@@ -26,6 +26,7 @@ import { LOCAL_SPACE_GUIDANCE } from "./guidance.js";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
+const HOSTING_REQUIREMENT = "hosted Managers require a registered user-auth participant space";
 
 /** Forget only the daemon's per-space hosting records after its owned service was removed. */
 export function forgetHostedManagerIntents(home: string): void {
@@ -167,9 +168,20 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     persistRefusal(l);
     return l.view;
   };
+  const recoveryNext = (space: string, next: string | undefined): string | undefined => {
+    try {
+      const entry = findMesh(space);
+      return entry && entry.mode !== "user" ? LOCAL_SPACE_GUIDANCE : next;
+    } catch (error) {
+      if (!isMeshRegistryError(error)) throw error;
+      return `Manager recovery guidance is unavailable: ${safeDiagnostic(error.message).slice(0, 1000)}`;
+    }
+  };
   const status = (space: string): HostedManager => {
     const view = rawStatus(space);
-    return { ...view, ...(view.next ? { next: command(view.next) } : {}), ...(view.reason ? { reason: command(view.reason) } : {}), ...(view.lastRefusal ? { lastRefusal: command(view.lastRefusal) } : {}) };
+    const next = (view.reason === HOSTING_REQUIREMENT || (view.state === "stopped" && view.next !== undefined)) && !view.registrationCleanup
+      ? recoveryNext(space, view.next) : view.next;
+    return { ...view, ...(next ? { next: command(next) } : {}), ...(view.reason ? { reason: command(view.reason) } : {}), ...(view.lastRefusal ? { lastRefusal: command(view.lastRefusal) } : {}) };
   };
   const rawStatus = (space: string): HostedManager => {
     const current = live.get(space);
@@ -396,7 +408,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     if (closed || generationPending || l.stopping) return l.view;
     const entry = findMesh(space);
     if (!entry) return refuse(l, "this space is no longer registered on this machine", `run \`cotal daemon setup --space ${space} --idp <url>\` to discover it again`);
-    if (entry.mode !== "user" || entry.userAuth?.remote !== true) return refuse(l, "hosted Managers require a registered user-auth participant space", entry.mode !== "user" ? LOCAL_SPACE_GUIDANCE : "use `cotal manager start` from the folder that hosts the space");
+    if (entry.mode !== "user" || entry.userAuth?.remote !== true) return refuse(l, HOSTING_REQUIREMENT, entry.mode !== "user" ? LOCAL_SPACE_GUIDANCE : "use `cotal manager start` from the folder that hosts the space");
     if (!loadIdpSession(home, entry.userAuth.idp.url)) return refuse(l, "the daemon has no sign-in for this space's provider", `run \`cotal daemon login --idp ${entry.userAuth.idp.url}\`, then \`cotal daemon setup --space ${space}\``);
     try { await reconcile(); }
     catch (error) {
@@ -862,8 +874,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         rmSync(managerCleanupFile(home, space), { force: true });
         held.view = { ...held.view, registrationCleanup: undefined };
       }
-      const entry = findMesh(space);
-      held.view = { ...held.view, state: "stopped", pid: undefined, reason: undefined, lastRefusal: undefined, next: entry && entry.mode !== "user" ? LOCAL_SPACE_GUIDANCE : options?.account ? "enable this space for this computer in the dashboard to host its Manager again" : `run \`cotal daemon setup --space ${space}\` to host its Manager again` };
+      held.view = { ...held.view, state: "stopped", pid: undefined, reason: undefined, lastRefusal: undefined, next: options?.account ? "enable this space for this computer in the dashboard to host its Manager again" : `run \`cotal daemon setup --space ${space}\` to host its Manager again` };
       rmSync(refusalFile(space), { force: true });
     },
     async resume() {

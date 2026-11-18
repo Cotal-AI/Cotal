@@ -346,7 +346,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
-        const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
+        const run = (req.op === "service-status" ? Promise.resolve().then(() => services.status(req.space))
           : (async () => {
             // Disconnect retires local authority even when sign-in or the account host is gone.
             // The local removal revision fences account reconciliation until a fresh enable.
@@ -364,7 +364,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
             finally { disconnected = await disconnect!; }
             return disconnected;
             }));
-          })().catch((error: unknown): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: error instanceof Error ? error.message : "The connection could not be changed. Check daemon status and try again." }));
+          })()).catch((error: unknown): ServiceConnectionResult => ({ space: req.space, state: "unavailable", message: error instanceof Error ? error.message : "The connection could not be changed. Check daemon status and try again." }));
         managerResult(async () => {
           const result = await run;
           counters.serviceAnswered++;
