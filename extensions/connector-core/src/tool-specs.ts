@@ -785,7 +785,7 @@ const NAMED_AHEAD = 3;
  *  silent. Not a drop: nothing was cleared and the stream still holds them. */
 export function aheadNote(items: readonly InboxItem[]): string {
   if (!items.length) return "";
-  const senders = [...new Set(items.map((i) => attributionSafe((i.fromName.trim() ? i.fromName : i.fromId.trim() ? i.fromId : "(unnamed)")).slice(0, 40)))];
+  const senders = [...new Set(items.map((i) => (i.fromName.trim() || i.fromId.trim() ? fmtFrom(i, 40) : "(unnamed)")))];
   const named = senders.slice(0, NAMED_AHEAD).join(", ");
   const rest = senders.length - Math.min(NAMED_AHEAD, senders.length);
   const one = items.length === 1;

@@ -25,7 +25,7 @@
     {
       "name": "the label is no longer bounded inside fmtFrom, so a caller's cut drops the marker of a long name",
       "file": "extensions/connector-core/src/framing.ts",
-      "find": "  return `${points.length <= room ? label : `${points.slice(0, room - 1).join(\"\")}…`}${marker}`;",
+      "find": "  return `${capped(label, maxCodePoints - marker.length)}${marker}`;",
       "replace": "  return `${label}${marker}`.slice(0, maxCodePoints);",
       "expectRed": "a 60-character name keeps the marker in the 40-character form",
       "cell": "a 60-character name keeps the marker in the 40-character form"
@@ -55,6 +55,22 @@
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "a name holding a quote and a sender_id field renders one sender_id, the checked one",
       "cell": "a name holding a quote and a sender_id field renders one sender_id, the checked one"
+    },
+    {
+      "name": "a preview row's channel and role labels are no longer capped, so a long label pushes the marker past the row's cut",
+      "file": "extensions/connector-core/src/framing.ts",
+      "find": "  const label = (s: string | undefined) => attributionMax === undefined ? attributionSafe(s ?? \"\") : capped(attributionSafe(s ?? \"\"), LABEL_MAX_CODE_POINTS);",
+      "replace": "  const label = (s: string | undefined) => attributionSafe(s ?? \"\");",
+      "expectRed": "a channel row with a 300-code-point channel label and a 300-code-point name keeps the marker whole",
+      "cell": "a channel row with a 300-code-point channel label and a 300-code-point name keeps the marker whole"
+    },
+    {
+      "name": "fmtFrom accepts a bound too small to hold the marker",
+      "file": "extensions/connector-core/src/framing.ts",
+      "find": "  if (!Number.isInteger(maxCodePoints) || maxCodePoints < FROM_MIN_CODE_POINTS)\n    throw new RangeError(`a sender label bound must be a whole number of at least ${FROM_MIN_CODE_POINTS} code points, got ${maxCodePoints}`);\n",
+      "replace": "",
+      "expectRed": "fmtFrom refuses a bound too small to hold the marker",
+      "cell": "fmtFrom refuses a bound too small to hold the marker"
     }
   ]
 }
