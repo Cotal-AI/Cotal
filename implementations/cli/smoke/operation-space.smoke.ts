@@ -245,7 +245,7 @@ check("spawn --dry-run with no default persona previews the shipped default with
 // echoing persona values and without recommending `cotal team deploy`, while a Mesh manifest still
 // names `cotal team deploy <file>`.
 for (const [label, body, reason] of [
-  ["a list where a string is required", "---\nname: badspawn\nmodel: [opus]\n---\nReview.\n", '"model" must be a scalar'],
+  ["a list where a string is required", "---\nname: badspawn\nmodel: [opus]\n---\nReview.\n", '"model" must be a string; got array'],
   ["a duplicate YAML key", "---\nname: badspawn\nmodel: secret-one\nmodel: secret-two\n---\nReview.\n", "the frontmatter has a duplicate YAML key at line 4, column 1"],
   ["an empty file", "", 'missing "---" frontmatter block'],
   ["a blank model", '---\nname: badspawn\nmodel: "   "\n---\n', '"model" must not be empty'],
