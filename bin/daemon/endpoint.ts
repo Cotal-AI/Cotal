@@ -123,7 +123,7 @@ export function daemonPaths(env: NodeJS.ProcessEnv = process.env, home: string =
         checkDir(runtime);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        throw new EndpointRefusal("NO_RUNTIME_DIR", `${runtime} is absent and XDG_RUNTIME_DIR is not set, so there is no per-user runtime directory to hold the daemon socket`);
+        throw new EndpointRefusal("NO_RUNTIME_DIR", `${runtime} is absent and XDG_RUNTIME_DIR is not set, so there is no per-user runtime directory to hold the daemon socket`, "use a private runtime directory created by systemd-logind or pam_rundir, or create one owned by your operating-system user with mode 0700 and set XDG_RUNTIME_DIR to its absolute path");
       }
     }
   }

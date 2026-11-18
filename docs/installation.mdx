@@ -72,6 +72,10 @@ Use this route on Windows.
 The shell installer does not support Windows shells.
 You can also use the shell installer inside WSL.
 
+The Linux background daemon service needs systemd and `systemctl` on PATH. On Linux without
+systemd, run `cotal daemon serve` under your own supervisor and use `cotal update --self` for
+manual updates. See [daemon installation and runtime directories](cli-processes.mdx#daemon).
+
 Cotal includes a `nats-server` binary for its local broker.
 If you put your own `nats-server` on PATH, Cotal uses it when its folder is not writable by other accounts.
 Otherwise it uses the bundled binary. `cotal up` refuses a selected broker older than 2.12 and names its path and version.

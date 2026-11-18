@@ -37,6 +37,7 @@ import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOw
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy } from "./guidance.js";
+import { daemonServiceRequirement } from "./service-platform.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
@@ -351,6 +352,8 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
 async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promise<void> {
   const presentation = presentationOf(args.values);
   const values = args.values as { "dry-run"?: boolean; yes?: boolean };
+  const requirement = op === "install" ? daemonServiceRequirement() : undefined;
+  if (requirement) throw requirement;
   const { paths, home } = resolveTarget(args, true);
   if (op === "install") {
     const dry = values["dry-run"] === true;
@@ -398,12 +401,14 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
   if (!space && (values["no-manager"] || values.wait !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager and --wait require --space <s>");
   if (space && !SPACE_PATTERN.test(space)) throw new CommandFailure("refused", "USAGE_INVALID", "space must be 1-64 characters of [A-Za-z0-9_-]", { native: { code: "BAD_FIELD" } });
   if (args.values.cloud && values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
-  let choice = values.idp !== undefined || args.values.cloud === true ? await daemonAccountChoice(args) : undefined;
-  let idp = choice?.url;
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
   const waitSeconds = values.wait === undefined ? 900 : Number(values.wait);
   if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > 86400) throw new CommandFailure("refused", "USAGE_INVALID", "--wait takes whole seconds from 0 to 86400");
   if (values.wait !== undefined && values["no-manager"] !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--wait requires --no-manager; Manager setup never waits for machine approval");
+  const requirement = daemonServiceRequirement();
+  if (requirement) throw requirement;
+  let choice = values.idp !== undefined || args.values.cloud === true ? await daemonAccountChoice(args) : undefined;
+  let idp = choice?.url;
   const { paths, home } = resolveTarget(args);
   let newSignIn = values.idp !== undefined || args.values.cloud === true;
   if (!space && !idp) {

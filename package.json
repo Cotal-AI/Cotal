@@ -15,6 +15,7 @@
     "smoke:cloud-login": "tsx packages/workspace/smoke/cloud-login.smoke.ts && tsx implementations/auth/smoke/cloud-login.smoke.ts && tsx bin/smoke/fresh-cloud-guidance.smoke.ts",
     "smoke:daemon-desktop-account": "tsx bin/smoke/daemon-desktop-account.smoke.ts",
     "smoke:daemon-update-settings": "tsx bin/smoke/daemon-update-settings.smoke.ts && tsx bin/smoke/update-auto-service.smoke.ts",
+    "smoke:daemon-systemd-guidance": "tsx bin/smoke/daemon-systemd-guidance.smoke.ts",
     "smoke:connection-cleanup": "tsx packages/core/smoke/connection-cleanup.smoke.ts && tsx bin/smoke/connection-cleanup.smoke.ts",
     "smoke:atomic-write-cleanup": "node bin/smoke/atomic-write-cleanup.smoke.mjs",
     "smoke:local-write-quota": "node bin/smoke/local-write-quota.smoke.mjs",

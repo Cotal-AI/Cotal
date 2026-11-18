@@ -42,6 +42,7 @@ import { randomUUID } from "node:crypto";
 import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, executionIdentity, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
+import { daemonServiceRequirement } from "./service-platform.js";
 import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
 import { ClosedPeerRefusal, isStoppingLifetime, openVerified, readLine } from "./client.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
@@ -280,6 +281,8 @@ function nativeInstallPlan(service: NativeService, paths: DaemonPaths, daemonHom
 
 /** Everything `install` would do, with no effect: the unit it would write and, on Linux, the linger it needs. */
 export function planInstall(paths: DaemonPaths, daemonHome: string | undefined): InstallPlan {
+  const requirement = daemonServiceRequirement();
+  if (requirement) throw requirement;
   const service = nativeService();
   if (service) {
     const { mechanism, unit, unitPath, sha256, user, restart, wantedBy } = nativeInstallPlan(service, paths, daemonHome);

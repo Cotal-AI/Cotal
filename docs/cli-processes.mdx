@@ -1013,6 +1013,12 @@ linger enabled, because other user services may rely on it. The unit and its rec
 before enabling linger. If linger cannot be enabled, the unit stays recorded for `uninstall` and
 is not enabled or started.
 
+Linux service installation and setup require systemd, `/run/systemd/system`, and `systemctl`
+on PATH. On Linux without systemd, such as Alpine with OpenRC, these commands refuse `UNSUPPORTED`.
+Run `cotal daemon serve` under your own supervisor, such as an OpenRC user service, runit or s6.
+Run `cotal update --self` by hand for updates. `cotal update --auto` saves the preference but cannot
+schedule automatic installation without a supported native daemon service.
+
 On macOS it is a LaunchAgent. It writes a plist to `~/Library/LaunchAgents`, then loads it into the
 user's GUI domain with `launchctl enable` and `launchctl bootstrap`. launchd starts the daemon when
 the job loads and at each login, and starts it again whenever it exits. Its output goes to
@@ -1128,8 +1134,13 @@ same facts. `service-status` reports the machine connection and Manager separate
 `state: "ready"` means only that the
 local control listener is bound and verified, not that a mesh or Cloud connection exists.
 
-On Linux the endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. Without `XDG_RUNTIME_DIR` both forms
-refuse `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`). On macOS it is `cotal/daemon.sock` in your cache
+On Linux the endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. Without `XDG_RUNTIME_DIR`, it uses
+the existing private `/run/user/<effective uid>`. If that directory is absent, commands refuse
+`TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`). systemd-logind or pam_rundir can create that directory.
+Without either, create a directory owned by your operating-system user with mode 0700 and set
+`XDG_RUNTIME_DIR` to its absolute path before running the daemon or its clients. Cotal does not
+create this parent directory or repair its ownership or permissions.
+On macOS the endpoint is `cotal/daemon.sock` in your cache
 directory under `/var/folders`, the one `confstr(_CS_DARWIN_USER_CACHE_DIR)` names. No environment
 variable changes it, so the LaunchAgent and your terminal reach the same socket. A socket path longer
 than the kernel accepts (107 bytes on Linux, 103 on macOS) refuses `TARGET_UNAVAILABLE`

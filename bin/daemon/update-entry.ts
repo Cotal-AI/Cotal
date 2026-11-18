@@ -19,6 +19,7 @@ import type { ExecutionPreinstallReceipt } from "./execution-preinstall-client.j
 import { findMesh, logicalExecutionEntry, pruneRetainedConnectorConfig, retainConnectorConfig, shellPath } from "@cotal-ai/workspace";
 import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
+import { daemonServiceRequirement } from "./service-platform.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
 
 /** A reconcile child of a parent that said it waits after the child and prints the line. A parent
@@ -164,6 +165,8 @@ const composed: Command = { ...command, async run(args) {
     currentPackages = updateRuntime.isCurrent?.() === true;
     return currentPackages;
   }, async automaticUpdateAdvice() {
+    const requirement = daemonServiceRequirement();
+    if (requirement) return `${requirement.message}. ${requirement.remedy}. Automatic installation remains unavailable without a supported native daemon service.`;
     try {
       const reply = await queryDaemon({ paths: daemonPaths() });
       if (!reply.ok) throw new Error(`machine daemon update schedule is unreadable: ${reply.error.message}`);
