@@ -665,7 +665,8 @@ export interface PrincipalServe {
   /** Resolves with the refusal that ended the serve, including one that arrives on a replaced
    *  connection after `ready` resolved. Never rejects, and never resolves after `stop`. */
   readonly failed: Promise<Error>;
-  /** Unsubscribe and wait for the handlers in flight. */
+  /** Unsubscribe, abort every handler's `signal`, and wait for each handler in flight until its
+   *  request's deadline at most. A reply that comes after that is dropped. */
   stop(): Promise<void>;
 }
 
@@ -2423,7 +2424,13 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  /** The presence epoch moves first: a bind still awaiting the broker must find it moved
+  /** Stop the endpoint and close its connection.
+   *
+   *  Every principal serve ends first: its handlers' `signal` aborts, and stop waits for each
+   *  handler in flight until its request's deadline at most, so a handler that never settles does
+   *  not hold stop open. A reply that comes after that is dropped.
+   *
+   *  The presence epoch moves first: a bind still awaiting the broker must find it moved
    *  before any await below gives it a window to install a watch on a stopped endpoint
    *  (see {@link startPresenceWatch}). */
   stop(): Promise<void> {
@@ -2439,7 +2446,8 @@ export class CotalEndpoint extends EventEmitter {
     this.activeGoalFollowers.clear();
     this.presenceEpoch++;
     // Every principal serve ends now, so a `ready` still waiting for the broker rejects and no new
-    // request is taken. Its handlers in flight finish below, before the connection they reply on closes.
+    // request is taken. Its handlers in flight finish below, before the connection they reply on
+    // closes, or their requests' deadlines pass.
     const principalStops = [...this.principalServes.values()].map((intent) => this.stopPrincipalServe(intent, false));
     this.presence.cancelRebind();
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
@@ -6786,8 +6794,8 @@ export class CotalEndpoint extends EventEmitter {
    * (subscribe, flush, and no permission violation for that subject), and rejects with the
    * refusal, which a credential minted before the rows existed gets. The serve is INTENT: every
    * replaced connection subscribes again and runs the check again, and a refusal there ends the
-   * serve, resolves `failed` and clears the presence field. `stop` unsubscribes and waits for the
-   * handlers in flight.
+   * serve, resolves `failed` and clears the presence field. `stop` unsubscribes, aborts the
+   * handlers' `signal`, and waits for each handler in flight until its request's deadline at most.
    */
   servePrincipal(serve: { endpoint: string; cluster: ClusterDocument; handlers: EpPrincipalCommandDef[] }): PrincipalServe {
     if (!this.authed)
@@ -6915,7 +6923,8 @@ export class CotalEndpoint extends EventEmitter {
     if (principalServers.get(intent.serverKey) === intent) principalServers.delete(intent.serverKey);
   }
 
-  /** Stop serving `intent` and wait for its handlers in flight. The ending is synchronous, so a
+  /** Stop serving `intent` and wait for its handlers in flight, each until its request's deadline
+   *  at most. The ending is synchronous, so a
    *  `ready` still waiting for the broker rejects before the caller's next step. `republish` writes
    *  presence without the `prompts` field; the endpoint's own stop writes it offline instead. */
   private async stopPrincipalServe(intent: PrincipalServeIntent, republish = true): Promise<void> {

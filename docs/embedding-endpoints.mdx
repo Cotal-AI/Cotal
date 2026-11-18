@@ -171,7 +171,11 @@ The returned `ready` resolves only after the broker accepted the subscription. I
 credential holds no serve row, which a credential minted before this release does not. The serve
 subscribes again after every reconnect, and a refusal there resolves `failed` and is reported on
 `warning`. `stop()` unsubscribes and waits for the handlers in flight, and the endpoint's own
-`stop()` does the same for every serve before it closes the connection.
+`stop()` does the same for every serve before it closes the connection. Each handler gets a `signal`
+in its context that aborts when the serve stops, so it can end early. Stop waits for a handler only
+until its request's `deadlineMs` has passed since the request arrived, because the caller has
+stopped waiting by then, and a reply that comes later is dropped. A handler that never settles
+cannot hold `stop()` open past that deadline.
 
 `setPromptsPresence({ open, seq })` sets the presence field above and writes presence at once. It
 throws while the `agent` endpoint is not served, and for a `seq` below one this process already used

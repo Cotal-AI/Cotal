@@ -20,7 +20,8 @@
  * cell 27, a malformed nonce; cell 28, a stored frame a Direct Get delivers on the caller's sentinel;
  * cell 29, a reply under another head that arrives first; cell 30, stopping the endpoint while a
  * handler runs and while `ready` waits; cells 31 and 32, `seq` across serves and endpoint objects of
- * one runtime, and a second server for one lifecycle in a process; a reconnect that rebinds, a
+ * one runtime, and a second server for one lifecycle in a process; cell 33, stop waits for a handler
+ * in flight only until its request's deadline; a reconnect that rebinds, a
  * reconnect whose new credential lacks the rows, and the mixed-version cases that need no 0.165
  * release: an agent that serves nothing, a caller or an agent whose credential predates the rows,
  * and a caller pinned to a later revision.
@@ -96,6 +97,7 @@ const W = {
   legacy: who(A, "legacy", "managed-agent"),
   stopper: who(A, "stopper", "managed-agent"),
   stopper2: who(A, "stopper2", "managed-agent"),
+  stopper3: who(A, "stopper3", "managed-agent"),
   cycler: who(A, "cycler", "managed-agent"),
   web: who(A, "web", "interactive"),
   term: who(A, "term", "interactive"),
@@ -799,6 +801,58 @@ try {
       cyclerSeq() === 50 && webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.runtime?.id === processRuntime(W.cycler.uid).id && next === 51,
       { seq: cyclerSeq(), next });
     await third.stop();
+  }
+
+  // ── cell 33: stop waits for a handler in flight only until its request's deadline ──
+  {
+    const ep3 = await userEndpoint(W.stopper3);
+    const at = addressOf(W.stopper3, processRuntime(W.stopper3.uid).id);
+    const replies: string[] = [];
+    const watch = webRaw.nc.subscribe(`${P}.ep.prin-reply.agent.${A}.stopper3.*.*.${A}.web.${W.web.uid}.*`, { callback: (_e, m) => { replies.push(m.subject); } });
+    await webRaw.nc.flush();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered = 0, aborted = 0;
+    const serve = ep3.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers(async (ctx) => {
+      entered++;
+      ctx.signal?.addEventListener("abort", () => { aborted++; });
+      await gate; // ignores the signal
+      return { runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] };
+    }) });
+    await serve.ready;
+    const deadlineMs = 2500;
+    const reply = settle(call(webEp, at, "prompts", "owner", {}, deadlineMs));
+    const sentAt = performance.now();
+    await until(() => entered === 1);
+    const stopAt = performance.now();
+    const stopped = await Promise.race([serve.stop().then(() => performance.now()), wait(deadlineMs + 3000).then(() => undefined)]);
+    const r = await reply;
+    check("cell 33: stop() on a handler that never settles returns once the request's deadline passed, not when the handler does",
+      stopped !== undefined && stopped - sentAt <= deadlineMs + 1000 && stopped - stopAt >= 500,
+      { stopAfterMs: stopped === undefined ? "still waiting" : Math.round(stopped - stopAt), sinceSentMs: stopped === undefined ? undefined : Math.round(stopped - sentAt) });
+    check("cell 33: the handler's signal aborted when the serve stopped", aborted === 1, { aborted });
+    const seenBefore = replies.length;
+    release();
+    await wait(500);
+    check("cell 33: the handler's late reply is dropped, and the caller saw its deadline",
+      replies.length === seenBefore && seenBefore === 0 && !r.ok && codeOf(r.error) === "deadline-exceeded/unknown", { replies: replies.length, call: r.ok ? r.value : codeOf(r.error) });
+    // A handler that ends on the signal lets stop return at once, and its reply still goes out.
+    const again = ep3.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers(async (ctx) => {
+      entered++;
+      await new Promise<void>((resolve) => ctx.signal.addEventListener("abort", () => resolve()));
+      return { runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] };
+    }) });
+    await again.ready;
+    const second = settle(call(webEp, at, "prompts", "owner", {}, 8000));
+    await until(() => entered === 2);
+    const t0 = performance.now();
+    await Promise.race([again.stop(), wait(10_000)]);
+    const tookMs = performance.now() - t0;
+    const r2 = await second;
+    check("cell 33: a handler that ends on the signal lets stop() return at once, and its reply goes out",
+      tookMs < 1000 && r2.ok && r2.value.ok, { tookMs: Math.round(tookMs), call: r2.ok ? r2.value : codeOf(r2.error) });
+    watch.unsubscribe();
+    await ep3.stop();
   }
 
   // ── mixed versions that need no 0.165 release ──
