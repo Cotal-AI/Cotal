@@ -16,7 +16,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SMOKE_BROKER_TOKEN, createSuite, freePort, killAndAwaitExit, listenOn, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, killAndAwaitExit, listenOn, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -25,9 +25,13 @@ if (!existsSync(BIN)) {
 }
 
 const home = mkdtempSync(join(tmpdir(), "cotal-space-reads-"));
+const cotalHome = join(home, ".cotal");
+const xdgConfigHome = join(home, ".config");
+const hintProject = mkdtempSync(join(home, "hint-root-"));
+const hintSandbox = recordSmokeSandbox({ root: hintProject, cotalHome, xdgConfigHome });
 // Set before the workspace is imported: it reads COTAL_HOME on each call, so the real ~/.cotal is
 // never touched.
-process.env.COTAL_HOME = join(home, ".cotal");
+process.env.COTAL_HOME = cotalHome;
 const { clearCurrent, findMesh, getCurrent, meshesDir, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
 
 const { check, finish } = createSuite();
@@ -56,12 +60,14 @@ process.on("exit", () => {
 });
 
 const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], {
+  const options = {
     cwd,
-    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: process.env.COTAL_HOME!, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
-    encoding: "utf8",
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdgConfigHome, COTAL_HOME: cotalHome, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
+    encoding: "utf8" as const,
     timeout: 120_000,
-  });
+  };
+  assertSmokeSandboxDown(hintSandbox, args, options);
+  const r = spawnSync(process.execPath, [BIN, ...args], options);
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 };
 const json = (args: string[]) => {
@@ -278,7 +284,7 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
 // The create hint must name a usable folder even when the selection already matches this root.
 {
   const selected = getCurrent();
-  const project = mkdtempSync(join(home, "hint-root-"));
+  const project = hintProject;
   const other = mkdtempSync(join(home, "hint-other-"));
   const child = mkdtempSync(join(project, "child-"));
   const localHint = /cotal space create <name>\s+Prepare another local space in this folder/;

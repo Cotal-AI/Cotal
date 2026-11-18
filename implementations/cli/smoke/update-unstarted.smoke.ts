@@ -1,6 +1,6 @@
 /** Updates skip retained legacy configurations without claiming continuity and prove stopped controllers cold. */
 import nodeAssert from "node:assert/strict";
-import { countedAssert } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, countedAssert, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, chownSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -150,6 +150,7 @@ try {
   clearCurrent();
   const privateHome = join(root, "private-home");
   mkdirSync(privateHome, { mode: 0o700 });
+  const env = { ...ambient, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
   for (const mode of ["open", "static"] as const) {
     const project = join(root, `refused-${mode}`);
     mkdirSync(join(project, ".cotal"), { recursive: true, mode: 0o700 });
@@ -174,8 +175,7 @@ try {
     assert.doesNotMatch(output, /no manager running/, `${mode}: does not assert absence of custody`);
     for (const args of [["update"], ["update", "--self"]]) {
       const result = spawnSync(process.execPath, [resolve(import.meta.dirname, "../../../bin/dist/cotal.js"), ...args], {
-        cwd: project, encoding: "utf8", timeout: 120_000,
-        env: { ...ambient, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" },
+        cwd: project, encoding: "utf8", timeout: 120_000, env,
       });
       assert.equal(result.status, 0, `${mode}: ${args.join(" ")} completes\n${result.stdout}\n${result.stderr}`);
       assert.ok(result.stdout.includes(project), `${mode}: command names the skipped folder`);
@@ -188,11 +188,12 @@ try {
   // Run the public startup and stop commands so this covers actual stopped-project records.
   const stoppedProject = join(root, "stopped-project");
   const stoppedSpace = `explicit-${randomUUID()}`;
-  mkdirSync(join(stoppedProject, ".cotal"), { recursive: true, mode: 0o700 });
-  const stoppedCli = (...args: string[]) => spawnSync(process.execPath, [bin, ...args], {
-    cwd: stoppedProject, encoding: "utf8", timeout: 120_000,
-    env: { ...ambient, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" },
-  });
+  const stoppedSandbox = recordSmokeSandbox({ root: stoppedProject, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+  const stoppedCli = (...args: string[]) => {
+    const options = { cwd: stoppedProject, encoding: "utf8" as const, timeout: 120_000, env };
+    assertSmokeSandboxDown(stoppedSandbox, args, options);
+    return spawnSync(process.execPath, [bin, ...args], options);
+  };
   let started = false;
   try {
     const up = stoppedCli("up", "--detach", "--server", target.server, "--space", stoppedSpace);
@@ -227,12 +228,17 @@ try {
   const originalProject = controllerProject;
   const controllerSpace = `controller-${randomUUID()}`;
   const temp = join(root, "readonly-temp");
-  mkdirSync(controllerProject, { mode: 0o700 });
+  mkdirSync(originalProject, { mode: 0o700 });
+  const controllerSandbox = recordSmokeSandbox({ root: originalProject, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   mkdirSync(temp, { mode: 0o500 });
-  const controllerCli = (args: string[], temporary?: string) => spawnSync(process.execPath, [bin, ...args], {
-    cwd: controllerProject, encoding: "utf8", timeout: 180_000,
-    env: { ...ambient, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", ...(temporary ? { TMPDIR: temporary, TMP: temporary, TEMP: temporary } : {}) },
-  });
+  const controllerCli = (args: string[], temporary?: string) => {
+    const options = {
+      cwd: controllerProject, encoding: "utf8" as const, timeout: 180_000,
+      env: { ...env, ...(temporary ? { TMPDIR: temporary, TMP: temporary, TEMP: temporary } : {}) },
+    };
+    assertSmokeSandboxDown(controllerSandbox, args, options);
+    return spawnSync(process.execPath, [bin, ...args], options);
+  };
   const expectSuccess = (args: string[], temporary?: string) => {
     const result = controllerCli(args, temporary);
     assert.equal(result.status, 0, `${args.join(" ")} succeeds${temporary ? ` with TMPDIR=${temporary}` : ""}\n${result.stdout}\n${result.stderr}`);

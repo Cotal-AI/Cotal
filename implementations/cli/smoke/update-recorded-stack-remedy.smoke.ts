@@ -3,21 +3,24 @@ import strictAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, countedAssert, emitSentinel, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert;
 const root = mkdtempSync(join(tmpdir(), "stack-remedy-"));
 const project = join(root, "project with spaces"), home = join(root, "home"), fixture = join(root, "fixture");
-for (const path of [project, join(project, ".cotal"), home, fixture, join(root, "config"), join(root, "cotal"), join(root, "tmp"), join(root, "rt")]) mkdirSync(path, { recursive: true, mode: 0o700 });
+for (const path of [project, home, fixture, join(root, "tmp"), join(root, "rt")]) mkdirSync(path, { recursive: true, mode: 0o700 });
 const repo = join(import.meta.dirname, "../../..");
 const packed = process.env.COTAL_REMEDY_TEST_ENTRY;
 const entry = packed ?? join(repo, "bin/cotal.ts");
 const env: NodeJS.ProcessEnv & { COTAL_HOME: string; XDG_CONFIG_HOME: string } = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))), HOME: home, COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: join(root, "rt"), TMPDIR: join(root, "tmp"), COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
+const sandbox = recordSmokeSandbox({ root: project, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+const downFlags = ["--yes", "--with-agents", "--space", "remedy-proof"];
 let latest = "99.0.0";
 const server = createServer(async (request, response) => {
   if (decodeURIComponent(request.url ?? "") === "/cotal-ai") response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest }, versions: { [latest]: { name: "cotal-ai", version: latest } } }));
@@ -39,7 +42,9 @@ writeFileSync(seat, `import{CotalEndpoint}from${JSON.stringify(core)};const e=pr
 writeFileSync(join(fixture, "index.js"), `import{registry}from${JSON.stringify(core)};registry.register({kind:'connector',name:'stack-remedy-seat',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))),COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
 let started = false;
 async function cli(args: string[], updating = false): Promise<{ code: number | null; output: string }> {
-  const child = spawn(process.execPath, [...(packed ? [] : ["--import", import.meta.resolve("tsx")]), entry, ...args], { cwd: project, env: { ...env, ...(updating ? { npm_config_registry: registry } : {}) }, stdio: ["ignore", "pipe", "pipe"] });
+  const options = { cwd: project, env: { ...env, ...(updating ? { npm_config_registry: registry } : {}) }, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+  assertSmokeSandboxDown(sandbox, args, options);
+  const child = spawn(process.execPath, [...(packed ? [] : ["--import", import.meta.resolve("tsx")]), entry, ...args], options);
   let output = "";
   child.stdout.on("data", bytes => output += bytes); child.stderr.on("data", bytes => output += bytes);
   const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
@@ -131,8 +136,12 @@ try {
     const version = await ok(["version", "--json"]);
     latest = JSON.parse(version).result.version;
     const commandEnv = { ...env, npm_config_registry: registry, PATH: `${join(dirname(packed), "../../../../bin")}:${process.env.PATH ?? ""}` };
-    for (const command of commands) {
-      const child = spawn("bash", ["-c", command], { cwd: project, env: commandEnv, stdio: ["ignore", "pipe", "pipe"] });
+    const options = { cwd: project, env: commandEnv, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+    // Verify the shell command stays in the same sandbox the argv guard checks.
+    assert.equal(commands[0], `cd ${shellWord(realpathSync.native(project))} && cotal down ${downFlags.join(" ")}`);
+    for (const [index, command] of commands.entries()) {
+      if (index === 0) assertSmokeSandboxDown(sandbox, ["down", ...downFlags], options);
+      const child = spawn("bash", ["-c", command], options);
       let output = "";
       child.stdout.on("data", bytes => output += bytes); child.stderr.on("data", bytes => output += bytes);
       const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
@@ -147,7 +156,7 @@ try {
     assert.notDeepEqual(finalJournal.members.find((row: { role: string }) => row.role === "manager").process, manager.process);
   }
 } finally {
-  if (started) await ok(["down", "--yes", "--with-agents", "--space", "remedy-proof"]);
+  if (started) await ok(["down", ...downFlags]);
   await new Promise<void>(resolve => server.close(() => resolve()));
   if (existsSync(journal)) assert.equal(JSON.parse(readFileSync(journal, "utf8")).operation.phase, "completed");
   rmSync(root, { recursive: true, force: true });
