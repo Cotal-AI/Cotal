@@ -7,6 +7,12 @@ export const useFlags = [
   jsonFlag, plainFlag,
 ] as const satisfies readonly FlagSpec[];
 
+export function validateUseArguments(args: ParsedArgs): void {
+  presentationOf(args.values);
+  if (args.positionals[0] !== undefined && !args.positionals[0].trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "space name cannot be empty", { remedy: "name a space with `cotal use <space>`, or omit the name to show the selection" });
+}
+
 interface Selection {
   readonly kind: "selection";
   /** The selected space after the command, or null when none is selected. */
@@ -34,6 +40,7 @@ interface Selection {
  * `cotal use` reports the selection, and `--clear` removes it.
  */
 export async function use(args: ParsedArgs): Promise<void> {
+  validateUseArguments(args);
   const values = args.values as FlagValues<typeof useFlags>;
   const presentation = presentationOf(values);
   if (args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "usage: cotal use [<space> | --clear]");

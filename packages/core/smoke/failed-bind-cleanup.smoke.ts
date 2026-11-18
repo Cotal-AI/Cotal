@@ -90,14 +90,13 @@ type Handles = {
 const snapshot = (endpoint: CotalEndpoint): Handles => {
   const e = endpoint as unknown as {
     nc?: unknown;
-    deliveryServeSub?: unknown;
-    deliveryAdminServeSub?: unknown;
+    deliveryPlane: { deliveryServeSub?: unknown; deliveryAdminServeSub?: unknown };
     subs?: unknown[];
   };
   return {
     nc: e.nc !== undefined,
-    deliveryServeSub: e.deliveryServeSub !== undefined,
-    deliveryAdminServeSub: e.deliveryAdminServeSub !== undefined,
+    deliveryServeSub: e.deliveryPlane.deliveryServeSub !== undefined,
+    deliveryAdminServeSub: e.deliveryPlane.deliveryAdminServeSub !== undefined,
     subsLen: Array.isArray(e.subs) ? e.subs.length : 0,
   };
 };
