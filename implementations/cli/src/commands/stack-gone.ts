@@ -246,11 +246,15 @@ export async function goneRootStackDown(space: string, root: string, values: Par
       const identity = assertRecordIdentity(member.process).kind;
       if (identity !== "match" && identity !== "gone" && identity !== "mismatch") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the ${member.role}'s recorded process identity cannot be checked; nothing was stopped`, { target });
     }
+    const stopped: { role: StackRole; pid: number; result: "stopped" | "already-stopped" }[] = [];
     if (values["dry-run"] !== true) {
       if (!values.yes) throw new ConfirmationRequired("stopping the creation-pinned members of a missing folder requires --yes", { target, remedy: `run \`cotal down --space ${space} --yes\`` });
       for (const member of [...members].sort((a, b) => STOP_ORDER.indexOf(a.role) - STOP_ORDER.indexOf(b.role))) {
         const before = assertRecordIdentity(member.process).kind;
-        if (before === "gone" || before === "mismatch") continue;
+        if (before === "gone" || before === "mismatch") {
+          stopped.push({ role: member.role, pid: member.process.pid, result: "already-stopped" });
+          continue;
+        }
         if (before !== "match") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the ${member.role}'s process identity became unavailable; later members were not stopped`, { target });
         try { process.kill(member.process.pid, "SIGTERM"); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `SIGTERM to the ${member.role} was not confirmed; later members were not stopped`, { target }); }
@@ -258,10 +262,15 @@ export async function goneRootStackDown(space: string, root: string, values: Par
         while (assertRecordIdentity(member.process).kind === "match" && Date.now() < deadline) await delay(100);
         const after = assertRecordIdentity(member.process).kind;
         if (after !== "gone" && after !== "mismatch") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the ${member.role}'s exit after SIGTERM was not confirmed; later members were not stopped`, { target });
+        stopped.push({ role: member.role, pid: member.process.pid, result: "stopped" });
       }
       removeMesh(space);
     }
-    writeResult(presentation, { command: "down", target, result: { kind: "gone-root-native-stack-stop", members, preview: values["dry-run"] === true }, noOp: values["dry-run"] === true }, () => ({ space, sections: [{ title: values["dry-run"] ? "Missing-folder stack preview" : "Stack stopped; its folder was gone", blocks: [{ kind: "lines", lines: [root, ...members.map((member) => `${member.role}: pid ${member.process.pid}`)] }] }] }));
+    const preview = values["dry-run"] === true;
+    const result = preview
+      ? { kind: "gone-root-stack-stop-preview", ...target, members }
+      : { kind: "gone-root-stack-stop", ...target, members: stopped, releasedDefinitions: [] };
+    writeResult(presentation, { command: "down", target, result, noOp: preview }, () => ({ space, sections: [{ title: values["dry-run"] ? "Missing-folder stack preview" : "Stack stopped; its folder was gone", blocks: [{ kind: "lines", lines: [root, ...members.map((member) => `${member.role}: pid ${member.process.pid}`)] }] }] }));
     return;
   }
   const members = readMembers(space, root);
