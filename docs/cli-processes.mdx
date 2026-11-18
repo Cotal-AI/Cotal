@@ -629,6 +629,10 @@ Active seats block that restart until they stop. When a desired space has no ava
 application, `daemon status` shows this recovery under Next.
 
 To connect directly to a space, use `cotal daemon setup --space <s> [--idp <url>]`.
+The space must use user auth. Local static-auth and open spaces run their Manager under
+`cotal up`, not the machine service. Setup refuses them with `UNSUPPORTED` (`NOT_USER_AUTH`)
+before turning the space on or saving a hosted Manager refusal. Service status reports them
+as unsupported without suggesting registration, and disconnect points back to `cotal up`.
 `--no-manager` and `--wait` require `--space`; `--wait` also requires `--no-manager`.
 Space-specific daemon commands require an explicit `--space <s>` even when `cotal use`
 has selected a space. `daemon status` can omit it to read the daemon and all hosted Managers.

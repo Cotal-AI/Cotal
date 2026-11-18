@@ -1,5 +1,8 @@
 import { homeCotalDir, shellPath } from "@cotal-ai/workspace";
 
+/** Non-user-auth spaces keep their Manager under the local stack's custody. */
+export const LOCAL_SPACE_GUIDANCE = "local spaces without user sign-in run their Manager under `cotal up`. The machine service hosts Managers only for user-auth participant spaces";
+
 /** A copyable command for this daemon. Tuples keep option values distinct from boolean flags;
  *  leading-hyphen values need `=` even when shell-quoted. Windows copy targets PowerShell. */
 export function daemonCommandCopy(op: string, home?: string, args: readonly (string | readonly [string, string])[] = []): string {

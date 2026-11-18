@@ -258,6 +258,9 @@ export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSe
 async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<RegisterResult | undefined> {
   const check = await connectCheckViaDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, space: opts.space });
   if (!check.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the connection check: ${check.code} ${check.message}`, { native: { code: check.code } });
+  if (check.result.outcome === "not-user-auth") {
+    throw new CommandFailure("refused", "UNSUPPORTED", check.result.message, { native: { code: "NOT_USER_AUTH" } });
+  }
   if (check.result.outcome === "credential-expired") {
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", check.result.message, { native: { code: "CREDENTIAL_EXPIRED" } });
   }
