@@ -287,8 +287,10 @@ value they built, because only the host knows its size in advance: case mapping 
 `toLowerCase`, `toUpperCase`), whose result is at most three times a bounded input. A string
 literal is bounded by the program text. A count, length or position argument must be a number
 (**L4018**). Values that enter a program from an effect or a replayed journal entry are bounded by
-the journal's result bound (the broker's `max_payload` less 4096 bytes), which keeps them under
-all three bounds; a journal built with no result bound does not bound them.
+the journal's result bound (the broker's `max_payload` less 4096 bytes), not by the value bounds.
+With the default 1 MiB `max_payload` that keeps them under all three; a broker configured above
+4 MiB lets one result exceed the string bound. A journal built with no result bound does not bound
+them.
 
 ### Foreign error text
 
