@@ -1,29 +1,48 @@
 # macOS repair acceptance status
 
-Updated 2026-11-18 at 04:09Z.
+Updated 2026-11-18 at 05:16Z. PR 7392 remains draft and not merge-ready.
 
-## Prepared first native run
+## Actual native result
 
-Local candidate `14d6598cb4265b26c8a51e590250e19947ed8ea4` merges current main `b30e9a29b3b887f3e34ef0d3bcbdcabd0350b363`. The published PR 7392 head remains `f6006204ce3e0fffcc128d761c9ae590327ab4e3` until the authorized serialized push.
+Published head `7ad8a7d86cd68dbb713ac7fc4ecc7021f4264d6a`, dedicated run `44235279384` attempt 1, is terminal FAILURE. Six exact-source builders and both normal guarded full 24-package candidate packs passed. Independent original audits verified ten native ZIPs, four source/binary receipts, all archive hashes and 4,307 actual file hashes per pack. A is 0.166.1003, B is 0.166.2003, packed on distinct clean runners. Normal native and prepublish guards and mandatory 30 GiB floors passed.
 
-The prepared workflow checks out the exact pushed source on six native runners and builds the Linux, macOS and Windows x64/arm64 seat helpers plus the four source-receipted workspace bindings. It assembles and checks the normal native closure, packs all 24 packages as candidate A, then uses a separate clean checkout and the normal next-candidate packer for candidate B at A.patch + 1000. No previous release binary is relabelled and no package/native guard is bypassed.
+Five native modes passed and were graded from API-hash-verified originals: status, install, disabled, unreadable-source and installed A-to-B self-update. Unreadable-Manager failed. Occupied-Manager and five crash variants were cancelled before execution by the mode matrix's fail-fast, all six remain UNRUN. Old evidence is not transferred to those cases. The fixture proves absent original app/program paths after retiring the bundle, not deletion of the renamed inode while old processes run.
 
-The macOS measurement jobs run one at a time on isolated hosted runners, with fail-fast enabled. Their modes are status, install, disabled, unreadable-source, self-update, unreadable-manager, occupied-manager, crash-prepared, crash-published, crash-prepared-mismatch, crash-prepared-concurrent and crash-prepared-changed-source. Each runner checks the exact 30 GiB free-space floor before setup. A runner below the floor fails setup rather than weakening that requirement.
+The failed job is `134578230027`. Original artifact `14400361083` SHA-256 `4d8357f7311435f54fe67aed9b225d5ff427fd329c7f38450c9f3f3934e5810c` independently matched the API before inspection. Its original ZIP, API snapshot, actual job JSON/log, failure checker and output are sealed on the approved host in `out/repair-44235279384-modes/`. The checker confirms an expected failure signature, not passing acceptance. The full failure grade is retained as `GRADE-44235279384-UNREADABLE-MANAGER-FAILURE.md` in lane evidence.
 
-## Local validation
+## Finding A: designed safety refusal, poor user diagnostic
 
-At the named candidate, the approved executor's existing dependency graph passed the full build, binary source and smoke-tree TypeScript checks, repair replies 3 of 3, update generation 57 of 57, and native adapters 378 of 378 including real built public-entry chains. Docs voice, literal and comment checks and the changeset plan passed. YAML structure, all 17 Bash blocks and embedded JavaScript syntax passed. These are local checks, not macOS native acceptance.
+The actual Manager 9494 was pinned by native birth, suspended with SIGSTOP and observed in state T. Candidate `daemon install --json` refused with exit 3 and `OPERATION_UNKNOWN`, message `the pinned daemon refused service repair preparation`. It did not time out. Original daemon 7829 and Manager 9494 identities, plist, receipt and sign-in assertions remained unchanged, and no repair intent was published. After same-lifetime SIGCONT, instance-pinned public `ps` answered.
 
-Independent source review found no further concrete A/B/source-cleanliness/observer-install execution blocker. It noted that the required 30 GiB admission may exceed available space on some hosted runner images. Actual hosted admission remains unmeasured. The floor is retained. Both preparation/review workers completed without jobs or runtime resources and were stopped.
+Refusing to stop an unreadable Manager is designed safety behavior, as documented in `docs/cli-processes.mdx` at the background-service repair description. The released 0.164.16 daemon's `generationCall` bounds its unanswered inspect at 10 seconds and `managerResult` sends `MANAGER_UNAVAILABLE` with a recovery remedy. The candidate's `bin/daemon/install.ts` request helper discards that negative reply at line 575 and throws a generic Error. The shared CLI maps generic errors to unknown. That loses the useful Manager cause and remedy. This is a user-diagnostic defect, not evidence that the service should have been stopped or that the safety refusal failed. No product fix was made.
 
-## Remaining native limits
+The actual native JSON contains outcome unknown, completeness not-checked, null result, no cause/remedy, empty stderr and exit 3. The same built public report helper was exercised read-only with the observed failure and renders:
 
-**All new native modes remain UNRUN.** This status does not transfer old `fc9872708c` native evidence to the new source. Real phase capture can be missed and must fail setup without inventing an intent. Distinct-destination receipt normalization and old Manager deleted bearer-entry resolution remain risks to measure, not speculative product fixes.
+```text
+Outcome unconfirmed
+  the pinned daemon refused service repair preparation
+  Outcome: unknown
+  Code:    OPERATION_UNKNOWN
+```
 
-Concurrent-operation assertions cover the actual suspended repair child, protected bytes and lock owner, not continuous native-job or all-process preservation. Changed-source restoration requires an isolated no-concurrent-writer fixture premise plus exact descriptor/path ownership, protected authority, native absence and exact fault bytes. Partial publication or unknown cleanup stays failed, with disposable runner teardown owning unknown survivors. No live agents are killed to make an update proceed.
+The render is evidence of the existing human renderer, not a second native mutation. The user sees no actionable restoration instruction or affected Manager in this path. Preserve conservative unknown semantics until any outstanding preparation/abort effects are classified; do not blindly turn every negative reply into a known no-effect refusal.
 
-## Serialized publication authority
+## Finding B: real user-reachable missing-runtime peer resolution
 
-Core `176546fd` authorized one PR 7392 push after PR 6411 run `44222918870` ends. Core `37c57459` subsequently tightened this gate: the Intel cancellation was a lost runner, core will rerun failed jobs once, and PR 7392 must wait for that rerun to end as well. Initial attempt 1 ended cancelled with only Intel lost before capture. Core's retry, attempt 2 on exact desktop head `ebe88aded09bf646bde51b7228d733944a2b8829`, is now terminal SUCCESS, confirmed at 04:06Z. New Intel launch, account and presence originals were independently SHA-256 verified before grading. The serialized publication prerequisite is met.
+Actual new lifecycle `spawn --on <original-instance>` exited 2 with `LIFECYCLE_BLOCKED`, native failed-precondition/not-executed. The reason is the ordinary fixture connector's `@cotal-ai/core` peer cannot be linked. Public read recovery is not lifecycle admission, no seat receipt was produced, and the full unreadable-Manager acceptance field was never written.
 
-No repair push, workflow dispatch, rerun or native mode execution has occurred as of this status commit. Core's retry has ended, so the validated repair head is authorized for its one push. All new repair modes remain unrun. Core `86074c80` instructs the lane to report both automatic run IDs immediately: the dedicated builder workflow and the ordinary Desktop apps workflow. Core, not this lane, will cancel the ordinary Desktop workflow to preserve capacity. No duplicate dispatch or agent cancellation is authorized. Taskbar naming remains unproven and unwaived.
+This is not merely an invalid fixture declaration. A real operator-installed custom connector declares the same peer and is lazily loaded on its first use in that Manager. The real launch path calls materialization, `bindExtensionPeers` and `realpathSync(hostPackageDir(peer))`. That host resolver walks the still-running Manager's original module installation, whose app path no longer exists. CLI `ext add` registration does not preload the connector into the separate Manager. The native fixture used those actual public entry points and reproduced the user-visible failure. Independent read-only source review confirmed the chain and owns no resources.
+
+Filed https://github.com/Cotal-AI/Cotal/issues/7472 with exact public steps, original hash and limits. This is scoped to first-use custom connector loading with missing original runtime paths. It does not prove all seeded or already-materialized connectors fail, nor that replacing the app with a complete new runtime at the original path has the same result. The native measured sequence includes suspension/refusal/resume, and a no-suspension variant was not run. It is not a lifecycle-fence regression diagnosis. Removing the fixture's peer declaration alone is not a valid proof fix: it would hide a real route and still leave a separate bearer command pointing at the retired app entry. No product or fixture edit was made.
+
+## Finding C: cleanup harness state defect and minimal proposal
+
+The fixture sets `occupiedInstance` before public spawn. Spawn proves not-executed, but no seat PID/birth/lifecycle is captured. Cleanup interprets the selected instance as an owned seat, fails `no seat stop without its captured native lifetime`, then correctly refuses daemon/Manager signalling. It reports unknown service and unresolved processes. Final census retains daemon 7829 and Manager 9494. Cleanup is UNCONFIRMED. Disposable hosted runner teardown owns unknown survivors, but fixture evidence does not prove teardown completion. This lane sent no cleanup signal.
+
+The harness defect is conflating selected/pending admission with an owned live seat. Smallest safe correction proposed, not implemented here: track pending admission separately; clear it only after attributed request/native not-executed evidence and unchanged original-instance inventory; mark cleanup-owned only after native PID/birth and public lifecycle UID are captured. A proven not-executed admission needs no seat stop, so existing receipt-bound service and pinned-process cleanup may continue. Unknown admission, timeout, malformed reply or missing native ownership retains today's refusal and teardown ownership. Do not simply test `if (occupiedSeat)` or assign the instance after spawn succeeds, which would discard ambiguous launch ownership.
+
+## Local workflow change and authority
+
+Core `dd37ec3e` requested mode fail-fast off. Local commit `468136019` changes only the measurement matrix to `fail-fast: false`. `max-parallel: 1`, all 12 isolated modes, native-builder fail-fast and exact 30 GiB floors remain unchanged. YAML parsing and structural assertions and `git diff --check` passed. This prepares independent execution of later modes, not a waiver of failed cleanup or acceptance. It has not run natively.
+
+The earlier publication grant was consumed at 7ad8. Core explicitly says no rerun and no new push yet, and will give the push word after this three-finding report. No dispatch, rerun, agent cancellation or source push followed the failed run. Ordinary Desktop run `44235285286` was cancelled under core-owned routing. Desktop PR 6411 exact ebe88 run `44222918870` attempt 2 passed, but taskbar naming remains unproven and unwaived, and combined recovered-preferences/HKLM native fault remains unrun. Main's `.internal` pointer remains untouched. Keep the lane seat until core closeout.
