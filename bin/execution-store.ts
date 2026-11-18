@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { claimGlobalNpmUpdateLock, readUpdateRecovery } from "@cotal-ai/workspace";
+import { claimGlobalNpmUpdateLock, readUpdateRecovery, resolveOnPath } from "@cotal-ai/workspace";
 import { inspectLock, processStartToken } from "@cotal-ai/core";
 import { executionBinding, executionDescriptorPath, executionInventory, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
 
@@ -10,6 +10,13 @@ export interface RetainedExecutionGeneration {
   root: string;
   version: string;
   inventorySha256: string;
+}
+
+/** Describe the administrator's install step without running a privilege command. */
+export function unwritableExecutionMessage(installedRoot: string): string {
+  const elevation = resolveOnPath("sudo") ? "sudo" : resolveOnPath("doas") ? "doas" : undefined;
+  const prefix = dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''");
+  return `installation is not writable; have an administrator run${elevation ? "" : " as root"}: ${elevation ? `${elevation} ` : ""}npm install -g --prefix '${prefix}' cotal-ai@latest; then run \`cotal update\` as your normal account${elevation ? `, without ${elevation}` : ""}`;
 }
 
 /** Remove group and other write from a tree this process just created. Node before 24.22 applies the
@@ -38,7 +45,7 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
     accessSync(installedRoot, constants.W_OK);
     accessSync(dirname(dirname(installedRoot)), constants.W_OK);
   }
-  catch { throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run \`cotal update\` as your normal account, without sudo`); }
+  catch { throw new Error(unwritableExecutionMessage(installedRoot)); }
   const store = executionStore(installedRoot), shared = executionShared(installedRoot);
   if (!lstatSync(store, { throwIfNoEntry: false })) { mkdirSync(store, { mode: 0o700 }); if (shared) chmodSync(store, 0o755); }
   if (!lstatSync(store).isDirectory() || lstatSync(store).isSymbolicLink()) throw new Error("unsafe execution generation store");

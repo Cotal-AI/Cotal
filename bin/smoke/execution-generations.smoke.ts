@@ -193,13 +193,30 @@ try {
   } else {
   check("a non-writable package refuses before creating generation storage", () => {
     chmodSync(root, 0o500);
-    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest; then run `cotal update` as your normal account, without sudo/); }
-    finally { chmodSync(root, 0o700); }
+    const previousPath = process.env.PATH;
+    try {
+      for (const names of [["sudo", "doas"], ["doas"], []]) {
+        const pathbin = mkdtempSync(join(scratch, "privilege-path-"));
+        for (const name of names) writeFileSync(join(pathbin, name), "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+        process.env.PATH = pathbin;
+        const elevation = names[0];
+        assert.throws(() => retainExecutionGeneration(root, source), (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.equal(error.message, `installation is not writable; have an administrator run${elevation ? "" : " as root"}: ${elevation ? `${elevation} ` : ""}npm install -g --prefix '${join(scratch, "prefix")}' cotal-ai@latest; then run \`cotal update\` as your normal account${elevation ? `, without ${elevation}` : ""}`);
+          return true;
+        });
+        assert.equal(existsSync(executionStore(root)), false);
+      }
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      chmodSync(root, 0o700);
+    }
     assert.equal(existsSync(executionStore(root)), false);
   });
   check("generation store refuses a non-writable installation before creating it", () => {
     const parent = join(scratch, "prefix/lib"); chmodSync(parent, 0o500);
-    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest; then run `cotal update` as your normal account, without sudo/); }
+    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; have an administrator run(?: as root)?: (?:sudo |doas )?npm install -g --prefix .*cotal-ai@latest; then run `cotal update` as your normal account(?:, without (?:sudo|doas))?$/); }
     finally { chmodSync(parent, 0o700); }
     assert.equal(existsSync(executionStore(root)), false);
   });
