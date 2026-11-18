@@ -170,11 +170,13 @@ spin_stop() {
 }
 
 TMPDIR_SELF=""
+STAGED_INSTALL=""
 LOCKDIR=""
 # shellcheck disable=SC2329,SC2317  # invoked from the EXIT/INT/TERM/HUP traps set in main
 cleanup() {
   spin_stop
   [ -n "$TMPDIR_SELF" ] && [ -d "$TMPDIR_SELF" ] && rm -rf "$TMPDIR_SELF"
+  [ -n "$STAGED_INSTALL" ] && [ -d "$STAGED_INSTALL" ] && rm -rf "$STAGED_INSTALL"
   [ -n "$LOCKDIR" ] && [ -L "$LOCKDIR" ] && rm -f "$LOCKDIR"
   return 0
 }
@@ -200,7 +202,7 @@ acquire_install_lock() {
     if [ -d "$_lock" ] && [ ! -L "$_lock" ]; then
       die "Something is in the way of the install lock at $(tildify "$_lock")." \
         "Remove it if no other install is running:" \
-        "  rm -rf $_lock"
+        "  rm -rf $(shquote "$_lock")"
     fi
     # A symlink, not a directory: creating one is a single atomic operation that fails if the
     # name already exists, AND its target string carries the owner's pid. `mkdir` then
@@ -224,7 +226,7 @@ acquire_install_lock() {
     if [ -z "$_owner" ]; then
       die "Something is in the way of the install lock at $(tildify "$_lock")." \
         "Remove it if no other install is running:" \
-        "  rm -rf $_lock"
+        "  rm -rf $(shquote "$_lock")"
     fi
     _owner_host=${_owner%:*}
     _owner_pid=${_owner##*:}
@@ -236,7 +238,7 @@ acquire_install_lock() {
         "still running cannot be determined from here." \
         "" \
         "Wait for it to finish. If you are sure it is gone, clear the lock:" \
-        "  rm -f $_lock"
+        "  rm -f $(shquote "$_lock")"
     fi
     # kill -0 answers "may I signal this pid", not "is this my installer". A pid recycled by
     # an unrelated process therefore reads as a live owner. That is rare, and fail-closed is
@@ -247,7 +249,7 @@ acquire_install_lock() {
         "Wait for it to finish, then run this again." \
         "" \
         "If you are sure no other install is running, clear the lock:" \
-        "  rm -f $_lock"
+        "  rm -f $(shquote "$_lock")"
     fi
     # The owner is gone, so the lock is stale. Drop it and retry rather than assume the retry
     # wins: another installer may be doing exactly the same thing right now.
@@ -255,7 +257,7 @@ acquire_install_lock() {
     _tries=$((_tries + 1))
     [ "$_tries" -lt 5 ] || die "Could not claim the install lock at $(tildify "$_lock")." \
       "Remove it by hand if no other install is running:" \
-      "  rm -f $_lock"
+      "  rm -f $(shquote "$_lock")"
   done
 }
 
@@ -718,6 +720,7 @@ read_installed_version() {
 
 install_cotal() {
   PREVIOUS_VERSION=$(read_installed_version)
+  STAGED_INSTALL=$(mktemp -d "$INSTALL_DIR/.install-stage.XXXXXX")
   _spec="$COTAL_PKG"
   [ "$OPT_VERSION" = "latest" ] || _spec="$COTAL_PKG@$OPT_VERSION"
 
@@ -727,14 +730,13 @@ install_cotal() {
     spin_start "Installing Cotal"
   fi
 
-  # nodebin goes on PATH for exactly this call. npm's own entry point resolves `node` through
-  # PATH, so on a machine with no system Node the vendored npm cannot start itself without
-  # it. Prepending only that one directory keeps every other tool the user has intact.
+  # npm's entry point resolves node through PATH. Use the selected runtime while staging,
+  # without changing the active installation's runtime links before verification.
   #
   # --prefix keeps this entirely inside a directory Cotal owns, which is what removes the
   # need for sudo. npm verifies the registry tarball against its published sha512 integrity
   # on the way in, so the package itself arrives checked without us re-implementing it.
-  if ! PATH="$INSTALL_DIR/nodebin:$PATH" "$NPM_BIN" install -g --prefix "$INSTALL_DIR" \
+  if ! PATH="$(dirname "$NODE_BIN"):$PATH" "$NPM_BIN" install -g --prefix "$STAGED_INSTALL" \
     --no-fund --no-audit --loglevel=error "$_spec" >>"$LOG" 2>&1; then
     spin_stop
     show_log_tail
@@ -743,6 +745,28 @@ install_cotal() {
   fi
   spin_stop
 
+  # The active package and launcher stay intact until the requested release can start.
+  if ! _version_output=$(COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 "$NODE_BIN" "$STAGED_INSTALL/lib/node_modules/$COTAL_PKG/dist/cotal.js" --version 2>&1); then
+    printf '%s\n' "$_version_output" >&2
+    if [ "$OPT_VERSION" != latest ]; then
+      die "The installed Cotal could not start." \
+        "Run the installer again without --version to install the latest release."
+    fi
+    die "The latest Cotal release could not start." \
+      "Report the error above at https://github.com/Cotal-AI/Cotal/issues."
+  fi
+  [ -x "$STAGED_INSTALL/bin/cotal" ] || [ -L "$STAGED_INSTALL/bin/cotal" ] ||
+    die "$COTAL_PKG installed without its cotal executable."
+  mkdir -p "$INSTALL_DIR/lib/node_modules" "$INSTALL_DIR/bin"
+  _active="$INSTALL_DIR/lib/node_modules/$COTAL_PKG"
+  if [ -e "$_active" ] || [ -L "$_active" ]; then
+    mv "$_active" "$STAGED_INSTALL/previous"
+  fi
+  if ! mv "$STAGED_INSTALL/lib/node_modules/$COTAL_PKG" "$_active"; then
+    [ ! -e "$STAGED_INSTALL/previous" ] && [ ! -L "$STAGED_INSTALL/previous" ] || mv "$STAGED_INSTALL/previous" "$_active"
+    die "Could not select the verified Cotal package."
+  fi
+  ln -sf "../lib/node_modules/$COTAL_PKG/dist/cotal.js" "$INSTALL_DIR/bin/cotal"
   INSTALLED_VERSION=$(read_installed_version)
   [ -n "$INSTALLED_VERSION" ] ||
     die "npm reported success but $COTAL_PKG is not in the install prefix." \
@@ -1064,7 +1088,7 @@ next_steps() {
       dim_line "PATH updated in $(tildify "$_rc")"
       ;;
     manual)
-      printf '    %s%s%s\n' "$C_BRAND" "export PATH=\"$BIN_DIR:\$PATH\"" "$C_OFF"
+      printf '    %s%s%s\n' "$C_BRAND" "export PATH=$(shquote "$BIN_DIR"):\"\$PATH\"" "$C_OFF"
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
       blank
       dim_line "Add that export to your shell rc to make it permanent."
@@ -1187,7 +1211,7 @@ main() {
     die "Cannot create $(tildify "$INSTALL_DIR")." \
       "This installer writes only inside your home directory, so it needs that to be" \
       "writable by you. Check the permissions:" \
-      "  ls -ld $(dirname "$INSTALL_DIR")" \
+      "  ls -ld $(shquote "$(dirname "$INSTALL_DIR")")" \
       "" \
       "Or send it somewhere else:" \
       "  curl -fsSL https://get.cotal.ai | COTAL_INSTALL_DIR=/path/you/own sh"
@@ -1203,9 +1227,8 @@ main() {
 
   resolve_node
   ok_line "Node $NODE_LABEL"
-  link_node_bin
-
   install_cotal
+  link_node_bin
   write_launcher
   if ! _version_output=$(COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 "$BIN_DIR/cotal" --version 2>&1); then
     printf '%s\n' "$_version_output" >&2
