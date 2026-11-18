@@ -26,11 +26,8 @@
  *     80-column terminal. `down` refuses that pidfile too, so its Next first asks the operator to
  *     confirm that no manager runs for the folder, which this fixture knows because it retired the
  *     manager itself, then names removing the file and a bare `cotal up`, which restores the manager.
- *  3d. In the first root, which still holds the static stack's accounts, an open `up --detach` exits
- *     0 and starts no delivery daemon, and its `down` stops the broker and manager and nothing else.
- *  3e. Static and open boots then alternate in that root, twice. Every boot exits 0 with a manager
- *     that answers `ps`, a static boot runs one delivery daemon and an open boot none, and every
- *     `down` leaves no broker, manager or delivery daemon of the space running.
+ *  3d. A legacy folder holding static accounts refuses `up --open` both while running and after
+ *     `down`. Bare `up` still restarts the stopped stack with static auth.
  *  4. #1307: Ctrl-C on a FOREGROUND `up` follows the same sparing rule as bare `down`. One managed
  *     seat (a shim `claude` on PATH: a real core-dist endpoint that joins presence and stays alive)
  *     runs on the in-process pty runtime, so it cannot outlive the manager: after the SIGINT the
@@ -129,17 +126,6 @@ const portOpenAt = (port: number) =>
     s.setTimeout(400, () => { s.destroy(); res(false); });
   });
 const portOpen = () => portOpenAt(PORT);
-/** The pids of the running `daemon` processes for `space`, read from the process table (Linux). */
-const daemonsOf = (daemon: "__daemon-deliver" | "__daemon-manager", space: string) => readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).filter((entry) => {
-  try {
-    const argv = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0");
-    const at = argv.indexOf(daemon);
-    return at >= 0 && argv[at + 1] === "--space" && argv[at + 2] === space;
-  } catch {
-    return false;
-  }
-}).map(Number);
-const deliveryDaemons = (space: string) => daemonsOf("__daemon-deliver", space);
 
 const pids: number[] = [];
 let startedOccupant = false;
@@ -382,6 +368,16 @@ try {
   ok("the manager pidfile is unchanged by the no-op refresh", pidOf(recordName(MANAGER_PIDFILE)) === restoredPid, managerPidFile);
   ok("a no-op refresh leaves an edited default persona byte-identical and prints no write", readFileSync(persona, "utf8") === editedPersona && !/wrote default persona/.test(noopOut), noopOut);
 
+  const checkPinnedStatic = (state: string, result: ReturnType<typeof cli>) => {
+    const output = plain(result.stdout + result.stderr).replace(/\s+/g, " ");
+    ok(`${state}: --open refuses CONFLICT and names both safe next steps`,
+      result.status === 2 && /Code:\s+CONFLICT/.test(output) && output.includes("already run with static auth") &&
+      output.includes("run bare `cotal up` to keep static auth here") && output.includes("`cotal up --open` in a new project folder"), output);
+  };
+  const staticBroker = pidOf("nats.pid");
+  checkPinnedStatic("running legacy static root", cli("up", "--open", "--server", SERVER));
+  ok("the refusal leaves the same static broker serving", pidOf("nats.pid") === staticBroker && await portOpen());
+
   // 3) down stops the whole stack, symmetric with up. Poll: the SIGTERM'd manager/daemon shut
   //    down gracefully, which can take a few seconds on slow CI.
   const down = cli("down", "--yes");
@@ -517,64 +513,17 @@ try {
   for (let i = 0; i < 24 && alive(openHealedPid); i++) await sleep(500);
   ok("down stops the open root's stack", openRootDown.status === 0 && !alive(openHealedPid), plain(openRootDown.stdout + openRootDown.stderr));
 
-  // Open mode in the SAME root retains static-auth files from the prior boot. Reporting follows the
-  // effective live mode, not stale on-disk auth material: broker + manager, never delivery/auth-service.
-  // The mode also decides what starts: no delivery daemon, so the next down has none to stop.
-  ok("static auth material remains before the open-mode reporting check", existsSync(join(root, ".cotal", "auth")));
-  const open = cli("up", "--detach", "--open", "--server", SERVER);
-  ok("open up --detach exits 0", open.status === 0, open.stdout + open.stderr);
-  const openStack = [pidOf("nats.pid"), pidOf(recordName(MANAGER_PIDFILE))];
-  pids.push(...openStack);
-  ok("an open up over static accounts starts no delivery daemon",
-    !existsSync(record(DELIVERY_PIDFILE)) && (process.platform !== "linux" || deliveryDaemons(SPACE).length === 0),
-    { pidfile: existsSync(record(DELIVERY_PIDFILE)), daemons: process.platform === "linux" ? deliveryDaemons(SPACE) : "not read" });
-  ok(
-    "open up reports the exact running component set",
-    /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `cotal down`$/m.test(plain(open.stdout)),
-    open.stdout,
-  );
-  ok("open summary omits auth-only components", !/running in the background:.*(?:delivery daemon|user-auth service)/.test(open.stdout), open.stdout);
-  ok("a folder that now names its space gets no default-space note", !/names no space/.test(open.stdout), open.stdout);
-  const openDown = cli("down", "--yes");
-  ok("open down exits 0", openDown.status === 0, openDown.stdout + openDown.stderr);
-  for (let i = 0; i < 24 && openStack.some(alive); i++) await sleep(500);
-  ok("open down stops the broker and manager, names no delivery daemon, and leaves nothing running",
-    !openStack.some(alive) && !(await portOpen()) && !/stopped delivery daemon/.test(plain(openDown.stdout)) && (process.platform !== "linux" || deliveryDaemons(SPACE).length === 0),
-    { openStack, alive: openStack.filter(alive), out: plain(openDown.stdout) });
-
-  // 3e) Static and open boots alternate in this root. An open boot used to run its manager on the
-  //     static stack's accounts, so it minted credentials into the open account's registry. The next
-  //     open boot could then re-register only by verify-evicting them through a delivery daemon that
-  //     an open mesh does not run: it exited 1 after about a minute and its manager was gone.
-  for (let round = 1; round <= 2; round++) {
-    for (const mode of ["static", "open"] as const) {
-      const cell = `round ${round}, ${mode}`;
-      const boot = cli("up", "--detach", ...(mode === "open" ? ["--open"] : []), "--server", SERVER);
-      ok(`${cell}: up --detach exits 0`, boot.status === 0, plain(boot.stdout + boot.stderr));
-      const deliveryPid = existsSync(record(DELIVERY_PIDFILE)) ? pidOf(recordName(DELIVERY_PIDFILE)) : undefined;
-      const stack = [pidOf("nats.pid"), pidOf(recordName(MANAGER_PIDFILE)), ...(deliveryPid === undefined ? [] : [deliveryPid])];
-      pids.push(...stack);
-      const answers = (r: { status: number | null; stdout: string }) => r.status === 0 && /^\s*No managed agents\.$/m.test(r.stdout);
-      let ps = cli("ps");
-      for (let i = 0; i < 14 && !answers(ps); i++) {
-        await sleep(2000);
-        ps = cli("ps");
-      }
-      ok(`${cell}: the manager answers ps`, answers(ps), plain(ps.stdout + ps.stderr));
-      const delivery = process.platform === "linux" ? deliveryDaemons(SPACE) : undefined;
-      ok(`${cell}: the boot runs ${mode === "static" ? "one delivery daemon" : "no delivery daemon"}`,
-        mode === "static"
-          ? deliveryPid !== undefined && (delivery === undefined || (delivery.length === 1 && delivery[0] === deliveryPid))
-          : deliveryPid === undefined && (delivery === undefined || delivery.length === 0),
-        { deliveryPid, daemons: delivery ?? "not read" });
-      const stop = cli("down", "--yes");
-      ok(`${cell}: down exits 0`, stop.status === 0, plain(stop.stdout + stop.stderr));
-      for (let i = 0; i < 24 && stack.some(alive); i++) await sleep(500);
-      const left = process.platform === "linux" ? [...deliveryDaemons(SPACE), ...daemonsOf("__daemon-manager", SPACE)] : [];
-      ok(`${cell}: down leaves no broker, manager or delivery daemon of the space running`,
-        !stack.some(alive) && !(await portOpen()) && left.length === 0, { stack, alive: stack.filter(alive), left });
-    }
-  }
+  const refusedOpen = cli("up", "--foreground", "--no-manager", "--open", "--server", SERVER);
+  checkPinnedStatic("stopped legacy static root", refusedOpen);
+  ok("the stopped refusal starts no broker and writes no open config",
+    !(await portOpen()) && !existsSync(join(root, ".cotal", "server-open.conf")));
+  const staticRestart = cli("up");
+  ok("bare up restarts the stopped legacy root", staticRestart.status === 0, plain(staticRestart.stdout + staticRestart.stderr));
+  pids.push(pidOf("nats.pid"), pidOf(recordName(MANAGER_PIDFILE)), pidOf(recordName(DELIVERY_PIDFILE)));
+  const staticDoctor = cli("doctor", "auth");
+  ok("the restarted root still uses static auth", staticDoctor.status === 0 && /Mode:\s+static\b/.test(plain(staticDoctor.stdout)), plain(staticDoctor.stdout + staticDoctor.stderr));
+  const staticStop = cli("down", "--yes");
+  ok("the restarted static stack stops", staticStop.status === 0 && !(await portOpen()), plain(staticStop.stdout + staticStop.stderr));
 
   // 4) #1417 broker-only boot: `up --detach --no-manager` starts broker + delivery daemon (auth
   //    mode) and NO manager — no manager pidfile, no manager process, no stale slot to leave —
