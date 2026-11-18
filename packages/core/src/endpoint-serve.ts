@@ -41,6 +41,7 @@ import {
 } from "./endpoint-traits.js";
 import type { GuardObligation } from "./endpoint-guard.js";
 import { parseDescribeObservation, type DescribeRequestContext } from "./endpoint-describe-observation.js";
+import { carriesStoredProvenance } from "./endpoint-provenance.js";
 
 // ---- the serve table ---------------------------------------------------------------------------
 
@@ -300,15 +301,6 @@ function successReply(id: string, data: unknown): EndpointReply {
 
 function encodeReply(reply: EndpointReply): Uint8Array {
   return enc.encode(JSON.stringify(reply));
-}
-
-/** Stored-message delivery is not a caller publication on this subject (§13.3). Native
- *  provenance is dropped before parsing, authorization or replies: there is no authenticated caller
- *  to answer. Header names are matched, not values; an empty marker is still a marker. */
-function carriesStoredProvenance(msg: Pick<Msg, "headers">): boolean {
-  for (const [name] of msg.headers ?? [])
-    if (/^Nats-(Stream|Subject|Sequence|Time-Stamp)$/i.test(name)) return true;
-  return false;
 }
 
 /** One request through the shared pipeline: subject parse, envelope parse, subject agreement, the

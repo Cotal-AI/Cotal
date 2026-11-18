@@ -36,7 +36,7 @@ import {
   AGENT_CLUSTER, AGENT_CONTRACTS, AGENT_ENDPOINT, AGENT_PROMPT_DIGEST_DETAIL, AGENT_PROMPT_STATE_DETAIL, CotalEndpoint, EpEnvelopeError, ContractInvalidError,
   agentClusterArtifacts, agentPromptDigest, buildClusterDocument, canonicalJson, compileContract, createSpaceAuth, epPrincipalGrantRows,
   epPrincipalNoRespondersSubject, epPrincipalReplySubject, epPrincipalRequestSubject, epServeGrantRows, isReachable, mintCreds, mintLifecycleUid,
-  newIdentity, parseClusterDocument, permissionsFor, processRuntime, provisionAgentDurables, serverConfig, setupSpaceStreams, spacePrefix,
+  newIdentity, parseClusterDocument, permissionsFor, presenceBucket, presenceKeySubject, processRuntime, provisionAgentDurables, serverConfig, setupSpaceStreams, spacePrefix,
   type AgentPrompt, type DescribeAnswer, type EndpointReply, type EpPrincipal, type EpPrincipalCommandDef, type PrincipalServe,
   type PromptAnswerInput, type PromptContent, type PromptState, type Presence,
 } from "@cotal-ai/core";
@@ -666,6 +666,34 @@ try {
       { targeted: true, modes: ["owner"], authorities: ["owner"] }, { modes: ["owner"], authorities: ["owner"] }, { authorities: [] }, { authorities: ["owner", "boss"] },
     ].filter((cmd) => { try { parseClusterDocument(docWith(cmd)); return false; } catch (e) { return e instanceof ContractInvalidError; } });
     check(`cell 26: ${bad.length}/4 documents refused contract-invalid at parse (targeted, with modes, empty, unknown word)`, bad.length === 4);
+  }
+
+  // ── cell 28: a stored frame on the caller's sentinel ──
+  // The agent's whole real credential holds Direct Get on the presence bucket, and Direct Get replies
+  // on whatever subject its requester names. Its raw connection serves another runtime id and, for
+  // each request, asks Direct Get to deliver its own stored presence on the caller's sentinel.
+  {
+    const rt = `${coderAt.runtimeId.slice(0, 30)}s`;
+    const onSentinel: Msg[] = [];
+    const watch = webRaw.nc.subscribe(`${P}.ep.prin-reply._nr._nr._nr._nr._nr.${A}.web.${W.web.uid}.*`, { callback: (_e, m) => { onSentinel.push(m); } });
+    await webRaw.nc.flush();
+    let received = 0;
+    const refusedBefore = coderRaw.refused.length;
+    const dg = coderRaw.nc.subscribe(`${P}.ep.prin.agent.${A}.coder.${W.coder.uid}.${rt}.*.*.*.*.*.*`, { callback: (_e, m) => {
+      received++;
+      const t = m.subject.split(".");
+      coderRaw.nc.publish(`$JS.API.DIRECT.GET.KV_${presenceBucket(space)}`, enc(JSON.stringify({ last_by_subj: presenceKeySubject(space, A, "coder") })),
+        { reply: epPrincipalNoRespondersSubject(space, { owner: t[11], actor: t[12], uid: t[13] }, t[14]) });
+    } });
+    await coderRaw.nc.flush();
+    const r = await settle(call(webEp, { ...coderAt, runtimeId: rt }, "prompts", "owner", {}, 2500));
+    dg.unsubscribe();
+    watch.unsubscribe();
+    const stored = onSentinel.filter((m) => m.headers?.get("Nats-Stream"));
+    check("cell 28: with the agent's own credential a Direct Get delivered its stored presence on the caller's sentinel, with stored provenance",
+      received === 1 && stored.length === 1 && coderRaw.refused.length === refusedBefore, { received, onSentinel: onSentinel.length, stored: stored.length, refused: coderRaw.refused.slice(refusedBefore) });
+    check("cell 28: the caller drops the stored frame and does not settle on it: deadline-exceeded, unknown, never internal or unavailable",
+      !r.ok && codeOf(r.error) === "deadline-exceeded/unknown", r.ok ? r.value : codeOf(r.error));
   }
 
   // ── mixed versions that need no 0.165 release ──

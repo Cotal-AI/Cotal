@@ -5596,8 +5596,9 @@ A process that serves the principal route (§13.21) holds items 1 to 4 in this f
 4. Reply only on the `prin-reply` subject derived from this process and the request's caller and
    nonce, never on a transport or payload reply target, and never publish on the sentinel.
 
-A caller on the principal route trusts the broker's no-responders status only on its sentinel and
-accepts a reply only on the subject the addressed process derives (§13.21).
+A caller on the principal route trusts the broker's no-responders status only on its sentinel, drops
+a stored message on its reply read, and accepts a reply only on the subject the addressed process
+derives (§13.21).
 
 ### 13.15 Issued authority
 
@@ -6542,9 +6543,11 @@ does when it must (§13.22).
 
 **Calling.** A caller subscribes `P.ep.prin-reply.*.*.*.*.*.<cOwner>.<cActor>.<cUid>.<nonce>` before
 it publishes, so the one subscription receives the reply and the sentinel, and publishes with the
-sentinel as the transport reply. A broker no-responders status counts only on the sentinel: it is
-`unavailable`, `not-executed`. A reply counts only when its subject is the one the addressed process
-derives, its id echoes the request and its output validates against the pinned contract. A refused
+sentinel as the transport reply. It drops a stored message that reaches this subscription, one with
+a `Nats-Stream`, `Nats-Sequence` or `Nats-Time-Stamp` header, before it reads it as the sentinel or
+a reply. A broker no-responders status counts only on the sentinel: it is `unavailable`,
+`not-executed`. A reply counts only when its subject is the one the addressed process derives, its
+id echoes the request and its output validates against the pinned contract. A refused
 publish is `permission-denied`, `not-executed`. A refused reply read is `permission-denied`, and its
 outcome is `not-executed` only when the publish was refused too, else `unknown`. A deadline is
 `deadline-exceeded`, `unknown`. The caller does not call `describe` first: it embeds the cluster
@@ -6554,8 +6557,12 @@ after a `contract-mismatch`.
 The sentinel is safe because a serving credential may publish only under its own literal
 `<pOwner>.<pActor>.<pUid>` with endpoint `agent`. `_nr` is neither, and no row can name it, so no
 serving credential can publish on the sentinel and a served request cannot be made to look
-unexecuted. The broker answers no-responders only when the requester owns the reply subscription
-and no interest exists anywhere; behind a leaf node or gateway a missing responder is a deadline, so
+unexecuted. A JetStream read is not a publish under a row: a client that may Direct Get a stream, as
+every agent may read the presence bucket, can name the sentinel as the reply subject, and the server
+delivers the stored message there. That message carries the stored-message headers, and the caller
+drops it. Any other message on the sentinel that is not the no-responders status is `internal`.
+The broker answers no-responders only when the requester owns the reply subscription and no
+interest exists anywhere; behind a leaf node or gateway a missing responder is a deadline, so
 `unavailable` is a fast path and the deadline is the guarantee. Permissions are fixed per
 connection, so a new row arrives with the next connection.
 

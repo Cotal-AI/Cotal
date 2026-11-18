@@ -4,6 +4,7 @@ import { base64url } from "./base64url.js";
 import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node";
 import { PermissionViolationError } from "@nats-io/nats-core";
 import { BROKER_REFUSAL_CAUSE, openPublishDenialWatch } from "./endpoint-publish-denial.js";
+import { carriesStoredReplyProvenance } from "./endpoint-provenance.js";
 import { spacePrefix } from "./subjects.js";
 import { epRequestSubject, parseEpSubject, callerRailTokens, epPlaneTokens, assertIdToken, assertLifecycleToken, assertBoundedOwner, epPrincipalRequestSubject, epPrincipalReplySubject, epPrincipalCallerReplyFilter, epPrincipalNoRespondersSubject, isIssuedCaller, type EpCaller, type EpPrincipal, type EpRoute, type EpTarget, type PrincipalAuthority } from "./endpoint-subjects.js";
 import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, EP_UNDECLARED_ARG, EP_BIND_REFUSED, bindRefusalMarked, parseEndpointReply, assertArgsValid, assertOutputValid, type EndpointRequest, type EndpointReply, type EpCorrelation, type EpTargetBlock, type EpUnboundResponderDetail, type EpBindRefusedDetail, type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpErrorDetail, type EpBindBlock } from "./endpoint-envelope.js";
@@ -500,7 +501,9 @@ export async function epCall(
 }
 
 /** The exchange every call shares (SPEC 13.5): subscribe the reply filter BEFORE publishing,
- *  publish with the no-responders sentinel as the transport reply, and settle on the first message.
+ *  publish with the no-responders sentinel as the transport reply, and settle on the first message
+ *  that counts. A stored message never counts (see {@link carriesStoredReplyProvenance}): a
+ *  JetStream read, such as a Direct Get, delivers one on any subject its requester names.
  *  The broker's no-responders status counts only on the sentinel, which no responder holds a
  *  publish grant for: there it is `unavailable`, `not-executed`; a 503 on any other subject is a
  *  responder frame and takes the ordinary reply path. A refused publish is `permission-denied`
@@ -543,6 +546,7 @@ async function exchange(
             }
             reject(new EpEnvelopeError("unavailable", `the caller's reply subscription failed: ${err.message}`)); return;
           }
+          if (carriesStoredReplyProvenance(msg)) return;
           // Broker no-responders is authoritative ONLY on the reserved sentinel reply-to: no responder
           // holds a publish grant for it (§13.9), so only the broker's control frame reaches it. A 503
           // status header on a NORMAL responder subject is just a responder frame carrying a status
@@ -599,8 +603,9 @@ export function buildPrincipalRequest(
  * Call one command of a principal's own endpoint on the principal route (SPEC 13.21) and await its
  * reply within `deadlineMs`. The caller subscribes its reply read for this nonce with the head
  * wildcarded, so the one subscription receives the reply and the sentinel, then publishes with the
- * sentinel as the transport reply. A reply counts only when its subject is the one the addressed
- * process derives, its id echoes the request and its output validates against the pinned contract.
+ * sentinel as the transport reply. A frame with stored-message provenance is dropped. A reply counts
+ * only when its subject is the one the addressed process derives, its id echoes the request and its
+ * output validates against the pinned contract.
  *
  * Application-level failure is the returned reply's `ok: false`. This boundary throws only for its
  * own refusals: invalid args `bad-request`; no responder on the sentinel `unavailable`,
