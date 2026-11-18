@@ -91,6 +91,8 @@ let jsAgent: MeshAgent | undefined;
 let jsBroker: ChildProcess | undefined;
 let jsClient: Client | undefined;
 let jsServer: McpServer | undefined;
+let backoffAgent: MeshAgent | undefined;
+let boBroker: ChildProcess | undefined;
 
 try {
   check("the owned throwaway broker starts", await until(() => false, 0) || await (async () => {
@@ -1102,11 +1104,60 @@ try {
     await refused.stop(); await refusedStart;
     await refusedClient.close(); await refusedServer.close(); await sealedNc.close();
   }
+
+  // #7408: after a long outage the endpoint sleeps out a rebuild backoff that grows to a minute, and a
+  // send made once the broker was back waited for an attempt nobody had scheduled, then failed with
+  // the last attempt's "connection refused". Real broker, real terminal close and real failed
+  // rebuilds; only the wait for the fourth failure reads private state.
+  const boPort = await pickFreePort();
+  const boServers = `nats://127.0.0.1:${boPort}`;
+  assertEphemeralBroker(boServers);
+  const boConfig = join(dir, "backoff.conf");
+  writeFileSync(boConfig, `port: ${boPort}\njetstream { store_dir: "${join(dir, "backoff-js")}" }\n`);
+  boBroker = startBroker(boConfig);
+  releases.push(teardownOnSignal(boBroker, dir));
+  for (let i = 0; i < 80; i++) { if (await isReachable(boServers)) break; await sleep(50); }
+  const boCfg: AgentConfig = { ...cfg, space: `transport-backoff-${boPort}`, name: "backoff-agent", servers: boServers };
+  await setupSpaceStreams({ servers: boServers, space: boCfg.space });
+  backoffAgent = new MeshAgent(boCfg);
+  await backoffAgent.start(100);
+  const boEp = backoffAgent.ep as unknown as {
+    nc?: { close(): Promise<void>; isClosed(): boolean };
+    retryAttempt: number; reestablishing: boolean; rebuildPromise?: Promise<void>;
+  };
+  boBroker.kill("SIGKILL");
+  await awaitExit(boBroker);
+  const reconnectingNc = boEp.nc;
+  await until(() => !backoffAgent!.transportConnected);
+  backoffAgent.ep.retryNow();
+  check(
+    "retryNow leaves a link nats.js is still reconnecting alone",
+    reconnectingNc !== undefined && boEp.nc === reconnectingNc && !reconnectingNc.isClosed() && !boEp.reestablishing,
+    { same: boEp.nc === reconnectingNc, reestablishing: boEp.reestablishing },
+  );
+  // nats.js would retry for about 20 s before giving up. Closing the real connection is the same
+  // terminal close, so the endpoint's own rebuild loop starts now.
+  await reconnectingNc!.close();
+  // After four failed rebuilds the loop sleeps 12 to 24 s, longer than the send's 10 s wait.
+  const backedOff = await until(() => boEp.retryAttempt >= 4 && boEp.reestablishing && !boEp.rebuildPromise, 40_000);
+  boBroker = startBroker(boConfig);
+  releases.push(teardownOnSignal(boBroker, dir));
+  for (let i = 0; i < 80; i++) { if (await isReachable(boServers)) break; await sleep(50); }
+  const sentAt = Date.now();
+  const sent = await backoffAgent.send("after the outage", "lab").then(() => "sent", (e: Error) => e.message);
+  const took = Date.now() - sentAt;
+  check(
+    "a send made while the endpoint sleeps out a long rebuild backoff reconnects and goes out at once",
+    backedOff && sent === "sent" && took < 5_000,
+    { backedOff, sent, took, retryAttempt: boEp.retryAttempt },
+  );
 } finally {
   await jsClient?.close().catch(() => {});
   await jsServer?.close().catch(() => {});
   await jsAgent?.stop().catch(() => {});
   if (jsBroker) { jsBroker.kill("SIGKILL"); await awaitExit(jsBroker); }
+  await backoffAgent?.stop().catch(() => {});
+  if (boBroker) { boBroker.kill("SIGKILL"); await awaitExit(boBroker); }
   await orderingAgent?.stop().catch(() => {});
   await blocker2Agent?.stop().catch(() => {});
   await blockerAgent?.stop().catch(() => {});
@@ -1122,7 +1173,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 52;
+const EXPECTED_CELLS = 54;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

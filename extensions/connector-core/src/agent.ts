@@ -4049,6 +4049,8 @@ export class MeshAgent extends EventEmitter {
    *  so one race at spawn silenced the event plane for the whole session. */
   async whenConnected(timeoutMs: number = CONNECT_GRACE_MS): Promise<void> {
     if (this._connected) return;
+    // An endpoint waiting out its rebuild backoff would not try again inside this window (#7408).
+    this.ep.retryNow();
     if (!(await this.awaitConnection(timeoutMs))) throw new Error(this.notConnectedMessage());
   }
 
