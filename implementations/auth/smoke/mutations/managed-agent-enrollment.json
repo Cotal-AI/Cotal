@@ -133,7 +133,7 @@
     },
     {
       "name": "stock dispatch sends an enrollment request to the manager-lifecycle issuer",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-manager-routes.ts",
       "find": "  if (request.kind === \"manager-managed-agent-enrollment\")\n    return ctx.enrollManagedAgent({ owner, scope: row.scope ?? [], request: body.request as RemoteManagedAgentEnrollmentRequest });\n",
       "replace": "",
       "expectRed": "FAIL: dispatch sends an enrollment request to the host enrollment arm with the caller's ledger scope",
