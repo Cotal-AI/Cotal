@@ -359,7 +359,15 @@ class Desk implements PromptDesk {
   private closing?: Promise<void>;
   serve?: PrincipalServe;
 
-  constructor(private readonly ep: CotalEndpoint, private readonly warn: (msg: string) => void) {
+  /** The adapter's logger. A logger that throws stops no step and no close. */
+  private readonly warn: (msg: string) => void;
+
+  constructor(private readonly ep: CotalEndpoint, warn: (msg: string) => void) {
+    this.warn = (msg) => {
+      try {
+        warn(msg);
+      } catch { /* the desk goes on without the line */ }
+    };
   }
 
   get waiting(): number {

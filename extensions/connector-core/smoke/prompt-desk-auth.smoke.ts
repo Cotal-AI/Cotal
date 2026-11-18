@@ -705,7 +705,7 @@ try {
     check("an omitted input with only a refusing option opens: it can be refused remotely", omittedDeny === "opened", omittedDeny);
   }
 
-  console.log("\ndesk 1: hooks that break their contract");
+  console.log("\ndesk 1: hooks and a logger that break their contract");
   {
     // Node exits on an unhandled rejection by default; here each one is counted instead.
     let unhandled = 0;
@@ -743,6 +743,20 @@ try {
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
+
+    // A logger that throws, on the interactive actor's own desk.
+    const termAt = addressOf(W.term);
+    const loud = await openPromptDesk(termEp, { warn: (m) => { warns.push(`loud: ${m}`); throw new Error("the logger is down"); } });
+    desks.push(loud);
+    const endThrows = openFake(loud, "end throws, and so does the logger", { end: () => { throw new Error("end exploded"); } });
+    const after = openFake(loud, "closed after it");
+    let closeThrew = "";
+    try { await loud.close(); } catch (e) { closeThrew = (e as Error).message; }
+    const served = await settled(call(webEp, "prompts", {}, { to: termAt, deadlineMs: 3000 }));
+    check("a logger that throws stops no close: end threw and so did its warning, and close() still ended every prompt and stopped serving",
+      closeThrew === "" && same(endThrows.ends, [false]) && same(after.ends, [false]) && warns.some((w) => w.startsWith("loud: ") && w.includes("end exploded"))
+      && !served.ok && served.error instanceof EpEnvelopeError && served.error.code === "unavailable",
+      { closeThrew, ends: [endThrows.ends, after.ends], served: served.ok ? verdictOf(served.value) : (served.error as Error).message });
   }
 
   // ── desk 1 closes, desk 2 opens: the closed memory, the caps, the bounds on the wire ──
