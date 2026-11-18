@@ -46,7 +46,7 @@ import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallo
 import { SMOKE_BROKER_TOKEN, createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   PROMPT_DESK_MIN_MAX_PAYLOAD, PROMPT_SUMMARY_MAX_BYTES, PromptRefused, openPromptDesk,
-  type Delivery, type PromptDesk, type PromptHold, type PromptVerdict,
+  type Delivery, type PromptDesk, type PromptHold, type PromptHooks, type PromptSpec, type PromptVerdict,
 } from "../src/prompt-desk.js";
 import { contentOfBytes, contentWithLargestSummary, permission, question } from "./_prompt-fixtures.js";
 import { pickFreePort } from "./_free-port.js";
@@ -182,17 +182,23 @@ interface Fake {
 const fakes: Fake[] = [];
 function openFake(desk: PromptDesk, label: string, o: {
   content?: PromptContent; openMs?: number; settleMs?: number;
-  check?: (v: PromptVerdict, f: Fake) => string | undefined;
+  /** The spec as the adapter gives it, in place of one built from the three fields above. */
+  spec?: unknown;
+  check?: (v: PromptVerdict, f: Fake) => unknown;
   deliver?: (v: PromptVerdict) => Promise<Delivery>;
+  /** Runs after the fake records the `end`; what it returns, `end` returns. */
+  end?: () => unknown;
+  /** Sees the hooks object the fake hands to the desk. */
+  hooks?: (h: PromptHooks) => void;
 } = {}): Fake {
-  const content = o.content ?? permission(`Allow Bash: ${label}?`);
+  const content = (o.spec as { content?: PromptContent } | undefined)?.content ?? o.content ?? permission(`Allow Bash: ${label}?`);
   let settle: { resolve(d: Delivery): void; reject(e: Error): void } | undefined;
   const f = {
     label, verdicts: [], writes: [], ends: [], checks: 0,
     delivered: (d: Delivery) => settle?.resolve(d), failed: (e: Error) => settle?.reject(e),
   } as unknown as Fake;
-  f.hold = desk.open({ content, openMs: o.openMs ?? 600_000, settleMs: o.settleMs ?? 600_000 }, {
-    check: (v) => { f.checks++; return o.check?.(v, f); },
+  const hooks: PromptHooks = {
+    check: (v) => { f.checks++; return o.check?.(v, f) as string | undefined; },
     deliver: (v) => {
       f.verdicts.push(v);
       f.writes.push(`answer:${v.option}`);
@@ -202,8 +208,11 @@ function openFake(desk: PromptDesk, label: string, o: {
     end: ({ attempted }) => {
       f.ends.push(attempted);
       if (!attempted) f.writes.push("release");
+      return o.end?.() as undefined;
     },
-  });
+  };
+  o.hooks?.(hooks);
+  f.hold = desk.open((o.spec ?? { content, openMs: o.openMs ?? 600_000, settleMs: o.settleMs ?? 600_000 }) as PromptSpec, hooks);
   f.id = f.hold.id;
   f.digest = agentPromptDigest(content);
   fakes.push(f);
@@ -694,6 +703,46 @@ try {
     const omittedDeny = refusal(spec(permission("x", { subject: { type: "tool", name: "Write", input: { kind: "omitted", bytes: 9_000_000 } },
       options: [{ id: "deny", label: "Deny", effect: "refuse" }] })));
     check("an omitted input with only a refusing option opens: it can be refused remotely", omittedDeny === "opened", omittedDeny);
+  }
+
+  console.log("\ndesk 1: hooks that break their contract");
+  {
+    // Node exits on an unhandled rejection by default; here each one is counted instead.
+    let unhandled = 0;
+    const onUnhandled = () => { unhandled++; };
+    process.on("unhandledRejection", onUnhandled);
+    const unhandledSince = async (before: number) => { await wait(100); return unhandled - before; };
+    try {
+      let before = unhandled;
+      const bigint = openFake(desk1, "deliver resolves 1n", { deliver: async () => 1n as unknown as Delivery });
+      const t0 = Date.now();
+      const r = await answer(bigint, "allow");
+      const took = Date.now() - t0;
+      const lost = await unhandledSince(before);
+      check("deliver that resolves 1n is one failed call: the reply comes at once with sent, unconfirmed, the desk warns, and nothing is unhandled",
+        show(stateIn(r)) === "sent/unconfirmed" && took < 2000 && lost === 0
+        && warns.some((w) => w.includes(bigint.id) && w.includes("1n") && w.includes("not a Delivery")), { took, got: verdictOf(r), unhandled: lost });
+      bigint.hold.settle({ kind: "withdrawn" });
+      check("...and a report then closes it, end attempted once", show(await stateOf(bigint)) === "closed/unconfirmed/none" && same(bigint.ends, [true]), bigint.ends);
+
+      before = unhandled;
+      const asyncCheck = openFake(desk1, "check is async and rejects", { check: async () => { throw new Error("the async check failed"); } });
+      const rc = await answer(asyncCheck, "allow");
+      const lostCheck = await unhandledSince(before);
+      check("check written as an async function that rejects: internal, not-executed, the prompt stays open, the desk warns, and the rejection is not unhandled",
+        refusedAs(rc, "internal") && show(await stateOf(asyncCheck)) === "open" && asyncCheck.verdicts.length === 0 && lostCheck === 0
+        && warns.some((w) => w.includes(asyncCheck.id) && w.includes("promise")), { got: verdictOf(rc), unhandled: lostCheck });
+      asyncCheck.hold.settle({ kind: "withdrawn" });
+
+      before = unhandled;
+      const asyncEnd = openFake(desk1, "end is async and rejects", { end: async () => { throw new Error("the async end failed"); } });
+      asyncEnd.hold.settle({ kind: "withdrawn" });
+      const lostEnd = await unhandledSince(before);
+      check("end written as an async function that rejects: the prompt closes, end came once, and the rejection is not unhandled",
+        show(await stateOf(asyncEnd)) === "closed/withdrawn/none" && same(asyncEnd.ends, [false]) && lostEnd === 0, { unhandled: lostEnd });
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   }
 
   // ── desk 1 closes, desk 2 opens: the closed memory, the caps, the bounds on the wire ──

@@ -234,7 +234,42 @@ interface Held {
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString();
-const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** Text for any value, such as one a hook gave back. Never throws: `JSON.stringify` throws on `1n`,
+ *  and `String` on an object with no primitive form. */
+function describe(v: unknown): string {
+  try {
+    if (v instanceof Error) return v.message;
+    const json = JSON.stringify(v);
+    if (json !== undefined) return json.length > 200 ? `${json.slice(0, 200)}...` : json;
+  } catch { /* not JSON */ }
+  try {
+    return typeof v === "bigint" ? `${v}n` : String(v);
+  } catch {
+    return `a ${typeof v} with no text form`;
+  }
+}
+
+/** A hook that returns a thenable where it returns a plain value broke its contract, and a rejection
+ *  of that thenable must not go unhandled: Node exits on one. Attaches a no-op rejection handler and
+ *  says whether `v` was a thenable. */
+function ignoreRejection(v: unknown): boolean {
+  try {
+    const then = (v as { then?: unknown } | null | undefined)?.then;
+    if (typeof then !== "function") return false;
+    then.call(v, undefined, () => {});
+  } catch { /* a `then` that throws has nothing to attach to */ }
+  return true;
+}
+
+/** `d.kind`, or undefined when reading it throws. */
+function deliveryKind(d: unknown): unknown {
+  try {
+    return (d as { kind?: unknown } | null | undefined)?.kind;
+  } catch {
+    return undefined;
+  }
+}
 const B32 = "abcdefghijklmnopqrstuvwxyz234567";
 const EFFECTS = new Set(["proceed", "refuse", "cancel"]);
 
@@ -265,7 +300,7 @@ function parseSeen(s: unknown): PromptSeen {
     if ((o.tie === "prompt" || o.tie === "subject") && keys === 2 && EFFECTS.has(o.effect as string))
       return { tie: o.tie, effect: o.effect as PromptEffect };
   }
-  throw new TypeError(`settle: ${JSON.stringify(s)} is not a sighting ({ tie: "prompt" | "subject", effect } or { tie: "none" })`);
+  throw new TypeError(`settle: ${describe(s)} is not a sighting ({ tie: "prompt" | "subject", effect } or { tie: "none" })`);
 }
 
 function parseEvidence(e: unknown): Evidence {
@@ -275,7 +310,7 @@ function parseEvidence(e: unknown): Evidence {
     if ((o.kind === "confirmed" || o.kind === "withdrawn") && keys === 1) return { kind: o.kind };
     if ((o.kind === "local" || o.kind === "observed") && keys === 2) return { kind: o.kind, seen: parseSeen(o.seen) };
   }
-  throw new TypeError(`settle: ${JSON.stringify(e)} is not an Evidence`);
+  throw new TypeError(`settle: ${describe(e)} is not an Evidence`);
 }
 
 /** The longest legal answerer: owner and actor at 64 characters, a 32-character lifecycle UID, and
@@ -395,7 +430,7 @@ class Desk implements PromptDesk {
     try {
       canonical = canonicalJson(spec.content);
     } catch (e) {
-      throw invalid(`the content is not interchangeable JSON: ${errText(e)}`);
+      throw invalid(`the content is not interchangeable JSON: ${describe(e)}`);
     }
     const contentBytes = Buffer.byteLength(canonical);
     if (contentBytes > AGENT_PROMPT_CONTENT_MAX_BYTES)
@@ -432,7 +467,7 @@ class Desk implements PromptDesk {
         // Values carry the declared properties and nothing else.
         form = compileContractSchema({ root: { ...schema, additionalProperties: false } });
       } catch (e) {
-        throw invalid(`form.schema does not compile: ${errText(e)}`);
+        throw invalid(`form.schema does not compile: ${describe(e)}`);
       }
     }
     const base: Omit<PromptSummary, "state"> = {
@@ -543,9 +578,9 @@ class Desk implements PromptDesk {
     }
     h.ended = true;
     try {
-      h.hooks.end({ attempted });
+      ignoreRejection(h.hooks.end({ attempted }));
     } catch (e) {
-      this.warn(`prompt ${h.id}: the adapter's end threw: ${errText(e)}`);
+      this.warn(`prompt ${h.id}: the adapter's end threw: ${describe(e)}`);
     }
   }
 
@@ -558,7 +593,7 @@ class Desk implements PromptDesk {
     if (!this.presenceOwed || this.closed || !this.serve) return;
     this.presenceOwed = false;
     this.ep.setPromptsPresence({ open: this.live, seq: this.seq }).catch((e) => {
-      if (!this.closed) this.warn(`the prompts presence field was not written: ${errText(e)}`);
+      if (!this.closed) this.warn(`the prompts presence field was not written: ${describe(e)}`);
     });
   }
 
@@ -606,7 +641,7 @@ class Desk implements PromptDesk {
     try {
       canonicalJson(a);
     } catch (e) {
-      throw refused("bad-request", `the answer is not interchangeable JSON: ${errText(e)}`);
+      throw refused("bad-request", `the answer is not interchangeable JSON: ${describe(e)}`);
     }
     // 1. An agent never answers its own prompt, whatever its row.
     if (ctx.caller.owner === ctx.principal.owner && ctx.caller.actor === ctx.principal.actor)
@@ -648,12 +683,12 @@ class Desk implements PromptDesk {
     try {
       refusal = h.hooks.check?.(verdict);
     } catch (e) {
-      this.warn(`prompt ${h.id}: the adapter's check threw: ${errText(e)}`);
-      throw refused("internal", `the agent could not check this answer: ${errText(e)}`);
+      this.warn(`prompt ${h.id}: the adapter's check threw: ${describe(e)}`);
+      throw refused("internal", `the agent could not check this answer: ${describe(e)}`);
     }
     if (refusal !== undefined) {
       if (typeof refusal !== "string") {
-        this.warn(`prompt ${h.id}: the adapter's check returned ${typeof refusal}, not a message or undefined`);
+        this.warn(`prompt ${h.id}: the adapter's check returned ${ignoreRejection(refusal) ? "a promise, and check is synchronous" : `${typeof refusal}, not a message or undefined`}`);
         throw refused("internal", "the agent could not check this answer");
       }
       throw refused("bad-request", refusal || "the agent refused this answer");
@@ -681,7 +716,8 @@ class Desk implements PromptDesk {
     return wait;
   }
 
-  /** Call `deliver` once, and apply its one result as event D when it ends. */
+  /** Call `deliver` once, and apply its one result as event D when it ends: anything that is not a
+   *  Delivery is one `failed` event, and nothing it holds escapes as an unhandled rejection. */
   private deliver(h: Held, verdict: PromptVerdict): void {
     let result: Promise<Delivery>;
     try {
@@ -689,14 +725,15 @@ class Desk implements PromptDesk {
     } catch (e) {
       result = Promise.reject(e);
     }
+    const failed = (why: string) => this.defer(() => this.apply(h, { kind: "delivery", result: "failed" }, why));
     result.then(
       (d) => {
-        const kind = (d as { kind?: unknown } | null)?.kind;
+        const kind = deliveryKind(d);
         if (kind === "confirmed" || kind === "delivered" || kind === "gone") this.defer(() => this.apply(h, { kind: "delivery", result: kind }));
-        else this.defer(() => this.apply(h, { kind: "delivery", result: "failed" }, `deliver resolved with ${JSON.stringify(d)}, which is not a Delivery`));
+        else failed(`deliver resolved with ${describe(d)}, which is not a Delivery`);
       },
-      (e) => this.defer(() => this.apply(h, { kind: "delivery", result: "failed" }, errText(e))),
-    );
+      (e) => failed(describe(e)),
+    ).catch((e) => this.warn(`prompt desk bug: applying prompt ${h.id}'s delivery result threw: ${describe(e)}`));
   }
 }
 
