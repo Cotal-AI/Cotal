@@ -463,6 +463,13 @@ reconcile, but the command still exits nonzero because it could not establish th
 current.
 
 
+From 0.167.1, a recorded local-path extension whose installed folder was deleted does not block
+reconciliation of other extensions, even if its original source directory is gone. Cotal removes its
+`file:` dependency from the staged npm inputs, keeps its extension inventory entry and reports that
+it is not installed. Reinstall it with `cotal ext add <original-spec>` or drop the entry with
+`cotal ext remove <package>`. An installed local copy is kept even when its source directory is gone.
+
+
 ### Update availability [#update-availability]
 
 `cotal update --check` queries the latest registry version and reads recorded extension versions.
