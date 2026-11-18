@@ -120,7 +120,7 @@ function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal
   }
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup requires the stopped preserved cut; maintenance state is ${record.state}`, {
     target: { root, space: record.space, state: record.state },
-    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, restoreLeftOut(record)) : "finish this root's current maintenance attempt first; check it with `cotal status`",
+    remedy: "restore" in record ? restoreNextStep(root, record.state, record.restore.attemptId, restoreLeftOut(record)) : "finish this root's current maintenance attempt first; check it with `cotal status`",
   });
 }
 

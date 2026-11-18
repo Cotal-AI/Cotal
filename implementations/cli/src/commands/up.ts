@@ -2318,7 +2318,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       for (const line of leftOutNotes(restored.attemptId, restored.selection, restoreOnlyCopy(restored.root, restored.attemptId))) console.log(c.yellow(line));
       const journal = readMaintenanceJournal(restored.root);
       if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
-        console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal))}`));
+        console.log(c.dim(`next: ${restoreNextStep(restored.root, journal.state, restored.attemptId, restoreLeftOut(journal))}`));
     }
     if (!quietRestore) {
       const managerRecord = managerRecordState(receiptSpace);

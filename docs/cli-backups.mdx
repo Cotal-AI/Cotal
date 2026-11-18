@@ -171,6 +171,8 @@ holds under Maintenance, with its state and next step. For a restore that left h
 runs out that step includes `--discard-history`. A refusal for the wrong state names the next step
 for the recorded one. A completed `cleanup-fallback` retires the journal, so a repeated cleanup
 refuses with `TARGET_NOT_FOUND` and says the root holds no restore attempt.
+Run recovery and cleanup from the original project folder. A missing record in another folder
+does not establish whether cleanup completed in the project.
 
 
 ## Restore receipts
@@ -241,7 +243,8 @@ its remedy gives the next step for that state. The listener endpoint must be a b
 endpoint value, including when it came from a preserved launch. `up --restore`
 remains as the equivalent startup form. After its startup lines it names the restore attempt and
 gives the cleanup step that retires it, with `--discard-history` for a restore that left history or
-workflow runs out. Unlike the other
+workflow runs out. Restore next steps include `cd <project> &&` so they also work from the folder
+that invoked `up --root <project>`. Unlike the other
 backup modes, `backup restore` runs the connector seed first, as `up` does, because it resumes seats.
 
 Three commands refuse an active restore. `down --preserve-state`, in each of its forms, refuses

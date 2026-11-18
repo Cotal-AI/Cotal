@@ -1,0 +1,2 @@
+# Live restore cleanup and additional-space guidance keep their project context.
+smoke:next-step-root:live

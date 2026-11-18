@@ -323,7 +323,7 @@ function spacesView(result: SpacesResult): Report {
     }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [
       { command: "cotal use <name>", description: "Select the space commands use" },
       { command: "cotal space show <name>", description: "Inspect its connection and project" },
-      { command: "cotal space create <name>", description: "Prepare another local space in this folder" },
+      { command: "cotal space create <name> --root <dir>", description: "Prepare another local space in a new folder" },
       { command: "cotal space add <name> --server <url>", description: "Register an existing broker" },
     ] }] }],
   };

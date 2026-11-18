@@ -459,8 +459,8 @@ try {
     );
     await assert.rejects(
       backup({ positionals: ["cleanup-fallback", "restore-00000000-0000-4000-8000-000000000000"], values: {}, raw: [] }),
-      (error: unknown) => isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && (error.remedy ?? "").includes("finds nothing to do"),
-      "a cleanup-fallback on a root with no restore attempt says why it found nothing",
+      (error: unknown) => isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && (error.remedy ?? "").includes("original project folder") && !(error.remedy ?? "").includes("finds nothing to do"),
+      "a missing local restore record directs cleanup to the original project without claiming it completed",
     );
   } finally {
     process.chdir(previousCwd);

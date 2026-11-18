@@ -324,11 +324,11 @@ if (!brokerDisplayOnly) {
   check("the report shows it under Maintenance with the attempt", titles(plain.stdout).includes("Maintenance") && /Attempt: +cut-status/.test(plain.stdout), plain.stdout);
   // A held restore names the command that moves it on, with the full attempt id.
   const attempt = "restore-00000000-0000-4000-8000-000000000000";
-  const restoring = { ...json.envelope!.result!, maintenance: { root: home, space: "held", state: "restore-ready", attemptId: attempt, next: restoreNextStep("restore-ready", attempt) } };
+  const restoring = { ...json.envelope!.result!, maintenance: { root: home, space: "held", state: "restore-ready", attemptId: attempt, next: restoreNextStep(home, "restore-ready", attempt) } };
   const report = renderReport(statusView(restoring as unknown as Parameters<typeof statusView>[0]), "plain");
   check("a held restore names its recover command with the full attempt id", new RegExp(`Attempt: +${attempt}`).test(report) && report.includes(`cotal backup recover ${attempt} --yes`), report);
   for (const [state, next] of [
-    ["restore-ready", restoreNextStep("restore-ready", attempt)],
+    ["restore-ready", restoreNextStep(home, "restore-ready", attempt)],
     ["claimed", `backup attempt ${attempt} stopped before it finished: release it with \`cotal backup recover ${attempt} --yes\``],
   ] as const) {
     const held = { ...restoring, maintenance: { ...restoring.maintenance, state, next }, hints: [next] };
@@ -337,7 +337,7 @@ if (!brokerDisplayOnly) {
     check(`${state} leads Next with recovery and no ordinary startup or setup`, actions.trim() === next && !/cotal (?:up|setup|spawn|ps)\b/.test(actions), rendered);
   }
   for (const state of ["ready", "commit-intent", "active"]) {
-    const settled = { ...restoring, maintenance: { ...restoring.maintenance, state, next: state === "ready" ? "resume with bare `cotal up`" : restoreNextStep(state, attempt) } };
+    const settled = { ...restoring, maintenance: { ...restoring.maintenance, state, next: state === "ready" ? "resume with bare `cotal up`" : restoreNextStep(home, state, attempt) } };
     const rendered = renderReport(statusView(settled as unknown as Parameters<typeof statusView>[0]), "plain");
     check(`${state} keeps ordinary Next actions`, /cotal setup/.test(rendered.split("\nNext\n")[1] ?? ""), rendered);
   }
