@@ -46,11 +46,11 @@ const cases = [
 ];
 
 try {
-  mkdirSync(join(root, "scripts"));
+  mkdirSync(join(root, "tools/docs-checks"), { recursive: true });
   mkdirSync(join(root, "node_modules"));
   mkdirSync(join(root, "packages/probe/src"), { recursive: true });
-  copyFileSync(checker, join(root, "scripts/check-doc-comments.mjs"));
-  check("fixture runs the unchanged checker bytes", readFileSync(checker).equals(readFileSync(join(root, "scripts/check-doc-comments.mjs"))));
+  copyFileSync(checker, join(root, "tools/docs-checks/check-doc-comments.mjs"));
+  check("fixture runs the unchanged checker bytes", readFileSync(checker).equals(readFileSync(join(root, "tools/docs-checks/check-doc-comments.mjs"))));
   symlinkSync(dirname(fileURLToPath(import.meta.resolve("typescript/package.json"))), join(root, "node_modules/typescript"), "junction");
   git("init", "--quiet", "--template=");
   writeFileSync(join(root, input), "");
@@ -59,7 +59,7 @@ try {
     writeFileSync(join(root, input), cell.text);
     const source = ts.createSourceFile(input, cell.text, ts.ScriptTarget.Latest);
     check(`${cell.name}: syntax control`, (source.parseDiagnostics.length > 0) === (cell.syntaxError === true));
-    const result = spawnSync(process.execPath, [join(root, "scripts/check-doc-comments.mjs")], { cwd: root, env, encoding: "utf8", timeout: 10_000 });
+    const result = spawnSync(process.execPath, [join(root, "tools/docs-checks/check-doc-comments.mjs")], { cwd: root, env, encoding: "utf8", timeout: 10_000 });
     const expected = cell.accept ? 0 : 1;
     check(`${cell.name}: checker ${cell.accept ? "accepts" : "refuses"}`, !result.error && result.status === expected &&
       (cell.accept ? result.stdout.includes("1 source files passed") : result.stderr.includes(cell.reason)));
