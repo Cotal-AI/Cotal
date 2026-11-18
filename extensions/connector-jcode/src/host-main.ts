@@ -9,6 +9,8 @@ import {
   JcodeReadinessProviderRefusal,
   JcodeSessionsEnumerationFailure,
   JcodeSessionsUnwritableFailure,
+  jcodeDiagnosticLogPath,
+  retainJcodeStartupError,
   writeJcodeDiagnostic,
 } from "./startup-diagnostics.js";
 
@@ -86,7 +88,9 @@ runJcodeHost().catch((error) => {
     // The message is only the flag's name and the operator's own value, never child output.
     writeJcodeDiagnostic(`[cotal-jcode] fatal: ${error.message}\n`);
   } else {
-    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\n`);
+    retainJcodeStartupError(error);
+    const logPath = jcodeDiagnosticLogPath();
+    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode startup failed (${startupFailureCode(error)}); ${logPath ? `details: ${logPath}` : "private diagnostic log unavailable"}\n`);
   }
   process.exit(1);
 });

@@ -125,6 +125,7 @@ export const codexConnector: Connector = {
   setup: { kind: "connector-setup", name: "codex" },
   supportsFreshStart: true,
   requires: ["codex"],
+  readinessTimeoutMs: 35_000, // leave room for the app-server's 30s listen timeout and teardown
   supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // Codex serves a first turn from an initial message — see buildLaunch

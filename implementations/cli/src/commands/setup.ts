@@ -186,6 +186,7 @@ interface SetupResult {
     readonly name: string;
     /** Host tools the harness needs that are not on PATH; its own setup did not run. */
     readonly missing: readonly string[];
+    readonly unavailable: boolean;
     readonly failed: ActionFailure | null;
   };
   /** Every connector-owned setup action that ran, in order. */
@@ -697,7 +698,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     space: inputs.space,
     project: inputs.project,
     spaceState,
-    harness: { name: candidate.value, missing: candidate.missing, failed },
+    harness: { name: candidate.value, missing: candidate.missing, unavailable: candidate.unavailable && (candidate.connector.requires ?? []).every((bin) => !!resolveOnPath(bin)), failed },
     actions: actions.ran,
     runtimes: runtimes.rows,
     written,
@@ -892,7 +893,9 @@ function setupView(r: SetupResult): Report {
         ? { text: `set up ${r.space} for ${r.harness.name}`, tone: "ok", mark: "✓" }
         : { text: `${r.space} is already set up for ${r.harness.name}`, tone: "ok", mark: "✓" };
   const leftOut = r.runtimes.filter((x) => !x.selected && x.state === "left-out").map((x) => x.name);
-  const application: Cell = r.harness.missing.length > 0
+  const application: Cell = r.harness.unavailable
+    ? { text: `${r.harness.name} · unavailable`, tone: "failed" }
+    : r.harness.missing.length > 0
     ? { text: `${r.harness.name} · ${r.harness.missing.join(", ")} not on PATH`, tone: "failed" }
     : r.harness.failed
       ? { text: `${r.harness.name} · ${r.harness.failed.title} did not finish`, tone: "failed" }

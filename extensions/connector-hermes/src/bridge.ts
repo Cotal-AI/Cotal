@@ -128,8 +128,9 @@ function tokenMatches(presented: unknown, digest: Buffer): boolean {
 }
 
 /** Start the adapter bridge. Returns a handle whose `close()` stops the server. `control` is the
- *  launch's control endpoint; the first frame must carry {@link bridgeToken} of its key. */
-export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, control: ControlEndpoint): BridgeServer {
+ *  launch's control endpoint; the first frame must carry {@link bridgeToken} of its key.
+ *  `onSubscribe` runs when an authenticated adapter subscribes. */
+export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, control: ControlEndpoint, onSubscribe?: () => void): BridgeServer {
   const digest = createHash("sha256").update(bridgeToken(control)).digest();
   assertControlSocketDir(socketPath);
 
@@ -231,6 +232,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         awaitingId = undefined;
         pushes++;
         log("adapter subscribed");
+        onSubscribe?.();
         pump();
         return;
       case "delivered":

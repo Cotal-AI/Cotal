@@ -93,7 +93,8 @@ const config = {
 
 const agent = new FakeAgent();
 const TOKEN = "quiet-bridge-token";
-const bridge = startBridgeServer(agent as unknown as MeshAgent, config, socketPath, bridgeKey(socketPath, TOKEN));
+let subscriptions = 0;
+const bridge = startBridgeServer(agent as unknown as MeshAgent, config, socketPath, bridgeKey(socketPath, TOKEN), () => { subscriptions++; });
 
 try {
   for (let i = 0; i < 50; i++) {
@@ -137,8 +138,10 @@ try {
     await once(raw, "close");
   }
 
+  assert.equal(subscriptions, 0, "unauthenticated sockets must not mark the gateway ready");
   await openBridge(client, TOKEN);
   const incoming = await waitFrame((frame) => frame.t === "incoming");
+  assert.equal(subscriptions, 1, "authenticated gateway subscription marks readiness");
   assert.equal((incoming.msg as { id?: string }).id, "dm", "older quiet ambient must not block or join automatic Hermes delivery");
 
   client.write(JSON.stringify({ t: "tool", id: "pull", name: "cotal_inbox", args: {} }) + "\n");

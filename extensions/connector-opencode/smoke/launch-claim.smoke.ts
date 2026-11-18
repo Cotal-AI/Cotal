@@ -91,7 +91,7 @@ try {
     const log = readFileSync(join(agentHome, logs[0]), "utf8");
     expect(log.includes("first-run dependency preparation") && log.includes("dependency install refused"), { log });
     expect((statSync(join(agentHome, logs[0])).mode & 0o777) === 0o600, { mode: statSync(join(agentHome, logs[0])).mode });
-    expect(failedBoot.out().includes("Check the retained boot log for setup errors, then launch again."), { out: failedBoot.out() });
+    expect(failedBoot.out().includes(`boot log: ${join(agentHome, logs[0])}`) && failedBoot.out().trimEnd().endsWith("Last output: first-run dependency preparation | dependency install refused"), { out: failedBoot.out() });
   });
 
   await check("a boot the plugin refused ends on the plugin's own reason", async () => {
@@ -101,7 +101,7 @@ try {
     const refused = launch({ STUB_REFUSE: reason });
     const code = await refused.exited;
     const last = refused.out().split("\n").filter((line) => line.trim()).at(-1) ?? "";
-    expect(code === 1 && last === `[cotal-connector] OpenCode exited before its Cotal session was ready (code 1). Last connector message: ${reason}`, { code, last });
+    expect(code === 1 && last.includes(`Last connector message: ${reason}`) && last.endsWith(reason), { code, last });
   });
 
   await check("a first run exceeding the old 60-second abort still announces its session", async () => {

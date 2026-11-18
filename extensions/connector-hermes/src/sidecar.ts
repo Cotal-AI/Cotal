@@ -47,7 +47,12 @@ export function startSidecar(): Sidecar {
   // to the message that started the turn. A peer's reply is therefore never a new task for us.
   config.channelRepliesPullOnly = true;
   const agent = new MeshAgent(config);
-  agent.start(); // background connect with retry
+  let started = false;
+  const startAgent = (): void => {
+    if (started) return;
+    started = true;
+    agent.start();
+  };
 
   // Socket path from the env, key and version from the launch material the launcher merged them
   // into. Absent means the launcher did not mint a control endpoint, which is a broken launch here.
@@ -59,7 +64,7 @@ export function startSidecar(): Sidecar {
 
   // Managed listener: own the endpoint (fatal bind) and prove every connection through the exchange.
   const controlServer = startControlServer(agent, control, hermesHookHandle, { fatalBind: true });
-  const bridge = startBridgeServer(agent, config, bridgeSock, control);
+  const bridge = startBridgeServer(agent, config, bridgeSock, control, startAgent);
 
   // The plugin reads this at register(ctx) time to declare the cotal_* tools (full shared parity).
   writeFileSync(toolsFile, JSON.stringify(hermesToolDescriptors(config)));

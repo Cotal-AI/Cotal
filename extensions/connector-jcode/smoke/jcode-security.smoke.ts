@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -120,6 +120,9 @@ try {
   const noCanary = result.status === 1 && !result.stderr.includes(canary);
   check("host launch failure reports the safe SDK startup code", safeCode, { status: result.status, stderr: result.stderr });
   check("host launch failure never prints captured Jcode child stderr canary", noCanary, { status: result.status, stderr: result.stderr });
+  const diagnostic = /details: ([^\r\n]+)/.exec(result.stderr)?.[1];
+  check("host launch failure names a readable private diagnostic log", !!diagnostic && existsSync(diagnostic), result.stderr);
+  check("private startup log retains the child error", !!diagnostic && readFileSync(diagnostic, "utf8").includes(canary));
 
   console.log(`\nJCODE SECURITY SMOKE PASSED (${pass} checks)`);
 } finally {
