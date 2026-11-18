@@ -1472,6 +1472,21 @@ for (const [code, summary, deferred] of [
   assert.equal(fixture.events.some(event => event === "global:reconcile"), !deferred, "only a real install failure enters repair");
 }
 
+// A waiting updater rechecks the selected release, releases its reservation before re-entry,
+// preserves the user's selection and consent, and never rolls back another updater's result.
+for (const installed of ["0.13.2", "0.13.3"]) {
+  const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+  fixture.rt.globalVersion = () => installed;
+  fixture.rt.spawn = (_file, args) => {
+    assert.ok(fixture.events.includes("release-global:/global/node_modules"));
+    assert.deepEqual(args, ["/global/node_modules/cotal-ai/dist/cotal.js", "update", "--self", "--space", "chosen", "--server", "nats://example:4222", "--creds", "/tmp/selected.creds", "--on", "chosen-manager", "--stop-agents"]);
+    return { status: 7, stdout: "", stderr: "recheck refused" };
+  };
+  assert.equal(await executeUpdate(true, fixture.rt, { space: "chosen", server: "nats://example:4222", creds: "/tmp/selected.creds", on: "chosen-manager", "stop-agents": true }), 7);
+  assert.ok(fixture.events.includes(`verify:/global/node_modules:${installed}`));
+  assert.ok(!fixture.events.some(event => event.startsWith("global:install:") || event === "reconcile"));
+}
+
 // --- --self: exact checked artifact, alternate global root, verified child, status propagation ----
 {
   const successful = updateRuntime({
