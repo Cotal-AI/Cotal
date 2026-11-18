@@ -862,6 +862,22 @@ try {
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 
+  for (const open of [false, true]) {
+    const space = open ? "recover-open-store" : "recover-auth-store", root = prepare(space);
+    const store = join(projects, `${space}-history`);
+    mkdirSync(store, { mode: 0o700 });
+    const first = cli(root, "up", ...(open ? ["--open"] : []), "--store-dir", store, "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
+    track(space);
+    check(`custom store starts, open=${open}`, first.status === 0, shown(first));
+    check("custom store stops before journal recovery", cli(root, "down", "--yes", "--json").status === 0);
+    rmSync(join(root, ".cotal", "stack-controller.json"));
+    const recovered = cli(root, "up", "--json");
+    track(space);
+    const journal = readStackJournal(root)?.journal;
+    check(`saved definition recovery retains mode and store, open=${open}`, recovered.status === 0 && journal?.mode === (open ? "open" : "auth") && journal.broker?.storeDir === store && !existsSync(join(root, ".cotal", "nats")), shown(recovered));
+    check("recovered custom stack stops", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
   // 3d. A project folder renamed while its stack runs.
   {
     const space = "renamed";

@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { credsClaims, dlvStream, dmStream, principalKey, resolveAuthProvider, spacePrefix, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
-import { authDir, brokerAddressForDisplay, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSpaceAuth, MeshTargetError, plainFlag, presentationOf, readCredsFile, recordedRevocation, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
+import { authDir, brokerAddressForDisplay, brokerUrlKey, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSpaceAuth, MeshTargetError, plainFlag, presentationOf, readCredsFile, recordedRevocation, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 
 const credsFlag = { name: "creds", type: "string", value: "<file>", description: "report what this credential file may do, from its own claims; no broker is contacted" } as const satisfies FlagSpec;
@@ -101,12 +101,12 @@ export async function whoami(args: ParsedArgs): Promise<void> {
   const server = brokerAddressForDisplay(t.server);
   if (server === undefined) throw new CommandFailure("refused", v.server === undefined ? "SCHEMA_INVALID" : "USAGE_INVALID", "the server address cannot be parsed safely; the raw value was not printed", { target });
   const entry = findMesh(t.space);
-  const base = { kind: "identity" as const, space: t.space, server, mode: t.mode, modeChecked: !(entry?.unchecked === true && entry.server === t.server) };
+  const base = { kind: "identity" as const, space: t.space, server, mode: t.mode, modeChecked: !(entry?.unchecked === true && brokerUrlKey(entry.server) === brokerUrlKey(t.server)) };
   let result: WhoamiResult;
   // A `--server` this space is not registered at says nothing about the broker there, and whoami does
   // not contact it. The folder's trust for the space does not reach an address nothing records.
   const registered = v.server === undefined ? undefined : findMesh(t.space);
-  if (v.server !== undefined && registered?.server !== t.server) {
+  if (v.server !== undefined && (registered === undefined || brokerUrlKey(registered.server) !== brokerUrlKey(t.server))) {
     const message = t.mode === "open" && !t.auth
       ? `${server} is not registered here and this folder holds no trust for it; whoami does not contact the broker, so whether it authenticates, and what this identity may do there, is unknown`
       : `${server} is not where ${t.space} is registered here; whoami does not contact the broker, so whether it serves ${t.space}, and what this identity may do there, is unknown`;

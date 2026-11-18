@@ -84,12 +84,15 @@ closest role a present participant holds, or lists the roles present when none i
 that is not current within two seconds adds no warning. A message over the broker's message limit, envelope included, refuses
 `UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A file or stdin body is read
 only to one byte past that limit. A pipe or a device such as `/dev/zero` has no size to report, so
-its refusal names the limit alone. A channel post the broker
-refuses was not stored, so it refuses `PERMISSION_DENIED` (exit 2): the channel does not exist in
-the space or this identity may not post to it. The remedy lists the channels this identity may post
-to, read from the grant ledger as `cotal whoami` reads it, or with `--creds` from an agent file's own
-claims. When the ledger is on another machine it says so and lists the space's registered channels
-instead. A broker whose JetStream store holds more
+its refusal names the limit alone. When the broker denies publishing to a channel, participant
+or role, `send` refuses with `PERMISSION_DENIED` (exit 2) and confirms nothing was stored. For
+channel posts, the remedy reads the grant ledger or the `agent`, `observer` or `admin` file passed
+with `--creds`. An observer or admin file has no channel post grants. If the grant is unknown,
+the remedy lists any registered channels it could read. To send after a `--creds` refusal, rerun
+without `--creds` if you have operator access to the same broker and space, or use a credential
+authorized for the destination. For a missing channel grant, the remedy shows how to mint an agent
+credential with `--allow-publish <channel>` on the machine that signs the space's credentials.
+A broker whose JetStream store holds more
 than its cap refuses every write with JetStream error 10023 and stores nothing, so `send` refuses
 `DEPENDENCY_UNAVAILABLE` (exit 2), naming the store and the `--max-file-store` cap this machine
 recorded for it. Its Next is `cotal history clear --yes`, which purges the space's channel history;

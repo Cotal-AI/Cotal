@@ -40,8 +40,8 @@ Source-checkout launches run the host directly in Node with the TypeScript loade
 command-line wrapper can interrupt its shutdown. Published installs continue to run the compiled host directly.
 
 A seat that dies without that teardown, from a manager restart or a kill past the grace window,
-leaves its Jcode server running. The server has a process group of its own and carries no
-`COTAL_NAME`, so a name-keyed reap does not reach it, and it holds the seat's runtime directory
+leaves its Jcode server running. The server has a process group of its own, so teardown uses
+recorded process identities rather than a name-keyed reap. It holds the seat's runtime directory
 until its own five-minute idle timer expires. Each launch records its identity nonce and its host
 process in the private home, and the seat's next launch stops the tree that record names. The
 recorded host is the gate: while it is still alive the seat is still serving, so nothing is
@@ -50,7 +50,10 @@ signalled and the second launch meets Jcode's own runtime-directory lock instead
 The private Jcode home lives under `<manager-workspace>/.cotal/jcode/`. It is unique per
 space/name and is owner-only. The connector mirrors the operator's provider logins into it (below),
 so provider logins work without copying Jcode's transcript/config tree into the seat. The spawned
-Jcode process does not inherit `COTAL_*` values or the Cotal launch-material pointer.
+Jcode process inherits only the non-secret Cotal seat attribution used by `cotal stop --self`:
+`COTAL_SPACE`, `COTAL_MANAGER_INSTANCE`, `COTAL_NAME`, `COTAL_ID`, `COTAL_LIFECYCLE_UID`,
+`COTAL_ACCEPTED_TOKEN` and `COTAL_HOME`. It does not inherit broker credentials or the
+Cotal launch-material pointer.
 
 Because the home is keyed by space and name, a seat respawned under the same space, name, and
 manager workspace lands in the same home, and the connector automatically continues the

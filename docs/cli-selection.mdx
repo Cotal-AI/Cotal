@@ -1165,6 +1165,20 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   failure in its facts, even if that URL is reachable.
   For a locally owned stack, a missing or dead broker process is `absent`, not `not-serving`.
   A cleanly stopped controller target reports `absent` and exits `1` without dialing another space.
+  For open and static-auth plaintext NATS targets with no absent local process, the probe also checks JetStream and the
+  recorded authentication requirement. An unauthenticated substitute for a static-auth broker
+  is not reported as serving. When the address and process identity match this space's running
+  local broker, missing JetStream does not trigger the substitute-broker remedy. A request that
+  fails after the broker disables JetStream keeps its store write diagnosis and history-preserving repair.
+
+When a stopped local broker's address accepts a connection without a NATS greeting, `status`
+and read commands name the occupied address and recommend stopping that listener or starting
+on another port. They keep the space's registration.
+
+When `--server` matches several registered spaces, add `--space <name>` to choose one.
+Selecting a default with `cotal use <name>` applies only after removing `--server`.
+`whoami` recognizes equivalent registered URL spellings, including a trailing slash or
+scheme case, without treating another transport as the same registered address.
 
 An unreadable component PID file is `refused`, and its row names the file path and read error.
 A missing or empty PID file still means no local process record.

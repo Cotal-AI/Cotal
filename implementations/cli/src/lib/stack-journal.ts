@@ -377,7 +377,7 @@ export function acquireStackOperationLock(root: string, operation?: string): Mai
   const paths = maintenancePaths(root);
   const created = [paths.versionDir, paths.maintenanceDir, paths.cotalDir].filter((dir) => !existsSync(dir));
   let lock: MaintenanceLock;
-  try { lock = acquireMaintenanceLock(root, operation ? { operation } : {}); }
+  try { lock = { ...acquireMaintenanceLock(root, operation ? { operation } : {}), createdDirectories: created }; }
   catch (error) {
     if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
     let holder: number | undefined;
@@ -794,6 +794,8 @@ export function stackDefinitionsAt(space: string, root: string): ServiceDefiniti
  *  wrote back into it. Undefined otherwise, or when the definition cannot be read. */
 export function goneStackRoot(space: string): string | undefined {
   try {
+    const native = loadMeshes().find((entry) => entry.space === space && entry.origin === "up");
+    if (native && !existsSync(native.root)) return native.root;
     const launch = serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch;
     if (launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER.broker || typeof launch.options.root !== "string" || typeof launch.options.config !== "string") return undefined;
     return existsSync(stackJournalPath(launch.options.root)) || existsSync(launch.options.config) ? undefined : launch.options.root;
@@ -921,10 +923,12 @@ export function stackMemberRecord(space: string, path: string): { definition: st
 }
 
 /** Remove the records under the root that front no process, `gone` and `reused` ones, and return
- *  them. Each is removed with its pin, only while its pidfile still reads as it did. */
+ *  them. Each is removed with its pin, only while its pidfile still reads as it did and the
+ *  process is still gone or reused. */
 export function removeStaleLocalRecords(root: string, space: string): LocalRecord[] {
   const stale = localRecords(root, space).filter((row) => row.state !== "live");
-  for (const row of stale) removePidPair(join(root, row.path), row.raw);
+  for (const row of stale)
+    if (!removePidPair(join(root, row.path), row.raw, "stale")) throw new Error(`${row.path} changed before stale record cleanup. Its record was kept.`);
   return stale;
 }
 

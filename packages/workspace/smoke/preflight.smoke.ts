@@ -776,7 +776,7 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
     const srv = createServer((sock) => {
       dials++;
       sock.on("error", () => { /* client tears down after its probe; not a test failure */ });
-      sock.write('INFO {"server_id":"s3872","version":"2.10.0","proto":1,"headers":true,"max_payload":1048576}\r\n');
+      sock.write('INFO {"server_id":"s3872","version":"2.10.0","proto":1,"headers":true,"jetstream":true,"max_payload":1048576}\r\n');
       sock.on("data", (d) => {
         if (d.toString().includes("PING")) sock.write("PONG\r\n");
       });
