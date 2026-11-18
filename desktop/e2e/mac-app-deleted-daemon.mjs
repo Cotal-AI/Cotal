@@ -320,7 +320,7 @@ try {
     assert(prepared.birth, 'old preparer must report its own native birth');
     report.preparer = { pid: prepared.pid, birth: prepared.birth, exited: true, exit: 0, result: prepared.result };
     preservingProbe = join(root, 'old-public-preserving-probe.mjs');
-    writeFileSync(preservingProbe, `import{queryDaemon}from${moduleUrl('dist/daemon/client.js')};import{daemonPaths}from${moduleUrl('dist/daemon/endpoint.js')};import{resolveControlTarget}from${moduleUrl('node_modules/@cotal-ai/workspace/dist/index.js')};import{askManager}from${moduleUrl('node_modules/@cotal-ai/workspace/dist/control/index.js')};import{withIdpSessionDir}from${moduleUrl('node_modules/@cotal-ai/auth/dist/index.js')};const d=await queryDaemon({paths:daemonPaths()});if(!d.ok)throw Error(JSON.stringify(d));const m=await withIdpSessionDir(${JSON.stringify(cotalHome)},async()=>{const t=await resolveControlTarget({space:${JSON.stringify(report.participant.space)}},'control-caller-privileged',${JSON.stringify(manager.instanceId)},{onRefusal:'throw',readOnly:true});const r=await askManager({versionSkew:t=>t,roster:async()=>[]},t.space,t.server,'managerStatus',undefined,t.auth,'owner',5000,{instanceId:${JSON.stringify(manager.instanceId)}});return r});console.log(JSON.stringify({daemon:d.result,manager:m}));`);
+    writeFileSync(preservingProbe, `import{queryDaemon}from${moduleUrl('dist/daemon/client.js')};import{daemonPaths}from${moduleUrl('dist/daemon/endpoint.js')};import{resolveControlTarget}from${moduleUrl('node_modules/@cotal-ai/workspace/dist/index.js')};import{askManager}from${moduleUrl('node_modules/@cotal-ai/workspace/dist/control/index.js')};import{withIdpSessionDir}from${moduleUrl('node_modules/@cotal-ai/auth/dist/index.js')};const d=await queryDaemon({paths:daemonPaths()});if(!d.ok)throw Error(JSON.stringify(d));const m=await withIdpSessionDir(${JSON.stringify(cotalHome)},async()=>{const t=await resolveControlTarget({space:${JSON.stringify(report.participant.space)}},'control-caller-privileged',${JSON.stringify(manager.instanceId)},{onRefusal:'throw',readOnly:true});const r=await askManager({versionSkew:t=>t,roster:async()=>[]},${JSON.stringify(report.participant.space)},t.server,'managerStatus',undefined,t.auth,'owner',5000,{instanceId:${JSON.stringify(manager.instanceId)}});return r});console.log(JSON.stringify({daemon:d.result,manager:m}));`);
     report.preservingBeforeDelete = await assertPreserving('old public preserving state before deletion');
   }
   const baseline = await snapshot('before-delete', before.pid, manager.pid);
@@ -351,7 +351,7 @@ try {
       assert.match(refused.stdout + refused.stderr, /staged pre.?install check refused/i);
       assert.match(refused.stdout + refused.stderr, /manager is in preserving mode; hold age .+; seats 0; update owner /);
       assert.match(refused.stdout + refused.stderr, /No hold was released by this check/);
-      assert.match(refused.stdout + refused.stderr, /no packages changed/i);
+      assert.match(refused.stdout + refused.stderr, /no installed packages or connector state were changed/i);
       for (const [index, file] of protectedFiles.entries()) assert.deepEqual(readFileSync(file), protectedBytes[index], `published floor changed ${file}`);
       const nativeAfter = ok(await call('published floor native after', '/bin/launchctl', ['print', target])).stdout;
       assert.equal(/^\s*pid = (\d+)\s*$/m.exec(nativeAfter)?.[1], /^\s*pid = (\d+)\s*$/m.exec(nativeBefore)?.[1]);
@@ -558,6 +558,15 @@ try {
       heldProcesses.push(await identity(pid, 'self-update repaired daemon'));
       const version = ok(await candidate('installed candidate version after self update', ['--version'])).stdout.split(/\r?\n/, 1)[0];
       assert.equal(version, `cotal-ai ${candidateRegistry.identity.targetVersion}`);
+      if (preserving) {
+        for (const held of heldProcesses.slice(0, 2)) {
+          const gone = await call(`preserving self-update retired original lifetime ${held.pid}`, '/bin/ps', ['-p', String(held.pid), '-o', 'pid=,lstart=,comm=']);
+          assert(!gone.timedOut && !gone.signal);
+          assert.equal(gone.exit, 1, 'plain self-update must retire originals before fixture cleanup');
+          assert.equal(processBirth(held.pid), undefined);
+        }
+        report.preservingOriginalsRetiredBeforeCleanup = true;
+      }
       report.selfUpdateRepairAcceptance = { exit: update.exit, pid, sourceOutsideAppBeforeStatus: true, credentialsPreserved: true, installedTarget: candidateRegistry.identity.targetVersion };
     }
     if (repairCommand === 'occupied-manager') {
