@@ -32,8 +32,8 @@
     {
       "name": "the smoke returns to one blind microtask yield",
       "file": "extensions/connector-core/smoke/cross-path-dedup.smoke.ts",
-      "find": "    let windowOpen = false;\n    for (let i = 0; i < 1_000 && !(windowOpen = (a2 as unknown as { enteringFocus: boolean }).enteringFocus); i++)\n      await Promise.resolve();\n    check(`focus-entry ${quiet ? \"quiet\" : \"normal\"} transition window opened before the retain emit`, windowOpen);\n",
-      "replace": "    await Promise.resolve();\n    check(`focus-entry ${quiet ? \"quiet\" : \"normal\"} transition window opened before the retain emit`, (a2 as unknown as { enteringFocus: boolean }).enteringFocus);\n",
+      "find": "    let windowOpen = false;\n    for (let i = 0; i < 1_000 && !(windowOpen = ((a2 as unknown as { inboxState: unknown }).inboxState as unknown as { enteringFocus: boolean }).enteringFocus); i++)\n      await Promise.resolve();\n    check(`focus-entry ${quiet ? \"quiet\" : \"normal\"} transition window opened before the retain emit`, windowOpen);\n",
+      "replace": "    await Promise.resolve();\n    check(`focus-entry ${quiet ? \"quiet\" : \"normal\"} transition window opened before the retain emit`, ((a2 as unknown as { inboxState: unknown }).inboxState as unknown as { enteringFocus: boolean }).enteringFocus);\n",
       "expectRed": "focus-entry normal transition window opened before the retain emit",
       "cell": "focus-entry normal transition window opened before the retain emit"
     }
