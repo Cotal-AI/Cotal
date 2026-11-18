@@ -1740,6 +1740,7 @@
   "presence:condition": "current:who",
   "presence:environment": "pending:who",
   "presence:lifecycleUid": "current:who",
+  "presence:prompts": "pending:who",
   "presence:runtime": "pending:who",
   "presence:status": "current:who",
   "presence:statusSince": "current:who",

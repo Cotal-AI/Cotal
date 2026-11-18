@@ -11,6 +11,7 @@ export * from "./endpoint-auth-digest.js";
 export * from "./endpoint-grants.js";
 export * from "./endpoint-coverage.js";
 export * from "./registry-contract.js";
+export * from "./agent-endpoint.js";
 export * from "./registry-client.js";
 export type { RegistryService, RegistryServiceHandle, RegistryServiceInputs } from "./registry-service.js";
 export * from "./endpoint-envelope.js";

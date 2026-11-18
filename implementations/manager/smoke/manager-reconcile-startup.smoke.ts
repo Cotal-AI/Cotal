@@ -57,7 +57,7 @@ import {
   type ControlReply,
   type EpCaller,
   type LaunchSpec,
-} from "@cotal-ai/core";
+} from "../../../packages/core/dist/index.js";
 import { authDir, createManagerInstanceIdentity, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
@@ -875,8 +875,8 @@ try {
     // writer), then driving the same public pass.
     {
       const bucket = await (holder as unknown as {
-        deliveryRegistry(): Promise<{ update(k: string, v: Uint8Array, rev: number): Promise<number>; get(k: string): Promise<{ revision: number } | undefined> }>;
-      }).deliveryRegistry();
+        deliveryLease: { deliveryRegistry(): Promise<{ update(k: string, v: Uint8Array, rev: number): Promise<number>; get(k: string): Promise<{ revision: number } | undefined> }> };
+      }).deliveryLease.deliveryRegistry();
       const row = await bucket.get(leaseKey(0));
       await bucket.update(leaseKey(0), new TextEncoder().encode("{not-json"), row!.revision);
     }
@@ -898,8 +898,8 @@ try {
     // an undetermined read, not an absent row.)
     {
       const bucket = await (holder as unknown as {
-        deliveryRegistry(): Promise<{ update(k: string, v: Uint8Array, rev: number): Promise<number>; get(k: string): Promise<{ revision: number } | undefined> }>;
-      }).deliveryRegistry();
+        deliveryLease: { deliveryRegistry(): Promise<{ update(k: string, v: Uint8Array, rev: number): Promise<number>; get(k: string): Promise<{ revision: number } | undefined> }> };
+      }).deliveryLease.deliveryRegistry();
       const row = await bucket.get(leaseKey(0));
       await bucket.update(leaseKey(0), new TextEncoder().encode(JSON.stringify({ holder: "", since: Date.now(), ready: false })), row!.revision);
     }

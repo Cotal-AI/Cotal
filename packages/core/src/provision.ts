@@ -92,6 +92,7 @@ import {
 import { LIVENESS_PLANES } from "./liveness.js";
 import {
   epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, baselineCallerCapabilities, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows,
+  epPrincipalServeGrantRows, epPrincipalOwnerGrantRows,
   operatorInstrumentCapabilities, instanceOnlyManagerCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT,
   MANAGER_VITALS_COMMAND, MANAGER_VITALS_SCOPE,
   type EpCapability,
@@ -786,6 +787,12 @@ export interface MintOpts {
   /** The issuer handles a static `agent` mint decides its listing generation over. The horizon is
    *  the credential's own expiry, so a mint with no expiry gets no listing generation. */
   listingSeam?: ListingSeam;
+  /** `agent` profile only: the kind of the ledger row the principal was found in, which only the
+   *  auth callout reads (SPEC 13.21). A row of either kind serves its own `agent` endpoint on the
+   *  principal route; an `interactive` row, an actor its person granted directly, also calls its
+   *  owner's agents there with the `owner` word. It never comes from a scope token, which a parent
+   *  could hand to the agents it spawns. A static mint refuses it. */
+  ledgerKind?: "interactive" | "managed-agent";
   /** The durable half of an issuance, REQUIRED beside {@link MintOpts.issued} on {@link mintCreds}:
    *  the credential is built first, then its evidence is staged create-only, the existing
    *  finalizer runs, and the attempt activates by CAS at the revision the stage observed; only
@@ -1323,6 +1330,16 @@ export function permissionsFor(
     throw new Error(`permissionsFor: a listing generation rides the agent and manager-caller views only, not "${profile}" (SPEC 13.15)`);
   if (opts.listing && opts.issued)
     throw new Error("permissionsFor: an issued credential lists under its own generation; a listing generation beside it is refused (SPEC 13.15)");
+  if (opts.ledgerKind !== undefined) {
+    if (profile !== "agent")
+      throw new Error(`permissionsFor: ledgerKind marks an agent-profile mint of a ledger row, not "${profile}" (SPEC 13.21)`);
+    // Only the auth callout reads a row's kind from the ledger, and only the callout sets a
+    // connection's reader id. A static mint, whose connection is its own nkey, carries no kind.
+    if (pr.readerId === undefined)
+      throw new Error("permissionsFor: a static mint carries no ledger kind; only the auth callout marks a mint with the kind of the ledger row it read (SPEC 13.21)");
+    if (opts.ledgerKind !== "interactive" && opts.ledgerKind !== "managed-agent")
+      throw new Error(`permissionsFor: ledgerKind ${JSON.stringify(opts.ledgerKind)} is not "interactive" or "managed-agent"`);
+  }
   if (isEnvironmentManagerProfile(profile)) return environmentManagerPermissions(profile, space, pr, opts.environmentManager);
   if (opts.environmentManager) throw new Error(`permissionsFor: environmentManager pins cannot ride ${profile}`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
@@ -1792,6 +1809,21 @@ export function permissionsFor(
       pubAllow.push(...rows.pub);
       for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);
     }
+  // THE PRINCIPAL ROUTE (SPEC 13.21), for a ledger row of either kind: serve its own `agent`
+  // endpoint under its own principal and lifecycle, the runtime spanned. An interactive row also
+  // calls its owner's agents with the `owner` word. The rows carry the caller triple alone: the
+  // route has no versioned form, whatever rail the rest of the credential rides.
+  if (opts.ledgerKind !== undefined) {
+    const self: EpCaller = { owner: pr.owner, actor: pr.actor, uid };
+    const serve = epPrincipalServeGrantRows(space, self);
+    pubAllow.push(...serve.pub);
+    epSub.push(...serve.sub);
+    if (opts.ledgerKind === "interactive") {
+      const own = epPrincipalOwnerGrantRows(space, self);
+      pubAllow.push(...own.pub);
+      epSub.push(...own.sub);
+    }
+  }
   if (opts.endpointCapabilities?.length) {
     if (opts.lifecycleUid !== undefined && assertLifecycleToken(opts.lifecycleUid) !== uid)
       throw new Error(`permissionsFor: opts.lifecycleUid "${opts.lifecycleUid}" disagrees with the principal's lifecycleUid "${uid}" - one credential names ONE incarnation on the caller rail (SPEC 13.1/13.2)`);

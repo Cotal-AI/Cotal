@@ -18,6 +18,12 @@ nonce, so the broker polices who is calling in the subject grammar itself. See
 [SPEC §13.2](../SPEC.md#132-grammar) for the grammar and [§13.5](../SPEC.md#135-verbs) for
 the verbs (`call`, `cast`, `watch`, `claim`, `scatter`).
 
+A fourth route, `prin`, addresses one process of a principal by its owner, actor, lifecycle UID
+and runtime id, and carries the command set that principal serves about itself, such as the
+`agent` endpoint. Its replies ride `prin-reply`. The registry does not list it, and `describe` and
+`invoke` do not reach it; a caller finds the address in presence. See
+[SPEC §13.21](../SPEC.md#1321-principal-route).
+
 ## Journal action coverage
 
 The core journal action rail is public API, but the shipped manager does not use it for

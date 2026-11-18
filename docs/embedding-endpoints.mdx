@@ -43,6 +43,7 @@ Optional metadata has the following meaning:
 | `activitySince` | Epoch milliseconds when the current activity was set. A status change or heartbeat leaves it unchanged. |
 | `environment` | An opaque provider reference. Core publishes the value without interpreting it. |
 | `attention`, `channelModes` | Advisory receive preferences. They confer no authorization and are not read back into delivery. |
+| `prompts` | `{ open, seq }` for the prompts the process serves on its `agent` endpoint. It is present only while that endpoint is served and the broker accepted the subscription. `seq` restarts with the process, so compare it together with `runtime.id`. |
 
 `ts` dates the heartbeat. A fresh `ts` can accompany an old `activeAt`, `statusSince`, or `activitySince`.
 The shared `presenceAges` helper omits an age for a nonfinite or nonnumeric timestamp and clamps clock-skewed negative ages to zero.
@@ -73,6 +74,7 @@ The endpoint rejects a presence row when any of these checks fails:
 - `ts` is a finite number.
 - Each present `card.role`, `activity`, and `attention` is a string.
 - A present `condition` is an object with a string `code`.
+- A present `prompts` is an object with non-negative integer `open` and `seq`.
 
 A rejection uses the recoverable warning path.
 A `condition` of `null`, a bare string, or an object without `code` is rejected.
@@ -158,6 +160,30 @@ One probe samples one queue member and cannot establish the state of every respo
 The complete reply, responder-state, grant, reply-target validation, and rebinding contracts are in
 [SPEC §6.1](../SPEC.md#61-plane-liveness).
 
+## Principal route [#principal-route]
+
+`servePrincipal({ endpoint, cluster, handlers })` serves a core-defined command set about this
+process on the principal route. Revision 1 defines one endpoint, `agent`, whose cluster and compiled
+contracts are `AGENT_CLUSTER` and `AGENT_CONTRACTS`. It throws on an open mesh, under a static
+credential, without a lifecycle UID, and for a cluster command that declares no `authorities`.
+The returned `ready` resolves only after the broker accepted the subscription. It rejects when the
+credential holds no serve row, which a credential minted before this release does not. The serve
+subscribes again after every reconnect, and a refusal there resolves `failed` and is reported on
+`warning`. `stop()` unsubscribes and waits for the handlers in flight.
+
+`setPromptsPresence({ open, seq })` sets the presence field above and writes presence at once. It
+throws while the `agent` endpoint is not served.
+
+`callPrincipal({ endpoint, principal, command, authority, args, deadlineMs })` calls one command as
+this endpoint's caller. `principal` is the addressed process: owner, actor, lifecycle UID and the
+`runtime.id` its presence publishes. `authority` is `owner` or `grant`, the word this credential's
+row covers. The `agent` contracts and `describe` are built in; another endpoint needs `contract`.
+The agent's own refusal comes back as a reply with `ok: false`. The call throws `unavailable` when
+no process serves that address, `permission-denied` when this credential holds no row, and
+`deadline-exceeded` when no reply came. The subjects, rows and refusals are in
+[SPEC §13.21](../SPEC.md#1321-principal-route), and the commands in
+[SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
+
 ## DM-only reader [#dm-only-reader]
 
 `dmOnly: { handler, settleTimeoutMs? }` binds the endpoint's existing `dm_<owner>-<actor>-<uid>` durable.
@@ -192,6 +218,22 @@ Reconnect uses the endpoint's normal credential-renewal and recovery paths and w
 A copy already received by the client cannot reach a new handler after stop begins or its connection is replaced.
 That copy stays unacknowledged and can redeliver after the durable's acknowledgement wait.
 An acknowledgement, negative acknowledgement, or in-progress signal from a handler on a closed connection throws.
+
+## Delivery lease [#delivery-lease]
+
+`acquireDeliveryLease(shardIndex)` atomically claims a shard as not ready.
+`markDeliveryLeaseReady` and `markDeliveryLeaseNotReady` change readiness without releasing the claim.
+`renewDeliveryLease` retains readiness and returns the new revision.
+Readiness updates, renewal and release use the broker's revision as their compare-and-swap token.
+`releaseDeliveryLease(shardIndex, revision)` deletes only that revision. An explicit `undefined` releases nothing.
+
+`ownsDeliveryLease(info)` requires both this endpoint's principal and its per-instance incarnation.
+`readDeliveryLeaseEntry` returns the row with its revision, returns `undefined` for an absent or deleted row, and throws for an unreadable row.
+`deliveryLeaseHolder` returns `undefined` when the holder cannot be determined.
+
+`watchDeliveryLease` reports puts and deletions for one shard and returns a stop handle.
+Its intent survives a connection replacement. Stop and reconnect settle in-flight watch binds and retire owned consumers before closing their connection.
+The watch reports state changes. The caller decides whether it still owns the shard.
 
 ## Watch cleanup [#watch-cleanup]
 

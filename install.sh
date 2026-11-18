@@ -356,7 +356,11 @@ require_download_tools() {
     die "Need curl or wget to download the Node runtime." \
       "This machine has no Node $NODE_MIN+, so one has to be fetched." \
       "Install curl or wget and run this again."
-  have tar || die "Need tar to unpack the Node runtime." "Install tar and run this again."
+  have tar || die "Need tar to unpack the Node runtime." \
+    "On Rocky Linux, Fedora or RHEL, install it first: sudo dnf install tar" \
+    "On other systems, install tar with your system package manager." \
+    "Then run this installer again as your own user, without sudo." \
+    "Prerequisites: $DOCS_URL/docs/installation/#use-the-shell-installer"
   have mktemp || die "Need mktemp to stage the download safely." \
     "Install coreutils and run this again."
   have sha256sum || have shasum || have openssl ||

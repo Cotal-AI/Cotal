@@ -217,7 +217,9 @@ try {
   });
   const traced = manager as unknown as {
     withEndpointServeExecutor: (...args: unknown[]) => Promise<unknown>;
-    sessionServingCredentials: () => Record<string, (...args: unknown[]) => unknown>;
+    servePlane: {
+      sessionServingCredentials: () => Record<string, (...args: unknown[]) => unknown>;
+    };
   };
   const executor = traced.withEndpointServeExecutor;
   traced.withEndpointServeExecutor = async function (...args) {
@@ -225,9 +227,9 @@ try {
     try { const result = await executor.apply(this, args); record("executor-exit", { id }); return result; }
     catch (error) { record("executor-error", { id, error: String(error) }); throw error; }
   };
-  const servingCredentials = traced.sessionServingCredentials;
-  traced.sessionServingCredentials = function () {
-    const seam = servingCredentials.call(this);
+  const servingCredentials = traced.servePlane.sessionServingCredentials;
+  traced.servePlane.sessionServingCredentials = function () {
+    const seam = servingCredentials.call(traced.servePlane);
     for (const method of ["observeGate", "stage", "open"] as const) {
       const original = seam[method]!;
       seam[method] = async function (...args) {

@@ -31,7 +31,10 @@ function read(): UpdatePending {
   const before = hashes();
   const result = readUpdatePending("0.164.0");
   assert.deepEqual(hashes(), before, "diagnostic creates no files and changes no file hashes");
-  if (result.kind !== "none") assert.match(result.instruction, /cotal update --self/);
+  if (result.kind === "version-mismatch") {
+    assert.match(result.instruction, /`cotal update`/);
+    assert.doesNotMatch(result.instruction, /--self/);
+  } else if (result.kind !== "none") assert.match(result.instruction, /cotal update --self/);
   return result;
 }
 

@@ -1,7 +1,8 @@
 import { clearWindowsUpdateAfterManualSuccess } from "./update-windows-state.js";
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFileAtomic, writeSecretFileCreateOnly } from "@cotal-ai/core";
 import { homeCotalDir } from "./cotal-home.js";
 import { recoveryOwner, recoverySnapshotProblem } from "./update-recovery.js";
 
@@ -42,13 +43,28 @@ function save(name: string, value: unknown): void {
   writeSecretFileAtomic(join(homeCotalDir(), name), `${JSON.stringify(value, null, 2)}\n`);
 }
 
-/** Missing preferences use the documented defaults, malformed preferences refuse. */
-export function readUpdateSettings(): UpdateSettings {
-  const value = readRecord("update-settings.json");
-  if (value === undefined) return { v: 1, auto: true, notify: true };
+/** Missing preferences use defaults. Explicit preference commands may preserve and reset damaged JSON. */
+export function readUpdateSettings(recovered?: (backup: string) => void): UpdateSettings {
+  const defaults: UpdateSettings = { v: 1, auto: true, notify: true };
+  const path = join(homeCotalDir(), "update-settings.json");
+  let contents: Buffer;
+  try { contents = readFileSync(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return defaults;
+    throw error;
+  }
+  let value: unknown;
+  try { value = JSON.parse(contents.toString("utf8")); }
+  catch (error) { if (!recovered) throw error; }
   const record = value as UpdateSettings;
-  if (!record || record.v !== 1 || typeof record.auto !== "boolean" || typeof record.notify !== "boolean") throw new Error("invalid update settings in update-settings.json");
-  return record;
+  if (record && record.v === 1 && typeof record.auto === "boolean" && typeof record.notify === "boolean") return record;
+  if (!recovered) throw new Error("invalid update settings in update-settings.json");
+  const backup = `${path}.corrupt.${randomBytes(8).toString("hex")}`;
+  mkSecretDir(homeCotalDir());
+  writeSecretFileCreateOnly(backup, contents);
+  save("update-settings.json", defaults);
+  recovered(backup);
+  return defaults;
 }
 
 export function setUpdateSetting(key: "auto" | "notify", enabled: boolean): UpdateSettings {

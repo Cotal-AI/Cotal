@@ -237,8 +237,8 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   if (args.values.auto || args.values.notify) {
     const key = args.values.auto ? "auto" : "notify";
     const value = args.positionals[0];
-    if (value !== undefined) setUpdateSetting(key, value === "on");
-    const settings = readUpdateSettings();
+    const current = readUpdateSettings(backup => rt.err(`Damaged update settings saved to ${backup}; using defaults (automatic updates and notices on).`));
+    const settings = value === undefined ? current : setUpdateSetting(key, value === "on");
     rt.out(`${key === "auto" ? "Automatic updates" : "Update notices"}: ${settings[key] ? "on" : "off"}${rt.env.COTAL_NO_UPDATE_CHECK === "1" ? " (disabled by COTAL_NO_UPDATE_CHECK=1)" : ""}`);
     if (key === "auto" && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) rt.out("This runtime belongs to the desktop app. Automatic npm updates have no effect here; update the desktop app with its signed platform installer.");
     else if (key === "auto" && settings.auto && ["linux", "darwin", "win32"].includes(process.platform) && rt.env.COTAL_NO_UPDATE_CHECK !== "1") {
@@ -836,6 +836,12 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       peek = resolveMeshTarget(process.cwd(), { server, space, offline });
     } catch (e) {
       if (!isWorkspaceTargetError(e)) throw e;
+      // Prepared-only spaces have no registry entry for the gone-root check above.
+      // As with a registered gone root, leave its records and processes untouched.
+      if (e.code === "not-started" && e.details.rootMissing === true) {
+        console.log(`  ${e.details.space}: folder is gone; leaving its processes untouched, continuity not checked`);
+        return "none";
+      }
       // A space prepared here that never started (`cotal setup --configure-only`, `space create`)
       // has no broker, no stack journal and no manager: a supervisor serves a started stack, and
       // this one never launched a member, so there is nothing this update could interrupt. Run from

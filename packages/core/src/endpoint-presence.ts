@@ -1,7 +1,7 @@
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { KV, KvEntry } from "@nats-io/kv";
 import { TimeoutError, type NatsConnection } from "@nats-io/transport-node";
-import type { AgentCard, Presence, PresenceStatus, PresenceCondition, AttentionMode, ChannelMode } from "./types.js";
+import type { AgentCard, Presence, PresenceStatus, PresenceCondition, PresencePrompts, AttentionMode, ChannelMode } from "./types.js";
 import { processRuntime } from "./process-runtime.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { TTL_RECONCILE_CANARY_KEY } from "./streams.js";
@@ -17,6 +17,8 @@ export interface EndpointPresenceDeps {
   bucket: () => KV | undefined;
   connection: () => NatsConnection | undefined;
   lifecycleUid: () => string | undefined;
+  /** The `prompts` field this process's presence carries now, or none (SPEC §6). */
+  prompts: () => PresencePrompts | undefined;
   ttlMs: () => number;
   registers: () => boolean;
   watches: () => boolean;
@@ -388,6 +390,7 @@ export class EndpointPresence {
       activeAt: this.activeAt,
       attention: this.attentionMode,
       channelModes: this.channelModes,
+      prompts: this.deps.prompts(),
       ts: Date.now(),
     };
     // Wire contract (SPEC §6): an OFFLINE record must not carry the advisory attention fields or
@@ -776,7 +779,9 @@ export class EndpointPresence {
       sameCondition(prev.condition, p.condition) &&
       prev.environment === p.environment &&
       prev.attention === p.attention &&
-      sameChannelModes(prev.channelModes, p.channelModes)
+      sameChannelModes(prev.channelModes, p.channelModes) &&
+      prev.prompts?.open === p.prompts?.open &&
+      prev.prompts?.seq === p.prompts?.seq
     ) {
       this.roster.set(id, p);
       return;
@@ -797,10 +802,10 @@ export class EndpointPresence {
   /** Materialize an OFFLINE presence record: drop the advisory attention fields. An offline peer must
    *  not show a stale `[focus]` or "locally muted #x" hint - SPEC: attention removed on offline sweep,
    *  channel modes reset on restart. `statusSince` goes too: it dated the live status, and an observer
-   *  that derives offline from a stale heartbeat does not know when the peer left. card/activity/ts
-   *  are kept. */
+   *  that derives offline from a stale heartbeat does not know when the peer left. `prompts` goes as
+   *  well: an offline process serves nothing. card/activity/ts are kept. */
   private toOffline(p: Presence): Presence {
-    return { ...p, status: "offline", statusSince: undefined, attention: undefined, channelModes: undefined };
+    return { ...p, status: "offline", statusSince: undefined, attention: undefined, channelModes: undefined, prompts: undefined };
   }
 
 

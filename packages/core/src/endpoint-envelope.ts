@@ -14,7 +14,7 @@
  */
 import type { ContractValidator, ContractValidationError } from "./contract-validator.js";
 import { isContractDigest, isWellFormedUnicode } from "./canonical-json.js";
-import { assertCommandToken, assertIdToken, assertLifecycleToken, endpointToken, type ParsedEpRequest } from "./endpoint-subjects.js";
+import { assertCommandToken, assertIdToken, assertLifecycleToken, endpointToken, type ParsedEpPrincipalRequest, type ParsedEpRequest } from "./endpoint-subjects.js";
 import { SCHEMA_PROFILE } from "./schema-bounds.js";
 import type { ControlReply, EndpointRef } from "./types.js";
 // The error catalog + EpEnvelopeError live in a node-free module so the browser session bundle can
@@ -361,12 +361,26 @@ export function parseEndpointRequest(raw: unknown): EndpointRequest {
  *  `handle` mode, subject-equal actor + lifecycleUid) for the targeted forms; `from.id` MUST
  *  equal the subject sender principal (`sender-mismatch`). Currency of `target.actor`/
  *  `target.lifecycleUid` against the live mapping is the handler's fresh-read (`expired`),
- *  deliberately not checkable here. */
-export function checkRequestSubjectAgreement(env: EndpointRequest, subject: ParsedEpRequest): void {
+ *  deliberately not checkable here. On the principal route (SPEC 13.21) the body carries no
+ *  target (`target-mismatch`) and no bind (`bad-request`), and a deadline is required. */
+export function checkRequestSubjectAgreement(env: EndpointRequest, subject: ParsedEpRequest | ParsedEpPrincipalRequest): void {
   if (env.op.endpoint !== subject.endpoint)
     fail("op-mismatch", `op.endpoint "${env.op.endpoint}" does not agree with the subject endpoint "${subject.endpoint}"`);
   if (env.op.command !== subject.command)
     fail("op-mismatch", `op.command "${env.op.command}" does not agree with the subject command "${subject.command}"`);
+
+  // The principal route (SPEC 13.21): the subject head is the target and its runtime id pins the
+  // process, so a body that names either is refused, never ignored. A call has a deadline.
+  if (subject.plane === "principal-request") {
+    if (env.target !== undefined)
+      fail("target-mismatch", "a body target on the principal route is target-mismatch: the subject head is the target (SPEC 13.21)");
+    if (env.bind !== undefined)
+      fail("bad-request", "a bind on the principal route is refused: the runtime id in the subject pins the process (SPEC 13.21)");
+    if (env.deadlineMs === undefined)
+      fail("bad-request", "deadlineMs is required on the principal route (SPEC 13.21)");
+    assertSender(env, subject.caller);
+    return;
+  }
 
   // §13.3: deadlineMs is a MUST for call, SCATTER, and journal submissions. Call and journal
   // are enforced at parse time; scatter is only knowable here, where the route is in hand.
@@ -400,7 +414,12 @@ export function checkRequestSubjectAgreement(env: EndpointRequest, subject: Pars
       fail("target-mismatch", `in ${t.mode} mode the body target actor and lifecycleUid must equal the subject target triple`);
   }
 
-  const sender = `${subject.caller.owner}.${subject.caller.actor}`;
+  assertSender(env, subject.caller);
+}
+
+/** `from.id` MUST equal the subject's sender principal (`sender-mismatch`, §13.3). */
+function assertSender(env: EndpointRequest, caller: { owner: string; actor: string }): void {
+  const sender = `${caller.owner}.${caller.actor}`;
   if (env.from.id !== sender)
     fail("sender-mismatch", `from.id "${env.from.id}" does not equal the subject sender principal "${sender}"`);
 }

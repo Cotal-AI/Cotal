@@ -36,7 +36,6 @@ import {
   dialerFor,
   connectorServers,
   spawnEnvAllow,
-  deprovisionAgent,
   fenceLifecycleAcl,
   DeprovisionError,
   addDeprovisionAccounting,
@@ -81,12 +80,8 @@ import {
   runAgentBearer,
   runDriverCaller,
   saveAgentFile,
-  AUTH_ENDPOINT,
-  EP_CMD_RETIRE_LIFECYCLE,
   eventChannel,
   eventChannelPrincipal,
-  resolveService,
-  invokeCommand,
   digestIdToken,
   capabilityWithin,
   grantOverreach,
@@ -98,7 +93,7 @@ import {
   shownSpawner,
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError, retainConnectorSeat } from "@cotal-ai/workspace";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlEndpoint, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -113,6 +108,8 @@ import {
   type Runtime,
   type RuntimeMode,
 } from "./runtime/index.js";
+import { Retirement, type TeardownTarget } from "./retirement.js";
+import { ServePlane } from "./serve-plane.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
 import { DELIVERY_ADMIN_BOOT_WAIT_MS, isUnansweredDeliveryAdmin, makeManagerEndpointEvictionEvidence, makeManagerEndpointHolderEvictor, untilDeliveryAdminAnswers, withScopedEndpoint } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
@@ -133,94 +130,16 @@ import { TranscriptReceiver, type TranscriptClaim, type TranscriptReceiveInput }
 // manager-side adapter (transport + slot orchestration + the terminal) — see static-lifecycle.ts.
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import {
-  recordsBucket,
-  epAuthBucket,
-  ensureAuthorityStores,
-  createEndpointStreams,
-  contractStoreContext,
-  publishContractArtifact,
-  contractArtifactCanonicalBytes,
-  standaloneConnectOpts,
-  credentialIdOf,
-  STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC,
-  STATIC_GENERATION_HORIZON_SEC,
-  issuedHorizon,
-  newArtifactSigner,
-  RotatingSigner,
-  generationAnchor,
-  sessionsBucket,
-  SESSION_GRANT_MAX_TTL_MS,
-  REMOTE_MANAGER_IDENTITY_NAMES,
-  type LifecycleStateTransport,
-  type StaticManagedSlotRow,
-} from "@cotal-ai/core";
+import { recordsBucket, epAuthBucket, ensureAuthorityStores, standaloneConnectOpts, credentialIdOf, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, issuedHorizon, REMOTE_MANAGER_IDENTITY_NAMES, type LifecycleStateTransport, type StaticManagedSlotRow } from "@cotal-ai/core";
 // The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
 // per-session credentials on their own short-lived connections).
-import { ManagerSessionPlane, openSessionLedgerKv, type AttachEndReason, type SessionServing } from "./session/index.js";
+import { ManagerSessionPlane, type AttachEndReason } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
-import {
-  provisionEndpointGateOpen,
-  endpointRegistrationBarrier,
-  serveIssuanceGateKv,
-  commitSiblingIssuance,
-  markLedgerRowRevoked,
-  epcredRowKey,
-  epgateKey,
-  parseEndpointGate,
-  readEndpointGateGeneration,
-  registerServingInstance,
-  deregisterServiceInstance,
-  type ServiceDeregistration,
-  serveEndpoint,
-  type EpIssuanceGate,
-  bindGoal,
-  createGoal,
-  transitionGoal,
-  commitGoalResult,
-  requestGoalCancel,
-  goalAlreadyTerminal,
-  type GoalResultFact,
-  settleGoalUncertain,
-  readGoalResult,
-  readGoalStatus,
-  readGoalSpec,
-  recordGoalIndex,
-  readGoalIndex,
-  clearGoalIndex,
-  listGoalIndex,
-  mintCheckpoint,
-  MAX_SCHEDULE_MS,
-  resumeCheckpoint,
-  readCheckpointSettle,
-  readCheckpointSpec,
-  expireCheckpoint,
-  type CheckpointSettleFact,
-  type GoalIndexEntry,
-  GOAL_TERMINAL_STATES,
-  goalRefOf,
-  goalProgressTopic,
-  turnNoticeSubject,
-  epeSubject,
-  submissionFingerprint,
-  EpEnvelopeError,
-  lifecycleBlocked,
-  seatCapRefused,
-  lifecycleBlockedFrom,
-  renderLifecycleBlocked,
-  controlReplyFromThrown,
-  type EpCommandDef,
-  type EpServeContext,
-  type EpServeGrant,
-  type EpServeHandle,
-  type GoalRef,
-  type Identity,
-  type ServiceNameAuthority,
-} from "@cotal-ai/core";
-import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerConnectorStatus, type ManagerStaticReconciliationFailure, type ManagerStaticReconciliationStatus, type ManagerStaticReconciliationSweep, type ManagerStatus, type ManagerStopImpact } from "./manager-service-contract.js";
+import { provisionEndpointGateOpen, serveIssuanceGateKv, commitSiblingIssuance, epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, bindGoal, createGoal, transitionGoal, commitGoalResult, requestGoalCancel, goalAlreadyTerminal, type GoalResultFact, settleGoalUncertain, readGoalResult, readGoalStatus, readGoalSpec, recordGoalIndex, readGoalIndex, clearGoalIndex, listGoalIndex, mintCheckpoint, MAX_SCHEDULE_MS, resumeCheckpoint, readCheckpointSettle, readCheckpointSpec, expireCheckpoint, type CheckpointSettleFact, type GoalIndexEntry, GOAL_TERMINAL_STATES, goalRefOf, goalProgressTopic, turnNoticeSubject, epeSubject, submissionFingerprint, EpEnvelopeError, lifecycleBlocked, seatCapRefused, lifecycleBlockedFrom, renderLifecycleBlocked, controlReplyFromThrown, type EpCommandDef, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
+import { MANAGER_ENDPOINT, managerCommandDefs, type ManagerConnectorStatus, type ManagerStaticReconciliationFailure, type ManagerStaticReconciliationStatus, type ManagerStaticReconciliationSweep, type ManagerStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import { measureManagerVitals } from "./vitals.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
@@ -1351,42 +1270,6 @@ export interface ManagedAgent {
   staticCredentialRenewal?: Promise<void>;
 }
 
-/** What the teardown chain (trackDeprovision → deprovision → driveDeprovision →
- *  driveStaticRetirement) needs to tear one incarnation down. Each hop passes the value on as a
- *  variable, which TypeScript does not excess-check, so the hops share this one declaration. */
-interface TeardownTarget {
-  id: string;
-  name: string;
-  lifecycleUid: string;
-  userOwner?: string;
-  delegated?: true;
-  secretPaths?: ManagedAgent["secretPaths"];
-  runtime?: RuntimeReference;
-  delegatedHandle?: AgentHandle;
-  launch?: { allowSubscribe: readonly string[] };
-  /** The departed agent's admitted renewal, which the static terminal drains before it begins. */
-  staticCredentialRenewal?: Promise<void>;
-  /** Set when this lifecycle's inline snapshot is settled: the file is gone, or the lifecycle never
-   *  had one. A live slot's free and a manager shutdown set it once they removed the seat's own, and
-   *  a spawn's rollback once it removed the one it wrote or its write was refused, since a file that
-   *  write refused was never this lifecycle's. Absent after a removal that failed, and for a
-   *  lifecycle known only by its slot row; the static terminal then removes the uid's path. */
-  snapshotSettled?: true;
-}
-
-/** A name held pending its incarnation's retirement. It keeps the teardown target whole, so a
- *  same-name spawn or a resume re-drives the same teardown the first drive ran. */
-interface RetirementHold {
-  opId: string;
-  owner: string;
-  actor: string;
-  target: TeardownTarget;
-  startedAt: number;
-  lastError?: string;
-  standingAuthorityLive?: boolean;
-  lastResources?: DeprovisionResourceAccounting;
-}
-
 /** Runtime hooks the spawn-as-action serve path injects into {@link Manager.startAgent}.
  *  Roster boot and the blocking callers pass none (unchanged behavior). */
 export interface SpawnHooks {
@@ -1715,33 +1598,6 @@ export class Manager {
   /** Expiry stamps (`startedAt + MIN_LIFETIME`) for slots that freed while still young — a
    *  count-only, lazily-pruned recycle floor (P4c). Pruned + summed into the ceiling gate. */
   private cooling: number[] = [];
-  /** Names RESERVED PENDING RETIREMENT: a despawned agent's name stays held until
-   *  the auth plane confirms its lifecycle's retirement TERMINAL over the auth-admin rail — the
-   *  alias-reuse gate that closes the same-name despawn→respawn race at its root. An UNCERTAIN
-   *  outcome (rail down, timeout) keeps the hold with the last attempt's copy; a same-name spawn
-   *  refuses legibly AND re-fires the request. In-memory: across a manager restart the durable
-   *  truth is the auth-side lifecycle head itself (an unretired head refuses issuance — the
-   *  named residual this belt narrows, not replaces). */
-  private retiring = new Map<string, RetirementHold>();
-  /** Exact predecessor incarnations whose full hosted retirement reached a terminal answer. Presence
-   *  is advisory and can retain that old lifecycle briefly after its process exits. Resume may ignore
-   *  only this exact (alias, principal, lifecycleUid) row when adopting a different lifecycle; every
-   *  unknown, current, or differently identified live row still refuses. A later retirement of the
-   *  same alias replaces its prior predecessor coordinate. */
-  private readonly confirmedRetiredPredecessors = new Map<string, { principal: string; lifecycleUid: string }>();
-  /** SINGLE-FLIGHT guard for {@link requestRetirement} (audit #1): one in-flight rail round-trip per
-   *  (name, lifecycleUid). The detached `deprovision` call and every same-name-spawn nudge for THAT
-   *  lifecycle JOIN the same promise instead of stacking independent requests that dual-enter the
-   *  barrier; a fresh trigger after it settles re-drives. Keyed by (name, uid) — NOT name alone — so a
-   *  same-name SUCCESSOR (which can spawn after the hold clears but before this flight's `nc.close`
-   *  yield settles) never joins the predecessor's rail request and skips its own retirement. */
-  private retiringFlight = new Map<string, Promise<void>>();
-  /** Wire principals of RETIRED static incarnations: populated at every completed
-   *  static terminal and from the boot sweep's retired slot rows, so a copied credential of a
-   *  retired incarnation is refused at the control surface even across a manager restart. The
-   *  durable truth is the slot row + principal-keyed head; this set is the in-memory index of it
-   *  (one string per retired incarnation — bounded by lifecycle count, never pruned in-process). */
-  private readonly retiredPrincipals = new Set<string>();
   /** This manager process's own incarnation uid (SPEC 13.1; minted once per supervisor process,
    *  never reused across restarts) — the endpoint's presence key AND the `managerInstance` audit
    *  coordinate every static activation records. */
@@ -1804,11 +1660,6 @@ export class Manager {
   /** Renews the session signing key long before its window closes. A key that expires unattended
    *  takes the whole session plane down until the manager is restarted, which kills live sessions. */
   private sessionKeyRenewTimer?: ReturnType<typeof setInterval>;
-  /** Maps credentialId → the nkey that credential was minted for, for the live per-session
-   *  SERVING credentials. The §13.1 ledger row records the holder principal, and the row is written
-   *  at stage time (after the mint), so the two steps need this one hop. Entries are dropped at
-   *  revoke; a session that never staged drops its entry when the manager exits. */
-  private readonly sessionServingKeys = new Map<string, string>();
   /** The STABLE session-LEDGER identity (auth mode) — minted once at registration
    *  alongside the serve + goal-writer identities; a renewal re-mints the SAME nkey with a fresh
    *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
@@ -1931,14 +1782,6 @@ export class Manager {
   /** Held as an instance field so broker-owning smokes can compress the schedule without changing
    *  production semantics. It is never a fence expiry: the durable non-retired row stays authoritative. */
   private staticReconcileRetryDelaysMs: readonly number[] = STATIC_RECONCILE_RETRY_DELAYS_MS;
-  /** SINGLE-FLIGHT guard for {@link deprovision} (INT-2/C): one in-flight teardown per
-   *  (name, lifecycleUid). The detached freeSlot teardown and every same-name-spawn nudge that
-   *  re-drives it JOIN one promise instead of launching a SECOND, concurrent teardown. Without it,
-   *  two teardowns race the NAME-KEYED ledger revoke: once the first frees the alias and a successor
-   *  mints its own row, the second's delayed revoke (which carries no lifecycle coordinate) would
-   *  delete the SUCCESSOR's standing authority. Keyed by (name, uid) so a later same-name lifecycle
-   *  gets its own flight; a fresh trigger after settle re-drives only if the hold still stands. */
-  private deprovisioningFlight = new Map<string, Promise<void>>();
   /** Retirements holding one of the {@link RETIREMENT_CONCURRENCY} slots. */
   private retirementsRunning = 0;
   /** Retirements waiting for a slot, oldest first. */
@@ -1955,6 +1798,95 @@ export class Manager {
   /** True on a USER-AUTH space (the on-disk marker; cross-checked against the registry at start).
    *  Gates the whole spawn path: user mode grants ledger actors + bearer plumbing, never static mints. */
   private userMode = false;
+  private readonly servePlane = new ServePlane({
+    auth: () => this.auth,
+    remoteAuthority: () => this.remoteAuthority,
+    space: () => this.space,
+    servers: () => this.servers,
+    workspaceRoot: () => this.workspaceRoot,
+    managerInstanceId: () => this.managerInstanceId,
+    managerServeIdentity: () => this.managerServeIdentity,
+    leaseStopping: () => this.leaseStopping,
+    remoteBundleRenewal: () => this.remoteBundleRenewal,
+    maxSessions: () => this.maxSessions,
+    serviceServe: () => this.serviceServe,
+    setServiceServe: (value) => { this.serviceServe = value; },
+    sessionLedgerIdentity: () => this.sessionLedgerIdentity,
+    setSessionLedgerIdentity: (value) => { this.sessionLedgerIdentity = value; },
+    sessionLedgerCreds: () => this.sessionLedgerCreds,
+    setSessionLedgerCreds: (value) => { this.sessionLedgerCreds = value; },
+    sessionLedgerConn: () => this.sessionLedgerConn,
+    setSessionLedgerConn: (value) => { this.sessionLedgerConn = value; },
+    sessionPlane: () => this.sessionPlane,
+    setSessionPlane: (value) => { this.sessionPlane = value; },
+    sessionKeyRenewTimer: () => this.sessionKeyRenewTimer,
+    setSessionKeyRenewTimer: (value) => { this.sessionKeyRenewTimer = value; },
+    connectorStatuses: () => this.connectorStatuses,
+    setGoalWriterIdentity: (value) => { this.goalWriterIdentity = value; },
+    setGoalWriterCreds: (value) => { this.goalWriterCreds = value; },
+    remoteStandingBudgetMs: REMOTE_STANDING_BUDGET_MS,
+    dial: (...args) => this.dial(...args),
+    dialRemoteStanding: (...args) => this.dialRemoteStanding(...args),
+    trackTransport: (...args) => this.trackTransport(...args),
+    discardServeCandidate: (...args) => this.discardServeCandidate(...args),
+    managerServiceDefs: (...args) => this.managerServiceDefs(...args),
+    omitClassCommands: (...args) => this.omitClassCommands(...args),
+    resolveTarget: (target) => this.resolveServeTarget(target),
+    withEndpointServeExecutor: (...args) => this.withEndpointServeExecutor(...args),
+    withOpenServeConnection: (...args) => this.withOpenServeConnection(...args),
+    boundedReconnect: (...args) => this.boundedReconnect(...args),
+    renewRemoteBeforeRedial: (...args) => this.renewRemoteBeforeRedial(...args),
+    scheduleServeRenewal: (...args) => this.scheduleServeRenewal(...args),
+    stop: (...args) => this.stop(...args),
+    healFrozenRegistrationGate: (...args) => this.healFrozenRegistrationGate(...args),
+    mintAndStageGoalWriter: (...args) => this.mintAndStageGoalWriter(...args),
+    retireConnection: (...args) => this.retireConnection(...args),
+    withTimeout,
+    remoteStandingTimeLeft,
+    openMeshUnverifiedEviction,
+    openMeshFrozenGateRefusal,
+  });
+
+  private resolveServeTarget(t: { owner: string; actor: string }): { lifecycleUid: string; mappingRevision: number } | undefined {
+          if (this.remoteAuthority) {
+            const key = principalKey(t.owner, t.actor).key;
+            for (const a of this.agents.values()) if (a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
+            const participant = [...this.participants.values()].find((p) =>
+              p.owner === t.owner && p.actor === t.actor && this.currentParticipant(p.owner, p.actor, p.uid) === p);
+            return participant ? { lifecycleUid: participant.uid, mappingRevision: 0 } : undefined;
+          }
+          if (t.owner === DEV_OWNER) {
+            for (const a of this.agents.values()) if (!a.userOwner && a.id === t.actor) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
+            return undefined;
+          }
+          const key = principalKey(t.owner, t.actor).key;
+          for (const a of this.agents.values()) if (a.userOwner && a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
+          return undefined;
+
+  }
+  private readonly retirement = new Retirement({
+    auth: () => this.auth,
+    remoteAuthority: () => this.remoteAuthority,
+    userMode: () => this.userMode,
+    workspaceRoot: () => this.workspaceRoot,
+    space: () => this.space,
+    servers: () => this.servers,
+    secrets: () => this.secrets,
+    serveIdentity: () => this.managerServeIdentity,
+    lifecycleUid: () => this.managerLifecycleUid,
+    instanceId: () => this.managerInstanceId,
+    serveEpoch: () => this.serviceServe?.grant.epoch,
+    dial: (opts) => this.dial(opts),
+    withRetirementSlot: (run) => this.withRetirementSlot(run),
+    driveStaticRetirement: (a) => this.driveStaticRetirement(a),
+    awaitHandleExit: (handle) => this.awaitHandleExit(handle),
+    shredUserSecrets: (failures, family) => this.shredUserSecrets(failures, family),
+    dropSeatRecord: (a) => this.dropSeatRecord(a),
+    fenceRetiringAcl: (a) => this.fenceRetiringAcl(a),
+    lifecycleMembershipInventory: (a) => this.lifecycleMembershipInventory(a),
+    brokerTeardown: (task, message) => withTimeout(task, DEPROVISION_TIMEOUT_MS, message),
+    trackLifecycle: () => { this.lifecycleInFlight++; return () => this.releaseLifecycle(); },
+  });
   private leaseInfo?: Omit<ManagerLeaseInfo, "since">;
   private leaseRevision?: number;
   private leaseTimer?: ReturnType<typeof setInterval>;
@@ -3456,15 +3388,7 @@ export class Manager {
     this.lifecycleDrainWaiters = [];
     for (const wake of waiters) wake();
   }
-
-  /** A cleanup spawned by accepted active-mode work is part of that work for maintenance draining,
-   * even where the ordinary control reply remains fire-and-forget. */
-  private trackDeprovision(a: TeardownTarget, context = ""): void {
-    this.lifecycleInFlight++;
-    void this.deprovision(a)
-      .catch((e) => console.error(`deprovision${context ? ` ${context}` : ""} ${a.name} (${a.id}): ${rejectionText(e)}`))
-      .finally(() => this.releaseLifecycle());
-  }
+  private trackDeprovision(a: TeardownTarget, context = ""): void { this.retirement.trackDeprovision(a, context); }
 
   private async awaitLifecycleDrain(): Promise<void> {
     if (this.lifecycleInFlight === 0) return;
@@ -5817,13 +5741,13 @@ export class Manager {
     // this, but the intent is "user mode only", not "any principal-shaped id").
     if (this.userMode) {
       const p = parsePrincipalKey(a.id);
-      if (p) this.retiring.set(a.name, { opId: managedRetirementOpId(a.lifecycleUid), owner: p.owner, actor: p.actor, target, startedAt: Date.now() });
+      if (p) this.retirement.hold(a.name, { opId: managedRetirementOpId(a.lifecycleUid), owner: p.owner, actor: p.actor, target, startedAt: Date.now() });
     } else if (this.auth) {
       // A STATIC lifecycle now also holds its name pending its own terminal (the
       // static retirement the detached deprovision below drives) — the alias frees only when the
       // gate+head terminal completes, exactly the user-mode discipline. The wire principal is the
       // incarnation-unique nkey; owner is the dev owner.
-      this.retiring.set(a.name, { opId: managedRetirementOpId(a.lifecycleUid), owner: DEV_OWNER, actor: a.id, target, startedAt: Date.now() });
+      this.retirement.hold(a.name, { opId: managedRetirementOpId(a.lifecycleUid), owner: DEV_OWNER, actor: a.id, target, startedAt: Date.now() });
     }
     // Auth mode: tear down the departed agent's minted broker footprint + creds file (#159 B2). The
     // process is already gone, so this must never block the slot free or throw into the caller — it runs
@@ -5857,33 +5781,7 @@ export class Manager {
   private teardownTarget(a: ManagedAgent): TeardownTarget {
     return { id: a.id, name: a.name, lifecycleUid: a.lifecycleUid, userOwner: a.userOwner, delegated: a.delegated, secretPaths: a.secretPaths, runtime: a.handle?.reference, ...(a.handedOff ? { delegatedHandle: a.handle } : {}), launch: { allowSubscribe: a.launch.allowSubscribe }, staticCredentialRenewal: a.staticCredentialRenewal };
   }
-
-  /** Tear down a departed agent's minted footprint (#159 B2, auth mode): its local-principal durables
-   *  (`dm_local-<id>`, `dlv_local-<id>`), its read-ACL row, and its creds file — everything the spawn's
-   *  `provisionAgent` + creds-write left behind. Mints an EPHEMERAL, TARGET-PINNED `deprovisioner` cred
-   *  (mirrors the ephemeral `provisioner`/`purger`): it can delete only THIS agent's local-principal footprint,
-   *  never a peer's and never the role-shared `svc_<role>` (which its siblings still bind). Open mesh →
-   *  no-op (nothing was minted). Idempotent at the broker (missing consumer / ACL row = no-op) and on
-   *  disk (`force` tolerates an absent creds file, e.g. a ledgered deploy that wrote none).
-   *
-   *  Removing the creds file is footprint REDUCTION, not revocation: a JWT copied off disk before exit
-   *  keeps its inline publish/live-sub/control grants until key rotation or JWT expiry — cred revocation
-   *  is the separate per-user-auth work, not this. Tearing down the durables + ACL row still shrinks the
-   *  delivery surface a stale copy could use. */
-  private async deprovision(a: TeardownTarget): Promise<void> {
-    if (!this.auth && !this.remoteAuthority) return; // open mesh mints no creds/durables — nothing to tear down
-    // SINGLE-FLIGHT per (name, lifecycleUid) (INT-2/C): join an in-flight teardown for this exact
-    // lifecycle rather than launching a second concurrent one whose delayed name-keyed revoke could
-    // outlive the hold-clear and delete a successor's row. A fresh trigger after settle re-drives.
-    const key = JSON.stringify([a.name, a.lifecycleUid]); // ASCII-safe, delimiter-collision-free
-    const inflight = this.deprovisioningFlight.get(key);
-    if (inflight) return inflight;
-    const flight = this.withRetirementSlot(() => this.driveDeprovision(a)).finally(() => {
-      if (this.deprovisioningFlight.get(key) === flight) this.deprovisioningFlight.delete(key);
-    });
-    this.deprovisioningFlight.set(key, flight);
-    return flight;
-  }
+  private deprovision(a: TeardownTarget): Promise<void> { return this.retirement.deprovision(a); }
 
   /** Run one retirement in a {@link RETIREMENT_CONCURRENCY} slot, oldest first: a seat's deprovision, a
    *  chat session's terminal and a static reconcile's terminal all take one. No retirement awaits
@@ -5900,339 +5798,8 @@ export class Manager {
       else this.retirementsRunning--;
     }
   }
-
-  /** The actual footprint teardown (wrapped by {@link deprovision}'s single-flight). */
-  private async driveDeprovision(a: TeardownTarget): Promise<void> {
-    if (this.remoteAuthority) {
-      if (a.delegated) {
-        // The agent is its user's: only that user's retirement intent retires it, so the name stays
-        // held until retireDelegatedAgent confirms the host retired this UID.
-        const held = this.retiring.get(a.name);
-        if (held?.target.lifecycleUid === a.lifecycleUid)
-          held.lastError = `"${a.name}" was launched under a delegated user intent and retires only through its user's retirement intent`;
-        return;
-      }
-      // A hosted composition owns grant revocation and resumable footprint release. It calls this
-      // prerequisite before the terminal rail. The callback must preserve this UID and its pending
-      // state until the host decides terminal retirement, never map deprovisioning to suspension.
-      const target = parsePrincipalKey(a.id);
-      if (!target) throw new Error(`hosted retirement cannot derive the managed principal ${a.id}`);
-      await this.remoteAuthority.prepareAgentRetirement({
-        target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid },
-        opId: managedRetirementOpId(a.lifecycleUid),
-      });
-      // A delegated seat's fenced close runs only now, after the grant is revoked so its child can
-      // obtain no fresh bearer, and before the barrier, which must never run ahead of a create that
-      // could still land. A close that cannot prove that yet throws here and keeps the alias held.
-      if (a.delegatedHandle) {
-        a.delegatedHandle.stop({ graceful: true });
-        await this.awaitHandleExit(a.delegatedHandle);
-      }
-      // THE LOCAL FAMILY IS THIS PARTICIPANT'S, not the host's (#3055). The hosted enrollment wrote
-      // it here, so the host's release cannot remove it, and returning after the terminal request
-      // left every hosted seat's actor token, sentinel and health file on disk. It goes once the
-      // grant is released and the child is gone, by the same rule as the local arm below: every
-      // removal is attempted, and a failure keeps the name held instead of reaching the terminal.
-      const unshredded: CleanupFailure[] = [];
-      await this.shredUserSecrets(unshredded, a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid));
-      if (unshredded.length) throw new Error(`could not shred "${a.name}": ${describeCleanupFailures(unshredded)}`);
-      await this.requestRetirement(a);
-      return;
-    }
-    if (!this.auth) return; // guaranteed by deprovision; re-checked for the deprovisionBroker narrowing
-    if (!this.userMode && !a.userOwner) {
-      // A STATIC lifecycle retires through the terminal barrier — freeze → head
-      // retiring → B1 ledger revoke → footprint cleanup (creds file + broker durables/ACL, INSIDE
-      // the barrier) → gate retired → head retired → alias free. The eviction step is the process
-      // kill the stop path already performed (static's best-effort eviction).
-      return this.driveStaticRetirement(a);
-    }
-    // Drop the local creds file FIRST + unconditionally — it is a usable identity on disk, useless for a
-    // departed agent, so it must not survive even if the broker teardown below fails or times out. The
-    // teardown mints its OWN deprovisioner cred (not this file), so removing it early is independent.
-    // Migrated kinds: the store delete is the authoritative removal; the rmSync clears the FS
-    // materialization (a byte-identical no-op under the local composition, real once the manager
-    // `secretStore` is a non-FS store).
-    //
-    // LIFECYCLE-OWNED (SPEC 13.1, the manager-local half): the family deleted here is the RECORDED
-    // one (spawn/adoption), else the lifecycle-keyed derivation for THIS uid — never a name-only
-    // derivation, so a stale/replayed teardown addresses only names a same-alias successor never
-    // uses. It deliberately CANNOT remove a name-keyed family it holds no record of (an operator's
-    // standing `cotal mint` cred, a seeded workstation cred, a pre-split leftover): deleting an
-    // unowned same-name file is the exact successor-clobber this ownership discipline removes.
-    const secrets = this.secrets;
-    const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
-    // Every removal is attempted, and a failed one is thrown only after the broker teardown below,
-    // so a file fault cannot strand the agent's durables and ACL row on the broker.
-    const unshredded: CleanupFailure[] = [];
-    if (files.creds) {
-      const creds = files.creds;
-      await attemptCleanup(unshredded, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.space)));
-      await attemptCleanup(unshredded, `file ${creds}`, () => rmSync(creds, { force: true }));
-    }
-    if (a.userOwner) {
-      // USER MODE: this teardown IS revocation, not just footprint reduction — the ledger row is
-      // the agent's standing mint authority, so delete it (next exchange refused, next connect
-      // denied) and shred the secret/sentinel/health files. A copied actor token dies here; a
-      // still-LIVE connection ends at its bearer-bound JWT expiry (≤ the agent TTL).
-      await this.shredUserSecrets(unshredded, files);
-      // The ledger row IS the agent's STANDING mint authority (a different store from the auth-plane
-      // cred ledger the rail retirement covers): while it lives, a copied actor token can still mint a
-      // fresh connect credential. So a FAILED revoke must NOT be swallowed into a clean terminal (INT-2):
-      // mark the standing authority live on the hold so the retirement can never free the name (a freed
-      // name says "this lifecycle is fully gone" - false while the mint authority stands), and carry a
-      // legible operator copy. A retry re-drives this whole teardown (the same-name-spawn nudge routes
-      // through deprovision, not the rail alone), so the revoke is re-attempted, not stranded.
-      const holdRevoke = this.retiring.get(a.name);
-      if (holdRevoke && holdRevoke.target.lifecycleUid === a.lifecycleUid) holdRevoke.standingAuthorityLive = true;
-      try {
-        await resolveAuthProvider().revokeAgent({
-          dir: userAuthStateDir(this.workspaceRoot, this.space),
-          owner: a.userOwner,
-          actor: a.name,
-        });
-        const done = this.retiring.get(a.name);
-        if (done && done.target.lifecycleUid === a.lifecycleUid) done.standingAuthorityLive = false;
-      } catch (e) {
-        const h = this.retiring.get(a.name);
-        if (h && h.target.lifecycleUid === a.lifecycleUid)
-          h.lastError = `the agent's standing mint authority could not be revoked (${rejectionText(e)}); the name stays held so a copied actor token cannot mint fresh credentials. NEXT: a same-name spawn re-drives the full teardown (including the revoke), or recover the auth state.`;
-        console.error(`revoke agent grant ${a.name}: ${rejectionText(e)}`);
-      }
-    }
-    const shredFailure = unshredded.length ? `could not shred "${a.name}": ${describeCleanupFailures(unshredded)}` : undefined;
-    try {
-      const res = await this.deprovisionBroker(a);
-      const h = this.retiring.get(a.name);
-      if (h && h.target.lifecycleUid === a.lifecycleUid) h.lastResources = res;
-    } catch (e) {
-      const h = this.retiring.get(a.name);
-      if (h && h.target.lifecycleUid === a.lifecycleUid) {
-        h.lastError = rejectionText(e);
-        if (e instanceof DeprovisionError) h.lastResources = e.accounting;
-      }
-      if (shredFailure) throw new Error(`${rejectionText(e)}; ${shredFailure}`, { cause: e });
-      throw e;
-    }
-    if (shredFailure) throw new Error(shredFailure);
-    // After the footprint teardown, ask the AUTH plane to RETIRE the lifecycle over
-    // the auth endpoint rail. The rail re-checks the SERVE-ISSUANCE GATE at serve time (not the
-    // space-manager lease - that check was replaced in 02794b2f) and refuses unless the registration
-    // this request names belongs to our own principal; the terminal (or an already-retired answer)
-    // clears the name reservation. Failures keep the hold with
-    // their operator copy — legible, retryable, never a silent half-state.
-    await this.requestRetirement(a);
-  }
-
-  /** Request the auth-side retirement of a departed agent's lifecycle: an ephemeral
-   *  `retirement-requester` credential (request + reply only), the generic `retireLifecycle` op,
-   *  a STABLE opId (derived from the lifecycleUid, so every retry re-drives the SAME operation),
-   *  and the four-outcome handling in operator vocabulary. */
-  private async requestRetirement(a: { id: string; name: string; lifecycleUid: string }): Promise<void> {
-    if (!this.userMode) return; // NEW-1: lifecycle retirement is a user-mesh concept; a static mint has no head to retire
-    // SINGLE-FLIGHT per (name, lifecycleUid) (audit #1): the detached deprovision call and every
-    // same-name-spawn nudge for THIS lifecycle share ONE in-flight retirement, so concurrent triggers
-    // never stack independent rail requests that dual-enter runAgentRetirementBarrier. Keyed by
-    // (name, uid), NOT name alone: driveRetirement clears the hold on rail ok but then yields at
-    // `nc.close()` with the flight still stored, so the alias can free and a SUCCESSOR (new uid) spawn.
-    // A name-only key would let that successor's own teardown JOIN the predecessor's still-pending
-    // flight and never send its OWN retirement — leaving the successor's lifecycle unretired. The uid in
-    // the key gives the successor a disjoint flight (mirrors {@link deprovisioningFlight}). A fresh
-    // trigger after settle re-drives (a still-present hold => retirement not yet confirmed).
-    const key = JSON.stringify([a.name, a.lifecycleUid]);
-    const inflight = this.retiringFlight.get(key);
-    if (inflight) return inflight;
-    const flight = this.driveRetirement(a).finally(() => {
-      if (this.retiringFlight.get(key) === flight) this.retiringFlight.delete(key);
-    });
-    this.retiringFlight.set(key, flight);
-    return flight;
-  }
-
-  /** The rail round-trip for one retirement (wrapped by {@link requestRetirement}'s single-flight). */
-  private async driveRetirement(a: { id: string; name: string; lifecycleUid: string }): Promise<void> {
-    if (!this.auth && !this.remoteAuthority) return;
-    const held = this.retiring.get(a.name);
-    const target = parsePrincipalKey(a.id);
-    if (!target) {
-      if (held) held.lastError = "the target principal could not be derived; the retirement was not requested";
-      return;
-    }
-    // The SERVE identity, not the endpoint identity, is who this request speaks as (#549). The field
-    // is declared `!:`, which asserts to the type system what the ordering happens to provide, so it
-    // is read here as what it actually is. On today's ordering this guard cannot fire: `start()`
-    // assigns the identity before it connects anything, and a retirement needs an agent that only a
-    // started manager can hold. It is kept as a fail-closed assertion rather than a live face,
-    // because the alternative is carrying `undefined` into the caller triple and surfacing the
-    // result as "the rail could not be reached", which would name the wrong cause.
-    const serveIdentity = this.managerServeIdentity as Identity | undefined;
-    if (!serveIdentity?.id) {
-      if (held) held.lastError = `the retirement was NOT requested: this manager has no serve identity yet, so it cannot speak as the registered serving instance. The despawn stopped "${a.name}" and the name stays held. NEXT: let the manager finish registering, then re-attempt the same-name spawn to re-drive the teardown.`;
-      return;
-    }
-    const reportFailure = (why: string, unconfirmed = false): void => {
-      // An orphan rollback owns no name hold. Re-read after the rail awaits so a successor's
-      // hold never receives the predecessor's error or supplies its despawn/retry claims.
-      const current = this.retiring.get(a.name);
-      const held = current?.target.lifecycleUid === a.lifecycleUid ? current : undefined;
-      const copy = !unconfirmed ? why : held
-        ? `the despawn stopped "${a.name}", but the retirement's completion could NOT be confirmed (${why}). The name stays held - not failed, not done - and a same-name spawn re-drives the same teardown; the auth service also finishes any started retirement on its next boot. NEXT: if the auth rail stays unreachable, recover the stack (\`cotal supervise\`), then re-attempt the same-name spawn.`
-        : `the retirement's completion could NOT be confirmed (${why}). No hold reserves the name for this lifecycle.`;
-      if (held) held.lastError = copy;
-      const prefix = held ? `despawn ${a.name}` : `retire ${a.name}: lifecycle ${a.lifecycleUid}`;
-      console.error(`${prefix}: ${copy}`);
-    };
-    try {
-      // The caller triple and the TARGET are both grant-pinned now (#350): the `handle` target
-      // rides the subject, so this ephemeral credential can ask to retire exactly this
-      // incarnation and nothing else.
-      //
-      // THE TRIPLE IS THE SERVE PRINCIPAL, and it has to be (#549). The auth rail authorizes this
-      // request by comparing the caller's `<owner>.<actor>` against the serve issuance gate's bound
-      // principal, and that gate is opened with `principalKey(DEV_OWNER, serveIdentity.id)` (see the
-      // registration block). Deriving the caller from `ep.ref().id` instead put the manager's
-      // ENDPOINT identity nkey on the wire, which is a different, equally real identity of the same
-      // manager, so the comparison was unsatisfiable and EVERY user-mesh retirement was refused as a
-      // full no-op. Measured before the fix: 8 refusals in one suite run across 5 agents, with the
-      // epoch and the instance id both matching and only the principal disagreeing.
-      //
-      // Both halves come from the gate's own sources rather than from `ep.ref()`: `DEV_OWNER` is
-      // hard-coded at the gate site, so taking the owner from `ep.ref().id` would re-open the same
-      // mismatch in the owner half the moment a manager ran under a user-shaped identity. This is
-      // also the more honest attribution: the authority being exercised is "I am the registered
-      // serving instance", which is exactly what the gate records.
-      const caller = this.remoteAuthority
-        ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.serve, uid: this.managerLifecycleUid }
-        : { owner: DEV_OWNER, actor: serveIdentity.id, uid: this.managerLifecycleUid };
-      const requestIdentity = newIdentity();
-      const retirementTarget = { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid };
-      const opId = managedRetirementOpId(a.lifecycleUid);
-      const serveEpoch = this.serviceServe?.grant.epoch ?? 0;
-      const creds = this.remoteAuthority
-        ? await this.remoteAuthority.mintRetirementRequester({ identity: requestIdentity, target: retirementTarget, opId, serveEpoch })
-        : await mintCreds(this.auth!, requestIdentity, "retirement-requester", {
-            retirementRequester: { ...caller, target: retirementTarget },
-          });
-      // The requester grant subscribes `_INBOX_<id>.>` only (provision.ts): the endpoint path's
-      // JetStream API requests (the contract-store read inside resolveService) must reply under it, not under the client default `_INBOX.`.
-      const nc = await this.dial({ authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${requestIdentity.id}`, maxReconnectAttempts: 0 });
-      try {
-        // The service resolves FRESH on every attempt (never cached on `this`): a plane restart
-        // mid-despawn then lands on the new epoch through an ordinary resolve, rather than a
-        // caller pinned to a now-superseded incarnation.
-        const service = await resolveService(nc, this.space, AUTH_ENDPOINT, caller, { deadlineMs: 10_000, commands: [EP_CMD_RETIRE_LIFECYCLE] });
-        // The TARGET rides the invoke's own target (authz mode `exact`, arity 3) — broker-enforced,
-        // and pinned by the grant minted above, so it is not a body claim the caller can vary.
-        const attributed = await invokeCommand(nc, this.space, service, EP_CMD_RETIRE_LIFECYCLE, {
-          opId,
-          serveEndpoint: MANAGER_ENDPOINT, serveInstanceId: this.managerInstanceId, serveEpoch,
-        }, {
-          target: { mode: "exact", owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid },
-          deadlineMs: 20_000,
-        });
-        const r = attributed.reply;
-        if (r.ok) {
-          this.confirmRetirement(a);
-        } else if (r.error?.code === "expired") {
-          // A stale-epoch refusal cannot confirm retirement. The retry copy follows the
-          // current lifecycle's hold, which an orphan rollback does not create.
-          reportFailure(r.error.message, true);
-        } else {
-          // The rail's refusal is already the operator copy (lease-loss/stale/foreign-op faces,
-          // full-no-op statements included) - surface it INTACT, never flattened.
-          const message = r.error?.message ?? "the auth service refused the retirement without a reason";
-          reportFailure(message);
-        }
-      } finally {
-        await nc.close().catch(() => {});
-      }
-    } catch (e) {
-      reportFailure(rejectionText(e), true);
-    }
-  }
-
-  /** Apply one terminal retirement answer. The predecessor coordinate is recorded only when the
-   *  answer clears this exact lifecycle's hold, never for an ABA-late answer or an incomplete hosted
-   *  teardown whose standing authority still lives. */
-  private confirmRetirement(a: { id: string; name: string; lifecycleUid: string }): void {
-    // CAS the hold clear (audit #1 ABA): free the alias ONLY if the current hold is still THIS
-    // lifecycle's. A late reply for a retired predecessor must never clear a successor's newer hold.
-    const cur = this.retiring.get(a.name);
-    // The record names this incarnation only, so a confirmed retirement removes it and a successor's
-    // record stays. A mint authority that is still live keeps the record: the seat is gone, and the
-    // next manager has to be able to re-drive the revoke.
-    if (!(cur?.target.lifecycleUid === a.lifecycleUid && cur.standingAuthorityLive)) this.dropSeatRecord(a);
-    if (cur && cur.target.lifecycleUid === a.lifecycleUid) {
-      if (cur.standingAuthorityLive) {
-        // INT-2: the auth-plane lifecycle retired, but the manager-side STANDING mint authority is
-        // not yet revoked. A copied token could still mint, so neither free the alias nor classify
-        // its presence as a completed predecessor.
-        console.error(`despawn ${a.name}: the auth-plane lifecycle retired, but the standing mint authority is not yet revoked; the name stays held. ${cur.lastError ?? ""}`);
-      } else {
-        this.confirmedRetiredPredecessors.set(a.name, { principal: a.id, lifecycleUid: a.lifecycleUid });
-        this.retiring.delete(a.name);
-        console.error(`despawn ${a.name}: the agent's retirement completed; the name is free for reuse`);
-      }
-    } else if (cur) {
-      console.error(`despawn ${a.name}: retirement confirmed for a prior lifecycle of "${a.name}"; the current hold is left intact`);
-    } else {
-      // No hold stands, as after an orphaned spawn's rollback: that lifecycle was never despawned and
-      // has no successor, so this line names neither.
-      console.error(`retire ${a.name}: lifecycle ${a.lifecycleUid} retired; the name had no hold to clear`);
-    }
-  }
-
-  /** The teardown's ASYNC BROKER PHASE: mint the ephemeral target-pinned deprovisioner cred and
-   *  delete the agent's broker footprint (dm_/dlv_ durables + read-ACL row). Split from
-   *  {@link deprovision} because it runs LAST in the ordered teardown chain — after the creds/secret
-   *  shred and the awaited ledger revoke, which precede it in that same single-flighted chain (the
-   *  revoke is awaited and can be deliberately slow, so it is not merely a synchronous prefix). The name
-   *  is NOT freed while any teardown phase is still in flight — the hold clears only after the
-   *  standing-authority revoke AND the lifecycle retirement both confirm (see {@link driveRetirement}) —
-   *  but the deletes here are still lifecycle-uid-pinned so even a replayed/stale teardown can never
-   *  reach a same-name successor's footprint (its names embed a different uid). Each call reports its
-   *  own accounting: the return value, or the {@link DeprovisionError} it throws once the deletes ran. */
-  private async deprovisionBroker(a: { id: string; name: string; lifecycleUid: string; launch?: { allowSubscribe: readonly string[] } }): Promise<DeprovisionResourceAccounting> {
-    // LIFECYCLE-PINNED (SPEC 13.1): both the credential's exact-name grants and the delete names
-    // carry a.lifecycleUid, so a stale/replayed teardown for this retired incarnation is broker-denied
-    // against a same-name successor's footprint (its names embed a different uid).
-    // Durable membership rows are lifecycle-keyed per concrete channel. Start with the launch's
-    // concrete read channels, then include wildcard-covered and unnamed channels from the inventory.
-    const memberChannels = new Set((a.launch?.allowSubscribe ?? []).filter(isConcreteChannel));
-    // Fence the lifecycle before its inventory is read: its read-ACL row narrowed to no reads, which
-    // every durable join re-reads around the row it writes, so a join the inventory does not see
-    // removes its own row. A fence that cannot be written makes the inventory incomplete.
-    const unfenced = await this.fenceRetiringAcl(a);
-    // Complete the set from the delivery daemon's lifecycle-exact inventory, which covers rows on
-    // wildcard-granted channels and teardowns that carry no launch spec. An inventory that cannot be
-    // read leaves those rows RETAINED and says so; it never widens the delete beyond exact keys.
-    const listed = await this.lifecycleMembershipInventory(a);
-    const inventory = unfenced === undefined ? listed : { ...listed, complete: false, reason: `the ACL fence was not written (${unfenced})${listed.complete ? "" : `; ${listed.reason}`}` };
-    for (const ch of inventory.channels) memberChannels.add(ch);
-    if (!inventory.complete)
-      console.error(`deprovision ${a.name} (${a.id}): membership inventory incomplete (${inventory.reason}); rows on channels outside its launch policy stay RETAINED for uid ${a.lifecycleUid}`);
-    const creds = await mintCreds(this.auth!, newIdentity(), "deprovisioner", {
-      deprovisionTarget: { principal: a.id, lifecycleUid: a.lifecycleUid, memberChannels: [...memberChannels] },
-    });
-    // Bound the detached broker teardown so a wedged broker can't leave the deprovision promise pending
-    // forever with no log — the timeout rejects into freeSlot's fail-loud `.catch` (paired with the
-    // helper's own fail-fast connect). The durables/ACL row still fall to space teardown as a backstop.
-    const accounting = await withTimeout(
-      deprovisionAgent({
-        servers: this.servers ?? DEFAULT_SERVER,
-        space: this.space,
-        targetId: a.id,
-        lifecycleUid: a.lifecycleUid,
-        memberChannels: [...memberChannels],
-        creds,
-      }),
-      DEPROVISION_TIMEOUT_MS,
-      `deprovision ${a.name} (${a.id}): broker teardown timed out`,
-    );
-    if (!inventory.complete)
-      throw new DeprovisionError(`membership inventory incomplete (${inventory.reason}); rows on channels outside its launch policy stay RETAINED for uid ${a.lifecycleUid}`, accounting);
-    return accounting;
-  }
+  private confirmRetirement(a: { id: string; name: string; lifecycleUid: string }): void { this.retirement.confirmRetirement(a); }
+  private deprovisionBroker(a: { id: string; name: string; lifecycleUid: string; launch?: { allowSubscribe: readonly string[] } }): Promise<DeprovisionResourceAccounting> { return this.retirement.deprovisionBroker(a); }
 
   /** Narrow the retiring lifecycle's read-ACL row to no reads ({@link fenceLifecycleAcl}) through a
    *  `deprovisioner` credential pinned to it. Returns undefined once fenced, or the reason it was not. */
@@ -6392,7 +5959,7 @@ export class Manager {
     const live = new Set<string>();
     for (const p of this.ep.getRoster()) {
       if (p.status === "offline") continue;
-      const predecessor = this.confirmedRetiredPredecessors.get(p.card.name);
+      const predecessor = this.retirement.predecessor(p.card.name);
       if (predecessor !== undefined && predecessor.principal === p.card.id && predecessor.lifecycleUid === p.lifecycleUid) continue;
       live.add(p.card.name);
     }
@@ -6404,7 +5971,7 @@ export class Manager {
    *  reserves/manages/retires it OR a roster-live occupant already holds it. Pass a pre-built
    *  {@link liveRosterNames} set when checking many names in one allocation. */
   private nameInUse(name: string, live: Set<string> = this.liveRosterNames()): boolean {
-    return this.agents.has(name) || this.reserved.has(name) || this.retiring.has(name) || live.has(name);
+    return this.agents.has(name) || this.reserved.has(name) || this.retirement.hasHold(name) || live.has(name);
   }
 
   /** First free name in the series `base`, `base_2`, `base_3`, … — checked against live slots,
@@ -7549,7 +7116,7 @@ export class Manager {
     // outstanding. All the teardown ops are idempotent, and the rail request is single-flighted.
     if (this.reconcilingAliases.has(identityName))
       return { ok: false, error: `the name "${identityName}" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };
-    const held = this.retiring.get(identityName);
+    const held = this.retirement.held(identityName);
     if (held !== undefined) {
       hooks?.onEffect?.();
       void this.deprovision(held.target).catch(() => {});
@@ -8258,7 +7825,7 @@ export class Manager {
         // The host enrolled this UID for the intent's user, so only that user's retirement intent
         // retires it, and its name stays held for retireDelegatedAgent.
         const p = orphan.delegated ? parsePrincipalKey(orphan.id) : null;
-        if (p) this.retiring.set(orphan.name, { opId: managedRetirementOpId(orphan.lifecycleUid), owner: p.owner, actor: p.actor, target: orphan, startedAt: Date.now() });
+        if (p) this.retirement.hold(orphan.name, { opId: managedRetirementOpId(orphan.lifecycleUid), owner: p.owner, actor: p.actor, target: orphan, startedAt: Date.now() });
         this.trackDeprovision(orphan, "(orphaned spawn)");
       }
     }
@@ -8301,7 +7868,7 @@ export class Manager {
         // must not hide the durable teardown state the manager already owns. Refuse and re-drive the
         // exact held lifecycle before consulting generic principal liveness. A confirmed terminal has
         // already removed the hold, so fresh-lifecycle resume still reaches the fail-closed roster gate.
-        const held = this.retiring.get(entry.name);
+        const held = this.retirement.held(entry.name);
         if (held) {
           void this.deprovision(held.target).catch(() => {});
           return {
@@ -8321,7 +7888,7 @@ export class Manager {
         if (principals.has(principal))
           return { ok: false, agents: [], error: `resume inventory contains duplicate principal "${principal}"` };
         principals.add(principal);
-        const confirmedPredecessor = this.confirmedRetiredPredecessors.get(entry.name);
+        const confirmedPredecessor = this.retirement.predecessor(entry.name);
         const principalIsLive = liveRoster.some((presence) => {
           if (presence.card.id !== principal) return false;
           return confirmedPredecessor === undefined ||
@@ -9333,7 +8900,7 @@ export class Manager {
     if (!release) return { ok: false, error: this.maintenanceError() };
     try {
       const live = this.agents.get(name);
-      const held = live ? undefined : this.retiring.get(name);
+      const held = live ? undefined : this.retirement.held(name);
       const principal = live?.delegated ? parsePrincipalKey(live.id) : held?.target.delegated ? held : null;
       const lifecycleUid = live?.lifecycleUid ?? held?.target.lifecycleUid;
       if (!principal || !lifecycleUid) return { ok: false, error: `no agent named "${name}" was launched on this manager under a delegated user intent` };
@@ -9347,7 +8914,7 @@ export class Manager {
           return { ok: false, error: `the host did not confirm the delegated retirement of "${name}" at ${target.lifecycleUid}; "${name}" is unchanged` };
       } catch (e) {
         const error = `the delegated retirement under intent ${intentId} did not complete (${rejectionText(e)})`;
-        const hold = this.retiring.get(name);
+        const hold = this.retirement.held(name);
         if (hold?.target.lifecycleUid === target.lifecycleUid) hold.lastError = error;
         return { ok: false, error: `${error}; "${name}" is unchanged` };
       }
@@ -9361,7 +8928,7 @@ export class Manager {
       await this.shredUserSecrets(unshredded, (live ?? held?.target)?.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, target.lifecycleUid));
       if (unshredded.length) {
         const error = `the host retired "${name}" at ${target.lifecycleUid}, but cleanup failed: ${describeCleanupFailures(unshredded)}; the name stays held until a retried retirement intent removes it`;
-        const hold = this.retiring.get(name);
+        const hold = this.retirement.held(name);
         if (hold?.target.lifecycleUid === target.lifecycleUid) hold.lastError = error;
         return { ok: false, error };
       }
@@ -9545,8 +9112,8 @@ export class Manager {
         stopping: this.leaseStopping,
         lifecycleInFlight: this.lifecycleInFlight,
         reservedLaunches: this.reserved.size,
-        retirementsPending: this.retiring.size,
-        deprovisioningInFlight: this.deprovisioningFlight.size,
+        retirementsPending: this.retirement.pendingCount,
+        deprovisioningInFlight: this.retirement.inFlightCount,
         staticReconciliationInFlight: this.staticReconcileSweepsInFlight,
         agents: [...this.agents.values()]
           .filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter)
@@ -9634,344 +9201,12 @@ export class Manager {
         report.reopenedAtGeneration} (processEpoch ${report.after.processEpoch}, registrationRevision ${report.after.registrationRevision}; freeze-holder gone, sweepComplete=true). Continuing the normal takeover.`,
     );
   }
-
-  /** #2073: dial the manager's ONE control-plane connection and serve its typed command surface on
-   *  it, exactly the shape `registerManagerService` used inline before this lane. Shared by the
-   *  initial registration AND the closed-connection recovery path ({@link onServeConnectionClosed}),
-   *  so there is one place that dials and serves this endpoint. Attaches {@link
-   *  onServeConnectionClosed} as the close handler in both cases: a closed serve connection is
-   *  always a fault this manager acts on, never a bare log line. */
-  private async dialServeConnection(
+  private dialServeConnection(
     state: { nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string },
     readCreds: () => string = () => state.creds!,
     deadline?: number,
-  ): Promise<{ nc: NatsConnection; handle: EpServeHandle }> {
-    const opts = {
-      // Open mesh: a bare serve connection (no credential exists; the broker enforces nothing).
-      ...(state.creds !== undefined ? standaloneConnectOpts({ creds: readCreds, tls: false }) : {}),
-      inboxPrefix: `_INBOX_${state.identity.id}`,
-      maxReconnectAttempts: -1,
-    };
-    const nc = await (deadline === undefined ? this.dial(opts) : this.dialRemoteStanding(opts, deadline));
-    this.trackTransport(nc);
-    let handle: EpServeHandle | undefined;
-    try {
-      // The typed surface + the derived `describe`. The descriptor stays PUBLIC in static
-      // mode: the broker grant (who holds each command's request-publish row) is the
-      // load-bearing authority tier, and a static single-operator mesh leaks nothing by listing
-      // command names; the trusted per-caller `view(caller)` scoping joins the user-mode
-      // registration follow-up (where actorScope is the trusted source). Every ordinary handler
-      // runs the SHARED admission chokepoint ({@link serveGated}).
-      handle = serveEndpoint(nc, this.space, state.grant, this.managerServiceDefs(), { public: true }, {
-        // The FRESH target resolver (§13.3) for the targeted commands (`despawn`/`attach`): the
-        // manager's live managed set IS the current-mapping authority for its own agents (the
-        // durable slot rows mirror it). Static mode carries no mapping-revision dimension, so
-        // the revision is the constant 0 — a caller that pins a revision pins 0.
-        resolveTarget: (t) => {
-          if (this.remoteAuthority) {
-            const key = principalKey(t.owner, t.actor).key;
-            for (const a of this.agents.values()) if (a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
-            const participant = [...this.participants.values()].find((p) =>
-              p.owner === t.owner && p.actor === t.actor && this.currentParticipant(p.owner, p.actor, p.uid) === p);
-            return participant ? { lifecycleUid: participant.uid, mappingRevision: 0 } : undefined;
-          }
-          if (t.owner === DEV_OWNER) {
-            for (const a of this.agents.values()) if (!a.userOwner && a.id === t.actor) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
-            return undefined;
-          }
-          const key = principalKey(t.owner, t.actor).key;
-          for (const a of this.agents.values()) if (a.userOwner && a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
-          return undefined;
-        },
-        ...(this.omitClassCommands() ? { omitClassCommands: this.omitClassCommands() } : {}),
-      });
-      // A subscribed replacement must be visible to the broker before the old rails retire.
-      if (deadline === undefined) await nc.flush();
-      else await withTimeout(nc.flush(), remoteStandingTimeLeft(deadline),
-        "remote manager standing serve flush exceeded its 10000ms aggregate budget");
-    } catch (e) {
-      await this.discardServeCandidate(nc, handle);
-      throw e;
-    }
-    // Wired only once the connection serves: a candidate this method closes after a
-    // refused serve is not a fault to recover, and the caller already sees the refusal.
-    nc.closed().then((err) => {
-      if (this.serviceServe?.nc === nc) void this.onServeConnectionClosed(err ?? undefined, nc);
-    });
-    return { nc, handle };
-  }
-
-  /** #2073: re-mint the SAME `endpoint-serve` identity through the SAME scoped one-shot executor and
-   *  §13.1 mint fence `renewDaemonCreds`'s serve branch uses — never a second copy of that mint. Used
-   *  by both the periodic renewal pass and the closed-connection recovery path below, so a
-   *  superseded instance's re-mint fails the SAME gate CAS in both places and lands in the exit
-   *  path rather than needing a second epoch check. */
-  private async remintServeCreds(s: { identity: Identity; grant: EpServeGrant }): Promise<string> {
-    const authRef = this.auth!;
-    return this.withEndpointServeExecutor(({ authKv }) =>
-      mintCreds(authRef, s.identity, "endpoint-serve", {
-        serveIssuance: serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId }),
-        endpointServe: s.grant,
-      }));
-  }
-
-  /** #2073: a closed serve connection is a FAULT the manager acts on, not a log line: this is the
-   *  control plane a report showed staying dead for hours while the process kept its liveness
-   *  lease and answered nothing (#2073). `stop()` sets `leaseStopping` BEFORE it tears down this
-   *  connection, so a close landing from OUR OWN graceful teardown returns here at once. Any other
-   *  close re-dials with the current credential (a transport blip needs nothing new), re-mints
-   *  through the existing serve branch when the credential itself has expired, and re-serves on the
-   *  new connection — bounded by {@link STATIC_RECONCILE_RETRY_DELAYS_MS}. Exhausting every attempt
-   *  releases this process's lease and exits loud (without `withAgents`, so seats stay up, the path
-   *  `supervise`'s signal handler already uses) so a restart can serve: a manager that holds the
-   *  lease and answers nothing is the worst of the three states this issue named, and holding the
-   *  connection open under unbounded reconnects (the transport-drop case) never reaches this method
-   *  at all — `nc.closed()` does not resolve until the client itself gives up. */
-  private async onServeConnectionClosed(err: Error | undefined, closed: NatsConnection): Promise<void> {
-    if (this.leaseStopping) return;
-    const s = this.serviceServe;
-    console.error(`! manager service endpoint connection closed: ${err?.message ?? "unknown reason"}`);
-    const recovered = await this.boundedReconnect("service endpoint", async () => {
-      if (!s) return false;
-      const deadline = this.remoteAuthority ? performance.now() + REMOTE_STANDING_BUDGET_MS : undefined;
-      // Let an admitted renewal finish owning its candidate before recovery opens another.
-      if (deadline === undefined) await this.remoteBundleRenewal;
-      else await withTimeout(Promise.resolve(this.remoteBundleRenewal), remoteStandingTimeLeft(deadline),
-        "remote manager closed-serve renewal wait exceeded its 10000ms aggregate budget");
-      if (this.leaseStopping || this.serviceServe !== s || s.nc !== closed) return true;
-      if (deadline !== undefined) await withTimeout(this.renewRemoteBeforeRedial("serve", () => s.creds), remoteStandingTimeLeft(deadline),
-        "remote manager closed-serve renewal wait exceeded its 10000ms aggregate budget");
-      else if (inspectCredHealth(s.creds ?? "").state !== "healthy" && s.creds !== undefined) {
-        s.creds = await this.remintServeCreds(s);
-        this.scheduleServeRenewal(s.creds);
-      }
-      if (this.leaseStopping || this.serviceServe !== s || s.nc !== closed) return true;
-      const { nc, handle } = await this.dialServeConnection(s, undefined, deadline);
-      if (this.leaseStopping || this.serviceServe !== s || s.nc !== closed) {
-        try { await handle.stop(); } finally { await nc.close(); }
-        return true;
-      }
-      s.nc = nc;
-      s.handle = handle;
-      console.error(`manager service endpoint re-dialed: ${MANAGER_ENDPOINT}/${this.managerInstanceId} (epoch ${s.grant.epoch})`);
-      return true;
-    });
-    if (this.leaseStopping || recovered) return;
-    console.error(
-      `! manager service endpoint could not be restored for ${this.space}/${MANAGER_ENDPOINT}/${this.managerInstanceId}: releasing the lease and exiting`,
-    );
-    await this.stop();
-    process.exit(1);
-  }
-
-  /** Register the manager as an ordinary v0.4 `service` endpoint and serve its typed
-   *  command surface on the ep rails - the manager's ONLY control door. On an AUTH mesh
-   *  the whole credential path is the SAME one an ordinary endpoint traverses (the enforcement
-   *  test that keeps "ordinary" honest): provision the §13.1 issuance gate, drive the
-   *  registration BARRIER's gate CAS, then release the serve credential only on the mint FENCE's
-   *  revision-pinned CAS win — all over the scoped one-shot executor ({@link
-   *  withEndpointServeExecutor}), never a seed-signed shortcut. Holding the signing seed only
-   *  AUTHORIZES the reserved single-label name (`manager`, operator name authority, DEV_OWNER).
-   *  On an OPEN mesh the same gate/registration/serve-grant ceremony runs over bare one-shot
-   *  connections and NO credential is ever minted: there is no credential system to issue from,
-   *  so the gate legitimately keeps an empty `epcred` family (the §13.1 fence is issuance-only)
-   *  and the serve connection is bare — the broker enforces nothing on an open mesh, exactly the
-   *  old open-mesh ctl trust ("open = single-trusted-host"). */
-  private async registerManagerService(): Promise<void> {
-    const auth = this.auth;
-    if (this.remoteAuthority) {
-      const remote = this.remoteAuthority;
-      this.goalWriterIdentity = remote.identities.goalWriter;
-      this.sessionLedgerIdentity = remote.identities.sessionLedger;
-      this.goalWriterCreds = remote.goalWriterCreds;
-      this.sessionLedgerCreds = remote.sessionLedgerCreds;
-      const state = {
-        handle: undefined as unknown as EpServeHandle,
-        nc: undefined as unknown as NatsConnection,
-        identity: remote.identities.serve,
-        grant: remote.serveGrant,
-        creds: remote.serveCreds,
-      };
-      // The shared dialer wires the closed-connection handler, which re-dials through the all-duty family.
-      const { nc, handle } = await this.dialServeConnection(state);
-      state.handle = handle;
-      state.nc = nc;
-      this.serviceServe = state;
-      console.error(`remote manager service endpoint activated: ${MANAGER_ENDPOINT}/${this.managerInstanceId} (epoch ${state.grant.epoch})`);
-      return;
-    }
-    // The §13.7 contract store is REGISTRATION's dependency, ensured here MODE-NEUTRALLY:
-    // it used to ride the static-only lifecycle reconcile, so a USER-mode manager registered
-    // against an absent stream and its artifact publish died no-responders (live-repro'd). A
-    // provisioner one-shot creates-or-verifies it (config-B immutability incl. the shadowed-legacy
-    // refuse) before the executor publishes a single artifact.
-    {
-      // Open mesh: the bare connection holds the rights (there is no credential system to mint from).
-      const provCreds = auth ? await mintCreds(auth, newIdentity(), "provisioner") : undefined;
-      const provNc = await this.dial({ ...standaloneConnectOpts({ creds: provCreds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
-      try {
-        // The manager now WRITES goal facts (EPF) + progress events (EPE), so the §13.12
-        // endpoint streams must exist. Nothing provisioned them before spawn-as-action (no endpoint
-        // wrote to EPF/EPE), so the manager ensures the full set here over the provisioner (whose
-        // STREAM.CREATE now covers them), idempotently - createEndpointStreams is a superset of
-        // ensureContractStore + ensureAuthorityStores, fail-loud on drift. Auth + open both run this.
-        await createEndpointStreams(await jetstreamManager(provNc), new Kvm(provNc), this.space);
-      } finally {
-        await drainAndClose(provNc);
-      }
-    }
-    const iid = this.managerInstanceId;
-    const artifacts = managerClusterArtifacts();
-    // In-memory §13.7 content store: the manager is this document's AUTHOR, so registration and
-    // serve authorization verify against the exact artifacts it publishes from memory. The DURABLE
-    // `epc` contract-store publication (for third-party digest fetches) runs below inside the same
-    // executor, BEFORE the registration that advertises the digests.
-    const store = new Map<string, unknown>([
-      [artifacts.rootDigest, artifacts.document],
-      [artifacts.closureDigest, artifacts.manifest],
-    ]);
-    const readClusterArtifact = (digest: string): unknown => store.get(digest);
-    // §13.9 name authority, static mode: `manager` is a core single-label name requiring OPERATOR
-    // authority — the manager holds the space signing seed, so it self-authorizes exactly its own
-    // name for exactly DEV_OWNER (never a general authority; any other (name, owner) refuses).
-    const authority: ServiceNameAuthority = {
-      authorize: (name, owner) => ({ authorized: name === MANAGER_ENDPOINT && owner === DEV_OWNER, revision: 0 }),
-    };
-    // The STABLE serve identity: the PERSISTED serve nkey, reused across restart so the
-    // gate binds the SAME principal (§13.1 serving-principal binding) - provisionEndpointGateOpen
-    // stays idempotent and verified eviction has a stable target. Renewals re-mint the same nkey
-    // with a fresh bounded exp; a restart re-provisions the same (idempotent) gate + re-registers.
-    const serveIdentity = this.managerServeIdentity;
-    const servePrincipal = principalKey(DEV_OWNER, serveIdentity.id).key;
-    // An open mesh mints no credentials, so it has no family for a fresh pair to grow.
-    const siblings = auth ? claimManagerSiblingIdentities(this.workspaceRoot, this.space) : { goalWriter: newIdentity(), sessionLedger: newIdentity() };
-    // The STABLE goal-writer identity — a SIBLING credential in the same §13.1 family
-    // (not the gate's bound serving principal), so the run block can family-stage it.
-    this.goalWriterIdentity = siblings.goalWriter;
-    // The STABLE session-LEDGER identity — another SIBLING in the SAME §13.1 family, so
-    // the takeover barrier revokes a deposed manager's ledger cred alongside its goal-writer. The
-    // per-session serving creds join the same family, each with its own fresh identity.
-    this.sessionLedgerIdentity = siblings.sessionLedger;
-    // One registration operation for this boot. Fresh executors may replace a dead connection, but
-    // they must resume THIS freeze rather than minting a new op that discards Phase-2 progress.
-    const registrationOpId = mintLifecycleUid();
-    const executorExpired = (e: unknown): boolean => /closed connection/i.test(rejectionText(e));
-    const retryExpiredExecutor = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
-      for (;;) {
-        try {
-          return await fn();
-        } catch (e) {
-          if (!executorExpired(e)) throw e;
-          console.error(`manager ${label} executor expired; retrying${label === "registration" ? ` operation ${registrationOpId}` : ""} with fresh scoped authority`);
-        }
-      }
-    };
-    const publishAndProvision = async (
-      { authKv, nc: execNc }: { recordsKv: KV; authKv: KV; nc: NatsConnection },
-    ) => {
-      // §13.7 contract-artifact publication: every schema root + its closure manifest, plus
-      // the cluster document + ITS manifest, land in the EPC store BEFORE the registration that
-      // advertises their digests — so a caller can always fetch-verify-compile a registered
-      // digest (the generic-invoke read path). Create-only + content-addressed: a retry
-      // or a same-artifact republish is an idempotent lost-CAS. The registration itself still
-      // verifies against the in-memory copies (the manager is the author).
-      const storeCtx = await contractStoreContext(execNc, this.space);
-      for (const value of [...managerContractArtifactValues(), artifacts.document, artifacts.manifest])
-        await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
-      // §13.1 pre-registration: the issuance gate, born open@gen0 bound to the serve
-      // principal — provisioned ONCE, on the FIRST registration. On a RESTART the gate
-      // already EXISTS (advanced past gen0 by the prior registration), so re-provisioning the gen0
-      // row would conflict "foreign content"; the persisted instanceId makes this a TAKEOVER, and
-      // registerServiceInstance below freezes + re-registers the EXISTING gate (advancing the epoch
-      // after it verify-evicts the superseded family). The serve principal is the SAME persisted one,
-      // so the gate's principal binding is unchanged either way.
-      if ((await serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid }).observe()) === null)
-        await provisionEndpointGateOpen(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid, principal: servePrincipal });
-    };
-    const completeRegistration = async (
-      { recordsKv, authKv, nc: execNc }: { recordsKv: KV; authKv: KV; nc: NatsConnection },
-    ) => {
-      await publishAndProvision({ recordsKv, authKv, nc: execNc });
-      // On an AUTH mesh a RE-registration (restart of the persisted instanceId)
-      // must VERIFY-EVICT the superseded serve family BEFORE the epoch advances (§13.1 "old authority
-      // dies before new authority is visible"). Inject the SCOPED delivery-admin evictor; the OPEN
-      // mesh mints no serve family, so its empty-family restart never consults an evictor, and one
-      // an earlier release staged there stays unverified with the reason in the refusal
-      // ({@link openMeshUnverifiedEviction}). NO-ORACLE = LOUD: with no reachable delivery daemon the
-      // evictor THROWS naming the cure, so PHASE 2 fails closed with the delivery-daemon fix in the
-      // error text — a crash-restart never silently skips eviction (no-fallbacks).
-      const barrier = endpointRegistrationBarrier(authKv, this.space, {
-        endpoint: MANAGER_ENDPOINT, instanceId: iid, opId: registrationOpId,
-        evict: auth ? makeManagerEndpointHolderEvictor({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth, log: (line) => console.error(line), unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }) : openMeshUnverifiedEviction,
-      });
-      const spec = { endpoint: MANAGER_ENDPOINT, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
-      const { grant } = await registerServingInstance(recordsKv, {
-        space: this.space, spec, instanceId: iid, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
-        // #1393: when a FOREIGN instance holds the endpoint governance slot, let core tell an
-        // in-flight registration from one abandoned by a predecessor that died between its
-        // slot-take and its spec publish. The read rides THIS executor's existing auth-bucket read
-        // grant (no new grant, no new writer); core refuses on anything but a gate provably
-        // reopened past the slot's stamp.
-        observeHolderGeneration: (holderInstanceId) =>
-          readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
-        status: { connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })) },
-      });
-      const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
-      // Open mesh: NO mint - the §13.1 fence is issuance-only and nothing is ever issued, so the
-      // gate keeps an empty `epcred` family; the serve connection below stays bare.
-      const creds = auth ? await mintCreds(auth, serveIdentity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant }) : undefined;
-      // Mint + family-stage the goal-writer credential HERE, over this executor's
-      // authKv (the fence is live), so its credId lands in `epcred.<e>.<iid>` and the takeover
-      // barrier revokes it. Open mesh: no mint (no credential system; the goal-writer conn is bare).
-      const goalWriterCreds = auth ? await this.mintAndStageGoalWriter(authKv) : undefined;
-      // Mint + family-stage the session-LEDGER credential HERE too (same executor, same
-      // fence, same §13.1 family), so takeover revokes a deposed manager's ledger connection. The
-      // per-session SERVING credentials are minted later, one per redemption, into the SAME family.
-      // Open mesh: no mint (no credential system; the ledger connection stays bare).
-      const sessionLedgerCreds = auth ? await this.mintAndStageSessionLedger(authKv) : undefined;
-      return { grant, creds, goalWriterCreds, sessionLedgerCreds };
-    };
-    let registration;
-    if (auth) {
-      // Boot heal may consume an arbitrarily large prior family. End that executor window here and
-      // mint fresh scoped authority for the new registration, rather than forcing heal + takeover
-      // through one fixed-lifetime connection. A closed connection during heal retries the SAME
-      // frozen predecessor op via reconcile's durable cursor; a closed connection during
-      // registration retries THIS boot's operationId without heal, so Phase-2 progress stays bound.
-      // #783/#871: a predecessor that died mid-barrier leaves this gate frozen under a
-      // registration op. registerServiceInstance will then refuse SPEC 13.8 forever, even
-      // when the freeze-holder is gone. Complete that SAME op (abort-reopen) on independent
-      // holder-gone evidence BEFORE this incarnation freezes a new one. Auth only: the
-      // CONNZ oracle rides delivery-admin, which an open mesh does not have.
-      await retryExpiredExecutor("boot-heal", () => this.withEndpointServeExecutor(async ({ recordsKv, authKv, nc: execNc }) => {
-        await publishAndProvision({ recordsKv, authKv, nc: execNc });
-        if (auth) {
-          await this.healFrozenRegistrationGate(authKv, iid, auth, recordsKv);
-        }
-      }));
-      registration = await retryExpiredExecutor("registration", () => this.withEndpointServeExecutor(completeRegistration));
-    } else {
-      registration = await this.withOpenServeConnection(completeRegistration).catch((e: unknown) => { throw openMeshFrozenGateRefusal(e, iid); });
-    }
-    if (!registration) throw new Error("manager registration produced no serve authority");
-    const { grant, creds, goalWriterCreds, sessionLedgerCreds } = registration;
-    this.goalWriterCreds = goalWriterCreds;
-    this.sessionLedgerCreds = sessionLedgerCreds;
-    // The serve connection presents the CURRENT credential on every (re)connect (the state object
-    // is captured by the authenticator), so a fence-traversing renewal is adopted by reconnect
-    // without re-registration. Reconnects stay unbounded: the serve rails are this instance's
-    // registered surface for its whole incarnation.
-    const state = { handle: undefined as unknown as EpServeHandle, nc: undefined as unknown as NatsConnection, identity: serveIdentity, grant, creds };
-    const { nc, handle } = await this.dialServeConnection(state);
-    state.nc = nc;
-    state.handle = handle;
-    this.serviceServe = state;
-    console.error(`manager service endpoint registered: ${MANAGER_ENDPOINT}/${iid} (epoch ${grant.epoch}, registrationRevision ${grant.registrationRevision})`);
-    // #2073: arm the serve credential's own renewal now, from ITS window, instead of leaving it to
-    // `credRenewTimer`'s boot-phased TTL/4 tick. Open mesh mints no credential (`creds` is
-    // undefined) and has nothing to schedule.
-    if (state.creds !== undefined) this.scheduleServeRenewal(state.creds);
-  }
+  ): Promise<{ nc: NatsConnection; handle: EpServeHandle }> { return this.servePlane.dialServeConnection(state, readCreds, deadline); }
+  private registerManagerService(): Promise<void> { return this.servePlane.registerManagerService(); }
 
   /** Mint the standing `goal-writer` credential and STAGE it into this
    *  instance's §13.1 revocation family (`epcred.<e>.<iid>`), over the passed executor's `authKv`
@@ -10107,300 +9342,9 @@ export class Manager {
     this.goalWriter = undefined;
     await this.retireConnection(gw.nc);
   }
-
-  /** Mint the standing `session-ledger` credential and STAGE it into this instance's
-   *  §13.1 revocation family (`epcred.<e>.<iid>`), over the passed executor's `authKv`, following the
-   *  {@link mintAndStageGoalWriter} pattern under the same open-and-commit fence.
-   *
-   *  This credential carries the DEDICATED sessions-bucket ledger rows and no session rail at all.
-   *  It therefore takes no epoch pin: §13.6 makes it the durable revocation authority that must
-   *  outlive the serving endpoint, so scoping it to one serving epoch would defeat its purpose. The
-   *  epoch lives where it belongs, on the per-session serving credentials, which are minted per
-   *  redemption into this same family. Because `mintCreds` stamps a random `issuance:` tag on
-   *  `session-ledger` (`userTags`), re-minting the SAME nkey on renewal or restart signs distinct
-   *  bytes and stages a distinct ledger row (per-JWT `credentialId` digest) even within one
-   *  second. */
-  private async mintAndStageSessionLedger(authKv: KV): Promise<string> {
-    const auth = this.auth!;
-    const identity = this.sessionLedgerIdentity!;
-    // Registration instanceId (the persisted logical id), not the per-process lifecycleUid:
-    // the barrier enumerates `epcred.<e>.<managerInstanceId>`, so the ledger cred joins that family.
-    const iid = this.managerInstanceId;
-    const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
-    const observed = await fence.observe();
-    if (observed === null)
-      throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} vanished; the session-ledger cred cannot join its §13.1 revocation family`);
-    const creds = await mintCreds(auth, identity, "session-ledger");
-    const exp = inspectCredHealth(creds).exp;
-    if (exp === undefined)
-      throw new Error(`the session-ledger credential for ${MANAGER_ENDPOINT}/${iid} is unbounded; the §13.1 ledger row requires an expiry`);
-    // The §13.1 open-and-commit fence (see {@link mintAndStageGoalWriter}): stage + revision-pinned
-    // commit against the gate this mint's grant was scoped from, releasing only on the win.
-    await commitSiblingIssuance(fence, observed, {
-      credentialId: credentialIdOf(creds),
-      credentialKey: identity.id,
-      holderPrincipal: principalKey(DEV_OWNER, identity.id).key,
-      endpoint: MANAGER_ENDPOINT, lifecycleUid: iid, sourceChain: ["root"], state: "active", exp,
-      generation: observed.generation, processEpoch: observed.processEpoch,
-      registrationRevision: observed.registrationRevision, nameAuthorityRevision: observed.nameAuthorityRevision,
-    });
-    return creds;
-  }
-
-  /** #2073: dial the session-ledger's ONE standing connection — shared by the initial start and the
-   *  closed-connection recovery ({@link onSessionLedgerConnectionClosed}), the same shape {@link
-   *  dialGoalWriter} uses for its rail. The KV/JetStream clients the session plane opened from the
-   *  connection at start stay bound to it for this incarnation's life; a redial refreshes the
-   *  standing authenticator connection the credential renewal presents onto (mirroring `sw.creds`),
-   *  which is what a closed-connection fault on this rail needs restored. */
-  private async dialSessionLedgerConnection(
-    sw: { nc: NatsConnection; creds?: string }, identity: Identity,
-  ): Promise<void> {
-    const nc = await this.dial({
-      ...((this.auth || this.remoteAuthority) ? standaloneConnectOpts({ creds: () => sw.creds!, tls: false }) : {}),
-      inboxPrefix: `_INBOX_${identity.id}`,
-      maxReconnectAttempts: -1,
-    });
-    nc.closed().then((err) => { void this.onSessionLedgerConnectionClosed(err ?? undefined); });
-    this.trackTransport(nc);
-    sw.nc = nc;
-  }
-
-  /** #2073: the session-ledger rail's closed-connection fault, the same bounded shape {@link
-   *  onGoalWriterConnectionClosed} uses: re-dial with the current credential, re-mint through the
-   *  existing session-ledger renewal branch when the credential itself has expired, then re-attach.
-   *  Exhaustion logs and leaves the credential to the next renewal pass; it never exits the process
-   *  (brief step 4: only the serve rail is the control plane the report lost). */
-  private async onSessionLedgerConnectionClosed(err: Error | undefined): Promise<void> {
-    if (this.leaseStopping) return;
-    console.error(`! manager session-ledger connection closed: ${err?.message ?? "unknown reason"}`);
-    const sw = this.sessionLedgerConn;
-    const identity = this.sessionLedgerIdentity;
-    const recovered = await this.boundedReconnect("session-ledger", async () => {
-      if (!sw || !identity) return false;
-      if (this.remoteAuthority) await this.renewRemoteBeforeRedial("session-ledger", () => sw.creds);
-      else if (sw.creds !== undefined && inspectCredHealth(sw.creds).state !== "healthy") {
-        sw.creds = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageSessionLedger(authKv));
-        this.sessionLedgerCreds = sw.creds;
-      }
-      await this.dialSessionLedgerConnection(sw, identity);
-      console.error("manager session-ledger re-dialed");
-      return true;
-    }, inspectCredHealth(sw?.creds ?? "").state === "expired");
-    if (this.leaseStopping || recovered) return;
-    console.error("! manager session-ledger could not be re-dialed; leaving the credential to the next renewal pass");
-  }
-
-  /** Stand up the ONE §13.6 session plane on its own standing connection. Mode-dual,
-   *  mirroring {@link startGoalWriter}: an AUTH mesh presents the scoped `session-ledger` cred
-   *  already minted + family-staged inside registration's run block ({@link mintAndStageSessionLedger});
-   *  an OPEN mesh uses a bare connection (no credential system to mint from). The connection presents
-   *  the CURRENT credential on every (re)connect, so a half-TTL renewal is adopted without reconnecting.
-   *
-   *  The offer SIGNER is a per-incarnation in-memory keypair: the static collapsed path mints AND
-   *  redeems the offer in one call ({@link ManagerSessionPlane.establishAttach}), so the manager
-   *  self-signs and self-verifies its own §13.6 grants and the keypair never leaves the process — a
-   *  holder never verifies the signature (it presents the grant back over the rail; the broker's
-   *  per-session caller cred is the holder's real fence). The plane's ledger lives in the DEDICATED
-   *  sessions bucket (createEndpointStreams provisioned it at registration). */
-  private async startSessionPlane(): Promise<void> {
-    const identity = (this.auth || this.remoteAuthority) ? this.sessionLedgerIdentity! : newIdentity();
-    // The mutable holder captured by the authenticator (mirrors the goal-writer): a half-TTL renewal
-    // updates `sw.creds` and the next (re)connect presents the refreshed credential.
-    const sw: { nc: NatsConnection; creds?: string } =
-      { nc: undefined as unknown as NatsConnection, creds: (this.auth || this.remoteAuthority) ? this.sessionLedgerCreds : undefined };
-    await this.dialSessionLedgerConnection(sw, identity);
-    const nc = sw.nc;
-    const serveEpoch = this.serviceServe?.grant.epoch;
-    if (serveEpoch === undefined)
-      throw new Error("the manager session plane needs the serve grant epoch; registerManagerService must run first");
-    const ledgerKv = await openSessionLedgerKv(nc, sessionsBucket(this.space));
-    // The session signing key ROTATES. It used to be minted once here with a flat 24h window and
-    // handed back frozen forever, so a manager that stayed up past 24h lost its session plane
-    // permanently: every attach failed closed with "outside its validity window", and the only
-    // recovery was restarting the manager, which kills every live session. It happened three times
-    // in one day. Failing closed on an expired key is correct (SPEC 13.10); the defect was that
-    // nothing ever renewed the key, so the correct refusal became permanent.
-    //
-    // Renewal is driven from two places on purpose - a timer below, and opportunistically before
-    // each signature. A timer alone stops if the loop is starved or the host suspends; an
-    // opportunistic check alone never fires on an idle plane that must sign after a long quiet
-    // period. Expiry now requires both to fail at once.
-    const rotating = new RotatingSigner((seq, now) => {
-      const kp = newArtifactSigner();
-      const keyId = seq === 0
-        ? `mgr-sessions-${identity.id.slice(0, 12)}`
-        : `mgr-sessions-${identity.id.slice(0, 12)}-g${seq}`;
-      return {
-        keyId,
-        keyPair: kp,
-        anchor: generationAnchor({
-          keyId, publicKey: kp.publicKey, owner: MANAGER_ENDPOINT, roles: ["sessions"],
-          scope: { sessions: [MANAGER_ENDPOINT] }, now, ttlMs: SESSION_GRANT_MAX_TTL_MS,
-        }),
-      };
-    }, Date.now());
-    this.sessionPlane = new ManagerSessionPlane({
-      space: this.space,
-      // The session's serving identity is the persisted REGISTRATION instanceId, not the
-      // per-process lifecycleUid: a restarted manager re-registers the SAME logical instanceId with
-      // an ADVANCED epoch, so a client re-attaches by the same instance while the epoch fences the
-      // old incarnation's sessions.
-      serving: { instanceId: this.managerInstanceId, epoch: serveEpoch },
-      // Read through the rotator on EVERY use rather than capturing a key: signing takes the newest
-      // generation, and resolution accepts any generation still inside its overlap so an artifact
-      // signed a moment before a swap is not orphaned a moment after it.
-      signer: {
-        get keyId() { rotating.maybeRenew(Date.now()); return rotating.current().keyId; },
-        keyPair: { sign: (input: Uint8Array) => rotating.current().keyPair.sign(input) },
-      },
-      resolveAnchor: (id) => rotating.resolve(id),
-      ledgerKv, ttlMs: SESSION_GRANT_MAX_TTL_MS,
-      servingCredential: this.sessionServingCredentials(),
-      ...(this.maxSessions !== undefined ? { maxSessions: this.maxSessions } : {}),
-    });
-    this.sessionLedgerConn = sw;
-    // The belt to the signing path's braces: renew on a timer as well, so a plane that sits idle
-    // for longer than a window still holds a live key when work finally arrives. Checked well
-    // inside the renewal margin, unref'd so it never holds the process open.
-    const renewTimer = setInterval(() => {
-      const rotated = rotating.maybeRenew(Date.now());
-      if (rotated)
-        console.error(
-          `manager session signing key rotated to ${rotated} (previous generations stay verifiable ` +
-            `through their overlap; a key is never allowed to expire unattended)`,
-        );
-    }, 15 * 60 * 1000);
-    renewTimer.unref?.();
-    this.sessionKeyRenewTimer = renewTimer;
-    console.error(`manager session plane standing (endpoint ${MANAGER_ENDPOINT}, epoch ${serveEpoch}, ${(this.auth || this.remoteAuthority) ? "scoped session-ledger cred, §13.1 family-staged" : "open/bare"})`);
-  }
-
-  /**
-   * The per-session SERVING credential seam (SPEC 13.6): the manager mints, gate-stages,
-   * connects and revokes ONE credential per live session, replacing a standing credential that held
-   * `eps.manager.*.<epoch>.{in,out}` and so reached every live session's bytes at its epoch.
-   *
-   * Each session gets its OWN nkey identity, so the §13.1 barrier's evict-by-holderPrincipal reaches
-   * it individually, and each is staged into `epcred.manager.<instanceId>` — the SAME family the
-   * ledger and goal-writer creds join. That is how manager takeover still kills a deposed manager's
-   * sessions: the barrier enumerates the family, revokes every row, and evicts every holder, so the
-   * per-session creds die with the incarnation exactly as the standing one did, with the blast
-   * radius of a leaked credential cut from "every session at this epoch" to "one dead session".
-   *
-   * OPEN MESH: no credential system exists to mint from, so the seam mints nothing and opens a bare
-   * connection. That is not a degraded auth path — an open mesh has no broker enforcement at all —
-   * and it is still per-session: the connection and the ledger row are still one-per-session, so
-   * teardown behaves identically in both modes.
-   */
-  private sessionServingCredentials(): SessionServing {
-    const iid = this.managerInstanceId;
-    const gate = async <T>(fn: (authKv: KV) => Promise<T>): Promise<T> =>
-      this.withEndpointServeExecutor(({ authKv }) => fn(authKv));
-    return {
-      mint: async (grant) => {
-        // Open mesh: no auth to mint from. The id still names the session so the ledger row and the
-        // teardown path are identical in both modes.
-        if (this.remoteAuthority) {
-          const identity = newIdentity();
-          const creds = await this.remoteAuthority.mintSessionServing({
-            identity,
-            endpoint: grant.endpoint,
-            sessionId: grant.sessionId,
-            epoch: grant.serving.epoch,
-            exp: Math.floor(grant.exp / 1000),
-          });
-          const id = credentialIdOf(creds);
-          this.sessionServingKeys.set(id, identity.id);
-          return { id, creds, exp: grant.exp };
-        }
-        if (!this.auth) return { id: `${grant.sessionId}.s`, creds: "", exp: grant.exp };
-        const identity = newIdentity();
-        const creds = await mintCreds(this.auth, identity, "session-serving", {
-          sessionServing: { endpoint: grant.endpoint, sessionId: grant.sessionId, epoch: grant.serving.epoch },
-          expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms; the JWT exp is seconds
-        });
-        const health = inspectCredHealth(creds);
-        if (health.exp === undefined)
-          throw new Error(`the session-serving credential for ${grant.sessionId} is unbounded; a per-session credential never outlives its session (SPEC 13.6)`);
-        const id = credentialIdOf(creds);
-        this.sessionServingKeys.set(id, identity.id);
-        return { id, creds, exp: grant.exp };
-      },
-      observeGate: async (_endpoint, instanceId) => {
-        // Open mesh: nothing is minted and nothing is staged, so there is no gate to pin (see
-        // ServingGatePin.gate — the stage refuses loudly if this is ever missing on an auth mesh).
-        if (!this.auth && !this.remoteAuthority) return { key: epgateKey(MANAGER_ENDPOINT, instanceId), revision: 0 };
-        return gate(async (authKv) => {
-          const observed = await serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId }).observe();
-          if (observed === null)
-            throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${instanceId} vanished; a session credential never stages against a missing gate (SPEC 13.1)`);
-          // The WHOLE observation rides the pin: the stage's fence compares every field of it, which
-          // is what lets a lost CAS be classified rather than blanket-refused.
-          return { key: epgateKey(MANAGER_ENDPOINT, instanceId), revision: observed.revision, gate: observed };
-        });
-      },
-      stage: async (grant, cred, pin) => {
-        if (!this.auth && !this.remoteAuthority) return; // open mesh: nothing minted, so nothing to make revocable
-        const key = this.sessionServingKeys.get(cred.id);
-        if (key === undefined)
-          throw new Error(`no minted identity for session credential ${cred.id}; the stage cannot record a holder it did not mint (SPEC 13.1)`);
-        // THE REDEMPTION'S OWN PIN IS THE FENCE, and it is never re-read into something newer here:
-        // `commitSiblingIssuance` CASes on this observation's revision and, on a loss, refuses unless
-        // the gate is still identical to it in every field but the revision. A barrier
-        // (freeze, or reopen at a successor coordinate) is therefore always a refusal, while another
-        // session's identical-bytes commit touch is not — per-session credentials all serialize on
-        // this one gate key, so refusing on that would fail live sessions for contention rather than
-        // for a barrier. A read is never a fence (SPEC 13.1); the pinned CAS is.
-        const observed = pin.gate;
-        if (observed === undefined)
-          throw new Error(`the redemption of session ${grant.sessionId} carries no gate observation for ${MANAGER_ENDPOINT}/${iid}; a session credential never stages unfenced (SPEC 13.1)`);
-        await gate(async (authKv) => {
-          const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
-          await commitSiblingIssuance(fence, observed, {
-            credentialId: cred.id,
-            credentialKey: key,
-            holderPrincipal: principalKey(DEV_OWNER, key).key,
-            endpoint: MANAGER_ENDPOINT, lifecycleUid: iid,
-            // The lineage records that this credential exists because a session was redeemed, so a
-            // ledger reader can tell a per-session row from a standing one (SPEC 13.6 sourceChain).
-            sourceChain: [`session.${grant.sessionId}`], state: "active",
-            exp: Math.floor(cred.exp / 1000),
-            generation: observed.generation, processEpoch: observed.processEpoch,
-            registrationRevision: observed.registrationRevision, nameAuthorityRevision: observed.nameAuthorityRevision,
-          });
-        });
-      },
-      open: async (cred) => {
-        // FAIL LOUD: there is deliberately no shared connection to fall back to. Serving a session
-        // without its own credential is exactly the standing-writer shape this design removes.
-        const opts = (this.auth || this.remoteAuthority) ? standaloneConnectOpts({ creds: cred.creds, /* not yet wired to a recorded transport */ tls: false }) : {};
-        return this.dial({ ...opts, maxReconnectAttempts: -1 });
-      },
-      revoke: async (credentialId) => {
-        if (!this.auth && !this.remoteAuthority) return; // open mesh: nothing was minted
-        await gate(async (authKv) => {
-          await markLedgerRowRevoked(authKv, epcredRowKey(MANAGER_ENDPOINT, iid, credentialId));
-        });
-        this.sessionServingKeys.delete(credentialId);
-      },
-    };
-  }
-
-  /** Tear the session plane down (best-effort, both exit paths): end every live bridge with the
-   *  honest `manager-restart` reason (this incarnation is going away; any successor takes a new epoch
-   *  and refuses these grants), then drain each session's own connection and retire the ledger
-   *  connection ({@link retireConnection}). */
-  private async stopSessionPlane(): Promise<void> {
-    const plane = this.sessionPlane;
-    const sw = this.sessionLedgerConn;
-    this.sessionPlane = undefined;
-    this.sessionLedgerConn = undefined;
-    // `drain` awaits each session's teardown (connection close, terminal row, credential revoke);
-    // `endAll` alone would let the process exit with per-session connections still open.
-    try { await plane?.drain("manager-restart"); } catch { /* best effort */ }
-    if (sw) await this.retireConnection(sw.nc);
-  }
+  private mintAndStageSessionLedger(authKv: KV): Promise<string> { return this.servePlane.mintAndStageSessionLedger(authKv); }
+  private startSessionPlane(): Promise<void> { return this.servePlane.startSessionPlane(); }
+  private stopSessionPlane(): Promise<void> { return this.servePlane.stopSessionPlane(); }
 
   /** The boot reconcile: a fresh incarnation (a manager restart takes a NEW
    *  instanceId, so the in-memory acceptance map starts empty) inherits the endpoint's accepted-but-
@@ -11966,15 +10910,9 @@ export class Manager {
           { cleanup: reapThenCleanup, evict, log: (line) => console.error(`static retirement ${a.name}: ${line}`) },
         );
       });
-      const principal = principalKey(DEV_OWNER, a.id).key;
-      this.retiredPrincipals.add(principal);
-      const cur = this.retiring.get(a.name);
-      if (cur && cur.target.lifecycleUid === a.lifecycleUid) {
-        this.retiring.delete(a.name); // ABA-guarded hold clear
-        this.confirmedRetiredPredecessors.set(a.name, { principal, lifecycleUid: a.lifecycleUid });
-      }
+      this.retirement.recordStaticRetirement(a);
     } catch (e) {
-      const h = this.retiring.get(a.name);
+      const h = this.retirement.held(a.name);
       if (h && h.target.lifecycleUid === a.lifecycleUid)
         h.lastError = `the static retirement did not complete (${rejectionText(e)}); the name stays held - a same-name spawn retries the same terminal (op ${opId})`;
       console.error(`static retirement ${a.name} (${a.id}): ${rejectionText(e)}`);
@@ -12545,7 +11483,7 @@ export class Manager {
           // A retirement is a GLOBAL refusal fact — seed the retired-principal index for EVERY retired incarnation
           // regardless of which instance owned it, so a sibling-retired incarnation's copied credential
           // is refused at this control surface too. Ownership gates only the DESTRUCTIVE sweep below.
-          this.retiredPrincipals.add(principalKey(row.owner, row.actor).key);
+          this.retirement.rememberRetired(principalKey(row.owner, row.actor).key);
           retiredSlots++;
           continue;
         }
@@ -12700,14 +11638,7 @@ export class Manager {
           ? `the caller's lifecycle ${a.lifecycleUid} is terminalizing; control is refused from the first terminal step`
           : undefined;
     }
-    for (const [name, hold] of this.retiring) {
-      const held = hold.target.userOwner ? hold.target.id : principalKey(DEV_OWNER, hold.target.id).key;
-      if (held === caller)
-        return `the caller's lifecycle ${hold.target.lifecycleUid} (name "${name}") is retiring; a retiring incarnation's credential holds no control authority`;
-    }
-    if (this.retiredPrincipals.has(caller))
-      return "the caller's lifecycle is retired; a retired incarnation's credential holds no control authority";
-    return undefined;
+    return this.retirement.membershipRefusal(caller);
   }
 
   /** Open a short-lived PROVISIONER connection, run the onboarding ops on it, and drain it (closure (ii),

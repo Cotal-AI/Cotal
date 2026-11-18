@@ -154,6 +154,12 @@ An answering daemon without an active automatic schedule is reported separately,
 paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
 the command installs and starts nothing.
 `cotal update --notify off` silences notices independently, and `--notify on` enables them.
+If `update-settings.json` contains damaged JSON or invalid settings, these preference commands
+save its contents in a private `update-settings.json.corrupt.<id>` copy in the same folder,
+report that path, and restore the defaults: automatic updates and notices on. A supplied
+`on` or `off` value is then saved. Bare `--auto` and `--notify` also recover the file.
+Filesystem read or write failures still stop the command. Background checks and desktop
+preference requests leave damaged settings unchanged until you run a CLI preference command.
 `COTAL_NO_UPDATE_CHECK=1` disables both checks and automatic installation for that process.
 
 On Windows, an interrupted helper in the same boot pauses automatic installation. Status and
@@ -225,7 +231,8 @@ liveness check keeps the registration unchanged. Local manager continuity checks
 apply before changing the installation. When a recorded local space's project folder no longer
 exists, update names the space and the gone folder, leaves its processes untouched, and makes no
 continuity claim for that space. A renamed project does not block the software update or require
-restoring internal identity files.
+restoring internal identity files. This also applies to a selected prepared space whose project
+folder was deleted before it ever started. Update keeps its saved selection and preparation record.
 
 After `update --self` replaces the installation, its verified replacement waits up to 120 seconds
 for the recorded same-installation daemon to load the new version and its intended hosted Managers
