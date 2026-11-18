@@ -693,6 +693,12 @@ recovery a connector restart runs. A pending frame that the broker stored before
 acknowledgement was lost is settled as published when the broker's two-minute duplicate window
 still holds its id, or when the seat may read its own event channel and that frame is the newest
 one there. Otherwise the plane halts, because nothing proves the frame at the tip is that frame.
+Before a new thread publishes, it also settles pending frames in earlier thread logs under the
+same principal and state root. Their frozen ids and expectations are preserved. A new thread
+does not discard an ended session's pending frame or publish against its stale subject record.
+A local unacknowledged frame lets startup reach that recovery even when no acknowledgement has
+yet been recorded. A state root with no such frame and no acknowledged frontier still refuses
+when the broker retains this principal's events.
 A failed publish or a failed log write is never retried on the emitter it failed on. A turn that ends while the plane is down keeps its terminal, and so does a
 turn whose terminal's own log write failed: once the re-establish has read on, the run the log had
 open is closed with that terminal, a failure as a failure, rather than left open for the next

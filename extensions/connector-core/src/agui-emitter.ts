@@ -469,6 +469,20 @@ export class AguiEmitter<T> {
     // intact so an operator can restore the rail and recover under the original policy.
     if (wal.pending?.payload && !em.payloadFrontier)
       throw new Error("previously frozen sibling payload requires an available event payload rail; upgrade the space and restart before recovery");
+    // A new thread shares the subject with ended threads. Settle their frozen work through the
+    // same recovery path before this thread can freeze an expectation from the shared record.
+    for (const sibling of await wal.pendingSiblings()) {
+      await sibling.bindSubjectFrontier(opts.subjectFrontier);
+      const previous = new AguiEmitter<T>(endpoint, sibling, opts.source, opts.map, channel, sibling.threadId, opts.onUnreadable);
+      previous.withholdPayloads = em.withholdPayloads;
+      previous.payloadFrontier = em.payloadFrontier;
+      previous.payloadLimit = em.payloadLimit;
+      if (previous.withholdPayloads && sibling.pending?.payload)
+        throw new Error("payload withholding refuses a previously frozen sibling publication; settle it under the prior policy before changing policy");
+      if (sibling.pending?.payload && !previous.payloadFrontier)
+        throw new Error("previously frozen sibling payload requires an available event payload rail; upgrade the space and restart before recovery");
+      await previous.recover();
+    }
     await em.recover();
     // The run the wire has open once the pending frame is settled, which is the last turn the log
     // can name: a terminal reported before any record the first pump reads is that run's.
