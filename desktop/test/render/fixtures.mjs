@@ -35,6 +35,7 @@ export function nativeStub(scenario) {
       if (command !== "daemon_request") throw new Error(`Unexpected native command: ${command}`);
       const request = args.request; let index = 0;
       const send = message => callbacks.get(args.onEvent.id)({ message, index: index++ });
+      if (request.op === "log") { state.logReads = (state.logReads ?? 0) + 1; if (state.logError) return fail("LOG_UNAVAILABLE", "The background service log could not be read."); return ok({ text: state.logText ?? "", truncated: state.logTruncated === true }); }
       if (request.op === "about") {
         if (state.loading) await new Promise(() => {});
         return ok({ version: "0.156.0", machine: "Davids-MacBook-Pro", platform: state.platform ?? "darwin", arch: state.arch ?? "arm64", memoryBytes: 36 * 1024 ** 3 });
@@ -537,7 +538,7 @@ export const scenarios = [
     assert.equal(await page.locator("#connection-title").textContent(), "The background service has not started");
     assert.equal(await page.locator("#connection-description").textContent(), "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.");
     assert.equal(await page.locator("#recover").textContent(), "Check status");
-    assert.equal(await page.locator("#refusal-detail").textContent(), "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused\nNext: choose Check status.");
+    assert.equal(await page.locator("#refusal-detail").textContent(), "DEPENDENCY_UNAVAILABLE (NOT_ANSWERING)\nCotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused\nNext: choose Check status.");
   } },
   { name: "no-spaces", state: { empty: true }, act: signIn },
   { name: "connected-and-pending", state: { installed: true, signedIn: true, connected: true, multiple: true, serviceState: "approval-pending" }, expect: async page => {
