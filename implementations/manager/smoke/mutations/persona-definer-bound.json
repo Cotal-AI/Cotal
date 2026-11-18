@@ -1,0 +1,61 @@
+{
+  "suite": [
+    "implementations/manager/smoke/persona-definer-bound.smoke.ts"
+  ],
+  "guard": "a persona saved over the wire keeps no launch options and grants only channels its definer holds",
+  "command": "pnpm smoke:persona-definer-bound",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/persona-definer-bound.json",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "why": [
+    "P1 keeps the prompt's launch options on a new wire persona, so a wider spawner launches with them.",
+    "P2 keeps a saved file's launch options through a redefine.",
+    "P3 bounds a definition only when it names capabilities or endpoints, so its channels go unchecked.",
+    "P4 drops the channels from the static bound. P5 drops them from the user-auth ledger bound."
+  ],
+  "mutations": [
+    {
+      "name": "P1 keep the prompt's launch options",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "    muted: fromPrompt?.muted,\n    meta: authored",
+      "replace": "    muted: fromPrompt?.muted,\n    launchOptions: fromPrompt?.launchOptions,\n    meta: authored",
+      "expectRed": "and the child is launched with none of the definer's options",
+      "cell": "and the child is launched with none of the definer's options",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:persona-definer-bound"
+    },
+    {
+      "name": "P2 keep a saved file's launch options on redefine",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "    delete def.launchOptions;\n",
+      "replace": "",
+      "expectRed": "a redefine writes no launch options the saved file held",
+      "cell": "a redefine writes no launch options the saved file held",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:persona-definer-bound"
+    },
+    {
+      "name": "P3 bound only a definition that names capabilities or endpoints",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (composed.def.capabilities?.length || composed.def.endpoints !== undefined || channels.allowSubscribe.length || channels.allowPublish.length) {",
+      "replace": "    if (composed.def.capabilities?.length || composed.def.endpoints !== undefined) {",
+      "expectRed": "a read channel the definer does not hold, from the prompt's frontmatter, is refused by name",
+      "cell": "a read channel the definer does not hold, from the prompt's frontmatter, is refused by name"
+    },
+    {
+      "name": "P4 drop the channels from the static definer bound",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        this.spawnBoundRefusal(bound, { capabilities, allowSubscribe, allowPublish, ...(endpoints.length ? { endpoints } : {}) }, false, \"define-persona\");",
+      "replace": "        this.spawnBoundRefusal(bound, { capabilities, ...(endpoints.length ? { endpoints } : {}) }, false, \"define-persona\");",
+      "expectRed": "a post channel the definer does not hold, as an argument, is refused by name",
+      "cell": "a post channel the definer does not hold, as an argument, is refused by name"
+    },
+    {
+      "name": "P5 drop the read channels from the user-auth definer bound",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const overSub = allowSubscribe.filter((ch) => !patternInAllow(held?.allowSubscribe ?? [], ch));",
+      "replace": "      const overSub: string[] = [];",
+      "expectRed": "a read channel beyond the definer's row is refused by name, writing nothing",
+      "cell": "a read channel beyond the definer's row is refused by name, writing nothing"
+    }
+  ]
+}

@@ -445,9 +445,12 @@ function dropWireDefaultIfScoped(def: AgentDef): void {
  * Build the AgentDef `definePersona` writes. A leading frontmatter block in `prompt` is parsed
  * and merged: explicit tool arguments win; grants, role, and agent from the prompt survive;
  * `capabilities`, `endpoints` and `owner` from the prompt never do, and only an explicit
- * `capabilities` or `endpoints` argument sets that field. The result is always one frontmatter block
- * once {@link saveAgentFile} writes it. On redefine, prompt grants are not applied (the stored
- * file's policy is preserved) except where an explicit tool argument names a field.
+ * `capabilities` or `endpoints` argument sets that field. `launchOptions` has no wire slot: a
+ * persona saved over the wire carries none, from the prompt or from the file it redefines, so
+ * only the operator's own files and the spawner's own call name a connector's launch surface.
+ * The result is always one frontmatter block once {@link saveAgentFile} writes it. On redefine,
+ * prompt grants are not applied (the stored file's policy is preserved) except where an explicit
+ * tool argument names a field.
  */
 export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): AgentDef {
   const parsed = parseLeadingPromptFrontmatter(args.prompt, args.name);
@@ -462,6 +465,7 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     if (args.allowPublish !== undefined) def.allowPublish = args.allowPublish;
     if (args.capabilities !== undefined) def.capabilities = args.capabilities;
     if (args.endpoints !== undefined) def.endpoints = args.endpoints;
+    delete def.launchOptions;
     def.persona = parsed.body;
     dropWireDefaultIfScoped(def);
     return def;
@@ -485,7 +489,6 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     variant: fromPrompt?.variant,
     quiet: fromPrompt?.quiet,
     muted: fromPrompt?.muted,
-    launchOptions: fromPrompt?.launchOptions,
     meta: authored ? fromPrompt?.meta : { scope_source: "wire-default" },
   };
   dropWireDefaultIfScoped(def);

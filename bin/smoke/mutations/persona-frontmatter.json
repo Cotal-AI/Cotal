@@ -44,8 +44,8 @@
       "cell": "prompt capabilities never land",
       "name": "compose copies capabilities from the prompt frontmatter",
       "file": "packages/core/src/agent-file.ts",
-      "find": "    launchOptions: fromPrompt?.launchOptions,",
-      "replace": "    launchOptions: fromPrompt?.launchOptions,\n    capabilities: fromPrompt?.capabilities,",
+      "find": "    capabilities: args.capabilities,\n    endpoints: args.endpoints,\n    description: fromPrompt?.description,",
+      "replace": "    capabilities: args.capabilities ?? fromPrompt?.capabilities,\n    endpoints: args.endpoints,\n    description: fromPrompt?.description,",
       "expectRed": "✗ FAIL: prompt capabilities never land",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },

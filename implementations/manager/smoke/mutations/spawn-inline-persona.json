@@ -200,31 +200,31 @@
     {
       "name": "N21 write a defined persona's capabilities unbounded",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        ? refusal({ capabilities: kept, endpoints: keptEndpoints, namesEndpoints })\n",
-      "replace": "        ? refusal({ capabilities: [], endpoints: keptEndpoints, namesEndpoints })\n",
+      "find": "        ? refusal({ capabilities: kept, endpoints: keptEndpoints, namesEndpoints, ...channels })\n",
+      "replace": "        ? refusal({ capabilities: [], endpoints: keptEndpoints, namesEndpoints, ...channels })\n",
       "expectRed": "and is refused one its row does not hold, by name, writing nothing",
       "cell": "and is refused one its row does not hold, by name, writing nothing"
     },
     {
       "name": "N22 bound a user-auth admin definer",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (scope?.includes(\"admin\")) return undefined;\n      const over = capabilities.filter((c) => !capabilityWithin(scope ?? [], c));\n",
-      "replace": "      const over = capabilities.filter((c) => !capabilityWithin(scope ?? [], c));\n",
+      "find": "      if (held?.scope.includes(\"admin\")) return undefined;\n      const overCaps",
+      "replace": "      const overCaps",
       "expectRed": "a user-auth definer whose row holds admin is exempt",
       "cell": "a user-auth definer whose row holds admin is exempt"
     },
     {
       "name": "N23 read the local ledger on a hosted manager",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (this.remoteAuthority)\n      return ({ capabilities, namesEndpoints }) => namesEndpoints\n",
-      "replace": "    if (false)\n      return ({ capabilities, namesEndpoints }) => namesEndpoints\n",
+      "find": "    if (this.remoteAuthority)\n      return ({ capabilities, namesEndpoints, allowSubscribe, allowPublish }) => namesEndpoints\n",
+      "replace": "    if (false)\n      return ({ capabilities, namesEndpoints, allowSubscribe, allowPublish }) => namesEndpoints\n",
       "expectRed": "a hosted manager reads no ledger, so its definer puts no capability into a persona",
       "cell": "a hosted manager reads no ledger, so its definer puts no capability into a persona"
     },
     {
       "name": "N24 write the def composed before the grant resolved",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      composed = compose();\n      if (\"reply\" in composed) return composed.reply;\n      const kept",
+      "find": "      composed = compose();\n      if (\"reply\" in composed) return composed.reply;\n      channels = channelsOf(composed.def);\n      const kept",
       "replace": "      const kept",
       "expectRed": "a definition that waited on its grant does not overwrite a persona another principal defined meanwhile",
       "cell": "a definition that waited on its grant does not overwrite a persona another principal defined meanwhile"
@@ -240,8 +240,8 @@
     {
       "name": "N26 bound only a definition that names capabilities",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (composed.def.capabilities?.length || composed.def.endpoints !== undefined) {\n      const refusal = await this.definerGrantRefusal(",
-      "replace": "    if (capabilities?.length || composed.def.endpoints !== undefined) {\n      const refusal = await this.definerGrantRefusal(",
+      "find": "    if (composed.def.capabilities?.length || composed.def.endpoints !== undefined || channels.allowSubscribe.length || channels.allowPublish.length) {\n      const refusal = await this.definerGrantRefusal(",
+      "replace": "    if (capabilities?.length || composed.def.endpoints !== undefined || channels.allowSubscribe.length || channels.allowPublish.length) {\n      const refusal = await this.definerGrantRefusal(",
       "expectRed": "a redefine that omits capabilities is refused the saved ones its definer no longer holds, writing nothing",
       "cell": "a redefine that omits capabilities is refused the saved ones its definer no longer holds, writing nothing"
     },

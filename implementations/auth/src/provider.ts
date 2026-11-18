@@ -774,6 +774,12 @@ export const cotalAuthProvider: AuthProvider = {
     return row ? [...row.scope] : undefined;
   },
 
+  /** The same fresh unified read as {@link actorScope}, with the row's channel lists. */
+  async actorGrant({ dir, owner, actor }) {
+    const row = findActorUnified(dir, owner, actor);
+    return row ? { scope: [...row.scope], allowSubscribe: [...row.allowSubscribe], allowPublish: [...row.allowPublish] } : undefined;
+  },
+
   async trustFingerprint({ store, dir, space }) {
     return userAuthTrustFingerprint(store, dir, space);
   },

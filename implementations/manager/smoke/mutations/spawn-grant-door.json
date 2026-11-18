@@ -33,7 +33,7 @@
     {
       "name": "D3 write the def composed before the evidence resolved",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      composed = compose();\n      if (\"reply\" in composed) return composed.reply;\n      const kept",
+      "find": "      composed = compose();\n      if (\"reply\" in composed) return composed.reply;\n      channels = channelsOf(composed.def);\n      const kept",
       "replace": "      const kept",
       "expectRed": "a served definition that waited on its evidence does not overwrite a persona another principal defined meanwhile",
       "cell": "a served definition that waited on its evidence does not overwrite a persona another principal defined meanwhile"

@@ -1,0 +1,2 @@
+# Wire-defined personas are bounded against their definer and carry no launch options.
+smoke:persona-definer-bound

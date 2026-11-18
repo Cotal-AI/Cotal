@@ -69,7 +69,7 @@ The deployment also has these limits.
 
 - A copied static credential retains inline data-plane grants until expiry or signing-key rotation. Despawn retires its lifecycle and control authority but cannot add a static auth callout.
 - A host compromise can expose signing authority. Narrow operator profiles reduce individual connection grants but do not protect a copied signer.
-- Static `spawn` can choose a child's channel ACL. Spawn also grants access to connector launch options on the manager host.
+- Static `spawn` can choose a child's channel ACL. Spawn also grants access to connector launch options on the manager host. That authority covers the spawner's own call and the operator's agent files: a persona saved over the wire carries no launch options, and its channels and capabilities must be ones its definer holds. See [Defining one at runtime](agent-files.mdx#defining-one-at-runtime).
 - Spawn environment filtering does not confine files reachable through `HOME` or other supplied roots.
 - Custodied PTY reap trusts the custody record and uses process-group membership for descendants. Same-uid record replacement and PID reuse remain risks.
 
