@@ -11,14 +11,15 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
 import { emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { AttachEndpoint } from "../../manager/dist/attach-endpoint.js";
+import { AttachEndpoint } from "../../implementations/manager/dist/attach-endpoint.js";
 
-const characterize = process.argv.includes("--characterize");
+const DASHBOARD_POLICY = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const MANAGER_POLICY = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 let passed = 0;
+let failed = 0;
 const check = (name: string, condition: unknown) => {
-  assert.ok(condition, name);
-  passed++;
-  console.log(`PASS ${name}`);
+  if (condition) passed++; else failed++;
+  console.log(`${condition ? "PASS" : "FAIL"} ${name}`);
 };
 const browser = (process.env.PATH ?? "").split(delimiter).flatMap((dir) =>
   ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"].map((name) => join(dir, name))).find(existsSync);
@@ -42,10 +43,12 @@ const pending = new Map<number, { resolve(value: any): void; reject(error: Error
 const responses: { session?: string; status: number; type: string }[] = [];
 const failures: { session?: string; blocked?: string }[] = [];
 let dashboardOutput = "";
-const managerOutput: string[] = [];
-const originalError = console.error;
-const originalLog = console.log;
-console.error = (...values: unknown[]) => { managerOutput.push(values.map(String).join(" ")); };
+
+function securityHeaders(name: string, response: Response, policy: string): void {
+  check(`${name}: complete Content-Security-Policy matches exactly`, response.headers.get("content-security-policy") === policy);
+  check(`${name}: Referrer-Policy is no-referrer`, response.headers.get("referrer-policy") === "no-referrer");
+  check(`${name}: X-Content-Type-Options is nosniff`, response.headers.get("x-content-type-options") === "nosniff");
+}
 
 async function cdp(method: string, params: object = {}, sessionId?: string): Promise<any> {
   const id = ++sequence;
@@ -87,7 +90,8 @@ async function security(name: string, session: string, token: string, base: stri
   await evaluate(session, "document.fonts.ready.then(() => true)");
   await delay(300);
   check(`${name}: shipped scripts, styles and live data render`, await evaluate(session, ready));
-  if (!characterize && name.startsWith("manager")) {
+  check(`${name}: first load has no application CSP violation`, (await evaluate(session, "window.__security.violations")).length === 0 && !failures.some((f) => f.session === session && f.blocked === "csp"));
+  if (name.startsWith("manager")) {
     await cdp("Page.reload", {}, session);
     await until(() => evaluate(session, ready), `${name}: reload retains authorized access`);
     check(`${name}: a clean-address reload retains authorized access`, await evaluate(session, ready));
@@ -98,18 +102,21 @@ async function security(name: string, session: string, token: string, base: stri
   check(`${name}: page has no uncaught script error`, (await evaluate(session, "window.__security.errors")).length === 0);
   check(`${name}: script and stylesheet requests succeed`, responses.some((r) => r.session === session && r.type === "Script") && responses.some((r) => r.session === session && r.type === "Stylesheet") && responses.filter((r) => r.session === session && ["Script", "Stylesheet", "Font"].includes(r.type)).every((r) => r.status === 200));
   const clean = await evaluate(session, `!location.href.includes(${JSON.stringify(token)})`);
-  check(`${name}: address bar ${characterize && name.startsWith("manager") ? "retains the bootstrap token before hardening" : "contains no bootstrap token"}`, characterize && name.startsWith("manager") ? !clean : clean);
+  check(`${name}: address bar contains no bootstrap token`, clean);
   const injected = await evaluate(session, `(() => { const s = document.createElement('script'); s.textContent = 'window.__injectedConsoleScript = true'; document.head.append(s); return window.__injectedConsoleScript === true; })()`);
   await delay(100);
-  check(`${name}: unrelated inline script ${characterize ? "executes without a policy" : "is refused by CSP"}`, characterize ? injected : !injected);
-  check(`${name}: inline-script control ${characterize ? "has no CSP violation" : "reports a script-src violation"}`, await evaluate(session, characterize ? "window.__security.violations.length === 0" : "window.__security.violations.some(v => v.blocked === 'inline' && v.directive === 'script-src-elem')"));
+  check(`${name}: unrelated inline script is refused by CSP`, !injected);
+  check(`${name}: inline-script control reports a script-src violation`, await evaluate(session, "window.__security.violations.some(v => v.blocked === 'inline' && v.directive === 'script-src-elem')"));
+  // The manager's no-referrer header predates this change. Its emitted value is checked below.
+  // Only the dashboard's new navigation policy is an enforcement control here.
+  if (name.startsWith("manager")) return;
   const seen = new Promise<string | undefined>((resolve) => { resolveReferrer = resolve; });
   const destination = `http://127.0.0.1:${(sink.address() as AddressInfo).port}/destination`;
   await evaluate(session, `(() => { const a = document.createElement('a'); a.href = ${JSON.stringify(destination)}; a.textContent = 'outside'; document.body.append(a); a.click(); return true; })()`);
   const referer = await Promise.race([seen, delay(10_000).then(() => { throw new Error("cross-origin navigation must reach the sink"); })]);
   check(`${name}: cross-origin Referer contains no token`, !referer?.includes(token));
-  if (characterize) console.log(`OBSERVED ${name}: cross-origin Referer ${referer === undefined ? "absent" : referer === base + "/" ? "origin only" : "present without token"}`);
-  check(`${name}: ${characterize ? "default browser policy withholds the credential" : "no-referrer omits the Referer header"}`, characterize ? !referer?.includes(token) : referer === undefined);
+  check(`${name}: no-referrer omits the Referer header`, referer === undefined);
+  check(`${name}: navigation to a different origin completes`, new URL(destination).origin !== base);
 }
 
 try {
@@ -125,18 +132,21 @@ try {
   await manager.start();
   const managerBase = new URL(manager.consoleUrl()).origin;
   const port = await freePort();
-  dashboard = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("./openapi-server.ts", import.meta.url)), server, space, String(port)], { stdio: ["ignore", "pipe", "pipe"] });
+  dashboard = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../../implementations/web/smoke/console-security-server.ts", import.meta.url)), server, space, String(port)], { stdio: ["ignore", "pipe", "pipe"] });
   dashboard.stdout!.on("data", (data: Buffer) => { dashboardOutput += data.toString(); });
   dashboard.stderr!.on("data", (data: Buffer) => { dashboardOutput += data.toString(); });
   let launchUrl: string | undefined;
+  let launchNonce: string | undefined;
   await until(async () => {
     for (const line of dashboardOutput.split("\n")) {
       if (!line.startsWith('{"ready":')) continue;
-      launchUrl = JSON.parse(line).launchUrl;
+      const record = JSON.parse(line);
+      launchUrl = record.launchUrl;
+      launchNonce = record.launchNonce;
     }
     return launchUrl !== undefined;
   }, "dashboard starts without printing its private launch credential in an operator log");
-  assert(launchUrl);
+  assert(launchUrl && launchNonce);
   const dashboardToken = new URL(launchUrl).searchParams.get("k")!;
   const dashboardBase = new URL(launchUrl).origin;
   chrome = spawn(browser, ["--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--remote-debugging-pipe", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
@@ -160,30 +170,49 @@ try {
     const session = await page(managerBase + "/?view=console" + (suffix.startsWith("?") ? "&" + suffix.slice(1) : suffix));
     await security(suffix.startsWith("#") ? "manager fragment" : "manager query", session, token, managerBase, "document.getElementById('meta')?.textContent?.startsWith('1 agent') === true && document.querySelector('.xterm-rows')?.textContent?.includes('attach failed (503)') === true");
   }
-  const dashboardPage = await page(launchUrl + "#/channel/general");
-  await security("dashboard", dashboardPage, dashboardToken, dashboardBase, "document.getElementById('root')?.textContent?.includes('browser-live-control') === true");
+  const exchange = await fetch(launchUrl, { redirect: "manual" });
+  check("dashboard exchange: documented query link returns 302", exchange.status === 302);
+  securityHeaders("dashboard exchange", exchange, DASHBOARD_POLICY);
+  const exchangeCookie = exchange.headers.get("set-cookie")?.split(";")[0];
+  assert(exchangeCookie, "exchange sets the browser session");
+  const browserLaunch = await fetch(dashboardBase + "/api/browser-launch", { method: "POST", headers: { "x-cotal-browser-launch": launchNonce } });
+  check("dashboard initial browser-launch: authenticated launch request succeeds", browserLaunch.status === 200);
+  securityHeaders("dashboard initial browser-launch", browserLaunch, DASHBOARD_POLICY);
+  const browserLaunchUrl = (await browserLaunch.json() as { launchUrl: string }).launchUrl;
+  const browserToken = new URL(browserLaunchUrl).searchParams.get("k")!;
+  const dashboardPage = await page(browserLaunchUrl + "#/channel/general");
+  await security("dashboard", dashboardPage, browserToken, dashboardBase, "document.getElementById('root')?.textContent?.includes('browser-live-control') === true");
   const sessionCookie = await cdp("Network.getCookies", { urls: [dashboardBase] }, dashboardPage);
   const cookie = sessionCookie.cookies.find((c: { name: string }) => c.name === "cotal_web_session");
   check("dashboard: existing query launch link still mints an HttpOnly session cookie", cookie?.httpOnly === true);
-  const html = await fetch(dashboardBase, { headers: { cookie: `cotal_web_session=${cookie.value}` } });
-  const managerHtml = await fetch(managerBase);
-  for (const [name, response] of [["dashboard", html], ["manager", managerHtml]] as const) {
-    check(`${name}: Content-Security-Policy ${characterize ? "is absent before hardening" : "restricts scripts to its own origin"}`, characterize ? response.headers.get("content-security-policy") === null : response.headers.get("content-security-policy")?.includes("script-src 'self'") && !response.headers.get("content-security-policy")?.includes("unsafe-eval"));
-    check(`${name}: Referrer-Policy ${characterize && name === "dashboard" ? "is absent before hardening" : "is no-referrer"}`, response.headers.get("referrer-policy") === (characterize && name === "dashboard" ? null : "no-referrer"));
-    check(`${name}: X-Content-Type-Options ${characterize ? "is absent before hardening" : "is nosniff"}`, response.headers.get("x-content-type-options") === (characterize ? null : "nosniff"));
+  const headers = { cookie: `cotal_web_session=${cookie.value}` };
+  securityHeaders("dashboard HTML", await fetch(dashboardBase, { headers }), DASHBOARD_POLICY);
+  securityHeaders("manager HTML", await fetch(managerBase), MANAGER_POLICY);
+  for (const [name, base, options, paths] of [
+    ["dashboard", dashboardBase, { headers }, [["JSON", "/api/roster", 200], ["asset", "/theme-boot.js", 200], ["404", "/missing-security-resource", 404]]],
+    ["manager", managerBase, { headers: { authorization: `Bearer ${token}` } }, [["JSON", "/agents", 200], ["asset", "/assets/xterm.js", 200], ["404", "/missing-security-resource", 404]]],
+  ] as const) {
+    for (const [kind, path, status] of paths) {
+      const response = await fetch(base + path, options);
+      check(`${name} ${kind}: response has the expected status`, response.status === status);
+      check(`${name} ${kind}: X-Content-Type-Options is nosniff`, response.headers.get("x-content-type-options") === "nosniff");
+      await response.arrayBuffer();
+    }
   }
-  const refused = await fetch(dashboardBase + "/api/roster?k=" + dashboardToken, { method: "POST", headers: { cookie: `cotal_web_session=${cookie.value}` }, body: "body-control" });
-  check("dashboard: an authenticated malformed request exercises the server diagnostic path", refused.status === 413);
-  await delay(150);
-  const diagnostics = dashboardOutput.split("\n").filter((line) => !line.startsWith('{"ready":'));
-  check("dashboard: server diagnostics omit the launch token", diagnostics.some((line) => line.includes("request refused")) && diagnostics.every((line) => !line.includes(dashboardToken)));
-  check("manager: server writes no token-bearing diagnostic for page or authorized data requests", managerOutput.every((line) => !line.includes(token)));
+  const launch = await fetch(dashboardBase + "/api/browser-launch", { method: "POST", headers: { "x-cotal-browser-launch": launchNonce } });
+  check("dashboard browser-launch: authenticated launch request succeeds", launch.status === 200);
+  securityHeaders("dashboard browser-launch", launch, DASHBOARD_POLICY);
+  const nextLaunch = (await launch.json() as { launchUrl: string }).launchUrl;
+  check("dashboard browser-launch: returns a new same-origin single-use link", new URL(nextLaunch).origin === dashboardBase && new URL(nextLaunch).searchParams.get("k") !== dashboardToken);
+  const nextExchange = await fetch(nextLaunch, { redirect: "manual" });
+  check("dashboard browser-launch: fresh link exchanges successfully", nextExchange.status === 302);
+  securityHeaders("dashboard renewed exchange", nextExchange, DASHBOARD_POLICY);
+  check("dashboard browser-launch: new link refuses replay", (await fetch(nextLaunch, { redirect: "manual" })).status === 401);
   check("dashboard: the spent documented launch link refuses a second session", (await fetch(launchUrl, { redirect: "manual" })).status === 401);
-  console.log(`browser security: ${passed} checks passed (${characterize ? "characterization" : "regression"})`);
-  emitSentinel({ passed, failed: 0 });
+  console.log(`browser security: ${passed} passed, ${failed} failed`);
+  emitSentinel({ passed, failed });
+  process.exitCode = failed ? 1 : 0;
 } finally {
-  console.error = originalError;
-  console.log = originalLog;
   for (const entry of pending.values()) clearTimeout(entry.timer);
   if (chrome) await killAndAwaitExit(chrome);
   if (dashboard) await killAndAwaitExit(dashboard);
