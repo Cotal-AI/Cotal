@@ -719,7 +719,8 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
         { kind: "fields", rows: [["State", activity.state ?? "not established"], ["Text", "not reported"], ["Condition", activity.condition?.code ?? "not established"], ["Condition since", activity.conditionSince ?? "not reported"], ["Work event", activity.reportedAt ?? "not reported"], ["Unverified name-match condition", activity.nameMatchedCondition?.code ?? "none"], ["Unverified name-match event", activity.nameMatchedWorkEventAt ?? "none"]] },
         { kind: "lines", lines: [{ text: "A work event is not task completion or a measured blocked duration. A name-match without the manager's exact-identity proof is not this agent's activity.", tone: "hint" }] },
       ] },
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal attach <agent>${managerHint}`, description: managerHint ? "Return to its terminal through this manager" : "Return to its terminal" }, { command: `cotal stop <agent>${managerHint}`, description: managerHint ? "Stop the named agent through this manager" : "Stop the named agent" }] }] },
+      // The agent this status found, with the --space or --server it was read with, so each line runs as printed (#7640).
+      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ${onRemedyVerb("attach", { ...values, name: row.name.trim() ? row.name : name })}${managerHint}`, description: managerHint ? "Return to its terminal through this manager" : "Return to its terminal" }, { command: `cotal ${onRemedyVerb("stop", { ...values, name: row.name.trim() ? row.name : name })}${managerHint}`, description: managerHint ? "Stop the named agent through this manager" : "Stop the named agent" }] }] },
     ] };
   });
 }
