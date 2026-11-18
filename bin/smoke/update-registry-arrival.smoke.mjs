@@ -12,7 +12,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** Runs real npm and the built public entry against a registry with a listed, initially missing archive. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
-  assert(['arrives', 'unavailable', 'integrity', 'reset', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging'].includes(scenario));
+  assert(['arrives', 'unavailable', 'integrity', 'reset', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const offline = scenario.startsWith('offline-');
   const root = mkdtempSync(join(parent, 'registry-arrival-'));
@@ -22,7 +22,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   for (const version of [previous, target]) {
     writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
-    writeFileSync(join(root, 'payload/package/dist/cotal.js'), '#!/usr/bin/env node\nconsole.log("fixture reconciled");\n', { mode: 0o755 });
+    writeFileSync(join(root, 'payload/package/dist/cotal.js'), scenario === 'concurrent' ? '#!/usr/bin/env node\nsetTimeout(() => console.log("fixture reconciled"), 2000);\n' : '#!/usr/bin/env node\nconsole.log("fixture reconciled");\n', { mode: 0o755 });
     const packed = spawnSync('tar', ['-czf', join(root, `${version}.tgz`), '-C', join(root, 'payload'), 'package']);
     assert.equal(packed.status, 0);
     archives.set(version, readFileSync(join(root, `${version}.tgz`)));
@@ -123,8 +123,22 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       // Do not await close: the detached npm child still owns the parent's output pipes.
       first.catch(() => {});
     }
-    const update = await run(process.execPath, [entry, 'update', '--self'], 660000);
+    const updates = await Promise.all(Array.from({ length: scenario === 'concurrent' ? 2 : 1 }, () => run(process.execPath, [entry, 'update', '--self'], 660000)));
+    const update = updates[0];
     if (abandoned) await abandoned;
+    const waitLine = "Waiting up to 10 minutes for another updater to release npm's global root";
+    for (const result of updates) assert.doesNotMatch(result.output, /Reserving npm's global root/);
+    if (scenario === 'concurrent') {
+      for (const result of updates) assert.equal(result.code, 0, result.output);
+      assert.equal(updates.filter(result => /installed globally and reconciled/.test(result.output)).length, 1, 'only one updater replaces the global package');
+      assert(updates.some(result => /rechecking the installed CLI/.test(result.output)), JSON.stringify(updates));
+      const installer = updates.find(result => /installed globally and reconciled/.test(result.output));
+      const waiter = updates.find(result => /rechecking the installed CLI/.test(result.output));
+      assert(!installer.output.includes(waitLine), installer.output);
+      assert.equal(waiter.output.split(waitLine).length - 1, 1, waiter.output);
+    } else {
+      assert(!update.output.includes(waitLine), update.output);
+    }
     const elapsedMs = Date.now() - started;
     const selected = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
     if (scenario === 'closed-scope') {
@@ -146,6 +160,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       assert.equal(update.code, 0, update.output);
       assert.match(update.output, /The registry cannot be reached; nothing was changed\./);
       assert.doesNotMatch(update.output, /npm error|release is not ready|still reaching|staged pre-install check refused/);
+    } else if (scenario === 'concurrent') {
+      assert.equal(selected, target);
     } else if (scenario === 'integrity') {
       assert.equal(update.code, 1, update.output);
       assert.doesNotMatch(update.output, /Waiting for cotal-ai|Keeping cotal-ai/);
@@ -169,7 +185,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
         assert(elapsedMs >= 600000 && elapsedMs < 660000, `real wait bound: ${elapsedMs}`);
       }
     }
-    if (scenario !== 'arrives' && scenario !== 'reset' && scenario !== 'orphan') {
+    if (scenario !== 'arrives' && scenario !== 'reset' && scenario !== 'orphan' && scenario !== 'concurrent') {
       assert.equal(selected, previous);
       assert.deepEqual(readFileSync(join(packageRoot, 'dist/cotal.js')), before);
       assert.equal(readFileSync(join(packageRoot, 'preserve'), 'utf8'), 'unchanged');
@@ -199,7 +215,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       assert.match(retry.output, /installed globally and reconciled/);
       assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, target);
     }
-    return { scenario, code: update.code, elapsedMs, selected, missing, requests, output: update.output, ...(retry ? { retry } : {}) };
+    return { scenario, code: update.code, ...(scenario === 'concurrent' ? { updates } : {}), elapsedMs, selected, missing, requests, output: update.output, ...(retry ? { retry } : {}) };
   } finally {
     if (orphan) { try { process.kill(orphan, 'SIGCONT'); } catch {} }
     if (abandoned) await abandoned.catch(() => {});
@@ -209,7 +225,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging'];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent'];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }

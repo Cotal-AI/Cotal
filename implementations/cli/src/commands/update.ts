@@ -154,7 +154,9 @@ export interface UpdateRuntime {
   prepareReplacement?(): Promise<() => Promise<void>>;
   /** Validate recorded local service ownership before replacing packages or reconciling connectors. */
   preflightReplacement?(): Promise<void>;
-  claimGlobalUpdate(root: string): () => void;
+  claimGlobalUpdate(root: string, onWait?: () => void): () => void;
+  /** Read the selected global package again after acquiring its update reservation. */
+  globalVersion?(root: string): string | undefined;
   selfArgv(): string[];
   /** Whether this CLI runs from a source checkout, where `--self` installs a separate global copy. */
   checkout(): boolean;
@@ -215,7 +217,14 @@ export const updateRuntime: UpdateRuntime = {
   extensions: () => loadExtensionsManifest().extensions,
   verifyExtension: verifyCurrentExtension,
   claimUpdatePass: () => claimExtensionUpdatePass(),
-  claimGlobalUpdate: (root) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000 }),
+  claimGlobalUpdate: (root, onWait) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000, onWait }),
+  globalVersion: (root) => {
+    const path = join(root, "cotal-ai", "package.json");
+    if (!existsSync(path)) return undefined;
+    const meta = JSON.parse(readFileSync(path, "utf8")) as { name?: string; version?: string };
+    if (meta.name !== "cotal-ai" || !meta.version || !STRICT_SEMVER.test(meta.version)) throw new Error("the installed global cotal-ai version is invalid");
+    return meta.version;
+  },
   selfArgv,
   checkout: () => seedWriterKind() === "checkout",
   installPrefix: () => {
@@ -1277,9 +1286,28 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
 
   let releaseGlobal: () => void;
   try {
-    releaseGlobal = rt.claimGlobalUpdate(root);
+    releaseGlobal = rt.claimGlobalUpdate(root, () => rt.out("Waiting up to 10 minutes for another updater to release npm's global root"));
   } catch (e) {
     rt.err(c.red(`✗ could not reserve npm's global root for update: ${message(e)}`));
+    return 1;
+  }
+
+  // Another updater may have finished while this process still has the old generation loaded.
+  // Re-enter through its verified installation instead of replacing it or rolling back to stale code.
+  try {
+    const installed = rt.globalVersion?.(root);
+    if (installed && compareSemver(installed, current) > 0 && compareSemver(installed, targetVersion) >= 0) {
+      const entry = rt.verifyGlobalEntry(root, installed);
+      releaseGlobal();
+      rt.out(`Another update installed cotal-ai@${installed}; rechecking the installed CLI`);
+      const child = rt.spawn(rt.nodePath, [entry, "update", "--self", ...targetArgv(target), ...(target["stop-agents"] === true ? ["--stop-agents"] : [])], rt.env, true);
+      if (child.stderr) rt.stderr(child.stderr);
+      if (child.stdout) rt.stdout(child.stdout);
+      return child.status ?? 1;
+    }
+  } catch (error) {
+    releaseGlobal();
+    rt.err(`could not recheck the installed global CLI: ${message(error)}`);
     return 1;
   }
 

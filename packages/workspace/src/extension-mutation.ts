@@ -27,12 +27,13 @@ function globalUpdateChildPath(root: string): string {
   return join(canonicalGlobalRoot(root), ".cotal-update-child");
 }
 
-export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number } = {}): () => void {
+export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; onWait?: () => void } = {}): () => void {
   const deadline = Date.now() + (opts.waitMs ?? 0);
   const canonicalRoot = canonicalGlobalRoot(root);
   const held = acquireLock(join(canonicalRoot, ".cotal-update.lock"), {
     label: "a global cotal-ai update",
     waitMs: opts.waitMs ?? 0,
+    onWait: opts.onWait,
     onTimeout: (owner) => new Error(
       `another cotal-ai update is using npm global root ${canonicalRoot} (pid ${owner.pid}) - retry once it finishes`,
     ),
