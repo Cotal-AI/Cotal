@@ -66,14 +66,14 @@ async function rejected(label: string, credential: { file: string; uid: string }
     await valid({ file, uid });
   }
 }
-async function valid(credential: { file: string; uid: string }) {
-  const proc = nodePty([entry, "join", "--space", "alpha", "--name", "alice", "--channel", "general", "--creds", credential.file, "--lifecycle-uid", credential.uid], { cwd: alpha, env, cols: 240 });
+async function valid(credential: { file: string; uid: string }, space = "alpha", flags: readonly string[] = ["--space", space]) {
+  const proc = nodePty([entry, "join", ...flags, "--name", "alice", "--channel", "general", "--creds", credential.file, "--lifecycle-uid", credential.uid], { cwd: alpha, env, cols: 240 });
   terminals.add(proc);
   let out = "", code: number | undefined;
   proc.onData((chunk) => { out += chunk; });
   proc.onExit((result) => { code = result.exitCode; terminals.delete(proc); });
-  await until(() => clean(out).includes("Joined alpha as alice on #general.") || code !== undefined);
-  assert.ok(clean(out).includes("Joined alpha as alice on #general."), clean(out));
+  await until(() => clean(out).includes(`Joined ${space} as alice on #general.`) || code !== undefined);
+  assert.ok(clean(out).includes(`Joined ${space} as alice on #general.`), clean(out));
   proc.write("/quit\r");
   await until(() => code !== undefined);
   check("valid provisioned credential joins and quits successfully", code === 0, clean(out));
@@ -103,6 +103,31 @@ try {
   const foreign = mint(beta, "beta", "foreign");
   ok(beta, "down", "--yes", "--json");
   ok(alpha, "up", "--no-manager", "--server", alphaServer, "--json");
+  ok(beta, "up", "--no-manager", "--server", betaServer, "--json");
+  const alphaLink = `${alphaServer.replace("nats://", "cotal://")}/alpha`;
+  const betaLink = `${betaServer.replace("nats://", "cotal://")}/beta`;
+  for (const [label, flags, removed, sameSpace] of [
+    ["cross-space link", ["--link", alphaLink], "--link", false],
+    ["cross-space server", ["--space", "alpha", "--server", alphaServer], "--server", false],
+    ["cross-space both", ["--space", "alpha", "--link", betaLink, "--server", alphaServer], "--server and --link", false],
+    ["same-space link", ["--link", `${alphaServer.replace("nats://", "cotal://")}/beta`], "--link", true],
+    ["same-space server", ["--space", "beta", "--server", alphaServer], "--server", true],
+    ["same-space both", ["--link", betaLink, "--server", alphaServer], "--server and --link", true],
+  ] as const) {
+    const run = cli(neutral, "join", ...flags, "--creds", foreign.file, "--lifecycle-uid", foreign.uid);
+    console.log(`OBSERVED ${label}: exit ${run.status}\n${run.stderr}`);
+    const expected = sameSpace
+      ? removed === "--server" ? `drop --server to use beta's broker at ${betaServer}, or point --server at it` : `use --space beta without ${removed} to reach beta's broker at ${betaServer}, or pass --server ${betaServer}`
+      : `use it with --space beta and without ${removed}, which dials beta's broker at ${betaServer}`;
+    check(`${label}: recovery names the actual address flags`, run.status === 2 && /Code: +PERMISSION_DENIED/.test(run.stderr) && run.stderr.includes(expected) && (sameSpace || run.stderr.includes("--provision")), run.stderr);
+    const drop = new Set(["--space", ...removed.split(" and ")]);
+    const kept: string[] = [];
+    for (let i = 0; i < flags.length; i += 2) if (!drop.has(flags[i]!)) kept.push(flags[i]!, flags[i + 1]!);
+    await valid(foreign, "beta", ["--space", "beta", ...kept]);
+  }
+  // A --server override is another actionable recovery while retaining the original link.
+  await valid(foreign, "beta", ["--space", "beta", "--link", alphaLink, "--server", betaServer]);
+  ok(beta, "down", "--yes", "--json");
   const credentialArgs = ["--creds", foreign.file, "--lifecycle-uid", foreign.uid];
   const unnamed = cli(neutral, "join", "--server", alphaServer, ...credentialArgs);
   console.log(`OBSERVED unnamed explicit server: exit ${unnamed.status}\n${unnamed.stderr}`);
@@ -132,6 +157,11 @@ try {
   ok(alpha, "auth", "revoke-credential", revoked.file, "--yes", "--json");
   ok(alpha, "up", "--no-manager", "--json");
   await rejected("revoked", revoked, "with auth revoke-credential");
+  const aliasLink = `${alphaServer.replace("nats://127.0.0.1", "cotal://localhost")}/alpha`;
+  const aliased = cli(neutral, "join", "--link", aliasLink, "--creds", revoked.file, "--lifecycle-uid", revoked.uid);
+  check("revoked credential through an aliased link names link recovery rather than an absent flag", aliased.status === 2 && aliased.stderr.includes(`use --space alpha without --link to reach alpha's broker at ${alphaServer}, or pass --server ${alphaServer}`) && !aliased.stderr.includes("drop --server"), aliased.stderr);
+  const aliasRepair = cli(neutral, "join", "--space", "alpha", "--creds", revoked.file, "--lifecycle-uid", revoked.uid);
+  check("following aliased-link recovery reaches the registered broker and reports recorded revocation", aliasRepair.status === 2 && aliasRepair.stderr.includes("with auth revoke-credential") && aliasRepair.stderr.includes("--provision"), aliasRepair.stderr);
   await until(() => live.proc.exitCode !== null);
   check("running join ends with its recorded revocation and provisioned recovery", await live.exited === 2 && /Space: +alpha/.test(live.output()) && live.output().includes("with auth revoke-credential") && /cotal auth mint <label>[^`]*--provision/.test(live.output()), live.output());
   const stale = mint(alpha, "alpha", "stale");

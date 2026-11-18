@@ -943,18 +943,20 @@ interface CredentialContext {
   path: string;
   named: boolean;
   serverExplicit?: boolean;
+  linkExplicit?: boolean;
   provision?: boolean;
 }
 
 /** Classify only a broker-rejected credential, using its own grants and recorded local trust. */
 async function rejectCredential(e: ConnectRefusal, server: string, creds: string, context: CredentialContext): Promise<never> {
-  const { space, path, named, serverExplicit = false, provision = false } = context;
+  const { space, path, named, serverExplicit = false, linkExplicit = false, provision = false } = context;
   const owner = spaceInCreds(creds);
   if (owner === undefined) throw e;
   const at = brokerAddressForDisplay(server) ?? "an invalid broker address";
   // An explicit address can name a different broker from the credential's recorded space.
   const ownerMesh = findMesh(owner);
-  const elsewhere = serverExplicit && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
+  const elsewhere = (serverExplicit || linkExplicit) && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
+  const addressFlags = [serverExplicit ? "--server" : undefined, linkExplicit ? "--link" : undefined].filter(Boolean).join(" and ");
   const paired = provision ? "; then join with the lifecycle UID that mint reports" : "";
   if (owner === space) {
     if (elsewhere === undefined) {
@@ -974,11 +976,13 @@ async function rejectCredential(e: ConnectRefusal, server: string, creds: string
       throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path } });
     }
     const message = `credentials rejected at ${at}: ${path} is a credential for space "${owner}", which is registered here at ${elsewhere}, not ${at}`;
-    const remedy = `drop --server to use ${owner}'s broker at ${elsewhere}, or point --server at it`;
+    const remedy = linkExplicit
+      ? `use --space ${owner} without ${addressFlags} to reach ${owner}'s broker at ${elsewhere}, or pass --server ${elsewhere}`
+      : `drop --server to use ${owner}'s broker at ${elsewhere}, or point --server at it`;
     throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, credentialSpace: owner, path, server: at } });
   }
   const message = `credentials rejected at ${at}: ${path} is a credential for space "${owner}"${named ? `, not "${space}"` : ""}`;
-  const use = elsewhere !== undefined ? `use it with --space ${owner} and without --server, which dials ${owner}'s broker at ${elsewhere}` : ownerMesh ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`;
+  const use = elsewhere !== undefined ? `use it with --space ${owner} and without ${addressFlags}, which dials ${owner}'s broker at ${elsewhere}` : ownerMesh ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`;
   const claims = provision ? credsClaims(creds) : undefined;
   const grants = claims?.name === "agent" ? grantMintFlags(agentGrants(claims.nats ?? {}, owner)) : "";
   const remedy = `${use}${named ? `, or mint one for "${space}" with \`cotal auth mint <label> --space ${space}${grants}${provision ? " --provision" : ""} --out <file>\`${paired}` : ""}`;

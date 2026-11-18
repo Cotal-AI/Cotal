@@ -554,6 +554,9 @@ that space is still registered at the broker being dialed. The replacement agent
 adds `--provision`, and the next join uses the lifecycle UID that mint reports.
 With `--server` and no named space, a cross-space refusal identifies the credential's space without
 presenting a default as the target or suggesting a mint for it.
+When a join's address comes from `--link`, recovery names `--link` instead of telling you to remove
+an absent `--server`. If both flags were passed, recovery removes both so the link cannot keep
+sending the credential to the wrong broker. Naming the credential's space then uses its registered broker.
 
 A manifest's `space:` is the target of native `up -f` and the new team
 check/boot/deploy routes. A `--space` that names another space is refused before

@@ -215,7 +215,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
-    credentialContext = values.creds ? { space, path: values.creds, named, serverExplicit: (values.server ?? link?.servers) !== undefined, provision: true } : undefined;
+    credentialContext = values.creds ? { space, path: values.creds, named, serverExplicit: values.server !== undefined, linkExplicit: link !== undefined, provision: true } : undefined;
     await reachableOrThrow(server, auth, credentialContext);
     if (values.creds) checkCredentialJoin(auth.creds!, space, lifecycleUid!, channel);
   } else {
