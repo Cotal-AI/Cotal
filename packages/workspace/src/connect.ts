@@ -422,6 +422,9 @@ export function preflightCode(failure: PreflightFailure): RefusalCode {
     case "unreachable":
     case "slow-link":
     case "broker-stopped":
+    case "non-nats-listener":
+    case "auth-unsupported":
+    case "jetstream-unsupported":
       return "TARGET_UNAVAILABLE";
     case "registry-open-now-auth":
     case "open-wants-auth":

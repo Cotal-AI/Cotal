@@ -354,7 +354,9 @@ the skip member while `spawn` lands on a sibling, the command was not run, and t
 re-issues or pins `--on`. `status` reports `classSpawn: false` when that skip is in effect.
 When no manager takes the class queue, the broker answers an unpinned `spawn` with no
 responders, and the caller classifies that `not-executed` (SPEC 13.3).
-A manager that can launch some connectors keeps the class rail. If the queue hands it a
+A launch, model catalog or status read rechecks unavailable applications on the Manager's PATH.
+When the first application becomes available, the Manager subscribes to class `spawn` and `launch`
+without restarting. A manager that can launch some connectors keeps the class rail. If the queue hands it a
 harness its inventory marked unavailable, the refusal names `--on` because the standing serve
 credential cannot read sibling inventories. Pin the capable instance (the whole id, as `ps`
 prints it).
