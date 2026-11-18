@@ -1,6 +1,13 @@
 # Desktop acceptance status
 
-Updated 2026-11-18 at 00:43Z.
+Updated 2026-11-18 at 02:23Z.
+
+## Post-cut refresh
+
+Core `176546fd` confirms 0.166.3 published and authorizes one PR 6411 push, then its automatic run, with no second dispatch. Only after that run is terminal may PR 7392 receive its one new-builder-mode push.
+
+Refreshed candidate `a01373270fee89d629d1f0263273741d27226ad7` merges actual current main `b30e9a29b3b887f3e34ef0d3bcbdcabd0350b363`. The desktop tree, render driver and timeout workflow are byte-identical to the locally motion-tested held head. Exact refreshed binary build, desktop tests (149 passed, 1 Windows skip), E2E tests (216 passed, 5 native/external skips) and both desktop TypeScript configurations passed on the approved executor. These checks do not transfer the previous native run to this new source.
+
 
 ## Local motion proof
 
@@ -29,6 +36,6 @@ Original run `44201140712` on `cc3334ccec` passed all five native platform jobs,
 
 Windows NSIS and MSI presence receipts explicitly report `taskbarNameProven: false`. Taskbar naming remains unproven and is not waived. The combined recovered-preference/HKLM native fault coordinate and issue 7210's new repair modes remain unrun.
 
-## Hold
+## Publication routing
 
-**Local commits only. Hold the push until core explicitly posts the 0.166.3 cut and grants the push word. No workflow dispatch, hosted rerun or additional push is authorized before then.** Core owns the first native run of repair PR 7392's new builder modes after that word. Both PRs remain drafts.
+The earlier hold was lifted by core `176546fd`. One desktop push is authorized for this refreshed timeout/status head. Let the automatic run finish before one repair PR 7392 push for its new builder modes. Do not dispatch a duplicate workflow or infer additional push/rerun permission. Taskbar naming remains unproven. Both PRs remain drafts.
