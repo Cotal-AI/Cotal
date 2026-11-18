@@ -4,9 +4,9 @@
 import { closeSync, existsSync, linkSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
-  CommandFailure, commandIsCotalServiceManager, identityLegacyWarning, identityUncertaintyRefusal, localProcessPath, parsePid, probeLiveness,
+  CommandFailure, assertRecordIdentity, commandIsCotalServiceManager, identityLegacyWarning, identityUncertaintyRefusal, localProcessPath, parsePid, probeLiveness,
   readPidfile, readProcessCommand, removePidPair, requestLocalStop, stopReservationPath, verifyIdentityPin,
-  type LocalProcess, type LocalProcessContext,
+  type LocalProcess, type LocalProcessContext, type ProcessIdentityRecord,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -138,6 +138,8 @@ export async function stopLocalProcess(
 
   let stopped = false;
   let authorized = false;
+  let stoppedPin: ProcessIdentityRecord | undefined;
+  const changedRecord = () => new Error(`${component.label} record at ${pidPath} changed during shutdown. The replacement record was kept. Run the command again.`);
   const cooperative = process.platform === "win32" && component.cooperativeStop === true;
   let cleanupRequest: ((gone: boolean) => void) | undefined;
   try {
@@ -160,9 +162,11 @@ export async function stopLocalProcess(
     // start clears the stale record: the recorded process is gone and the live one is
     // not signalled, whichever component the record belongs to.
     const identity = verifyIdentityPin(pidPath);
+    if (readPidfile(pidPath) !== rawPid || ((identity.kind === "match" || identity.kind === "mismatch") && identity.record.pid !== pid)) throw changedRecord();
     if (identity.kind === "mismatch") {
+      if (options.pid !== undefined) return false;
+      if (!removePidPair(pidPath, rawPid, identity.record)) throw changedRecord();
       console.error(`! removed the stale ${component.label} record ${pidPath}: pid ${pid} was reused by another process`);
-      stopped = true;
       return true;
     }
     // One attribution, from the descriptor, and only where the pin has nothing to say (#1528, #3701).
@@ -191,8 +195,8 @@ export async function stopLocalProcess(
     // will be sent. Clear that stale record directly, preserving the hook's documented placement
     // immediately before SIGTERM and avoiding a false "identity is not pinned" refusal on cleanup.
     if (identity.kind === "gone") {
+      if (!removePidPair(pidPath, rawPid, "gone")) throw changedRecord();
       console.log(c.dim(`${component.label} (pid ${pid}) was not running.`));
-      stopped = true;
       return true;
     }
     // Native manager service custody exists only on Linux. win32 has no argv source, so its
@@ -205,7 +209,22 @@ export async function stopLocalProcess(
       target: identity.kind === "match" ? identity.record : { pid },
       stopper: { pid: process.pid, marker },
     };
+    if (identity.kind === "match") stoppedPin = identity.record;
+    // The authorization hook can outlast a process. Check the same incarnation again before any
+    // signal, and never escalate at a PID that changed hands while we waited.
+    const state = () => {
+      if (!stoppedPin) return probeLiveness(pid);
+      const current = assertRecordIdentity(stoppedPin);
+      return current.kind === "match" ? "alive" : current.kind === "unpinned" ? "unknown" : "dead";
+    };
     options.beforeSignal?.(attempt);
+    if (readPidfile(pidPath) !== rawPid) throw changedRecord();
+    const before = state();
+    if (before === "dead") { stopped = true; return true; }
+    if (stoppedPin) {
+      const current = verifyIdentityPin(pidPath);
+      if (current.kind !== "match" || current.record.pid !== pid || current.record.token !== stoppedPin.token) throw changedRecord();
+    }
     try {
       if (cooperative) cleanupRequest = requestLocalStop(pidPath, attempt);
       else process.kill(pid, "SIGTERM");
@@ -227,29 +246,26 @@ export async function stopLocalProcess(
     // Cooperative authentication can spend fifteen seconds reading the stopper's native identity;
     // allow that bound and the daemon's cleanup before escalation, without waiting for a lease TTL.
     const graceDeadline = Date.now() + (cooperative ? 20_000 : 15_000);
-    while (probeLiveness(pid) !== "dead" && Date.now() < graceDeadline) await sleep(100);
-    if (probeLiveness(pid) !== "dead") {
+    while (state() !== "dead" && Date.now() < graceDeadline) await sleep(100);
+    const afterGrace = state();
+    if (afterGrace === "alive" || (!stoppedPin && afterGrace === "unknown")) {
       try { process.kill(pid, "SIGKILL"); } catch { /* raced to exit */ }
       const hardDeadline = Date.now() + 3_000;
-      while (probeLiveness(pid) !== "dead" && Date.now() < hardDeadline) await sleep(100);
+      while (state() !== "dead" && Date.now() < hardDeadline) await sleep(100);
     }
-    if (probeLiveness(pid) !== "dead")
+    if (state() !== "dead")
       throw new Error(`${component.label} (pid ${pid}) did not exit, or its death could not be confirmed; its pidfile was preserved`);
     stopped = true;
     console.log(c.green(`✓ stopped ${component.label} (pid ${pid})`));
     return true;
   } finally {
     signalled = undefined;
-    // Remove the pidfile ONLY when we confirmed a clean stop: `stopped` is set exclusively on an
-    // ESRCH-proven death (already-gone, or a confirmed exit). Every other exit from the try above is
-    // a throw that must PRESERVE the record - an unattributable pidfile, a process we could not
-    // signal, or a death we could not confirm (`unknown`). The old `|| !isAlive(pid)` clause treated
-    // `unknown` as gone and deleted a live process's record; it is gone.
-    // The pin goes with the pidfile (#969), and only while the pidfile still names the stopped pid: a
-    // publish that committed a successor meanwhile is left whole (#1238).
+    // Remove only a settled record. An unknown exit keeps the pair, and a same-PID successor's
+    // creation pin keeps its new pair intact (#969, #1238).
     try {
-      if (stopped) removePidPair(pidPath, rawPid);
-      else if (authorized) options.afterFailedSignal?.();
+      if (stopped) {
+        if (!removePidPair(pidPath, rawPid, stoppedPin)) throw changedRecord();
+      } else if (authorized) options.afterFailedSignal?.();
     } finally {
       // Both cleanups stay under this attempt's reservation, even when either one throws.
       try { cleanupRequest?.(stopped); }

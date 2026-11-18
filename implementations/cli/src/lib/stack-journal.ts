@@ -921,10 +921,12 @@ export function stackMemberRecord(space: string, path: string): { definition: st
 }
 
 /** Remove the records under the root that front no process, `gone` and `reused` ones, and return
- *  them. Each is removed with its pin, only while its pidfile still reads as it did. */
+ *  them. Each is removed with its pin, only while its pidfile still reads as it did and the
+ *  process is still gone or reused. */
 export function removeStaleLocalRecords(root: string, space: string): LocalRecord[] {
   const stale = localRecords(root, space).filter((row) => row.state !== "live");
-  for (const row of stale) removePidPair(join(root, row.path), row.raw);
+  for (const row of stale)
+    if (!removePidPair(join(root, row.path), row.raw, "stale")) throw new Error(`${row.path} changed before stale record cleanup. Its record was kept.`);
   return stale;
 }
 
