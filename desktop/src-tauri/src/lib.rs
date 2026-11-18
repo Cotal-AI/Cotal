@@ -195,6 +195,10 @@ mod tests {
     #[test]
     fn only_closed_requests_are_admitted() {
         assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"status"}"#).is_ok());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"log"}"#).is_ok());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"log","path":"/foreign"}"#).is_err());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"log","limit":1000000}"#).is_err());
+        assert!(DesktopRequest::Log {}.validate().is_ok());
         for input in [
             r#"{"op":"exec","command":"sh"}"#,
             r#"{"op":"status","args":[]}"#,
