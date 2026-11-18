@@ -1,16 +1,17 @@
 /**
- * A Claude spawn delivers its initial prompt as the first turn or refuses the launch.
+ * A Claude spawn delivers its initial prompt as the first turn, whatever the prompt's text.
  *
- * `claude` takes the prompt as its leading positional, and its parser reads a positional that
- * starts with `-` as an option. The connector therefore refuses such a prompt, and a `--resume` id
- * that starts with `-`, before anything starts. This suite drives the built binary the way a user
- * does: `cotal ext seed`, `cotal up --open --detach`, then `cotal spawn --foreground --agent claude`
- * against a `claude` found by name on PATH. That `claude` is a recorder the suite writes, so each
- * cell reads the argv the connector really handed the harness.
+ * `claude` takes the prompt as its leading operand. Its parser reads an operand that names one of
+ * its subcommands as that subcommand, and any argument that starts with `-` as an option. The
+ * connector carries the prompt after one leading space, which no command name or option begins
+ * with, and refuses a `--resume` id that starts with `-`. This suite drives the built binary the way
+ * a user does: `cotal ext seed`, `cotal up --open --detach`, then `cotal spawn --agent claude` in the
+ * foreground and through the stack's manager, against a `claude` found by name on PATH. That
+ * `claude` is a recorder the suite writes, so each cell reads the argv the connector really handed
+ * the harness. What the real `claude` does with that argv is measured by hand, not here.
  *
- * The control cells are what keep a refuse-everything guard from passing: a plain prompt must reach
- * `claude` as its first argument, a prompt with a `-` inside it must too, and a plain resume id must
- * reach it as the value of `--resume`.
+ * A plain prompt and a prompt with a `-` inside it are the controls: they must arrive unchanged
+ * apart from the leading space, and a plain resume id must reach `claude` as the value of `--resume`.
  *
  * HOME, COTAL_HOME and XDG_CONFIG_HOME are scratch, and no COTAL_*, CLAUDE_* or ANTHROPIC_*
  * variable reaches a child. Kills only what it starts. Needs nats-server on PATH; `pnpm build` first.
@@ -77,43 +78,60 @@ const launches = (): string[][] => {
 };
 
 const root = join(scratch, "project");
+const seatDir = join(scratch, "seat");
+mkdirSync(seatDir, { recursive: true });
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nrole: tester\n---\nYou are a test seat.\n");
+// A managed launch is refused unless Claude's own user config declares the `cotal` server, as
+// `cotal setup` would leave it.
+writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { cotal: { command: "node", args: ["cotal-seat"] } } }));
 const anchor = recordSmokeSandbox({ root, cotalHome, xdgConfigHome: xdg });
 let up = false;
 try {
   const seeded = cotal(scratch, undefined, "ext", "seed");
   if (seeded.status !== 0) throw new Error(`ext seed failed:\n${seeded.out}`);
-  const started = cotal(root, anchor, "up", "--detach", "--open", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`);
+  const started = cotal(root, anchor, "up", "--detach", "--open", "--server", `nats://127.0.0.1:${await freePort()}`);
   if (started.status !== 0) throw new Error(`up failed:\n${started.out}`);
   up = true;
 
   let n = 0;
   const spawn = (...extra: string[]) =>
     cotal(root, anchor, "spawn", "--foreground", "--file", join(root, ".cotal", "agents", "probe.md"), "--agent", "claude", "--name", `probe${++n}`, ...extra);
+  // The manager path: the same connector, launched by the stack's manager through its pty runtime.
+  // The recorder exits at once, so the spawn's verdict is not graded here, only what claude received.
+  const detached = (prompt: string) =>
+    cotal(root, anchor, "spawn", "probe", "--detach", "--agent", "claude", "--name", `managed${++n}`, "--cwd", seatDir, `--prompt=${prompt}`);
+  /** The prompt is one operand, ahead of every option the connector adds, carried after one space. */
+  const carried = (argv: string[][], prompt: string) =>
+    argv.length === 1 && argv[0]![0] === ` ${prompt}` && argv[0]![1] === "--dangerously-load-development-channels";
 
-  console.log("claude connector: the initial prompt is the first turn or the launch is refused");
+  console.log("claude connector: the initial prompt is always the first turn, whatever its text");
 
-  {
-    const r = spawn("--prompt", "greet the operator");
+  const shapes: Array<[string, string]> = [
+    ["a plain prompt", "greet the operator"],
+    ["a prompt equal to a claude subcommand name", "mcp"],
+    ["a prompt that starts with '-'", "--version"],
+    ["a Markdown-list prompt", "- item one\n- item two"],
+    ["a prompt with a dash inside it", "review the a-b diff -- carefully"],
+  ];
+  for (const [what, prompt] of shapes) {
+    const r = spawn(`--prompt=${prompt}`);
     const argv = launches();
-    check("control: a plain prompt reaches claude as its first argument", r.status === 0 && argv.length === 1 && argv[0]![0] === "greet the operator", { status: r.status, argv, out: r.out });
-  }
-  {
-    const r = spawn("--prompt", "review the a-b diff -- carefully");
-    const argv = launches();
-    check("control: a prompt with a dash inside it is delivered unchanged", r.status === 0 && argv.length === 1 && argv[0]![0] === "review the a-b diff -- carefully", { status: r.status, argv, out: r.out });
-  }
-  {
-    const r = spawn("--prompt=--version");
-    const argv = launches();
-    check("a prompt that starts with '-' is refused before claude starts", r.status !== 0 && argv.length === 0, { status: r.status, argv, out: r.out });
-    check("...and the refusal names the rule", r.out.includes("an initial prompt cannot start with '-'"), r.out);
+    check(`foreground: ${what} reaches claude as its first operand`, r.status === 0 && carried(argv, prompt), { status: r.status, argv, out: r.out });
   }
   {
     const r = spawn("--prompt=  -p");
     const argv = launches();
-    check("a prompt that starts with '-' after its leading blanks is refused too", r.status !== 0 && argv.length === 0, { status: r.status, argv, out: r.out });
+    check("foreground: a prompt's leading blanks are trimmed before it is carried", r.status === 0 && carried(argv, "-p"), { status: r.status, argv, out: r.out });
+  }
+  for (const [what, prompt] of shapes.slice(1, 3)) {
+    const r = detached(prompt);
+    let argv: string[][] = [];
+    for (let i = 0; i < 60 && argv.length === 0; i++) {
+      argv = launches();
+      if (argv.length === 0) await new Promise((done) => setTimeout(done, 500));
+    }
+    check(`managed: ${what} reaches claude as its first operand`, carried(argv, prompt), { status: r.status, argv, out: r.out });
   }
   {
     const r = spawn("--resume", "0b6f1c2e-5d4a-4f3b-9e8d-7c6b5a493827");

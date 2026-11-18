@@ -355,14 +355,9 @@ export const claudeConnector: Connector = {
     // so a driving session can greet the operator the moment it joins.
     // A prompt with no text in it cannot be submitted as a turn: refuse the launch rather than start
     // a seat that quietly ignores what the operator passed (same rule as the other connectors).
-    // `claude` reads a leading positional that starts with `-` as an option, so such a prompt is
-    // refused rather than delivered as something other than the first turn. `--` is no carrier:
-    // after it `claude` still runs a subcommand whose name the prompt matches.
     const prompt = opts.prompt === undefined ? undefined : opts.prompt.trim();
     if (prompt === "")
       throw new Error("claude connector: an initial prompt was given but it is empty, there is no first turn to submit");
-    if (prompt?.startsWith("-"))
-      throw new Error("claude connector: an initial prompt cannot start with '-' (claude reads it as an option); reword it");
     // `--resume` takes an optional value, so `claude` reads an id that starts with `-` as the next
     // option and resumes nothing. A Claude session id never starts with one.
     if (opts.resume?.startsWith("-"))
@@ -381,8 +376,13 @@ export const claudeConnector: Connector = {
     // included) for one session; verified live that it fires SessionStart/UserPromptSubmit/
     // Stop/SessionEnd with this exact hooks.json. The plugin's own .mcp.json riding along is
     // deduplicated by Claude against the explicit server with the same command and arguments.
+    // `claude` reads its first operand as a subcommand when the text names one, and any argument that
+    // starts with `-` as an option; `--` does not stop the subcommand match. The prompt therefore
+    // goes out with one leading space: no command name and no option starts with a space, so the
+    // text is always the first turn. Claude submits it as written, space included (measured on
+    // 2.1.327 for prompts equal to a command name, starting with `-`, and a Markdown list).
     const args = prompt
-      ? [prompt, "--dangerously-load-development-channels", CHANNEL_REF, "--plugin-dir", PLUGIN_ROOT]
+      ? [` ${prompt}`, "--dangerously-load-development-channels", CHANNEL_REF, "--plugin-dir", PLUGIN_ROOT]
       : ["--dangerously-load-development-channels", CHANNEL_REF, "--plugin-dir", PLUGIN_ROOT];
 
     // Pre-allow fetching the public Cotal docs so a doc-grounded persona (e.g. david)

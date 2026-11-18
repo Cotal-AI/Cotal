@@ -40,9 +40,11 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   channel did not bind joins the mesh, reports idle and never answers a turn or a direct message.
   `cotal status` reports the entry under `Claude wake channel`.
 
-- `--prompt` is Claude's leading argument, delivered as its first turn. A prompt that is empty or
-  starts with `-` refuses the launch, because Claude would read it as an option. A `--resume` id
-  that starts with `-` is refused for the same reason.
+- `--prompt` is Claude's first turn. The connector passes it as Claude's leading argument after one
+  space, so a prompt that names a Claude command or starts with `-` still arrives as the turn. An
+  empty prompt refuses the launch. A `--resume` id that starts with `-` is refused, because Claude
+  would read it as an option. Values given through `--opt` are passed to Claude as written and are
+  not covered by these rules.
 
 - **Tool permissions.** A managed seat has no human at its terminal, so it launches with
   `--permission-mode bypassPermissions`: a prompt under the default mode would stop its first mesh
