@@ -111,6 +111,7 @@ import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../../implementations/auth/src/lifecycle-registry.js";
 import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
+import { processBirth } from "../daemon/lifetime.js";
 import { daemonConnectIntentFile } from "../daemon/service.js";
 import { runSetup } from "../daemon/setup.js";
 import { serveDaemon } from "../daemon/server.js";
@@ -119,6 +120,7 @@ import { unitReceiptFile } from "../daemon/install.js";
 if (process.platform !== "linux") skipSuite(`daemon-service-connect smoke: Linux only; skipped on ${process.platform}`);
 const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
 const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
+const retiredAppRuntime = process.env.COTAL_DAEMON_RETIRED_APP_RUNTIME;
 const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
 const manualAdmissionEmpty = process.argv.includes("--manual-admission-empty-repro");
 const manualAdmissionRace = manualAdmissionEmpty || process.argv.includes("--manual-admission-race-repro");
@@ -538,7 +540,7 @@ try {
   const filesUnder = (dir: string) => existsSync(dir) ? readdirSync(dir, { recursive: true }).map(String) : [];
   /** A real unit and receipt in the fixture manager's reported directory. Operational native
    *  calls reach only an owned recorder; the default fixture admits directory reads only. */
-  const seedUnitReceipt = (entry = join(repo, "bin/dist/cotal.js"), marked = false): string => {
+  const seedUnitReceipt = (entry = join(repo, "bin/dist/cotal.js"), marked = false, node = process.execPath): string => {
     const native = join(root, "native"), config = join(root, "config");
     mkdirSync(native, { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "systemd", "user"), { recursive: true, mode: 0o700 });
@@ -546,7 +548,7 @@ try {
     process.env.PATH = `${native}:${originalPath ?? ""}`;
     const unit = explicitHome ? `cotal-daemon-${createHash("sha256").update(explicitHome).digest("hex").slice(0, 16)}.service` : "cotal-daemon.service";
     const unitPath = join(config, "systemd", "user", unit);
-    const unitBytes = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nExecStart="${process.execPath}" "${entry}" daemon serve${explicitHome ? ` --daemon-home "${explicitHome}"` : ""}\n${marked ? "Environment=COTAL_DAEMON_NATIVE_SERVICE=1\n" : ""}Restart=always\n\n[Install]\nWantedBy=default.target\n`;
+    const unitBytes = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nExecStart="${node}" "${entry}" daemon serve${explicitHome ? ` --daemon-home "${explicitHome}"` : ""}\n${marked ? "Environment=COTAL_DAEMON_NATIVE_SERVICE=1\n" : ""}Restart=always\n\n[Install]\nWantedBy=default.target\n`;
     writeFileSync(unitPath, unitBytes, { mode: 0o600 });
     mkdirSync(paths.state, { recursive: true, mode: 0o700 });
     writeFileSync(unitReceiptFile(paths), `${JSON.stringify({ v: 1, unit, unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString(), ...(explicitHome ? { daemonHome: explicitHome } : {}) })}\n`, { mode: 0o600 });
@@ -2075,6 +2077,7 @@ process.stdin.once('data', () => {
         }
       }
       let cliEntry = process.env.CUSTODY_RELEASE_ENTRY ?? join(repo, "bin", "dist", "cotal.js");
+      let cliNode = process.execPath;
       const npmRun = async (args: string[]) => {
         const child = spawn("npm", args, { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let output = "";
@@ -2099,6 +2102,24 @@ process.stdin.once('data', () => {
         seedUnitReceipt(cliEntry, true);
       }
       const connectorUpgrade = process.argv.includes("--upgrade-connectors-repro");
+      if (retiredAppRuntime) {
+        cliEntry = join(retiredAppRuntime, "dist/cotal.js");
+        cliNode = join(retiredAppRuntime, "../../MacOS/cotal-node");
+        seedUnitReceipt(cliEntry, true, cliNode);
+        const fixturePackage = join(root, "daemon-smoke-connector");
+        renameSync(pkg, fixturePackage);
+        const index = join(fixturePackage, "index.js");
+        writeFileSync(index, readFileSync(index, "utf8").replace(JSON.stringify(coreUrl), '"@cotal-ai/core"'));
+        rmSync(join(prefix, "extensions.json"));
+        const added = spawnSync(cliNode, [cliEntry, "ext", "add", fixturePackage], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+        assert.equal(added.status, 0, added.stdout + added.stderr);
+        console.log("  retired runtime: public ext add exited 0");
+        const version = JSON.parse(readFileSync(join(retiredAppRuntime, "package.json"), "utf8")).version;
+        for (const [file, data] of [["stamp.json", { generation: version }], ["witness.json", { initialized: true, firstGeneration: version }]] as const) {
+          writeFileSync(join(root, "config", "cotal", "seed", file), JSON.stringify(data));
+        }
+        saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+      }
       if (upgrading) {
         const fixturePackage = join(root, "daemon-smoke-connector");
         renameSync(pkg, fixturePackage);
@@ -2149,7 +2170,7 @@ process.stdin.once('data', () => {
           check("D1 setup frames contain no session or JWT", !out.includes(SESSION) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(out));
           return { code: frame.ok ? 0 : 2, doc: { result: frame.result, error: frame.error ? { ...frame.error, cause: frame.error.native } : undefined } as Record<string, any>, err: progress.join("\n") };
         }
-        const child = spawn(process.execPath, [cliEntry, "daemon", ...args, ...(explicitHome ? ["--daemon-home", explicitHome] : []), "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(cliNode, [cliEntry, "daemon", ...args, ...(explicitHome ? ["--daemon-home", explicitHome] : []), "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let out = "", err = "";
         child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
         const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
@@ -2168,7 +2189,7 @@ process.stdin.once('data', () => {
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
         const servicePath = process.argv.includes("--setup-path-repro") || process.argv.includes("--account-setup-journey") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
         let recoveryRestarts = 0;
-        const launch = () => spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(!upgrading || !process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro") ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
+        const launch = () => spawn(cliNode, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(!upgrading || !process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro") ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
         let child = launch();
         const attach = () => {
           child.stdout.on("data", chunk => { if (process.argv.includes("--rollback-busy-repro")) console.log("RB DAEMON STDOUT", String(chunk)); });
@@ -2924,7 +2945,7 @@ process.stdin.once('data', () => {
           return;
         }
         if (!claudeWakeOnly) check(explicitHome ? "Explicit-home manager-start returns answering hosted Manager" : "H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
-        if (!explicitHome && !claudeWakeOnly) {
+        if (!explicitHome && !claudeWakeOnly && !retiredAppRuntime) {
           check("H0 fresh setup prints device URL and code on stderr", setup.err.includes(`${idpOrigin}/approve?code=DAEMON`) && setup.err.includes("Approval code") && setup.err.includes("DAEMON"));
           check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
         }
@@ -2975,6 +2996,40 @@ process.stdin.once('data', () => {
           const human = await plainCommand("status", "--space", ON);
           assert.equal(human.code, 0);
           assert.ok(!human.out.includes("Last refusal:"), "human status omits the superseded refusal");
+          return;
+        }
+        if (retiredAppRuntime) {
+          assert(manager.connectors?.some((connector: { agent: string; state: string }) => connector.agent === "daemon-smoke" && connector.state === "available"));
+          const observeCli = async (...args: string[]) => {
+            const command = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
+            let out = "", err = "";
+            command.stdout.on("data", b => { out += String(b); });
+            command.stderr.on("data", b => { err += String(b); });
+            const code = await new Promise<number | null>((resolve, reject) => { command.once("error", reject); command.once("close", resolve); });
+            return { code, out, err };
+          };
+          const app = join(retiredAppRuntime, "../../..");
+          const birth = processBirth(manager.pid);
+          assert(birth);
+          renameSync(app, `${app}.retired`);
+          try {
+            assert(!existsSync(cliEntry) && !existsSync(cliNode));
+            const observe = await observeCli("ps", "--on", manager.instanceId, "--space", ON, "--json");
+            assert.equal(observe.code, 0, observe.out + observe.err);
+            assert(JSON.parse(observe.out).result.managers.some((row: any) => row.instanceId === manager.instanceId && row.state === "answered"), observe.out);
+            console.log(`  retired runtime: public ps answered on original instance ${manager.instanceId}`);
+            const launch = await observeCli("spawn", "--agent", "daemon-smoke", "--on", manager.instanceId, "--name", "retired_runtime_seat", "--detach", "--no-events", "--space", ON);
+            console.log(`  retired runtime: public spawn exited ${launch.code}\n${launch.out}${launch.err}`);
+            assert.equal(launch.code, 0, launch.out + launch.err);
+            const after = await observeCli("ps", "--on", manager.instanceId, "--space", ON, "--json");
+            assert.equal(after.code, 0, after.out + after.err);
+            const seats = JSON.parse(after.out).result;
+            check("retained hosted Manager joins a seat on first use of the installed connector",
+              processBirth(manager.pid) === birth && seats.managers.some((row: any) => row.instanceId === manager.instanceId && row.state === "answered")
+                && seats.items.some((row: any) => row.name === "retired_runtime_seat" && typeof row.lifecycleUid === "string"), seats);
+          } finally {
+            renameSync(`${app}.retired`, app);
+          }
           return;
         }
         if (process.argv.includes("--update-stop-agents-repro")) {

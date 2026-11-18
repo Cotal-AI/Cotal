@@ -81,6 +81,73 @@ try {
     otherSelection.result.selected.space !== "status-broker" && nats(otherSelection)?.state === "running" && nats(otherSelection)?.pid === brokerPid, otherSelection);
   const plain = run("status", "--plain");
   check("plain status keeps controller members under Owned services", plain.status === 0 && plain.stdout.includes("Controller stack") && plain.stdout.includes("stack-broker") && !plain.stdout.includes("Legacy local process records"), plain.stdout);
+  const journalPath = join(root, ".cotal", "stack-controller.json");
+  const journalBytes = readFileSync(journalPath);
+  try {
+    writeFileSync(journalPath, '{"schemaVersion":1,"kind":"cotal-stack-');
+    const corrupt = run("status", "--plain");
+    check("a half-written journal never infers legacy membership or a stopped broker",
+      corrupt.status === 4 && corrupt.stdout.includes("no stack membership or stopped state was inferred") &&
+      !corrupt.stdout.includes("Legacy local process records") && !/Broker\s+not started/.test(corrupt.stdout) &&
+      /stack-broker[^\n]+running/.test(corrupt.stdout), corrupt.stdout);
+    const report = status();
+    check("JSON also retains the unknown broker state when its journal is unreadable",
+      report.exit === 4 && nats(report)?.state === "unreadable" && !report.result.folder.storedState, nats(report));
+    rmSync(journalPath);
+    for (const [file, label] of [["manager.7374617475732d62726f6b6572.pid", "Manager"], ["delivery.7374617475732d62726f6b6572.pid", "Delivery"], ["nats.pid", "Broker"]]) {
+      const path = join(root, ".cotal", file!);
+      const before = existsSync(path) ? readFileSync(path) : undefined;
+      try {
+        for (const invalid of ["12abc", "removing:interrupted"]) {
+          writeFileSync(path, invalid);
+          const refused = run("status", "--plain");
+          check(`${label}: unattributable pidfile is partial, named and never not started`,
+            refused.status === 4 && /bad pidfile|extension removal in progress/.test(refused.stdout) &&
+            refused.stdout.includes(`inspect ${path}`) && !new RegExp(`${label}\\s+not started`).test(refused.stdout), refused.stdout);
+          if (label === "Delivery") {
+            const components = run("status", "--components");
+            check("component status agrees about the unattributable delivery pidfile", components.status === 3 && /delivery\s+refused[^\n]*unattributable pidfile/.test(components.stdout), components.stdout);
+          }
+        }
+      } finally { if (before) writeFileSync(path, before); else rmSync(path); }
+    }
+  } finally { writeFileSync(journalPath, journalBytes, { mode: 0o600 }); }
+  for (const file of ["broker.json", "account.7374617475732d62726f6b6572.json"]) {
+    const path = join(root, ".cotal", "auth", file);
+    const before = readFileSync(path);
+    try {
+      writeFileSync(path, '{"broken":');
+      for (const args of [["status", "--plain"], ["ps", "--plain"], ["doctor", "auth", "--plain"]]) {
+        const refused = run(...args);
+        const text = refused.stdout + refused.stderr;
+        check(`${args[0]} names the broken ${file} and preserves other account records`,
+          refused.status !== 0 && text.includes(file) && /restore[^\n]+from backup/.test(text) &&
+          !text.includes("repair or remove the account record"), text);
+      }
+      check("diagnosis leaves the broken trust record untouched", readFileSync(path, "utf8") === '{"broken":');
+    } finally { writeFileSync(path, before); }
+  }
+  const renewalPath = join(root, ".cotal", "renewal.7374617475732d62726f6b6572.json");
+  const renewalBytes = existsSync(renewalPath) ? readFileSync(renewalPath) : undefined;
+  try {
+    for (const value of ['{"ts":"2026-11-18', '{}', '{"ts":"2026-11-18T11:41:00.000Z","owner":"manager","results":[],"adoption":{"ok":false,"error":"authorization violation"}}']) {
+      writeFileSync(renewalPath, value, { mode: 0o600 });
+      const plain = run("status", "--plain");
+      const component = run("status", "--components");
+      check("unreadable or refused renewal never leaves bare status healthy", plain.status === 4 && /renewal[^\n]*(unreadable|refused)/i.test(plain.stdout + plain.stderr), plain.stdout + plain.stderr);
+      check("unreadable or refused renewal grades delivery refused", component.status === 3 && /delivery\s+refused[^\n]*renewal/.test(component.stdout), component.stdout);
+      const doctor = run("doctor", "auth", "--plain");
+      check("doctor keeps credential rows and a renewal recovery step", [4, 5].includes(doctor.status!) && doctor.stdout.includes("Local credential files") && /restore[^\n]+renewal\.|start or repair this space's manager/.test(doctor.stdout + doctor.stderr), doctor.stdout + doctor.stderr);
+    }
+  } finally { if (renewalBytes) writeFileSync(renewalPath, renewalBytes); else rmSync(renewalPath); }
+  const registryPath = join(cotalHome, "meshes", "space.7374617475732d62726f6b6572.json");
+  const registryBytes = readFileSync(registryPath);
+  try {
+    writeFileSync(registryPath, '{"space":"status-broker","server":"nats://');
+    const refused = run("status", "--components");
+    check("a half-written registry is a refused target row, not an uncaught absent exit",
+      refused.status === 3 && /target\s+refused[^\n]*SCHEMA_INVALID/.test(refused.stdout) && !refused.stdout.includes("Request refused"), refused.stdout);
+  } finally { writeFileSync(registryPath, registryBytes); }
   const pidfile = join(root, ".cotal", "nats.pid");
   if (!brokerPid) throw new Error("positive control has no broker PID");
   writeFileSync(pidfile, `${brokerPid}\n`);

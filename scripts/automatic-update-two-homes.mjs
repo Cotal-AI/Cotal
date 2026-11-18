@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, lstatSync, readdirS
 import { delimiter, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:net';
+import { isMainEntry } from './main-entry.mjs';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 
 /** Two homes share one installed CLI, but each must reconcile its own built-ins before launch. */
@@ -211,7 +212,7 @@ function inventory(output, version) {
   return ['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi', 'web, web-service'].every(name => output.split('\n').some(line => line.trimStart().startsWith(name) && line.trimEnd().endsWith(version)));
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMainEntry(import.meta.url)) {
   const [oldDirectory, targetDirectory, root, route] = process.argv.slice(2);
   assert(oldDirectory && targetDirectory && root, 'usage: automatic-update-two-homes.mjs <old-packed-closure> <target-packed-closure> <new-private-root>');
   await twoHomeUpgrade({ oldDirectory, targetDirectory, root, ...(route ? { routes: [route] } : {}) });
