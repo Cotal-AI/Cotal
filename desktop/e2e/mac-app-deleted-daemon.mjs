@@ -62,6 +62,8 @@ function ok(row) { assert.equal(row.timedOut, false, row.label); assert.equal(ro
 function body(row) { return JSON.parse(ok(row).stdout).result; }
 const npm = (label, args, options) => call(label, process.env.NPM_BIN, args, options);
 async function installArchive(label, version, prefix, callEnv = env) {
+  const historicalBefore = preserving && version === '0.163.2' ? '2026-11-12T21:09:39.000Z' : undefined;
+  if (historicalBefore) callEnv = { ...callEnv, npm_config_before: historicalBefore };
   const official = preserving ? ['--registry=https://registry.npmjs.org/'] : [];
   const metadata = JSON.parse(ok(await npm(`${label} archive metadata`, ['view', `cotal-ai@${version}`, 'dist', '--json', ...official])).stdout);
   assert.match(metadata.integrity, /^sha512-[A-Za-z0-9+/=]+$/);
@@ -72,6 +74,12 @@ async function installArchive(label, version, prefix, callEnv = env) {
   assert.equal(`sha512-${createHash('sha512').update(readFileSync(archive)).digest('base64')}`, metadata.integrity);
   report[`${label}Archive`] = { version, ...metadata, archiveSha256: createHash('sha256').update(readFileSync(archive)).digest('hex') };
   ok(await npm(`${label} official CLI install`, ['install', '--global', '--prefix', prefix, archive, ...official], { callEnv, timeout: 600000 }));
+  if (historicalBefore) {
+    const runtime = join(prefix, 'lib/node_modules/cotal-ai');
+    const nkeys = JSON.parse(readFileSync(join(runtime, 'node_modules/@nats-io/nkeys/package.json'), 'utf8'));
+    assert.equal(nkeys.version, '2.0.3', 'historical runtime must retain the release-time nkeys dependency');
+    report[`${label}Archive`].dependencyResolution = { before: historicalBefore, nkeys: nkeys.version, reason: 'Release-time dependency closure; current nkeys 2.1.0 exports reject this historical core deep import.' };
+  }
 }
 const bundledNode = join(app, 'Contents/MacOS/cotal-node');
 const bundledEntry = join(app, 'Contents/Resources/runtime/dist/cotal.js');
