@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "80b79415d51049ac9c26f77d5abc91715894fbfa",
+  "generatedAt": "0d397ed93d60dab3e9d06adffad5846e826eca35",
   "files": {
     "bin/daemon/account.ts": {
       "no-longer": 1
@@ -56,7 +56,7 @@
       "no-longer": 1
     },
     "extensions/connector-core/src/agent.ts": {
-      "issue-reference": 77,
+      "issue-reference": 78,
       "used-to": 4,
       "previously": 1,
       "no-longer": 4
@@ -546,7 +546,7 @@
       "used-to": 1
     },
     "implementations/manager/src/manager.ts": {
-      "issue-reference": 123,
+      "issue-reference": 122,
       "previously": 1,
       "used-to": 10,
       "no-longer": 12
@@ -570,6 +570,10 @@
     "implementations/manager/src/seat-custody.ts": {
       "used-to": 1,
       "issue-reference": 4
+    },
+    "implementations/manager/src/session-recovery.ts": {
+      "used-to": 1,
+      "issue-reference": 1
     },
     "implementations/manager/src/session/bridge.ts": {
       "issue-reference": 1
@@ -705,7 +709,7 @@
       "issue-reference": 1
     },
     "packages/core/src/endpoint.ts": {
-      "issue-reference": 96,
+      "issue-reference": 98,
       "used-to": 10,
       "no-longer": 15
     },
@@ -920,6 +924,9 @@
       "issue-reference": 3
     },
     "packages/workspace/src/secret-store-fs.ts": {
+      "issue-reference": 1
+    },
+    "packages/workspace/src/service-custody.ts": {
       "issue-reference": 1
     },
     "packages/workspace/src/space-host.ts": {
