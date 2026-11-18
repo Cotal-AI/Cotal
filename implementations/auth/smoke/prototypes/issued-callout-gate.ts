@@ -11,7 +11,7 @@ export function issuedCalloutName(generation: string, inboxNonce: string): strin
 /** Read the generation and nonce from a connection name, `ia1_<generation>_<nonce>` after the
  *  `<owner>-<actor>-` principal prefix the shipped callout requires. */
 export function readIssuedCalloutName(name: string): { generation: string; inboxNonce: string } {
-  const match = /^(?:[A-Za-z0-9_]+-[A-Za-z0-9_]+-)?ia1_([a-f0-9]{32})_([a-f0-9]{32})$/.exec(name);
+  const match = /^[A-Za-z0-9_]+-[A-Za-z0-9_]+-ia1_([a-f0-9]{32})_([a-f0-9]{32})$/.exec(name);
   if (!match) throw new Error("unsupported issued callout connection name");
   return Object.freeze({ generation: match[1], inboxNonce: match[2] });
 }

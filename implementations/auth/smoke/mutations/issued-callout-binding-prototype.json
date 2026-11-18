@@ -30,8 +30,8 @@
     {
       "name": "future callout metadata is accepted",
       "file": "implementations/auth/smoke/prototypes/issued-callout-gate.ts",
-      "find": "/^ia1_([a-f0-9]{32})_([a-f0-9]{32})$/",
-      "replace": "/^ia[12]_([a-f0-9]{32})_([a-f0-9]{32})$/",
+      "find": "-ia1_([a-f0-9]{32})_([a-f0-9]{32})$/",
+      "replace": "-ia[12]_([a-f0-9]{32})_([a-f0-9]{32})$/",
       "expectRed": "legacy and future connection metadata receive no issued fallback",
       "cell": "legacy and future connection metadata receive no issued fallback"
     },
