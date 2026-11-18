@@ -155,6 +155,7 @@
     "smoke:pi-sdk": "tsx extensions/pi/pi-sdk.smoke.ts",
     "smoke:pi-once": "tsx extensions/pi/smoke/once-handoff.smoke.ts",
     "smoke:codex-args": "tsx extensions/connector-codex/smoke/codex-args.smoke.ts",
+    "smoke:claude-refresh-readonly:live": "tsx bin/smoke/claude-refresh-readonly-live.smoke.ts",
     "smoke:codex-setup-refresh": "tsx extensions/connector-codex/smoke/setup-refresh.smoke.ts",
     "smoke:codex-plugin-list-buffer": "tsx extensions/connector-codex/smoke/plugin-list-buffer.smoke.ts",
     "smoke:codex-failed-turn-redrive": "tsx extensions/connector-codex/smoke/failed-turn-redrive.smoke.ts",
