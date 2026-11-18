@@ -1038,7 +1038,7 @@ for (const { alias, cmd } of aliases) {
   refused("an alias's unknown flag writes no seed store", cotal(["sp", "--bogus"]), /Unknown option '--bogus'/);
   refused("an undeclared subcommand writes no seed store", cotal(["ext", "bogus"]), /cotal ext has no subcommand "bogus"/);
   refused("a missing flag value writes no seed store", cotal(["spawn", "--space"]), /--space/);
-  const control = cotal(["sync"]);
+  const control = cotal(["config", "unset", "color", "--user"]);
   check("control: a valid command that is not a read seeds the same sandbox shape", control.status === 0 && control.wrote.length > 0, shown(control));
   // `manager start` replaces `supervise`, which seeds on first run, so it seeds too; the group's
   // other verbs keep the native-maintenance rule and seed nothing.
