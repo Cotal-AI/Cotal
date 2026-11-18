@@ -87,8 +87,8 @@
     },
     {
       "name": "N8 keep the snapshot at the static retirement terminal",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "        await attemptCleanup(failed, `file ${snapshot}`, () => removeInlineSnapshot(this.workspaceRoot, a.lifecycleUid));\n",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
+      "find": "        await attemptCleanup(failed, `file ${snapshot}`, () => removeInlineSnapshot(this.deps.workspaceRoot(), a.lifecycleUid));\n",
       "replace": "",
       "expectRed": "the static retirement terminal removes a snapshot by its lifecycle uid",
       "cell": "the static retirement terminal removes a snapshot by its lifecycle uid"
