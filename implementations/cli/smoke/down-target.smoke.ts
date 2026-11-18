@@ -417,9 +417,9 @@ try {
   );
   const mismatched = await stopPlantedManager(false, "mismatch");
   check(
-    "a pinned manager identity mismatch is refused before SIGTERM and preserves both records",
-    mismatched.managerAlive && mismatched.agentAlive && mismatched.pidfilePreserved && mismatched.pinPreserved === true &&
-      /pid has been reused/.test(mismatched.warning),
+    "a reused manager pid clears both stale records without signalling the unrelated process",
+    mismatched.managerAlive && mismatched.agentAlive && !mismatched.pidfilePreserved && mismatched.pinPreserved === false &&
+      /was reused by another process/.test(mismatched.warning) && !mismatched.warning.includes("\\u000a"),
     mismatched,
   );
   // `down manager` is a named down, so a service stop: the planted manager is not a saved definition,

@@ -91,7 +91,9 @@ interactive terminal it shows the member set and the live manager's native agent
 confirm, then stops manager, delivery and broker in that order. `--yes` acknowledges that scope in
 scripts and prints no plan. The receipt names the mesh once, lists each member with its result in
 stop order, and names `cotal up` as the next step. `--with-agents`
-requests the manager's native retirement policy. Another live service instance in the space
+requests the manager's native retirement policy. Pending native lifecycle work refuses before any
+stop. The refusal lists each blocker and its count and names `cotal ps` to inspect the agents before
+retrying. Another live service instance in the space
 refuses `LIFECYCLE_BLOCKED` before the first stop; the Next names the
 `cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. So does a
 process record under the root that may front a process, such as a daemon an earlier release
@@ -227,6 +229,14 @@ space, such as `send` or `history`, is refused with `DEPENDENCY_UNAVAILABLE`, be
 with the folder, and its Next names the same `down`.
 
 
+On Linux, a default stack started without `space create` also accepts `down --space <space> --yes`
+after its project folder is deleted. It finds this account's retained manager and delivery children
+by their exact space, server and working folder, and its broker by that folder's configuration
+argument. It pins each process's creation identity before stopping it, manager first and broker
+last. The stop never targets a listener by address alone. `--dry-run` lists the processes, and an
+unconfirmed exit keeps the registration and leaves later components running. `space forget` names
+this whole-stack stop while any of those children still runs, even after the broker has exited.
+
 ### Missing home records
 
 If the Cotal home is removed while a controller stack runs, the project's journal still names
@@ -318,8 +328,8 @@ until the TTL and a five-second grace have passed, was left by a daemon that exi
 releasing it, such as one whose broker stalled past its broker-gone window, and `down` goes on.
 A delivery daemon gets two seconds to release shard 0 of its lease after the signal and then exits
 anyway. A signal that lands while its connection redials first waits up to five seconds from the
-drop for the redial. So after it stops, the bare stop reads the lease while the broker still runs.
-When the row
+drop for the redial. So after it stops, the bare stop reads the lease while the broker still runs, even when the daemon
+already exited and removed its pidfile. When the row
 still names the credential this folder gave that daemon, or the lease cannot be read, the credential
 stays and `down` prints a `!` line saying so. The next `up` uses it to wait the row out, as after a
 crash, and then starts the new daemon. These are known-blocker
@@ -482,6 +492,10 @@ An extension-removal reservation in a component's pidfile refuses the stop: it r
 progress while the owner is live, calls the reservation stale only when the owner is proven gone or is
 not a pid, and otherwise refuses without advising deletion because the owner's liveness could not be
 confirmed.
+When a manager starts shutdown, it cancels outstanding readiness waits before draining admitted
+launches. Its default stop then stops its in-process PTY seats, waits for their exit, including
+runtime escalation for a seat that ignores SIGTERM, and deprovisions them before the manager exits.
+
 Whole-stack shutdown keeps delivery credentials until every required component has stopped.
 A refused stop preserves both the space-scoped credential and its legacy copy. Credential removal
 errors remain failures. `down` removes the manager's delivery-aware marker, shutdown intent and
@@ -495,8 +509,9 @@ so a recorded pid alone is not a durable target identity. `up` and the dashboard
 process's creation identity in a sibling `<pidfile>.identity` pin, which holds the pid and the
 process start reported by the OS. Every stop path, including `down` for the broker, web and
 extension components, and the manager, delivery and auth-service stops, applies the same rule. A pin
-that names a different start means the pid was reused, so teardown refuses and preserves it. A
-controller stack's bare `down` signals no such record, so it removes it, as described above. A torn
+that names a different start means the pid was reused. The local stop removes that stale pidfile
+and pin without signalling the unrelated process, and continues stopping later components. A
+controller stack's bare `down` clears the same stale records, as described above. A torn
 or unreadable pin also refuses. On macOS, the reader calls `sysctl` through a bundled Node-API
 binding for x64 or arm64 and records the process start in microseconds. A macOS pin that an earlier
 release wrote holds the `ps -o lstart` start date instead and is verified with that same reader. That

@@ -1,5 +1,17 @@
 # Upgrading a running deployment
 
+## Participant payload history after 0.168.0
+
+Participant connections can read retained tool payloads for their own owner and for foreign
+event channels granted by full name. Chat and event-channel wildcards still grant no foreign
+payload access. Live payload subscriptions are unchanged.
+
+For user-auth spaces, update and restart the auth callout, then reconnect participant readers
+so it issues the corrected history-consumer grants. Updating only the reader leaves the old
+broker permissions in place. Static spaces must reissue participant credentials with this version
+and reconnect readers with those credentials. The delivery daemon needs no update or restart for
+this fix. Retained payloads need no migration.
+
 ## Durable channel leave after 0.166.0
 
 From 0.166.0 a channel leave retires every open durable membership the principal holds on that
