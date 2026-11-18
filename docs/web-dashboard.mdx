@@ -65,9 +65,9 @@ cotal auth mint dashboard --space main --no-persona --allow-subscribe general --
 cotal service start web --space main --no-read-only --posting-creds /absolute/private/dashboard-posting.creds
 ```
 
-`service start` and `service add` refuse either flag without the other and save nothing. A saved
-definition left with only one of them, from a file or from a later start that changed one, is
-refused when it starts, naming the remove and add that fix it.
+`service start` and `service add` refuse either flag without the other and save nothing. A
+definition saved from a file with only one of them is refused when it starts, naming the remove and
+add that fix it.
 
 Select #general in Channels, enter text in the composer, and choose Send.
 Posts use the separate credential's identity, labelled `operator`, and preserve mentions.
