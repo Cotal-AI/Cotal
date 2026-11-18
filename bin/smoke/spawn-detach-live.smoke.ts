@@ -259,7 +259,9 @@ try {
     ok("Jcode startup failure names its private diagnostic log", isCommandFailure(jcodeFailure) && jcodeFailure.message.includes("connector-") && jcodeFailure.message.includes(".log"), String(jcodeFailure));
     const hermesFailure = await failedLaunch("hermes", "failed_hermes", ["--model", "test-model"]);
     ok("Hermes gateway exit fails instead of reporting joined", isCommandFailure(hermesFailure) && hermesFailure.message.includes("run auth login to reauthenticate"), String(hermesFailure));
-    fixture("hermes", "const fs=await import('node:fs');const net=await import('node:net');const token=JSON.parse(fs.readFileSync(process.env.COTAL_LAUNCH_MATERIAL,'utf8')).controlToken;const s=net.connect(process.env.COTAL_BRIDGE_SOCKET,()=>s.write(JSON.stringify({t:'subscribe',token})+'\\n'));setInterval(()=>{},60000);");
+    // The stand-in gateway subscribes as the plugin does: with the bridge token derived from the
+    // launch material's control key, HMAC-SHA256 over `cotal-hermes-bridge/<version>`.
+    fixture("hermes", "const fs=await import('node:fs');const net=await import('node:net');const {createHmac}=await import('node:crypto');const m=JSON.parse(fs.readFileSync(process.env.COTAL_LAUNCH_MATERIAL,'utf8'));const token=createHmac('sha256',Buffer.from(m.controlKey,'utf8')).update('cotal-hermes-bridge/'+m.controlVersion,'utf8').digest('base64url');const s=net.connect(process.env.COTAL_BRIDGE_SOCKET,()=>s.write(JSON.stringify({t:'subscribe',token})+'\\n'));setInterval(()=>{},60000);");
     const hermesJoined = await capture(() => run("spawn", ["poet", "--detach", "--agent", "hermes", "--space", SPACE, "--name", "ready_hermes", "--model", "test-model"]));
     ok("Hermes joins after its authenticated bridge subscribes without --no-events", joinedAs(hermesJoined, "ready_hermes"), hermesJoined);
     await capture(() => run("stop", ["--name", "ready_hermes", "--space", SPACE]));

@@ -68,7 +68,7 @@ const FORBIDDEN = [
   "COTAL_CREDS",
   "COTAL_SERVERS",
   "COTAL_TOKEN",
-  "COTAL_CONTROL_TOKEN",
+  "COTAL_CONTROL_KEY",
   "COTAL_OWNER",
   "COTAL_ACTOR",
   "COTAL_SENTINEL_CREDS",
@@ -313,11 +313,11 @@ console.log("✓ A6b: the named user-mode identity keeps all four writer round t
 {
   assert.throws(
     () => controlFromEnv({ COTAL_CONTROL_SOCKET: "/tmp/cotal-nonexistent.sock" } as NodeJS.ProcessEnv),
-    /COTAL_CONTROL_SOCKET is set but no control token could be resolved/,
+    /COTAL_CONTROL_SOCKET is set but no control key could be resolved/,
     "A8: a socket with no resolvable token was reported as no control plane rather than a broken one",
   );
   assert.throws(
-    () => controlFromEnv({ COTAL_CONTROL_TOKEN: "orphan-token" } as NodeJS.ProcessEnv),
+    () => controlFromEnv({ COTAL_CONTROL_KEY: "orphan-token" } as NodeJS.ProcessEnv),
     /COTAL_CONTROL_SOCKET is unset/,
     "A8: a control token with no socket was accepted as a normal launch",
   );
@@ -369,7 +369,7 @@ console.log("✓ A7: a material file plus a direct carrier (COTAL_LINK) is refus
   // endpoint rather than an absent one, and the contract is that a half pair is refused out loud.
   assert.throws(
     () => controlFromEnv(env),
-    /no control token could be resolved/,
+    /no control key could be resolved/,
     "A5: a scrubbed env with a socket path still resolved a control endpoint instead of refusing",
   );
 }

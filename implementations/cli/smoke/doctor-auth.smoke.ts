@@ -320,6 +320,12 @@ try {
     }
     const openText = await runDoctor({});
     assert.match(openText.text, /Mode:\s+open, as registered/, "text report shows open, as registered");
+    rmSync(elsewhere, { recursive: true });
+    for (const fix of [false, true]) {
+      const missing = await refusal({ space: "remote", fix }, ["auth"]);
+      assert.equal(missing.code, "AUTH_REQUIRED", "a deleted registered root still refuses local credential diagnosis");
+      assert.equal(missing.remedy, `the folder space remote is recorded at, ${elsewhere}, no longer exists; if it was moved or renamed, move it back and run \`cotal doctor auth --space remote${fix ? " --fix" : ""}\` there; otherwise forget the space with \`cotal space forget remote\``, "its step names the missing folder, restoring it or forgetting the space");
+    }
   }
 } finally {
   process.chdir(startCwd);

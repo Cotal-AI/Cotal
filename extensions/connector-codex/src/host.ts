@@ -1286,7 +1286,7 @@ export async function runCodexHost(): Promise<void> {
     }
   };
   let controlServer: ReturnType<typeof startControlServer> | undefined;
-  // Socket path from the env, first-frame token from the launch material (see controlFromEnv).
+  // Socket path from the env, control key and version from the launch material (see controlFromEnv).
   const control = controlFromEnv();
   if (control) {
     controlServer = startControlServer(

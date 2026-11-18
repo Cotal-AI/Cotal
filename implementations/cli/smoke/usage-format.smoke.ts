@@ -651,5 +651,108 @@ if (process.platform !== "win32") {
   }
 }
 
+// Scoped help and flag/subcommand refusals across config, run, daemon, manager, service,
+// service-endpoint and ext (#7553, #7552, #7550, #7548, #7547, #7540, #7574).
+{
+  const configVerbose = run(["config", "--verbose"]);
+  check("bare config --verbose prints the Storage section", configVerbose.status === 0 && /^Storage$/m.test(configVerbose.stdout), shown(configVerbose));
+  const savedPreference = run(["config", "set", "color", "never"]);
+  const preferencesFile = join(env.XDG_CONFIG_HOME, "cotal", "preferences.json");
+  check("control: a preference is saved before verbose refusals", savedPreference.status === 0 && existsSync(preferencesFile), shown(savedPreference));
+  const preferencesBefore = readFileSync(preferencesFile, "utf8");
+  for (const words of [
+    ["config", "get", "harness"],
+    ["config", "set", "color", "auto"],
+    ["config", "unset", "color"],
+  ]) for (const verbose of ["--verbose", "-v"]) for (const output of [[], ["--json"]]) {
+    const args = [...words, verbose, ...output];
+    const r = run(args, { COTAL_SKIP_CONNECTOR_SEED: "" });
+    const envelope = parsed(r);
+    const refused = output.length
+      ? r.status === 1 && r.stderr === "" && envelope?.error?.code === "USAGE_INVALID" && /--verbose belongs to bare `cotal config`/.test(envelope.error.message ?? "")
+      : usageShape(r, /--verbose belongs to bare `cotal config`/);
+    check(`${args.join(" ")} refuses verbose before seeding or changing preferences`, refused && readFileSync(preferencesFile, "utf8") === preferencesBefore, shown(r));
+  }
+
+  const runShowHelp = run(["run", "show", "--help"]);
+  check("run show --help lists --limit in Usage and Options", runShowHelp.status === 0 && /Usage\n[^\n]*\[--limit <n>\]/.test(runShowHelp.stdout) && /\n {2}--limit <n>\s+/.test(runShowHelp.stdout), shown(runShowHelp));
+  const runCheckHelp = run(["run", "check", "--help"]);
+  check("run check --help lists --file and --local in Usage and Options", runCheckHelp.status === 0 && /Usage[\s\S]*--file <program>[\s\S]*\[--local\]/.test(runCheckHelp.stdout) && /\n {2}-f, --file <program>\s+/.test(runCheckHelp.stdout) && /\n {2}--local\s+/.test(runCheckHelp.stdout), shown(runCheckHelp));
+
+  const daemonHelp = run(["daemon", "--help"]);
+  check("bare daemon --help scopes Options to --daemon-home, --json and --plain", daemonHelp.status === 0 && /--daemon-home <abs dir>/.test(daemonHelp.stdout) && !/\n {2}--(?:refresh|no-manager|wait|cloud|idp)\b/.test(daemonHelp.stdout) && !/--refresh|--no-manager|--wait/.test(daemonHelp.stdout.split("\nCommands\n")[0] ?? ""), shown(daemonHelp));
+  for (const [args, message] of [
+    [["daemon", "--json"], /cotal daemon needs a mode:/],
+    [["daemon", "bogus", "--json"], /cotal daemon has no subcommand "bogus"/],
+    [["daemon", "--bogus", "--json"], /Unknown option '--bogus'/],
+  ] as const) {
+    const r = run([...args]);
+    const envJson = parsed(r) as { outcome?: string; error?: { code?: string; message?: string } } | undefined;
+    check(`${args.join(" ")} writes a USAGE_INVALID JSON envelope on stdout and nothing on stderr`, r.status === 1 && r.stderr === "" && envJson?.outcome === "refused" && envJson.error?.code === "USAGE_INVALID" && message.test(envJson.error.message ?? ""), shown(r));
+  }
+
+  const presetSpace = join(home, "preset-space");
+  mkdirSync(presetSpace, { mode: 0o700 });
+  const createdPresetSpace = run(["space", "create", "presetspace", "--root", presetSpace]);
+  const mgrFlagFirst = run(["manager", "--runtime", "pty", "start", "--dry-run", "--space", "presetspace"], {}, presetSpace);
+  const mgrFlagAfter = run(["manager", "start", "--runtime", "pty", "--dry-run", "--space", "presetspace"], {}, presetSpace);
+  check("manager --runtime pty start --dry-run matches manager start --runtime pty --dry-run", createdPresetSpace.status === 0 && mgrFlagFirst.status === 0 && mgrFlagAfter.status === 0 && mgrFlagFirst.stdout === mgrFlagAfter.stdout, { first: shown(mgrFlagFirst), after: shown(mgrFlagAfter) });
+  const mgrHelpFirst = run(["manager", "--runtime", "pty", "start", "--help"]);
+  const mgrHelpAfter = run(["manager", "start", "--runtime", "pty", "--help"]);
+  check("manager --runtime pty start --help prints manager start help", mgrHelpFirst.status === 0 && mgrHelpFirst.stdout === mgrHelpAfter.stdout && /--runtime/.test(mgrHelpFirst.stdout), shown(mgrHelpFirst));
+  const svcFlagFirst = run(["service", "start", "--runtime", "pty", "manager", "--dry-run", "--space", "presetspace"], {}, presetSpace);
+  const svcFlagAfter = run(["service", "start", "manager", "--runtime", "pty", "--dry-run", "--space", "presetspace"], {}, presetSpace);
+  check("service start --runtime pty manager --dry-run matches service start manager --runtime pty --dry-run", svcFlagFirst.status === 0 && svcFlagAfter.status === 0 && svcFlagFirst.stdout === svcFlagAfter.stdout, { first: shown(svcFlagFirst), after: shown(svcFlagAfter) });
+  const helpSvcStartMgr = run(["help", "service", "start", "manager"]);
+  const svcStartMgrHelp = run(["service", "start", "manager", "--help"]);
+  check("help service start manager prints the same preset-augmented help as service start manager --help", helpSvcStartMgr.status === 0 && helpSvcStartMgr.stdout === svcStartMgrHelp.stdout && /--runtime/.test(helpSvcStartMgr.stdout), shown(helpSvcStartMgr));
+  const svcAddPresetMissingHelp = run(["service", "add", "--preset", "--help"]);
+  const svcAddPresetBogusHelp = run(["service", "add", "x", "--preset", "bogus", "--help"]);
+  const svcAddHelp = run(["service", "add", "--help"]);
+  check("service add --help wins over missing or unknown --preset", svcAddPresetMissingHelp.status === 0 && svcAddPresetMissingHelp.stdout === svcAddHelp.stdout && svcAddPresetBogusHelp.status === 0 && svcAddPresetBogusHelp.stdout === svcAddHelp.stdout, { missing: shown(svcAddPresetMissingHelp), bogus: shown(svcAddPresetBogusHelp) });
+
+  for (const args of [
+    ...["start", "show", "stop", "status", "logs", "remove"].map((mode) => ["service", mode, "myweb", "--preset", "web"]),
+    ["service", "--preset", "web"],
+    ["service", "start", "mymgr", "--preset", "manager"],
+  ]) {
+    const r = run(args);
+    check(`${args.join(" ")} rejects --preset as USAGE_INVALID without recommending ext add`, usageShape(r, /--preset belongs to service add/) && !/ext add|DEPENDENCY_UNAVAILABLE/.test(r.stderr), shown(r));
+  }
+
+  const helpSeApprove = run(["help", "service-endpoint", "approve"]);
+  check("help service-endpoint approve prints approve's scoped help", helpSeApprove.status === 0 && /cotal service-endpoint approve <proposalId>/.test(helpSeApprove.stdout) && /--caller-ceiling/.test(helpSeApprove.stdout) && !/--cursor|--commands/.test(helpSeApprove.stdout), shown(helpSeApprove));
+  const seBogusHelp = run(["service-endpoint", "bogus", "--help"]);
+  check("service-endpoint bogus --help refuses the unknown subcommand", usageShape(seBogusHelp, /cotal service-endpoint has no subcommand "bogus"/), shown(seBogusHelp));
+  const unseededEnv = Object.fromEntries(Object.entries(env).filter(([k]) => k !== "COTAL_SKIP_CONNECTOR_SEED"));
+  const runUnseeded = (args: string[]) => {
+    const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env: unseededEnv, encoding: "utf8", timeout: 120_000 });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  };
+  for (const [args, message] of [
+    [["service-endpoint"], /service-endpoint <approve <proposalId>/],
+    [["service-endpoint", "approve"], /service-endpoint <approve <proposalId>/],
+    [["service-endpoint", "name-bind", "com.example.api"], /service-endpoint <approve <proposalId>/],
+    [["service-endpoint", "bogus"], /cotal service-endpoint has no subcommand "bogus"/],
+    [["service-endpoint", "approv"], /cotal service-endpoint has no subcommand "approv" - did you mean approve\?/],
+    [["service-endpoint", "grant", "p1"], /grant needs --commands <a,b>/],
+  ] as const) {
+    const r = runUnseeded([...args]);
+    check(`unseeded ${args.join(" ")} exits 1 as USAGE_INVALID before target resolution or seeding`, usageShape(r, message) && !/TARGET_NOT_FOUND|operator-global seed store/.test(r.stderr), shown(r));
+  }
+
+  const extBareHelp = run(["ext", "--help"]);
+  check("bare ext --help omits seed-only flags --repair, --reset and --force from Options", extBareHelp.status === 0 && !/\n {2}--(?:repair|reset|force)\b/.test(extBareHelp.stdout), shown(extBareHelp));
+  for (const [args, flag] of [
+    [["ext", "--repair"], "--repair"],
+    [["ext", "list", "--reset"], "--reset"],
+    [["ext", "root", "--repair"], "--repair"],
+    [["ext", "remove", "nonexistent-pkg", "--force"], "--force"],
+  ] as const) {
+    const r = runUnseeded([...args]);
+    check(`${args.join(" ")} refuses ${flag} outside ext seed`, usageShape(r, new RegExp(`${flag} belongs to \`cotal ext seed\``)), shown(r));
+  }
+}
+
 finish();
 process.exit(process.exitCode ?? 0);

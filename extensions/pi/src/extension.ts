@@ -134,7 +134,7 @@ function cleanPersonaFile(runtime: PiRuntime): void {
   }
 }
 
-function createRuntime(config: AgentConfig, control: { path: string; token: string } | undefined): PiRuntime {
+function createRuntime(config: AgentConfig, control: ReturnType<typeof controlFromEnv>): PiRuntime {
   const mesh = new MeshAgent(config);
   const driver = new PiDriver(mesh);
   const runtime: PiRuntime = {
@@ -195,7 +195,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   delete process.env.COTAL_PI_FRESH_SESSION;
   delete process.env.COTAL_PI_EXPECTED_SESSION;
   delete process.env.COTAL_PI_SUPERVISED_CWD;
-  // Only a new runtime needs the one-shot control token. A reload retains its existing listener.
+  // Only a new runtime needs the one-shot control key and version. A reload retains its existing listener.
   const control = runtime ? undefined : controlFromEnv();
   // Both readers are done, so the pointer to the launch material has none left. Dropping it here is
   // what keeps it out of the environment of every shell command, build and tool this seat runs.

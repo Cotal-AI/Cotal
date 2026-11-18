@@ -99,6 +99,37 @@ class Rpc {
     } finally { clearTimeout(timer); }
   }
 }
+const nameRaces: Array<{ space: string; names: string[]; routed: boolean }> = [];
+/** Distinct stdio hosts contend before either one's presence has settled. */
+async function competingNames(space: string, mode: "race" | "sequential"): Promise<void> {
+  const name = `twin_${mode}`;
+  const pair = [new Rpc(space, `${space}-${mode}-one`), new Rpc(space, `${space}-${mode}-two`)];
+  const probe = new Rpc(space, `${space}-${mode}-probe`);
+  try {
+    await Promise.all([...pair, probe].map((rpc) => rpc.initialize()));
+    const replies: Reply[] = [];
+    if (mode === "race") replies.push(...await Promise.all(pair.map((rpc) => rpc.call("cotal_connect", { name }))));
+    else for (const rpc of pair) replies.push(await rpc.call("cotal_connect", { name }));
+    for (const reply of replies) assert.ok(!reply.result?.isError, text(reply));
+    const names = replies.map((reply) => /^Connected as ([\w-]+)/.exec(text(reply))?.[1] ?? "");
+    const connected = await probe.call("cotal_connect", { name: `probe_${mode}` });
+    assert.ok(!connected.result?.isError, text(connected));
+    const connection_id = /connection_id: ([^\s]+)/.exec(text(connected))?.[1];
+    assert.ok(connection_id, text(connected));
+    const roster = text(await probe.call("cotal_roster", { connection_id }));
+    const delivered = await Promise.all(names.map((to) => probe.call("cotal_dm", { connection_id, to, text: "unique name routing proof" })));
+    const routed = delivered.every((reply) => !reply.result?.isError && reply.error === undefined);
+    const evidence = { space, mode, names, roster, routed, dm: delivered.map(text) };
+    writeFileSync(join(scratch, `${space}-${mode}.json`), JSON.stringify(evidence, null, 2));
+    console.log(`Name contention: ${JSON.stringify(evidence)}`);
+    if (mode === "race") nameRaces.push({ space, names, routed });
+    else check(`${space}: sequential hosts retain the name and report its next free suffix`,
+      names[0] === name && names[1] === `${name}_2` && text(replies[1]!).includes("was taken") && routed);
+  } finally {
+    await Promise.all([...pair, probe].map((rpc) => rpc.end()));
+  }
+}
+
 function run(args: string[]) {
   return spawnSync(process.execPath, [bin, ...args], { cwd: scratch, env, encoding: "utf8", timeout: 30_000 });
 }
@@ -230,6 +261,8 @@ try {
   const bad = await narrowed.call("cotal_connect", { name: "limited", channels: [{ channel: "forbidden", access: "read-post" }] });
   check("connect refuses permissions outside the persona without issuing an identity", Boolean(bad.result?.isError) && identities().length === 0);
   await narrowed.end();
+  await competingNames(staticSpace, "sequential");
+  await competingNames(staticSpace, "race");
 
   const openSpace = `mcpopen${process.pid}`;
   const port = await freePort();
@@ -246,6 +279,8 @@ try {
   check("an open mesh also connects through the shipped command", !openReply.result?.isError && Boolean(/connection_id:/.test(text(openReply))));
   await open.end();
   check("open-mesh EOF removes its identity record", identities().length === 0);
+  await competingNames(openSpace, "sequential");
+  await competingNames(openSpace, "race");
 
   const userSpace = `mcpuser${process.pid}`;
   recordMesh({ space: userSpace, server: servers, root, mode: "user", origin: "manual", ts: new Date().toISOString(),
@@ -256,6 +291,9 @@ try {
   check("signed-in spaces refuse instead of inventing native session identity", Boolean(refused.result?.isError) && /native conversation identity/.test(text(refused)) && identities().length === 0);
   await user.end();
   console.log(`Evidence retained at ${scratch}`);
+  check("simultaneous hosts on static and open spaces receive distinct names that route unambiguously",
+    nameRaces.length === 2 && nameRaces.every(({ names, routed }) =>
+      names.length === 2 && names.includes("twin_race") && names.includes("twin_race_2") && routed));
 } finally {
   for (const rpc of children) await killAndAwaitExit(rpc.child);
   await sender?.stop();

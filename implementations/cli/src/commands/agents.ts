@@ -24,6 +24,7 @@ import {
   type Tone,
   recordOperationSpace,
   resolveControlTarget,
+  resolveMeshTarget,
   connectOrThrow,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
@@ -761,6 +762,11 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
     return readYourManagers(v, command, managers);
   }
   recordOperationSpace(t.space);
+  if (command === "slots" && (t.mode === "open" || t.mode === "user"))
+    throw new CommandFailure("refused", "UNSUPPORTED", "--slots applies only to static-auth spaces; open and user-auth managers own no durable static slot rows", {
+      target: on !== undefined ? { space: t.space, scope: "manager", managerInstanceId: on } : { space: t.space, scope: t.auth.bearer ? "manager" : "all-managers" },
+      remedy: "run `cotal ps` without --slots to list live agents",
+    });
   // A pin the registry does not list is refused at once, as spawn refuses it; only a registered manager is waited on.
   if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
 
@@ -904,6 +910,15 @@ export class NoManagerAnswered extends CommandFailure {
 
 /** {@link readSeats} on a user-auth mesh with several of your managers live and none named. */
 async function readYourManagers(v: ConnectFlags, command: "ps" | "slots", managers: readonly ManagerCandidate[]): Promise<SeatCensus> {
+  if (command === "slots") {
+    let space: string | undefined;
+    try { space = resolveMeshTarget(process.cwd(), { server: v.server, space: v.space, readOnly: true }).space; } catch { /* unresolved stays null */ }
+    if (space !== undefined) recordOperationSpace(space);
+    throw new CommandFailure("refused", "UNSUPPORTED", "--slots applies only to static-auth spaces; open and user-auth managers own no durable static slot rows", {
+      target: { space: space ?? null, scope: "your-managers" },
+      remedy: "run `cotal ps` without --slots to list live agents",
+    });
+  }
   const { space, mode, instances } = await askYourManagers(cliControl, v, command, managers);
   if (space !== undefined) recordOperationSpace(space);
   if (space === undefined || !instances.some((i) => i.reachable))

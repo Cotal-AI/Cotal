@@ -153,10 +153,32 @@ const mapAll = (entries: ClaudeEntry[]) => {
     wire.includes(TOOL_SECRET));
 }
 
-// A COUNT, because several cells above build their own inputs and a regression that DELETES one
-// leaves the run green with fewer cells rather than red. The PR body leans on this number, so the
-// suite is what holds it rather than a sentence.
-const EXPECTED = 12;
+// Native plugin prompts carry the same peer content, but arrive under the plugin's origin.
+{
+  const { events } = mapAll([{
+    type: "user", uuid: "native-wake", origin: { kind: "plugin", name: "cotal" },
+    message: { content: [{ type: "text", text: PEER_SECRET }] },
+  }]);
+  c("a native Cotal plugin prompt opens a channel-attributed run",
+    events.some((e) => e.type === "RUN_STARTED" && (e.cotal as Record<string, unknown> | undefined)?.turnSource === "channel"));
+  c("a native Cotal plugin prompt withholds its entire body", !JSON.stringify(events).includes(PEER_SECRET));
+  for (const origin of [
+    { kind: "plugin", name: "another" },
+    { kind: "plugin", name: "cotal", asUser: true },
+    { kind: "unrecognised" },
+  ]) {
+    let refused = false;
+    try {
+      mapAll([{ type: "user", uuid: "unknown-origin", origin, message: { content: MINE } }]);
+    } catch (e) {
+      refused = e instanceof Error && e.message.includes("unrecognised origin.kind");
+    }
+    c(`unknown provenance is still refused: ${JSON.stringify(origin)}`, refused);
+  }
+}
+
+// Keep the cell count explicit so a deleted case cannot silently reduce coverage.
+const EXPECTED = 17;
 c(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(`agui-authorship smoke: ${pass} passed, ${fail} failed`);

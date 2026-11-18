@@ -1214,7 +1214,7 @@ for (const assistant of [
     "COTAL_HOME",
     "COTAL_DEFAULT_AGENT",
     "COTAL_CONTROL_SOCKET",
-    "COTAL_CONTROL_TOKEN",
+    "COTAL_CONTROL_KEY",
     "COTAL_LAUNCH_MATERIAL",
     "COTAL_SPACE",
     "COTAL_ID",
@@ -1234,7 +1234,7 @@ for (const assistant of [
     registerTool(): void {},
     on(): void {},
   } as unknown as ExtensionAPI;
-  await assert.rejects(() => cotalMesh(compatibleApi), /COTAL_CONTROL_SOCKET is set but no control token could be resolved/);
+  await assert.rejects(() => cotalMesh(compatibleApi), /COTAL_CONTROL_SOCKET is set but no control key could be resolved/);
   checks++;
 
   // Managed reload has already consumed its launch material. It must bind the existing
