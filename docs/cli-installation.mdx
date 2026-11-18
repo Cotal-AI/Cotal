@@ -192,7 +192,7 @@ is followed by another reconcile attempt, then a verified reinstall
 and reconcile of the previous version. A private same-filesystem snapshot restores the previous seed
 stamp, connectors and operator extensions before Managers start. Interrupted restoration resumes on
 the next update or daemon start. The snapshot is removed after successful update or restoration.
-If the computer has never run setup, update creates the missing config folders with private permissions before taking the snapshot. A home or configuration folder reached through a symbolic link is checked at its physical location. Unsafe physical folders and links inside retained connector state still refuse the update. If a snapshot cannot be saved, update discards the unpublished staged build. Automatic config and snapshot preflight refusals appear in the daemon status update result as one line with paths redacted.
+If the computer has never run setup, update creates the missing config folders with private permissions before taking the snapshot. A home or configuration folder reached through a symbolic link is accepted only when the physical folder and every link's parent chain are protected against other local writers. Unsafe physical folders and links inside retained connector state still refuse the update. If a snapshot cannot be saved, update discards the unpublished staged build. Automatic config and snapshot preflight refusals appear in the daemon status update result as one line with paths redacted.
 If reconciliation still fails after retry, the command preserves the original child's exit status
 through restoration. An interrupt takes precedence over that status.
 If restoration also fails, the error names the installed version

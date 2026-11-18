@@ -12,6 +12,7 @@ import { homeCotalDir } from "./cotal-home.js";
 import { MANAGER_PIDFILE, localProcessPathCandidates, recordedLocalProcessPaths } from "./local-process.js";
 import { commandIsCotalSupervisor, readProcessRecord } from "./pid.js";
 import { probeLiveness } from "./liveness.js";
+import { protectedResolvedDirectory } from "./protected-records.js";
 
 interface ConnectorHolder {
   v: 1;
@@ -155,6 +156,7 @@ function ownedDirectory(path: string): void {
 }
 function ownedAncestors(path: string): void {
   const config = resolve(globalConfigDir());
+  protectedResolvedDirectory(config, "the connector config folder");
   for (let parent = path; parent !== config; parent = dirname(parent)) {
     if (parent === dirname(parent)) throw new Error("connector retention escaped its config directory");
     ownedDirectory(parent);
@@ -218,6 +220,9 @@ export function retainConnectorConfig(): string {
   const selected = currentConfig(id);
   if (selected !== undefined) return selected;
   const current = previousConfig(id) ?? globalConfigDir();
+  let ancestor = current;
+  while (!lstatSync(ancestor, { throwIfNoEntry: false })) ancestor = dirname(ancestor);
+  protectedResolvedDirectory(ancestor, "the connector config folder");
   const releaseClosure = claimUpdateClosureAccess();
   let releaseWriter = () => {};
   let releaseSeed = () => {};
