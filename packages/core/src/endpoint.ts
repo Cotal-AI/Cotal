@@ -6825,6 +6825,9 @@ export class CotalEndpoint extends EventEmitter {
     const handle = this.bindPrincipalHandle(intent, nc);
     this.principalServes.set(serve.endpoint, intent);
     principalServers.set(serverKey, intent);
+    // A fresh `seq` per serve: the last serve may have ended with prompts open, and the pair
+    // `(runtime.id, seq)` it showed then must not name this serve's empty list (SPEC §6).
+    if (serve.endpoint === AGENT_ENDPOINT) this.promptsPresence = { open: 0, seq: this.nextPromptsSeq() };
     void this.armPrincipalServe(intent, nc, handle);
     return { ready, failed, stop: () => this.stopPrincipalServe(intent) };
   }
@@ -6947,8 +6950,8 @@ export class CotalEndpoint extends EventEmitter {
    * prompts it holds `open` or `sent`, and a counter that goes up by one each time a prompt opens or
    * changes state. The field shows only while the `agent` endpoint is served and the broker accepted
    * its subscription on the current connection. Until this is called it shows `open: 0` with the
-   * highest `seq` this process used under its runtime id, or 0. Throws when the `agent` endpoint is
-   * not served, and a RangeError for a `seq` below one this runtime already used.
+   * fresh `seq` the serve took from {@link nextPromptsSeq} when it started. Throws when the `agent`
+   * endpoint is not served, and a RangeError for a `seq` below one this runtime already used.
    */
   async setPromptsPresence(prompts: PresencePrompts): Promise<void> {
     for (const k of ["open", "seq"] as const)
@@ -6981,7 +6984,7 @@ export class CotalEndpoint extends EventEmitter {
   private servedPrompts(): PresencePrompts | undefined {
     const intent = this.principalServes.get(AGENT_ENDPOINT);
     if (!intent || intent.ended || !this.nc || intent.readyOn !== this.nc) return undefined;
-    return this.promptsPresence ?? { open: 0, seq: promptsSeqs.get(intent.self.runtimeId) ?? 0 };
+    return this.promptsPresence;
   }
 
   /**

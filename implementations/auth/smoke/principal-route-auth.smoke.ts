@@ -779,11 +779,11 @@ try {
     const again = cyclerEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() });
     await again.ready;
     await until(() => cyclerSeq() !== undefined, 8000);
-    check("cell 31: serving agent again on the same endpoint shows the counter where it was, { open: 0, seq: 50 }, never seq 0",
-      cyclerSeq() === 50 && webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.prompts?.open === 0, webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.prompts);
+    check("cell 31: serving agent again on the same endpoint takes a fresh seq, { open: 0, seq: 51 }: never seq 0, and never 50, which named a list with two prompts open",
+      cyclerSeq() === 51 && webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.prompts?.open === 0, webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.prompts);
     let below = "";
-    try { await cyclerEp.setPromptsPresence({ open: 0, seq: 49 }); } catch (e) { below = (e as Error).message; }
-    check("cell 31: a seq below one this runtime already used is refused", below.includes("never goes back"), below);
+    try { await cyclerEp.setPromptsPresence({ open: 0, seq: 50 }); } catch (e) { below = (e as Error).message; }
+    check("cell 31: a seq below one this runtime already used is refused, the one the last serve showed too", below.includes("never goes back"), below);
     const twin = await userEndpoint(W.cycler);
     let twinRefusal = "";
     try { twin.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() }); } catch (e) { twinRefusal = (e as Error).message; }
@@ -797,8 +797,8 @@ try {
     await until(() => cyclerSeq() !== undefined, 8000);
     let next = -1;
     try { next = nextEp.nextPromptsSeq(); } catch { /* not there */ }
-    check("cell 31: a new endpoint object for the same lifecycle, after the first stopped, serves again: same runtime id, the counter at 50, and the next seq 51",
-      cyclerSeq() === 50 && webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.runtime?.id === processRuntime(W.cycler.uid).id && next === 51,
+    check("cell 31: a new endpoint object for the same lifecycle, after the first stopped, serves again: same runtime id, a fresh seq 52, and the next seq 53",
+      cyclerSeq() === 52 && webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.runtime?.id === processRuntime(W.cycler.uid).id && next === 53,
       { seq: cyclerSeq(), next });
     await third.stop();
   }

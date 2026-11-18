@@ -181,6 +181,8 @@ cannot hold `stop()` open past that deadline.
 throws while the `agent` endpoint is not served, and for a `seq` below one this process already used
 under its runtime id. `nextPromptsSeq()` hands out the next `seq` for that runtime id: the process
 keeps the highest it used across serves and endpoints of the lifecycle, so `seq` never goes back.
+Each serve of `agent` takes a fresh `seq` when it starts and shows `{ open: 0, seq }` with it until
+`setPromptsPresence` is called, so one `(runtime.id, seq)` never names two states.
 
 `callPrincipal({ endpoint, principal, command, authority, args, deadlineMs })` calls one command as
 this endpoint's caller. `principal` is the addressed process: owner, actor, lifecycle UID and the

@@ -386,28 +386,28 @@ try {
   console.log("\ndesk 1: the presence count and counter after each change");
   const desk1 = await deskOn(coderEp, "desk1");
   {
-    check("openPromptDesk resolves once the broker accepted the subscription, and presence shows { open: 0, seq: 0 }", await presenceIs(0, 0));
+    check("openPromptDesk resolves once the broker accepted the subscription, and presence shows { open: 0, seq: 1 }: the serve took seq 0 and the desk the next", await presenceIs(0, 1));
     const l0 = await list();
-    check("prompts: no prompt, seq 0, and the runtime is the agent's presence runtime",
-      l0.open.length === 0 && l0.closed.length === 0 && l0.seq === 0 && l0.runtime.id === coderAt.runtimeId
+    check("prompts: no prompt, seq 1, and the runtime is the agent's presence runtime",
+      l0.open.length === 0 && l0.closed.length === 0 && l0.seq === 1 && l0.runtime.id === coderAt.runtimeId
       && l0.runtime.startedAt === processRuntime(W.coder.uid).startedAt && roster(W.coder)?.runtime?.id === coderAt.runtimeId, l0);
     const P1 = openFake(desk1, "presence one");
-    check("a prompt opens: { open: 1, seq: 1 }", await presenceIs(1, 1) && (await list()).seq === 1);
+    check("a prompt opens: { open: 1, seq: 2 }", await presenceIs(1, 2) && (await list()).seq === 2);
     const P2 = openFake(desk1, "presence two");
-    check("a second opens: { open: 2, seq: 2 }", await presenceIs(2, 2));
+    check("a second opens: { open: 2, seq: 3 }", await presenceIs(2, 3));
     const full = await call(webEp, "prompt", { id: P2.id });
     const got = full.ok ? (full.data as { prompt: AgentPrompt }).prompt : undefined;
     check("prompt returns the full prompt, and the reader's recomputed digest equals the one it carries",
       got !== undefined && agentPromptDigest(got.content) === got.digest && got.digest === P2.digest && got.state.kind === "open", full);
     const r1 = (await accept(P1)).reply;
-    check("an answer is accepted: { open: 2, seq: 3 }", await presenceIs(2, 3));
+    check("an answer is accepted: { open: 2, seq: 4 }", await presenceIs(2, 4));
     P1.delivered({ kind: "delivered" });
     const a1 = await r1;
-    check("its receipt: the reply says sent, delivered, and presence { open: 2, seq: 4 }", show(stateIn(a1)) === "sent/delivered" && await presenceIs(2, 4), verdictOf(a1));
+    check("its receipt: the reply says sent, delivered, and presence { open: 2, seq: 5 }", show(stateIn(a1)) === "sent/delivered" && await presenceIs(2, 5), verdictOf(a1));
     P1.hold.settle({ kind: "confirmed" });
-    check("the harness confirms it: closed, answered, and { open: 1, seq: 5 }", await presenceIs(1, 5) && show(await stateOf(P1)) === "closed/answered");
+    check("the harness confirms it: closed, answered, and { open: 1, seq: 6 }", await presenceIs(1, 6) && show(await stateOf(P1)) === "closed/answered");
     P2.hold.settle({ kind: "withdrawn" });
-    check("the other is withdrawn: { open: 0, seq: 6 }", await presenceIs(0, 6) && show(await stateOf(P2)) === "closed/withdrawn/none");
+    check("the other is withdrawn: { open: 0, seq: 7 }", await presenceIs(0, 7) && show(await stateOf(P2)) === "closed/withdrawn/none");
     check("each ended once: the answered one attempted, the withdrawn one released to the harness",
       same(P1.ends, [true]) && same(P1.writes, ["answer:allow"]) && same(P2.ends, [false]) && same(P2.writes, ["release"]), { P1: P1.writes, P2: P2.writes });
   }
