@@ -151,7 +151,12 @@ try {
   manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
   await manager.start();
   type Seat = { id: string; lifecycleUid: string; handle: AgentHandle; issued?: { generation: string; acceptedToken: string } };
-  const M = manager as unknown as { agents: Map<string, Seat>; reserved: Map<string, string> };
+  const M = manager as unknown as {
+    agents: Map<string, Seat>;
+    namesCapacity: {
+      reserved: Map<string, string>;
+    };
+  };
 
   // The spawner: the operator's admin instrument, issued as the CLI mints it, so the static spawn
   // bound reads its evidence and it hands on the helper's role (SPEC 13.15).
@@ -254,7 +259,7 @@ try {
   check("once with supervise is refused: a once seat is never restarted", supervised.ok === false && /never restarted|cannot enforce/.test(errorText(supervised)), supervised);
   const tooLong = await call("spawn", { name: "helper", agent: "once-stub", cwd: repoRoot, events: false, prompt: "\u0001".repeat(20_000), once: {} }, { id: goalId("tl") });
   check("a prompt whose relay record cannot fit the goal index is refused", tooLong.ok === false && /too long for one task/.test(errorText(tooLong)), tooLong);
-  check("...and none of them allocated a seat or a reservation", M.agents.size === seatsBefore && M.reserved.size === 0, { agents: [...M.agents.keys()], reserved: [...M.reserved.keys()] });
+  check("...and none of them allocated a seat or a reservation", M.agents.size === seatsBefore && M.namesCapacity.reserved.size === 0, { agents: [...M.agents.keys()], reserved: [...M.namesCapacity.reserved.keys()] });
 
   console.log("\n2. control: a prompt-only spawn takes its prompt as a kickoff and keeps running");
   const control = await call("spawn", { name: "helper", agent: "once-stub", cwd: repoRoot, events: false, prompt: "kick" }, { id: goalId("ctl") });
