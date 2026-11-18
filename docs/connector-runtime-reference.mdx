@@ -200,6 +200,8 @@ The shared formatter indents body continuations and neutralizes attribution fiel
 A redelivered item includes the broker's delivery count and warns that an earlier delivery may already have run.
 The count comes from the broker, not a sender field.
 
+The shared connector marks a newly received durable channel copy historical when its envelope's sender timestamp is more than five minutes old. It keeps that copy pull-only, including mentions, without changing DM or role-request delivery. Live subscription copies and recent durable copies keep their normal wake behavior across short reconnects. An item already buffered in this process keeps its classification across redelivery. A process restart has no earlier classification to retain. Sender clock skew beyond five minutes can affect the comparison.
+
 ## Acknowledgement [#acknowledgement-and-redelivery]
 
 The connector acknowledges a durable message at its integration's handoff boundary.
