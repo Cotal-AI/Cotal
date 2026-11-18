@@ -94,13 +94,13 @@
       "find": "        const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal).catch((e: unknown) => {",
       "replace": "        const bearer = (signal?: AbortSignal) => runAgentBearer(bearerArgv, { signal }).catch((e: unknown) => {",
       "command": "pnpm smoke:user-manager-transport",
-      "expectRed": "\u2717 actual MeshAgent.spawn over real wire to real Manager succeeded"
+      "expectRed": "✗ actual MeshAgent.spawn over real wire to real Manager succeeded"
     },
     {
       "name": "endpoint ignores explicit presence environment",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    this.environment =\n      (opts.environment === undefined ? process.env.COTAL_ENVIRONMENT : opts.environment)?.trim() || undefined;",
-      "replace": "    this.environment = process.env.COTAL_ENVIRONMENT?.trim() || undefined;",
+      "find": "    this.presence.configureEnvironment(\n      (opts.environment === undefined ? process.env.COTAL_ENVIRONMENT : opts.environment)?.trim() || undefined);",
+      "replace": "    this.presence.configureEnvironment(process.env.COTAL_ENVIRONMENT?.trim() || undefined);",
       "command": "pnpm smoke:claude-hosted-presence",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_presence_sess_a",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
@@ -117,8 +117,8 @@
     {
       "name": "explicit null presence label falls back to the host",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      (opts.environment === undefined ? process.env.COTAL_ENVIRONMENT : opts.environment)?.trim() || undefined;",
-      "replace": "      (opts.environment ?? process.env.COTAL_ENVIRONMENT)?.trim() || undefined;",
+      "find": "      (opts.environment === undefined ? process.env.COTAL_ENVIRONMENT : opts.environment)?.trim() || undefined);",
+      "replace": "      (opts.environment ?? process.env.COTAL_ENVIRONMENT)?.trim() || undefined);",
       "command": "pnpm smoke:claude-hosted-presence",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_presence_sess_absent",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
@@ -126,8 +126,8 @@
     {
       "name": "legacy endpoint stops inheriting its presence environment",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      (opts.environment === undefined ? process.env.COTAL_ENVIRONMENT : opts.environment)?.trim() || undefined;",
-      "replace": "      opts.environment?.trim() || undefined;",
+      "find": "      (opts.environment === undefined ? process.env.COTAL_ENVIRONMENT : opts.environment)?.trim() || undefined);",
+      "replace": "      opts.environment?.trim() || undefined);",
       "command": "pnpm smoke:claude-hosted-presence",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_presence_legacy_inherits",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
