@@ -38,7 +38,7 @@ function load(operator: unknown | undefined, spaceLocal: unknown | undefined): C
   const root = join(box, "space");
   mkdirSync(join(root, ".cotal"), { recursive: true });
   if (spaceLocal !== undefined) writeFileSync(join(root, ".cotal", "config.json"), JSON.stringify(spaceLocal));
-  return loadCotalConfig(root);
+  return loadCotalConfig(root, () => true); // a trusted project: these cells cover layering, not trust
 }
 function cell(name: string, fn: () => void): void {
   try {

@@ -208,6 +208,7 @@ import {
   canonicalLocalProcessPath,
   DELIVERY_LOGFILE,
   terminalWidth,
+  trustCreatedProject,
   type ControlAuth,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
@@ -4713,6 +4714,13 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   // (that launch really is the mesh now).
   if (provenance === "refresh" && !prior)
     throw new Error(`mesh "${m.space}" was removed from the registry while \`cotal up\` refreshed it - not re-recording it from an earlier read`);
+  // A started space's folder is trusted to declare MCP servers and `spawn.env` names in its own
+  // config, before the record is written (see trustCreatedProject). The stack is already running, so
+  // a failure is reported with its remedy rather than undoing the start.
+  if (provenance === "started") {
+    try { trustCreatedProject(m.root); }
+    catch (e) { console.error(c.yellow(`! ${m.root} was not recorded as a trusted project: ${(e as Error).message}. Its config cannot declare MCP servers or spawn.env until you run \`cotal trust ${m.root}\``)); }
+  }
   recordMesh(provenance === "refresh" ? { ...prior, ...m, origin } : { ...m, origin });
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {

@@ -21,7 +21,7 @@
  * The caller (both spawn paths) resolves this once and hands the chosen servers to the connector,
  * which renders them into its own host format.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -205,10 +205,46 @@ function mergeConfig(base: CotalConfig, over: CotalConfig): CotalConfig {
   return { connectors, ...(spawn === undefined ? {} : { spawn }), ...(modelPolicy === undefined ? {} : { modelPolicy }) };
 }
 
+/** Whether the operator trusts the project at `root` to declare MCP servers and `spawn.env` names in
+ *  its own config. The caller answers it from the operator's trust records (see `cotal trust`). */
+export type ProjectTrust = (root: string) => boolean;
+
+/** Whether `path`, or what it links to, belongs to another account. Windows has no owner ids here. */
+function ownedByAnotherUser(path: string): boolean {
+  if (typeof process.getuid !== "function") return false;
+  const uid = process.getuid();
+  return [lstatSync(path, { throwIfNoEntry: false }), statSync(path, { throwIfNoEntry: false })]
+    .some((stat) => stat !== undefined && stat.uid !== uid);
+}
+
+/** The entries of a project config that start processes or forward environment names: every
+ *  declared MCP server and every `spawn.env` name. A project config may declare these only when its
+ *  folder is trusted. */
+export function trustedOnlyEntries(config: CotalConfig): string[] {
+  const servers = Object.entries(config.connectors ?? {}).flatMap(([name, connector]) =>
+    Object.keys(connector.mcpServers ?? {}).map((server) => `connectors.${name}.mcpServers.${server}`));
+  return config.spawn?.env?.length ? [...servers, "spawn.env"] : servers;
+}
+
 /** Load the merged cotal config: the operator-level file as the base, the space-local file layered
- *  on top (more specific wins, per connector + server name). */
-export function loadCotalConfig(root: string): CotalConfig {
-  return mergeConfig(readCotalConfigFile(globalConfigPath()), readCotalConfigFile(spaceConfigPath(root)));
+ *  on top (more specific wins, per connector + server name).
+ *
+ *  A space-local file is refused whole when it, or the `.cotal` folder holding it, belongs to another
+ *  account. A space-local file that declares an MCP server or a `spawn.env` name is refused unless
+ *  `trusted(root)` holds, which is asked only then; its other fields load either way. Each refusal
+ *  names the file. */
+export function loadCotalConfig(root: string, trusted: ProjectTrust): CotalConfig {
+  const operator = readCotalConfigFile(globalConfigPath());
+  const path = spaceConfigPath(root);
+  if (!existsSync(path)) return mergeConfig(operator, {});
+  const owner = [join(root, ".cotal"), path].find(ownedByAnotherUser);
+  if (owner !== undefined)
+    throw configError(path, `${owner} belongs to another user, so this project config is refused and nothing was launched. Use a project folder your own account owns`);
+  const project = readCotalConfigFile(path);
+  const declared = trustedOnlyEntries(project);
+  if (declared.length && !trusted(root))
+    throw configError(path, `declares ${declared.join(", ")}, which a project config may declare only when its folder is trusted. ${root} is not trusted, so nothing was launched. If you trust this folder, run \`cotal trust ${root}\``);
+  return mergeConfig(operator, project);
 }
 
 /** The MCP servers a connector should share with an agent it spawns, after applying an optional

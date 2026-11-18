@@ -65,6 +65,7 @@ import {
 import {
   parseCommaList,
   CommandFailure,
+  isTrustedProject,
   loadLaunchPersonaFile,
   personaFileReference,
   PersonaSourceError,
@@ -1388,7 +1389,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // effective role, model (flag over file) and launch options before anything is provisioned or launched.
   let cotalConfig: CotalConfig;
   try {
-    cotalConfig = loadCotalConfig(personaProject);
+    cotalConfig = loadCotalConfig(personaProject, isTrustedProject);
     const refusal = modelPolicyRefusal(cotalConfig, {
       persona: `persona "${ref}" (${path})`,
       role, model, variant,
