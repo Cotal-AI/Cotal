@@ -36,6 +36,23 @@ scenarios.splice(0, scenarios.length,
     console.log('REPRO Add disabled during selected-space status read:', disabled);
     assert.equal(disabled, true, 'Add must stay disabled while selected-space status is pending');
   } },
+  { name: 'selection-superseded-by-poll', state: { installed: true, signedIn: true, connected: true, multiple: true }, act: async page => {
+    await page.click('#another-space');
+    await page.evaluate(() => {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      window.__heldStatus = [];
+      window.__TAURI_INTERNALS__.invoke = (command, args) => command === 'daemon_request' && args.request.op === 'status' ? new Promise(resolve => { window.__heldStatus.push(() => resolve(invoke(command, args))); }) : invoke(command, args);
+      const select = document.querySelector('#space'); select.value = 'research'; select.dispatchEvent(new Event('change'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.waitForFunction(() => window.__heldStatus.length >= 2);
+    await page.evaluate(() => window.__heldStatus[0]());
+    await page.waitForTimeout(30);
+    await page.evaluate(() => window.__heldStatus[1]());
+    await page.waitForTimeout(100);
+  }, expect: async page => {
+    assert.equal(await page.locator('#connect').isDisabled(), false, 'superseding status success releases pending Add');
+  } },
   { name: 'all-spaces-connected', state: { installed: true, signedIn: true, connected: true }, act: page => page.click('#another-space'), expect: async page => {
     assert.match(await page.locator('#no-other-spaces').textContent(), /Every space in this account is already connected/);
     assert.equal(await page.locator('#connect').isDisabled(), true);

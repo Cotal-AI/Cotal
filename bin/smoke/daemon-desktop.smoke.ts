@@ -86,6 +86,17 @@ try {
   check("recent log is bounded and preserves the service reason", recentLog.ok === true && recentLog.result.truncated === true && recentLog.result.text.includes("daemon startup refused: test reason") && !recentLog.result.text.includes("earlier output") && !recentLog.result.text.includes("eyJtest"));
   const foreignLog = await request({ op: "log", path: logFile });
   check("log never accepts a renderer path", foreignLog.ok === false && foreignLog.error.code === "BAD_REQUEST");
+  writeFileSync(logFile, `${"x".repeat(5 * 1024 * 1024)}\nlarge log final reason\n`, { mode: 0o600 });
+  const largeLog = await request({ op: "log" });
+  check("large native logs return only their recent tail", largeLog.ok === true && largeLog.result.truncated === true && largeLog.result.text.endsWith("large log final reason\n") && Buffer.byteLength(largeLog.result.text) <= 8192);
+  writeFileSync(logFile, "service is writing\n", { mode: 0o600 });
+  const writer = spawn(process.execPath, ["--input-type=module", "-e", 'import { appendFileSync } from "node:fs"; const file = process.argv[1]; setInterval(() => appendFileSync(file, "concurrent service output\\n".repeat(200)), 1);', logFile], { stdio: "ignore" });
+  try {
+    for (let i = 0; i < 4; i++) {
+      const growing = await request({ op: "log" });
+      check("a writing service does not conflict with its bounded log view", growing.ok === true && growing.result.text.includes("concurrent service output") && Buffer.byteLength(growing.result.text) <= 8192);
+    }
+  } finally { writer.kill(); await new Promise(resolve => writer.once("exit", resolve)); }
   rmSync(logFile);
 
   check("missing daemon is not reported connected", absent.ok === false);

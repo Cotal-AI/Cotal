@@ -1,4 +1,5 @@
 /** The desktop shell's bounded stdio adapter. It holds no login session or broker credentials. */
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { defaultComputerName } from "./computer-name.js";
 import { computerName } from "./name-validation.js";
@@ -173,12 +174,27 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     target = opts.resolveTarget();
     const { paths, home } = target;
     if (req.op === "log") {
-      const bytes = readLocalRecordSource(nativeDaemonLog(paths.state), 4 * 1024 * 1024, true);
-      const text = bytes?.subarray(Math.max(0, bytes.length - 8192)).toString("utf8")
+      let fd: number | undefined;
+      let bytes = Buffer.alloc(0), truncated = false;
+      try {
+        try { fd = openSync(nativeDaemonLog(paths.state), constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        if (fd !== undefined) {
+          const stat = fstatSync(fd);
+          if (!stat.isFile() || process.platform !== "win32" && (stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0)) throw new Error("The background service log is not a private regular file.");
+          const start = Math.max(0, stat.size - 8192);
+          truncated = start > 0;
+          bytes = Buffer.alloc(Math.min(8192, stat.size));
+          let length = 0;
+          while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, start + length); if (!count) break; length += count; }
+          bytes = bytes.subarray(0, length);
+        }
+      } finally { if (fd !== undefined) closeSync(fd); }
+      const text = bytes.toString("utf8")
         .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
         .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
         .replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>") ?? "";
-      emit({ v: 1, event: "result", ok: true, result: { text, truncated: Boolean(bytes && bytes.length > 8192) } });
+      emit({ v: 1, event: "result", ok: true, result: { text, truncated } });
       return;
     }
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };

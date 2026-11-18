@@ -624,7 +624,7 @@ function sizeClipEdges(): void {
         bottom = Math.min(bottom, (row ? row.top + viewport.scrollTop : top));
       }
     }
-    if (bottom < edge && bottom - box.top > 36) rule.style.setProperty("max-height", `${bottom - box.top}px`, "important");
+    if (bottom < edge && bottom - box.top > 36) rule.style.setProperty("max-height", `${bottom - box.top + parseFloat(style.borderBottomWidth)}px`, "important");
   }
 }
 let listBudgetSheet: CSSStyleSheet | undefined;
@@ -811,6 +811,7 @@ async function refresh(): Promise<void> {
   try {
     const status = await request({ op: "status" });
     if (!current()) return;
+    selectionPending = false;
     serviceStatus = status;
     ready = status.state === "ready";
     if (statusProblem || (ready && problem === "NOT_ANSWERING")) clearDetails();
@@ -861,6 +862,7 @@ async function refresh(): Promise<void> {
     } else { state("ready", space); if (stage === "connect") showStage("connect"); }
   } catch (error) {
     if (!current()) return;
+    selectionPending = false;
     ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
     if (problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING") { buttons(); return; }
     if (!(error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
@@ -1017,9 +1019,7 @@ el("refresh").addEventListener("click", () => void action(refresh));
 el("space").addEventListener("change", () => {
   signedInProvider = undefined; connection = undefined; selectionPending = true;
   progress = progressNames.map(() => "waiting"); clearDetails(); notice(""); showStage(stage); buttons();
-  const selected = selectedSpace();
-  const pending = refresh(); const generation = refreshGeneration;
-  void pending.finally(() => { if (generation === refreshGeneration && selected === selectedSpace()) selectionPending = false; buttons(); });
+  void refresh();
 });
 function openDashboard(): void {
   const space = selectedSpace(); const provider = providers.get(space) ?? el<HTMLInputElement>("provider").value.trim();
