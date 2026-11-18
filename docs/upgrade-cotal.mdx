@@ -68,6 +68,7 @@ restart obtains fresh zero-seat admission instead of reusing that earlier lifeti
 Rollback restores captured connector configuration before verifying the previous execution.
 It releases its own admission fences even when the daemon still runs the target generation.
 The updater pins recorded local Managers on Linux, macOS and Windows and continues with a mesh-naming notice if no local instance can be identified and the exchange refuses because several Managers are live.
+If this home has no credentials for a local Manager's space, the update names its space, instance and root, leaves it running the version it loaded until it is restarted from its own home, and continues without reading its continuity.
 A successful manual update waits for the target daemon generation, not its updater's loaded version.
 If no machine daemon is installed, successful reconciliation completes the update without querying a daemon endpoint.
 An unwritable installation refuses before staging and names the owning install command.

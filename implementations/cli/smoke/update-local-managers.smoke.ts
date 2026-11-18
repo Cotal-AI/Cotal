@@ -1,11 +1,65 @@
 import { once } from "node:events";
 import strictAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { reportRunningManagers } from "../src/commands/update.js";
+import { ConnectRefusal, identityRecord } from "@cotal-ai/workspace";
+import { readUpdateManagerContinuity, reportRunningManagers } from "../src/commands/update.js";
 
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 const seen: Record<string, unknown>[] = [];
+const ownProcess = identityRecord(process.pid);
+assert.ok("token" in ownProcess);
+if (!("token" in ownProcess)) throw new Error("smoke process must have a native identity");
+const retained = { retainGraph: true };
+const manager = { process: ownProcess, space: 'other "space"', server: "nats://127.0.0.1:4222", root: '/other "home"', instanceId: "localtwo", pid: process.pid };
+const missing = new ConnectRefusal("missing", undefined, { code: "AUTH_REQUIRED", native: { code: "CREDENTIALS_MISSING" } });
+const signedOut = new ConnectRefusal("signed out", undefined, { code: "AUTH_REQUIRED", cause: { code: "signed-out" } });
+const notices: string[] = [];
+const log = console.log;
+console.log = text => { notices.push(String(text)); };
+try {
+  for (const error of [missing, signedOut]) {
+    const before = notices.length;
+    assert.equal(await readUpdateManagerContinuity(manager, {}, async flags => {
+      assert.deepEqual(flags, { space: manager.space, server: manager.server, on: manager.instanceId });
+      throw error;
+    }, retained), "none");
+    assert.equal(notices.length, before + 1, "one missing-credentials notice per read");
+    assert.ok(notices.at(-1)!.includes(JSON.stringify(manager.space)));
+    assert.ok(notices.at(-1)!.includes(JSON.stringify(manager.root)));
+    assert.ok(notices.at(-1)!.includes(manager.instanceId));
+    assert.ok(notices.at(-1)!.includes("keeps running the version it loaded until it is restarted from its own home"));
+  }
+  for (const error of [
+    new ConnectRefusal("expired", undefined, { code: "AUTH_REQUIRED" }),
+    new ConnectRefusal("rejected", undefined, { code: "PERMISSION_DENIED" }),
+    new ConnectRefusal("refused", undefined, { code: "PERMISSION_DENIED", cause: { code: "refused" } }),
+    Object.assign(new Error("unreadable credentials"), { code: "EACCES" }),
+    Object.assign(new Error("untyped missing"), { native: { code: "CREDENTIALS_MISSING" } }),
+  ]) await assert.rejects(readUpdateManagerContinuity(manager, {}, async () => { throw error; }, retained), actual => actual === error);
+  await assert.rejects(readUpdateManagerContinuity(manager, { creds: "/explicit.creds" }, async () => { throw missing; }, retained), actual => actual === missing);
+  await assert.rejects(readUpdateManagerContinuity(manager, {}, async () => { throw missing; }), actual => actual === missing, "nonretained reads still refuse");
+  await assert.rejects(readUpdateManagerContinuity({ ...manager, process: undefined }, {}, async () => { throw missing; }, retained), actual => actual === missing, "missing native pin still refuses");
+  await assert.rejects(reportRunningManagers({}, async () => { throw missing; }, () => [manager]), actual => actual === missing, "generic report cannot absorb missing credentials");
+  assert.equal(await reportRunningManagers({}, async () => { throw missing; }, () => [manager], retained), "none", "retained report uses known local Manager boundary");
+  assert.equal(await readUpdateManagerContinuity(manager, {}, async () => "legacy"), "legacy", "answered legacy is unchanged");
+  assert.equal(await readUpdateManagerContinuity(manager, {}, async () => "none"), "none");
+  const processRecord = identityRecord(process.pid);
+  assert.ok("token" in processRecord);
+  if ("token" in processRecord) {
+    const pinned = { ...manager, process: { ...processRecord } };
+    await assert.rejects(readUpdateManagerContinuity(pinned, {}, async () => {
+      pinned.process.token = "changed";
+      throw missing;
+    }, retained), /changed during its continuity read/);
+    await assert.rejects(readUpdateManagerContinuity(pinned, {}, async () => "none"), /changed during its continuity read/);
+    pinned.process.token = processRecord.token;
+    await assert.rejects(readUpdateManagerContinuity(pinned, {}, async () => {
+      pinned.process.token = "changed";
+      return "legacy";
+    }, retained), /changed during its continuity read/);
+  }
+} finally { console.log = log; }
 // The selected mesh must not decide which local Managers share the installation.
 const report = reportRunningManagers as unknown as (
   flags: Record<string, unknown>,

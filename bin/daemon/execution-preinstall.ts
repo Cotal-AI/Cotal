@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
-import { localUpdateManagers, readManagerContinuity, reportRunningManagers } from "@cotal-ai/cli/update";
+import { localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, reportRunningManagers } from "@cotal-ai/cli/update";
 import { CommandFailure, homeCotalDir, resolveControlTarget } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { queryDaemon } from "./client.js";
@@ -29,7 +29,7 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
     try { paths = daemonPaths(); reply = await queryDaemon({ paths }); }
     catch (error) {
       if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) throw error;
-      await reportRunningManagers(request.flags, readOne, flags => localUpdateManagers(flags, request.installedEntry));
+      await reportRunningManagers(request.flags, readOne, flags => localUpdateManagers(flags, request.installedEntry), { retainGraph: true });
       return { hostedSpaces: [], occupied: 0 };
     }
     if (!reply.ok) throw new Error(`machine daemon custody is unreadable: ${reply.error.message}`);
@@ -91,10 +91,10 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
     if (process.platform === "linux") {
       for (const manager of localUpdateManagers(request.flags, request.installedEntry)) {
         if (active.some(hosted => hosted.instanceId === manager.instanceId)) continue;
-        await readOne({ ...request.flags, space: manager.space, server: manager.server, on: manager.instanceId });
+        await readUpdateManagerContinuity(manager, request.flags, readOne, { retainGraph: true });
       }
     } else {
-      await reportRunningManagers(request.flags, readOne);
+      await reportRunningManagers(request.flags, readOne, undefined, { retainGraph: true });
       if (typeof request.flags.space !== "string" && typeof request.flags.creds !== "string") {
         const { readMeshRegistry } = await import("@cotal-ai/workspace");
         for (const entry of readMeshRegistry().entries) {

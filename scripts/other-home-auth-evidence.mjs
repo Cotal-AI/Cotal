@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+
+export const otherHomeNotice = e => `Manager ${e.before.instanceId} in space ${JSON.stringify(e.space)} at ${JSON.stringify(e.project)} keeps running the version it loaded until it is restarted from its own home; this home has no credentials for its space`;
+const clean = row => row?.exit === 0 && row.signal === null && row.timeout === false;
+export function verifyOtherHomeAuthEvidence({ report, cell }) {
+  const e = report.otherHomeAuth;
+  assert.equal(cell.otherHomeAuth, true);
+  assert.equal(cell.platform, 'linux');
+  assert.equal(report.environment?.nativeServiceRequested, true);
+  assert.equal(e?.mode, 'second-private-home-static-auth');
+  assert.notEqual(e.home, e.updaterHome);
+  assert.equal(e.sourceVersion, cell.sourceVersion);
+  assert.equal(e.before.loadedVersion, cell.sourceVersion);
+  assert(Number.isSafeInteger(e.before.pid) && e.before.pid > 0);
+  assert.equal(typeof e.before.birth, 'string'); assert(e.before.birth);
+  assert.equal(typeof e.before.instanceId, 'string'); assert(e.before.instanceId);
+  assert.equal(e.before.argv[0], process.execPath);
+  assert(e.before.argv.includes('supervise'));
+  assert.equal(e.before.cwd, e.project);
+  assert(e.before.graph.length > 0);
+  assert.deepEqual(e.after, e.before, 'Manager native identity and complete loaded graph must survive');
+  assert(e.authRead && clean(e.authRead));
+  assert.deepEqual(JSON.parse(e.authRead.stdout), { refused: true, code: 'AUTH_REQUIRED', nativeCode: 'CREDENTIALS_MISSING' });
+  const one = label => { const rows = report.calls.filter(row => row.label === label); assert.equal(rows.length, 1, label); return rows[0]; };
+  const auth = one('other home original continuity read');
+  for (const key of ['exit', 'signal', 'timeout', 'stdout', 'stderr']) assert.equal(auth[key], e.authRead[key]);
+  assert(auth.argv.at(-1).includes('readManagerContinuity'));
+  assert.equal(auth.home, e.updaterHome);
+  const update = one('upgrade under test'); assert(clean(update));
+  assert.deepEqual(update.argv.slice(-2), ['update', '--self']);
+  assert((update.stdout + update.stderr).split(/\r?\n/).includes(otherHomeNotice(e)));
+  assert(Date.parse(auth.finishedAt) <= Date.parse(update.startedAt));
+  const before = one('other home Manager before'), after = one('other home Manager after');
+  assert(clean(before) && clean(after));
+  assert.equal(before.home, e.home); assert.equal(after.home, e.home);
+  assert(Date.parse(before.finishedAt) <= Date.parse(auth.startedAt));
+  assert(Date.parse(after.startedAt) >= Date.parse(update.finishedAt));
+  assert(report.calls.some(row => row.label === 'native install' && clean(row)));
+  return { 'other-home-auth-required': true, 'other-home-manager-preserved': true, 'other-home-loaded-graph-preserved': true, 'other-home-update-notice': true };
+}

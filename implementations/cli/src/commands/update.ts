@@ -53,6 +53,7 @@ import { processGone, readStackJournal, stackScopeRefusals } from "../lib/stack-
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import {
   ConnectRefusal,
+  isConnectRefusal,
   isWorkspaceTargetError,
   localMeshesForRoot,
   preparedNeverStarted,
@@ -756,6 +757,7 @@ export async function reportRunningManagers(
   flags: Record<string, unknown>,
   readOne: (flags: Record<string, unknown>) => Promise<"none" | "legacy"> = readManagerContinuity,
   census: (flags: Record<string, unknown>) => readonly UpdateManager[] = localUpdateManagers,
+  options: { retainGraph?: boolean } = {},
 ): Promise<"none" | "legacy"> {
   // Raw credentials are an explicit off-registry target, not an install-wide discovery request.
   if (typeof flags.creds === "string") return readOne(flags);
@@ -768,9 +770,7 @@ export async function reportRunningManagers(
   if (selected.length) {
     let verdict: "none" | "legacy" = "none";
     for (const manager of selected) {
-      if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before its continuity read`);
-      console.log(c.dim(`  ${manager.space}: reading local Manager ${manager.instanceId} (pid ${manager.pid})`));
-      if (await readOne({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") verdict = "legacy";
+      if (await readUpdateManagerContinuity(manager, flags, readOne, options) === "legacy") verdict = "legacy";
     }
     return verdict;
   }
@@ -791,6 +791,31 @@ export async function reportRunningManagers(
       else console.log(c.dim("  manager custody carries this update"));
     }
     return verdict;
+  }
+}
+
+/** Read one known local Manager without requiring another home's credentials. */
+export async function readUpdateManagerContinuity(
+  manager: UpdateManager,
+  flags: Record<string, unknown>,
+  readOne: (flags: Record<string, unknown>) => Promise<"none" | "legacy"> = readManagerContinuity,
+  options: { retainGraph?: boolean } = {},
+): Promise<"none" | "legacy"> {
+  const pin = () => {
+    if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed during its continuity read`);
+  };
+  pin();
+  try {
+    const verdict = await readOne({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId });
+    pin();
+    return verdict;
+  } catch (error) {
+    pin();
+    const cause = isConnectRefusal(error) ? error.cause as { code?: unknown } | undefined : undefined;
+    if (!options.retainGraph || !manager.process || typeof flags.creds === "string" || !isConnectRefusal(error) || error.code !== "AUTH_REQUIRED" ||
+        (error.native?.code !== "CREDENTIALS_MISSING" && cause?.code !== "signed-out")) throw error;
+    console.log(`Manager ${manager.instanceId} in space ${JSON.stringify(manager.space)} at ${JSON.stringify(manager.root)} keeps running the version it loaded until it is restarted from its own home; this home has no credentials for its space.`);
+    return "none";
   }
 }
 
