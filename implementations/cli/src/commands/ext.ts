@@ -136,7 +136,7 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
       closed.status,
       closed.signal,
       closed.signal !== null
-        ? `npm intermediary terminated by ${closed.signal}`
+        ? `Windows npm intermediary terminated by ${closed.signal}`
         : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,
     );
     return { status: spawnError ? null : closed.status, output: `${spawnError}${stdout}${stderr}`.trim() };

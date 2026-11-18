@@ -1284,6 +1284,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     snapshot = snapshotUpdateClosure();
     rt.out(`✓ recovery snapshot saved (${((Date.now() - snapshotStarted) / 1000).toFixed(1)} s)`);
   } catch (error) {
+    try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
     releaseClosure?.();
     await releaseAdmission?.();
     releaseGlobal();

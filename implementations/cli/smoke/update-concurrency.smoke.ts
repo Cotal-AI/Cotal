@@ -189,6 +189,10 @@ if (process.platform !== "win32") {
 
     assert.equal(processExitIsAmbiguous(1, null, true), true, "a Windows npm intermediary failure is ambiguous");
     assert.equal(processExitIsAmbiguous(0, null, true), false);
+    for (const signal of ["SIGKILL", "SIGTERM"] as const) {
+      assert.equal(processExitIsAmbiguous(null, signal, false), false, "a direct child's signal exit proves completion");
+      assert.equal(processExitIsAmbiguous(null, signal, true), true, "a signalled intermediary cannot prove descendant completion");
+    }
     const mutation = beginExtensionNpmMutation();
     mutation.markLive(process.pid);
     mutation.markAmbiguous("Windows npm intermediary exited 1; descendant completion is unproved");

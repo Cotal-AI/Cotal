@@ -202,7 +202,9 @@ export function processExitIsAmbiguous(
   signal: NodeJS.Signals | null,
   intermediary: boolean,
 ): boolean {
-  return signal !== null || (intermediary && status !== 0);
+  // A direct child's close proves it has exited, including after a signal. An intermediary's
+  // abnormal exit does not prove its mutating descendant has finished.
+  return intermediary && (signal !== null || status !== 0);
 }
 
 export function beginExtensionNpmMutation(intermediary = process.platform === "win32"): ProcessMutation {

@@ -24,6 +24,9 @@ for the processes that already loaded it. This does not restore files a prior ma
 already replaced. Source checkouts, Windows and version-changing update checks are unchanged.
 Later releases inherit the selected prefix, including when its publication was interrupted.
 A recorded extension npm child must finish before its source prefix can be copied.
+On POSIX, a signal exit of that direct child releases its marker so repair and self-update can
+continue. If the recovery snapshot refuses after a target generation was prepared, the updater
+discards that unpublished generation before returning the refusal.
 After a successful update selects the complete new prefix, unused earlier release sets are removed on a best-effort basis.
 A successful update authenticates every recorded local Manager and the daemon before collecting sets, and keeps each release they still use.
 An unreadable inventory or a holder without a known release keeps all sets. Removal failure does not fail the update.

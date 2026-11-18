@@ -1388,6 +1388,52 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(!fixture.events.some(event => event.includes("installed globally") || event.includes("into npm's global installation")));
 }
 
+// A refused recovery snapshot must discard its verified but unpublished execution generation.
+{
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const xdg = mkdtempSync(join(tmpdir(), "cotal-staged-snapshot-refusal-"));
+  process.env.XDG_CONFIG_HOME = xdg;
+  const config = join(xdg, "cotal");
+  mkdirSync(config, { recursive: true, mode: 0o700 });
+  const marker = join(config, ".extensions.lock.npm-child");
+  const record = JSON.stringify({ phase: "ambiguous", owner: process.pid, nonce: "0".repeat(24), operation: "extension npm mutation", reason: "descendant completion is unproved" });
+  writeFileSync(marker, record);
+  try {
+    const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+    const staged = join(xdg, "unpublished-generation");
+    fixture.rt.prepareExecution = async () => {
+      mkdirSync(staged);
+      fixture.events.push("prepare-execution");
+      return {
+        entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: join(staged, "execution.json"),
+        async preflight() {},
+        publish() { assert.fail("snapshot refusal must not publish the generation"); },
+        restore() { assert.fail("an unpublished generation needs no rollback"); },
+        verify() {},
+        discard() { fixture.events.push("discard-execution"); rmSync(staged, { recursive: true }); },
+      };
+    };
+    fixture.rt.prepareReplacement = async () => {
+      fixture.events.push("prepare-admission");
+      return async () => { fixture.events.push("release-admission"); };
+    };
+    assert.equal(await executeUpdate(true, fixture.rt), 1);
+    assert.ok(fixture.events.some(event => event.includes("update snapshot refused: extension npm mutation ended ambiguously")), "the real snapshot writer refused the marker");
+    assert.equal(readFileSync(marker, "utf8"), record, "unproved descendant evidence stays intact");
+    assert.ok(fixture.events.includes("prepare-execution"));
+    assert.equal(existsSync(staged), false, "snapshot refusal removes the unpublished generation");
+    assert.equal(fixture.events.filter(event => event === "discard-execution").length, 1);
+    assert.ok(fixture.events.includes("release-admission"));
+    assert.ok(fixture.events.some(event => event.startsWith("release-global:")));
+    assert.ok(!fixture.events.some(event => event.startsWith("global:")));
+    assert.equal(readUpdateRecovery(), undefined, "pre-publication refusal writes no replacement journal");
+  } finally {
+    rmSync(xdg, { recursive: true, force: true });
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
+}
+
 // Staged verification loads the live extension config, so rollback restores its snapshot first.
 {
   const priorXdg = process.env.XDG_CONFIG_HOME;

@@ -627,6 +627,12 @@ A package directory that is present without a readable `package.json` still fail
 a seed that failed this way in an earlier release, `cotal ext seed --repair` finishes it, and
 `cotal ext remove` then drops the entry.
 
+On POSIX, a connector seed interrupted by a signal to its direct npm child releases the npm marker
+after that child closes. Run `cotal ext seed --repair` or `cotal update --self` to reconcile it.
+A still-running npm child blocks another writer. On Windows, a failed or signalled npm intermediary
+keeps its marker because a descendant may still be writing. Older ambiguous markers without a
+recorded child identity also remain blocked and require the emitted inspection remedy.
+
 Removing an extension reclaims a pidfile when its recorded PID is proven dead. A running process,
 unreadable or unattributable record, or unconfirmed liveness still refuses removal with its process
 or record remedy. There is no command that stops one extension's legacy process. Follow the emitted

@@ -117,6 +117,7 @@ const files = [
   "operator-pinned.smoke.ts",
   "forged-environment.smoke.ts",
   "ambiguous-marker.smoke.ts",
+  "npm-signal-repair.smoke.ts",
   "parallel-boots.smoke.ts",
   "symlinked-bin.smoke.ts",
   "downgrade.smoke.ts",
@@ -135,6 +136,8 @@ if (process.platform === "win32") {
   excluded["absent-extension.smoke.ts"] = "its failed-seed PATH and dangling package link are symlinks, which need a privilege on Windows";
   files.splice(files.indexOf("config-modes.smoke.ts"), 1);
   excluded["config-modes.smoke.ts"] = "POSIX folder modes; Windows has no group write to repair";
+  files.splice(files.indexOf("npm-signal-repair.smoke.ts"), 1);
+  excluded["npm-signal-repair.smoke.ts"] = "POSIX direct npm child signals; Windows uses an intermediary";
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "seed-run-"));
@@ -162,7 +165,7 @@ try {
     process.exitCode = 1;
   } else {
     const passed = unit.passed + result.results.reduce((sum, row) => sum + row.cells, 0);
-    const expected = process.platform === "win32" ? 102 : 151;
+    const expected = process.platform === "win32" ? 102 : 161;
     if (passed !== expected) throw new Error(`seed smoke: expected ${expected} checks, observed ${passed}`);
     console.log(`seed smoke: ${passed} passed, 0 failed`);
     emitSentinel({ passed, failed: 0 });
