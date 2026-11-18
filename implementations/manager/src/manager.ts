@@ -118,7 +118,7 @@ import { DELIVERY_ADMIN_BOOT_WAIT_MS, isUnansweredDeliveryAdmin, makeManagerEndp
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { SessionRecovery } from "./session-recovery.js";
 import { SeatCustody } from "./seat-custody.js";
-import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
+import { withTimeout } from "./manager-timeout.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { inlinePersonaDir, inlineSnapshotPath, launchSpecForRun, materializePersona, launchAgentToStartOpts, removeInlineSnapshot, writeInlineSnapshot, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, type ContinuityAssignment } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
