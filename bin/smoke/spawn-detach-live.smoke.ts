@@ -79,6 +79,11 @@ writeFileSync(
   join(workspaceRoot, ".cotal", "config.json"),
   JSON.stringify({ connectors: { e2e: { mcpServers: { alpha: { command: "true" }, beta: { command: "true" } } } } }),
 );
+// A project config that declares servers applies only in a folder the operator trusts. The trust
+// record lives in this suite's own config folder.
+process.env.XDG_CONFIG_HOME = join(home, "xdg");
+const { trustProject } = await import("@cotal-ai/workspace");
+trustProject(workspaceRoot);
 
 // The e2e connector: a REAL long-lived child (node keepalive) through the REAL pty runtime — no
 // Claude cold-start, but a genuine process the manager supervises and attach streams. The child

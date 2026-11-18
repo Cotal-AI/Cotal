@@ -95,6 +95,8 @@ The [agent file reference](agent-files.mdx) defines the persona format.
 | `capabilities` | Control capabilities such as `spawn` and `run`. `role:<r>` lets the agent hand role `r` to a helper it spawns. `admin` is never accepted from a manifest. See [Identity and auth](identity-and-auth.mdx). |
 | `personaPermissions` | Override for the top-level `reject` or `include` policy. |
 
+[Project trust](config.mdx#trusted-project-folders) does not cover a manifest's own `launchOptions`, `prompt` or `cwd`, or a persona file kept outside `.cotal/agents`, so a manifest or persona file you run from a folder you did not write can start commands.
+
 ### Working directory
 
 An absolute `cwd` is used as supplied.

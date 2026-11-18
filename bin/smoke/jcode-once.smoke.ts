@@ -24,7 +24,7 @@ const scratch = mkdtempSync(join(tmpdir(), "cotal-jcode-once-"));
 // The operator's own config and Jcode home stay out of this run.
 process.env.HOME = join(scratch, "home");
 process.env.XDG_CONFIG_HOME = join(scratch, "home", ".config");
-mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true });
+mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true, mode: 0o700 });
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_") || key.startsWith("FAKE_JCODE_")) delete process.env[key];
 // `jcode` on PATH is the fake harness.
 const bin = join(scratch, "bin");
@@ -38,7 +38,7 @@ const {
   createSpaceAuth, mintCreds, newIdentity, standaloneConnectOpts, setupSpaceStreams,
   digestIdToken, epCall, readGoalResult, readGoalIndex, lifecycleBlockedFrom,
 } = await import("@cotal-ai/core");
-const { authDir, saveSpaceAuth, mintControlInstrument, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, saveSpaceAuth, mintControlInstrument, trustProject, workspaceSecretStore } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/connector-jcode");
 const { Manager } = await import("@cotal-ai/manager");
 const { MANAGER_ENDPOINT, MANAGER_CONTRACTS } = await import("../../implementations/manager/src/manager-service-contract.js");
@@ -86,6 +86,8 @@ writeFileSync(join(workspaceRoot, ".cotal", "agents", "helper.md"), "---\nname: 
 writeFileSync(join(workspaceRoot, ".cotal", "config.json"), JSON.stringify({
   spawn: { env: ["FAKE_JCODE_LOG", "FAKE_JCODE_DAEMON", "FAKE_JCODE_SESSION_STATE", "FAKE_JCODE_RUN_WITHOUT_ACCEPT_ON_CONTENT", "FAKE_JCODE_RUN_WITHOUT_ACCEPT_HOLD_FILE", "FAKE_JCODE_HOLD_TURN_ON_CONTENT", "FAKE_JCODE_HOLD_TURN_RELEASE_FILE"] },
 }));
+// A project config that names spawn.env applies only in a folder the operator trusts.
+trustProject(workspaceRoot);
 process.env.FAKE_JCODE_DAEMON = "1";
 
 let manager: InstanceType<typeof Manager> | undefined;

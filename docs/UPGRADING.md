@@ -1,5 +1,35 @@
 # Upgrading a running deployment
 
+## Trusted project folders
+
+A project folder's own `.cotal` may now declare `connectors.<name>.mcpServers` entries, `spawn.env`
+names and persona `launchOptions` only when the folder is trusted. A spawn that reads them from any
+other folder refuses, names the folder, and launches nothing. This holds for a spawn in this
+terminal and for one a manager runs.
+
+### What changes for you
+
+- The first command you run at this version writes `trusted-projects.json` in the operator config
+  folder. It lists every root a space on this machine was registered or prepared at before that
+  command, so those projects keep working with no step. This happens once per Cotal home: a
+  record beside the space registry notes it, so a space registered later is never added, even if
+  `trusted-projects.json` is removed or another shell uses a different config folder. Removing
+  `trusted-projects.json` leaves no folder trusted until you run `cotal trust <path>` again.
+  Removing the record, `trusted-projects-seed.json` in the Cotal home, makes the next command
+  trust every folder a space is registered or prepared at by then.
+- `cotal setup`, `cotal space create` and `cotal up` trust a folder only when they made its
+  `.cotal` in that run. A folder that already had one, such as a cloned repository, needs
+  `cotal trust <path>` once if it declares servers, `spawn.env` or persona launch options.
+- A folder you use with no space registered before the upgrade, such as one you spawn in with
+  `--cwd` only, needs `cotal trust <path>` once for the same reason. A persona file a manifest
+  names (`cotal up -f`, `cotal team deploy`) follows the same rule for its `launchOptions`. The
+  manifest's own `launchOptions` on an agent are not checked: a manifest you run is trusted as you
+  run it. Its launch options are refused when the path you give, any symbolic link or folder on the
+  way, or the file reached lies under the `.cotal/agents` of a folder that is not trusted.
+- A project config in a `.cotal` that another account owns is refused. Move the project to a
+  folder your own account owns.
+- Restart a running manager at this version so its spawns apply the rule.
+
 ## Durable channel leave after 0.166.0
 
 From 0.166.0 a channel leave retires every open durable membership the principal holds on that

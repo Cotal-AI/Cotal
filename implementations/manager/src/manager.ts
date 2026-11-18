@@ -92,7 +92,7 @@ import {
   renderOnceTask,
   shownSpawner,
 } from "@cotal-ai/core";
-import { loadLaunchPersonaFile, PersonaSourceError, retainConnectorSeat } from "@cotal-ai/workspace";
+import { isTrustedProject, loadTrustCheckedPersona, manifestPersonaLaunchOptionsRefusal, PersonaSourceError, retainConnectorSeat } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
@@ -6446,6 +6446,10 @@ export class Manager {
         spec = parseLaunchSpec(args.spec, `inline launch spec (run ${runId})`);
         if (spec.runId !== runId)
           return { ok: false, error: `inline launch spec runId "${spec.runId}" does not match requested "${runId}"` };
+        // Refused before the spec is kept, so a refused launch leaves no record a restart would read.
+        const requested = spec.agents.find((a) => a.name === name);
+        const optionsRefused = requested && manifestPersonaLaunchOptionsRefusal(requested.personaPath, requested.launchOptions);
+        if (optionsRefused) return { ok: false, error: optionsRefused };
         hooks?.onEffect?.();
         persistLaunchSpec(this.workspaceRoot, spec);
       } catch (e) {
@@ -6591,12 +6595,24 @@ export class Manager {
     // file is NOT its authority, so its def (and its agent pin) is deliberately not consulted here —
     // the manifest's own `agent:` field drove the launch object already.
     let def: AgentDef | undefined;
+    if (opts.resolved) {
+      // A manifest launch carries the persona's launch options merged into its spec. The persona file
+      // it names is read again on this host: one in a project folder that is not trusted may
+      // contribute none, as on every other launch path.
+      const optionsRefused = manifestPersonaLaunchOptionsRefusal(opts.resolved.personaPath, opts.resolved.launchOptions);
+      if (optionsRefused) return { error: optionsRefused };
+    }
     if (!opts.resolved) {
+      // A persona file in a project folder that is not trusted may contribute no launch options: the
+      // connector renders each key into the host's own flags or config. One walk judges every
+      // spelling of the path and reads the file it reached, so the file judged is the file used.
+      let optionsRefused: string | undefined;
       try {
-        def = loadLaunchPersonaFile(configPath);
+        ({ def, refusal: optionsRefused } = loadTrustCheckedPersona(configPath, "launch"));
       } catch (e) {
         return { error: rejectionText(e), ...(e instanceof PersonaSourceError ? { code: "bad-request" as const } : {}) };
       }
+      if (optionsRefused) return { error: optionsRefused };
       // Shared operator files remain launchable. Owned content follows the catalog's visibility
       // decision before connector loading or any allocation. A hosted run acts for its admission;
       // only a complete authenticated caller can request the current ledger's admin decision.
@@ -6870,7 +6886,7 @@ export class Manager {
     let cotalConfig: CotalConfig;
     let hostFields: ReturnType<Manager["hostLaunchFields"]>;
     try {
-      cotalConfig = loadCotalConfig(this.workspaceRoot);
+      cotalConfig = loadCotalConfig(this.workspaceRoot, isTrustedProject);
       hostFields = this.hostLaunchFields(cotalConfig, agent, opts.shareTools, harness);
     } catch (e) {
       const error = rejectionText(e);
@@ -8255,14 +8271,19 @@ export class Manager {
         }
         if (!spec || spec.hash !== launchSource.hash)
           return { ok: false, error: `retained manifest agent ${launchSource.requested} is missing or its hash changed; refusing same-principal resume` };
+        const manifestOptionsRefused = manifestPersonaLaunchOptionsRefusal(spec.personaPath, spec.launchOptions);
+        if (manifestOptionsRefused) return { ok: false, error: manifestOptionsRefused };
         launchOptions = spec.launchOptions;
         exact = spec.continuity === "exact";
       } else {
+        // Judged on the file read, as on start.
+        let optionsRefused: string | undefined;
         try {
-          launchOptions = loadAgentFile(entry.launch.source.configPath).launchOptions;
+          ({ def: { launchOptions }, refusal: optionsRefused } = loadTrustCheckedPersona(entry.launch.source.configPath, "agent"));
         } catch (e) {
           return { ok: false, error: rejectionText(e) };
         }
+        if (optionsRefused) return { ok: false, error: optionsRefused };
       }
       // Asked once `exact` is known: an exact seat reopens its retained session or fails, like its
       // manifest launch, so the connector must honor reopenSession before the batch starts any child.
@@ -8280,7 +8301,7 @@ export class Manager {
 
       try {
         const launchOpts: LaunchOpts = {
-          ...this.hostLaunchFields(loadCotalConfig(this.workspaceRoot), entry.launch.connector, entry.launch.shareTools, harness),
+          ...this.hostLaunchFields(loadCotalConfig(this.workspaceRoot, isTrustedProject), entry.launch.connector, entry.launch.shareTools, harness),
           name: entry.name,
           role: entry.role,
           id: authority.id,

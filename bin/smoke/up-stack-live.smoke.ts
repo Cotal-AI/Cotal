@@ -68,6 +68,7 @@ const autoRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-auto-"));
 const occupantRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-occupant-"));
 const warningRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-warning-"));
 const openRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-open-"));
+const clonedRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-cloned-"));
 const fakeBin = mkdtempSync(join(tmpdir(), "cotal-upstack-bin-"));
 const configDir = join(home, "xdg");
 const anchors = new Map([
@@ -76,6 +77,7 @@ const anchors = new Map([
   [occupantRoot, recordSmokeSandbox({ root: occupantRoot, cotalHome: home, xdgConfigHome: configDir })],
   [warningRoot, recordSmokeSandbox({ root: warningRoot, cotalHome: home, xdgConfigHome: configDir })],
   [openRoot, recordSmokeSandbox({ root: openRoot, cotalHome: home, xdgConfigHome: configDir })],
+  [clonedRoot, recordSmokeSandbox({ root: clonedRoot, cotalHome: home, xdgConfigHome: configDir })],
 ]);
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
@@ -463,6 +465,13 @@ try {
   const openRefresh = (...extra: string[]) => cliIn(openRoot, "up", "--detach", "--open", "--server", openServer, ...extra);
   const openBoot = openRefresh();
   ok("a fresh open up --detach starts the broker and manager", openBoot.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `cotal down`$/m.test(plain(openBoot.stdout)), plain(openBoot.stdout + openBoot.stderr));
+  // `up` made this folder's `.cotal`, so it trusts the folder to declare MCP servers, spawn.env names
+  // and persona launch options.
+  const trustedRoots = (): string[] => {
+    try { return (JSON.parse(readFileSync(join(configDir, "cotal", "trusted-projects.json"), "utf8")) as { roots: string[] }).roots; }
+    catch { return []; }
+  };
+  ok("up in a new folder trusts the folder whose .cotal it made", trustedRoots().includes(realpathSync(openRoot)), trustedRoots());
   const openManager = openManagerPid();
   pids.push(Number(readFileSync(join(openRoot, ".cotal", "nats.pid"), "utf8").trim()), openManager);
   for (const extra of [[], ["--runtime", "pty"]]) {
@@ -516,6 +525,17 @@ try {
   const openRootDown = cliIn(openRoot, "down", "--yes");
   for (let i = 0; i < 24 && alive(openHealedPid); i++) await sleep(500);
   ok("down stops the open root's stack", openRootDown.status === 0 && !alive(openHealedPid), plain(openRootDown.stdout + openRootDown.stderr));
+
+  // A folder that arrived with a `.cotal`, as a cloned repository does, is not trusted by `up`, which
+  // did not make it.
+  {
+    const cloned = clonedRoot;
+    mkdirSync(join(cloned, ".cotal", "agents"), { recursive: true, mode: 0o700 });
+    const clonedUp = cliIn(cloned, "up", "--detach", "--open", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`);
+    if (existsSync(join(cloned, ".cotal", "nats.pid"))) pids.push(Number(readFileSync(join(cloned, ".cotal", "nats.pid"), "utf8").trim()));
+    ok("up in a folder that already had a .cotal starts and does not trust it", clonedUp.status === 0 && !trustedRoots().includes(realpathSync(cloned)), { status: clonedUp.status, roots: trustedRoots(), out: plain(clonedUp.stdout + clonedUp.stderr).slice(-300) });
+    cliIn(cloned, "down", "--yes");
+  }
 
   // Open mode in the SAME root retains static-auth files from the prior boot. Reporting follows the
   // effective live mode, not stale on-disk auth material: broker + manager, never delivery/auth-service.
@@ -781,6 +801,9 @@ try {
   mkdirSync(join(fgRoot, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(fgRoot, ".cotal", "agents", "seat.md"), "---\nname: seat\nrole: worker\nsubscribe: []\nallowPublish: []\n---\nA supervised seat that exists to be spared.\n");
   writeFileSync(join(fgRoot, ".cotal", "config.json"), JSON.stringify({ spawn: { env: ["CORE_DIST", "PIDFILE", "SHIM_BODY"] } }));
+  // A project config that names spawn.env applies only in a folder the operator trusts.
+  const fgTrust = cliIn(fgRoot, "trust", fgRoot);
+  ok("the foreground project folder is trusted", fgTrust.status === 0, plain(fgTrust.stderr));
   // Seeding installs the connector, not Claude's user configuration. Declare its wake-channel
   // server in this project so the shim launch does not depend on the host's Claude setup.
   writeFileSync(join(fgRoot, ".mcp.json"), JSON.stringify({
@@ -916,7 +939,8 @@ try {
   if (startedOccupant) cliIn(occupantRoot, "down", "--yes");
   cliIn(warningRoot, "down", "--yes");
   cliIn(openRoot, "down", "--yes");
+  cliIn(clonedRoot, "down", "--yes");
   for (const p of pids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(home, { recursive: true, force: true });
-  for (const d of [root, autoRoot, occupantRoot, warningRoot, openRoot, fakeBin]) rmSync(d, { recursive: true, force: true });
+  for (const d of [root, autoRoot, occupantRoot, warningRoot, openRoot, clonedRoot, fakeBin]) rmSync(d, { recursive: true, force: true });
 }

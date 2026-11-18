@@ -65,6 +65,8 @@ import {
 import {
   parseCommaList,
   CommandFailure,
+  isTrustedProject,
+  loadTrustCheckedPersona,
   loadLaunchPersonaFile,
   personaFileReference,
   PersonaSourceError,
@@ -1335,8 +1337,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // user's own choice, so one that is missing is still refused.
   const implicitDefault = ref === "default" && personaFrom === undefined && values.config === undefined && handoffText === undefined && redeemedEnrollment === undefined;
   let def: AgentDef;
+  // The file judged for project trust is the file read: one walk resolves the path, judges every
+  // spelling on the way, and reads the file it reached.
+  let personaOptionsRefused: string | undefined;
   try {
-    def = loadLaunchPersonaFile(path);
+    ({ def, refusal: personaOptionsRefused } = loadTrustCheckedPersona(path, "launch"));
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (!(implicitDefault && code === "ENOENT")) {
@@ -1360,7 +1365,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       throw new CommandFailure("refused", "PERMISSION_DENIED", `${missing.message}, and the shipped one could not be written there: ${(writeError as Error).message}`, { target: { space, path }, remedy: missing.remedy });
     }
     if (written !== undefined) provenance.wrote("default persona", written);
-    def = loadLaunchPersonaFile(path);
+    ({ def, refusal: personaOptionsRefused } = loadTrustCheckedPersona(path, "launch"));
   }
 
   // Provenance: say which persona file WON resolution (--config > positional > preference > default)
@@ -1375,7 +1380,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // launch, after the check, so an edit in between would launch a model the policy never saw.
   const model = values.model ?? def.model;
   const variant = values.variant ?? def.variant;
-  // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`.
+  // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`. A
+  // persona file in a project folder that is not trusted may contribute none: the connector renders
+  // each key into the host's own flags or config. Judged above, on the file that was read.
+  if (personaOptionsRefused) {
+    stderrLine("✗ ", personaOptionsRefused, c.red);
+    process.exit(1);
+  }
   const launchOptions = mergeLaunchOptions(def.launchOptions, cliLaunchOptions);
   if (redeemedEnrollment && redeemedEnrollment.bundle.actor !== requested) {
     stderrLine("✗ ", `the enrollment is for actor "${redeemedEnrollment.bundle.actor}" but this spawn names "${requested}"`, c.red);
@@ -1388,7 +1399,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // effective role, model (flag over file) and launch options before anything is provisioned or launched.
   let cotalConfig: CotalConfig;
   try {
-    cotalConfig = loadCotalConfig(personaProject);
+    cotalConfig = loadCotalConfig(personaProject, isTrustedProject);
     const refusal = modelPolicyRefusal(cotalConfig, {
       persona: `persona "${ref}" (${path})`,
       role, model, variant,

@@ -29,6 +29,7 @@ import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, completionFlags, complete, validateCompletionArguments } from "./commands/completion.js";
 import { config, configComplete, configFlags, configSubcommands } from "./commands/config.js";
 import { telemetry, telemetryFlags, validateTelemetryArguments } from "./commands/telemetry.js";
+import { trust, trustFlags, validateTrustArguments } from "./commands/trust.js";
 import { mint } from "./commands/mint.js";
 import { revokeCredential } from "./commands/revoke-credential.js";
 import { channels, channelArguments, channelComplete, channelFlags } from "./commands/channels.js";
@@ -155,6 +156,20 @@ const baseCommands: Command[] = [
     examples: [{ command: "cotal telemetry", note: "show the telemetry level in force" }, { command: "cotal telemetry off", note: "send no usage data" }, { command: "cotal telemetry minimal", note: "send only the command, outcome and version" }],
     validate: validateTelemetryArguments,
     run: telemetry,
+  },
+  {
+    kind: "command",
+    name: "trust",
+    group: "Setup",
+    summary: "trust a project folder, so its .cotal may declare MCP servers, spawn.env names and persona launch options",
+    usage: "cotal trust <path> [--json|--plain]",
+    positionals: "<path>",
+    flags: trustFlags,
+    outputs: ["json", "plain"],
+    prepareMeshTarget: false,
+    examples: [{ command: "cotal trust .", note: "trust the project in this folder" }, { command: "cotal trust <path>", note: "trust the project at a path" }],
+    validate: validateTrustArguments,
+    run: trust,
   },
   {
     kind: "command",

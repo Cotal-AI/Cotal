@@ -28,6 +28,12 @@ export function loadLaunchPersonaFile(path: string): AgentDef {
   } finally {
     closeSync(fd);
   }
+  return parseLaunchPersonaSource(source, path);
+}
+
+/** Parse persona source read for a launch: a Mesh manifest is refused, and anything else must pass
+ *  the native persona parser. `path` names the file in refusals. */
+export function parseLaunchPersonaSource(source: string, path: string): AgentDef {
   let manifest = false;
   try {
     const document = parseDocument(source);

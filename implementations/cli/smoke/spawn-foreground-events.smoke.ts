@@ -117,6 +117,11 @@ writeFileSync(persona, "---\nname: probe\nrole: worker\nsubscribe: [general]\nal
 writeFileSync(join(root, ".cotal", "config.json"), JSON.stringify({
   connectors: { "fg-probe-emitter": { mcpServers: { alpha: { command: "true" }, beta: { command: "true" } } } },
 }));
+// A project config that declares servers applies only in a folder the operator trusts. The trust
+// record lives in this suite's own config folder.
+process.env.XDG_CONFIG_HOME = join(home, "xdg");
+const { trustProject } = await import("@cotal-ai/workspace");
+trustProject(root);
 
 const port = await pickFreePort();
 const store = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}fg-events-js-`));

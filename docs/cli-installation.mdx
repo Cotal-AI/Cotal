@@ -1006,6 +1006,19 @@ anything but a level refuses `USAGE_INVALID`. A settings file that does not vali
 `SCHEMA_INVALID` on `cotal telemetry` and on every command that reports usage, until it is fixed or
 moved away. Under the environment opt-outs above nothing reads it, so it stops no command.
 
+## trust [#trust]
+
+```bash
+cotal trust <path> [--json|--plain]
+```
+
+Trusts one project folder, so its `.cotal/config.json` may declare MCP servers and `spawn.env`
+names, and its persona files may declare `launchOptions`, for agents spawned there. The folder's
+canonical path is recorded in `trusted-projects.json` in the operator config folder. Trusting a
+folder that is already trusted is a `no-op`. A path that is not a folder refuses `TARGET_NOT_FOUND`.
+A folder whose `.cotal` another account owns refuses `PERMISSION_DENIED`.
+[Trusted project folders](config.mdx#trusted-project-folders) describes the rule.
+
 
 ### Preparation [#preparation]
 

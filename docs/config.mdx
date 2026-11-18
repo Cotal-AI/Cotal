@@ -27,6 +27,45 @@ The files merge per connector and server name. A space-local server replaces the
 entry with the same name. Connectors and servers present in only one file remain. A missing file
 means no settings. Invalid JSON, a non-object top level, or an invalid shared server causes an error.
 
+### Trusted project folders [#trusted-project-folders]
+
+A project folder's own `.cotal` may declare these only when the folder is trusted:
+
+- `connectors.<name>.mcpServers` entries and `spawn.env` names in `.cotal/config.json`;
+- `launchOptions` in a persona file under `.cotal/agents/`, or a folder below it, since the
+  connector renders each key into the application's own flags or config. This includes a persona
+  file a manifest names for `cotal up -f` or `cotal team deploy`. Cotal resolves a persona path one
+  symbolic link at a time, refuses its launch options when the path you give, any link or folder on
+  the way, or the file reached lies under the `.cotal/agents` of a folder that is not trusted, and
+  reads the persona from the file it checked.
+
+A spawn that reads either from a folder that is not trusted refuses. The refusal names the file,
+the entries, the folder and the command that trusts it. Nothing launches. This applies to a spawn
+in this terminal and to one a manager runs. The config file's other fields, such as `modelPolicy`,
+apply whether or not the folder is trusted. A persona file outside any project folder, `--opt`
+given on the command line, and a manifest's own `launchOptions` on an agent are not affected.
+
+`cotal trust <path>` trusts one folder. It records the folder's canonical path in
+`trusted-projects.json` in the operator config folder. A trusted folder does not trust the folders
+inside it. Trust follows the path, not the contents: what the folder's files declare later is
+trusted, and so is a folder deleted and made again at the same path. A trusted path later replaced
+by a link does not pass its trust to the link's target.
+
+`cotal setup`, `cotal space create` and `cotal up` trust a folder only when they made its `.cotal`
+in that run. A folder that already had a `.cotal`, such as a cloned repository, is trusted only by
+`cotal trust`. Run it after you read the folder's `.cotal/config.json` and personas.
+
+The first command at the version that added this rule trusted every folder a space was registered
+or prepared at before it. That ran once per Cotal home, and `trusted-projects-seed.json` in the
+Cotal home records it. Removing `trusted-projects.json` does not run it again: no folder is trusted
+until `cotal trust` records it. `cotal trust` does not change the seed record. Removing
+`trusted-projects-seed.json` makes the next command run the seed again, trusting every folder a
+space is registered or prepared at by then.
+
+A space-local file is refused whole when it, or the `.cotal` folder that holds it, belongs to
+another account. `cotal trust` refuses such a folder too. A trusted projects file that another
+account owns or may write trusts nothing.
+
 | Field | Meaning | Merge rule |
 |---|---|---|
 | `connectors.<name>.mcpServers` | Named MCP servers available to a connector's spawned agents | Per connector and server name |
@@ -566,6 +605,7 @@ Move the file aside so Cotal can create the folder when it next saves configurat
 |---|---|
 | `config.json` | Operator-level connector config (the base layer above) |
 | `preferences.json` | Your [preferences](#preferences), private to you (`0600`), written by `cotal config` |
+| `trusted-projects.json` | The [trusted project folders](#trusted-project-folders), private to you (`0600`), written by `cotal trust` |
 | `extensions/` | `cotal ext` install prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache. Built-in connectors install here too, seeded on first run |
 | `seed/` | Built-in-connector seeding state: the `ever-seeded` authority (+ durable backup), the init witness, the version stamp, the crash cursor, and `store/<version>/<name>` (the stable payloads `ext add --install-links` reifies each seeded connector from) |
 

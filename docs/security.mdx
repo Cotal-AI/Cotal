@@ -71,6 +71,8 @@ The deployment also has these limits.
 - A host compromise can expose signing authority. Narrow operator profiles reduce individual connection grants but do not protect a copied signer.
 - Static `spawn` can choose a child's channel ACL. Spawn also grants access to connector launch options on the manager host.
 - Spawn environment filtering does not confine files reachable through `HOME` or other supplied roots.
+- A project folder's `.cotal` may declare MCP server commands, `spawn.env` names and persona launch options only after `cotal trust` records that folder, or after `cotal setup`, `cotal space create` or `cotal up` made its `.cotal`. A file in a folder another account owns is refused. Trust follows the path: what the folder declares later is trusted, and so is a folder made again at that path. An untrusted project config can still set `modelPolicy` for a role. See [trusted project folders](config.mdx#trusted-project-folders).
+- Project trust does not cover a manifest's own launch options, prompt or working directory, or a persona file kept outside `.cotal/agents`, so a manifest or persona file you run from a folder you did not write can start commands.
 - Custodied PTY reap trusts the custody record and uses process-group membership for descendants. Same-uid record replacement and PID reuse remain risks.
 
 [Host boundaries and credential limits](security-boundaries.mdx) preserves the exact environment rules, TTLs, key rotation behavior, PTY signal checks, and same-uid caveats.

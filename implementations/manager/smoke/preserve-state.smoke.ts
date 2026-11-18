@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -1178,6 +1178,115 @@ let openInventory: ManagerResumeAgent;
   check("replacement recommit revalidates every static entry and refuses later-entry drift", !commitDrift.ok && /static-worker-two/.test(commitDrift.error ?? ""), commitDrift.error);
   const cannotFinalize = await control(commitDriftManager, "admin", "finalizeResume", { attemptId: "static_commit_drift", durableCommitToken: "0".repeat(64) });
   check("a failed static authority commit cannot be finalized", !cannotFinalize.ok && /no successful commit/.test(cannotFinalize.error ?? ""), cannotFinalize.error);
+}
+
+// A resumed seat whose persona file sits in a project folder reads its launch options from that file
+// again, so the same trust rule as start applies: refused while the folder is not trusted, launched
+// once it is. A private config folder holds the trust list for this block only.
+{
+  const prevXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "cotal-preserve-xdg-"));
+  try {
+    const { trustProject } = await import("@cotal-ai/workspace");
+    const auth = await createSpaceAuth("preserve-smoke");
+    const identity = newIdentity();
+    const credsDir = agentCredsDir(root, "preserve-smoke");
+    mkdirSync(credsDir, { recursive: true });
+    const credsPath = join(credsDir, "options-worker.creds");
+    writeFileSync(credsPath, await mintCreds(auth, identity, "agent", { lifecycleUid: uidFor(identity.id) }), { mode: 0o600 });
+    const optionsPersona = join(agentsDir, "options-worker.md");
+    writeFileSync(optionsPersona, "---\nname: worker\nlaunchOptions:\n  mcp-config: ./servers.json\n---\nworker persona\n");
+    const entry: ManagerResumeAgent = {
+      ...openInventory,
+      name: "options-worker",
+      identity: { mode: "static", id: identity.id, lifecycleUid: uidFor(identity.id), credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } },
+      launch: { ...openInventory.launch, source: { kind: "persona", ref: "worker", configPath: optionsPersona, configSha256: digest(optionsPersona) } },
+      dependencies: [optionsPersona],
+    };
+    const untrusted = managerWith((name) => fakeHandle(name));
+    (untrusted as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const refused = await untrusted.resumePreserved(inventoryOf(entry));
+    const refusal = refused.agents[0]?.reply.error ?? refused.error ?? "";
+    check("resume refuses a project persona's launch options while its folder is not trusted",
+      !refused.ok && capturedLaunch === undefined && /launchOptions\.mcp-config/.test(refusal) && refusal.includes(`cotal trust ${root}`), { refusal, launched: capturedLaunch !== undefined });
+
+    trustProject(root);
+    const trusted = managerWith((name) => fakeHandle(name));
+    (trusted as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const passed = await trusted.resumePreserved(inventoryOf(entry));
+    check("and resumes it, launch options included, once the folder is trusted",
+      passed.ok && capturedLaunch?.launchOptions?.["mcp-config"] === "./servers.json", { reply: passed.agents[0]?.reply ?? passed.error, launchOptions: capturedLaunch?.launchOptions });
+
+    // A manifest seat's resume reads its launch options from the retained run spec, which merged the
+    // persona's. The persona file that spec names, in a folder that is not trusted, refuses the same way.
+    const otherRoot = mkdtempSync(join(tmpdir(), "cotal-preserve-manifest-"));
+    mkdirSync(join(otherRoot, ".cotal", "agents"), { recursive: true });
+    const manifestPersona = join(otherRoot, ".cotal", "agents", "planted.md");
+    writeFileSync(manifestPersona, "---\nname: planted\nlaunchOptions:\n  mcp-config: ./servers.json\n---\nbody\n");
+    writeFileSync(join(runDir, "r2.json"), JSON.stringify({
+      apiVersion: "cotal-launch/v1", space: "preserve-smoke", runId: "r2",
+      agents: [{ name: "worker", agent: "preserve-connector", subscribe: ["general"], allowSubscribe: ["general"], allowPublish: [], hash: "abc124", launchOptions: { "mcp-config": "./servers.json" }, personaPath: manifestPersona }],
+    }));
+    mkdirSync(join(runDir, "r2", "agents"), { recursive: true });
+    const r2Persona = join(runDir, "r2", "agents", "worker.md");
+    writeFileSync(r2Persona, "---\nname: worker\n---\nworker persona\n");
+    const manifestIdentity = newIdentity();
+    const manifestCreds = join(credsDir, "manifest-worker.creds");
+    writeFileSync(manifestCreds, await mintCreds(auth, manifestIdentity, "agent", { lifecycleUid: uidFor(manifestIdentity.id) }), { mode: 0o600 });
+    const manifestEntry: ManagerResumeAgent = {
+      ...openInventory,
+      name: "manifest-worker",
+      identity: { mode: "static", id: manifestIdentity.id, lifecycleUid: uidFor(manifestIdentity.id), credential: { kind: "file", path: manifestCreds, sha256: digest(manifestCreds) } },
+      launch: { ...openInventory.launch, source: { kind: "manifest", runId: "r2", requested: "worker", hash: "abc124", configPath: r2Persona, configSha256: digest(r2Persona), manifestSha256: digest(join(runDir, "r2.json")) } },
+      dependencies: [join(runDir, "r2.json"), r2Persona],
+    };
+    const manifestUntrusted = managerWith((name) => fakeHandle(name));
+    (manifestUntrusted as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const manifestRefused = await manifestUntrusted.resumePreserved(inventoryOf(manifestEntry));
+    const manifestRefusal = manifestRefused.agents[0]?.reply.error ?? manifestRefused.error ?? "";
+    check("a manifest seat's resume refuses launch options its untrusted persona file declares",
+      !manifestRefused.ok && capturedLaunch === undefined && /launchOptions\.mcp-config/.test(manifestRefusal) && manifestRefusal.includes(`cotal trust ${otherRoot}`), { manifestRefusal, launched: capturedLaunch !== undefined });
+    // A persona seat's file judged as read: a link in the trusted project's `.cotal/agents` naming the
+    // untrusted folder's persona refuses on resume.
+    const linkedPersona = join(agentsDir, "linked-worker.md");
+    symlinkSync(manifestPersona, linkedPersona);
+    const linkedEntry: ManagerResumeAgent = { ...entry, launch: { ...entry.launch, source: { kind: "persona", ref: "linked-worker", configPath: linkedPersona, configSha256: digest(linkedPersona) } }, dependencies: [linkedPersona] };
+    const linkedManager = managerWith((name) => fakeHandle(name));
+    (linkedManager as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const linkedRefused = await linkedManager.resumePreserved(inventoryOf(linkedEntry));
+    const linkedRefusal = linkedRefused.agents[0]?.reply.error ?? linkedRefused.error ?? "";
+    check("a persona seat whose file links to an untrusted project's persona refuses on resume",
+      !linkedRefused.ok && capturedLaunch === undefined && linkedRefusal.includes(`cotal trust ${otherRoot}`), { linkedRefusal, launched: capturedLaunch !== undefined });
+    // The same seat through a chain whose middle hop is in the untrusted folder's .cotal/agents and
+    // whose file is outside it.
+    mkdirSync(join(otherRoot, "cfg"));
+    writeFileSync(join(otherRoot, "cfg", "x.md"), "---\nname: worker\nlaunchOptions:\n  mcp-config: ./servers.json\n---\nbody\n");
+    symlinkSync("../../cfg/x.md", join(otherRoot, ".cotal", "agents", "hop.md"));
+    const chainedPersona = join(agentsDir, "chained-worker.md");
+    symlinkSync(join(otherRoot, ".cotal", "agents", "hop.md"), chainedPersona);
+    const chainedEntry: ManagerResumeAgent = { ...entry, launch: { ...entry.launch, source: { kind: "persona", ref: "chained-worker", configPath: chainedPersona, configSha256: digest(chainedPersona) } }, dependencies: [chainedPersona] };
+    const chainedManager = managerWith((name) => fakeHandle(name));
+    (chainedManager as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const chainedRefused = await chainedManager.resumePreserved(inventoryOf(chainedEntry));
+    const chainedRefusal = chainedRefused.agents[0]?.reply.error ?? chainedRefused.error ?? "";
+    check("a persona seat whose file reaches its persona through an untrusted project's .cotal/agents refuses on resume",
+      !chainedRefused.ok && capturedLaunch === undefined && chainedRefusal.includes(`cotal trust ${otherRoot}`), { chainedRefusal, launched: capturedLaunch !== undefined });
+    trustProject(otherRoot);
+    const manifestTrusted = managerWith((name) => fakeHandle(name));
+    (manifestTrusted as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const manifestPassed = await manifestTrusted.resumePreserved(inventoryOf(manifestEntry));
+    check("and resumes the manifest seat with them once that folder is trusted",
+      manifestPassed.ok && capturedLaunch?.launchOptions?.["mcp-config"] === "./servers.json", { reply: manifestPassed.agents[0]?.reply ?? manifestPassed.error, launchOptions: capturedLaunch?.launchOptions });
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdg;
+  }
 }
 
 // User mode delegates to the provider's read-only retained validator and never grants a replacement.

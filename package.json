@@ -416,6 +416,7 @@
     "smoke:opencode-run-error": "tsx extensions/connector-opencode/smoke/agui-run-error.smoke.ts",
     "smoke:opencode-events-release": "tsx extensions/connector-opencode/smoke/events-release.smoke.ts",
     "smoke:spawn-foreground-events": "tsx implementations/cli/smoke/spawn-foreground-events.smoke.ts",
+    "smoke:project-config-trust": "tsx implementations/cli/smoke/project-config-trust.smoke.ts",
     "smoke:foreground-actor-names": "tsx implementations/cli/smoke/foreground-actor-names.smoke.ts",
     "smoke:installer-selection": "tsx implementations/cli/smoke/installer-selection.smoke.ts",
     "smoke:installed-command-display:live": "tsx implementations/cli/smoke/installed-command-display.smoke.ts",
