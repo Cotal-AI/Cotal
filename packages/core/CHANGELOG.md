@@ -1,5 +1,15 @@
 # @cotal-ai/core
 
+## 0.168.0
+
+### Patch Changes
+
+- 4ad482d: Keep credential minting, permission templates, durable provisioning and broker configuration in separate internal modules while preserving their public exports.
+- 6546892: Stopping an endpoint now ends its principal-route serves, and a principal-route call now waits for its own reply instead of failing on a message that is not it.
+  
+  `CotalEndpoint.stop()` ends every serve that `servePrincipal` started: a `ready` still waiting rejects, and the handlers in flight finish before the connection closes. A caller drops a stored message on its reply read, such as one an agent asks a Direct Get to deliver on the caller's sentinel, and keeps waiting past a message from another head for the reply the addressed process derives. The presence `prompts.seq` never goes back under one runtime id: the process keeps the highest it used across serves and endpoint objects, `setPromptsPresence` refuses a lower value with a RangeError, and the new `CotalEndpoint.nextPromptsSeq()` hands out the next one. A second `servePrincipal` of one endpoint for one lifecycle in a process now throws, because both would answer the same subject.
+- b0e70a5: A stopped endpoint no longer keeps its process alive while a boot channel join or a refused membership close waits to retry. With no delivery daemon running, `cotal mcp` and other short-lived clients could take up to 30 seconds to exit after a stop. Stopping now ends that wait, so the process exits as soon as its connection closes.
+
 ## 0.167.0
 
 ### Minor Changes
