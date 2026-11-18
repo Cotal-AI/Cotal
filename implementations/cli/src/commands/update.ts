@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { satisfies, validRange } from "semver";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, writeResult, type OutputWarning,
@@ -1014,6 +1015,18 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
         } catch {
           throw new Error(`metadata for ${spec} is incomplete or invalid`);
         }
+        if (name === "cotal-ai" && meta.engines !== undefined) {
+          const engines = meta.engines;
+          if (!engines || typeof engines !== "object" || Array.isArray(engines))
+            throw new ReleaseEngineRefusal(`invalid engines metadata for ${spec}`);
+          const node = (engines as Record<string, unknown>).node;
+          if (node !== undefined) {
+            if (typeof node !== "string" || !node.trim() || validRange(node) === null)
+              throw new ReleaseEngineRefusal(`invalid engines.node for ${spec}`);
+            if (!satisfies(process.version, node, { includePrerelease: true }))
+              throw new ReleaseEngineRefusal(`${spec} requires Node.js ${node}; the current runtime is ${process.version}. Install a supported Node.js version before updating`);
+          }
+        }
         for (const field of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
           const deps = meta[field];
           if (deps === undefined) continue;
@@ -1040,6 +1053,7 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
 }
 
 class ReleaseNotAvailable extends Error {}
+class ReleaseEngineRefusal extends Error {}
 
 function releaseReadError(result: CommandResult, detail: string): Error {
   if (result.status !== null && !result.error) {
@@ -1121,6 +1135,11 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     }
     rt.out(`✓ release archives checked (${((Date.now() - releaseChecksStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
+    if (e instanceof ReleaseEngineRefusal) {
+      recordUpdateRefusal(targetVersion, e.message);
+      rt.err(c.red(`✗ ${e.message}; no global install was attempted`));
+      return 1;
+    }
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
     rt.err(c.red(`✗ cotal-ai@${targetVersion} release is not ready: ${message(e)}. The release is still reaching the registry or registry access failed; no global install was attempted. Check registry access and run \`cotal update --self\` again in a few minutes.`));
     return 1;

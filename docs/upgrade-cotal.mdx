@@ -17,6 +17,11 @@ shows its progress and waits up to ten minutes. If the archives are still unavai
 the installed version and exits successfully. Invalid release metadata, failed integrity checks
 and other installation errors still refuse the update.
 
+Before downloading release archives, `cotal update --self` checks the target's Node requirement.
+An incompatible runtime is refused with the required range and current Node version, before replacing packages.
+Older installed updaters do not gain this check until upgraded. If npm installed an old release on Node 20,
+upgrade Node to 22.10 or newer first, then run `npm install -g --engine-strict cotal-ai@latest`.
+
 On an installed POSIX CLI, reconciling the installed release can keep a standalone Manager
 and its seats running. The command authenticates their inventory before selecting a separate
 connector and seed prefix for this installation and release. The earlier prefix stays in place
