@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { emitSentinel, skipSuite } from './sentinel.mjs';
+import { emitSentinel, skipSuite } from '@cotal-ai/smoke-kit';
 
 if (process.platform !== 'linux' && process.platform !== 'darwin') skipSuite('private global npm prefix requires POSIX');
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
