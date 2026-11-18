@@ -91,7 +91,7 @@ function asksForHelp(args: readonly string[]): boolean {
 function takeGlobalFlag(word: string): boolean {
   if (!GLOBAL_FLAG_WORDS.has(word)) return false;
   if (word === "--no-color") disableColor();
-  else if (word === "--no-input") disableInput();
+  else if (word === "--no-input") disableInput(true);
   else return false;
   return true;
 }

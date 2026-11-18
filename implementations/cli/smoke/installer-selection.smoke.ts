@@ -98,7 +98,19 @@ try {
   const npmPrefix = spawnSync("npm", ["prefix", "-g"], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
   assert.equal(npmPrefix.status, 0, output(npmPrefix));
   assert.equal(npmPrefix.stdout.trim(), join(npmHome, ".local"), "the documented npm prefix persists for future global installs");
-  console.log("NPM INSTALL: documented user-owned prefix and PATH commands passed with real npm (offline package)");
+  const removeSection = installation.split("## Remove Cotal")[1]?.split("## ")[0];
+  const removeSteps = removeSection?.match(/```bash\n([^`]+)```/)?.[1];
+  assert(removeSteps, "npm removal instructions include a shell command block");
+  assert(removeSteps.includes('rm -rf "$(npm root -g)/../.cotal-generations"'), "npm removal instructions clean up the retained generation store");
+  assert(removeSteps.includes("npm uninstall -g cotal-ai"), "npm removal instructions uninstall the global package");
+  const fakeGen = join(npmHome, ".local", "lib", ".cotal-generations", "deadbeef");
+  mkdirSync(fakeGen, { recursive: true });
+  writeFileSync(join(fakeGen, "inventory.json"), "[]");
+  const npmRemove = spawnSync("/bin/sh", ["-c", `set -eu\nexport PATH="$HOME/.local/bin:$PATH"\n${removeSteps}`], { env: npmEnv, encoding: "utf8", timeout: 30_000 });
+  assert.equal(npmRemove.status, 0, output(npmRemove));
+  assert(!existsSync(join(npmHome, ".local", "lib", ".cotal-generations")), "documented npm removal deletes .cotal-generations");
+  assert(!existsSync(join(npmHome, ".local", "bin", "cotal")), "documented npm removal deletes the cotal executable");
+  console.log("NPM INSTALL: documented user-owned prefix, PATH, and uninstall commands passed with real npm (offline package)");
 
   const shadow = fixture("shadow");
   const shadowed = spawnSync("/bin/sh", [driver, library], { env: { ...shadow.env, PATH: `${shadow.oldBin}:${shadow.newBin}:${toolPath}` }, encoding: "utf8" });
@@ -237,8 +249,61 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
     assert.equal(realpathSync(join(nodebin, name)), realpathSync(join(runtimeBin, name)), `${name} retains its physical target across repeated relinking`);
   const nodeVersion = spawnSync(join(nodebin, "node"), ["--version"], { encoding: "utf8" });
   assert.equal(nodeVersion.stdout.trim(), process.version, "the relinked runtime remains executable");
+
+  // #7630: lock remedies, unwritable parent ls -ld, and manual export PATH must shquote file paths.
+  const spaceLockHome = join(root, "lock space 'home");
+  const lockDir = join(spaceLockHome, ".local", "share", "cotal", ".install-lock");
+  mkdirSync(lockDir, { recursive: true });
+  const dirLock = spawnSync("/bin/sh", [resolve(import.meta.dirname, "../../../install.sh"), "--no-setup"], {
+    env: { HOME: spaceLockHome, PATH: toolPath, CI: "1", NO_COLOR: "1" }, encoding: "utf8",
+  });
+  assert.equal(dirLock.status, 1, output(dirLock));
+  assert(output(dirLock).includes(`rm -rf ${quote(lockDir)}`), "directory lock remedy quotes paths containing spaces and quotes");
+  rmSync(lockDir, { recursive: true, force: true });
+  symlinkSync(`otherhost:12345`, lockDir);
+  const crossLock = spawnSync("/bin/sh", [resolve(import.meta.dirname, "../../../install.sh"), "--no-setup"], {
+    env: { HOME: spaceLockHome, PATH: toolPath, CI: "1", NO_COLOR: "1" }, encoding: "utf8",
+  });
+  assert.equal(crossLock.status, 1, output(crossLock));
+  assert(output(crossLock).includes(`rm -f ${quote(lockDir)}`), "cross-host lock remedy quotes paths containing spaces and quotes");
+  rmSync(lockDir, { force: true });
+  symlinkSync(`${spawnSync("uname", ["-n"], { encoding: "utf8" }).stdout.trim()}:${process.pid}`, lockDir);
+  const liveLock = spawnSync("/bin/sh", [resolve(import.meta.dirname, "../../../install.sh"), "--no-setup"], {
+    env: { HOME: spaceLockHome, PATH: toolPath, CI: "1", NO_COLOR: "1" }, encoding: "utf8",
+  });
+  assert.equal(liveLock.status, 1, output(liveLock));
+  assert(output(liveLock).includes(`rm -f ${quote(lockDir)}`), "live lock remedy quotes paths containing spaces and quotes");
+
+  if (typeof process.getuid === "function" && process.getuid() !== 0) {
+    const roParent = join(root, "ro space \"parent");
+    mkdirSync(roParent, { recursive: true, mode: 0o500 });
+    try {
+      const unwritable = spawnSync("/bin/sh", [resolve(import.meta.dirname, "../../../install.sh"), "--no-setup"], {
+        env: { HOME: spaceLockHome, COTAL_INSTALL_DIR: join(roParent, "cotal"), PATH: toolPath, CI: "1", NO_COLOR: "1" }, encoding: "utf8",
+      });
+      assert.equal(unwritable.status, 1, output(unwritable));
+      assert(output(unwritable).includes(`ls -ld ${quote(roParent)}`), "unwritable install parent ls -ld remedy quotes paths containing spaces and quotes");
+    } finally {
+      chmodSync(roParent, 0o700);
+    }
+  }
+
+  const manualHome = fixture("manual-quote");
+  const weirdBin = join(manualHome.home, 'bin "dir$x');
+  const manualRun = spawnSync("/bin/sh", [driver, library], {
+    env: { ...manualHome.env, COTAL_BIN_DIR: weirdBin, PATH: toolPath }, encoding: "utf8",
+  });
+  assert.equal(manualRun.status, 0, output(manualRun));
+  const expectedExport = `export PATH=${quote(weirdBin)}:"$PATH"`;
+  assert(output(manualRun).includes(expectedExport), "manual PATH export quotes BIN_DIR safely against quotes and parameter expansion");
+  const evalExport = spawnSync("/bin/sh", ["-c", `set -eu\n${expectedExport}\nprintf '%s' "\${PATH%%:*}"`], {
+    env: { PATH: "/usr/bin:/bin", x: "UNSAFE" }, encoding: "utf8",
+  });
+  assert.equal(evalExport.status, 0, output(evalExport));
+  assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
+
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: 54, failed: 0 });
+  emitSentinel({ passed: 69, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

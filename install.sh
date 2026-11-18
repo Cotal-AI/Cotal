@@ -202,7 +202,7 @@ acquire_install_lock() {
     if [ -d "$_lock" ] && [ ! -L "$_lock" ]; then
       die "Something is in the way of the install lock at $(tildify "$_lock")." \
         "Remove it if no other install is running:" \
-        "  rm -rf $_lock"
+        "  rm -rf $(shquote "$_lock")"
     fi
     # A symlink, not a directory: creating one is a single atomic operation that fails if the
     # name already exists, AND its target string carries the owner's pid. `mkdir` then
@@ -226,7 +226,7 @@ acquire_install_lock() {
     if [ -z "$_owner" ]; then
       die "Something is in the way of the install lock at $(tildify "$_lock")." \
         "Remove it if no other install is running:" \
-        "  rm -rf $_lock"
+        "  rm -rf $(shquote "$_lock")"
     fi
     _owner_host=${_owner%:*}
     _owner_pid=${_owner##*:}
@@ -238,7 +238,7 @@ acquire_install_lock() {
         "still running cannot be determined from here." \
         "" \
         "Wait for it to finish. If you are sure it is gone, clear the lock:" \
-        "  rm -f $_lock"
+        "  rm -f $(shquote "$_lock")"
     fi
     # kill -0 answers "may I signal this pid", not "is this my installer". A pid recycled by
     # an unrelated process therefore reads as a live owner. That is rare, and fail-closed is
@@ -249,7 +249,7 @@ acquire_install_lock() {
         "Wait for it to finish, then run this again." \
         "" \
         "If you are sure no other install is running, clear the lock:" \
-        "  rm -f $_lock"
+        "  rm -f $(shquote "$_lock")"
     fi
     # The owner is gone, so the lock is stale. Drop it and retry rather than assume the retry
     # wins: another installer may be doing exactly the same thing right now.
@@ -257,7 +257,7 @@ acquire_install_lock() {
     _tries=$((_tries + 1))
     [ "$_tries" -lt 5 ] || die "Could not claim the install lock at $(tildify "$_lock")." \
       "Remove it by hand if no other install is running:" \
-      "  rm -f $_lock"
+      "  rm -f $(shquote "$_lock")"
   done
 }
 
@@ -1088,7 +1088,7 @@ next_steps() {
       dim_line "PATH updated in $(tildify "$_rc")"
       ;;
     manual)
-      printf '    %s%s%s\n' "$C_BRAND" "export PATH=\"$BIN_DIR:\$PATH\"" "$C_OFF"
+      printf '    %s%s%s\n' "$C_BRAND" "export PATH=$(shquote "$BIN_DIR"):\"\$PATH\"" "$C_OFF"
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
       blank
       dim_line "Add that export to your shell rc to make it permanent."
@@ -1211,7 +1211,7 @@ main() {
     die "Cannot create $(tildify "$INSTALL_DIR")." \
       "This installer writes only inside your home directory, so it needs that to be" \
       "writable by you. Check the permissions:" \
-      "  ls -ld $(dirname "$INSTALL_DIR")" \
+      "  ls -ld $(shquote "$(dirname "$INSTALL_DIR")")" \
       "" \
       "Or send it somewhere else:" \
       "  curl -fsSL https://get.cotal.ai | COTAL_INSTALL_DIR=/path/you/own sh"
