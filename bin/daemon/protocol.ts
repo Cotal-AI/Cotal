@@ -17,7 +17,7 @@ import type { AccountComputerStatus } from "./account-state.js";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
-const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-intent", "agent-stop", "status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-intent", "agent-stop", "agent-terminal", "status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
 type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
@@ -27,6 +27,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "daemon-stop": { required: [], optional: ["commit"] },
   "space-intent": { required: ["space", "enabled"], optional: [] },
   "agent-stop": { required: ["space", "lifecycleUid"], optional: [] },
+  "agent-terminal": { required: ["space", "lifecycleUid"], optional: [] },
   name: { required: [], optional: ["name"] },
   status: { required: [], optional: [] },
   "manager-start": { required: ["space"], optional: [] },
@@ -53,11 +54,13 @@ type LogoutResult =
   | { readonly kind: "logout"; readonly localLogin: "absent"; readonly serverRevoked: null }
   | { readonly kind: "logout"; readonly serverRevoked: boolean; readonly localLoginCleared: true; readonly removedRegistrations: readonly string[]; readonly skippedServices: readonly string[] };
 
-export type AgentStopRequest = { readonly op: "agent-stop"; readonly space: string; readonly lifecycleUid: string };
+export type AgentRowRequest = { readonly space: string; readonly lifecycleUid: string } & (
+  { readonly op: "agent-stop" } | { readonly op: "agent-terminal" }
+);
 export const isAgentLifecycleUid = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 
 export type DaemonRequest =
-  | ({ readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string } & AgentStopRequest)
+  | ({ readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string } & AgentRowRequest)
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "logout"; readonly idp: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "update-check" }
@@ -224,7 +227,7 @@ export interface DaemonSpaces {
 
 type Envelope = { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string | null };
 export type DaemonResponse =
-  | (Envelope & { readonly ok: true; readonly result: HostedManager | DaemonSpaces | DaemonStatus | LogoutResult | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult })
+  | (Envelope & { readonly ok: true; readonly result: HostedManager | DaemonSpaces | DaemonStatus | LogoutResult | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult | { readonly argv: readonly string[] } })
   | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode | import("@cotal-ai/workspace").CommandFailure["code"]; readonly message: string; readonly remedy?: string; readonly outcome?: "failed" | "refused" | "unknown" | "partial"; readonly changed?: readonly LogoutChange[] } })
   | (Envelope & { readonly ok: true; readonly event: "login-prompt"; readonly attempt: string; readonly prompt: LoginPrompt })
   | (Envelope & { readonly ok: true; readonly event: "login-result"; readonly attempt: string; readonly result: LoginResult });
@@ -280,7 +283,7 @@ export function parseRequest(line: string): ParsedRequest {
     if (!isDaemonSpaceName(obj.space) || typeof obj.enabled !== "boolean") return bad(id, "space and enabled must name a space and a boolean");
     return { ok: true, request: { v, id, op, space: obj.space, enabled: obj.enabled } };
   }
-  if (op === "agent-stop") {
+  if (op === "agent-stop" || op === "agent-terminal") {
     if (!isDaemonSpaceName(obj.space) || !isAgentLifecycleUid(obj.lifecycleUid)) return bad(id, "invalid local agent selection");
     return { ok: true, request: { v, id, op, space: obj.space, lifecycleUid: obj.lifecycleUid } };
   }

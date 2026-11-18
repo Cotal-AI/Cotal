@@ -1,6 +1,6 @@
 import { renderAppUpdate, appUpdateNotice, appliedUpdateSummary, type AppUpdate, type AppUpdateReceipt } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
-import { renderAgents, type LocalAgent } from "./agents";
+import { renderAgents, type AgentAction, type LocalAgent } from "./agents";
 import { updateScrollThumb } from "./scrollbars";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
@@ -833,28 +833,32 @@ function state(value: string, space = selectedSpace()): void {
   else showStage(stage);
   if (isTauri()) void refreshPresence(verified).catch(refusal);
 }
-const pendingAgentActions = new Set<string>();
+const pendingAgentActions = new Map<string, AgentAction>();
 function renderAgentRows(status: Record<string, unknown>): void {
-  renderAgents(status, el("running-agents"), { pending: pendingAgentActions, stop: agent => void stopLocalAgent(agent) });
+  renderAgents(status, el("running-agents"), { pending: pendingAgentActions, act: (agent, op) => void actOnLocalAgent(agent, op) });
 }
-async function stopLocalAgent(agent: LocalAgent): Promise<void> {
+async function actOnLocalAgent(agent: LocalAgent, op: AgentAction): Promise<void> {
   if (!agent.lifecycleUid) return;
   const key = JSON.stringify([agent.space, agent.name, agent.lifecycleUid]);
   if (pendingAgentActions.has(key)) return;
-  pendingAgentActions.add(key);
+  pendingAgentActions.set(key, op);
   if (serviceStatus) renderAgentRows(serviceStatus);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await Promise.race([
-      request({ op: "agent-stop", space: agent.space, lifecycleUid: agent.lifecycleUid }),
-      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Stop did not finish within 30 seconds. Check whether the agent is still running before trying again.")), 30_000); }),
+    const result = await Promise.race([
+      request({ op, space: agent.space, lifecycleUid: agent.lifecycleUid }),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(op === "agent-stop" ? "Stop did not finish within 30 seconds. Check whether the agent is still running before trying again." : "Opening the terminal did not finish within 30 seconds. Check your terminal before trying again.")), 30_000); }),
     ]);
+    if (op === "agent-terminal") {
+      if (result.started !== true) throw new Error("The app did not confirm that it opened the terminal.");
+      notice(`Terminal opened for ${agent.name}.`);
+    }
   } catch (error) { refusal(error); }
   finally {
     if (timer) clearTimeout(timer);
     pendingAgentActions.delete(key);
     if (serviceStatus) renderAgentRows(serviceStatus);
-    void refresh();
+    if (op === "agent-stop") void refresh();
   }
 }
 async function refresh(): Promise<void> {

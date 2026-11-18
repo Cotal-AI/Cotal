@@ -255,13 +255,13 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         })().catch(error => log(`daemon: shutdown failed: ${String(error)}`));
         return;
       }
-      const managerResult = (run: () => DaemonStatus | HostedManager | ServiceConnectionResult | Promise<DaemonStatus | HostedManager | ServiceConnectionResult>) => {
+      const managerResult = (run: () => DaemonStatus | HostedManager | ServiceConnectionResult | { argv: string[] } | Promise<DaemonStatus | HostedManager | ServiceConnectionResult | { argv: string[] }>) => {
         replyTask(Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), (error: unknown) => {
           counters.requestsRefused++;
           const cause = String(error instanceof Error ? error.message : error).replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
           log(`daemon: ${req.op} refused: ${cause}`);
           if (error instanceof HostedManagerRefusal) return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) } });
-          if (req.op === "agent-stop") {
+          if (req.op === "agent-stop" || req.op === "agent-terminal") {
             const failure = isConnectRefusal(error) ? error.failure() : error;
             if (isCommandFailure(failure)) {
               const clean = (value: string) => value.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
@@ -338,6 +338,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "agent-stop") {
         managerResult(async () => { await managers.stopAgent(req.space, req.lifecycleUid); return status(); });
+        return;
+      }
+      if (req.op === "agent-terminal") {
+        managerResult(() => managers.terminalAgent(req.space, req.lifecycleUid));
         return;
       }
       if (req.op === "connect-check") {

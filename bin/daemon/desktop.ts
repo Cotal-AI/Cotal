@@ -11,13 +11,13 @@ import { loginViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, t
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
 import { applyInstall, planUninstall, startInstalled } from "./install.js";
 import { nativeDaemonLog } from "./native-log.js";
-import { encode, isAgentLifecycleUid, isDaemonSpaceName, type AgentStopRequest, type DaemonResponse } from "./protocol.js";
+import { encode, isAgentLifecycleUid, isDaemonSpaceName, type AgentRowRequest, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
 import { discoverDesktopApplicationPath } from "./desktop-path.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
 
 export type DesktopRequest =
-  | AgentStopRequest
+  | AgentRowRequest
   | { readonly op: "update-policy"; readonly auto?: boolean }
   | { readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly op: "update-check" }
@@ -35,7 +35,7 @@ export type DesktopRequest =
 export function parseDesktopRequest(value: unknown): DesktopRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request must be an object");
   const o = value as Record<string, unknown>;
-  if (o.op === "agent-stop") {
+  if (o.op === "agent-stop" || o.op === "agent-terminal") {
     if (Object.keys(o).some(key => !["op", "space", "lifecycleUid"].includes(key)) || !isDaemonSpaceName(o.space) || !isAgentLifecycleUid(o.lifecycleUid)) throw new Error("invalid local agent selection");
     return { op: o.op, space: o.space, lifecycleUid: o.lifecycleUid };
   }

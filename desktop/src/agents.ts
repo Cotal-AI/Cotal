@@ -16,7 +16,8 @@ export function agentInventory(status: Record<string, unknown>): AgentInventory 
   agents.sort((a, b) => a.space.localeCompare(b.space) || a.name.localeCompare(b.name, undefined, { numeric: true }));
   return { agents, unreadable, available: true };
 }
-export function renderAgents(status: Record<string, unknown>, root: HTMLElement, controls?: { pending: ReadonlySet<string>; stop: (agent: LocalAgent) => void }): void {
+export type AgentAction = "agent-stop" | "agent-terminal";
+export function renderAgents(status: Record<string, unknown>, root: HTMLElement, controls?: { pending: ReadonlyMap<string, AgentAction>; act: (agent: LocalAgent, op: AgentAction) => void }): void {
   const inventory = agentInventory(status);
   root.dataset.available = String(inventory.available);
   root.closest(".connection-card")?.classList.toggle("has-running-agents", inventory.agents.length > 0);
@@ -44,23 +45,27 @@ export function renderAgents(status: Record<string, unknown>, root: HTMLElement,
         const span = document.createElement("span"); span.className = name; row.append(span);
       }
       if (agent.lifecycleUid && controls) {
-        const stop = document.createElement("button"); stop.className = "text-button agent-stop"; stop.type = "button";
-        stop.addEventListener("click", () => controls.stop(agent)); row.append(stop);
+        const actions = document.createElement("div"); actions.className = "agent-actions";
+        for (const op of ["agent-stop", "agent-terminal"] as const) {
+          const button = document.createElement("button"); button.className = "text-button"; button.type = "button"; button.dataset.op = op;
+          button.addEventListener("click", () => controls.act(agent, op)); actions.append(button);
+        }
+        row.append(actions);
       }
       list.append(row);
     }
     const shown = shownAgentName(agent.name);
     const values = [shortFolder(shown, 28), agent.model ? `${agent.application} · ${agent.model}` : agent.application, `${shortFolder(agent.cwd, 32)} · ${agent.space}`, agent.state === "running" ? `Running · ${runningFor(agent.startedAt)}` : "Exited"];
     values.forEach((value, i) => { if (row.children[i]!.textContent !== value) row.children[i]!.textContent = value; });
-    const stop = row.querySelector<HTMLButtonElement>(".agent-stop");
-    if (stop) {
-      const pending = controls?.pending.has(key) === true;
-      stop.hidden = agent.state !== "running" && !pending;
-      stop.disabled = pending;
-      stop.textContent = pending ? "Stopping…" : "Stop";
-      stop.setAttribute("aria-label", `${stop.textContent} ${shown}`);
-      row.setAttribute("aria-busy", String(pending));
+    const pending = controls?.pending.get(key);
+    for (const button of row.querySelectorAll<HTMLButtonElement>(".agent-actions button")) {
+      const terminal = button.dataset.op === "agent-terminal";
+      button.hidden = pending !== button.dataset.op && (agent.state !== "running" || terminal && status.agentTerminal !== true);
+      button.disabled = pending !== undefined;
+      button.textContent = terminal ? pending === "agent-terminal" ? "Opening terminal…" : "Open in Terminal" : pending === "agent-stop" ? "Stopping…" : "Stop";
+      button.setAttribute("aria-label", `${button.textContent} ${shown}`);
     }
+    if (agent.lifecycleUid) row.setAttribute("aria-busy", String(pending !== undefined));
     (row.children[0] as HTMLElement).title = shown;
     row.children[0]!.setAttribute("aria-label", shown);
     row.title = `${shown} · ${agent.application}${agent.model ? ` · Model: ${agent.model}` : ""}`;

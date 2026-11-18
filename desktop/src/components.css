@@ -238,7 +238,8 @@ select { appearance: none; background-image: url("./chevron.svg"); background-re
 .agent-folder { grid-column: 1 / 3; color: var(--dim); font-family: var(--mono); font-size: 10px; }
 .agent-time { grid-column: 3; grid-row: 1 / 3; align-self: center; color: var(--dim); font-size: 11px; }
 .agent-list-with-controls .agent-row { height: 54px; grid-template-rows: 1fr 1fr; grid-template-columns: auto minmax(0, 1fr) auto auto; }
-.agent-stop { grid-column: 4; grid-row: 1 / 3; align-self: center; justify-self: end; }
+.agent-actions { grid-column: 4; grid-row: 1 / 3; align-self: center; justify-self: end; display: flex; align-items: center; gap: var(--s-1); }
+.agent-actions button { padding-inline: var(--s-1); }
 #agents-empty, #agents-unavailable { margin: var(--s-1) 0; }
 @keyframes agent-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { .agent-row { animation: none; } }

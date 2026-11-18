@@ -40,6 +40,7 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
     let operation = match &request {
         DesktopRequest::Status {} => "status",
         DesktopRequest::Setup { .. } => "setup",
+        DesktopRequest::AgentTerminal { .. } => "agent-terminal",
         _ => "other",
     };
     let seconds = request.timeout_seconds();
@@ -116,7 +117,19 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
         Err("The daemon client closed without an exit receipt.".into())
     }).await;
     let _ = child.kill();
-    let frame = answer.map_err(|_| "The daemon client timed out. The operation outcome is unknown; check status before retrying.".to_string())??;
+    let mut frame = answer.map_err(|_| "The daemon client timed out. The operation outcome is unknown; check status before retrying.".to_string())??;
+    if frame.get("ok").and_then(Value::as_bool) == Some(true) {
+        if operation == "agent-terminal" {
+            let argv: Vec<String> = serde_json::from_value(frame["result"]["argv"].take())
+                .map_err(|_| "The background service returned an invalid terminal command.")?;
+            tauri::async_runtime::spawn_blocking(move || crate::terminal::launch(&argv)).await.map_err(|e| e.to_string())??;
+            return Ok(serde_json::json!({"v":1,"event":"result","ok":true,"result":{"started":true}}));
+        }
+        if operation == "status" {
+            let available = tauri::async_runtime::spawn_blocking(crate::terminal::available).await.unwrap_or(false);
+            frame["result"]["agentTerminal"] = Value::Bool(available);
+        }
+    }
     if matches!(operation, "status" | "setup") {
         let status = crate::presence::tray_status(&frame);
         app.state::<TrayStatus>().0.set_text(&status).map_err(|e| e.to_string())?;
