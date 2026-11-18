@@ -23,7 +23,10 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   for (const version of [previous, target]) {
     writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
-    writeFileSync(join(root, 'payload/package/dist/cotal.js'), scenario === 'concurrent' ? '#!/usr/bin/env node\nsetTimeout(() => console.log("fixture reconciled"), 2000);\n' : '#!/usr/bin/env node\nconsole.log("fixture reconciled");\n', { mode: 0o755 });
+    const contention = scenario === 'concurrent'
+      ? `if (process.argv.includes('update')) { const fs = require('node:fs'); const deadline = Date.now() + 30000; while (!fs.existsSync(${JSON.stringify(join(root, 'waiter-observed'))})) { if (Date.now() >= deadline) throw new Error('competing updater did not reach the reservation'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } }\n`
+      : '';
+    writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\n${contention}console.log("fixture reconciled");\n`, { mode: 0o755 });
     const packed = spawnSync('tar', ['-czf', join(root, `${version}.tgz`), '-C', join(root, 'payload'), 'package']);
     assert.equal(packed.status, 0);
     archives.set(version, readFileSync(join(root, `${version}.tgz`)));
@@ -65,6 +68,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     let output = '';
     child.stdout.on('data', bytes => {
       output += bytes;
+      if (scenario === 'concurrent' && output.includes("Waiting up to 10 minutes for another updater to release npm's global root"))
+        writeFileSync(join(root, 'waiter-observed'), 'ready');
       const progress = { 'offline-metadata': 'release archives', 'offline-closure': 'Checking installed extension dependencies', 'offline-staging': 'beside the running version' }[scenario];
       if (armed && progress && output.includes(progress)) disconnected = true;
     });
