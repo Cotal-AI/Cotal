@@ -178,11 +178,11 @@ def control_key() -> str | None:
     has_key, has_version = "controlKey" in material, "controlVersion" in material
     if not has_key and not has_version:
         return None
-    key = _usable_key(material["controlKey"], "the launch material's controlKey") if has_key else None
-    if has_version and not _is_version(material["controlVersion"]):
+    if not has_key:
+        raise ControlConfigError("the launch material has a controlVersion without a usable controlKey")
+    key = _usable_key(material["controlKey"], "the launch material's controlKey")
+    if not has_version or not _is_version(material["controlVersion"]):
         raise ControlConfigError("the launch material's controlVersion is not the control protocol version this plugin speaks")
-    if key is None or not has_version:
-        raise ControlConfigError("the launch material carries half of the control key and its version; they travel together")
     return key
 
 
