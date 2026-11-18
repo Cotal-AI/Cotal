@@ -42,7 +42,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
       contexts.set(account.ownerKey, context);
       state = context.state;
       if (context.work || context.state.mode === "per-space" || context.state.mode === "sign-in-required") return;
-      context.work = poll().catch((error: unknown) => { context.state.message = error instanceof Error && error.message.startsWith("invalid computer") ? error.message : "account computer request failed; existing connections are unchanged"; }).finally(() => { tasks.delete(context.work!); context.work = undefined; if (!stopped && pendingNames.delete(account.ownerKey)) void tick().catch(() => {}); });
+      context.work = poll().then(() => { reconciler.accountHealth(account.ownerKey, context.state.mode !== "sign-in-required"); }).catch((error: unknown) => { reconciler.accountHealth(account.ownerKey, false); context.state.message = error instanceof Error && error.message.startsWith("invalid computer") ? error.message : "account computer request failed; existing connections are unchanged"; }).finally(() => { tasks.delete(context.work!); context.work = undefined; if (!stopped && pendingNames.delete(account.ownerKey)) void tick().catch(() => {}); });
       tasks.add(context.work);
       async function poll() {
     const state = context.state;
@@ -146,6 +146,22 @@ export function createAccountComputer(home: string, version: string, reconciler:
   return {
     /** Start polling and settle every account's initial attempt before saved hosting resumes. */
     async start() { run(); await work; await Promise.all([...tasks]); if (!vitals && !vitalsError) void sample(); }, intent,
+    async recover(space: string, candidate: string, holder: string) {
+      await tick();
+      await Promise.all([...contexts.values()].map(item => item.work));
+      const account = signedInMachineAccounts(home).find(item => item.ownerKey === candidate);
+      if (!account) throw new Error("Sign in again before moving this connection.");
+      await contexts.get(candidate)?.work;
+      const context = contexts.get(candidate);
+      if (!context) throw new Error("Refresh this account's spaces before moving the connection.");
+      delete context.etag;
+      await settlePoll(candidate);
+      const row = context.snapshot?.spaces.find(item => item.slug === space);
+      if (!context || !row || "unavailable" in row || context.state.message || context.state.mode !== "account") throw new Error("Refresh this account's spaces before moving the connection.");
+      await reconciler.transfer(space, account, holder);
+      delete context.etag;
+      await withIdpSessionDir(home, () => reconciler.apply(account, context.snapshot!, context.revision!, context.bindingRevisions!, true, context.abort.signal));
+    },
     vitals: () => vitals,
     vitalsError: () => vitalsError,
     name: () => name,
@@ -164,7 +180,9 @@ export function createAccountComputer(home: string, version: string, reconciler:
     signedIn() { for (const context of contexts.values()) context.abort.abort(); contexts.clear(); if (timer) clearTimeout(timer); run(); },
     status: (): AccountComputerStatus => {
       const ordered = [...contexts.values()].sort((a, b) => Number(b.state.hostSupport === "supported") - Number(a.state.hostSupport === "supported") || (a.state.idpUrl ?? "").localeCompare(b.state.idpUrl ?? "") || (a.state.sub ?? "").localeCompare(b.state.sub ?? ""));
-      return { ...(ordered[0]?.state ?? state), accounts: [...contexts.values()].map(context => ({ ...context.state, spaces: reconciler.view().filter(row => context.snapshot?.spaces.some(space => space.slug === row.space) || !row.desired) })), spaces: reconciler.view() };
+      const computers = new Map<string | undefined, typeof ordered[number]>();
+      for (const context of ordered) if (!computers.has(context.state.machineId)) computers.set(context.state.machineId, context);
+      return { ...(ordered[0]?.state ?? state), accounts: [...computers.values()].map(context => ({ ...context.state, spaces: reconciler.view().filter(row => context.snapshot?.spaces.some(space => space.slug === row.space) || !row.desired) })), spaces: reconciler.view() };
     },
     async close() { stopped = true; if (timer) clearTimeout(timer); abort.abort(); await work; await Promise.all([...tasks]); await reconciler.settled(); },
   };

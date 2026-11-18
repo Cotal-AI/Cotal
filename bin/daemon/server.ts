@@ -325,6 +325,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         }));
         return;
       }
+      if (req.op === "space-recover") {
+        managerResult(async () => { await account.recover(req.space, req.candidate, req.holder); return status(); });
+        return;
+      }
       if (req.op === "space-intent") {
         managerResult(async () => { await account.intent(req.space, req.enabled); return status(); });
         return;

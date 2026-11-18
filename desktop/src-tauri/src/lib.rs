@@ -59,6 +59,8 @@ pub enum DesktopRequest {
     Logout { idp: String },
     #[serde(rename = "setup")]
     Setup { space: String, idp: String },
+    #[serde(rename = "space-recover")]
+    SpaceRecover { space: String, candidate: String, holder: String },
     #[serde(rename = "space-intent")]
     SpaceIntent { space: String, enabled: bool },
     #[serde(rename = "connect-check")]
@@ -76,6 +78,13 @@ pub enum DesktopRequest {
 impl DesktopRequest {
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::SpaceRecover { space, candidate, holder } => {
+                Self::ConnectCheck { space: space.clone() }.validate()?;
+                if candidate.len() != 64 || !candidate.bytes().all(|c| c.is_ascii_hexdigit()) || holder.len() > 2048 {
+                    return Err("Invalid custody recovery.".into());
+                }
+                browser_url(holder)?;
+            }
             Self::UpdateRelease { version } => {
                 let parts: Vec<_> = version.split('.').collect();
                 if parts.len() != 3 || parts.iter().any(|part| part.is_empty() || !part.bytes().all(|c| c.is_ascii_digit())) || version.len() > 64 {
