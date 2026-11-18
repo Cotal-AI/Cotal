@@ -19,7 +19,7 @@
  * Run: pnpm smoke:service-commands:live
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -166,6 +166,15 @@ try {
     if (helloCode === "timeout") helloFollow.child.kill("SIGINT");
     check("  and a plain service logs hello --follow ends with a sentence, not a raw end record",
       helloCode === 0 && lastLine(helloFollow.text) === "hello is no longer running, so the follow ended." && !/^end: /m.test(helloFollow.text), { helloCode, text: helloFollow.text });
+
+    const helloLog = JSON.parse(cotal(["service", "logs", "hello", "--json"]).stdout) as { result: { path: string } };
+    const helloPath = helloLog.result.path;
+    writeFileSync(`${helloPath}.1`, "previous output\n");
+    check("stopping a service keeps its current log and rotation", existsSync(helloPath) && existsSync(`${helloPath}.1`));
+    const removedHello = cotal(["service", "remove", "hello", "--yes"]);
+    check("removing the definition deletes its stopped instance's log and rotation",
+      removedHello.status === 0 && !existsSync(helloPath) && !existsSync(`${helloPath}.1`) &&
+        out(removedHello).includes("Deleted logs:") && out(removedHello).includes(helloPath), out(removedHello));
 
     const stop = cotal(["manager", "stop", "--yes"]);
     managerUp = stop.status !== 0;

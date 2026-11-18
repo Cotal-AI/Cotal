@@ -284,11 +284,12 @@ are not publisher signatures or a proof of every executable file. No remote sche
 adapter option values and credential contents. Missing launch paths do not prevent reading the
 saved declaration. Records live under the workstation store's case-safe per-space service path.
 
-`service remove <name> --yes` forgets only the unchanged definition. Interactive removal defaults
-to keeping it. Unknown or foreign instance custody makes removal refuse. The process driver verifies that every
-owned direct incarnation is gone and that no OS supervisor is installed before removing its
-unchanged instance records and definition. Logs are retained. No process or OS unit is removed
-by this operation. The presets are described below. A preset is not installed under an OS
+`service remove <name> --yes` removes the unchanged definition and its stopped instances' records
+and deletes each removed instance's log file and rotated `<log>.1` file. Interactive removal defaults
+to keeping them. Unknown or foreign instance custody makes removal refuse. The process driver verifies
+that every owned direct incarnation is gone and that no OS supervisor is installed before removal.
+`service remove <name> --instance <id> --yes` removes only that instance's record and retains its logs.
+No process or OS unit is removed by either operation. The presets are described below. A preset is not installed under an OS
 supervisor.
 On Windows, local records use the access-list model described under `up`. There, `cotal ext add`
 and the setup seed record a service receipt for an extension that declares service adapters or

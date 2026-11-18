@@ -904,10 +904,12 @@ AG-UI runs, regardless of who drives their input. Required events do not turn te
 into agent runs or copy channel and DM text into an event stream. This launch policy is not an
 additional broker authorization boundary. The broker still enforces each endpoint's grants.
 
-The selection `cotal use` sets applies from every directory except the project folder of a running
-space, where the command targets that folder's space. There `status` reports that space under its
-`Mesh:` heading and a `This folder's space` section, and says the selected space applies outside the
-folder. `--json` names it in `target.space` and in `meshes.folder`, which `cotal space --json` gives
+An explicit `cotal use` selection applies from every directory, including the project folder of a
+running space. There `status` reports the selected space under its `Mesh:` heading and names
+`--space <space>` or `cotal use --clear` to reach the folder's space. Only an automatically adopted
+selection yields to a running project's space. In that case, `status` reports the folder's space
+under its `Mesh:` heading and a `This folder's space` section, and says the selected space applies
+outside the folder. `--json` names it in `target.space` and in `meshes.folder`, which `cotal space --json` gives
 as `folder`. In the folder of a space that is prepared or stopped, `status` reports the selection
 instead, and the line under its heading names what the folder holds and the `cotal up` that starts
 it; `meshes.folder` is then `null`. A folder whose stack is half started or half stopped, with a
