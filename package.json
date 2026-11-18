@@ -1119,7 +1119,7 @@
     "smoke:backup-restore:live": "tsx bin/smoke/backup-restore-live.smoke.ts",
     "smoke:chat-history-restore:live": "tsx bin/smoke/chat-history-restore-live.smoke.ts",
     "smoke:restore-endpoint-redaction:live": "tsx implementations/cli/smoke/restore-endpoint-redaction-live.smoke.ts",
-    "smoke:next-step-root:live": "tsx implementations/cli/smoke/next-step-root-live.smoke.ts && tsx implementations/cli/smoke/restore-remedy-root-live.smoke.ts",
+    "smoke:next-step-root:live": "tsx implementations/cli/smoke/next-step-root-live.smoke.ts && tsx implementations/cli/smoke/restore-remedy-root-live.smoke.ts && tsx implementations/cli/smoke/restore-interrupt-root-live.smoke.ts",
     "smoke:isolated-reload": "tsx implementations/cli/smoke/isolated-reload.smoke.ts",
     "smoke:isolated-infrastructure-scope": "tsx implementations/cli/smoke/isolated-infrastructure-scope.smoke.ts",
     "smoke:backup-conservation:live": "tsx bin/smoke/backup-conservation-live.smoke.ts",

@@ -384,7 +384,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     if (restoreArtifact === registryArtifact) {
       assert.match(restored.stdout, /channel settings only, so chat and DM history and workflow runs start empty/, `${mode} registry restore names the empty history\n${restored.stdout}`);
       const previous = active.restore.previousSource?.identity.path;
-      assert.ok(previous && restored.stdout.includes(`The previous store at ${previous} holds the only copy of them. \`cotal backup cleanup-fallback ${active.restore.attemptId}\` deletes it only with --discard-history.`), `${mode} registry restore names the previous store\n${restored.stdout}`);
+      assert.ok(previous && restored.stdout.includes(`The previous store at ${previous} holds the only copy of them. ${codeSpan(`cd ${shellPath(root)} && cotal backup cleanup-fallback ${active.restore.attemptId}`)} deletes it only with --discard-history.`), `${mode} registry restore names the previous store\n${restored.stdout}`);
     } else {
       assert.doesNotMatch(restored.stdout, /history start empty/);
       const previous = active.restore.previousSource?.identity.path;

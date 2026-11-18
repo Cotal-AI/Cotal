@@ -874,14 +874,14 @@ export function heldClaim(root: string, attemptId: string, claim: { readonly dea
   const { coordinator, owners, deadline } = claim, kind = attemptId.startsWith("backup-") ? "backup" : "restore";
   const running = owners.filter((owner) => localProcessOwnerStatus(owner) === "alive").map((owner) => owner.pid);
   const coordinatorRuns = localProcessOwnerStatus(coordinator) === "alive";
-  const recover = `cotal backup recover ${attemptId} --yes`;
+  const recover = codeSpan(restoreCommand(root, `cotal backup recover ${attemptId} --yes`));
   const [holder, remedy] = assessment === "ambiguous"
-    ? [`its processes on host ${coordinator.host} cannot be proven gone from this host`, `prove its ${kind} process and brokers on ${coordinator.host} have exited, then run \`${recover}\``]
+    ? [`its processes on host ${coordinator.host} cannot be proven gone from this host`, `prove its ${kind} process and brokers on ${coordinator.host} have exited, then run ${recover}`]
     : coordinatorRuns
-      ? [`its ${kind} process ${coordinator.pid} is still running, started at ${coordinator.startedAt}`, `wait for that ${kind} to finish; if it was stopped, run \`${recover}\` once process ${coordinator.pid} has exited`]
+      ? [`its ${kind} process ${coordinator.pid} is still running, started at ${coordinator.startedAt}`, `wait for that ${kind} to finish; if it was stopped, run ${recover} once process ${coordinator.pid} has exited`]
       : running.length
-        ? [`its ${kind} process ${coordinator.pid} has exited, and its brokers (pid ${running.join(", ")}) are still stopping`, `run \`${recover}\` again once they have exited`]
-        : [`its ${kind} process ${coordinator.pid} has exited, but a broker it started cannot be proven gone`, `run \`${recover}\` after ${deadline}`];
+        ? [`its ${kind} process ${coordinator.pid} has exited, and its brokers (pid ${running.join(", ")}) are still stopping`, `run ${recover} again once they have exited`]
+        : [`its ${kind} process ${coordinator.pid} has exited, but a broker it started cannot be proven gone`, `run ${recover} after ${deadline}`];
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${command} is refused: ${kind} attempt ${attemptId} holds this root until ${deadline}, and ${holder}; nothing was changed`, { target: { root, attemptId, deadline, holderPid: coordinator.pid }, remedy });
 }
 
@@ -919,10 +919,10 @@ export function rolledBackNotes(rolledBack: ReturnType<typeof restoreRolledBackR
  *  that what was written after the artifact is not restored. One whose replaced store also held
  *  another account's streams says those are not restored. The store it set aside holds the only
  *  copy, which cleanup-fallback deletes only with `--discard-history`. */
-export function leftOutNotes(attemptId: string, selection: string, onlyCopy: ReturnType<typeof restoreOnlyCopy>): string[] {
+export function leftOutNotes(root: string, attemptId: string, selection: string, onlyCopy: ReturnType<typeof restoreOnlyCopy>): string[] {
   if (!onlyCopy) return [];
   const accounts = onlyCopy.otherAccounts;
-  const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" && !accounts.length ? "them" : `the ${onlyCopy.leftOut}`}. \`cotal backup cleanup-fallback ${attemptId}\` deletes it only with --discard-history.` : undefined;
+  const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" && !accounts.length ? "them" : `the ${onlyCopy.leftOut}`}. ${codeSpan(restoreCommand(root, `cotal backup cleanup-fallback ${attemptId}`))} deletes it only with --discard-history.` : undefined;
   const other = accounts.length ? [`The store this restore replaced also held streams of ${accounts.length === 1 ? "account" : "accounts"} ${accounts.join(", ")}, which this backup does not hold, so they are not restored.`] : [];
   if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...other, ...(kept ? [kept] : [])];
   return ["A registry-only restore brings back channel settings only, so chat and DM history and workflow runs start empty.", ...other, kept ?? "No previous store was retained."];
@@ -1342,8 +1342,8 @@ function restoreInterruptNotice(root: string, attemptId: string): string {
   const journal = readMaintenanceJournal(root);
   const ours = journal !== undefined && "restore" in journal && journal.restore.attemptId === attemptId;
   if (ours && journal.state === "restore-ready")
-    return `Interrupted: restore attempt ${attemptId} stopped before it committed, and nothing was restored.\nRoll it back with \`cotal backup recover ${attemptId} --yes\`, or run the restore again, which rolls it back first.`;
-  if (ours) return `Interrupted: restore attempt ${attemptId} committed before it stopped. Continue it with bare \`cotal up\` from ${root}.`;
+    return `Interrupted: restore attempt ${attemptId} stopped before it committed, and nothing was restored.\nRoll it back with ${codeSpan(restoreCommand(root, `cotal backup recover ${attemptId} --yes`))}, or run the restore again, which rolls it back first.`;
+  if (ours) return `Interrupted: restore attempt ${attemptId} committed before it stopped. Continue it with ${codeSpan(restoreCommand(root, "cotal up"))}.`;
   return `Interrupted: restore attempt ${attemptId} stopped before it claimed this root; nothing was restored.`;
 }
 

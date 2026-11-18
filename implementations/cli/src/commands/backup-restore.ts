@@ -42,7 +42,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
   const registryOnly = result.selection === "registry";
   const onlyCopy = restoreOnlyCopy(result.root, result.attemptId);
   const previousStore = onlyCopy?.previousStore;
-  const leftOutLines = leftOutNotes(result.attemptId, result.selection, onlyCopy);
+  const leftOutLines = leftOutNotes(result.root, result.attemptId, result.selection, onlyCopy);
   const composition = restoreComposition(result.space, result.restoredStreams, result.mode);
   // The native activation throws on a degraded control plane or auth service before this point, so
   // a returned result is a healthy one. A static or open mesh has no auth service to report.
