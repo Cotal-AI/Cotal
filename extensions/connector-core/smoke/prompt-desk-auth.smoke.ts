@@ -1097,9 +1097,12 @@ try {
     const r = await settled(reply);
     check("...the waiting caller, whose reply can no longer be published, sees an unknown outcome at its deadline, never a refusal that claims nothing ran",
       !r.ok && r.error instanceof EpEnvelopeError && r.error.code === "deadline-exceeded" && r.error.outcome === "unknown", r.ok ? verdictOf(r.value) : (r.error as Error).message);
+    check("...and the agent's endpoint reports the broker's refusal of that reply as an error, since no call or serve waits for it",
+      events.some((e) => e.startsWith("alice.coder2 error:") && e.includes(`cannot publish "cotal.${space}.ep.prin-reply.agent.`)), events.filter((e) => e.startsWith("alice.coder2")));
   }
 
-  const errors = () => events.filter((e) => e.includes(" error: "));
+  // The reply refusal the cell above provokes is the one error expected.
+  const errors = () => events.filter((e) => e.includes(" error: ") && !(e.startsWith("alice.coder2 error:") && e.includes(".ep.prin-reply.agent.")));
   check("no endpoint emitted an error before the broker restart", errors().length === 0, errors());
   const restartAt = events.length;
 

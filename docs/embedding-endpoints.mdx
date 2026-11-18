@@ -175,7 +175,8 @@ subscribes again after every reconnect, and a refusal there resolves `failed` an
 in its context that aborts when the serve stops, so it can end early. Stop waits for a handler only
 until its request's `deadlineMs` has passed since the request arrived, because the caller has
 stopped waiting by then, and a reply that comes later is dropped. A handler that never settles
-cannot hold `stop()` open past that deadline.
+cannot hold `stop()` open past that deadline. A reply the broker refuses to let the serve publish
+is reported on `error`, because no call or serve waits for that refusal.
 
 `setPromptsPresence({ open, seq })` sets the presence field above and writes presence at once. It
 throws while the `agent` endpoint is not served, and for a `seq` below one this process already used

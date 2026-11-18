@@ -22,7 +22,7 @@
  * handler runs and while `ready` waits; cells 31 and 32, `seq` across serves and endpoint objects of
  * one runtime, and a second server for one lifecycle in a process; cell 33, stop waits for a handler
  * in flight only until its request's deadline; cell 34, a JetStream API answer on the caller's
- * sentinel; a reconnect that rebinds, a
+ * sentinel; cell 35, a refused reply publish is reported; a reconnect that rebinds, a
  * reconnect whose new credential lacks the rows, and the mixed-version cases that need no 0.165
  * release: an agent that serves nothing, a caller or an agent whose credential predates the rows,
  * and a caller pinned to a later revision.
@@ -99,6 +99,7 @@ const W = {
   stopper: who(A, "stopper", "managed-agent"),
   stopper2: who(A, "stopper2", "managed-agent"),
   stopper3: who(A, "stopper3", "managed-agent"),
+  mute: who(A, "mute", "managed-agent"),
   cycler: who(A, "cycler", "managed-agent"),
   web: who(A, "web", "interactive"),
   term: who(A, "term", "interactive"),
@@ -122,6 +123,8 @@ type Perm = { pub?: { allow?: string[]; deny?: string[] }; sub?: { allow?: strin
 const shipped = calloutPermissions(resolveAcl, async () => {});
 const grants = new Map<string, { target: Who; commands: string[] }[]>();
 const stripped = new Set<string>();
+/** Lifecycles whose serve credential keeps the subscription row and loses the reply publish row. */
+const muted = new Set<string>();
 const strip = (p: Perm): Perm => ({ ...p,
   pub: { ...p.pub, allow: (p.pub?.allow ?? []).filter((r) => !r.includes(".ep.prin")) },
   sub: { ...p.sub, allow: (p.sub?.allow ?? []).filter((r) => !r.includes(".ep.prin")) } });
@@ -129,6 +132,7 @@ const mintFor = async (t: ValidatedUserToken, connId: string, readerId: string):
   let p = (await shipped(t, connId, readerId)) as Perm;
   const uid = t.act.lifecycleUid!;
   if (stripped.has(uid)) p = strip(p);
+  if (muted.has(uid)) p = { ...p, pub: { ...p.pub, allow: (p.pub?.allow ?? []).filter((r) => !r.includes(".ep.prin-reply.")) } };
   for (const g of grants.get(uid) ?? []) {
     const r = epPrincipalGrantRows(space, { owner: t.owner, actor: t.act.actor, uid }, { owner: g.target.owner, actor: g.target.actor, uid: g.target.uid }, g.commands);
     p = { ...p, pub: { ...p.pub, allow: [...(p.pub?.allow ?? []), ...r.pub] }, sub: { ...p.sub, allow: [...new Set([...(p.sub?.allow ?? []), ...r.sub])] } };
@@ -799,6 +803,23 @@ try {
       readyOutcome === "still pending" ? readyOutcome : readyOutcome.ok ? "ready resolved" : (readyOutcome.error as Error).message);
   }
 
+  // ── cell 35: a refused reply publish is reported ──
+  // The agent's credential keeps its serve row and lacks the reply row. Its handler runs and the
+  // broker refuses the reply. No call or serve awaits that refusal, so the endpoint reports it.
+  {
+    muted.add(W.mute.uid);
+    const muteEp = await userEndpoint(W.mute);
+    const serve = muteEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() });
+    await serve.ready;
+    const r = await settle(call(webEp, addressOf(W.mute, processRuntime(W.mute.uid).id), "prompts", "owner", {}, 1500));
+    await until(() => warnings.some((w) => w.startsWith("alice.mute error:")), 2000);
+    const reported = warnings.filter((w) => w.startsWith("alice.mute error:"));
+    check("cell 35: the broker refused the agent's reply, the caller saw its deadline, and the agent's endpoint reported the refusal as an error naming the reply subject",
+      !r.ok && codeOf(r.error) === "deadline-exceeded/unknown" && reported.length === 1 && reported[0].includes(`${P}.ep.prin-reply.agent.${A}.mute.`),
+      { call: r.ok ? r.value : codeOf(r.error), reported });
+    await muteEp.stop();
+  }
+
   // ── cells 31 and 32: seq never goes back under one runtime id, and one server per lifecycle ──
   {
     const cyclerSeq = () => webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.prompts?.seq;
@@ -952,7 +973,8 @@ try {
     check("a later refusal is reported on the warning channel, never as an error", warnings.some((w) => w.startsWith("alice.coder warning: stopped serving")) && !warnings.some((w) => w.startsWith("alice.coder error")),
       warnings.filter((w) => w.startsWith("alice.coder")));
   }
-  check("no endpoint emitted an error", !warnings.some((w) => w.includes(" error: ")), warnings.filter((w) => w.includes(" error: ")));
+  const unexpected = warnings.filter((w) => w.includes(" error: ") && !w.startsWith("alice.mute error:"));
+  check("no endpoint emitted an error but the reply refusal cell 35 provokes", unexpected.length === 0, unexpected);
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   for (const nc of raws) await nc.close().catch(() => {});

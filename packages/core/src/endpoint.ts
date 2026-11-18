@@ -5099,9 +5099,10 @@ export class CotalEndpoint extends EventEmitter {
         }
         if (s.type !== "error") continue;
         if (s.error instanceof PermissionViolationError && this.chatSubRefusals.has(s.error)) continue;
-        // A principal-route refusal belongs to the call that throws it or the serve that ends on it
-        // (SPEC 13.21); nothing else on this private connection publishes or subscribes there.
-        if (s.error instanceof PermissionViolationError && this.isPrincipalRouteSubject(s.error.subject)) continue;
+        // A refused principal-route request publish or subscription belongs to the call that throws
+        // it or the serve that ends on it (SPEC 13.21). A refused reply publish has no owner, so it
+        // is reported below.
+        if (s.error instanceof PermissionViolationError && this.ownedPrincipalRouteRefusal(s.error)) continue;
         if (s.error instanceof PermissionViolationError && handedToRequest.has(s.error)) continue;
         // The predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
         // history reads, whose refusal can arrive after that delete timed out.
@@ -6837,10 +6838,12 @@ export class CotalEndpoint extends EventEmitter {
     return servePrincipalRoute(nc, this.space, intent.self, intent.serve);
   }
 
-  /** A request or reply subject (or filter) of the principal route in this space. */
-  private isPrincipalRouteSubject(subject: string): boolean {
+  /** A principal-route refusal a call or a serve reports itself: a request publish, a serve
+   *  subscription or a reply read. Only a reply publish is left, which no call or serve awaits. */
+  private ownedPrincipalRouteRefusal(err: PermissionViolationError): boolean {
     const p = `${spacePrefix(this.space)}.ep.`;
-    return subject.startsWith(`${p}prin.`) || subject.startsWith(`${p}prin-reply.`);
+    if (err.operation === "publish") return err.subject.startsWith(`${p}prin.`);
+    return err.subject.startsWith(`${p}prin.`) || err.subject.startsWith(`${p}prin-reply.`);
   }
 
   /** Track one binding: a refusal ends the serve, and an accepted subscription on the current
