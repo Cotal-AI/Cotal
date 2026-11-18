@@ -44,7 +44,7 @@ class Rpc {
   readonly pending = new Map<number, { resolve: (r: Reply) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   seq = 0;
   badOutput = "";
-  constructor(readonly space: string, tag: string) {
+  constructor(readonly space: string, readonly tag: string) {
     this.child = spawn(process.execPath, [bin, "mcp", "--space", space], { cwd: scratch, env, stdio: "pipe" });
     children.push(this);
     let output = "", errors = "";
@@ -93,7 +93,7 @@ class Rpc {
     else this.child.stdin.end();
     let timer: NodeJS.Timeout | undefined;
     try {
-      const code = await Promise.race([this.exited, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("MCP shutdown timed out")), 15_000); })]);
+      const code = await Promise.race([this.exited, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`MCP shutdown of ${this.tag} (pid ${this.child.pid}) timed out after ${signal ?? "stdin EOF"}`)), 15_000); })]);
       assert.equal(code, 0);
       assert.equal(this.badOutput, "", "stdout is exclusively MCP");
     } finally { clearTimeout(timer); }
@@ -102,7 +102,8 @@ class Rpc {
 function run(args: string[]) {
   return spawnSync(process.execPath, [bin, ...args], { cwd: scratch, env, encoding: "utf8", timeout: 30_000 });
 }
-const identities = () => readdirSync(env.TMPDIR!).filter((name) => name.startsWith("cotal-app-identity-"));
+/** This suite's identity directories, under the Cotal home where provision makes them or in the temp dir where earlier versions did. */
+const identities = () => [join(env.COTAL_HOME!, "app-identities"), env.TMPDIR!].flatMap((parent) => (existsSync(parent) ? readdirSync(parent) : []).filter((name) => name.startsWith("cotal-app-identity-")));
 const persona = "---\nname: default\nsubscribe: [general]\nallowSubscribe: [general, team.>]\nallowPublish: [general]\ncapabilities: []\n---\n\nA local conversation.\n";
 const staticSpace = `mcpstatic${process.pid}`;
 const auth = await createSpaceAuth(staticSpace);
