@@ -32,7 +32,9 @@ import {
   MANAGER_START_PAYLOAD_FLOOR,
   createSpaceAuth,
   applyAccountLimits,
-  loadCotalConfig,
+  decodeNatsJwt,
+  type AccountLimits,
+  loadAccountLimits,
   serverConfig,
   openServerConfig,
   validateTlsMaterial,
@@ -992,7 +994,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // `space create` and `down` refuse a root other local accounts can write, so `up` refuses it too,
   // before anything is written: a stack started there could not be stopped from it.
   protectedLocalDirectory(canonicalRoot(cotalRoot()), "the project root");
-  const accountLimits = loadCotalConfig(cotalRoot()).accountLimits;
+  const accountLimits = loadAccountLimits(cotalRoot());
   if (accountLimits !== undefined) {
     if (values.open) throw new Error("accountLimits requires an authenticated broker; open mode has no data-account JWT");
     const stored = await getSpaceAuth(workspaceSecretStore(cotalRoot()), values.space ?? folderSpace());
@@ -3645,7 +3647,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
       remedy: opts.server !== undefined ? `pass --server ${tlsAddress(server)}` : `set broker.servers to ${tlsAddress(server)} in ${file}`,
     });
   const open = m.broker?.auth === false; // default is auth
-  if (open && loadCotalConfig(cotalRoot()).accountLimits !== undefined)
+  if (open && loadAccountLimits(cotalRoot()) !== undefined)
     throw new Error("accountLimits requires an authenticated broker; open mode has no data-account JWT");
   const userAuth = m.broker?.auth === "user" ? { idpUrl: m.broker.idp } : undefined;
   const runtime = m.runtime ?? "pty";
@@ -4304,7 +4306,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
   refuseStartOverUserState(Boolean(opts.open), opts.userAuth !== undefined, space);
   const root = cotalRoot();
-  if (!useAuth && loadCotalConfig(root).accountLimits !== undefined)
+  if (!useAuth && loadAccountLimits(root) !== undefined)
     throw new Error("accountLimits requires an authenticated broker; open mode has no data-account JWT");
   const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
   if (opts.storeDir) warnForeignStoreEntries(storeDir);
@@ -5690,7 +5692,7 @@ async function authSetup(
 ): Promise<{ brokerBinary: NatsServer; confPath: string; creds: string; wsPort: number; moveWebsocketPort: () => Promise<number>; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number; maxPayload?: number; accountResolver: "memory" | "full" }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());
-  const limits = loadCotalConfig(cotalRoot()).accountLimits;
+  const limits = loadAccountLimits(cotalRoot());
   let auth: SpaceAuth | undefined = await getSpaceAuth(store, space).catch((error: unknown) => { throw unreadableTrust(error); });
   if (!auth) {
     auth = await createSpaceAuth(space, limits);
@@ -5738,8 +5740,11 @@ async function authSetup(
   const limited = await applyAccountLimits(auth, limits);
   if (limited !== auth) {
     await assertRootBrokerStopped(cotalRoot(), "accountLimits");
+    const before = decodeNatsJwt<{ nats: { limits?: AccountLimits } }>(auth.account.jwt).nats.limits ?? {};
+    const changed = Object.entries(limits ?? {}).filter(([key, value]) => before[key as keyof typeof before] !== value);
     auth = limited;
     await putSpaceAuth(store, auth);
+    console.error(c.green(`✓ applied accountLimits for "${space}": ${changed.map(([key, value]) => `${key}=${value}`).join(", ")}`));
   }
   // The DATA half of the membership bundle, on EVERY path — see healMembershipDataCreds.
   await healMembershipDataCreds(auth, cotalRoot(), space, quietBoot);

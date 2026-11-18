@@ -16,7 +16,7 @@ defines the protocol.
 
 ## The config file
 
-The config file has two layers. The space-local file takes precedence over the operator-level file.
+The config file has two layers. The space-local file takes precedence for connector, spawn and model settings. Account limits are operator-only and are refused in a space-local file.
 
 | Layer | Path | Scope |
 |---|---|---|
@@ -32,7 +32,7 @@ means no settings. Invalid JSON, a non-object top level, or an invalid shared se
 | `connectors.<name>.mcpServers` | Named MCP servers available to a connector's spawned agents | Per connector and server name |
 | `spawn.env` | Extra environment names available to spawned agents | The space-local `spawn` object replaces the operator-level object |
 | `modelPolicy` | Allowed models and variants for each role | Per role |
-| `accountLimits` | Native NATS data-account resource ceilings | Per field |
+| `accountLimits` | Native NATS data-account resource ceilings | Operator file only |
 
 The [launcher environment](#launcher-variables) describes `spawn.env`. [Model policy](#model-policy)
 describes model restrictions.
@@ -147,8 +147,10 @@ after maintenance are not re-checked.
 ### Account limits
 
 `accountLimits` sets native NATS ceilings when `cotal up` creates or starts an authenticated
-space's broker. The operator-level and space-local objects merge per field, with the local value
-winning. Invalid values stop config loading and name the file and key.
+space's broker. Put it only in the operator-level file, `$XDG_CONFIG_HOME/cotal/config.json`
+(or the platform fallback listed above). A project `.cotal/config.json` carrying this key is
+refused, even if it only lowers a ceiling. Invalid values name the file and specific key.
+Startup reads this policy without validating unrelated connector, spawn or model sections.
 
 ```json
 {
@@ -172,7 +174,9 @@ winning. Invalid values stop config loading and name the file and key.
 | `disk_storage` | Total file-backed JetStream storage bytes |
 | `consumer` | JetStream consumers across the data account |
 
-Every field is optional and accepts a positive safe integer or `-1` for unlimited. Unknown fields,
+Every field is optional and accepts a positive safe integer or `-1` for unlimited.
+`conn`, `subs` and `payload` must not exceed `2147483647`, the broker's signed 32-bit range.
+The JetStream fields retain the positive safe-integer range. Unknown fields,
 zero, other negative numbers, fractions, strings and null are refused. With no setting, a new
 account has unlimited ceilings. An existing account keeps its saved limits for omitted fields,
 including when the whole setting is absent. To remove a saved ceiling, set that field to `-1`

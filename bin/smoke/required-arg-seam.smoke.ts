@@ -564,7 +564,7 @@ const SEAMS: Seam[] = [
   // which states `tls: false` for the suite's loopback broker.
   // 451/359 -> 452/360: agui-egress-acl-auth adds its payload-rail subscriber connection, which
   // states `tls: false` for the suite's loopback broker.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 460, untypecheckedSites: 368 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 461, untypecheckedSites: 369 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
