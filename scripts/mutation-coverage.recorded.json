@@ -19,10 +19,6 @@
     "sha256": "4eff9e64c42045cf1a97171d6dcd798c1b3f8322390e78c185f4a17f9562bf58",
     "refusal": "mutation \"an unparseable RSS date is carried into render again\" is missing \"cell\""
   },
-  "bin/smoke/mutations/focus-recall-honesty.json": {
-    "sha256": "92d3d30f88eac0b81d8d379ca67fcefca44dc7151aa4661f67aa7d107b9b6955",
-    "refusal": "mutation \"recallChannel stops reporting the replay=off gate, so an ack-dropped channel reads as an empty, complete window\" targets packages/core/src/endpoint.ts, which none of [extensions/connector-core/smoke/attention.smoke.ts, extensions/connector-core/smoke/focus-recall-wildcard.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "bin/smoke/mutations/goal-follow-subscription.json": {
     "sha256": "1ae2bdd3416c91a0117c6764faa0ffed3000916356eba020a21387f9b6ffc766",
     "refusal": "mutation \"the subscription error is discarded again, so a denied caller is handed a timeout\" targets packages/core/src/endpoint-invoke.ts, which none of [bin/smoke/goal-follow.smoke.ts, implementations/auth/smoke/user-spawn.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
@@ -111,10 +107,6 @@
     "sha256": "26c38aa474830870520150033ed5569738bb1dc805a594e552b48e854f0be6de",
     "refusal": "mutation \"M1 the relay fails open silently again\" is missing \"cell\""
   },
-  "extensions/connector-claude-code/smoke/mutations/wake-overlap-refcount.json": {
-    "sha256": "af6023342bb4a479e8c825a6c4fc2a301019b18f6e4ce097134c333697f4b793",
-    "refusal": "mutation \"W1 a second overlapping frame does not increment the existing hold\" targets extensions/connector-core/src/agent.ts, which none of [extensions/connector-claude-code/smoke/wake-path.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in extensions/connector-core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "extensions/connector-codex/smoke/mutations/agui-codex-map.json": {
     "sha256": "c389a6e292920f29a574846cf9a7bdc086404caf9fd3441dfb0f02cc4fdec2d8",
     "refusal": "mutation \"M1 the mapper stops branching on task_complete.error, so a failed turn publishes as a success\" is missing \"cell\""
@@ -167,17 +159,9 @@
     "sha256": "34b1903994f441cbf4b82421e82b80e2467a1847c482301296df10ecf563f9ef",
     "refusal": "mutation \"the wildcard-stripped base is never indexed, so a wildcard with no literal form matches nothing\" targets extensions/connector-core/src/docs.ts, which is outside the swept tree"
   },
-  "extensions/connector-core/smoke/mutations/history-flood.json": {
-    "sha256": "be5b4a23a0ea703a1d732de6b7c92976154470cbf8e827865b0959b73a91b79c",
-    "refusal": "mutation \"M1 the shipped defect: historical no longer forces pull-only\" is missing \"cell\""
-  },
   "extensions/connector-core/smoke/mutations/hook-relay-startup.json": {
     "sha256": "36ac323070eb4788b5801474017bedf738fe07511e82bc63f9fb3c56c74b4bfa",
     "refusal": "mutation \"R1 restore the one-shot startup loss on the first missing socket\" is missing \"cell\""
-  },
-  "extensions/connector-core/smoke/mutations/inbox-overflow-directed.json": {
-    "sha256": "9b05fdaeedd4c97cd33f5ac158ab998a3b7707998f1aecfe3875e6d6e2a478aa",
-    "refusal": "mutation \"M1 the shipped defect: no channel tier, so eviction falls through to the oldest entry\" is missing \"cell\""
   },
   "extensions/connector-core/smoke/mutations/orientation-identity-plane.json": {
     "sha256": "ec5450f6fd7b0a1911a08e5e4938149dc11a7e824717a756bd1694c88580d111",
@@ -422,10 +406,6 @@
   "implementations/manager/smoke/mutations/spawn-action-seat-reap.json": {
     "sha256": "ad4a96fcc417cff50a4d19ec31bcf33983b9961d62dc058bd6b41ff6204c9c05",
     "refusal": "mutation \"the teardown never reaps (the leak reintroduced)\" is missing \"cell\""
-  },
-  "implementations/manager/smoke/mutations/turn-relay-auth.json": {
-    "sha256": "3500dcf981095264e9a2efdcea5966d239cdc025165c028b836897e22ad513a6",
-    "refusal": "mutation \"the operator seat-write set carries input alone; no profile mints a turn row\" targets packages/core/src/endpoint-grants.ts, which none of [implementations/manager/smoke/turn-relay-auth.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
   "implementations/manager/smoke/mutations/user-bearer-goal-lifetime.json": {
     "sha256": "e28847588b47878eb62c829ed5d417e3a6e63572c718e88d785573598bcb28e2",

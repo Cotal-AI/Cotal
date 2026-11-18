@@ -34,7 +34,7 @@
     },
     {
       "name": "a take the hook waits on is announced as a new arrival",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "      if (!p.awaited) this.emit(\"incoming\", p.item);",
       "replace": "      this.emit(\"incoming\", p.item);",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
@@ -62,8 +62,8 @@
     },
     {
       "name": "a held request counts toward a wake while its retry is waited out",
-      "file": "extensions/connector-core/src/agent.ts",
-      "find": "    const held = this.mayAskTakes() ? this.gated.filter((p) => !skip?.(p.item)).length : 0;",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
+      "find": "    const held = this.mayAskTakes() ? this.gated.filter((p) =>\n      (p.taking === undefined || p.takingDrops !== this.transportDrops) && !skip?.(p.item)).length : 0;",
       "replace": "    const held = this.gated.filter((p) => !skip?.(p.item)).length;",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
       "expectRed": "6b the Stop after it pushes no notice, so no new turn starts",

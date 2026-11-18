@@ -229,7 +229,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   /** A refusal while the definition is built names the space and name it was for. */
   const forName = <T>(build: () => T): T => {
     try { return build(); }
-    catch (error) { throw isCommandFailure(error) && error.target === null ? new CommandFailure(error.outcome, error.code, error.message, { target: named, remedy: error.remedy, native: error.native, changed: error.changed, remedyIsCommand: error.remedyIsCommand }) : error; }
+    catch (error) { throw isCommandFailure(error) && error.target === null ? new CommandFailure(error.outcome, error.code, error.message, { target: named, remedy: error.remedy, native: error.native, changed: error.changed, selfContained: error.selfContained, remedyIsCommand: error.remedyIsCommand }) : error; }
   };
   // A file names its space, so a definition for another space is refused before its name is looked
   // up in the selected one, whose service of that name it does not concern.

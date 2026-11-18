@@ -68,7 +68,7 @@
     },
     {
       "name": "the mint defaults an omitted read ACL back to general, so every channel-less agent carries the row",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "  const allowSubscribe = opts.allowSubscribe ?? [];",
       "replace": "  const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : [\"general\"];",
       "expectRed": "a persona with no read set mints NO channel read row: the broker denies chat.*.*.general",

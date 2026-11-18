@@ -68,6 +68,38 @@ function fixture(label: string) {
 const output = (result: ReturnType<typeof spawnSync>): string => `${result.stdout ?? ""}${result.stderr ?? ""}`;
 let passed = false;
 try {
+  // Execute the documented npm prefix/PATH commands with real npm and an offline package.
+  // The separate published-package check covers Cotal's dependency closure and startup.
+  const npmHome = join(root, "npm home's");
+  const npmPackage = join(root, "npm-package");
+  mkdirSync(npmHome);
+  mkdirSync(npmPackage);
+  writeFileSync(join(npmPackage, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.0.0", bin: { cotal: "cotal.js" } }));
+  writeFileSync(join(npmPackage, "cotal.js"), '#!/usr/bin/env node\nconsole.log("cotal-ai 0.0.0");\n');
+  chmodSync(join(npmPackage, "cotal.js"), 0o755);
+  const installation = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
+  const npmSection = installation.split("## Install with npm")[1]?.split("## ")[0];
+  const npmSteps = npmSection?.match(/```bash\n([^`]+)```/)?.[1];
+  assert(npmSteps, "npm instructions include a shell command block");
+  assert(npmSteps.includes('npm config set prefix "$HOME/.local"'), "npm instructions select a user-owned prefix before installing");
+  assert(npmSteps.includes('export PATH="$HOME/.local/bin:$PATH"'), "npm instructions put the prefix's bin directory first on PATH");
+  assert(npmSteps.includes("npm install -g cotal-ai"), "npm instructions retain the global install command");
+  const npmEnv = {
+    HOME: npmHome, PATH: toolPath, CI: "1", NO_COLOR: "1",
+    npm_config_userconfig: join(npmHome, ".npmrc"),
+    npm_config_globalconfig: join(npmHome, "global-npmrc"),
+    npm_config_cache: join(npmHome, ".npm"),
+    npm_config_registry: "http://127.0.0.1:9",
+    FIXTURE_PACKAGE: npmPackage,
+  };
+  const npmInstall = spawnSync("/bin/sh", ["-c", `set -eu\n${npmSteps.replace("npm install -g cotal-ai", 'npm install -g "$FIXTURE_PACKAGE" --offline --ignore-scripts --no-audit --no-fund')}\ncotal --version`], { env: npmEnv, encoding: "utf8", timeout: 30_000 });
+  assert.equal(npmInstall.status, 0, output(npmInstall));
+  assert(output(npmInstall).includes("cotal-ai 0.0.0"), "the documented PATH selects npm's installed executable, including with spaces and quotes in HOME");
+  const npmPrefix = spawnSync("npm", ["prefix", "-g"], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+  assert.equal(npmPrefix.status, 0, output(npmPrefix));
+  assert.equal(npmPrefix.stdout.trim(), join(npmHome, ".local"), "the documented npm prefix persists for future global installs");
+  console.log("NPM INSTALL: documented user-owned prefix and PATH commands passed with real npm (offline package)");
+
   const shadow = fixture("shadow");
   const shadowed = spawnSync("/bin/sh", [driver, library], { env: { ...shadow.env, PATH: `${shadow.oldBin}:${shadow.newBin}:${toolPath}` }, encoding: "utf8" });
   assert.equal(shadowed.status, 0, output(shadowed));
@@ -158,7 +190,7 @@ cotal --version
   const nodeVersion = spawnSync(join(nodebin, "node"), ["--version"], { encoding: "utf8" });
   assert.equal(nodeVersion.stdout.trim(), process.version, "the relinked runtime remains executable");
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: 35, failed: 0 });
+  emitSentinel({ passed: 43, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

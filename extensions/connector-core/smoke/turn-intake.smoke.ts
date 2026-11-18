@@ -814,7 +814,7 @@ CotalEndpoint.prototype.stop = async function () {};
 const stubPostLeaseBoot = (m: unknown) => {
   const internal = m as Record<string, unknown>;
   internal.registerManagerService = async () => {
-    internal.staticReconcileStopping = true;
+    (internal.staticLifecycle as { staticReconcileStopping: boolean }).staticReconcileStopping = true;
   };
 };
 
@@ -872,7 +872,7 @@ const mgr = new Manager({
 
 stubPostLeaseBoot(mgr);
 await mgr.start();
-(mgr as unknown as { staticReconcileStopping: boolean }).staticReconcileStopping = false;
+(mgr as unknown as { staticLifecycle: { staticReconcileStopping: boolean } }).staticLifecycle.staticReconcileStopping = false;
 if ((mgr as unknown as { credRenewTimer?: ReturnType<typeof setInterval> }).credRenewTimer) {
   clearInterval((mgr as unknown as { credRenewTimer?: ReturnType<typeof setInterval> }).credRenewTimer);
 }
@@ -950,7 +950,7 @@ const localMgr = new Manager({
 });
 stubPostLeaseBoot(localMgr);
 await localMgr.start();
-(localMgr as unknown as { staticReconcileStopping: boolean }).staticReconcileStopping = false;
+(localMgr as unknown as { staticLifecycle: { staticReconcileStopping: boolean } }).staticLifecycle.staticReconcileStopping = false;
 if ((localMgr as unknown as { leaseTimer?: ReturnType<typeof setInterval> }).leaseTimer) {
   clearInterval((localMgr as unknown as { leaseTimer?: ReturnType<typeof setInterval> }).leaseTimer);
 }

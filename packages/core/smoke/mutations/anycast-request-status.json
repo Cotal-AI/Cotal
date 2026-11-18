@@ -79,7 +79,7 @@
     },
     {
       "name": "a holder's credential may take for any role",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "takeSubject(space, role, pr.owner, pr.actor),",
       "replace": "takeSubject(space, \"*\", pr.owner, pr.actor),",
       "expectRed": "5d the request is still waiting after all three",

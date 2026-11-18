@@ -310,6 +310,9 @@ concludes nothing.
 
 ### Terminal attachment
 
+Since 0.167.1, `attach` does not install or repair local application connectors. Missing npm or a
+previous connector seed failure does not block the native manager terminal route.
+
 `attach` streams and drives an agent's terminal on the `pty` runtime; detach with the escape key
 (Ctrl-] by default; see the [`detach-key` preference](config.mdx#preferences)). The key is recognised
 as the legacy control byte and as the kitty keyboard protocol and xterm modifyOtherKeys encodings of

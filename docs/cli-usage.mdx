@@ -26,8 +26,12 @@ to pass one URL for the new broker to listen on. The refusal does not repeat the
 
 ## Invocation [#running-it]
 
+Install as your own user, without sudo. The npm global prefix must be user-writable and its
+executable directory must be on PATH. With distribution Node on macOS or Linux, follow the
+[user-owned prefix and PATH steps](installation.mdx#install-with-npm), or use the shell installer.
+
 ```bash
-npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 22.10+)
+npm install -g cotal-ai   # needs Node 22.10+ and the prefix/PATH prerequisites above
 cotal                     # the selected space, common commands, and where to start
 cotal help                # the same, then every command group (also `cotal --help`)
 cotal help <command> [<subcommand>]   # one command's or subcommand's usage and flags
