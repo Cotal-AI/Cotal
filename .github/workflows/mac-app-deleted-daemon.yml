@@ -157,7 +157,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       max-parallel: 1
-      fail-fast: true
+      fail-fast: false
       matrix:
         mode: [status, install, disabled, unreadable-source, self-update, unreadable-manager, occupied-manager, crash-prepared, crash-published, crash-prepared-mismatch, crash-prepared-concurrent, crash-prepared-changed-source]
     steps:
