@@ -181,7 +181,7 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
     },
     recordIssuance: async (i) => {
       refuse();
-      await recordSessionConnection(registryStores(registry).authKv, i);
+      await recordSessionConnection(registryStores(registry).authKv, i, { jsm: deps.recordsJsm, space, secret: dataAccount.signingSeed });
       await recordIssuance(i);
     },
     authorizeManagerCaller: async (owner, instanceId) => {

@@ -371,12 +371,17 @@ is active and unexpired, its signature equals the presented grant's, its holder 
 actor at this lifecycle, its endpoint and serving epoch match, and the serving manager's gate is open
 at that epoch. The callout repeats the same check at connect and mints the session's caller rails
 with the grant's expiry instead of the bearer's. The callout records the session ID and the
-broker's server and connection IDs before releasing access. The auth service checks those
-records in bounded passes, normally once a second. A terminal, deleted or missing session row
-causes the delivery service to evict only those connections. Other sessions and control
-connections of the same actor stay connected. Failed reads or eviction leave the evidence for
-retry and report the failure. Connections admitted before these records were introduced cannot
-be selected this way and end at their existing expiry.
+broker's server and connection IDs before releasing access. The record includes the observed
+session revision and a MAC under the auth host's account signing secret, bound to the space,
+record key and connection. A record without valid authentication never authorizes eviction.
+The auth service checks these records in bounded passes, normally once a second. A terminal,
+deleted or missing session row causes eviction only with authenticated evidence that the
+session existed when access was issued. Other sessions and control connections of the same actor
+stay connected. Invalid records are quarantined with bounded purge markers and do not block
+later records. Failed reads or evictions keep evidence for retry with capped backoff.
+Closing the auth service aborts and awaits its session sweep. Connections admitted before
+these authenticated records were introduced cannot be selected this way and end at their
+existing expiry.
 
 The session connection still lasts through its grant when the identity proof expires.
 Actor retirement uses the existing lifecycle eviction. Renewing the identity proof is required

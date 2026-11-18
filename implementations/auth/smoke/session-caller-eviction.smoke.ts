@@ -158,6 +158,20 @@ async function main() {
     const before = readFileSync(sink).length; transport.send(Buffer.from("session-byte"));
     check("redeemed terminal sends real bytes to participant child", await until(() => readFileSync(sink).subarray(before).equals(Buffer.from("session-byte"))));
     check("redeemed terminal returns real child output", await until(() => Buffer.concat(received).includes(Buffer.from("session-byte"))));
+    const attackWriter = await openAuthorityClient({ server: fx.servers, space: a.space, dataAccount: { pub: a.auth.account.pub, signingSeed: a.auth.account.signingSeed! }, label: `session-evidence-fixture:${a.space}`, grants: (id: string) => ({ publish: [">"], subscribe: [`_INBOX_${id}.>`] }), log: () => {} });
+    const attackKv = await new Kvm(attackWriter.nc).open(core.epAuthBucket(a.space));
+    const attackKey = `sessionconn.${newIdentity().id}`;
+    const victimNc = (freelance as unknown as { nc: Awaited<ReturnType<typeof connect>> }).nc;
+    const victimCoordinates = (await nativeAccountConnections(a.auth, fx.servers)).find((c) => c.user === core.principalKey(owner, "freelance").name)!;
+    assert.ok(victimCoordinates);
+    const forged = { sessionId: core.mintSessionId(), principal: `${owner}.freelance`, lifecycleUid: freelanceUid,
+      connection: { serverId: victimNc.info!.server_id!, cid: victimCoordinates.cid }, releaseAfter: Date.now() - 10000 };
+    await attackKv.create(attackKey, JSON.stringify(forged));
+    await wait(2500);
+    check("B1 unsigned record naming another principal's broker connection evicts nothing", !victimNc.isClosed());
+    await attackKv.purge(attackKey);
+    const poisonKey = `sessionconn.${newIdentity().id}`;
+    await attackKv.create(poisonKey, "not-json");
     const siblingReply = await call("attach", undefined, target); assert.ok(siblingReply.ok);
     const siblingGrant = (siblingReply.data as any).grant;
     const siblingExchange = await exchange({ idpToken: token, actor: "cli", view: "session-caller", sessionGrant: siblingGrant }, false);
@@ -168,7 +182,7 @@ async function main() {
     siblingTransport.onReady(() => { siblingReady = true; }); siblingTransport.onData((b) => { siblingBytes.push(b); });
     check("E1 control second same-actor session works", await until(() => siblingReady));
     transport.close(); check("terminal detach ends session distinctly", await until(() => ended === "detached"));
-    measurement("E1 session end evicts the live caller socket", await closedWithin(sessionNc));
+    measurement("B2 malformed record does not block honest ended session eviction", await closedWithin(sessionNc));
     if (!sessionNc.isClosed()) { await sessionNc.flush(); console.log("OBSERVED E1 socket still answers broker PING after detach"); }
     await sessionNc.close(); sessionNc = undefined;
     const socketWorks = async (nc: Awaited<ReturnType<typeof connect>>) => { try { await nc.flush(); return !nc.isClosed(); } catch { return false; } };
@@ -180,7 +194,20 @@ async function main() {
     try { const bad = await connect({ servers: fx.servers, ...standaloneConnectOpts({ bearer: sc.body.token, sentinelCreds: a.sentinelCreds, tls: false }), reconnect: false }); await bad.close(); }
     catch (e) { endedDenied = /authorization|authentication/i.test((e as Error).message); }
     check("E1 ended session credential cannot reconnect", endedDenied);
+    const kvPrototype = Object.getPrototypeOf(attackKv) as { create: typeof attackKv.create };
+    const createEvidence = kvPrototype.create;
+    kvPrototype.create = async function (key, ...args) {
+      if (key.startsWith("sessionconn.")) throw new Error("fixture session evidence write refused");
+      return createEvidence.call(this, key, ...args);
+    };
+    let recordWriteDenied = false;
+    try {
+      try { const unexpected = await connect({ servers: fx.servers, ...standaloneConnectOpts({ bearer: siblingExchange.body.token, sentinelCreds: a.sentinelCreds, tls: false }), reconnect: false }); await unexpected.close(); }
+      catch (e) { recordWriteDenied = /authorization|authentication/i.test(String(e)); }
+    } finally { kvPrototype.create = createEvidence; }
+    check("B1 failed session evidence write refuses the real broker connection", recordWriteDenied);
     siblingTransport.close(); await siblingNc.close();
+    await attackWriter.close();
 
     const attachAgain = async () => { const reply = await call("attach", undefined, target); assert.ok(reply.ok); return (reply.data as any).grant; };
     const detachEvents = ["closed", "retired", "delete", "purge"] as const;

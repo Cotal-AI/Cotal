@@ -829,18 +829,26 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   const sessionAbort = new AbortController();
   let sessionSeq = 1, sessionTimer: ReturnType<typeof setTimeout> | undefined;
   let sessionFlight: Promise<void> = Promise.resolve();
+  let sessionBackoffMs = 1000;
+  const stopSessionSweep = async (): Promise<void> => { clearTimeout(sessionTimer); sessionAbort.abort(); await sessionFlight; };
   const scheduleSessionSweep = (): void => {
     if (closing || fatalReason !== undefined || sessionAbort.signal.aborted) return;
     sessionTimer = setTimeout(() => {
+      let transient = false;
       sessionFlight = reconcileSessionConnections({
-        jsm: sessionJsm, kv: registryStores(registry).authKv, space, seq: sessionSeq, maxRows: 64,
+        jsm: sessionJsm, kv: registryStores(registry).authKv, space, secret: dataAccount.signingSeed, seq: sessionSeq, maxRows: 64,
         releaseWindowMs: (opts.sessionCalloutTimeoutMs ?? 2000) + 1000, signal: sessionAbort.signal, evict: sessionEvict,
+        log, transient: () => { transient = true; },
       }).then((next) => { sessionSeq = next ?? 1; }, (e: unknown) => {
+        transient = true;
         if (!closing) log(`auth-plane: session connection eviction failed: ${e instanceof Error ? e.message : String(e)}`);
-      }).then(scheduleSessionSweep);
-    }, 1000);
+      }).then(() => {
+        sessionBackoffMs = transient ? Math.min(sessionBackoffMs * 2, 30_000) : 1000;
+        scheduleSessionSweep();
+      });
+    }, sessionBackoffMs);
   };
-  unwind.push(async () => { clearTimeout(sessionTimer); sessionAbort.abort(); await sessionFlight; });
+  unwind.push(stopSessionSweep);
   scheduleSessionSweep();
   const pruneMs = opts.nativeIssuancePruneMs ?? 60_000;
   if (!Number.isSafeInteger(pruneMs) || pruneMs < 100 || pruneMs > 3_600_000)
@@ -2250,6 +2258,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       await drainCallerPayload();
       await stopPrune();
       await stopChatSweep();
+      await stopSessionSweep();
       // Every service host call that entered returns, discovery and effects included, then every
       // effect connection that did not close is closed again, before discovery closes and before
       // the claim is released. A failure here rejects with the claim still held; close retries it.

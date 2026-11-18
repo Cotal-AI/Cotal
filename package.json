@@ -9,6 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
+    "smoke:session-connection-guards": "tsx implementations/auth/smoke/session-connection-guards.smoke.ts",
     "smoke:session-caller-eviction": "tsx implementations/auth/smoke/session-caller-eviction.smoke.ts",
     "smoke:update-extension-set": "tsx implementations/cli/smoke/extension-promotion.smoke.ts && tsx implementations/cli/smoke/extension-promotion-crash.smoke.ts && tsx implementations/cli/smoke/update-set-atomic.smoke.ts",
     "smoke:discovery-login": "tsx packages/workspace/smoke/discovery-login.smoke.ts && tsx bin/smoke/daemon-discovery-login.smoke.ts",

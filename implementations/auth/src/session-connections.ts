@@ -1,44 +1,69 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { JetStreamManager, MsgRequest } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
-import { epAuthBucket, sessionLedgerKey, sessionsBucket, type EvictionResult, type KickTarget, type SessionLedgerRow } from "@cotal-ai/core";
+import { fromPublic } from "@nats-io/nkeys";
+import { EP_AUTH_MARKER_TTL_MS, assertLifecycleToken, epAuthBucket, parsePrincipalKey, sessionLedgerKey, sessionsBucket, type EvictionResult, type KickTarget, type SessionLedgerRow } from "@cotal-ai/core";
 import type { NativeIssuance } from "./native-issuance.js";
 
-/** Private auth-host evidence. This is not a native issuance or session ledger wire record. */
+/** Auth-host authenticated issuance evidence, including the session revision observed at release. */
 interface SessionConnection {
   sessionId: string;
   principal: string;
   lifecycleUid: string;
   connection: KickTarget;
   releaseAfter: number;
+  sessionRevision: number;
+}
+interface SignedSessionConnection { v: 1; row: SessionConnection; mac: string }
+const PREFIX = "sessionconn.";
+const markerTtl = `${EP_AUTH_MARKER_TTL_MS / 1000}s`;
+
+function signature(secret: string, space: string, key: string, row: SessionConnection): Buffer {
+  return createHmac("sha256", secret).update(JSON.stringify(["cotal-session-connection-v1", space, key, row])).digest();
+}
+function validateRow(raw: unknown): SessionConnection {
+  const r = raw as SessionConnection | null;
+  if (!r || typeof r !== "object" || Array.isArray(r) || Object.keys(r).length !== 6 ||
+    typeof r.sessionId !== "string" || typeof r.principal !== "string" || typeof r.lifecycleUid !== "string" ||
+    !r.connection || !/^N[A-Z2-7]{55}$/.test(r.connection.serverId) || !Number.isSafeInteger(r.connection.cid) || r.connection.cid <= 0 ||
+    !Number.isSafeInteger(r.releaseAfter) || r.releaseAfter <= 0 || !Number.isSafeInteger(r.sessionRevision) || r.sessionRevision <= 0)
+    throw new Error("session connection evidence is malformed");
+  sessionLedgerKey(r.sessionId);
+  parsePrincipalKey(r.principal);
+  assertLifecycleToken(r.lifecycleUid, "session holder lifecycle");
+  return r;
+}
+function sessionState(raw: unknown, row: Pick<SessionConnection, "sessionId" | "principal" | "lifecycleUid">): SessionLedgerRow {
+  const state = raw as SessionLedgerRow | null;
+  if (!state || state.sessionId !== row.sessionId || state.holder?.principal !== row.principal || state.holder.lifecycleUid !== row.lifecycleUid ||
+    !["issuing", "active", "closed", "expired", "superseded", "retired"].includes(state.state) || !Number.isSafeInteger(state.exp))
+    throw new Error("session connection authority does not match its recorded holder");
+  return state;
 }
 
-const PREFIX = "sessionconn.";
-
-/** Persist exact broker coordinates before releasing a session caller's credential. */
-export async function recordSessionConnection(kv: KV, issuance: NativeIssuance): Promise<void> {
+/** Persist signed broker coordinates only after observing the caller's live session authority. */
+export async function recordSessionConnection(kv: KV, issuance: NativeIssuance, authority: { jsm: JetStreamManager; space: string; secret: string }): Promise<void> {
   const { token, connection } = issuance;
   if (token.act.view !== "session-caller") return;
-  if (!connection || !/^N[A-Z2-7]{55}$/.test(connection.serverId) || !Number.isSafeInteger(connection.cid) || connection.cid <= 0 ||
-    !token.act.session || !token.act.lifecycleUid) throw new Error("session connection evidence requires broker coordinates and session authority");
-  const row: SessionConnection = {
-    sessionId: token.act.session.sessionId,
-    principal: `${token.owner}.${token.act.actor}`,
-    lifecycleUid: token.act.lifecycleUid,
-    connection,
-    releaseAfter: Date.now(),
-  };
-  await kv.create(`${PREFIX}${issuance.userNkey}`, JSON.stringify(row));
+  if (!connection || !token.act.session || !token.act.lifecycleUid) throw new Error("session connection evidence requires broker coordinates and session authority");
+  fromPublic(issuance.userNkey);
+  const key = `${PREFIX}${issuance.userNkey}`;
+  const bucket = sessionsBucket(authority.space);
+  const session = await authority.jsm.streams.getMessage(`KV_${bucket}`, { last_by_subj: `$KV.${bucket}.${sessionLedgerKey(token.act.session.sessionId)}` });
+  if (!session || session.header?.get("KV-Operation")) throw new Error("session connection requires an existing active session");
+  const row = validateRow({ sessionId: token.act.session.sessionId, principal: `${token.owner}.${token.act.actor}`,
+    lifecycleUid: token.act.lifecycleUid, connection, releaseAfter: Date.now(), sessionRevision: session.seq });
+  const state = sessionState(session.json(), row);
+  if (state.state !== "active" || state.exp <= Date.now()) throw new Error("session connection requires an existing active session");
+  const evidence: SignedSessionConnection = { v: 1, row, mac: signature(authority.secret, authority.space, key, row).toString("base64url") };
+  await kv.create(key, JSON.stringify(evidence));
 }
 
-/** Reconcile a bounded, leader-read batch. Failed reads or kicks retain evidence for retry. */
+/** Reconcile bounded leader reads. Invalid evidence is quarantined; transient failures retain rows and advance. */
 export async function reconcileSessionConnections(opts: {
-  jsm: JetStreamManager;
-  kv: KV;
-  space: string;
-  seq: number;
-  maxRows: number;
-  releaseWindowMs: number;
-  signal: AbortSignal;
+  jsm: JetStreamManager; kv: KV; space: string; secret: string; seq: number; maxRows: number; releaseWindowMs: number; signal: AbortSignal;
+  log?: (line: string) => void;
+  transient?: () => void;
   evict(principal: string, connections: KickTarget[]): Promise<EvictionResult>;
 }): Promise<number | undefined> {
   const bucket = epAuthBucket(opts.space), prefix = `$KV.${bucket}.`;
@@ -47,32 +72,53 @@ export async function reconcileSessionConnections(opts: {
     opts.signal.throwIfAborted();
     const message = await opts.jsm.streams.getMessage(`KV_${bucket}`, { seq, next_by_subj: `${prefix}${PREFIX}>` } as unknown as MsgRequest);
     if (!message) return undefined;
+    opts.signal.throwIfAborted();
     seq = message.seq + 1;
     if (message.header?.get("KV-Operation")) continue;
-    const row = message.json<SessionConnection>();
-    if (!row || typeof row.sessionId !== "string" || !row.sessionId || typeof row.principal !== "string" ||
-      typeof row.lifecycleUid !== "string" || !row.connection || !/^N[A-Z2-7]{55}$/.test(row.connection.serverId) ||
-      !Number.isSafeInteger(row.connection.cid) || row.connection.cid <= 0 || !Number.isSafeInteger(row.releaseAfter))
-      throw new Error("session connection evidence is malformed");
-    const sessions = sessionsBucket(opts.space);
-    let session;
+    const key = message.subject.slice(prefix.length);
+    let row: SessionConnection;
     try {
-      session = await opts.jsm.streams.getMessage(`KV_${sessions}`, { last_by_subj: `$KV.${sessions}.${sessionLedgerKey(row.sessionId)}` });
-    } catch (e) { if ((e as { code?: unknown }).code !== 10037) throw e; }
-    let ended = !session || !!session.header?.get("KV-Operation");
-    if (!ended) {
-      const state = session!.json<SessionLedgerRow>();
-      if (state.sessionId !== row.sessionId || state.holder?.principal !== row.principal || state.holder.lifecycleUid !== row.lifecycleUid ||
-        !["issuing", "active", "closed", "expired", "superseded", "retired"].includes(state.state) || !Number.isSafeInteger(state.exp))
-        throw new Error("session connection authority does not match its recorded holder");
-      ended = state.state !== "active" || state.exp <= Date.now();
+      fromPublic(key.slice(PREFIX.length));
+      const signed = message.json<SignedSessionConnection>();
+      if (signed?.v !== 1 || typeof signed.mac !== "string") throw new Error("session connection evidence is unsigned");
+      row = validateRow(signed.row);
+      const expected = signature(opts.secret, opts.space, key, row), actual = Buffer.from(signed.mac, "base64url");
+      if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) throw new Error("session connection evidence authentication failed");
+    } catch {
+      try {
+        await opts.kv.purge(key, { previousSeq: message.seq, ttl: markerTtl });
+        opts.log?.("auth-plane: quarantined invalid session connection evidence");
+      } catch { opts.transient?.(); }
+      continue;
     }
-    if (!ended) continue;
-    const result = await opts.evict(row.principal, [row.connection]);
-    if (!result.verifiedGone) throw new Error(`session eviction was not verified: ${result.note ?? "incomplete scan"}`);
-    // A callout response can bind after the first scan. Repeat through its bounded release window.
-    if (Date.now() <= row.releaseAfter + opts.releaseWindowMs) continue;
-    await opts.kv.purge(message.subject.slice(prefix.length), { previousSeq: message.seq });
+    try {
+      const sessions = sessionsBucket(opts.space);
+      let session;
+      try { session = await opts.jsm.streams.getMessage(`KV_${sessions}`, { last_by_subj: `$KV.${sessions}.${sessionLedgerKey(row.sessionId)}` }); }
+      catch (e) { if ((e as { code?: unknown }).code !== 10037) throw e; }
+      opts.signal.throwIfAborted();
+      // A verified receipt proves a real session revision was observed before access was released.
+      let ended = !session || !!session.header?.get("KV-Operation");
+      if (!ended) {
+        let state: SessionLedgerRow;
+        try { state = sessionState(session!.json(), row); }
+        catch {
+          await opts.kv.purge(key, { previousSeq: message.seq, ttl: markerTtl });
+          opts.log?.("auth-plane: quarantined mismatched session connection authority");
+          continue;
+        }
+        ended = state.state !== "active" || state.exp <= Date.now();
+      }
+      if (!ended) continue;
+      const result = await opts.evict(row.principal, [row.connection]);
+      opts.signal.throwIfAborted();
+      if (!result.verifiedGone) { opts.transient?.(); continue; }
+      if (Date.now() <= row.releaseAfter + opts.releaseWindowMs) continue;
+      await opts.kv.purge(key, { previousSeq: message.seq, ttl: markerTtl });
+    } catch (e) {
+      if (opts.signal.aborted) throw e;
+      opts.transient?.();
+    }
   }
   return seq;
 }
