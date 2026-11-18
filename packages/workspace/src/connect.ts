@@ -377,7 +377,7 @@ export class ConnectRefusal extends Error {
 
 /** A refusal over a workspace failure: the one-line sentence for a terminal, its parts for a
  *  structured command. */
-function workspaceRefusal(e: WorkspaceError, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode }): ConnectRefusal {
+function workspaceRefusal(e: WorkspaceError, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode; native?: NativeCause }): ConnectRefusal {
   // A folder whose records name no space is probed under the default space, and its refusal names
   // the folder, so its target names only the folder too.
   const target = e.kind === "target" ? spaceRootTarget({ root: e.error.details.root, space: targetErrorSpace(e.error.details) })
@@ -996,7 +996,7 @@ export async function reachableOrThrow(server: string, auth: RawAuth = {}): Prom
   const kind = probe.reason === "timeout" || probe.reason === "unreachable" ? "transient" : "permanent";
   const code: RefusalCode =
     kind === "transient" ? "TARGET_UNAVAILABLE" : probe.reason === "tls-unsupported" ? "DEPENDENCY_UNAVAILABLE" : probe.reason === "auth-required" && hasAuth ? "PERMISSION_DENIED" : "AUTH_REQUIRED";
-  throw workspaceRefusal({ kind: "reachable", reason: probe.reason, server, hasAuth }, { kind, code });
+  throw workspaceRefusal({ kind: "reachable", reason: probe.reason, server, hasAuth }, { kind, code, ...(probe.reason === "auth-required" && !hasAuth ? { native: { code: "CREDENTIALS_MISSING" } } : {}) });
 }
 
 /** {@link reachableOrThrow} with the exiting disposition. */

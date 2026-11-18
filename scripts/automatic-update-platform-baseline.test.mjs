@@ -279,7 +279,7 @@ test('documented hosted Manager command and container cleanup are extracted with
   assert(source.includes("['ps', '--on', current.instanceId, '--space', report.managerHost.space, '--json']"));
   assert(source.includes("const home = hosted && (state === 'daemon' || daemonHostedManager) ? homedir()"));
   assert(source.includes("if (!(hosted && (state === 'daemon' || daemonHostedManager))) Object.assign"));
-  assert(source.includes("if (daemonHostedManager || options['dead-updater'] === 'true') Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') })"));
+  assert(source.includes("if (daemonHostedManager || options['dead-updater'] === 'true' || options['other-home-auth'] === 'true') Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') })"));
   assert(source.includes('const deadline = Date.now() + 60000;'));
   assert(source.includes('JSON.stringify(observed)'));
   assert(source.includes("['daemon', 'service-disconnect', '--space', report.managerHost.space, '--json']"));
@@ -373,7 +373,7 @@ test('eligibility rejects status arriving after deadline even when it claims aut
 });
 
 function productCheckout() {
-  const parent = '/var/tmp/upgrade-matrix';
+  const parent = tmpdir();
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const root = mkdtempSync(join(parent, 'source-root-test-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
@@ -432,7 +432,7 @@ test('source-root refuses non-repositories and untracked product inputs', () => 
   const { root } = productCheckout();
   writeFileSync(join(root, 'untracked.mjs'), 'export {};');
   assert.throws(() => baseline.resolveCandidateSourceRoot(root), /tree must be clean/);
-  const outside = mkdtempSync(join('/var/tmp/upgrade-matrix', 'not-git-'));
+  const outside = mkdtempSync(join(tmpdir(), 'not-git-'));
   assert.throws(() => baseline.resolveCandidateSourceRoot(outside));
 });
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -457,7 +457,7 @@ test('only optional shell completion section becomes exact advisory', () => {
 });
 
 test('candidate installer binds exact bytes and source to packed closure', () => {
-  const parent = '/var/tmp/upgrade-matrix';
+  const parent = tmpdir();
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const root = mkdtempSync(join(parent, 'installer-proof-'));
   const script = join(root, 'installer.sh'), source = 'a'.repeat(40), bytes = '#!/bin/sh\nexit 0\n';
@@ -536,7 +536,7 @@ test('workflow bounds diagnostics and preserves every immutable release head wit
     if (done.has(name)) return;
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
-    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 44 : 6), `${name} exceeds its matrix bound`);
+    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 45 : 6), `${name} exceeds its matrix bound`);
     if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof', 'windows-baseline', 'next-release-macos', 'windows-job-facts', 'select'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);
@@ -548,7 +548,7 @@ test('workflow bounds diagnostics and preserves every immutable release head wit
 
 
 test('candidate overlay serves packed closure, stock metadata and read-only policy', async () => {
-  const parent = '/var/tmp/upgrade-matrix';
+  const parent = tmpdir();
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const root = mkdtempSync(join(parent, 'registry-test-'));
   const names = JSON.parse(readFileSync(new URL('../.changeset/config.json', import.meta.url))).fixed.flat();
@@ -615,7 +615,7 @@ for (const scenario of [
   const status = scenario.archive ? 200 : 503;
   const method = scenario.archive ? 'arrayBuffer' : 'text';
   const body = scenario.archive ? Buffer.from([0, 1, 255]) : 'upstream unavailable';
-  const parent = '/var/tmp/upgrade-matrix';
+  const parent = tmpdir();
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const root = mkdtempSync(join(parent, 'registry-body-'));
   const packages = [];
@@ -669,7 +669,7 @@ for (const scenario of [
 });
 
 test('candidate registry configuration removes only unchanged owned bytes and preserves prior account settings', () => {
-  const home = mkdtempSync('/var/tmp/upgrade-matrix/npmrc-test-');
+  const home = mkdtempSync(join(tmpdir(), 'npmrc-test-'));
   const file = join(home, '.npmrc');
   const restoreAbsent = baseline.configureCandidateRegistry(home, 'http://127.0.0.1:1');
   restoreAbsent();
@@ -681,7 +681,7 @@ test('candidate registry configuration removes only unchanged owned bytes and pr
   writeFileSync(file, 'foreign change');
   assert.throws(restore, /changed during cell/);
   assert.equal(readFileSync(file, 'utf8'), 'foreign change');
-  const other = mkdtempSync('/var/tmp/upgrade-matrix/npmrc-link-');
+  const other = mkdtempSync(join(tmpdir(), 'npmrc-link-'));
   symlinkSync(file, join(other, '.npmrc'));
   assert.throws(() => baseline.configureCandidateRegistry(other, 'http://127.0.0.1:3'), /regular file/);
 });
@@ -698,7 +698,7 @@ test('Windows policy registry exposes newer metadata but can never supply an ins
 });
 
 test('real product cache refresh requires success checkedAt older than one day, not merely two hours', async () => {
-  const root = mkdtempSync('/var/tmp/upgrade-matrix/windows-tick-cache-');
+  const root = mkdtempSync(join(tmpdir(), 'windows-tick-cache-'));
   const home = join(root, 'home'), cotal = join(home, '.cotal');
   mkdirSync(cotal, { recursive: true, mode: 0o700 });
   const overlay = await baseline.policyRegistry('0.164.7');
@@ -729,7 +729,7 @@ test('Windows baseline admission cannot run native code on persistent or non-Win
 
 test('published installer override requires explicit source/hash and cannot enter candidate tiers', async () => {
   const { verifyPublishedInstaller } = await import('./automatic-update-platform-baseline.mjs');
-  const parent = '/var/tmp/upgrade-matrix';
+  const parent = tmpdir();
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const root = mkdtempSync(join(parent, 'published-script-proof-'));
   const script = join(root, 'install.sh'), source = 'b'.repeat(40), bytes = '#!/bin/sh\nexit 0\n';
@@ -809,7 +809,7 @@ test('Mac admission gate records late arm64 unrun before any installation', asyn
 test('summary preserves unrun runner receipts separately from product verdicts and does not count matched known refusals as unexpected failures', async () => {
   const { summarize } = await import('./automatic-update-platform-baseline.mjs');
   const { knownRefusals } = await import('./upgrade-matrix-refusals.mjs');
-  const parent = '/var/tmp/upgrade-matrix';
+  const parent = tmpdir();
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const root = mkdtempSync(join(parent, 'admission-summary-'));
   writeFileSync(join(root, 'runner-admission.json'), JSON.stringify({ run: 1, head: 'a'.repeat(40), runner: 'macos-15', ageMs: 900001, result: 'unrun', reason: 'late arm64' }));
