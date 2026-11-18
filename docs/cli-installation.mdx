@@ -398,6 +398,16 @@ If a previous update replaced the CLI but left first-party extensions on older v
 Run `cotal update --self` again to reconcile the installed generation. The same agent-consent
 checks apply even when no newer CLI is available.
 
+An update run inside a copied or renamed controller-stack folder leaves that folder's records
+and processes untouched. It names the folder and its recorded root and reports that continuity
+was not checked there. Updating software does not adopt or restart the stack.
+
+Updates create private temporary scratch and pass it to npm and reconciliation children.
+If the configured temporary directory cannot be used, Cotal tries `/tmp` on POSIX, then your
+home directory. It removes its scratch afterwards without changing the configured directory's
+permissions. If none can hold private scratch, the command refuses before changing packages
+or connector state, rather than reporting an unconfirmed outcome.
+
 When a newer release exists, Cotal first downloads and integrity-checks its `cotal-ai` archive and the archives
 of its first-party runtime dependency closure through npm, using a temporary cache and no install
 scripts. Each registry request has a 15-second timeout. Package installs and archive checks retry
