@@ -63,9 +63,9 @@ it through a `--server` other than the broker its registration records, it canno
 stack runs. The Next then says to start the space's manager where its stack runs and names no local
 command.
 
-A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
-that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
-entry, is the route that does.
+A raw `--creds` file is refused as `UNSUPPORTED` before dialing by `status <agent>`, `ps`, `stop`, `attach`, `input` and `models`, because
+that route mints no endpoint-caller triple. Run the command without `--creds` from the project folder, or pass `--space` against its registry
+entry, so the CLI mints the one-shot caller itself.
 
 The stock auth provider gives each hosted manager admin-authorization decision a single
 5-second dependency budget, covering IdP token acquisition, the authority POST and its complete

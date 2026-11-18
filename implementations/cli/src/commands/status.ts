@@ -85,6 +85,7 @@ import {
   readPreparedSpaces,
   stackJournalPath,
   readRenewalRecord,
+  recordOperationSpace,
   renderWorkspaceError,
   resolveMeshTarget,
   serverFlag,
@@ -176,7 +177,7 @@ export const statusFlags = [
   spaceFlag,
   serverFlag,
   { name: "on", type: "string", value: "<manager-instance>", description: "named agent: inspect one manager instance" },
-  { name: "creds", type: "string", value: "<file>", description: "named agent: use an explicit connection credential" },
+  { name: "creds", type: "string", value: "<file>", description: "explicit credential file (unsupported for status)" },
   { name: "all", type: "boolean", description: "check every recorded mesh, not only the selected one, and report every row in full" },
   { name: "wide", type: "boolean", description: "report every row in full: each known agent application, each extension, and the spaces under their broker addresses" },
   { name: "verbose", short: "v", type: "boolean", description: "include installation paths, local records and detailed diagnostics" },
@@ -429,8 +430,16 @@ export function validateStatusArguments(args: ParsedArgs): void {
   if (args.positionals.length && (args.values.all || args.values.components))
     throw new CommandFailure("refused", "USAGE_INVALID", "a named agent status takes no --all or --components");
   if (typeof args.values.on === "string") onInstance(args.values.on, "cotal status");
-  if (!args.positionals.length && (args.values.on !== undefined || args.values.creds !== undefined))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--on and --creds select a named agent read, not infrastructure status");
+  if (!args.positionals.length && args.values.on !== undefined)
+    throw new CommandFailure("refused", "USAGE_INVALID", "--on selects a named agent read, not infrastructure status");
+  if (!args.positionals.length && args.values.creds !== undefined) {
+    const space = typeof args.values.space === "string" && args.values.space.trim() ? args.values.space : undefined;
+    if (space !== undefined) recordOperationSpace(space);
+    throw new CommandFailure("refused", "UNSUPPORTED", "status does not accept --creds: infrastructure status reads local and registered meshes, and named agent status mints its own control caller", {
+      ...(space !== undefined ? { target: { space } } : {}),
+      remedy: "run `cotal status` or `cotal status <agent>` without --creds",
+    });
+  }
 }
 
 /** `cotal status` — detailed, read-only diagnostics for the local machine + selected mesh. */

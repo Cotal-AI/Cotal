@@ -467,6 +467,9 @@ try {
   check("a rejected raw credential ends a follow PERMISSION_DENIED without claiming a local identity change", given?.code === "PERMISSION_DENIED" && given.failure().message === `credentials rejected at ${servers}` && given.failure().remedy === "check your creds, or the broker wants different auth", given?.failure());
   check("a rejected credential the follow minted ends it PERMISSION_DENIED saying to run it again",
     minted?.code === "PERMISSION_DENIED" && minted.failure().message === given?.failure().message && /run it again/.test(minted.failure().remedy ?? ""), minted?.failure());
+  const expiredSelfMinted = await credentialEnded({ server: servers, space, tls: false, creds: await mintCreds(auth, newIdentity(), "observer", { expiresAt: Math.floor(Date.now() / 1000) - 10 }), auth });
+  check("an expired self-minted credential ends AUTH_REQUIRED telling the caller to run the command again, not doctor auth or re-mint",
+    expiredSelfMinted?.code === "AUTH_REQUIRED" && /run the command again/.test(expiredSelfMinted.failure().remedy ?? "") && !/doctor auth|re-mint/i.test(expiredSelfMinted.failure().remedy ?? ""), expiredSelfMinted?.failure());
 
   // A followed line is drawn for the terminal it is shown in, as the window above it is.
   const tty = nodePty([BIN, "history", "--follow", "--grep", "wrapped"], { cwd: shell, env: isolatedEnv as Record<string, string>, cols: 60, rows: 30 });

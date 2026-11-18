@@ -111,6 +111,28 @@ try {
   const unpaired = cli("join", "--space", space, "--creds", allowed.file);
   await until(() => unpaired.proc.exitCode !== null);
   check("missing lifecycle explains pairing and the provisioning mint", await unpaired.exited === 1 && /lifecycle-paired/.test(unpaired.output()) && /--lifecycle-uid/.test(unpaired.output()) && /auth mint.*--provision/.test(unpaired.output()), unpaired.output());
+
+  // #7531: observer and admin credentials refuse PERMISSION_DENIED (exit 2) before lifecycle pairing or binding,
+  // naming the required provisioned agent credential rather than demanding --lifecycle-uid, blaming delivery, or printing dm-durable-missing.
+  for (const profile of ["observer", "admin"] as const) {
+    const profFile = join(dir, `${profile}.creds`);
+    const minted = cli("auth", "mint", `fixed_${profile}`, "--space", space, "--profile", profile, "--out", profFile);
+    await until(() => minted.proc.exitCode !== null);
+    check(`#7531 fixture: auth mint --profile ${profile} succeeds`, await minted.exited === 0, minted.output());
+    for (const [label, extra] of [["without --lifecycle-uid", []], ["with --lifecycle-uid", ["--lifecycle-uid", wrongUid, "--channel", "general"]]] as const) {
+      const attempt = cli("join", "--space", space, "--creds", profFile, "--name", `try_${profile}`, ...extra);
+      await until(() => attempt.proc.exitCode !== null);
+      const code = await attempt.exited;
+      const out = attempt.output();
+      check(`#7531: ${profile} credential ${label} refuses PERMISSION_DENIED naming agent mint`,
+        code === 2 &&
+          /Code: +PERMISSION_DENIED/.test(out) &&
+          out.includes(`an ${profile}-profile credential cannot join as a mesh participant`) &&
+          out.includes("cotal auth mint <name> --provision --allow-subscribe general --out <file>") &&
+          !/lifecycle-paired|DELIVERY DAEMON|dm-durable-missing/i.test(out),
+        out);
+    }
+  }
   emitSentinel({ passed, failed: 0 });
 } finally {
   for (const child of children) await killAndAwaitExit(child);

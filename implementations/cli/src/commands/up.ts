@@ -140,6 +140,7 @@ import {
   parsePositiveIntegerFlag,
   recordMesh,
   retainedLegacyBroker,
+  rootHoldsAccount,
   meshesForRoot,
   removeMesh,
   rotateSystemCreds,
@@ -1731,8 +1732,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // refused them. The address still follows the flags; the recorded mode is inherited whenever
     // this start names no mode of its own.
     const recorded = resumeAttempt ? undefined : retainedLegacyBroker(cotalRoot());
-    // A flag still wins: `--open` over a root that last ran with auth starts it open, as it always
-    // has, and `--user-auth` asks for the mode the user-auth state decides. Only silence inherits.
+    // Inherit an open root's recorded mode when this start names no mode of its own.
     if (recorded?.open && values["user-auth"] !== true) values.open = true;
     const retained = implicit ? recorded : undefined;
     // An address up chooses for a TLS broker names TLS, as an explicit one must.
@@ -1877,6 +1877,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // held mode.
       const requested = wantUser ? "user" : values.open ? "open" : undefined;
       if (requested && requested !== held.mode) {
+        if (requested === "open" && held.mode === "auth" && rootHoldsAccount(root)) {
+          throw new CommandFailure("refused", "CONFLICT", `this root holds static auth for "${held.space}" (running at ${server}), and --open does not convert or bypass its recorded authorization`, {
+            target: { root, space: held.space, recorded: "auth", requested: "open" },
+            remedy: "run bare `cotal up` to keep static auth here, or for open run `cotal space create <space>`, then `cotal up --open`, in another folder",
+          });
+        }
         const label = { auth: "static JWT auth", open: "no auth (--open)", user: "per-user auth" }[held.mode];
         console.error(
           c.red(
@@ -2250,6 +2256,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const receiptSpace = values.space ?? folderSpace();
     const unnamed = values.space === undefined && unnamedDefault(cotalRoot(), receiptSpace);
     refuseStartOverUserState(Boolean(values.open), wantUser, receiptSpace);
+    refuseOpenOverStaticState(Boolean(values.open), receiptSpace);
     await claimSpace(receiptSpace, server, cotalRoot());
     if (!quietRestore) console.log(`${renderReport({ space: receiptSpace, sections: [] }, "rich", process.stdout)}\n`);
     const { pid, executable, authService, controlPlane: planeReturned, delivery, deliveryLost, manager } = await startMeshDetached({
@@ -2336,6 +2343,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const space = values.space ?? folderSpace();
   ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
   refuseStartOverUserState(Boolean(values.open), wantUser, space);
+  refuseOpenOverStaticState(Boolean(values.open), space);
   const storeDir = values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats");
   if (values.__ordinaryResumeAttempt) {
     // Final identity re-assertion immediately before JetStream opens: the journaled canonical path
@@ -4293,6 +4301,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   const space = opts.space ?? folderSpace();
   ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
   refuseStartOverUserState(Boolean(opts.open), opts.userAuth !== undefined, space);
+  refuseOpenOverStaticState(Boolean(opts.open), space);
   const root = cotalRoot();
   const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
   if (opts.storeDir) warnForeignStoreEntries(storeDir);
@@ -4429,6 +4438,14 @@ function refuseStartOverUserState(open: boolean, userAuth: boolean, space: strin
   throw new CommandFailure("refused", "CONFLICT", `space "${space}" has user auth enabled (state under ${stateDir})${open ? ", and --open would serve its streams without auth" : ""}; nothing was started`, {
     target: { root: cotalRoot(), space },
     remedy: `${open ? "replace --open with --user-auth" : "add --user-auth"} to start it with user auth, or remove ${shellWord(stateDir)} deliberately to disable user auth (existing logins and grants die with it)`,
+  });
+}
+
+function refuseOpenOverStaticState(open: boolean, space: string): void {
+  if (!open || !rootHoldsAccount(cotalRoot())) return;
+  throw new CommandFailure("refused", "CONFLICT", `this root holds static auth for "${space}", and --open does not convert or bypass its recorded authorization; nothing was started`, {
+    target: { root: cotalRoot(), space, recorded: "auth", requested: "open" },
+    remedy: "run bare `cotal up` to keep static auth here, or for open run `cotal space create <space>`, then `cotal up --open`, in another folder",
   });
 }
 
