@@ -253,7 +253,7 @@ try {
 
     const onValid = await openRun(["--agent", "fg-probe-emitter", "--cwd", validDir]);
     check("foreground --cwd on a valid folder passes the resolved directory into connector.buildLaunch (#7607)",
-      onValid.opts?.cwd === realpathSync(validDir),
+      onValid.opts?.cwd === realpathSync(validDir) && onValid.opts.foreground === true,
       { got: onValid.opts?.cwd, expected: realpathSync(validDir) });
   }
 

@@ -163,6 +163,8 @@ export interface LaunchOpts {
    *  A connector can declare native startup choices for that directory. A foreground launch
    *  without `--cwd` runs in the operator's terminal and omits it. */
   cwd?: string;
+  /** Native execution in the caller's terminal, which can answer application trust prompts. */
+  foreground?: boolean;
 }
 
 /** The `once` seat a {@link Connector.retireAfterExit} call is about: the launch inputs that

@@ -383,7 +383,6 @@ const baseCommands: Command[] = [
     outputs: ["json", "plain"],
     examples: [{ command: "cotal space", note: "list the spaces on this machine" }, { command: "cotal space show <name>", note: "show one space in full" }, { command: "cotal space add <name> --server <url> --root <dir>", note: "register a space that runs elsewhere" }],
     reads: true,
-    validate: validateSpaceArguments,
     run: space,
     complete: spaceComplete,
   },

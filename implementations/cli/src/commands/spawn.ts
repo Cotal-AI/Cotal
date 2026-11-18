@@ -1814,6 +1814,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // construction because its write-ahead log had nowhere to live that a later start would look.
       workspaceRoot: target.root,
       ...(launchCwd !== undefined ? { cwd: launchCwd } : {}),
+      foreground: true,
     });
     applyHandoffManagerInstance(spec, handoffManagerInstanceId);
     artifacts = spec.artifacts;
