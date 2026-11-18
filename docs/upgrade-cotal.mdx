@@ -253,6 +253,10 @@ cotal update
 ```
 
 This reconciles installed extensions and connector integrations with the running CLI's release.
+A self-update inherits the extension state captured by the updating CLI, including added extensions
+and deliberate connector removals, even when that release has an older retained connector set.
+If the connector seed store is newer than the running CLI, reconciliation refuses before creating
+or pruning retained sets. Run `cotal update --self` to upgrade the CLI to match the store.
 After a manual `npm install -g`, the first command that runs the launch gate also brings installed
 first-party extensions to the running CLI's release, or refuses with `cotal update --self` if an
 extension cannot be reconciled. When automatic updates are enabled, the daemon's scheduled check
