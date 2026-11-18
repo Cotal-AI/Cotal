@@ -347,7 +347,7 @@ try {
       COTAL_MODEL: "fake-model",
       COTAL_VARIANT: "high",
       COTAL_CONTROL_SOCKET: controlSock("control.sock"),
-      COTAL_CONTROL_TOKEN: "jcode-host-smoke-control-token",
+      COTAL_CONTROL_KEY: "jcode-host-smoke-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -421,7 +421,7 @@ try {
       COTAL_EVENTS: "1",
       COTAL_JCODE_PROMPT: "JCODE-JOURNAL-PRIME-1984",
       COTAL_CONTROL_SOCKET: controlSock("fold-control.sock"),
-      COTAL_CONTROL_TOKEN: "fold-control-token",
+      COTAL_CONTROL_KEY: "fold-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -714,7 +714,7 @@ try {
       COTAL_JCODE_TUI: "0",
       COTAL_VARIANT: "high",
       COTAL_CONTROL_SOCKET: controlSock("variant-only-control.sock"),
-      COTAL_CONTROL_TOKEN: "variant-only-control-token",
+      COTAL_CONTROL_KEY: "variant-only-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -769,7 +769,7 @@ try {
       COTAL_MODEL: "lagged-model-pin",
       COTAL_VARIANT: "high",
       COTAL_CONTROL_SOCKET: controlSock("lagged-variant-control.sock"),
-      COTAL_CONTROL_TOKEN: "lagged-variant-control-token",
+      COTAL_CONTROL_KEY: "lagged-variant-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -835,7 +835,7 @@ try {
       COTAL_JCODE_TUI: "0",
       COTAL_MODEL: "model-only-pin",
       COTAL_CONTROL_SOCKET: controlSock("model-only-control.sock"),
-      COTAL_CONTROL_TOKEN: "model-only-control-token",
+      COTAL_CONTROL_KEY: "model-only-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -913,7 +913,7 @@ try {
       COTAL_JCODE_TUI: "0",
       COTAL_MODEL: "fake-model",
       COTAL_CONTROL_SOCKET: controlSock("no-provider-control.sock"),
-      COTAL_CONTROL_TOKEN: "no-provider-control-token",
+      COTAL_CONTROL_KEY: "no-provider-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -960,7 +960,7 @@ try {
       COTAL_MODEL: "requested-route-model",
       COTAL_VARIANT: "high",
       COTAL_CONTROL_SOCKET: controlSock("missing-route-control.sock"),
-      COTAL_CONTROL_TOKEN: "missing-route-control-token",
+      COTAL_CONTROL_KEY: "missing-route-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1019,7 +1019,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("race-control.sock"),
-      COTAL_CONTROL_TOKEN: "race-control-token",
+      COTAL_CONTROL_KEY: "race-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1060,7 +1060,7 @@ try {
       COTAL_JCODE_TUI: "0",
       COTAL_JCODE_PROMPT: "KICKOFF-WITHOUT-ANY-INBOX-WAKE",
       COTAL_CONTROL_SOCKET: controlSock("idle-only-control.sock"),
-      COTAL_CONTROL_TOKEN: "idle-only-token",
+      COTAL_CONTROL_KEY: "idle-only-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1098,7 +1098,7 @@ try {
       COTAL_JCODE_TUI: "0",
       COTAL_JCODE_PROMPT: "KICKOFF-MUST-SURVIVE-REFUSED-NOTICE",
       COTAL_CONTROL_SOCKET: controlSock("busy-control.sock"),
-      COTAL_CONTROL_TOKEN: "busy-control-token",
+      COTAL_CONTROL_KEY: "busy-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1220,7 +1220,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("absent-control.sock"),
-      COTAL_CONTROL_TOKEN: "absent-control-token",
+      COTAL_CONTROL_KEY: "absent-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1265,7 +1265,7 @@ try {
       COTAL_MODEL: "fake-model",
       COTAL_VARIANT: "xhigh",
       COTAL_CONTROL_SOCKET: controlSock("refused-control.sock"),
-      COTAL_CONTROL_TOKEN: "refused-control-token",
+      COTAL_CONTROL_KEY: "refused-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1330,7 +1330,7 @@ try {
       COTAL_MODEL: "capability-model",
       COTAL_VARIANT: "high",
       COTAL_CONTROL_SOCKET: controlSock("unsupported-control.sock"),
-      COTAL_CONTROL_TOKEN: "unsupported-control-token",
+      COTAL_CONTROL_KEY: "unsupported-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1396,7 +1396,7 @@ try {
         COTAL_JCODE_TUI: "0",
         COTAL_MODEL: modelCase.model,
         COTAL_CONTROL_SOCKET: controlSock(`${modelCase.name}-control.sock`),
-        COTAL_CONTROL_TOKEN: `${modelCase.name}-control-token`,
+        COTAL_CONTROL_KEY: `${modelCase.name}-control-token`, COTAL_CONTROL_VERSION: "1",
       },
       stdio: ["ignore", "ignore", "pipe"],
     });
@@ -1437,7 +1437,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("outage-control.sock"),
-      COTAL_CONTROL_TOKEN: "outage-control-token",
+      COTAL_CONTROL_KEY: "outage-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1493,7 +1493,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "1",
       COTAL_CONTROL_SOCKET: controlSock("tui-control.sock"),
-      COTAL_CONTROL_TOKEN: "tui-control-token",
+      COTAL_CONTROL_KEY: "tui-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1525,7 +1525,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("blocked-control.sock"),
-      COTAL_CONTROL_TOKEN: "blocked-control-token",
+      COTAL_CONTROL_KEY: "blocked-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1564,7 +1564,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("refused-control.sock"),
-      COTAL_CONTROL_TOKEN: "refused-control-token",
+      COTAL_CONTROL_KEY: "refused-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1629,7 +1629,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("wrapped-control.sock"),
-      COTAL_CONTROL_TOKEN: "wrapped-control-token",
+      COTAL_CONTROL_KEY: "wrapped-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1675,7 +1675,7 @@ try {
       COTAL_AGENT_FILE: personaFile,
       COTAL_JCODE_PROMPT: "KICKOFF-1216-DO-THE-REVIEW",
       COTAL_CONTROL_SOCKET: controlSock("slow-control.sock"),
-      COTAL_CONTROL_TOKEN: "slow-control-token",
+      COTAL_CONTROL_KEY: "slow-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1791,7 +1791,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("early-control.sock"),
-      COTAL_CONTROL_TOKEN: "early-control-token",
+      COTAL_CONTROL_KEY: "early-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
