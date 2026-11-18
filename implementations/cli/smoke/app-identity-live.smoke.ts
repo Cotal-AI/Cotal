@@ -78,7 +78,7 @@ async function run(positionals: string[], values: Record<string, unknown>): Prom
 }
 
 /** Separate CLI processes compete for the same native conversation, not a shared JS invocation. */
-function provisionChild(values: Record<string, unknown>): Promise<{ ok: boolean; retire?: { dir: string } }> {
+function provisionChild(values: Record<string, unknown>): Promise<{ ok: boolean; taken?: boolean; retire?: { dir: string } }> {
   return new Promise((resolve, reject) => {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
     const child = spawn(process.execPath, [...process.execArgv, import.meta.filename, "--fixture-provision", JSON.stringify(values)], {
@@ -111,7 +111,7 @@ async function runMeshes(positionals: string[], values: Record<string, unknown>)
   return code;
 }
 
-interface Held { dir: string; space: string; id: string; lifecycleUid: string; owner: number; ownerStart?: string; session?: string; alias?: string }
+interface Held { dir: string; space: string; id: string; lifecycleUid: string; owner: number; ownerStart?: string; session?: string; name?: string; alias?: string }
 /** Where provision makes identity directories: the account's Cotal folder, which a reboot keeps. */
 const recordRoot = join(home, "app-identities");
 /** This suite's identity directories on `space`, with their records, wherever provision made them. */
@@ -228,6 +228,24 @@ try {
   const issued = competing.filter((result) => result.ok);
   for (const result of issued) await run(["retire"], { dir: result.retire!.dir });
   check("concurrent processes cannot issue two names for one native session", issued.length === 1, { issued: issued.length });
+
+  for (const space of [SPACE, OPEN]) {
+    const racers = await Promise.all(["one", "two"].map((session) => provisionChild({ space, name: "reserved", session: `${space}-${session}` })));
+    const winner = racers.find((result) => result.ok);
+    try {
+      check(`${space}: separate sessions cannot reserve the same name before publishing presence`,
+        racers.filter((result) => result.ok).length === 1 && racers.filter((result) => result.taken).length === 1, racers.map(({ ok, taken }) => ({ ok, taken })));
+      check(`${space}: the reservation records its name`, winner !== undefined && record(winner.retire!.dir).name === "reserved");
+      const other = await run(["provision"], { space: space === SPACE ? OPEN : SPACE, name: "reserved", session: `${space}-other-space` });
+      check(`${space}: another space can reserve the same name`, other.code === 0, other.reply?.error);
+      if (other.reply?.retire) await run(["retire"], { dir: other.reply.retire.dir });
+    } finally {
+      for (const result of racers.filter((result) => result.ok)) await run(["retire"], { dir: result.retire!.dir });
+    }
+    const reused = await run(["provision"], { space, name: "reserved", session: `${space}-reuse` });
+    check(`${space}: successful retirement releases a name without waiting for presence`, reused.code === 0, reused.reply?.error);
+    if (reused.reply?.retire) await run(["retire"], { dir: reused.reply.retire.dir });
+  }
 
   const a = await run(["provision"], { space: SPACE, name: "claude_app", session: "session-a", events: true });
   check("a native conversation opens its own identity, as one JSON line", a.code === 0 && a.reply?.ok === true && a.out.trim().split("\n").length === 1, a.out);

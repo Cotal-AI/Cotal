@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   acquireLock,
+  acquireLockAsync,
   agentFilePath,
   checkConversationSelection,
   DEV_OWNER,
@@ -79,6 +80,8 @@ interface IdentityRecord {
   /** The owner's process start token, so a pid reused after a reboot is not read as the owner. */
   ownerStart?: string;
   session?: string;
+  /** The reserved display name, including on open meshes. Earlier static records carry `alias`. */
+  name?: string;
   alias?: string;
 }
 
@@ -182,7 +185,14 @@ async function provisionLocal(t: MeshTarget, name: string, session: string | und
   const root = recordRoot();
   mkSecretDir(root);
   const lock = acquireLock(join(root, `session-${createHash("sha256").update(session).digest("hex")}.lock`), { waitMs: 0 });
-  try { return await provisionLocalLocked(t, name, session, events, selection, retired); }
+  try {
+    // The session lock prevents one conversation opening twice. This lock also serializes different
+    // conversations checking and recording one name, before either host can publish presence.
+    const nameLock = await acquireLockAsync(join(root, `name-${createHash("sha256").update(JSON.stringify([t.space, name])).digest("hex")}.lock`),
+      { waitMs: 30_000, label: "conversation name provisioning" });
+    try { return await provisionLocalLocked(t, name, session, events, selection, retired); }
+    finally { nameLock.release(); }
+  }
   finally { lock.release(); }
 }
 
@@ -191,8 +201,13 @@ async function provisionLocalLocked(t: MeshTarget, name: string, session: string
     return { ok: false, error: `the mesh "${t.space}" takes static credentials, and this account holds no signing authority for it in ${t.root}, so no identity was opened` };
   if (t.policy?.events === "required" && !events)
     return { ok: false, error: "this mesh requires a real native conversation event source; no identity was opened" };
-  const held = localRecords().find(({ record }) => record.session === session && ownerAlive(record));
+  const records = localRecords();
+  const held = records.find(({ record }) => record.session === session && ownerAlive(record));
   if (held) return { ok: false, error: `this native conversation already has a live identity on "${held.record.space}"; disconnect it before connecting again` };
+  // A record reserves the name until retirement succeeds, even while presence is not yet visible
+  // or the host is gone but its broker footprint could not be retired. `alias` covers older static seats.
+  if (records.some(({ record }) => record.space === t.space && (record.name === name || record.alias === name)))
+    return { ok: false, taken: true };
   const taken = await liveMeshNames(t, retired);
   // A bare `cotal up` starts this mesh only in its own folder; anywhere else it starts a new space.
   if (!taken) return { ok: false, error: `the mesh "${t.space}" at ${t.server} is not answering. Start it with \`${displayCmd()} up --root ${shellWord(t.root)}\`.` };
@@ -221,7 +236,7 @@ async function provisionLocalLocked(t: MeshTarget, name: string, session: string
   const dir = mkdtempSync(join(recordRoot(), CRED_DIR_PREFIX));
   // Written before anything reaches the broker, so a provision killed partway still leaves a record.
   const ownerStart = processStartToken(process.ppid);
-  const record: IdentityRecord = { space: t.space, id: identity.id, lifecycleUid, owner: process.ppid, ...(ownerStart === undefined ? {} : { ownerStart }), session, ...(t.auth ? { alias: name } : {}) };
+  const record: IdentityRecord = { space: t.space, id: identity.id, lifecycleUid, owner: process.ppid, ...(ownerStart === undefined ? {} : { ownerStart }), session, name, ...(t.auth ? { alias: name } : {}) };
   writeFileSync(join(dir, RECORD), JSON.stringify(record), { mode: 0o600 });
   const reply = { ok: true as const, env, retire: { dir }, grant: { ...grant, allowPublish } };
   if (!t.auth) return reply;

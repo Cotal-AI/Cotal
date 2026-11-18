@@ -35,6 +35,11 @@ and pass it on every later gateway call. One stdio process owns one connection. 
 connection requires disconnecting the first, or a separate server process. Do not share
 one connection between conversations.
 
+Hosts using the same account's Cotal folder reserve names before publishing presence.
+If two connect to the same local space with the same name, one keeps it and the other
+gets the next free variant, such as `twin_2`. The connect result reports the change.
+The reservation stays until the identity is retired, including after a failed cleanup.
+
 The default persona bounds channels, role and capabilities. A `cotal_connect` permission
 selection can narrow those grants, never widen them. A space requiring native activity
 events refuses this host, because it has no native transcript source.

@@ -104,6 +104,43 @@ function run(args: string[]) {
 }
 /** This suite's identity directories, under the Cotal home where provision makes them or in the temp dir where earlier versions did. */
 const identities = () => [join(env.COTAL_HOME!, "app-identities"), env.TMPDIR!].flatMap((parent) => (existsSync(parent) ? readdirSync(parent) : []).filter((name) => name.startsWith("cotal-app-identity-")));
+
+/** Separate hosts must reserve a name before either has published presence (#7359). */
+async function competingNames(space: string): Promise<void> {
+  const pair = [new Rpc(space, `${space}-one`), new Rpc(space, `${space}-two`)];
+  const observer = new Rpc(space, `${space}-observer`);
+  await Promise.all([...pair, observer].map((rpc) => rpc.initialize()));
+  const connectedName = (reply: Reply): string => /^Connected as ([^ .]+)/.exec(text(reply))?.[1] ?? "";
+  const connectionId = (reply: Reply): string => {
+    assert.ok(!reply.result?.isError, text(reply));
+    const id = /connection_id: ([^\s]+)/.exec(text(reply))?.[1];
+    assert.ok(id, text(reply));
+    return id;
+  };
+  const seen = await observer.call("cotal_connect", { name: "name-observer" });
+  const observerId = connectionId(seen);
+  for (const concurrent of [false, true]) {
+    const name = concurrent ? "twin" : "sequential";
+    const replies = concurrent
+      ? await Promise.all(pair.map((rpc) => rpc.call("cotal_connect", { name })))
+      : [await pair[0]!.call("cotal_connect", { name }), await pair[1]!.call("cotal_connect", { name })];
+    const handles = replies.map(connectionId);
+    const names = replies.map(connectedName);
+    console.log(JSON.stringify({ space, concurrent, names }));
+    check(`${space}: ${concurrent ? "simultaneous" : "sequential control"} hosts get the requested name and its next variant`,
+      names.slice().sort().join() === [name, `${name}_2`].sort().join(), names);
+    check(`${space}: the renamed host is told its requested name was taken`, replies.some((r) => text(r).startsWith(`Connected as ${name}_2 ("${name}" was taken).`)));
+    for (const to of names) {
+      const sent = await observer.call("cotal_dm", { connection_id: observerId, to, text: "unique name probe" });
+      check(`${space}: a third host can DM ${to} by name`, !sent.result?.isError && !sent.error, text(sent).split("\n").slice(0, 4));
+    }
+    for (const [i, rpc] of pair.entries()) {
+      const disconnected = await rpc.call("cotal_disconnect", { connection_id: handles[i] });
+      assert.ok(!disconnected.result?.isError, text(disconnected));
+    }
+  }
+  await Promise.all([...pair, observer].map((rpc) => rpc.end()));
+}
 const persona = "---\nname: default\nsubscribe: [general]\nallowSubscribe: [general, team.>]\nallowPublish: [general]\ncapabilities: []\n---\n\nA local conversation.\n";
 const staticSpace = `mcpstatic${process.pid}`;
 const auth = await createSpaceAuth(staticSpace);
@@ -138,6 +175,8 @@ try {
   sender = new CotalEndpoint({ space: staticSpace, servers: broker.servers, creds: await mintCreds(auth, newIdentity(), "operator"), channels: [], card: { name: "sender", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
   sender.on("error", () => {});
   await sender.start();
+
+  await competingNames(staticSpace);
 
   const rpc = new Rpc(staticSpace, "static");
   await rpc.initialize();
@@ -240,6 +279,7 @@ try {
   await until(async () => openBroker!.exitCode === null && await isReachable(servers), "owned open broker did not start");
   await setupSpaceStreams({ servers, space: openSpace });
   recordMesh({ space: openSpace, server: servers, root, mode: "open", origin: "manual", ts: new Date().toISOString() });
+  await competingNames(openSpace);
   const open = new Rpc(openSpace, "open");
   await open.initialize();
   const openReply = await open.call("cotal_connect", { name: "reader" });
