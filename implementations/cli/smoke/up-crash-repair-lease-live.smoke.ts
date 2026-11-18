@@ -317,6 +317,10 @@ try {
   }
   await crash("nats.pid", "broker");
   ok("D1 the daemon exits on its own once its broker is gone", await until(() => !alive(daemon), 60_000), { daemon });
+  ok("D1 broker loss removed the delivery pidfile", pidOf(DELIVERY_PIDFILE) === undefined);
+  const downAfterCrash = cli("down", "--yes");
+  ok("D1 down after the broker crash exits 0", downAfterCrash.status === 0, downAfterCrash.out);
+  ok("D1 down preserves the old delivery credential without a pidfile", (await workspaceSecretStore(root).get(deliveryCredsKey(SPACE, { injected: false, root }))) === ownCreds);
   const d1 = up();
   ok("D1 repair up after a broker SIGKILL exits 0", d1.status === 0, d1.out);
   ok("D1 the delivery daemon is up after that one run", /delivery daemon/.test(d1.out) && alive(pidOf(DELIVERY_PIDFILE)), d1.out);

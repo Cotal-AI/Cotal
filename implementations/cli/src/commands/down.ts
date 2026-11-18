@@ -427,7 +427,7 @@ function recordsElsewhere(root: string, action: "stop" | "preview"): CommandFail
 /** Keep the retained pidfile sweep from crossing an exact recorded broker-sharing boundary or
  *  stopping the broker under a saved service that still runs. This is not a complete live ownership
  *  or agent-impact proof. */
-function guardLegacyBareDown(): { space: string; server: string } {
+function guardLegacyBareDown(): { space: string; server: string; mode?: string } {
   const root = canonicalRoot(cotalRoot());
   const target = { root };
   if (root === canonicalRoot(homedir())) {
@@ -435,7 +435,7 @@ function guardLegacyBareDown(): { space: string; server: string } {
     if (!existsSync(join(root, ".cotal")) || !localMeshesForRoot(root).length && !pidRecordsUnder(root)) throw noOwnedStack(root);
     throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated whole-stack stop root; no process was signalled", { target, remedy: MACHINE_HOME_STOP });
   }
-  let mesh: { readonly space: string; readonly server: string };
+  let mesh: { readonly space: string; readonly server: string; readonly mode?: string };
   try {
     if (!realDirNoSymlink(root, ".cotal")) throw new Error("missing project control directory");
     // A root that hosts several spaces refuses before the registration lookup, naming them.
@@ -488,7 +488,7 @@ function guardLegacyBareDown(): { space: string; server: string } {
     "then run `cotal down` again",
   ].join("; ") });
   assertNoLiveServices(mesh.space, "down");
-  return { space: mesh.space, server: mesh.server };
+  return { space: mesh.space, server: mesh.server, mode: mesh.mode };
 }
 
 /** Bare down reads each process record it stops where the record lies, as the stopped-stack census
@@ -662,7 +662,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
         // The daemon's exit does not prove its release committed: it gives the release two seconds
         // and then exits anyway. The row it leaves is recognised by the next up only through this
         // daemon's credential, so the lease is read while the broker still runs.
-        if (recorded) deliveryLease = await deliveryLeaseAfterStop(context.root, context.space, guarded.server);
+        if (guarded.mode !== "open") deliveryLease = await deliveryLeaseAfterStop(context.root, context.space, guarded.server);
       }
       else await stopLocalProcess(component, context);
       if (recorded) stopped.push(component.label);

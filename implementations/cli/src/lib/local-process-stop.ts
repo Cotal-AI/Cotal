@@ -4,7 +4,7 @@
 import { closeSync, existsSync, linkSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
-  CommandFailure, commandIsCotalServiceManager, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, localProcessPath, parsePid, probeLiveness,
+  CommandFailure, commandIsCotalServiceManager, identityLegacyWarning, identityUncertaintyRefusal, localProcessPath, parsePid, probeLiveness,
   readPidfile, readProcessCommand, removePidPair, requestLocalStop, stopReservationPath, verifyIdentityPin,
   type LocalProcess, type LocalProcessContext,
 } from "@cotal-ai/workspace";
@@ -157,10 +157,14 @@ export async function stopLocalProcess(
     // #969 OPEN-VERIFY-TERMINATE: identity before signal. This is the path every manager, delivery
     // and user-auth stop takes, and the one `cotal down` uses for the BROKER, the web dashboard and
     // every extension component, so all of them share one identity rule. A pin that names another
-    // start refuses before anything else is read: the recorded process is gone and the live one is
+    // start clears the stale record: the recorded process is gone and the live one is
     // not signalled, whichever component the record belongs to.
     const identity = verifyIdentityPin(pidPath);
-    if (identity.kind === "mismatch") throw identityRefusal(component.label, pidPath, identity.record, identity.liveToken);
+    if (identity.kind === "mismatch") {
+      console.error(`! removed the stale ${component.label} record ${pidPath}: pid ${pid} was reused by another process`);
+      stopped = true;
+      return true;
+    }
     // One attribution, from the descriptor, and only where the pin has nothing to say (#1528, #3701).
     // A readable command that is not this component's means a legacy record outlived its process and
     // the pid was reused. Signalling it would kill an unrelated process; the stale record goes. A
