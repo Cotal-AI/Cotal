@@ -1,5 +1,117 @@
 # cotal-ai
 
+## 0.169.0
+
+### Patch Changes
+
+- 58e8073: Explain when no space uses a connected computer and show the terminal command and provider-specific dashboard guidance in setup text and JSON.
+- 9e52bd9: Stop self-update immediately when npm's min-release-age or before setting excludes the release, and name the date filter instead of waiting for registry propagation.
+- 3f04b38: Scope CLI subcommand help and flag validation across `config`, `run`, `daemon`, `manager`, `service`, `service-endpoint`, and `ext`, and emit JSON envelopes for `daemon --json` usage refusals.
+- a9cb553: Support `--json` and `--plain` on `cotal update --auto` and `--notify`, allow `cotal persona edit --json` and `cotal endpoint describe --refresh`, reject impossible calendar dates in `cotal history --since`, refuse `cotal ps --slots` cleanly on open and user-auth spaces, and report `TARGET_NOT_FOUND` when `cotal attach <name> --on <instance>` names an absent agent.
+- 893267b: Correct the references for OpenCode 2.x model catalogs, explicit space selection, and service log deletion.
+- a3d78c7: Daemon-hosted Managers install and register the Claude Code wake channel without preparing a local space and report Claude Code as unavailable if setup fails.
+- 9b7aef2: Keep desktop connection refusals visible with their exact reason and provide recent background service output in Settings.
+- 58c16f7: Preserve pnpm dlx command hints and connector state across dlx cache refreshes, quote shell installer lock and PATH remedies, document npm generation store removal, and eliminate the Node 22.10 JSON module experimental warning.
+- 9ecacd7: Repair a recorded macOS background service when its application executable has been removed.
+  
+  The CLI verifies the original LaunchAgent and receipt before moving the service to the current installation. Interrupted source and receipt publication retain a bounded repair record, disabled services stay disabled, and updater output no longer claims that an untouched foreign service was stopped.
+- ae78e21: Restore owner write permission on user-owned self-update directories and check npm's global node_modules directory before downloading release archives.
+- 08ae3e1: Restore interrupted update snapshots from the original config folder after a newer release selects retained connectors.
+- df69317: Concurrent MCP-only hosts using the same local account now receive distinct agent names.
+  Local identity provisioning reserves each name before presence starts and keeps it reserved until retirement, so the next host can report the next free suffix and name-based messages remain unambiguous.
+- 6fca291: Allow updates from copied or renamed stack folders and use private writable temporary scratch when the configured temporary directory is unavailable.
+- 67d9a30: Recover workflow runs after an activation stops before recording its status, reject unsupported check and resume flags before connecting, and keep missing-run remedies on the selected space and manager.
+- cadeb7f: List each account computer once and show which sign-in address holds a local space connection when another account is refused.
+- eee44d8: Keep completion remedies safe for paths with spaces, leave clean uninstalls untouched, report the installed extension root before seeding, and preserve a working shell installation when a requested release cannot start.
+- 1d56740: Let plain `cotal update` reconcile a running standalone space while the background daemon is available, without stopping its agents.
+- 8cde363: Report recovery steps in `cotal status` and `cotal ps` when a default stack's Manager stops or hangs or when no agent application is set up, validate named-agent `cotal status` flags before querying Managers, and refresh the recorded store identity when adopting a copied or moved project folder.
+- 3e4862f: Keep update smoke tests reliable on busy machines by timing lock holds from child readiness and allowing daemon startup and recovery up to a minute.
+- 1dbbfbd: Use disposable npm caches during self-update so a configured cache that is not writable does not prevent upgrading.
+- 320fd05: Report application startup failures truthfully, retain actionable diagnostics, leave unsupported event planes off by default, and distinguish unavailable applications from missing executables during setup.
+- 1a968ba: Recover unpublished connector copies and abandoned update staging directories so interrupted updates do not block later reconciliation or cleanup.
+- cd9b2f7: Fix `cotal update --self` on 0.165.4 through 0.168.0 refusing a newer release with "target pre-install checks returned invalid evidence". After an update with no daemon running, start the recorded service or report why it stays stopped, and name Managers outside the machine daemon again.
+- 339d6ee: Verify Linux automatic daemon activation before completing updates and repair abandoned global update markers during manual self-update.
+- a6496a5: Let a verified staged update target decide its pre-install checks, retaining running work when daemon activation cannot be authorized.
+- de57e89: Wait for a killed updater's surviving install child and finish the requested self-update on the first retry.
+- Updated dependencies [ec01e0a]
+- Updated dependencies [f5aee20]
+- Updated dependencies [b0b7708]
+- Updated dependencies [018f2b2]
+- Updated dependencies [d5b9887]
+- Updated dependencies [9e52bd9]
+- Updated dependencies [3f04b38]
+- Updated dependencies [a9cb553]
+- Updated dependencies [417fabf]
+- Updated dependencies [a59864f]
+- Updated dependencies [893267b]
+- Updated dependencies [a3d78c7]
+- Updated dependencies [aa86f45]
+- Updated dependencies [f25d7ff]
+- Updated dependencies [4fb5779]
+- Updated dependencies [e9bee41]
+- Updated dependencies [58c16f7]
+- Updated dependencies [55e3e40]
+- Updated dependencies [f7ff11a]
+- Updated dependencies [37a700f]
+- Updated dependencies [9ecacd7]
+- Updated dependencies [0a67fab]
+- Updated dependencies [c7e68ef]
+- Updated dependencies [db1f5b4]
+- Updated dependencies [e1ae6bc]
+- Updated dependencies [c2f9729]
+- Updated dependencies [2c48ce6]
+- Updated dependencies [a103e1e]
+- Updated dependencies [c4ca691]
+- Updated dependencies [4c83a17]
+- Updated dependencies [08ae3e1]
+- Updated dependencies [50573a4]
+- Updated dependencies [df69317]
+- Updated dependencies [6fca291]
+- Updated dependencies [71088a6]
+- Updated dependencies [1fa14fd]
+- Updated dependencies [67d9a30]
+- Updated dependencies [e7fa3bf]
+- Updated dependencies [cadeb7f]
+- Updated dependencies [d4a5242]
+- Updated dependencies [14ee8cd]
+- Updated dependencies [173799b]
+- Updated dependencies [5b63d96]
+- Updated dependencies [eee44d8]
+- Updated dependencies [519ad70]
+- Updated dependencies [1360657]
+- Updated dependencies [5338176]
+- Updated dependencies [a487faa]
+- Updated dependencies [8cde363]
+- Updated dependencies [f5aee20]
+- Updated dependencies [3e4862f]
+- Updated dependencies [e09252c]
+- Updated dependencies [4362eb1]
+- Updated dependencies [963db93]
+- Updated dependencies [f5aee20]
+- Updated dependencies [4050457]
+- Updated dependencies [7775e33]
+- Updated dependencies [a8d75ff]
+- Updated dependencies [63724bb]
+- Updated dependencies [1dbbfbd]
+- Updated dependencies [320fd05]
+- Updated dependencies [1a968ba]
+- Updated dependencies [c28b783]
+- Updated dependencies [339d6ee]
+- Updated dependencies [a6496a5]
+- Updated dependencies [de57e89]
+- Updated dependencies [2a71cc3]
+- Updated dependencies [2f36c2d]
+  - @cotal-ai/core@0.169.0
+  - @cotal-ai/connector-core@0.169.0
+  - @cotal-ai/workspace@0.169.0
+  - @cotal-ai/cli@0.169.0
+  - @cotal-ai/auth@0.169.0
+  - @cotal-ai/runtime@0.169.0
+  - @cotal-ai/manager@0.169.0
+  - @cotal-ai/seat@0.169.0
+  - @cotal-ai/delivery@0.169.0
+  - @cotal-ai/registry@0.169.0
+
 ## 0.168.0
 
 ### Patch Changes
