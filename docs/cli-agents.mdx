@@ -452,7 +452,7 @@ cotal persona [--json|--plain]
 cotal persona show <name> [--json|--plain]
 cotal persona create <name> --file <persona.md>
 cotal persona create <name> --prompt <text> --subscribe <a,b> [--allow-subscribe <a,b>] [--allow-publish <a,b>]
-cotal persona edit <name>
+cotal persona edit <name> [--json|--plain]
 cotal persona remove <name> --yes
 ```
 
@@ -536,7 +536,8 @@ editor or confirmation is open. Manager and external writes do not participate i
 Create, edit and remove refuse a catalog folder you cannot write, such as one set to mode 0500,
 with `PERMISSION_DENIED`, and leave it and its files as they were. An edit whose save fails for
 this or any other reason keeps your edited draft and names it, so the edit is not lost.
-`--json` and `--no-input` refuse editing before an editor opens. That refusal, and a removal
+`--no-input` refuses editing before an editor opens. Under `--json`, the editor's output goes to
+stderr so stdout carries only the JSON receipt. That `--no-input` refusal, and a removal
 refused for want of `--yes`, give the fix without the command's help.
 
 A catalog file that is not a regular file, such as a FIFO, is not opened: show, edit and remove

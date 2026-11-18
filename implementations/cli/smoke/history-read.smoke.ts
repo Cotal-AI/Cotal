@@ -273,6 +273,10 @@ try {
     starred.status === 1 && starred.envelope?.error?.message === "name one concrete channel, without wildcards", shown(starred));
   const notADay = await run(["history", "--since", "2026-02-30", "--server", unavailable, "--json"]);
   check("a --since date that is not on the calendar is a usage error before connecting", notADay.status === 1 && notADay.envelope?.error?.message === "--since 2026-02-30 is not a calendar date", shown(notADay));
+  for (const [badIso, badDate] of [["2026-02-30T00:00:00Z", "2026-02-30"], ["2026-02-29T12:00:00+01:00", "2026-02-29"], ["2026-02-30 00:00:00", "2026-02-30"]] as const) {
+    const bad = await run(["history", "--since", badIso, "--server", unavailable, "--json"]);
+    check(`an impossible ISO date-time (${badIso}) is refused as USAGE_INVALID before connecting`, bad.status === 1 && bad.envelope?.error?.code === "USAGE_INVALID" && bad.envelope.error.message === `--since ${badDate} is not a calendar date`, shown(bad));
+  }
   const unsafeSequence = await run(["history", "--since", "9007199254740993", "--server", unavailable, "--json"]);
   check("an inexact --since sequence is a usage error before connecting", unsafeSequence.status === 1 && unsafeSequence.envelope?.error?.code === "USAGE_INVALID", shown(unsafeSequence));
 

@@ -10,6 +10,7 @@ import {
   processStartToken,
   claimUpdateClosureAccess,
   updateClosureOwner,
+  homeCotalDir,
   readUpdateRecovery,
   clearUpdateRecovery,
   writeUpdateRecovery,
@@ -238,14 +239,37 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   if (args.values.auto || args.values.notify) {
     const key = args.values.auto ? "auto" : "notify";
     const value = args.positionals[0];
-    const current = readUpdateSettings(backup => rt.err(`Damaged update settings saved to ${backup}; using defaults (automatic updates and notices on).`));
+    let recoveredBackup: string | undefined;
+    const current = readUpdateSettings(backup => {
+      recoveredBackup = backup;
+      if (!args.values.json) rt.err(`Damaged update settings saved to ${backup}; using defaults (automatic updates and notices on).`);
+    });
     const settings = value === undefined ? current : setUpdateSetting(key, value === "on");
-    rt.out(`${key === "auto" ? "Automatic updates" : "Update notices"}: ${settings[key] ? "on" : "off"}${rt.env.COTAL_NO_UPDATE_CHECK === "1" ? " (disabled by COTAL_NO_UPDATE_CHECK=1)" : ""}`);
-    if (key === "auto" && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) rt.out("This runtime belongs to the desktop app. Automatic npm updates have no effect here; update the desktop app with its signed platform installer.");
-    else if (key === "auto" && settings.auto && ["linux", "darwin", "win32"].includes(process.platform) && rt.env.COTAL_NO_UPDATE_CHECK !== "1") {
-      const advice = await rt.automaticUpdateAdvice();
+    const disabledByEnv = rt.env.COTAL_NO_UPDATE_CHECK === "1";
+    const desktop = key === "auto" && existsSync(join(cliPackageRoot(), "desktop-runtime.json"));
+    const advice = desktop
+      ? "This runtime belongs to the desktop app. Automatic npm updates have no effect here; update the desktop app with its signed platform installer."
+      : key === "auto" && settings.auto && ["linux", "darwin", "win32"].includes(process.platform) && !disabledByEnv
+        ? await rt.automaticUpdateAdvice()
+        : undefined;
+    const line = `${key === "auto" ? "Automatic updates" : "Update notices"}: ${settings[key] ? "on" : "off"}${disabledByEnv ? " (disabled by COTAL_NO_UPDATE_CHECK=1)" : ""}`;
+    if (!args.values.json && !args.values.plain) {
+      rt.out(line);
       if (advice) rt.out(advice);
+      return;
     }
+    const file = join(homeCotalDir(), "update-settings.json");
+    const warnings: OutputWarning[] = recoveredBackup
+      ? [{ code: "SETTINGS_RECOVERED", target: { file, backup: recoveredBackup }, message: `Damaged update settings saved to ${recoveredBackup}; using defaults (automatic updates and notices on).` }]
+      : [];
+    const noOp = value !== undefined && recoveredBackup === undefined && current[key] === settings[key];
+    writeResult(presentationOf(args.values), {
+      command: "update",
+      target: null,
+      result: { kind: "update-preference", preference: key, enabled: settings[key], effective: !disabledByEnv && !desktop && settings[key], disabledByEnv, advice: advice ?? null, file },
+      warnings,
+      noOp,
+    }, () => ({ sections: [{ blocks: [{ kind: "lines", lines: advice ? [line, advice] : [line] }] }] }));
     return;
   }
   if (args.values.check === true) return checkUpdate(args, rt);
@@ -398,7 +422,7 @@ export function validateUpdateArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (args.values["stop-agents"] && args.values.self !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--stop-agents requires `cotal update --self`");
   if (args.values.auto || args.values.notify) {
-    if (args.values.auto && args.values.notify || args.values.self || args.values.check || args.values.json || args.values.plain || args.values.space || args.values.server || args.values.creds || args.values.on || args.positionals.length > 1 || args.positionals.some(value => value !== "on" && value !== "off"))
+    if (args.values.auto && args.values.notify || args.values.self || args.values.check || args.values.space || args.values.server || args.values.creds || args.values.on || args.positionals.length > 1 || args.positionals.some(value => value !== "on" && value !== "off"))
       throw new CommandFailure("refused", "USAGE_INVALID", "use `cotal update --auto [off|on]` or `cotal update --notify [off|on]` without other update flags");
     return;
   }

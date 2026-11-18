@@ -165,9 +165,18 @@ function parseSince(raw: string | undefined, now: number): Since | undefined {
     if (at.getFullYear() !== year || at.getMonth() !== month || at.getDate() !== date) throw usage(`--since ${raw} is not a calendar date`);
     return { kind: "time", ms: at.getTime(), text: at.toISOString(), input: raw };
   }
-  // An ISO 8601 date and time only: Date.parse also reads forms such as "-5" or "1/2/3".
-  const at = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(raw) ? Date.parse(raw) : NaN;
-  if (Number.isFinite(at)) return { kind: "time", ms: at, text: new Date(at).toISOString(), input: raw };
+  // An ISO 8601 date and time only: Date.parse also reads forms such as "-5" or "1/2/3", and V8 rolls
+  // overflowed calendar dates such as 2026-02-30 forward into the next month instead of rejecting them.
+  const dt = /^(\d{4})-(\d{2})-(\d{2})[T ]\d{2}:\d{2}/.exec(raw);
+  if (dt) {
+    const [year, month, date] = [Number(dt[1]), Number(dt[2]) - 1, Number(dt[3])];
+    const cal = new Date(0);
+    cal.setUTCFullYear(year, month, date);
+    if (cal.getUTCFullYear() !== year || cal.getUTCMonth() !== month || cal.getUTCDate() !== date)
+      throw usage(`--since ${raw.slice(0, 10)} is not a calendar date`);
+    const at = Date.parse(raw);
+    if (Number.isFinite(at)) return { kind: "time", ms: at, text: new Date(at).toISOString(), input: raw };
+  }
   throw usage(`--since takes a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence, not "${raw}"`);
 }
 

@@ -213,6 +213,7 @@ Update that app with its signed platform installer so the app, CLI and runtime s
 ```bash
 cotal update [--self] [--space <s>] [--server <url>] [--creds <path>] [--on <instance>]
 cotal update --check [-j|--json|--plain]
+cotal update (--auto | --notify) [off|on] [-j|--json|--plain]
 ```
 
 | Flag | Default | Meaning |
@@ -221,7 +222,7 @@ cotal update --check [-j|--json|--plain]
 | `--space`, `--server`, `--creds` | resolved mesh | Select the running manager whose continuity state is reported |
 | `--on` | none | Name the manager whose continuity state is reported, by the instance id `cotal ps` prints or, on a user-auth mesh, by its name or host. The reconcile the new binary runs inherits it. |
 | `--check` | off | Read version availability and recorded extensions without installation or restart; takes no mesh selector or `--self` |
-| `--json`, `-j`, `--plain` | off | Choose the finite check report; requires `--check` |
+| `--json`, `-j`, `--plain` | off | Choose the finite report for `--check`, `--auto` or `--notify` |
 
 On a user-auth mesh where you run several managers, the exchange refuses to pick one and names `--on`; pass this machine's manager.
 Update reads the recorded mesh inventory without refreshing account space catalogues. An expired

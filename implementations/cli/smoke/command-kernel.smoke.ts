@@ -744,12 +744,10 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.equal((await completionOut(["channel", "set", "ops", "--creds", ""])).trimEnd(), ":default", "channel --creds completes from the shell's file names");
 }
 
-// --- endpoint describe has no contract cache, so --refresh refuses before any request ------------
+// --- endpoint describe accepts --refresh and performs a fresh contract fetch ---------------------
 {
   const endpoint = registry.all<Command>("command").find((cmd) => cmd.name === "endpoint")!;
-  let refused: unknown;
-  try { endpoint.validate?.(parseCommandArgs(endpoint, ["describe", "manager", "--refresh"])); } catch (e) { refused = e; }
-  assert.ok(isCommandFailure(refused) && refused.code === "UNSUPPORTED", "endpoint describe --refresh refuses as UNSUPPORTED instead of being accepted and ignored");
+  assert.doesNotThrow(() => endpoint.validate?.(parseCommandArgs(endpoint, ["describe", "manager", "--refresh"])));
   endpoint.validate?.(parseCommandArgs(endpoint, ["describe", "manager"]));
   for (const name of ["spawn", "status"]) {
     const usage = registry.all<Command>("command").find((cmd) => cmd.name === name)?.usage ?? "";
@@ -764,6 +762,8 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["auto", "notify", "self", "stop-agents", "check", "json", "plain", "space", "server", "creds", "on"]);
   assert.equal(parseCommandArgs(cmd!, ["--self"]).values.self, true);
   assert.equal(parseCommandArgs(cmd!, ["--on", "inst_0123456789abcdefghijklmnopqrs"]).values.on, "inst_0123456789abcdefghijklmnopqrs", "update takes the manager pin every other manager command takes");
+  for (const flags of [["--notify", "--json"], ["--notify", "--plain"], ["--auto", "--json"], ["--auto", "off", "--json"], ["--notify", "on", "--plain"]])
+    assert.doesNotThrow(() => validateUpdateArguments(parseCommandArgs(cmd!, flags)));
   assert.throws(
     () => validateUpdateArguments(parseCommandArgs(cmd!, ["--check", "--on", "x"])),
     (e: unknown) => (e as { code?: string }).code === "USAGE_INVALID",
