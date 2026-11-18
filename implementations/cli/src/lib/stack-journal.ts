@@ -11,7 +11,7 @@ import { CommandFailure, acquireMaintenanceLock, codeSpan, admittedControllerRes
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, processServiceHost, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
-import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, abandonUnresolvedLaunch, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
+import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, abandonUnresolvedLaunch, pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
 import type { StoreIdentity } from "./store-identity.js";
@@ -820,6 +820,8 @@ export function releaseStackDefinitions(root: string, space: string): { released
       throw new CommandFailure("partial", "OPERATION_PARTIAL", `the stopped stack definitions were removed, but the stack journal still names their instances: ${(error as Error).message}`, { target: { space, root }, changed: released.map((name) => ({ kind: "service-definition", name })), remedy: `inspect ${stackJournalPath(root)} and the service instances it names with \`cotal service --space ${space}\`; it was not reset` });
     }
   }
+  removeServiceLogs(space, retired.map((item) => item.instanceId));
+  pruneEmptyServiceSpace(space);
   return { released };
 }
 

@@ -223,8 +223,9 @@ Its Next names `cotal service logs <name> --space <space> --instance <id>`, wher
 output is kept.
 
 `remove` forgets a definition once every instance is stopped and no unit is installed. It deletes
-those instances' logs and lists each file it deleted.
-With `--instance <id>` it forgets only that stopped instance record, and keeps the definition,
+those instances' logs and sidecar receipts, lists each log file it deleted, and removes the
+space's service folder when no definitions or instance records remain.
+With `--instance <id>` it forgets only that stopped instance record and its sidecar receipts, and keeps the definition,
 its other instances and its logs. A command that names no instance while several records exist refuses
 `TARGET_AMBIGUOUS`; its Next lists each instance with its state and the `remove --instance` command
 for each stopped one, so a finished record stops blocking the bare form. A `start` that selects a
@@ -287,7 +288,7 @@ saved declaration. Records live under the workstation store's case-safe per-spac
 `service remove <name> --yes` forgets only the unchanged definition. Interactive removal defaults
 to keeping it. Unknown or foreign instance custody makes removal refuse. The process driver verifies that every
 owned direct incarnation is gone and that no OS supervisor is installed before removing its
-unchanged instance records and definition. Logs are retained. No process or OS unit is removed
+unchanged instance records, sidecar receipts, logs and definition. No process or OS unit is removed
 by this operation. The presets are described below. A preset is not installed under an OS
 supervisor.
 On Windows, local records use the access-list model described under `up`. There, `cotal ext add`

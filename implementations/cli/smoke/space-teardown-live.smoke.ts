@@ -519,6 +519,9 @@ try {
       stopped.status === 0 && stopped.env?.result?.kind === "gone-root-stack-stop" && members.length === 3 && members.every((row) => row.result === "stopped")
         && JSON.stringify(stopped.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]), shown(stopped));
     check("no member process is left", pids.every((pid) => { try { process.kill(pid!, 0); return false; } catch { return true; } }), pids);
+    const spaceServiceDir = join(home, "services", Buffer.from(space, "utf8").toString("hex"));
+    check("gone-root down removes retired instance logs, sidecars, broker launch scratch, and the empty space service directory",
+      !existsSync(spaceServiceDir), spaceServiceDir);
     const elsewhere = folder(`${space}b`);
     const again = cli(home, "space", "create", space, "--root", elsewhere, "--json");
     anchor(elsewhere);
@@ -695,9 +698,20 @@ try {
       omitted.status === 2 && omitted.env?.error?.code === "LIFECYCLE_BLOCKED" && journalRows().find((row) => row.role === "manager")?.instanceId === manager, shown(omitted));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops every member, and no member process is left", stopped.status === 0 && JSON.stringify(ids(rows(stopped))) === JSON.stringify(ids(first)) && gone(firstPids), shown(stopped));
+    const cycledUp = cli(root, "up", "--json"), cycledRows = rows(cycledUp), cycledPids = pidsOf();
+    const cycledDown = cli(root, "down", "--yes", "--json");
+    const spaceServiceDir = join(home, "services", Buffer.from(space, "utf8").toString("hex"));
+    const instanceEntries = existsSync(join(spaceServiceDir, "instances")) ? readdirSync(join(spaceServiceDir, "instances")).sort() : [];
+    check("restarting and stopping the stack replaces retired manager logs and prior broker launch scratch without leaking retired files",
+      cycledUp.status === 0 && cycledDown.status === 0 && gone(cycledPids)
+        && instanceEntries.filter((f) => f.endsWith(".log")).length === 3
+        && instanceEntries.filter((f) => f.startsWith(".broker-ports-")).length === 1
+        && instanceEntries.filter((f) => f.startsWith(".broker-launch-")).length === 1
+        && !instanceEntries.some((f) => f.includes(Buffer.from(manager!, "utf8").toString("hex"))),
+      { cycledRows, instanceEntries });
     const forgot = cli(home, "space", "forget", space, "--json");
-    check("space forget removes the three stack definitions, and the journal then names none of their instances",
-      forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]) && ids(journalRows()).length === 0, { forget: shown(forgot), journal: journalRows() });
+    check("space forget removes the three stack definitions, the journal names none of their instances, and the space's services directory is gone",
+      forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]) && ids(journalRows()).length === 0 && !existsSync(spaceServiceDir), { forget: shown(forgot), journal: journalRows(), exists: existsSync(spaceServiceDir) });
     const again = cli(home, "space", "create", space, "--root", root, "--json");
     const restarted = cli(root, "up", "--server", server, "--no-manager", "--json"), second = rows(restarted), secondPids = pidsOf();
     check("space create there and up --no-manager start a new broker and delivery, and record no manager instance",

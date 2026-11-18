@@ -38,11 +38,11 @@ export function claimServicePid(context: LocalProcessContext, template: string):
   };
 }
 
-/** Clear the slot when its holder is proven gone, the one verdict that clears a record anywhere: a
- *  reused pid (`mismatch`) still refuses. The record is read before it is judged and removed only
- *  while it still reads the same, under the lock its publisher holds, so a successor that claimed the
- *  slot meanwhile is left whole and the retried claim refuses. A record that cannot be read or judged
- *  is left for the refusal. */
+/** Clear the slot when its holder is proven gone (`gone` or a start-token `mismatch` on a reused
+ *  PID, which proves the recorded process has exited). The record is read before it is judged and
+ *  removed only while it still reads the same, under the lock its publisher holds, so a successor
+ *  that claimed the slot meanwhile is left whole and the retried claim refuses. A record that cannot
+ *  be read or judged is left for the refusal. */
 function clearDeadHolder(path: string): boolean {
   let recorded: string | undefined;
   let verdict: ReturnType<typeof verifyIdentityPin>;
@@ -50,7 +50,7 @@ function clearDeadHolder(path: string): boolean {
     recorded = readPidfile(path);
     verdict = verifyIdentityPin(path);
   } catch { return false; }
-  if (!recorded || verdict.kind !== "gone") return false;
+  if (!recorded || (verdict.kind !== "gone" && verdict.kind !== "mismatch")) return false;
   removePidPair(path, recorded);
   return true;
 }

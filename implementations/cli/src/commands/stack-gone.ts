@@ -19,7 +19,8 @@ import { cotalRoot } from "../lib/paths.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
-import { assertNoServiceUnitAttempts } from "../lib/service-process.js";
+import { assertNoServiceUnitAttempts, pruneEmptyServiceSpace, removeInstanceSidecars, removeServiceLogs } from "../lib/service-process.js";
+import { removeCustodyCapability } from "../lib/service-custody-win32.js";
 import { refuseRecordedSupervisor } from "../lib/service-supervision.js";
 import { STACK_DEFINITION, goneStackRoot, processGone, stackDefinitionsAt, type StackRole } from "../lib/stack-journal.js";
 
@@ -134,17 +135,22 @@ async function stopMember(space: string, member: Member): Promise<Stopped> {
 
 /** Remove each stack definition with its instance records, once none of their processes runs. */
 function releaseDefinitions(space: string, root: string): string[] {
-  const store = serviceDefinitionStore(space), instances = serviceInstanceStore(space), released: string[] = [];
+  const store = serviceDefinitionStore(space), instances = serviceInstanceStore(space), released: string[] = [], retired: string[] = [];
   for (const definition of stackDefinitionsAt(space, root)) {
     assertNoServiceUnitAttempts(space, definition.name);
     store.commit(definition.name, definition, undefined, () => {
       for (const row of serviceInstances(space, definition.name)) {
         if (!processGone(observeServiceProcess(row.record.value))) throw new CommandFailure("refused", "CONFLICT", `the ${definition.name} instance ${row.name} runs again; its definition was kept`, { target: { space, instanceId: row.name } });
         instances.commit(row.name, row, undefined);
+        removeCustodyCapability(space, row.record.value.custody);
+        removeInstanceSidecars(space, row.name, row.record.value.launchRequestId);
+        retired.push(row.name);
       }
     });
     released.push(definition.name);
   }
+  removeServiceLogs(space, retired);
+  pruneEmptyServiceSpace(space);
   return released;
 }
 
