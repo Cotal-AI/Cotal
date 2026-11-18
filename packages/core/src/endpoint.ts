@@ -22,6 +22,7 @@ import {
   ConnectionError,
   type NatsConnection,
   type Msg,
+  type MsgHdrs,
   type Subscription,
 } from "@nats-io/transport-node";
 import { wsconnect } from "@nats-io/nats-core";
@@ -221,6 +222,7 @@ import {
 } from "./subjects.js";
 
 import { isPermissionDenied } from "./permission-denied.js";
+import { hasStoredOrigin } from "./stored-origin.js";
 export { isPermissionDenied };
 
 export const DEFAULT_SERVER = "nats://127.0.0.1:4222";
@@ -2967,6 +2969,7 @@ export class CotalEndpoint extends EventEmitter {
         }
         const parsed = parseSubject(m.subject);
         if (decoded !== undefined && (parsed?.kind === "chat" || parsed?.kind === "evp" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
+          if (hasStoredOrigin(m.headers)) continue; // a stored message replayed onto this subject has no sender here
           if (!isFromSubjectSender(decoded, parsed)) continue;
           // A message whose parts cannot be read is dropped, as history drops it (#7060).
           if (parsed.kind !== "evp" && (!Array.isArray(decoded.parts) || !decoded.parts.every(isReadableMessagePart))) continue;
@@ -3047,6 +3050,12 @@ export class CotalEndpoint extends EventEmitter {
     try {
       let reply: ControlReply;
       const req = m.json<ControlRequest>();
+      // A stored message replayed onto the request subject was not sent by the subject's principal,
+      // and has no caller to answer. Report it and leave without a reply.
+      if (hasStoredOrigin(m.headers)) {
+        this.emit("error", new Error(`rejected control request on ${m.subject}: it carries stored-message headers, so no caller published it`));
+        return;
+      }
       // Authenticity guard (fail closed): control is the most privileged surface
       // (start/stop). The sender is encoded in the subject (ctl.<svc>.<sender>), which
       // the server policed who could publish; the payload `from` is advisory and must
@@ -6177,6 +6186,7 @@ export class CotalEndpoint extends EventEmitter {
           let msg: CotalMessage;
           try { msg = m.json<CotalMessage>(); } catch { continue; }
           const parsed = parseSubject(m.subject);
+          if (hasStoredOrigin(m.headers)) continue; // catch-up never copies a stored replay
           if (!parsed || !isFromSubjectSender(msg, parsed) || msg.from.id === owner) continue;
           if (!(await stored(parsed.rest))) continue;
           await this.publishDinbox(owner, lifecycleUid, {
@@ -7169,6 +7179,7 @@ export class CotalEndpoint extends EventEmitter {
     const channel = parsed.rest;
     let msg: CotalMessage;
     try { msg = m.json<CotalMessage>(); } catch { m.ack(); return; }
+    if (hasStoredOrigin(m.headers)) { m.ack(); return; } // fan-out never routes a stored replay (SPEC §5)
     if (!isFromSubjectSender(msg, parsed)) { m.ack(); return; } // authenticity (SPEC §5)
     const seq = m.seq;
     const normalizedMsg = authenticatedChannelMessage(msg, channel);
@@ -7292,6 +7303,9 @@ export class CotalEndpoint extends EventEmitter {
     // FENCE, same rule as the fan-out writer: no effect and no ack once this daemon has stopped
     // serving the shard. The entry redelivers to the holder rather than being consumed here.
     if (!this.plane3MayAct()) return;
+    // Only the fan-out writer publishes an entry, so one carrying stored-message headers is a replay
+    // the writer never made: permanently invalid.
+    if (hasStoredOrigin(m.headers)) { m.ack(); return; }
     const pr = parseDinboxPrincipal(m.subject);
     if (!pr) { m.ack(); return; } // unparseable subject (incl. a pre-cut 5-segment form) — not a real entry
     const owner = `${pr.owner}.${pr.actor}`; // the member principal dot-form (acl/member keys, msgID)
@@ -7409,7 +7423,8 @@ export class CotalEndpoint extends EventEmitter {
   /** Agent-side: bind + pump our pre-created Plane-3 DELIVER durable (`dlv_<id>`). Every message here is
    *  delivery-daemon-written (DLV is delivery-write-only, broker-enforced) and is a CHANNEL message by contract
    *  (the backstop never carries DMs), so `kind=channel` is path-derived (SPEC §4) and the body is
-   *  trusted (no spoof-guard). `durable:true` — real JetStream ack, coalesced with the core-sub live
+   *  trusted (no spoof-guard). A copy carrying stored-message headers is not the writer's and is
+   *  terminated. `durable:true` — real JetStream ack, coalesced with the core-sub live
    *  copy by `MeshAgent.ingest`. No-op when the durable isn't present (open mode / not provisioned). A read
    *  list declared on a credential that cannot fetch the durable refuses. */
   private async pumpDlv(): Promise<void> {
@@ -7449,6 +7464,13 @@ export class CotalEndpoint extends EventEmitter {
     this.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
+        // The trusted DLV writer publishes every copy, so a copy carrying stored-message headers is a
+        // replay it never wrote, and the count stamped on it is not the writer's either.
+        if (hasStoredOrigin(m.headers)) {
+          this.emit("error", new Error("plane-3 delivery: DLV entry carrying stored-message headers terminated"));
+          try { m.term(); } catch { /* draining */ }
+          continue;
+        }
         // A copy with a full store behind it means the store held its count, so older copies may have
         // been discarded unread (#5404); NATS gives no notice of the discard itself. The count is the
         // one the trusted writer stamped on this copy. Checked on every delivery, ahead of the checks
@@ -7891,6 +7913,11 @@ export class CotalEndpoint extends EventEmitter {
       this.emit("error", new Error(`dropped message on ${m.subject}: absent or non-string id`));
       return undefined;
     }
+    if (hasStoredOrigin(m.headers)) {
+      m.term(); // a stored replay is permanently invalid here
+      this.emit("error", new Error(`dropped message on ${m.subject}: it carries stored-message headers, so its subject's principal did not publish it`));
+      return undefined;
+    }
     const parsed = parseSubject(m.subject);
     if (!parsed || !isFromSubjectSender(msg, parsed)) {
       m.term();
@@ -8013,6 +8040,7 @@ export class CotalEndpoint extends EventEmitter {
           return;
         }
         if (!isRecord(msg) || !isUsableMessageId(msg.id)) return; // malformed envelope (SPEC sec 5) — live is at-most-once: drop
+        if (hasStoredOrigin(m.headers)) return; // a stored replay on the live subject — drop (at-most-once)
         if (!isFromSubjectSender(msg, parsed)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
         if (msg.from.id === this.card.id) return; // our own echo
         const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false }; // live = at-most-once, not acked
@@ -8252,6 +8280,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       // Same authenticity guard as the tail; skip our own echoes in history.
       if (!isRecord(msg) || !isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — history skips
+      if (hasStoredOrigin(sm.headers)) continue; // backfill skips a stored replay
       const parsed = parseSubject(sm.subject);
       if (!parsed || !isFromSubjectSender(msg, parsed) || msg.from.id === this.card.id) continue;
       // Backfill only ever reads the chat stream, so the authenticated class is always "channel".
@@ -8309,6 +8338,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       // Same authenticity guard as the tail/backfill; skip our own echoes.
       if (!isRecord(msg) || !isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — recall skips
+      if (hasStoredOrigin(sm.headers)) continue; // recall skips a stored replay
       const parsed = parseSubject(sm.subject);
       if (!parsed || !isFromSubjectSender(msg, parsed) || msg.from.id === this.card.id) continue;
       collected.push(authenticatedMessage(msg, parsed));
@@ -8894,7 +8924,8 @@ function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
 
 /** SPEC §5 on receive: a delivery comes from the principal its subject names. The payload is an
  *  object whose `from.id` is the subject's sender, and the subject's owner is a real principal, not
- *  an old-shape alias. Every receive path asks this one predicate. What a path does with a refusal
+ *  an old-shape alias. Every receive path asks this one predicate, after it has dropped a message
+ *  carrying stored-message headers ({@link hasStoredOrigin}). What a path does with a refusal
  *  (drop, skip, ack, term or reject) and its own extra checks (a usable id, its own echo) stay with
  *  the path. */
 function isFromSubjectSender(msg: unknown, parsed: ParsedSubject): boolean {
@@ -8968,9 +8999,11 @@ function dmOnlyDelivery(m: JsMsg, ackWaitMs: number, nc: NatsConnection | undefi
 /** History drain keeps `m.json()` and used to throw the subject away. SPEC §5: on receive, verify
  *  `from.id` equals the subject sender; on mismatch, a missing `from`, or an unparseable delivery
  *  subject, reject and never surface. Fail closed on shape too: a stored JSON `null` or a truthy
- *  non-object `from` must not throw mid-array. Do not echo-drop `from.id === this.card.id`:
+ *  non-object `from` must not throw mid-array. A copy carrying stored-message headers is rejected
+ *  the same way. Do not echo-drop `from.id === this.card.id`:
  *  god-view history must include the viewer's own sends. */
-function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): HistoryMessage | undefined {
+function historyMessageFromDelivery(m: { subject: string; headers?: MsgHdrs; json: <T>() => T }): HistoryMessage | undefined {
+  if (hasStoredOrigin(m.headers)) return undefined; // history never surfaces a stored replay
   let raw: unknown;
   try {
     raw = m.json();

@@ -17,6 +17,7 @@
 import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node";
 import type { ContractValidator } from "./contract-validator.js";
 import { spacePrefix } from "./subjects.js";
+import { hasStoredOrigin } from "./stored-origin.js";
 import {
   endpointToken, assertCommandToken, assertLifecycleToken, epClassQueueGroup,
   deriveReplySubject, parseEpSubject, EP_RAIL_V1,
@@ -614,9 +615,8 @@ function encodeReply(reply: EndpointReply): Uint8Array {
     const cb = (_err: unknown, msg: Pick<Msg, "subject" | "data" | "headers">) => {
       // Stored-message delivery is not a caller publication on this subject. Drop native
       // provenance before parsing, authorization or replies: there is no authenticated caller
-      // to answer. Match header names, not values; an empty marker is still a marker.
-      for (const [name] of msg.headers ?? [])
-        if (/^Nats-(Stream|Subject|Sequence|Time-Stamp)$/i.test(name)) return;
+      // to answer.
+      if (hasStoredOrigin(msg.headers)) return;
       const run = handle(def, msg).catch(() => { /* handle() reports via the reply; never unhandled */ });
       pending.add(run);
       void run.finally(() => pending.delete(run));

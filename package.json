@@ -239,6 +239,7 @@
     "smoke:watch-roster:live": "tsx implementations/cli/smoke/watch-roster-live.smoke.ts",
     "smoke:members": "tsx packages/core/smoke/members.smoke.ts",
     "smoke:plane3:auth": "tsx packages/core/smoke/plane3-auth.smoke.ts",
+    "smoke:stored-origin:auth": "tsx packages/core/smoke/stored-origin-auth.smoke.ts",
     "smoke:plane3-gate:auth": "tsx packages/core/smoke/plane3-gate-auth.smoke.ts",
     "smoke:plane3-activation:auth": "tsx packages/core/smoke/plane3-activation-auth.smoke.ts",
     "smoke:channel-family:auth": "tsx packages/core/smoke/channel-family-auth.smoke.ts",

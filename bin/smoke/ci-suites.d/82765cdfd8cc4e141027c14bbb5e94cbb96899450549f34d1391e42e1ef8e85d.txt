@@ -1,0 +1,3 @@
+# Every messaging receive path drops a message carrying the broker's stored-message headers, and a
+# message whose from.id is not its subject's sender, while accepting a legitimate one.
+smoke:stored-origin:auth
