@@ -1,0 +1,3 @@
+# Who may serve and call on the principal route, enforced by the broker through the shipped
+# auth callout, with a core-only agent serving a hand-made prompt.
+smoke:principal-route:auth

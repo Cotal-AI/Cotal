@@ -157,8 +157,20 @@ export interface Presence {
    *  concrete channel names. Advisory: lets a peer see "locally muted #deploys → DM to reach me". NOT
    *  access control — the broker still authorizes and delivers; this is a receive-side presentation. */
   channelModes?: Record<string, ChannelMode>;
+  /** The prompts this process serves on its `agent` endpoint (SPEC §6, §13.22). Present, with zero,
+   *  exactly while the endpoint is served and the broker accepted its subscription. Advisory: it
+   *  carries no prompt content and no authority. */
+  prompts?: PresencePrompts;
   /** Epoch ms of the last heartbeat. */
   ts: number;
+}
+
+/** How many prompts a process holds `open` or `sent`, and a counter that goes up by one each time a
+ *  prompt opens or changes state. The counter restarts with the process, so it means something only
+ *  together with `runtime.id`. */
+export interface PresencePrompts {
+  open: number;
+  seq: number;
 }
 
 /**

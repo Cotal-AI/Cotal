@@ -636,6 +636,8 @@
     "smoke:grammar": "tsx packages/core/smoke/grammar.smoke.ts",
     "smoke:ep-grammar": "tsx packages/core/smoke/endpoint-grammar.smoke.ts",
     "smoke:ep-grants": "tsx packages/core/smoke/endpoint-grants.smoke.ts",
+    "smoke:principal-route": "tsx packages/core/smoke/principal-route.smoke.ts",
+    "smoke:principal-route:auth": "tsx implementations/auth/smoke/principal-route-auth.smoke.ts",
     "smoke:native-service-gate": "tsx implementations/auth/smoke/native-service-gate.smoke.ts",
     "smoke:service-access-callout:auth": "tsx implementations/auth/smoke/service-access-callout.smoke.ts",
     "smoke:service-custody:auth": "tsx implementations/auth/smoke/service-custody.smoke.ts",
