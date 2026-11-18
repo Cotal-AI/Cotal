@@ -92,7 +92,7 @@ import {
   renderOnceTask,
   shownSpawner,
 } from "@cotal-ai/core";
-import { loadLaunchPersonaFile, isTrustedProject, PersonaSourceError, retainConnectorSeat } from "@cotal-ai/workspace";
+import { loadLaunchPersonaFile, isTrustedProject, personaLaunchOptionsRefusal, PersonaSourceError, retainConnectorSeat } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
@@ -6597,6 +6597,10 @@ export class Manager {
       } catch (e) {
         return { error: rejectionText(e), ...(e instanceof PersonaSourceError ? { code: "bad-request" as const } : {}) };
       }
+      // A persona file in a project folder that is not trusted may contribute no launch options: the
+      // connector renders each key into the host's own flags or config.
+      const optionsRefused = personaLaunchOptionsRefusal(configPath, def.launchOptions);
+      if (optionsRefused) return { error: optionsRefused };
       // Shared operator files remain launchable. Owned content follows the catalog's visibility
       // decision before connector loading or any allocation. A hosted run acts for its admission;
       // only a complete authenticated caller can request the current ledger's admin decision.
@@ -8263,6 +8267,8 @@ export class Manager {
         } catch (e) {
           return { ok: false, error: rejectionText(e) };
         }
+        const optionsRefused = personaLaunchOptionsRefusal(entry.launch.source.configPath, launchOptions);
+        if (optionsRefused) return { ok: false, error: optionsRefused };
       }
       // Asked once `exact` is known: an exact seat reopens its retained session or fails, like its
       // manifest launch, so the connector must honor reopenSession before the batch starts any child.

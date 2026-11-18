@@ -1,6 +1,6 @@
 /**
- * A project's own `.cotal/config.json` declares MCP servers and `spawn.env` names only when the
- * operator trusts its folder, and only when the folder's `.cotal` belongs to the operator.
+ * A project's own `.cotal` declares MCP servers, `spawn.env` names and persona launch options only
+ * when the operator trusts its folder, and only when the folder's `.cotal` belongs to the operator.
  *
  * Every cell runs a foreground `cotal spawn` through the binary's own dispatch, with the real Claude
  * connector, against a real open broker on a free loopback port. `claude` on PATH is a stand-in host
@@ -59,6 +59,14 @@ await import("@cotal-ai/connector-claude-code");
 const { runCli } = await import("../src/command.js");
 const { registry } = await import("@cotal-ai/core");
 const { recordMesh, trustedProjectsPath } = await import("@cotal-ai/workspace");
+
+// The one-time upgrade seed reads the registrations before the first command. This space is
+// registered before that command, as a space registered under an earlier version would be, and the
+// first command below seeds the file. Every later `project()` registers after it.
+const preUpgrade = mkdtempSync(join(box, "pre-upgrade-"));
+mkdirSync(join(preUpgrade, ".cotal"), { mode: 0o700 });
+recordMesh({ space: "preupgrade", server: "nats://127.0.0.1:1", root: preUpgrade, mode: "open", origin: "manual", ts: new Date().toISOString() } as never);
+const trustedRoots = (): string[] => (existsSync(trustedProjectsPath()) ? (JSON.parse(readFileSync(trustedProjectsPath(), "utf8")) as { roots: string[] }).roots : []);
 
 let passed = 0;
 let failed = 0;
@@ -127,14 +135,26 @@ const spawnIn = (p: { root: string; space: string }) =>
 const reportText = (): string => (existsSync(report) ? readFileSync(report, "utf8") : "");
 const fresh = (): void => writeFileSync(report, "");
 
-console.log("cotal spawn: a project config declares servers and spawn.env only in a trusted folder");
+console.log("cotal spawn: a project declares servers, spawn.env and persona launch options only in a trusted folder");
 try {
-  // A project with no config launches whether or not its folder is trusted.
+  // A project with no config launches whether or not its folder is trusted. This is the first command,
+  // so it runs the upgrade seed.
   {
     const p = project(undefined);
     fresh();
     const r = await spawnIn(p);
     check("an empty project launches the host", r.exited === undefined && reportText().includes("ENV <absent>"), r.out.slice(-400));
+  }
+
+  // The upgrade seed: a space registered before the first command is trusted, and one registered after
+  // it is not, even though it was registered before any trust read of its own.
+  {
+    check("the upgrade seed trusts a space registered before the first command", trustedRoots().includes(preUpgrade), trustedRoots());
+    const later = project(declares);
+    check("a space registered after the first command is not seeded", !trustedRoots().includes(later.root), trustedRoots());
+    fresh();
+    const r = await spawnIn(later);
+    check("a space registered after the upgrade cannot run its declared server", r.exited === 1 && !reportText().includes(`RAN ${later.marker}`), r.out.slice(-300));
   }
 
   // CONTROL: a trusted folder's declared server runs, and its spawn.env name reaches the host.
@@ -179,6 +199,57 @@ try {
     check("an untrusted folder's model policy still applies", r.exited === 1 && r.out.includes("does not allow") && !reportText().includes("ENV "), r.out.slice(-300));
   }
 
+  // A persona file in an untrusted project may not contribute launch options: the connector renders
+  // each key into the host's own flags. Here one names an MCP config file whose server would run.
+  {
+    const p = project(undefined);
+    const planted = join(p.root, "planted-mcp.json");
+    writeFileSync(planted, JSON.stringify({ mcpServers: { viapersona: { command: "/bin/sh", args: ["-c", `echo RAN persona-${p.marker} >> ${JSON.stringify(report)}`] } } }));
+    writeFileSync(join(p.root, ".cotal", "agents", "probe.md"), `---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nlaunchOptions:\n  mcp-config: ${planted}\n---\nbody\n`);
+    fresh();
+    const r = await spawnIn(p);
+    check("an untrusted project's persona launch options do not reach the host", !reportText().includes(`RAN persona-${p.marker}`) && !reportText().includes("ENV "), reportText());
+    check("the persona refusal names the file, the key, the folder and `cotal trust`", r.exited === 1 && r.out.includes("probe.md") && r.out.includes("launchOptions.mcp-config") && r.out.includes(`cotal trust ${p.root}`), r.out.slice(-400));
+    await cli(p.root, ["trust", p.root]);
+    fresh();
+    await spawnIn(p);
+    check("CONTROL: a trusted project's persona launch options reach the host", reportText().includes(`RAN persona-${p.marker}`), reportText());
+    // A caller's own --opt is the caller's choice, not the project's.
+    const q = project(undefined);
+    fresh();
+    const o = await cli(q.root, ["spawn", "--foreground", "--file", join(q.root, ".cotal", "agents", "probe.md"), "--space", q.space, "--agent", "claude", "--opt", `mcp-config=${planted}`]);
+    check("--opt given by the caller is not gated in an untrusted project", o.exited === undefined && reportText().includes(`RAN persona-${p.marker}`), o.out.slice(-300));
+  }
+
+  // A persona file outside any project is the operator's own, so its launch options apply.
+  {
+    const q = project(undefined);
+    const outside = mkdtempSync(join(box, "catalog-"));
+    const planted = join(outside, "planted-mcp.json");
+    writeFileSync(planted, JSON.stringify({ mcpServers: { outside: { command: "/bin/sh", args: ["-c", `echo RAN outside >> ${JSON.stringify(report)}`] } } }));
+    const file = join(outside, "probe.md");
+    writeFileSync(file, `---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nlaunchOptions:\n  mcp-config: ${planted}\n---\nbody\n`);
+    fresh();
+    const r = await cli(q.root, ["spawn", "--foreground", "--file", file, "--space", q.space, "--agent", "claude"]);
+    check("a persona file outside any project keeps its launch options", r.exited === undefined && reportText().includes("RAN outside"), r.out.slice(-300));
+  }
+
+  // Trust follows the stored path. A trusted path replaced by a link to another folder does not pass
+  // its trust to that folder.
+  {
+    const target = project(declares);
+    const linkParent = mkdtempSync(join(box, "link-"));
+    const trustedPath = join(linkParent, "proj");
+    mkdirSync(trustedPath);
+    await cli(linkParent, ["trust", trustedPath]);
+    rmSync(trustedPath, { recursive: true });
+    symlinkSync(target.root, trustedPath);
+    recordMesh({ space: target.space, server, root: trustedPath, mode: "open", origin: "manual", ts: new Date().toISOString() } as never);
+    fresh();
+    const r = await spawnIn({ root: trustedPath, space: target.space });
+    check("a trusted path replaced by a link does not trust the link's target", r.exited === 1 && !reportText().includes(`RAN ${target.marker}`), r.out.slice(-300));
+  }
+
   // A trust record is per folder: trusting a parent does not trust a project inside it.
   {
     const parent = mkdtempSync(join(box, "parent-"));
@@ -193,17 +264,17 @@ try {
     check("a trusted parent does not trust a project inside it", r.exited === 1 && !reportText().includes(`RAN ${inner.marker}`), r.out.slice(-300));
   }
 
-  // `cotal space create` trusts the folder it prepares, and declines a folder that already declares.
+  // `cotal space create` trusts a folder whose `.cotal` it made, and never one whose `.cotal` was
+  // already there, such as one a cloned repository brought, even with nothing declared in it yet.
   {
     const made = mkdtempSync(join(box, "made-"));
     const c = await cli(made, ["space", "create", "madespace", "--root", made]);
     check("space create succeeds", c.exited === undefined, c.out.slice(-300));
-    check("space create trusts the folder it prepared", readFileSync(trustedProjectsPath(), "utf8").includes(made), readFileSync(trustedProjectsPath(), "utf8"));
-    const planted = mkdtempSync(join(box, "planted-"));
-    mkdirSync(join(planted, ".cotal"), { mode: 0o700 });
-    writeFileSync(join(planted, ".cotal", "config.json"), JSON.stringify(declares("planted-create")));
-    const d = await cli(planted, ["space", "create", "plantedspace", "--root", planted]);
-    check("space create in a folder whose config declares servers does not trust it", d.exited === undefined && !readFileSync(trustedProjectsPath(), "utf8").includes(planted), readFileSync(trustedProjectsPath(), "utf8"));
+    check("space create trusts a folder whose .cotal it made", trustedRoots().includes(made), trustedRoots());
+    const cloned = mkdtempSync(join(box, "cloned-"));
+    mkdirSync(join(cloned, ".cotal", "agents"), { recursive: true, mode: 0o700 });
+    const d = await cli(cloned, ["space", "create", "clonedspace", "--root", cloned]);
+    check("space create does not trust a folder that already had a .cotal", d.exited === undefined && !trustedRoots().includes(cloned), trustedRoots());
   }
 
   // Usage and target refusals of the command itself.
@@ -211,7 +282,18 @@ try {
     const none = await cli(box, ["trust"]);
     check("cotal trust with no path is a usage refusal", none.exited === 1 && none.out.includes("usage: cotal trust <path>"), none.out.slice(-200));
     const missing = await cli(box, ["trust", join(box, "does-not-exist")]);
-    check("cotal trust of a missing folder is refused as a missing target", missing.exited === 2 && !readFileSync(trustedProjectsPath(), "utf8").includes("does-not-exist"), missing.exited);
+    check("cotal trust of a missing folder is refused as a missing target", missing.exited === 2 && !trustedRoots().some((r) => r.includes("does-not-exist")), missing.exited);
+  }
+
+  // The trust store refuses to be read when another account may write it.
+  {
+    const p = project(declares);
+    await cli(p.root, ["trust", p.root]);
+    chmodSync(trustedProjectsPath(), 0o666);
+    fresh();
+    const r = await spawnIn(p);
+    chmodSync(trustedProjectsPath(), 0o600);
+    check("a trust store other accounts may write trusts nothing", r.exited !== undefined && r.exited !== 0 && !reportText().includes(`RAN ${p.marker}`), r.out.slice(-300));
   }
 
   // Ownership. `/etc` and `/etc/passwd` belong to root on Linux and macOS, so a link to one stands
@@ -226,7 +308,7 @@ try {
     const foreign = mkdtempSync(join(box, "foreign-"));
     symlinkSync("/etc", join(foreign, ".cotal"));
     const t = await cli(foreign, ["trust", foreign]);
-    check("cotal trust refuses a folder whose .cotal another account owns", t.exited === 2 && !readFileSync(trustedProjectsPath(), "utf8").includes(foreign), t.exited);
+    check("cotal trust refuses a folder whose .cotal another account owns", t.exited === 2 && !trustedRoots().includes(foreign), t.exited);
   } else console.log("  - ownership cells not run: this suite runs as root");
 } finally {
   broker.kill("SIGKILL");
@@ -234,7 +316,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.getuid?.() === 0 ? 18 : 20;
+const EXPECTED = process.getuid?.() === 0 ? 28 : 30;
 if (passed + failed !== EXPECTED) { failed++; console.log(`  ✗ FAIL: ${passed + failed - 1} cells reported, ${EXPECTED} expected`); }
 emitSentinel({ passed, failed });
 process.exit(failed === 0 ? 0 : 1);

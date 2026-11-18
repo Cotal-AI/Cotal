@@ -6,6 +6,7 @@ import {
   CommandFailure,
   commandFailureReport,
   cachedPreferences,
+  seedTrustedProjects,
   cotalDirProblem,
   cotalHomeProblem,
   findCotalRoot,
@@ -763,6 +764,18 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       } catch (e) {
         if (!isCommandFailure(e)) throw e;
         failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
+      }
+    }
+    // The one-time upgrade seed of the trusted project folders runs here, before any command body can
+    // register a space, so only spaces registered or prepared before this version are seeded. It writes
+    // nothing once the file exists. When it cannot be written, such as in a config folder another
+    // account could write, the command still runs and no folder is trusted until it can be.
+    if (!["version", "docs"].includes(cmd.name)) {
+      try {
+        seedTrustedProjects();
+      } catch (e) {
+        if (!isCommandFailure(e)) throw e;
+        stderrLine("! ", `no project folder is trusted: ${e.message}${e.remedy ? `; ${e.remedy}` : ""}`, c.yellow);
       }
     }
   }

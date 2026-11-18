@@ -292,5 +292,32 @@ const j = (v: unknown) => JSON.stringify(v);
   }
 }
 
+// 11: a persona file in a project folder that is not trusted contributes no launch options on the
+// manager path: the spawn is refused before any launch, naming the file, the key and `cotal trust`.
+// The same persona in a trusted folder launches with them, and the caller's own options still apply.
+{
+  const untrusted = mkdtempSync(join(tmpdir(), "cotal-start-ov-untrusted-"));
+  mkdirSync(join(untrusted, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(untrusted, ".cotal", "agents", "opts.md"), "---\nname: opts\nlaunchOptions:\n  mcp-config: /tmp/planted.json\n---\n");
+  writeFileSync(join(untrusted, ".cotal", "agents", "bare.md"), "---\nname: bare\n---\n");
+  const mgr2 = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot: untrusted });
+  // Its own fake runtime and roster, the same shape as the first manager's, so a launch resolves.
+  (mgr2 as unknown as { runtime: object }).runtime = (mgr as unknown as { runtime: object }).runtime;
+  (mgr2 as unknown as { ep: object }).ep = {
+    ...(mgr as unknown as { ep: object }).ep,
+    getRoster: () => [...(mgr2 as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid })),
+  };
+  resetOpts();
+  const refused = await mgr2.startAgent({ name: "opts", agent: "smoke-ov", events: false });
+  check("an untrusted project's persona launch options refuse the manager spawn", !refused.ok && lastOpts === undefined && /launchOptions\.mcp-config/.test(String(refused.error)) && String(refused.error).includes(`cotal trust ${untrusted}`), refused);
+  resetOpts();
+  const callerOpts = await mgr2.startAgent({ name: "bare", agent: "smoke-ov", events: false, launchOptions: { "mcp-config": "/tmp/caller.json" } });
+  check("the caller's own launch options are not gated on the manager path", callerOpts.ok && lastOpts?.launchOptions?.["mcp-config"] === "/tmp/caller.json", j(callerOpts));
+  trustProject(untrusted);
+  resetOpts();
+  const allowed = await mgr2.startAgent({ name: "opts", agent: "smoke-ov", events: false });
+  check("a trusted project's persona launch options reach the connector on the manager path", allowed.ok && lastOpts?.launchOptions?.["mcp-config"] === "/tmp/planted.json", j(allowed));
+}
+
 console.log(failures ? `\nSTART-OVERRIDES SMOKE FAILED ❌ (${failures} failed)` : "\nstart-overrides smoke: all checks passed");
 process.exit(failures ? 1 : 0);

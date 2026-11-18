@@ -2,21 +2,25 @@
 
 ## Trusted project folders
 
-A project folder's own `.cotal/config.json` may now declare `connectors.<name>.mcpServers` entries
-or `spawn.env` names only when the folder is trusted. A spawn from any other folder whose file
-declares them refuses, names the folder, and launches nothing.
+A project folder's own `.cotal` may now declare `connectors.<name>.mcpServers` entries, `spawn.env`
+names and persona `launchOptions` only when the folder is trusted. A spawn that reads them from any
+other folder refuses, names the folder, and launches nothing. This holds for a spawn in this
+terminal and for one a manager runs.
 
 ### What changes for you
 
-- The first command that reads trust after the upgrade writes `trusted-projects.json` in the
-  operator config folder. It lists every root a space on this machine is registered or prepared
-  at, so those projects keep working with no step.
-- A folder you use with no registered or prepared space, such as one you start with `--file` or
-  `--cwd` only, needs `cotal trust <path>` once if its config declares servers or `spawn.env`.
+- The first command you run at this version writes `trusted-projects.json` in the operator config
+  folder. It lists every root a space on this machine was registered or prepared at before that
+  command, so those projects keep working with no step. It is written once. A space registered
+  after it is not added.
+- `cotal setup`, `cotal space create` and `cotal up` trust a folder only when they made its
+  `.cotal` in that run. A folder that already had one, such as a cloned repository, needs
+  `cotal trust <path>` once if it declares servers, `spawn.env` or persona launch options.
+- A folder you use with no space registered before the upgrade, such as one you start with
+  `--file` or `--cwd` only, needs `cotal trust <path>` once for the same reason.
 - A project config in a `.cotal` that another account owns is refused. Move the project to a
   folder your own account owns.
-- Spawns that read a manager's workspace root follow the same rule. Restart the manager at this
-  version so it applies it.
+- Restart a running manager at this version so its spawns apply the rule.
 
 ## Durable channel leave after 0.166.0
 

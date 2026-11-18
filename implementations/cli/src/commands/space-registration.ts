@@ -50,7 +50,7 @@ import {
   type RefusalCode,
   type Report,
   type UserBundle,
-  trustCreatedProject,
+  trustProject,
 } from "@cotal-ai/workspace";
 import { forgetChatSessions } from "@cotal-ai/workspace/chat";
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
@@ -558,9 +558,10 @@ export function recordLocalSpace(name: string, root: string): { file: string; pr
     throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, "create the space in a folder you own, or pass --root <dir>");
   }
   protectedLocalDirectory(dir, "the project's .cotal directory");
-  // The folder this account just prepared a space in is trusted to declare MCP servers and
-  // `spawn.env` names in its own config, before the space is recorded (see trustCreatedProject).
-  trustCreatedProject(root);
+  // A folder whose `.cotal` this run made is trusted to declare MCP servers, `spawn.env` names and
+  // persona launch options. A `.cotal` that was already there, such as one a cloned repository
+  // brought, is trusted only by `cotal trust`.
+  if (made !== undefined) trustProject(root);
   const preparedAt = new Date().toISOString();
   try { return { file: recordPreparedSpace({ space: name, root, ts: preparedAt }), preparedAt }; }
   catch (error) {

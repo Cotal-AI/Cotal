@@ -29,20 +29,31 @@ means no settings. Invalid JSON, a non-object top level, or an invalid shared se
 
 ### Trusted project folders [#trusted-project-folders]
 
-A space-local file may declare `connectors.<name>.mcpServers` entries or `spawn.env` names only
-when its project folder is trusted. A spawn from a folder that is not trusted refuses when that
-folder's file declares either one. The refusal names the file, the entries, the folder and the
-command that trusts it. Nothing launches. The file's other fields, such as `modelPolicy`, apply
-whether or not the folder is trusted.
+A project folder's own `.cotal` may declare these only when the folder is trusted:
+
+- `connectors.<name>.mcpServers` entries and `spawn.env` names in `.cotal/config.json`;
+- `launchOptions` in a persona file under `.cotal/agents/`, since the connector renders each key
+  into the application's own flags or config.
+
+A spawn that reads either from a folder that is not trusted refuses. The refusal names the file,
+the entries, the folder and the command that trusts it. Nothing launches. This applies to a spawn
+in this terminal and to one a manager runs. The config file's other fields, such as `modelPolicy`,
+apply whether or not the folder is trusted. A persona file outside any project folder, and `--opt`
+given on the command line, are not affected.
 
 `cotal trust <path>` trusts one folder. It records the folder's canonical path in
 `trusted-projects.json` in the operator config folder. A trusted folder does not trust the folders
-inside it. `cotal setup`, `cotal space create` and `cotal up` trust the folder they prepare or
-start a space in, unless that folder's file already declares servers or `spawn.env`. Run
-`cotal trust` for such a folder after you read its file.
+inside it. Trust follows the path, not the contents: what the folder's files declare later is
+trusted, and so is a folder deleted and made again at the same path. A trusted path later replaced
+by a link does not pass its trust to the link's target.
+
+`cotal setup`, `cotal space create` and `cotal up` trust a folder only when they made its `.cotal`
+in that run. A folder that already had a `.cotal`, such as a cloned repository, is trusted only by
+`cotal trust`. Run it after you read the folder's `.cotal/config.json` and personas.
 
 A space-local file is refused whole when it, or the `.cotal` folder that holds it, belongs to
-another account. `cotal trust` refuses such a folder too.
+another account. `cotal trust` refuses such a folder too. A trusted projects file that another
+account owns or may write trusts nothing.
 
 | Field | Meaning | Merge rule |
 |---|---|---|

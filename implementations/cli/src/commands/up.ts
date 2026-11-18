@@ -208,7 +208,7 @@ import {
   canonicalLocalProcessPath,
   DELIVERY_LOGFILE,
   terminalWidth,
-  trustCreatedProject,
+  trustProject,
   type ControlAuth,
 } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
@@ -904,6 +904,7 @@ function seedMovedFailure(error: unknown): unknown {
 export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, freshTeamBoot = false, restoreSink?: (result: RestoreStartupResult) => void): Promise<void> {
   // One `up`, its re-entries included, reads each channels file once (see `channelsReads`).
   if (!channelsReads.getStore()) return channelsReads.run(new Map(), () => up(args, inheritedLock, freshTeamBoot, restoreSink));
+  snapshotControlFolders(typeof args.values.root === "string" ? args.values.root : undefined);
   // A --server is recorded and compared in one spelling, the scheme in lower case with no bare
   // trailing slash. A manifest boot checks its own override against broker.servers.
   if (typeof args.values.server === "string" && !args.values.file) args = { ...args, values: { ...args.values, server: canonicalServer(args.values.server) } };
@@ -4692,6 +4693,24 @@ export function maxSessionsFor(space: string, explicit?: number): number | undef
  */
 type Provenance = "started" | "refresh";
 
+/** The canonical folders that already held a `.cotal` when this process first entered `up`: every
+ *  folder from the working folder up to the filesystem root, and an explicit `--root`. Taken once per
+ *  process, before `up` makes any `.cotal`, so a re-entry for a restore or resume sees the folders as
+ *  they were before this run. Undefined in a process that never entered `up`. */
+let controlFoldersBeforeUp: Set<string> | undefined;
+
+function snapshotControlFolders(root: string | undefined): void {
+  if (controlFoldersBeforeUp !== undefined) return;
+  const held = new Set<string>();
+  const note = (dir: string): void => { if (existsSync(join(dir, ".cotal"))) held.add(canonicalRoot(dir)); };
+  for (let dir = resolve(process.cwd()); ; dir = dirname(dir)) {
+    note(dir);
+    if (dirname(dir) === dir) break;
+  }
+  if (root !== undefined) note(resolve(root));
+  controlFoldersBeforeUp = held;
+}
+
 /** {@link recordOurMesh} under a name that says it is a test seam: the origin rule it enforces is
  *  asserted directly by the registry smoke, since reaching each branch through a full `up` would
  *  need a live broker per case. */
@@ -4714,12 +4733,14 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   // (that launch really is the mesh now).
   if (provenance === "refresh" && !prior)
     throw new Error(`mesh "${m.space}" was removed from the registry while \`cotal up\` refreshed it - not re-recording it from an earlier read`);
-  // A started space's folder is trusted to declare MCP servers and `spawn.env` names in its own
-  // config, before the record is written (see trustCreatedProject). The stack is already running, so
-  // a failure is reported with its remedy rather than undoing the start.
-  if (provenance === "started") {
-    try { trustCreatedProject(m.root); }
-    catch (e) { console.error(c.yellow(`! ${m.root} was not recorded as a trusted project: ${(e as Error).message}. Its config cannot declare MCP servers or spawn.env until you run \`cotal trust ${m.root}\``)); }
+  // A started space's folder is trusted to declare MCP servers, `spawn.env` names and persona launch
+  // options only when this run made its `.cotal` (see controlFoldersBeforeUp). A `.cotal` that was
+  // already there, such as one a cloned repository brought, is trusted only by `cotal trust`. The
+  // stack is already running, so a failed trust write is reported with its remedy rather than undoing
+  // the start.
+  if (provenance === "started" && controlFoldersBeforeUp !== undefined && !controlFoldersBeforeUp.has(canonicalRoot(m.root)) && existsSync(join(m.root, ".cotal"))) {
+    try { trustProject(m.root); }
+    catch (e) { console.error(c.yellow(`! ${m.root} was not recorded as a trusted project: ${(e as Error).message}. Its .cotal cannot declare MCP servers, spawn.env or persona launch options until you run \`cotal trust ${m.root}\``)); }
   }
   recordMesh(provenance === "refresh" ? { ...prior, ...m, origin } : { ...m, origin });
   removePreparedSpace(m.space); // started: the registration is its record now

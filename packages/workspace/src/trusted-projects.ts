@@ -1,20 +1,29 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
-import { acquireLock, globalConfigDir, readCotalConfigFile, spaceConfigPath, trustedOnlyEntries, writeSecretFileAtomic } from "@cotal-ai/core";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { acquireLock, globalConfigDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure } from "./output.js";
 import { localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
 import { localWriteFailure } from "./local-write.js";
-import { canonicalRoot, loadMeshes } from "./mesh-registry.js";
-import { loadPreparedSpaces } from "./prepared-spaces.js";
+import { canonicalRoot, readMeshRegistry } from "./mesh-registry.js";
+import { readPreparedSpaces } from "./prepared-spaces.js";
 
 /**
- * The project folders whose own `.cotal/config.json` may declare MCP servers and `spawn.env` names.
- * The list lives in the operator's config folder, beside `config.json`, so nothing inside a project
- * can add itself. `cotal trust <path>` adds a folder; `cotal setup`, `cotal space create` and
- * `cotal up` add the folder they make a space in. Roots are kept canonical (symbolic links resolved).
+ * The project folders whose own `.cotal` may declare MCP servers, `spawn.env` names and persona
+ * launch options. The list lives in the operator's config folder, beside `config.json`, so nothing
+ * inside a project can add itself. `cotal trust <path>` adds a folder; `cotal setup`, `cotal space
+ * create` and `cotal up` add a folder only when they made its `.cotal` in that same run.
+ *
+ * Each root is stored in canonical form (symbolic links resolved) when it is added, and a folder is
+ * trusted when its own canonical form equals a stored string. Trust follows the path: a folder
+ * deleted and made again at a trusted path is trusted.
+ *
+ * `seeded` records that the one-time upgrade seed ran: the CLI writes the file, with every root a
+ * space was registered or prepared at, before a command can register anything (see
+ * {@link seedTrustedProjects}). A file that exists is never seeded again.
  */
 interface TrustedProjects {
   schemaVersion: 1;
+  seeded: true;
   roots: string[];
 }
 
@@ -31,13 +40,20 @@ const invalid = (problem: string): CommandFailure =>
   });
 
 /** The trusted roots as written, or undefined when there is no file yet. A linked or non-regular
- *  file, and a file that does not validate, refuse rather than read as empty. */
+ *  file, one another account owns or may write, and one that does not validate all refuse rather
+ *  than read as empty. */
 function readFile(): TrustedProjects | undefined {
   const path = trustedProjectsPath();
   const stat = lstatSync(path, { throwIfNoEntry: false });
   if (!stat) return undefined;
-  if (localRecordAccess() === "posix" && stat.isSymbolicLink())
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `the trusted projects file ${path} is a symbolic link; it is kept only in a regular file, so nothing was read`, { target: { path }, remedy: `replace the link ${path} with a regular copy of the file it names` });
+  if (localRecordAccess() === "posix") {
+    if (stat.isSymbolicLink())
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the trusted projects file ${path} is a symbolic link; it is kept only in a regular file, so nothing was read`, { target: { path }, remedy: `replace the link ${path} with a regular copy of the file it names` });
+    if (typeof process.getuid === "function" && stat.uid !== process.getuid())
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the trusted projects file ${path} belongs to another user, so nothing was read`, { target: { path }, remedy: `remove ${path}, then run \`cotal trust <path>\` for each folder you trust` });
+    if ((stat.mode & 0o022) !== 0)
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the trusted projects file ${path} can be written by other accounts, so nothing was read`, { target: { path }, remedy: `run \`chmod 600 ${path}\`` });
+  }
   if (!stat.isFile()) throw invalid("it is not a regular file");
   let doc: unknown;
   try {
@@ -46,24 +62,25 @@ function readFile(): TrustedProjects | undefined {
     throw invalid(`not JSON (${(e as Error).message})`);
   }
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) throw invalid("not an object");
-  const { schemaVersion, roots, ...rest } = doc as Record<string, unknown>;
+  const { schemaVersion, seeded, roots, ...rest } = doc as Record<string, unknown>;
   const extra = Object.keys(rest);
   if (extra.length) throw invalid(`unknown field "${extra[0]}"`);
   if (schemaVersion !== SCHEMA_VERSION) throw invalid(`schemaVersion ${JSON.stringify(schemaVersion)} is not ${SCHEMA_VERSION}`);
+  if (seeded !== true) throw invalid("seeded is not true");
   if (!Array.isArray(roots) || roots.some((root) => typeof root !== "string" || !isAbsolute(root))) throw invalid("roots is not a list of absolute paths");
-  return { schemaVersion: SCHEMA_VERSION, roots: roots as string[] };
+  return { schemaVersion: SCHEMA_VERSION, seeded: true, roots: roots as string[] };
 }
 
-/** Every root a space this machine runs or prepared is recorded at. The first write of the trusted
- *  projects file records these, so a project that worked before upgrading keeps working. */
+/** Every root a space this machine registered or prepared is recorded at, skipping a record that
+ *  cannot be read (it names no root anyone can use). */
 function knownSpaceRoots(): string[] {
-  return [...loadMeshes().map((m) => m.root), ...loadPreparedSpaces().map((p) => p.root)];
+  return [...readMeshRegistry().entries.map((m) => m.root), ...readPreparedSpaces().spaces.map((p) => p.root)];
 }
 
-/** Add `roots` to the file under its lock and report the canonical roots that were new. A missing file
- *  starts from every known space root, so the first write also records those. A config folder another
- *  account could write refuses before anything is written. */
-function addRoots(roots: readonly string[]): string[] {
+/** Run `change` on the current file (undefined when there is none) under its lock and write what it
+ *  returns, or nothing when it returns undefined. A config folder another account could write
+ *  refuses before anything is written. */
+function update(change: (current: TrustedProjects | undefined) => TrustedProjects | undefined): void {
   const dir = globalConfigDir();
   let existing = dir;
   while (!lstatSync(existing, { throwIfNoEntry: false }) && dirname(existing) !== existing) existing = dirname(existing);
@@ -81,34 +98,65 @@ function addRoots(roots: readonly string[]): string[] {
     throw localWriteFailure(e, trustedProjectsPath(), {});
   }
   try {
-    const current = readFile();
-    const kept = new Set((current?.roots ?? knownSpaceRoots()).map(canonicalRoot));
-    const added = [...new Set(roots.map(canonicalRoot))].filter((root) => !kept.has(root));
-    if (current && !added.length) return [];
-    const next: TrustedProjects = { schemaVersion: SCHEMA_VERSION, roots: [...kept, ...added].sort() };
+    const next = change(readFile());
+    if (next === undefined) return;
     try {
-      writeSecretFileAtomic(trustedProjectsPath(), `${JSON.stringify(next, null, 2)}\n`);
+      writeSecretFileAtomic(trustedProjectsPath(), `${JSON.stringify({ ...next, roots: [...new Set(next.roots)].sort() }, null, 2)}\n`);
     } catch (e) {
       throw localWriteFailure(e, trustedProjectsPath(), {});
     }
-    return added;
   } finally {
     lock.release();
   }
 }
 
-/** Whether the project at `root` is trusted: its canonical path is in the trusted projects file. When
- *  that file does not exist yet, it is written first with every root a space this machine runs or
- *  prepared is recorded at. */
+/** The one-time upgrade seed: when no trusted projects file exists, write one that trusts every root
+ *  a space was registered or prepared at, so a project that worked before upgrading keeps working.
+ *  The CLI calls it before a command runs, so a registration made after the upgrade is never seeded;
+ *  a file that exists, even an empty one, is left as it is. */
+export function seedTrustedProjects(): void {
+  if (readFile() !== undefined) return;
+  update((current) => current ?? { schemaVersion: SCHEMA_VERSION, seeded: true, roots: knownSpaceRoots().map(canonicalRoot) });
+}
+
+/** Whether the project at `root` is trusted: its canonical path equals a stored root. Stored roots
+ *  are compared as written, never resolved again, so a trusted path later replaced by a link does
+ *  not pass its trust to the link's target. With no trusted projects file, nothing is trusted. */
 export function isTrustedProject(root: string): boolean {
-  if (readFile() === undefined) addRoots([]);
-  const roots = readFile()?.roots ?? [];
   const wanted = canonicalRoot(root);
-  return roots.some((r) => canonicalRoot(r) === wanted);
+  return (readFile()?.roots ?? []).includes(wanted);
+}
+
+/** The refusal for a trusted-only entry a project folder declares while it is not trusted: the
+ *  file, what it declares, the folder and the command that trusts it. */
+export function untrustedProjectRefusal(file: string, declared: readonly string[], root: string): string {
+  return `${file} declares ${declared.join(", ")}, which a project may declare only when its folder is trusted. ${root} is not trusted, so nothing was launched. If you trust this folder, run \`cotal trust ${root}\``;
+}
+
+/** The project folder a persona file belongs to, when it sits in one: the folder holding the
+ *  `.cotal/agents` directory that contains it. Undefined for a file elsewhere. */
+export function personaProjectRoot(file: string): string | undefined {
+  const agents = dirname(resolve(file));
+  const control = dirname(agents);
+  return agents.endsWith(join(".cotal", "agents")) && dirname(control) !== control ? dirname(control) : undefined;
+}
+
+/** Why a persona file may not contribute its `launchOptions` to a launch, or undefined when it may:
+ *  a file in a project folder that is not trusted may name none, since the connector renders each
+ *  key into the host's own flags or config. A file outside any project, and a file whose project is
+ *  trusted, may. */
+export function personaLaunchOptionsRefusal(file: string, launchOptions: Record<string, unknown> | undefined): string | undefined {
+  const keys = Object.keys(launchOptions ?? {});
+  if (!keys.length) return undefined;
+  const root = personaProjectRoot(file);
+  if (root === undefined || isTrustedProject(root)) return undefined;
+  return untrustedProjectRefusal(file, keys.map((key) => `launchOptions.${key}`), root);
 }
 
 /** Trust the project at `root`, which must be an existing folder whose `.cotal`, when it has one,
- *  belongs to this account. Returns its canonical path and whether it was newly trusted. */
+ *  belongs to this account. Returns its canonical path and whether it was newly trusted. With no
+ *  trusted projects file yet, it writes one holding this root alone: only {@link seedTrustedProjects}
+ *  reads the registrations. */
 export function trustProject(root: string): { root: string; added: boolean } {
   if (!existsSync(root) || !lstatSync(canonicalRoot(root)).isDirectory())
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${root} is not a folder, so it was not trusted`, { target: { root }, remedy: "name an existing project folder" });
@@ -116,27 +164,11 @@ export function trustProject(root: string): { root: string; added: boolean } {
   const control = statSync(join(canonical, ".cotal"), { throwIfNoEntry: false });
   if (control && typeof process.getuid === "function" && control.uid !== process.getuid())
     throw new CommandFailure("refused", "PERMISSION_DENIED", `${join(canonical, ".cotal")} belongs to another user, so ${canonical} was not trusted`, { target: { root: canonical }, remedy: "trust a project folder your own account owns" });
-  return { root: canonical, added: addRoots([canonical]).length > 0 };
-}
-
-/** Trust the folder a command is about to record a space in, unless its project config already
- *  declares an MCP server or a `spawn.env` name, or cannot be read: such a folder came with that
- *  config, and only `cotal trust` trusts it. Call it before the space is recorded, so the first write
- *  of the trusted projects file does not take the folder from the records either. Returns whether the
- *  folder is now newly trusted. */
-export function trustCreatedProject(root: string): boolean {
-  const path = spaceConfigPath(root);
-  let declares = false;
-  if (existsSync(path)) {
-    try {
-      declares = trustedOnlyEntries(readCotalConfigFile(path)).length > 0;
-    } catch {
-      declares = true;
-    }
-  }
-  if (declares) {
-    if (readFile() === undefined) addRoots([]);
-    return false;
-  }
-  return trustProject(root).added;
+  let added = false;
+  update((current) => {
+    const roots = current?.roots ?? [];
+    added = !roots.includes(canonical);
+    return added ? { schemaVersion: SCHEMA_VERSION, seeded: true, roots: [...roots, canonical] } : undefined;
+  });
+  return { root: canonical, added };
 }

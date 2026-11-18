@@ -66,6 +66,7 @@ import {
   parseCommaList,
   CommandFailure,
   isTrustedProject,
+  personaLaunchOptionsRefusal,
   loadLaunchPersonaFile,
   personaFileReference,
   PersonaSourceError,
@@ -1376,7 +1377,14 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // launch, after the check, so an edit in between would launch a model the policy never saw.
   const model = values.model ?? def.model;
   const variant = values.variant ?? def.variant;
-  // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`.
+  // Opaque connector options: `--opt` flags win per key over the persona's `launchOptions:`. A
+  // persona file in a project folder that is not trusted may contribute none: the connector renders
+  // each key into the host's own flags or config.
+  const personaOptionsRefused = personaLaunchOptionsRefusal(path, def.launchOptions);
+  if (personaOptionsRefused) {
+    stderrLine("✗ ", personaOptionsRefused, c.red);
+    process.exit(1);
+  }
   const launchOptions = mergeLaunchOptions(def.launchOptions, cliLaunchOptions);
   if (redeemedEnrollment && redeemedEnrollment.bundle.actor !== requested) {
     stderrLine("✗ ", `the enrollment is for actor "${redeemedEnrollment.bundle.actor}" but this spawn names "${requested}"`, c.red);
