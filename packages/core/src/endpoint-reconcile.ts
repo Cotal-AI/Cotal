@@ -34,6 +34,7 @@ import { completeFrozenRegistrationFromSpec } from "./endpoint-service.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { KV } from "@nats-io/kv";
 import { claimEndpointRegistrationRecovery } from "./endpoint-registration-lease.js";
+import { EpEnvelopeError } from "./endpoint-error.js";
 
 /** Which guard refused. The command prints this verbatim, and the smoke asserts on it, so a refusal
  *  can never be confused with a different refusal — the failure mode where an operator reads
@@ -49,6 +50,8 @@ export type GateReconcileCondition =
   | "holder-alive"
   /** Host lease still excludes recovery, including while the executor reconnects. */
   | "registration-leased"
+  /** Stored host lease is malformed or deleted, so registration authority cannot be established. */
+  | "registration-lease-unestablishable"
   /** The sweep under-reported (no responder, truncation, unproven single-server mode). May be live. */
   | "holder-unknown"
   /** The oracle could not be consulted at all, or answered unusably (unreachable, unprovisioned,
@@ -195,9 +198,17 @@ export async function reconcileEndpointGate(opts: {
     }
   }
 
-  if (await claimEndpointRegistrationRecovery(kv, {
-    endpoint, instanceId, principal: row.principal, generation: row.generation, freezeToken,
-  }) === "active")
+  let leaseState: Awaited<ReturnType<typeof claimEndpointRegistrationRecovery>>;
+  try {
+    leaseState = await claimEndpointRegistrationRecovery(kv, {
+      endpoint, instanceId, principal: row.principal, generation: row.generation, freezeToken,
+    });
+  } catch (error) {
+    if (error instanceof EpEnvelopeError && (error.code === "internal" || error.code === "failed-precondition"))
+      throw new GateReconcileRefused("registration-lease-unestablishable", `the host registration lease cannot be established: ${error.message}; refusing before credential revocation, eviction or gate reopen`);
+    throw error;
+  }
+  if (leaseState === "active")
     throw new GateReconcileRefused("registration-leased", `registration at ${key} holds an active host lease; recovery cannot claim this operation during executor replacement`);
 
   // ---- 3. Only now: the shipped composition, in the §13.1 order, over the DEAD op's own id.

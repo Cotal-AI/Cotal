@@ -47,8 +47,10 @@ export async function readEndpointRegistrationLease(kv: KV, endpoint: string, in
     || !["active", "recovering", "released"].includes(row.state)
     || (row.state === "recovering" ? !Number.isSafeInteger(row.freezeToken) || row.freezeToken! <= 0 : row.freezeToken !== undefined))
     throw new EpEnvelopeError("internal", `registration lease ${key} does not validate`);
-  assertLifecycleToken(row.leaseId, "registration leaseId");
-  assertLifecycleToken(row.lifecycleUid, "registration lease lifecycleUid");
+  try {
+    assertLifecycleToken(row.leaseId, "registration leaseId");
+    assertLifecycleToken(row.lifecycleUid, "registration lease lifecycleUid");
+  } catch { throw new EpEnvelopeError("internal", `registration lease ${key} does not validate`); }
   return { lease: row, revision: entry.revision };
 }
 

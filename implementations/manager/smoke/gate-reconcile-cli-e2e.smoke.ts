@@ -38,7 +38,8 @@ import {
   mintMembershipObserverCreds, mintConnectionEvictorCreds,
   principalKey, standaloneConnectOpts, epAuthBucket, DEV_OWNER,
   provisionEndpointGateOpen, serveIssuanceGateKv, endpointRegistrationBarrier,
-  epgateKey, parseEndpointGate, mintLifecycleUid, mkSecretDir, writeSecretFile,
+  epgateKey, eprepairKey, parseEndpointGate, mintLifecycleUid, mkSecretDir, writeSecretFile,
+  renewEndpointRegistrationLease, epRegistrationLeaseKey, loadEndpointRepairCursor,
 } from "@cotal-ai/core";
 import { putSpaceAuth, recordMesh, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { executePrincipalLiveness } from "../../delivery/src/evict-exec.js";
@@ -189,7 +190,7 @@ try {
 
   /** The crashed-restart residue, built by the shipped barrier's own freeze — and PERSISTED as this
    *  root's manager instance identity, so the command finds it with no `--instance`. */
-  const buildResidue = async (opts: { holderLive: boolean }): Promise<{ instanceId: string; principal: string; kv: KV; conn?: NatsConnection }> => {
+  const buildResidue = async (opts: { holderLive: boolean; leased?: boolean; leaseTtlMs?: number }): Promise<{ instanceId: string; principal: string; kv: KV; conn?: NatsConnection }> => {
     const instanceId = mintLifecycleUid();
     const actor = `h${randomUUID().replace(/-/g, "").slice(0, 12)}`;
     const principal = principalKey(DEV_OWNER, actor).key;
@@ -211,6 +212,10 @@ try {
       holderConns.push(conn);
     }
 
+    if (opts.leased) await renewEndpointRegistrationLease(kv, {
+      endpoint: ENDPOINT, instanceId, principal, executorNkey: newIdentity().id,
+      lifecycleUid: instanceId, requestId: randomUUID(), expiresAt: Date.now() + (opts.leaseTtlMs ?? 300_000),
+    });
     const observed = await gate.observe();
     if (observed === null) throw new Error("the gate vanished right after provisioning");
     const frozen = await endpointRegistrationBarrier(kv, space, {
@@ -318,6 +323,53 @@ try {
     check("CLI (live holder): the gate is untouched — a running manager was not evicted", still.state === "frozen", still);
     const rows = await endpointRegistrationBarrier(kv2, space, { endpoint: ENDPOINT, instanceId, opId: mintLifecycleUid() }).enumerate();
     check("CLI (live holder): the credential family is untouched — the row is still active", rows.length === 1 && rows[0]?.state === "active", rows);
+  }
+
+  // Host lease refusals must remain pre-effect refusals through the operator's public command.
+  for (const state of ["active", "malformed", "deleted", "invalid-token"] as const) {
+    const { instanceId, kv } = await buildResidue({ holderLive: false, leased: true });
+    const key = epRegistrationLeaseKey(ENDPOINT, instanceId);
+    if (state === "malformed") await kv.put(key, new TextEncoder().encode("{"));
+    if (state === "deleted") await kv.delete(key);
+    if (state === "invalid-token") {
+      const entry = (await kv.get(key))!;
+      const lease = JSON.parse(new TextDecoder().decode(entry.value));
+      await kv.put(key, new TextEncoder().encode(JSON.stringify({ ...lease, leaseId: "invalid" })));
+    }
+    const beforeGate = (await kv.get(epgateKey(ENDPOINT, instanceId)))!;
+    const beforeLease = (await kv.get(key))!;
+    const r = reconcile();
+    const condition = state === "active" ? "registration-leased" : "registration-lease-unestablishable";
+    check(`CLI (${state} host lease): refuses before effects with an actionable lifecycle condition`,
+      r.code === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "LIFECYCLE_BLOCKED"
+      && r.envelope.target?.condition === condition && r.envelope.error.cause?.code === condition
+      && (state === "active" ? /let registration finish/i : /host.*lease/i).test(r.envelope.error.remedy ?? ""),
+      { code: r.code, out: r.out.slice(-1400), err: r.err.slice(-600) });
+    const afterGate = (await kv.get(epgateKey(ENDPOINT, instanceId)))!;
+    const afterLease = (await kv.get(key))!;
+    const rows = await endpointRegistrationBarrier(kv, space, { endpoint: ENDPOINT, instanceId, opId: mintLifecycleUid() }).enumerate();
+    check(`CLI (${state} host lease): gate, lease, family and repair cursor have no repair effects`,
+      afterGate.revision === beforeGate.revision && afterLease.revision === beforeLease.revision
+      && rows.length === 1 && rows[0]?.state === "active"
+      && await loadEndpointRepairCursor(kv, ENDPOINT, instanceId) === null,
+      { gateBefore: beforeGate.revision, gateAfter: afterGate.revision, rows });
+  }
+
+  for (const partial of [false, true]) {
+    const { instanceId, kv } = await buildResidue({ holderLive: false, leased: true, leaseTtlMs: 500 });
+    if (partial) await kv.put(eprepairKey(ENDPOINT, instanceId), new TextEncoder().encode("{"));
+    await wait(600);
+    const r = reconcile();
+    const gateEntry = (await kv.get(epgateKey(ENDPOINT, instanceId)))!;
+    const after = parseEndpointGate(gateEntry.value, epgateKey(ENDPOINT, instanceId));
+    const lease = JSON.parse(new TextDecoder().decode((await kv.get(epRegistrationLeaseKey(ENDPOINT, instanceId)))!.value));
+    const rows = await endpointRegistrationBarrier(kv, space, { endpoint: ENDPOINT, instanceId, opId: mintLifecycleUid() }).enumerate();
+    check(`CLI (expired lease${partial ? ", invalid cursor" : ""}): ${partial ? "retains unknown outcome after repair effects" : "completes guarded recovery"}`,
+      (partial ? r.code === 3 && r.envelope?.outcome === "unknown" && r.envelope.error?.code === "OPERATION_UNKNOWN" && after.state === "frozen"
+        : r.code === 0 && r.envelope?.outcome === "ok" && after.state === "open")
+      && rows.length === 1 && rows[0]?.state === "revoked" && lease.state === "recovering"
+      && (!partial || lease.freezeToken === gateEntry.revision),
+      { code: r.code, out: r.out.slice(-1000), after, rows });
   }
 
   // ---- CELL 3: the holder is DEAD — the repair completes through the public path ---------------
