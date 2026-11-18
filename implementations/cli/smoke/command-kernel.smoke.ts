@@ -14,7 +14,7 @@ import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
-import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
+import { beginExtensionNpmMutation, hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
 import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { supervisorMayServe } from "../src/lib/manager-proc.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
@@ -1391,6 +1391,39 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(fixture.events.some(event => event.includes("Switching to cotal-ai@0.13.2")));
   assert.ok(fixture.events.some(event => event.includes("✓ cotal-ai@0.13.2 in use and reconciled")));
   assert.ok(!fixture.events.some(event => event.includes("installed globally") || event.includes("into npm's global installation")));
+}
+
+// A snapshot refusal discards the prepared target before releasing update custody.
+{
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const xdg = mkdtempSync(join(tmpdir(), "cotal-staged-snapshot-refusal-"));
+  process.env.XDG_CONFIG_HOME = xdg;
+  mkdirSync(join(xdg, "cotal"), { mode: 0o700 });
+  const mutation = beginExtensionNpmMutation(true);
+  mutation.markAmbiguous("descendant completion is unproved");
+  try {
+    const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+    fixture.rt.prepareExecution = async () => ({
+      entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: "/private/execution.json",
+      async preflight() {},
+      publish() { assert.fail("snapshot refusal must not publish"); },
+      restore() { assert.fail("an unpublished target needs no rollback"); },
+      verify() { assert.fail("snapshot refusal must not verify publication"); },
+      discard() { fixture.events.push("discard-execution"); },
+    });
+    fixture.rt.prepareReplacement = async () => async () => { fixture.events.push("release-admission"); };
+    assert.equal(await executeUpdate(true, fixture.rt), 1);
+    assert.equal(fixture.events.filter(event => event === "discard-execution").length, 1);
+    assert.ok(fixture.events.indexOf("discard-execution") < fixture.events.indexOf("release-admission"));
+    assert.ok(fixture.events.includes("release-global:/global/node_modules"));
+    assert.ok(fixture.events.some(event => event.includes("update snapshot refused: extension npm mutation ended ambiguously")));
+    assert.ok(!fixture.events.some(event => event.startsWith("global:")));
+  } finally {
+    mutation.clear();
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+    rmSync(xdg, { recursive: true, force: true });
+  }
 }
 
 // Staged verification loads the live extension config, so rollback restores its snapshot first.

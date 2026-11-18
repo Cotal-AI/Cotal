@@ -24,6 +24,10 @@ for the processes that already loaded it. This does not restore files a prior ma
 already replaced. Source checkouts, Windows and version-changing update checks are unchanged.
 Later releases inherit the selected prefix, including when its publication was interrupted.
 A recorded extension npm child must finish before its source prefix can be copied.
+On POSIX, a direct npm child's observed signal exit clears its mutation marker, so
+`cotal ext seed --repair` can retry the failed seed. A live child or unproved intermediary
+completion still blocks repair and update. Older ambiguous markers without a child identity
+still require manual inspection before removal.
 After a successful update selects the complete new prefix, unused earlier release sets are removed on a best-effort basis.
 A successful update authenticates every recorded local Manager and the daemon before collecting sets, and keeps each release they still use.
 An unreadable inventory or a holder without a known release keeps all sets. Removal failure does not fail the update.
@@ -67,6 +71,7 @@ does not start a command.
 
 On a writable POSIX npm or pnpm installation, `cotal update --self` prepares a complete target
 package and its dependencies in retained storage before changing the selected execution.
+If saving the recovery snapshot refuses, the update discards the unpublished target.
 The verified target's declared read-only admission decides Manager, discovery, auth and continuity policy.
 The installed transaction checks archive integrity, entry confinement, its install binding and the native
 daemon's authenticated process lifetime. An unreadable identity or a target refusal leaves the installed

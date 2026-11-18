@@ -102,6 +102,7 @@ const files = [
   "supervise.smoke.ts",
   "removal.smoke.ts",
   "cursor-repair.smoke.ts",
+  "npm-signal.smoke.ts",
   "failed-seed.smoke.ts",
   "absent-extension.smoke.ts",
   "manifest-reset.smoke.ts",
@@ -135,6 +136,8 @@ if (process.platform === "win32") {
   excluded["absent-extension.smoke.ts"] = "its failed-seed PATH and dangling package link are symlinks, which need a privilege on Windows";
   files.splice(files.indexOf("config-modes.smoke.ts"), 1);
   excluded["config-modes.smoke.ts"] = "POSIX folder modes; Windows has no group write to repair";
+  files.splice(files.indexOf("npm-signal.smoke.ts"), 1);
+  excluded["npm-signal.smoke.ts"] = "POSIX direct npm child signals; Windows intermediary completion stays fail-closed";
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "seed-run-"));

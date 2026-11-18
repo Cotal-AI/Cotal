@@ -203,7 +203,7 @@ export function processExitIsAmbiguous(
   signal: NodeJS.Signals | null,
   intermediary: boolean,
 ): boolean {
-  return signal !== null || (intermediary && status !== 0);
+  return intermediary && (signal !== null || status !== 0);
 }
 
 export function beginExtensionNpmMutation(intermediary = process.platform === "win32"): ProcessMutation {
