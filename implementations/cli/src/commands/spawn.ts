@@ -1334,10 +1334,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     stderrLine("✗ ", `${policySpace} requires the event plane by registration policy; --no-events is not allowed`, c.red);
     process.exit(1);
   }
-  // Foreground is the operator's own in-process launch (no typed door, no epAdminReach) and is
-  // NOT gated: it keeps the default-on plane. `events` is now a tri-state (undefined when the
-  // operator passed neither flag), so default it on here the way the old boolean did.
-  const launchEvents = eventsRequired || events !== false;
   const { space, server, auth } = target;
   // Only a static mesh's seat carries an issuance whose expiry the person sets here.
   if ((values["expires-in"] !== undefined || values["expires-at"] !== undefined) && (target.mode === "user" || !auth))
@@ -1466,7 +1462,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(binaryPins[bin]?.trim() || bin));
   if (missing.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${agentType} needs ${missing.join(", ")} on PATH; nothing was launched`, {
     target: { space, path },
-    remedy: `install or repair ${missing.join(", ")} on this machine, then run the same spawn again`,
+    remedy: `Follow ${["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/"} to install ${missing.join(", ")}, then retry: ${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}`,
   });
   if (variant && !connector.supportsModelVariant) {
     stderrLine("✗ ", `${agentType} connector does not support model variants (variant)`, c.red);
@@ -1528,11 +1524,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
   // roll back. The GRANT cannot be derived yet, because it is keyed on the principal and in user
   // mode the owner is resolved inside the provisioning call below.
+  // Default events on only where supported. An explicit request or registration policy still refuses below.
+  const launchEvents = eventsRequired || events === true || (events !== false && !!connector.eventChannel);
   const eventPayloads = policy?.eventPayloads !== "withheld" && !values["no-event-payloads"] && def.eventPayloads !== false;
   if (launchEvents && !connector.eventChannel) {
     console.error(c.red(eventsRequired
       ? `✗ ${policySpace} requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
-      : `✗ connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events to launch it without one`));
+      : `✗ connector "${connector.name}" does not publish an AG-UI event plane; omit --events to launch it without one`));
     process.exit(1);
   }
   // A REMOTE user mesh (registered with `meshes add --from`) that advertises a provisioning

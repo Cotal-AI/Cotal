@@ -254,15 +254,13 @@ try {
 
   {
     const r = await openRun(["--agent", "fg-probe-silent"]);
-    // Asserted on the MESSAGE, not on the exit code. Every other refusal in this path also exits 1,
-    // so a code-only cell would pass on a missing persona, an unreachable broker, or a bad flag,
-    // and would report the CLI refusing for a reason this suite is not about.
-    check(
-      "a bare spawn on a connector that publishes no event plane REFUSES, by name and opt-out",
-      /connector "fg-probe-silent".*--no-events/.test(r.stderr),
-      r.stderr.slice(0, 300),
-    );
-    check("and it refuses BEFORE the connector is reached", r.opts === undefined, "buildLaunch ran anyway");
+    check("a bare spawn leaves an unsupported event plane unarmed", r.opts?.events === false, r.stderr.slice(0, 300));
+  }
+
+  {
+    const r = await openRun(["--agent", "fg-probe-silent", "--events"]);
+    check("explicit --events refuses an unsupported connector", /connector "fg-probe-silent".*omit --events/.test(r.stderr), r.stderr);
+    check("explicit unsupported events refuse before launch", r.opts === undefined);
   }
 
   {
@@ -371,7 +369,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 23;
+const EXPECTED = 24;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

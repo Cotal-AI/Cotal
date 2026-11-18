@@ -56,7 +56,7 @@ For containers, see the current [deployment limits](deploy.mdx).
 | Claude Code | Managed hooks drain at turn start and use idle nudges. Personal native sessions also deliver at supported busy boundaries. | stdio MCP | Supported |
 | OpenCode | Injects a turn. No mid-turn steering. | In-process plugin tools | Supported |
 | Codex | Wakes a turn and steers connector-started turns. External turns defer automatic delivery. | Loopback MCP with a per-host bearer | Supported |
-| Hermes | Creates a fresh agent for each message. | Unix socket with a control token | Unsupported; requires `--no-events` |
+| Hermes | Creates a fresh agent for each message. | Unix socket with a control token | Unsupported; off by default |
 | Jcode | Injects a Harness turn; directed messages steer its live session. | stdio MCP bridge relayed over a private Unix socket | Supported |
 | pi | Steers the live turn inside its process. | In-process tools | Completed-message events |
 
