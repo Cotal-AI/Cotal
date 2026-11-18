@@ -716,15 +716,6 @@ handler sees a message. Its native requests are CONSUMER.INFO and MSG.NEXT on th
 acks under `$JS.ACK.<DM>.<durable>.>`; it needs no presence, registry, channel, delivery, history
 or account-level JetStream row. The credential profile for such a reader is not defined here.
 
-A trusted host MAY observe space quiescence with a one-shot `space-quiescence-reader`. Its grants
-MUST name only native metadata inspection, leader auth/records/tracking reads and broker self-identity
-in one account, with no consumer creation, consumption, ACK or mutation. An observation MUST verify
-the provisioned account pin, credential lifetime and grants, required consumers, active authority,
-queued work, workflow checkpoints and armed timers. Missing, malformed, changing or incomplete
-state MUST produce unknown rather than quiescent. Retained DM/DLV mail alone does not block sleep.
-The observer MUST release its owned connection before returning, including a failed pre-INFO dial.
-A quiescent result MUST NOT replace the host's admission fence and serving-lane drain.
-
 Per-instance durable names use the principal's dash-form `<owner>-<actor>` (both tokens
 fail-loud-validated, not lossily sanitized), so a durable name-scopes to exactly one principal (§2).
 The authenticated wire identity is the principal, not the connection nkey. From v0.4, in auth mode,
