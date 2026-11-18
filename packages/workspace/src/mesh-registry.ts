@@ -356,6 +356,17 @@ export function brokerAddressKey(server: string): string | undefined {
   return `${address.hostname}:${address.port || "4222"}`;
 }
 
+/** Normalize harmless URL spelling without changing the broker's transport or TLS intent. */
+export function brokerUrlKey(server: string): string {
+  try {
+    const url = new URL(server);
+    if (url.pathname === "/") url.pathname = "";
+    return url.href;
+  } catch {
+    return server;
+  }
+}
+
 /** Canonicalize a project root for comparison. A recorded root is whatever spelling `cotal up` was
  *  run under, so the same directory reaches us by several names: a symlinked root (macOS `/var` →
  *  `/private/var`) or, on Windows, an 8.3 short name (`C:\Users\RUNNER~1\…`) — `process.cwd()` keeps

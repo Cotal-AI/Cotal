@@ -122,6 +122,22 @@ const QUESTION = "Which one?";
   check("a script's human output refuses without asking", human.status === 2 && !human.stdout.includes(QUESTION) && !human.stderr.includes(QUESTION) && /multiple meshes running/.test(human.stderr), shown(human));
 }
 
+// Equivalent URLs keep identity and unchecked registrations keep their caveat.
+{
+  for (const server of [`${A}/`, A.replace("nats:", "NATS:")]) {
+    for (const flags of [[], ["--space", "alpha"]]) {
+      const identity = run(["whoami", "--server", server, ...flags, "--json"]);
+      check(`equivalent broker ${server} ${flags} keeps open identity`, identity.status === 0 && envelope(identity)?.result?.identity?.kind === "open", shown(identity));
+    }
+  }
+  recordMesh({ space: "shared", server: A, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString(), unchecked: true });
+  const ambiguous = run(["whoami", "--server", A, "--json"]);
+  check("explicit broker ambiguity names recorded spaces and explains removing --server after use", ambiguous.status === 2 && /multiple spaces recorded/.test(envelope(ambiguous)?.error?.message ?? "") && /remove --server/.test(envelope(ambiguous)?.error?.remedy ?? ""), shown(ambiguous));
+  const unchecked = run(["whoami", "--space", "shared", "--server", `${A}/`, "--json"]);
+  check("equivalent URL does not turn unchecked mode into checked", unchecked.status === 4 && envelope(unchecked)?.result?.modeChecked === false, shown(unchecked));
+  removeMesh("shared");
+}
+
 // ── A terminal chooses, for this run only ───────────────────────────────────────────────────────────
 {
   const t = terminal(["who"]);
