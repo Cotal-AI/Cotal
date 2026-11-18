@@ -1,5 +1,26 @@
 # @cotal-ai/workspace
 
+## 0.167.0
+
+### Patch Changes
+
+- 186fc68: A command that names a space and gives `--server` the address of another space's broker is now refused with the address `--server` named and the step that reaches the named space at its recorded broker. It used to suggest `cotal up` for a space that was already running.
+- dbf310b: A stopped space whose project folder was deleted no longer sends the user to that folder. `status` says the folder no longer exists instead of naming `cotal up` there, and `send` and `history` refuse `TARGET_UNAVAILABLE` instead of reporting a missing seed. Both name moving the folder back or `cotal space forget <space>`. Run with `--space` from the folder it was renamed to, `send` and `history` give the moved-folder refusal they give there without `--space`.
+- ad38504: Protect the installation update lock from project creation and keep the home-record, presence-render, and turn-intake checks current under permissive file modes.
+- 6f3c77d: Software updates leave Managers owned by another home running without requiring that home's continuity or credentials.
+  
+  The update names the proven Manager coordinates and leaves its loaded version running until it is restarted from its own home. For a Manager registered in the calling home, only missing credentials become nonblocking. Other failures remain refusals. Connector sets stay until the authenticated update collector can prove they are unused.
+- c1cf22c: Recover damaged update preferences with a private backup and documented defaults when reading or changing them through the CLI.
+- 70842a1: `cotal service start web` works again after a dashboard crashed, was killed or could not connect. Its `web.pid` named a process that had exited, and every later start refused while `service stop` and `down` found nothing to stop. A start now clears a slot whose process has exited and claims it. A slot that may still front a running process keeps refusing, and the refusal names the file.
+- Updated dependencies [ded2be1]
+- Updated dependencies [211142b]
+- Updated dependencies [eead187]
+- Updated dependencies [6c2c27f]
+- Updated dependencies [7bf5e73]
+- Updated dependencies [d97f549]
+- Updated dependencies [3705c35]
+  - @cotal-ai/core@0.167.0
+
 ## 0.166.3
 
 ### Patch Changes
