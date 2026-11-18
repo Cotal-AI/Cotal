@@ -1,5 +1,12 @@
 # Upgrading a running deployment
 
+## Agent names that start with a hyphen
+
+An agent name that starts with `-` is now refused on every mesh. Open and static meshes accepted
+one before. The manager refuses it at spawn, at a persona definition and when it restores a
+retained agent, and `cotal spawn --name` refuses it before launching anything. Rename such a
+persona, its `name:` field included, to a name that starts with a letter, digit or `_`.
+
 ## Durable channel leave after 0.166.0
 
 From 0.166.0 a channel leave retires every open durable membership the principal holds on that

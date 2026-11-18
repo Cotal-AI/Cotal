@@ -976,6 +976,9 @@ try {
     const rTravId = await A.call("spawn", { name: "w1", agent: "e2e-stub", identity: "../evil", events: false });
     check("a traversal identity override refuses at the FINAL allocation-site grammar",
       rTravId.reply.ok === false && String(rTravId.reply.error?.message ?? "").includes("unsafe name"), rTravId.reply);
+    const rDashId = await A.call("spawn", { name: "w1", agent: "e2e-stub", identity: "--session", events: false });
+    check("an identity starting with \"-\" refuses on a static mesh before any runtime receives it",
+      rDashId.reply.ok === false && String(rDashId.reply.error?.message ?? "").includes('may not start with "-"'), rDashId.reply);
     const rTravDef = await A.call("define-persona", { name: "../evil", persona: "x" });
     check("a traversal define-persona name refuses before any file write",
       rTravDef.reply.ok === false && String(rTravDef.reply.error?.message ?? "").includes("unsafe name"), rTravDef.reply);

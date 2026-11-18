@@ -637,7 +637,9 @@ export function firstFreeName(base: string, taken: (name: string) => boolean, op
  *
  *  Two constraints, and they are not the same constraint:
  *   - ALWAYS: the name becomes a `.cotal/agents/<name>.md` path, so it must be a bare token and
- *     never a path — this is the traversal guard, and it holds in every mode.
+ *     never a path — this is the traversal guard, and it holds in every mode. It also never starts
+ *     with `-`: terminal runtimes hand the name to other programs as an argument, where a leading
+ *     `-` reads as an option.
  *   - USER MODE ONLY: the name is additionally the mesh ACTOR, so it must be one the exchange can
  *     serve: the principal grammar (no `-`) AND the 64-character rail bound. Static/open mode keys
  *     the actor on the freshly minted nkey instead of the name, so the narrow rule does not apply
@@ -652,6 +654,8 @@ export function firstFreeName(base: string, taken: (name: string) => boolean, op
 export function spawnNameError(name: string, opts: { userMode: boolean }): string | undefined {
   if (!/^[A-Za-z0-9_-]+$/.test(name))
     return `unsafe name ${JSON.stringify(name)} (allowed: letters, digits, _ -)`;
+  if (name.startsWith("-"))
+    return `unsafe name ${JSON.stringify(name)}: a name may not start with "-", because runtimes pass it to other commands as an argument`;
   if (!opts.userMode) return undefined;
   try {
     assertBoundedOwner(name, "actor");

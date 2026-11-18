@@ -206,7 +206,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--space <s>` | resolved mesh | Target space |
 | `--server <url>` | registry entry | Broker URL override |
 | `--creds <path>` | none | Retained flag for managed launches with `-d` or `--on`. Raw credentials alone cannot provide supported off-registry Manager control authority; an endpoint-caller triple is required. Refused for a spawn in this terminal and from a managed seat's own shell |
-| `--name <n>`, `-n` | persona's `name:` | Presence-name override (does not choose the persona) |
+| `--name <n>`, `-n` | persona's `name:` | Presence-name override (does not choose the persona). A name that starts with `-` is refused |
 | `--file <persona-file>`, `-f` | none | Persona file to launch, on the execution host. A value with no path separator that does not end in `.md` is read as `./<value>`. Refused together with a positional persona, and when the file is a Mesh manifest |
 | `--config <persona-or-path>` | none | Reserved for internal launchers that set `COTAL_MANAGED_HANDOFF_FILE`, `COTAL_ENROLLMENT_FILE` or `COTAL_ENROLLMENT_URL`; any other use is refused and names `--file` |
 | `--harness <connector>`, `-H` | persona's `agent:`, else the [`harness` preference](config.mdx#preferences), else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, and so on). `--agent` is the legacy spelling; giving both is refused |
