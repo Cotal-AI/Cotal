@@ -2448,8 +2448,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     await stopManager(space).then(() => clearManagerArtifacts(space)).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
     await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
     // Unrecording (and the exit code below) both depend on WHY the broker is gone. `stopping` is
-    // true only for the intended shutdown `stop()` drives (Ctrl-C, SIGTERM) — everything else here
-    // (a crash, an OOM kill, a signal from outside `up`) leaves the record and its store in place.
+    // true only for the intended shutdown `stop()` drives (Ctrl-C, SIGTERM). An external `down`
+    // owns its registry sweep. A crash, an OOM kill or a signal leaves the record and store in place.
     if (stopping) {
       // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
       // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
@@ -2464,6 +2464,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (getCurrent() === space) clearCurrent();
       }
       if (activationFinished) process.exit(stopSignal === "SIGTERM" ? 143 : 130);
+    } else if (code === 0) {
+      // An external `down` stops the broker cleanly and owns the registry sweep that follows.
+      // Do not race that sweep with a crash diagnostic claiming the record stays offline.
+      if (activationFinished) process.exit(0);
     } else {
       // The record is kept ON PURPOSE: it still names the store this broker opened, so a repair
       // `up` reopens that SAME store instead of falling back to the root's default, and a
@@ -2488,10 +2492,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       stderrLine("✗ ", `nats-server exited unexpectedly (${detail})${outcome}`, c.red);
       // A foreground broker under `Restart=on-failure` must exit non-zero on a crash so the unit
       // restarts it; exiting 0 here (as an unconditional `code ?? 0` used to) looked like a clean
-      // stop and left the unit sitting dead. A broker that exited 0, as after an external `down`,
-      // still exits 0. Any other exit is a failed run, 5, not the broker's own code, which the exit
-      // table would read as a usage error (1) or a refusal (2).
-      if (activationFinished) process.exit(code === 0 ? 0 : exitCode("failed", "OPERATION_FAILED"));
+      // stop and left the unit sitting dead. An abnormal exit is a failed run, 5, not the broker's
+      // own code, which the exit table would read as a usage error (1) or a refusal (2).
+      if (activationFinished) process.exit(exitCode("failed", "OPERATION_FAILED"));
     }
   });
 

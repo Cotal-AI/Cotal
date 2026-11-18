@@ -184,11 +184,11 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.equal(down.code, 0, "own-root public down --with-agents succeeds after resume and serving readiness"); passed++;
       await until(() => state.exited, 20_000, () => err.slice(-3000));
       await waitForOwnedChild(() => state.closed, 3_000, `${root}: external down streams drained`);
-      assert.equal(state.code, 0, "observed N4: external down propagates clean broker exit0 despite unexpected diagnostic"); passed++;
-      assert.match(err, /exited unexpectedly/, "known N4 unexpected-exit diagnostic retained"); passed++;
+      assert.equal(state.code, 0, "external down propagates a clean broker exit"); passed++;
+      assert.doesNotMatch(err, /exited unexpectedly|stays recorded|repair:/, "external down emits no crash or retention diagnostic"); passed++;
       assert.equal(await portOpen(port), false, "own-root down closed listener"); passed++;
       assert.equal([...owned.values()].some(live), false, "own-root down removed exact owned births"); passed++;
-      console.log(`${refusalBoundary ? "PASS" : "INCONCLUSIVE"} foreground-up-signals ${name}: native startup-capability refusal=${refusalBoundary}, resumed serving, explicit private down, N4 unexpected diagnostic with exit${state.code}`);
+      console.log(`${refusalBoundary ? "PASS" : "INCONCLUSIVE"} foreground-up-signals ${name}: native startup-capability refusal=${refusalBoundary}, resumed serving, explicit private down, clean exit${state.code}`);
       return refusalBoundary;
     }
     ownRecords();
