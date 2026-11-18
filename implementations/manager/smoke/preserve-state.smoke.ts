@@ -1180,6 +1180,50 @@ let openInventory: ManagerResumeAgent;
   check("a failed static authority commit cannot be finalized", !cannotFinalize.ok && /no successful commit/.test(cannotFinalize.error ?? ""), cannotFinalize.error);
 }
 
+// A resumed seat whose persona file sits in a project folder reads its launch options from that file
+// again, so the same trust rule as start applies: refused while the folder is not trusted, launched
+// once it is. A private config folder holds the trust list for this block only.
+{
+  const prevXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "cotal-preserve-xdg-"));
+  try {
+    const { trustProject } = await import("@cotal-ai/workspace");
+    const auth = await createSpaceAuth("preserve-smoke");
+    const identity = newIdentity();
+    const credsDir = agentCredsDir(root, "preserve-smoke");
+    mkdirSync(credsDir, { recursive: true });
+    const credsPath = join(credsDir, "options-worker.creds");
+    writeFileSync(credsPath, await mintCreds(auth, identity, "agent", { lifecycleUid: uidFor(identity.id) }), { mode: 0o600 });
+    const optionsPersona = join(agentsDir, "options-worker.md");
+    writeFileSync(optionsPersona, "---\nname: worker\nlaunchOptions:\n  mcp-config: ./servers.json\n---\nworker persona\n");
+    const entry: ManagerResumeAgent = {
+      ...openInventory,
+      name: "options-worker",
+      identity: { mode: "static", id: identity.id, lifecycleUid: uidFor(identity.id), credential: { kind: "file", path: credsPath, sha256: digest(credsPath) } },
+      launch: { ...openInventory.launch, source: { kind: "persona", ref: "worker", configPath: optionsPersona, configSha256: digest(optionsPersona) } },
+      dependencies: [optionsPersona],
+    };
+    const untrusted = managerWith((name) => fakeHandle(name));
+    (untrusted as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const refused = await untrusted.resumePreserved(inventoryOf(entry));
+    const refusal = refused.agents[0]?.reply.error ?? refused.error ?? "";
+    check("resume refuses a project persona's launch options while its folder is not trusted",
+      !refused.ok && capturedLaunch === undefined && /launchOptions\.mcp-config/.test(refusal) && refusal.includes(`cotal trust ${root}`), { refusal, launched: capturedLaunch !== undefined });
+
+    trustProject(root);
+    const trusted = managerWith((name) => fakeHandle(name));
+    (trusted as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const passed = await trusted.resumePreserved(inventoryOf(entry));
+    check("and resumes it, launch options included, once the folder is trusted",
+      passed.ok && capturedLaunch?.launchOptions?.["mcp-config"] === "./servers.json", { reply: passed.agents[0]?.reply ?? passed.error, launchOptions: capturedLaunch?.launchOptions });
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdg;
+  }
+}
+
 // User mode delegates to the provider's read-only retained validator and never grants a replacement.
 {
   const manager = managerWith((name) => fakeHandle(name));
