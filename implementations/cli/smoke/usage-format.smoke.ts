@@ -220,8 +220,10 @@ for (const [args, usage, foreign] of [
     return clean(out).split(/\r?\n/);
   };
   const command = "cotal service add <name> --preset exec-endpoint --contract <file> --handler <file>";
+  // The list was given --space, so its next: names it too (#7642).
+  const listedCommand = `${command} --space widenext`;
   const listed = await at80(["service", "--space", "widenext"]);
-  check(`cotal service on 80 columns keeps the ${command.length}-column exec-endpoint next: command on one line`, created.status === 0 && listed.some((line) => line.trim() === command), { created: shown(created), listed });
+  check(`cotal service on 80 columns keeps the ${listedCommand.length}-column exec-endpoint next: command on one line`, created.status === 0 && listed.some((line) => line.trim() === listedCommand), { created: shown(created), listed });
   for (const flags of [[], ["--plain"]]) {
     const refused = await at80(["service", "add", "myep", "--preset", "exec-endpoint", "--space", "widenext", ...flags]);
     check(`the service add refusal on 80 columns${flags.length ? " under --plain" : ""} keeps its remedy command on one line`, refused.some((line) => line.trim() === command.replace("<name>", "myep")), refused.slice(0, 16));
