@@ -9,6 +9,8 @@
  *
  * Run: pnpm smoke:principal-route   (no broker; part of smoke:ci)
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { encodeUser } from "@nats-io/jwt";
 import { createAccount, createUser } from "@nats-io/nkeys";
 import {
@@ -295,5 +297,12 @@ const withRows = await jwtBytes(fixture("interactive"));
 console.log(`  maximum-capability fixture as an interactive mint: ${withRows} JWT bytes, ${withRows - without} of them the principal-route rows (mint bound ${MAX_MINTED_JWT_BYTES})`);
 check("the maximum-capability fixture with the principal-route rows stays under the mint bound", withRows < MAX_MINTED_JWT_BYTES, { withRows, without, bound: MAX_MINTED_JWT_BYTES });
 check("the interactive rows add 2 serve rows, 4 owner rows and 1 reply read", prinRows(fixture("interactive")).length - prinRows(fixture()).length === 7);
+
+// ── the published schema: the presence `prompts` counts are non-negative integers (SPEC §6) ──
+const schema = JSON.parse(readFileSync(fileURLToPath(new URL("../../../spec/cotal.schema.json", import.meta.url)), "utf8")) as
+  { definitions: Record<string, { properties: Record<string, { type?: string; minimum?: number }> }> };
+const counts = schema.definitions.PresencePrompts?.properties;
+check("spec/cotal.schema.json gives prompts.open and prompts.seq as non-negative integers",
+  ["open", "seq"].every((k) => counts?.[k]?.type === "integer" && counts[k].minimum === 0), counts);
 
 finish();
