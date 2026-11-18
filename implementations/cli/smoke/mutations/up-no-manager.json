@@ -7,14 +7,14 @@
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/up-no-manager.json",
   "why": [
     "The suite drives the shipped CLI on open and authenticated brokers and checks process records and startup reports.",
-    "Bypassing the broker-only branch in `ensureControlPlane` skips recording the manager omission and lets startup reach `ensureManager`. Delivery setup and the refusal for an already-live manager are unchanged."
+    "Removing the broker-only branch in `ensureControlPlane` skips recording the manager omission and lets startup reach `ensureManager`. Delivery setup and the refusal for an already-live manager are unchanged."
   ],
   "mutations": [
     {
       "name": "drop the flag's effect in ensureControlPlane (ensureManager runs anyway)",
       "file": "implementations/cli/src/lib/delivery-proc.ts",
-      "find": "  if (o.noManager) {\n",
-      "replace": "  if (false) {\n",
+      "find": "  if (o.noManager) {\n    const brokerPath = canonicalLocalProcessPath(\"nats.pid\", ctx(space));\n    const brokerPid = existsSync(brokerPath) ? parsePid(readFileSync(brokerPath, \"utf8\")) : undefined;\n    if (brokerPid !== undefined) writePidPair(omitted, brokerPid);\n    return { running: false, delivery: deliveryStarted, responderBound: delivery.responderBound };\n  }\n",
+      "replace": "",
       "expectRed": "a --no-manager open refresh stays broker-only and exits 0",
       "cell": "a --no-manager open refresh stays broker-only and exits 0",
       "command": "pnpm --filter cotal-ai... build && pnpm smoke:up-stack:live",
