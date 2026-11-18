@@ -160,8 +160,8 @@ for (const bad of ["../escape", "a/b", "a\\b", "with space", "dot.name", ""]) {
 }
 
 // Terminal runtimes pass the name to another program as an argument (herdr's `tab rename <id>
-// <name>`), where a leading `-` is read as an option: herdr takes `--session` there as its own flag.
-// The door refuses it in static mode too, where the alphabet alone allows it, and says why.
+// <name>`), where a leading `-` is read as an option. The door refuses it in static mode too, where
+// the alphabet alone allows it, and says why.
 for (const dashed of ["--session", "-h", "-", "-x_1"]) {
   const refusal = spawnNameError(dashed, { userMode: false });
   check(`a name starting with "-" (${JSON.stringify(dashed)}) is refused in static/open mode, naming the leading "-"`,
