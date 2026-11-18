@@ -1,5 +1,17 @@
 # @cotal-ai/connector-core
 
+## 0.168.0
+
+### Minor Changes
+
+- 296ea4d: A connector can now hold its agent's harness prompts, such as "Allow this command?", and let an authorized session see and answer them over the control surface, with the answer going to the agent's own process.
+  
+  `@cotal-ai/connector-core` adds the prompt desk: `openPromptDesk(ep, { warn })` serves the agent's `agent` endpoint (`prompts`, `prompt` and `prompt-answer`) on the principal route and keeps the presence field `prompts: { open, seq }`. It knows no harness. An adapter opens a prompt per native dialog with an offer bound and a settle bound, runs its own rules in `check`, hands the one accepted answer to its harness in `deliver`, reports what the harness was then seen to do with `settle`, and frees what it holds in `end`, which comes once per prompt. The desk runs the state table with one order rule, checks every answer in a fixed order, makes a retried answer safe, bounds an answer's reply at 10 s, holds at most 32 prompts open and remembers 32 closed ones, measures every summary against 4096 bytes when a prompt opens, and serves only on a connection whose `max_payload` is at least 524288 bytes, checked again on every reconnect. A hook that resolves, rejects or returns a value it should not never escapes as an unhandled rejection, a logger that throws stops no close, the timers measure from the prompt's own times, and a closed prompt lets go of its hooks. No connector opens a desk yet; the Claude adapter follows. SPEC §13.22 now specifies the desk's answer checks, its bounds and what moves a prompt.
+
+### Patch Changes
+
+- d443ef1: Keep connector inbox handling in a dedicated internal component while preserving MeshAgent's delivery and recall methods.
+
 ## 0.167.0
 
 ### Patch Changes

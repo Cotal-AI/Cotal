@@ -1,5 +1,21 @@
 # @cotal-ai/cli
 
+## 0.168.0
+
+### Patch Changes
+
+- 52e6c81: Install host-compatible optional dependencies despite npm's omit=optional setting so repeated updates do not reinstall every built-in connector.
+- cfd5730: Keep daemon services on the invoked Node path so distribution Node upgrades do not strand them on a removed versioned executable. Retain only a same-directory alias of the running runtime, avoiding version managers' transient shell directories. Provide explicit service inspection and replacement guidance for older units without hiding an absent daemon endpoint behind a service lookup failure.
+- f769fff: Explain how to install with npm as a normal user when distribution Node has a root-owned global prefix.
+- 5723f51: When `cotal up` cannot read the version of the nats-server it would start, it now reports a known failure and starts nothing, so a later `cotal down` has nothing to refuse. A first `up` under a low open-file limit on Node 24 used to fail `OPERATION_UNKNOWN` and leave an unconfirmed launch, and `down` then refused. It now fails `OPERATION_FAILED`, exit 5, with raising `ulimit -n` as the next step. Any other version check failure refuses `DEPENDENCY_UNAVAILABLE` and names its cause.
+- b31e1e8: Let updates finish when an unrelated working folder is removed, preserving the project and relative credential selection.
+- 9d5a50b: `cotal service add web --preset web` now refuses `--posting-creds` without `--no-read-only`, or `--no-read-only` without `--posting-creds`, and saves nothing. Before, it saved the definition and every start was refused. A start of a saved dashboard definition with either problem, or with a wildcard `--host`, now names the one condition that failed and the `cotal service remove` and `cotal service add` that change it. A wildcard host no longer prints the usage of `service start`. A preset refusal while `service add` builds a definition no longer prints the command's usage after a remedy that already says the whole fix.
+- Updated dependencies [4ad482d]
+- Updated dependencies [6546892]
+- Updated dependencies [b0e70a5]
+  - @cotal-ai/core@0.168.0
+  - @cotal-ai/workspace@0.168.0
+
 ## 0.167.0
 
 ### Patch Changes
