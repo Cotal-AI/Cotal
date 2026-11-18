@@ -1644,7 +1644,7 @@ async function runGlobalProcess(
     child.once("error", (e) => { error = e.message; });
     if (child.pid !== undefined) {
       try {
-        mutation.markLive(child.pid);
+        mutation.markLive(child.pid, process.platform !== "win32");
         published = true;
       } catch (e) {
         error = `could not journal ${operation} child ${child.pid}: ${(e as Error).message}`;
@@ -1654,13 +1654,13 @@ async function runGlobalProcess(
     const closed = await new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolveClose) =>
       child.once("close", (status, signal) => resolveClose({ status, signal })),
     );
-    if (published) mutation.complete(
+    if (published) while (!mutation.complete(
       closed.status,
       closed.signal,
       closed.signal !== null
         ? `${operation} child terminated by ${closed.signal}`
         : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,
-    );
+    ) && process.platform !== "win32") await new Promise(resolve => setTimeout(resolve, 50));
     return { status: error ? null : closed.status, stdout, stderr, ...(error ? { error } : {}) };
   } catch (e) {
     return { status: null, stdout: "", stderr: "", error: message(e) };

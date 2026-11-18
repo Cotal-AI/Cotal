@@ -1,9 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, constants, type Stats } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, constants, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
 import { acquireLock, acquireLockAsync, inspectLock, processStartToken, type AcquireOptions, type HeldLock } from "./advisory-lock.js";
 import { extensionMutationLockPath } from "./extensions.js";
 import { claimUpdateClosureAccess } from "./update-closure.js";
+import { darwinProcessBinding } from "./darwin-process.js";
 
 function extensionUpdatePassLockPath(): string {
   return `${extensionMutationLockPath()}.update`;
@@ -188,13 +189,15 @@ export function extensionUpdatePassOwnedBy(pid: number): boolean {
 
 export type ProcessMutationRecord =
   | { readonly phase: "pending"; readonly owner: number; readonly ownerStart?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string }
-  | { readonly phase: "live"; readonly owner: number; readonly ownerStart?: string; readonly pid: number; readonly start?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string }
+  | { readonly phase: "live"; readonly owner: number; readonly ownerStart?: string; readonly pid: number; readonly start?: string; readonly processGroup?: true; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string }
   | { readonly phase: "ambiguous"; readonly owner: number; readonly nonce: string; readonly operation?: string; readonly reason: string };
 
 export interface ProcessMutation {
-  markLive(pid: number): void;
+  /** `processGroup` requires a POSIX child spawned with `detached: true`. */
+  markLive(pid: number, processGroup?: boolean): void;
   markAmbiguous(reason: string): void;
-  complete(status: number | null, signal: NodeJS.Signals | null, ambiguityReason: string): void;
+  /** False keeps custody: a recorded group still exists, or intermediary completion is unproved. */
+  complete(status: number | null, signal: NodeJS.Signals | null, ambiguityReason: string): boolean;
   clear(): void;
 }
 
@@ -203,7 +206,7 @@ export function processExitIsAmbiguous(
   signal: NodeJS.Signals | null,
   intermediary: boolean,
 ): boolean {
-  return intermediary && (signal !== null || status !== 0);
+  return signal !== null || (intermediary && status !== 0);
 }
 
 export function beginExtensionNpmMutation(intermediary = process.platform === "win32"): ProcessMutation {
@@ -301,15 +304,16 @@ export function inspectGlobalUpdateChild(root: string, localAccounts?: UpdateCus
 }
 
 /** Journal an actual mutating child across wrapper death. Pending closes spawn->PID publication;
- * live tracks the child itself; ambiguous is operator-repaired and never auto-cleared. */
+ * live tracks the child and its isolated group; ambiguous is operator-repaired and never auto-cleared. */
 function beginProcessMutation(path: string, operation: string, intermediary: boolean): ProcessMutation {
   assertNoProcessMutation(path, operation);
   const nonce = randomBytes(12).toString("hex");
   const ownerStart = processStartToken(process.pid);
   writeMarker(path, { phase: "pending", owner: process.pid, ownerStart, intermediary, nonce, operation });
   return {
-    markLive(pid) {
+    markLive(pid, processGroup = false) {
       if (!positiveInteger(pid)) throw new Error(`invalid ${operation} child pid ${pid}`);
+      if (processGroup && (process.platform === "win32" || pid === 1)) throw new Error(`invalid ${operation} process group ${pid}`);
       const current = readMarker(path);
       if (!current || current.nonce !== nonce)
         throw new Error(`${operation} marker changed before the child PID was published`);
@@ -319,6 +323,7 @@ function beginProcessMutation(path: string, operation: string, intermediary: boo
         ownerStart,
         pid,
         start: processStartToken(pid),
+        ...(processGroup ? { processGroup: true as const } : {}),
         intermediary,
         nonce,
         operation,
@@ -331,14 +336,20 @@ function beginProcessMutation(path: string, operation: string, intermediary: boo
       writeMarker(path, { phase: "ambiguous", owner: process.pid, nonce, operation, reason });
     },
     complete(status, signal, ambiguityReason) {
+      const current = readMarker(path);
+      if (!current || current.nonce !== nonce)
+        throw new Error(`${operation} marker changed before completion was recorded`);
+      if (current.phase === "live" && current.processGroup) {
+        if (processGroupAlive(current.pid)) return false;
+        removeMarker(path, nonce);
+        return true;
+      }
       if (processExitIsAmbiguous(status, signal, intermediary)) {
-        const current = readMarker(path);
-        if (!current || current.nonce !== nonce)
-          throw new Error(`${operation} marker changed before ambiguity was recorded`);
         writeMarker(path, { phase: "ambiguous", owner: process.pid, nonce, operation, reason: ambiguityReason });
-        return;
+        return false;
       }
       removeMarker(path, nonce);
+      return true;
     },
     clear() {
       removeMarker(path, nonce);
@@ -348,7 +359,7 @@ function beginProcessMutation(path: string, operation: string, intermediary: boo
 
 function assertNoProcessMutation(path: string, operation: string, deadline = 0): void {
   let marker = readMarker(path);
-  while (marker?.phase === "live" && sameProcessAlive(marker.pid, marker.start) && Date.now() < deadline) {
+  while (marker?.phase === "live" && mutationAlive(marker) && Date.now() < deadline) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Math.min(100, deadline - Date.now())));
     marker = readMarker(path);
   }
@@ -361,7 +372,7 @@ function assertNoProcessMutation(path: string, operation: string, deadline = 0):
       throw new Error(`${marker.operation ?? operation} is starting under pid ${marker.owner} - retry once it finishes`);
     throw new Error(`${marker.operation ?? operation} may have been orphaned before publishing its child PID (${path}) - if no descendant process is running, remove the marker and retry`);
   }
-  if (sameProcessAlive(marker.pid, marker.start))
+  if (mutationAlive(marker))
     throw new Error(`${marker.operation ?? operation} is still running (pid ${marker.pid}) - retry once it finishes`);
   if (marker.intermediary) {
     const ownerAlive = sameProcessAlive(marker.owner, marker.ownerStart);
@@ -372,6 +383,44 @@ function assertNoProcessMutation(path: string, operation: string, deadline = 0):
     );
   }
   removeMarker(path, marker.nonce);
+}
+
+function mutationAlive(marker: Extract<ProcessMutationRecord, { phase: "live" }>): boolean {
+  return marker.processGroup ? processGroupAlive(marker.pid) : sameProcessAlive(marker.pid, marker.start);
+}
+
+function processGroupAlive(pid: number): boolean {
+  if (process.platform === "win32") throw new Error("POSIX process group custody is unavailable on Windows");
+  try { process.kill(-pid, 0); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    if ((error as NodeJS.ErrnoException).code === "EPERM") return true;
+    throw error;
+  }
+  // Zombies cannot write or fork. Some init processes retain them indefinitely.
+  if (process.platform === "darwin") {
+    const members = darwinProcessBinding().groupMembers(pid);
+    if (members === undefined) throw new Error(`process group ${pid} is unreadable`);
+    return members.length !== 0;
+  }
+  if (process.platform !== "linux") return true;
+  const entries = readdirSync("/proc").filter(entry => /^\d+$/.test(entry));
+  for (const entry of entries) {
+    let stat: string;
+    try { stat = readFileSync(`/proc/${entry}/stat`, "utf8"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+      throw error;
+    }
+    const end = stat.lastIndexOf(") ");
+    const fields = stat.slice(end + 2).trim().split(/\s+/);
+    if (end < 0 || !/^\d+$/.test(fields[2] ?? "")) throw new Error(`process ${entry} has unreadable group membership`);
+    if (Number(fields[2]) === pid && fields[0] !== "Z" && fields[0] !== "X") return true;
+  }
+  // A member could have forked and exited between listing /proc and reading its state.
+  // Require an unchanged census before treating the remaining group as zombies only.
+  const after = readdirSync("/proc").filter(entry => /^\d+$/.test(entry));
+  return entries.length !== after.length || entries.some((entry, index) => entry !== after[index]);
 }
 
 function sameProcessAlive(pid: number, start: string | undefined): boolean {
@@ -409,8 +458,8 @@ function validMarker(value: unknown): value is ProcessMutationRecord {
   }
   if (marker.phase === "live") {
     return positiveInteger(marker.pid) && optionalString(marker.ownerStart) && optionalString(marker.start) &&
-      typeof marker.intermediary === "boolean" &&
-      exactKeys(marker, ["phase", "owner", "ownerStart", "pid", "start", "intermediary", "nonce", "operation"]);
+      typeof marker.intermediary === "boolean" && (marker.processGroup === undefined || (marker.processGroup === true && marker.pid !== 1)) &&
+      exactKeys(marker, ["phase", "owner", "ownerStart", "pid", "start", "processGroup", "intermediary", "nonce", "operation"]);
   }
   if (marker.phase === "ambiguous") {
     return typeof marker.reason === "string" && marker.reason.length > 0 && exactKeys(marker, ["phase", "owner", "nonce", "operation", "reason"]);

@@ -215,12 +215,13 @@ if (process.platform !== "win32") {
     assert.equal(processExitIsAmbiguous(1, null, true), true, "a Windows npm intermediary failure is ambiguous");
     assert.equal(processExitIsAmbiguous(0, null, true), false);
     for (const signal of ["SIGKILL", "SIGTERM"] as const) {
-      assert.equal(processExitIsAmbiguous(null, signal, false), false, "a direct child's observed signal exit proves it ended");
+      assert.equal(processExitIsAmbiguous(null, signal, false), true, "a signal exit without group custody cannot prove descendant completion");
       assert.equal(processExitIsAmbiguous(null, signal, true), true, "an intermediary's signal exit does not prove descendant completion");
       const direct = beginExtensionNpmMutation(false);
       direct.markLive(process.pid);
       direct.complete(null, signal, "direct child terminated");
-      assert.equal(existsSync(path), false, "direct-child completion clears its own marker");
+      assert.throws(() => claimExtensionMutationLock(), /ended ambiguously/);
+      direct.clear();
       const intermediary = beginExtensionNpmMutation(true);
       intermediary.markLive(process.pid);
       intermediary.complete(null, signal, "descendant completion is unproved");
@@ -239,7 +240,7 @@ if (process.platform !== "win32") {
     writeFileSync(path, JSON.stringify({ ...live, nonce: "f".repeat(24) }));
     assert.throws(
       () => failedTransition.complete(1, null, "descendant completion is unproved"),
-      /marker changed before ambiguity was recorded/,
+      /marker changed before completion was recorded/,
     );
     assert.equal(existsSync(path), true, "a failed ambiguity transition preserves the prior live evidence");
     assert.throws(() => claimExtensionMutationLock(), /is still running/);
@@ -387,6 +388,52 @@ if (process.platform !== "win32") {
   });
   assert.equal(live.status, 0, `${live.stdout}\n${live.stderr}`);
   assert.match(live.stdout, /"selected":"99\.0\.0"/);
+}
+
+if (process.platform !== "win32") {
+  const { updateRuntime } = await import("../src/commands/update.js");
+  for (const operation of ["install", "reconcile"] as const) {
+    const root = mkdtempSync(join(tmpdir(), `cotal-global-descendant-${operation}-`));
+    const ready = join(root, "ready"), release = join(root, "release"), done = join(root, "done");
+    const marker = join(root, ".cotal-update-child");
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "cotal-global-descendant", version: "1.0.0", scripts: { postinstall: "node hold.cjs" } }));
+    writeFileSync(join(root, "hold.cjs"), `
+const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid));
+const timer = setInterval(() => {
+  if (!fs.existsSync(${JSON.stringify(release)})) return;
+  clearInterval(timer);
+  fs.writeFileSync(${JSON.stringify(done)}, "finished");
+}, 20);
+`);
+    let settled = false;
+    const pending = updateRuntime.spawnGlobal(root, operation, "npm", ["install", "--prefix", root, "--no-audit", "--no-fund"], process.env)
+      .then(result => { settled = true; return result; });
+    try {
+      await waitFor(() => existsSync(ready), `${operation} lifecycle publication`, 60_000);
+      const descendant = Number(readFileSync(ready, "utf8"));
+      const record = JSON.parse(readFileSync(marker, "utf8")) as { pid: number; processGroup?: boolean };
+      assert.equal(record.processGroup, true);
+      process.kill(record.pid, "SIGKILL");
+      await waitFor(() => !pidAlive(record.pid), `${operation} npm reaping`);
+      assert.ok(pidAlive(descendant));
+      await sleep(100);
+      assert.equal(settled, false, "updater cannot clean up or roll back while the group writes");
+      const before = readFileSync(marker, "utf8");
+      assert.throws(() => claimGlobalNpmUpdateLock(root, { waitMs: 50 }), /still running/);
+      assert.equal(readFileSync(marker, "utf8"), before);
+      writeFileSync(release, "release");
+      const result = await pending;
+      assert.notEqual(result.status, 0);
+      assert.ok(existsSync(done));
+      assert.equal(existsSync(marker), false);
+      claimGlobalNpmUpdateLock(root)();
+    } finally {
+      writeFileSync(release, "release");
+      await pending;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
 }
 
 console.log("update-concurrency.smoke: all assertions passed");

@@ -115,7 +115,7 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
   let published = false;
   let preservePending = false;
   try {
-    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd, env, windowsVerbatimArguments }));
+    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd, env, windowsVerbatimArguments, detached: process.platform !== "win32" }));
     let spawnError = "";
     let stdout = "";
     let stderr = "";
@@ -124,7 +124,7 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
     child.once("error", (e) => { spawnError = `spawn error: ${e.message}\n`; });
     if (child.pid !== undefined) {
       try {
-        mutation.markLive(child.pid);
+        mutation.markLive(child.pid, process.platform !== "win32");
         published = true;
       } catch (e) {
         spawnError = `could not journal npm child ${child.pid}: ${(e as Error).message}\n`;
@@ -134,13 +134,13 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
     const closed = await new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolveClose) =>
       child.once("close", (status, signal) => resolveClose({ status, signal })),
     );
-    if (published) mutation.complete(
+    if (published) while (!mutation.complete(
       closed.status,
       closed.signal,
       closed.signal !== null
         ? `npm intermediary terminated by ${closed.signal}`
         : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,
-    );
+    ) && process.platform !== "win32") await new Promise(resolve => setTimeout(resolve, 50));
     return { status: spawnError ? null : closed.status, output: `${spawnError}${stdout}${stderr}`.trim() };
   } catch (e) {
     return { status: null, output: `spawn error: ${(e as Error).message}` };

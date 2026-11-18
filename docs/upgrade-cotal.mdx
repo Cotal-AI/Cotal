@@ -24,10 +24,12 @@ for the processes that already loaded it. This does not restore files a prior ma
 already replaced. Source checkouts, Windows and version-changing update checks are unchanged.
 Later releases inherit the selected prefix, including when its publication was interrupted.
 A recorded extension npm child must finish before its source prefix can be copied.
-On POSIX, a direct npm child's observed signal exit clears its mutation marker, so
-`cotal ext seed --repair` can retry the failed seed. A live child or unproved intermediary
-completion still blocks repair and update. Older ambiguous markers without a child identity
-still require manual inspection before removal.
+On POSIX, npm runs in its own process group. A signal exit keeps its mutation marker until
+no live group member remains, including lifecycle scripts. The command waits before cleaning
+up or rolling back. If its wrapper dies, repair checks the recorded group before retrying.
+`cotal ext seed --repair` can then retry the failed seed. Unproved intermediary completion
+and older ambiguous markers still require manual inspection before removal.
+An install script that deliberately starts a new session leaves this process-group boundary.
 After a successful update selects the complete new prefix, unused earlier release sets are removed on a best-effort basis.
 A successful update authenticates every recorded local Manager and the daemon before collecting sets, and keeps each release they still use.
 An unreadable inventory or a holder without a known release keeps all sets. Removal failure does not fail the update.
