@@ -463,6 +463,19 @@ try {
       && r21b !== "none" && !r21b.ok && r21b.error.code === "bad-request" && r21b.error.outcome === "not-executed", { r21a, r21b });
     const ok = await rawCall(webRaw, "prompt", {});
     check("control: the same raw envelope with nothing forged is answered ok", ok !== "none" && ok.ok, ok);
+
+    // cell 27: the caller's row spans the nonce, so the broker passes a malformed one. The subject
+    // then matches no shape and the handler MUST NOT run (SPEC 13.21).
+    const beforeBadNonce = coder.calls.length;
+    const good = epPrincipalRequestSubject(space, { endpoint: AGENT_ENDPOINT, principal: coderAt, command: "prompt", authority: "owner", caller: { owner: A, actor: "web", uid: W.web.uid }, nonce: nonce() });
+    const badNonce = `${good.slice(0, good.lastIndexOf(".") + 1)}x`;
+    const env = { v: 1, id: hex(8), op: { endpoint: AGENT_ENDPOINT, command: "prompt", ...D("prompt") }, class: "ephemeral", replyExpected: true, deadlineMs: 4000,
+      args: { id: coder.prompt.id }, from: { id: `${A}.web`, name: "web" } };
+    webRaw.nc.publish(badNonce, enc(JSON.stringify(env)), { reply: `${P}.ep.prin-reply._nr._nr._nr._nr._nr.${A}.web.${W.web.uid}.x` });
+    await webRaw.nc.flush();
+    await until(() => coder.calls.length > beforeBadNonce, 1500);
+    check("cell 27: the broker passes the owner's request with the nonce x, and the agent's handler runs zero times",
+      !refusedNow(webRaw, "publish", badNonce) && coder.calls.length === beforeBadNonce, { ran: coder.calls.length - beforeBadNonce });
   }
 
   // ── cell 10: the agent publishes a reply under another principal's head ──

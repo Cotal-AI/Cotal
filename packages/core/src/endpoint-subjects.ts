@@ -650,6 +650,9 @@ export function parseEpSubject(subject: string): ParsedEp | null {
     if (!issued && route === EP_PRINCIPAL_ROUTE) {
       const authority = parts[10];
       if (parts.length !== 15 || !isPrincipalAuthority(authority)) return null;
+      // The caller's row spans the nonce, so the broker passes any token there. A malformed nonce
+      // or runtime id is no shape, and no shape is handled (SPEC 13.21).
+      try { assertRuntimeToken(parts[8]); assertNonce(parts[14]); } catch { return null; }
       return {
         plane: "principal-request", endpoint: endpointNameOf(parts[4]),
         principal: { owner: parts[5], actor: parts[6], uid: parts[7], runtimeId: parts[8] },
@@ -659,7 +662,7 @@ export function parseEpSubject(subject: string): ParsedEp | null {
     if (!issued && route === EP_PRINCIPAL_REPLY_ROUTE) {
       if (parts.length !== 13) return null;
       // The sentinel carries `_nr` where a head carries a lifecycle UID, so it is no reply.
-      try { assertLifecycleToken(parts[7]); } catch { return null; }
+      try { assertLifecycleToken(parts[7]); assertRuntimeToken(parts[8]); assertNonce(parts[12]); } catch { return null; }
       return {
         plane: "principal-reply", endpoint: endpointNameOf(parts[4]),
         principal: { owner: parts[5], actor: parts[6], uid: parts[7], runtimeId: parts[8] },
