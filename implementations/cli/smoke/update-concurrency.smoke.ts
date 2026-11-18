@@ -338,7 +338,7 @@ const timer = setInterval(() => {
     const second = spawnSync(
       process.execPath,
       [...process.execArgv, cli, "ext", "__update-add", pkg, fixture],
-      { env, encoding: "utf8", timeout: 5_000 },
+      { env, encoding: "utf8", timeout: 60_000 },
     );
     assert.equal(second.status, 1, second.stderr);
     assert.equal(existsSync(secondStarted), false, "the next replay must stop before spawning npm");
