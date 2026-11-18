@@ -1205,8 +1205,12 @@ main() {
   write_launcher
   if ! _version_output=$(COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 "$BIN_DIR/cotal" --version 2>&1); then
     printf '%s\n' "$_version_output" >&2
-    die "The installed Cotal could not start." \
-      "Run the installer again without --version to install the latest release."
+    if [ "$OPT_VERSION" != latest ]; then
+      die "The installed Cotal could not start." \
+        "Run the installer again without --version to install the latest release."
+    fi
+    die "The latest Cotal release could not start." \
+      "Report the error above at https://github.com/Cotal-AI/Cotal/issues."
   fi
   ok_line "Cotal $INSTALLED_VERSION"
 
