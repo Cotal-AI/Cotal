@@ -139,7 +139,7 @@ import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
-import { cliControl, failIfNotOk, onInstance } from "../lib/control.js";
+import { cliControl, failIfNotOk, onInstance, onRerun } from "../lib/control.js";
 import { askManagerFolder, askSpawnPlace, managerPin, managerSelection, managersWithPersona, rerunOn, rerunWithCwd, type FolderCheck } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
@@ -478,6 +478,11 @@ function seatExpiry(values: { "expires-in"?: string; "expires-at"?: string }, di
 }
 
 /** Check the public mode and spelling before catalog preparation or identity allocation. */
+/** The spawn an `--on` refusal tells the caller to rerun: the persona and `-d` as given, with the
+ *  `--space` or `--server` given (#7644). */
+const spawnRerun = (values: { detach?: unknown; space?: unknown; server?: unknown }, positionals: readonly string[]): string =>
+  onRerun("cotal spawn", values, [...positionals, ...(values.detach === true ? ["-d"] : [])]);
+
 export function validateSpawnArguments(args: ParsedArgs): void {
   const values = args.values as FlagValues<typeof spawnFlags>;
   const handoffRefusal = managedHandoffRefusal();
@@ -515,7 +520,7 @@ export function validateSpawnArguments(args: ParsedArgs): void {
   for (const field of ["harness", "agent", "model", "variant", "name"] as const) if (values[field] !== undefined && !values[field]!.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", `--${field} cannot be empty`);
   if (values.events && values["no-events"]) throw new CommandFailure("refused", "USAGE_INVALID", "choose --events or --no-events, not both");
-  if (values.on !== undefined) onInstance(values.on, "cotal spawn");
+  if (values.on !== undefined) onInstance(values.on, spawnRerun(values, args.positionals));
   try {
     parseLaunchOptions(values.opt);
     if (values.role !== undefined) assertValidRole(values.role);
@@ -634,7 +639,7 @@ export async function launchManagedPersona(
   // `COTAL_DEFAULT_PERSONA` > `default`). Identity is separate:
   // when `--name` is given it OVERRIDES the file's `name:` (foreground's `requested`), threaded
   // as the op's `identity` so it is never silently dropped in detached mode.
-  let on = await managerPin(values, "cotal spawn <persona>");
+  let on = await managerPin(values, spawnRerun(values, positionals));
   // From a managed seat's own shell the launch is the SEAT's, as its `cotal_spawn` tool is: the
   // manager records the seat as the spawner, so the seat can stop the child it asked for (#718).
   // `--on` keeps the pin on that path too.

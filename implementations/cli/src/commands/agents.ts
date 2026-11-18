@@ -29,7 +29,7 @@ import {
 import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { presenceFacts } from "../ui.js";
-import { cliControl, onInstance, onFlag } from "../lib/control.js";
+import { cliControl, onInstance, onFlag, onRerun } from "../lib/control.js";
 import { AgentManagerUnsettled, managerPin, noLiveManager } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
 import { attachSeat as attachSeatWith, detachKey, type AttachTarget, type AttachVerdict } from "@cotal-ai/workspace/attach";
@@ -93,7 +93,7 @@ export function managedTarget(args: ParsedArgs, operation: "stop" | "attach", al
   if (args.positionals.length > 1 || (args.positionals.length && named !== undefined))
     throw new CommandFailure("refused", "USAGE_INVALID", `choose one agent: \`cotal ${operation} <name>\``);
   const name = args.positionals[0] ?? named;
-  if (typeof args.values.on === "string") onInstance(args.values.on, `cotal ${operation}`);
+  if (typeof args.values.on === "string") onInstance(args.values.on, name === undefined ? onRerun(`cotal ${operation}`, args.values) : onRemedyVerb(`cotal ${operation}`, { ...args.values, name }));
   if (name === undefined && operation === "attach" && allowPicker) {
     if (!canPrompt()) throw new CommandFailure("refused", "USAGE_INVALID", "name the agent to attach without an interactive terminal", { remedy: "run `cotal ps`, then `cotal attach <name>`", selfContained: true });
     return undefined;
@@ -260,15 +260,14 @@ function fmtUptime(ms: number): string {
   return `${d}d ${Math.floor(h - d * 24)}h`;
 }
 
-/** The command an `--on` remedy tells the caller to rerun: the verb with the agent, the other
- *  positionals and the `--space` or `--server` they gave, so following it changes only `--on` (#7322). */
+/** {@link onRerun} for a verb that names an agent: the agent, then the other words as given (#7322). */
 function onRemedyVerb(verb: string, v: { name?: unknown; space?: unknown; server?: unknown }, rest: readonly string[] = []): string {
-  return [
-    verb, shellWord(String(v.name)), ...rest,
-    ...(typeof v.space === "string" ? ["--space", shellWord(v.space)] : []),
-    ...(typeof v.server === "string" ? ["--server", shellWord(v.server)] : []),
-  ].join(" ");
+  return onRerun(verb, v, [String(v.name), ...rest]);
 }
+
+/** The text `input` was given, as the words that give it again: `--text` for a value that starts
+ *  with a dash, which a positional cannot carry. */
+const inputText = (text: string): string[] => text.startsWith("-") ? ["--text", text] : [text];
 
 /** Resolve a targeted verb's manager and retain the presence-selected seat for its fresh caller.
  *  `rest` is the positionals after the agent name that a remedy has to repeat. */
@@ -580,7 +579,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "USAGE_INVALID", "--slots and --wide are mutually exclusive: --slots lists durable static slot rows, --wide the live seat facts", { remedy: "pass one of them" });
   const command = slots ? "slots" : "ps";
   const kind = slots ? "slots" : "seats";
-  const on = await managerPin(v, "cotal ps");
+  const on = await managerPin(v, onRerun(`cotal ${command}`, v));
   let census: SeatCensus;
   try {
     census = await readSeats(v, command, on);
@@ -929,7 +928,7 @@ export async function attachSeat(
 }
 
 async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ name: string; on: string; expectedTarget: NonNullable<ManagerPin["expectedTarget"]> } | undefined> {
-  const census = await readSeats(values, "ps", await managerPin(values, "cotal attach"));
+  const census = await readSeats(values, "ps", await managerPin(values, onRerun("cotal attach", values)));
   const choices = census.items.map((value) => {
     const row = value as Partial<AgentRow> | null;
     if (!row || typeof row.name !== "string" || typeof row.id !== "string" || typeof row.lifecycleUid !== "string")
@@ -995,14 +994,14 @@ export function inputArguments(args: ParsedArgs): { name: string; text: string }
   const text = positionalText ?? values.text;
   if (!name?.trim() || /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "input needs one concrete agent name without terminal control characters");
   if (!text) throw new CommandFailure("refused", "USAGE_INVALID", "input needs nonempty text; use --text for a value beginning with a dash");
-  if (values.on !== undefined) onInstance(values.on, onRemedyVerb("cotal input", { ...values, name }, ["<text>"]));
+  if (values.on !== undefined) onInstance(values.on, onRemedyVerb("cotal input", { ...values, name }, inputText(text)));
   return { name, text };
 }
 
 export async function input(args: ParsedArgs): Promise<void> {
   const parsed = inputArguments(args);
   const v = { ...args.values, ...parsed } as FlagValues<typeof inputFlags> & { name: string; text: string };
-  const pin = await pinForTarget(v as never, "cotal input", ["<text>"]);
+  const pin = await pinForTarget(v as never, "cotal input", inputText(v.text));
   const on = pin.instanceId;
   // A typed pin the registry does not list is refused at once, as stop refuses it.
   if (v.on !== undefined && on !== undefined) {
