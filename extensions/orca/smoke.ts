@@ -525,6 +525,14 @@ ok("orcaRuntimeProvider registered as 'runtime/orca'", resolved === orcaRuntimeP
 // seat and stops there instead of failing on an attach that cannot open. Graded above the live
 // gate, because what a backend declares does not depend on whether its CLI is installed here.
 ok("the runtime declares that it streams no terminal", new OrcaRuntime().streamsTerminal === false);
+// A name that begins with `-` would reach Orca's argument list as an option. The runtime checks the
+// name before it asks whether Orca is reachable, so this holds where Orca is not installed.
+for (const dashed of ["--json", "-x"]) {
+  let refusal = "";
+  try { new OrcaRuntime().spawn(dashed, { command: "true", args: [], env: {} }, "/tmp"); }
+  catch (error) { refusal = (error as Error).message; }
+  ok(`spawn refuses an agent name that begins with - (${dashed})`, refusal.includes("not starting with -"), refusal);
+}
 
 if (!orca.available()) {
   const message = `SKIPPED (${LIVE_CHECK_COUNT} live checks not run) — Orca CLI/runtime is not reachable`;

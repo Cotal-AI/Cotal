@@ -133,6 +133,11 @@ agents: { a: ./a.md }
 channels: { general: { subscribe: [a] } }
 `, "no connector");
 
+// An agent name that begins with `-` would reach a runtime's argument list as an option, so the
+// manifest refuses it before any channel is created. A `-` after the first character is a name.
+fails(`${HEAD}agents: { "-x": ./a.md }\nchannels: { general: { subscribe: ["-x"] } }\n`, 'invalid agent name "-x": a name may not begin with "-"');
+assert.equal(ok(`${HEAD}agents: { a-x: ./a.md }\nchannels: { general: { subscribe: [a-x] } }\n`).agents[0]!.name, "a-x");
+
 // --- semantic errors ---------------------------------------------------------------------------
 
 // allowSubscribe ⊉ subscribe

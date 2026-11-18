@@ -50,6 +50,15 @@ function ok(label: string, val: unknown, extra?: unknown) {
 // herdr call, because what a backend declares does not depend on a live herdr server.
 ok("the runtime declares that it streams no terminal", new HerdrRuntime(SESSION).streamsTerminal === false);
 
+// A name that begins with `-` would reach herdr's argument list as an option (`tab rename <id>
+// <name>`). The runtime checks the name before it looks for herdr, so this holds without herdr.
+for (const dashed of ["--session", "-x"]) {
+  let refusal = "";
+  try { new HerdrRuntime(SESSION).spawn(dashed, { command: "true", args: [], env: {} }, "/tmp"); }
+  catch (error) { refusal = (error as Error).message; }
+  ok(`spawn refuses an agent name that begins with - (${dashed})`, refusal.includes("not starting with -"), refusal);
+}
+
 /** Synchronous sleep: these checks poll around synchronous driver calls, so there is no event
  *  loop to await on. */
 function sleepSync(ms: number): void {

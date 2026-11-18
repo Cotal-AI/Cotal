@@ -65,6 +65,15 @@ function sessionListed(name: string): boolean {
   }
 }
 
+// A name that begins with `-` would reach tmux's argument list as an option. The runtime checks the
+// name before it looks for tmux, so this holds where tmux is not installed.
+for (const dashed of ["--help", "-x"]) {
+  let refusal = "";
+  try { new TmuxRuntime("cotal-tmux-smoke-dash").spawn(dashed, { command: "true", args: [], env: {} }, "/tmp"); }
+  catch (error) { refusal = (error as Error).message; }
+  ok(`spawn refuses an agent name that begins with - (${dashed})`, refusal.includes("not starting with -"));
+}
+
 // Needs a real tmux. Skip cleanly where it isn't installed (local `pnpm check` on a tmux-less box);
 // CI installs tmux explicitly so this runs there.
 if (!tmux.available()) {

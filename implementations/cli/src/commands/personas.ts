@@ -9,7 +9,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { cachedPreferences, CommandFailure, resolvePreference, parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
-import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
+import { assertLabels, commitPersona, editPersona, personaCatalog, personaNameProblem, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
@@ -197,7 +197,7 @@ async function presentNames(values: ConnectValues): Promise<{ space: string; nam
 function show(name: string | undefined, values: { space?: string; server?: string }): void {
   if (!name) return usage();
   // A bad name, a missing persona and an invalid definition are refused as `persona show` refuses them.
-  const path = personaPath(targetRoot(values), name);
+  const path = personaPath(targetRoot(values), name, "read");
   const bytes = requirePersonaSource(path).bytes;
   validatePersona(bytes, path);
   // The canonical card (frontmatter + persona body). Piped or redirected it is the file byte for
@@ -231,6 +231,11 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
     process.exit(1);
   }
   assertValidName(name); // shared reserved-character guard (also rejects "/")
+  const problem = personaNameProblem(name);
+  if (problem) {
+    console.error(c.red(`invalid persona name "${name}": ${problem}`));
+    process.exit(1);
+  }
   const reserved = reservedPersonaName(name);
   if (reserved) {
     console.error(c.red(reserved));
@@ -288,7 +293,7 @@ function remove(name: string | undefined, force: boolean, values: { space?: stri
   const expected = requirePersonaSource(path);
   if (!force) {
     console.error(c.red(`refusing to delete "${name}" without --force`));
-    console.error(c.dim(`cotal personas rm ${name} --force`));
+    console.error(c.dim(name.startsWith("-") ? `cotal personas rm --force -- ${name}` : `cotal personas rm ${name} --force`));
     process.exit(1);
   }
   commitPersona(path, expected, undefined);

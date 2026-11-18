@@ -13485,12 +13485,14 @@ export class Manager {
 
   /** Mesh-side catalog show (#402). Same ownership as list. Unknown, unauthorized, or unparseable
    *  names are not-found (no existence or parser-diagnostic leak). The body is included so a peer can
-   *  inspect a prompt it owns before spawn; policy fields stay off the wire. */
+   *  inspect a prompt it owns before spawn; policy fields stay off the wire. Showing is a read, so
+   *  the name passes the catalog file rule remove uses, not the spawn rule: a file an earlier
+   *  release created under a name that begins with `-` can still be shown. */
   private opShowPersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
     const name = String(args.name ?? "").trim();
     if (!name) return { ok: false, error: "name required" };
-    const nameErr = this.nameError(name);
-    if (nameErr) return { ok: false, error: nameErr };
+    if (!/^[A-Za-z0-9_-]+$/.test(name))
+      return { ok: false, code: "bad-request", error: `unsafe persona name ${JSON.stringify(name)} (allowed: letters, digits, _ -)` };
     const path = agentFilePath(this.workspaceRoot, name);
     if (!existsSync(path)) return { ok: false, error: `no persona "${name}"` };
     let def;

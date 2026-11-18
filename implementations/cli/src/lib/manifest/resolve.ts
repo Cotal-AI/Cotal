@@ -80,6 +80,11 @@ export function resolveManifest(src: string, sourcePath: string): ResolvedManife
   for (const name of agentNames)
     try {
       assertValidName(name);
+      // A runtime passes the agent name to another program as an argument, where a leading `-` reads
+      // as an option. The manager refuses it at spawn; refusing it here keeps a deploy from creating
+      // the declared channels first and then failing at the launch.
+      if (name.startsWith("-"))
+        throw new Error(`invalid agent name ${JSON.stringify(name)}: a name may not begin with "-", because runtimes pass it to other commands as an argument`);
     } catch (e) {
       add((e as Error).message, ["agents", name]);
     }
