@@ -33,6 +33,7 @@ import { toNodeHandler } from "better-auth/node";
 import { pickFreePort } from "./_free-port.js";
 import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { cotalOnPath } from "../../cli/src/lib/self-exec.js";
 import { approveDevice } from "./_device-approval.js";
 
 // Sandbox the temp root BEFORE minting the fixture. `findCotalRoot` walks to `/` unbounded, so a
@@ -747,10 +748,12 @@ try {
     const signedOutStatus = await cotal(["status", "--space", signedOutSpace], 30_000);
     console.log(`   #1832 signed-out bare status (exit=${signedOutStatus.status}):\n` +
       signedOutStatus.out.split("\n").filter((l) => /login|live snapshot/.test(l.replace(/\x1b\[[0-9;]*m/g, ""))).map((l) => `   | ${l}`).join("\n"));
-    check("discovered space, signed out: status says not signed in with the exact login command",
+    // The fixture invokes bin/cotal.ts from the checkout, even when cotal is on PATH.
+    const loginCommand = `${cotalOnPath() ? "cotal" : "pnpm cotal"} login --idp ${base}`;
+    check("manual remote space, signed out: status says not signed in with the pinned login command",
       signedOutStatus.status === 0 &&
         /^ +Account: +● not signed in$/m.test(signedOutStatus.out) &&
-        new RegExp(`^Next\n(?: .*\n)* +cotal login --idp ${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +Sign in to the selected space$`, "m").test(signedOutStatus.out) &&
+        new RegExp(`^Next\n(?: .*\n)* +${loginCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +Sign in to the selected space$`, "m").test(signedOutStatus.out) &&
         !signedOutStatus.out.includes("no user-auth material"),
       signedOutStatus.out.slice(-600));
     const signedOutPs = await cotal(["ps", "--json", "--space", signedOutSpace], 30_000);
