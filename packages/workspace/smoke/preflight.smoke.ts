@@ -270,6 +270,14 @@ check("message: credentials rejected at a --server recorded elsewhere for this f
 check("message: credentials rejected with no other recorded broker keep the meshes-or-up step",
   preflightMessage("creds-rejected", { ...T, source: "flag-server" }, false).endsWith("run `cotal meshes` to check, or `cotal up` here to start yours")
     && preflightMessage("creds-rejected", { ...T, source: "flag-server", recordedServer: DEAD }, false) === preflightMessage("creds-rejected", T, false));
+for (const source of ["flag-server", "flag-space-override"] as const) {
+  const target = { ...T, source, recordedServer: "nats://127.0.0.1:14993" };
+  const message = preflightMessage("open-wants-auth", target, false);
+  check(`message: open space at an overriding ${source} names both brokers without prescribing up`,
+    message === `✗ broker at ${DEAD}, the address --server named, requires auth, but "alpha" is recorded as an open mesh at nats://127.0.0.1:14993 - check that address, or drop --server to reach "alpha" at nats://127.0.0.1:14993, where it is recorded`, message);
+}
+check("message: open space at the recorded broker keeps the original auth guidance",
+  preflightMessage("open-wants-auth", { ...T, source: "flag-server", recordedServer: DEAD }, false) === preflightMessage("open-wants-auth", T, false));
 for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-rejected", "open-wants-auth"] as const)
   check(`message: ${kind} names the server + leads with ✗`, (() => {
     const m = preflightMessage(kind, T, true);
