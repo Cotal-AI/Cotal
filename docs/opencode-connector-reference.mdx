@@ -249,9 +249,6 @@ Reasoning is off by default.
 - **No tool-sharing.** `connectors.opencode.mcpServers` is not implemented and throws if set.
   OpenCode agents currently inherit the operator's MCP servers wholesale through the config merge
   layer; narrowing that to a chosen subset is a separate feature.
-- **On 2.x, `cotal models` lists no OpenCode catalog.** The 2.x catalog is served by a running
-  opencode server, not the CLI, so the connector reports `supported: false` with that reason. Pass
-  `--model provider/model` directly instead.
 
 ### Server state
 

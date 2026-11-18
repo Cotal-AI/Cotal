@@ -173,16 +173,20 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
     };
     const recovery = readUpdateRecovery();
     const protectedJournal = recovery?.execution;
-    const transactions = names.filter(name => /^\.transaction-[A-Za-z0-9]+$/.test(name)).map(name => {
+    const transactions = names.filter(name => /^\.transaction-[A-Za-z0-9]+$/.test(name)).flatMap(name => {
       const directory = join(store, name), stat = lstatSync(directory);
       if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid) throw new Error("unsafe transaction directory");
       const path = join(directory, "execution.json");
+      if (!lstatSync(path, { throwIfNoEntry: false }) && readdirSync(directory).length === 0 && path !== protectedJournal) {
+        rmSync(directory, { recursive: true });
+        return [];
+      }
       const record = executionRecord(path) as { v: number; installed: string; completed?: boolean; target: Generation & { root: string }; previous: { descriptor: ExecutionDescriptor | null } };
       if (record.v !== 1 || typeof record.installed !== "string" || executionStore(record.installed) !== store || !record.previous) throw new Error("invalid execution journal");
       generation(record.target);
       if (record.target.root !== join(store, record.target.id, "cotal-ai")) throw new Error("execution journal target escapes store");
       if (record.previous.descriptor) generation(record.previous.descriptor.generation);
-      return { directory, path, record, finished: record.completed === true && path !== protectedJournal };
+      return [{ directory, path, record, finished: record.completed === true && path !== protectedJournal }];
     });
     // A successful successor supersedes its uniquely identified rollback ancestry. Unlike the
     // absence of this home's recovery record, its explicit completion is installation-wide proof.
@@ -215,6 +219,14 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
       try {
         const stat = lstatSync(path);
         if (stat.uid !== uid || stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`not an owned update directory: ${path}`);
+        const writable = (entry: string): void => {
+          const info = lstatSync(entry);
+          if (info.uid !== uid) throw new Error(`not an owned update entry: ${entry}`);
+          if (!info.isDirectory() || info.isSymbolicLink()) return;
+          chmodSync(entry, (info.mode & 0o777) | 0o700);
+          for (const name of readdirSync(entry)) writable(join(entry, name));
+        };
+        writable(path);
         rmSync(path, { recursive: true, force: true });
       } catch (error) { warn(error); }
     };

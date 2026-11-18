@@ -112,7 +112,7 @@ interface BridgeServer {
 /** Start the adapter bridge. Returns a handle whose `close()` stops the server. `token` is the
  *  launch's control token: the same shared secret {@link startControlServer} authenticates the
  *  control plane with, presented here as the first frame's `token` field. */
-export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, token: string): BridgeServer {
+export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, token: string, onSubscribe?: () => void): BridgeServer {
   const digest = createHash("sha256").update(token).digest();
 
   if (process.platform !== "win32" && existsSync(socketPath)) {
@@ -213,6 +213,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         awaitingId = undefined;
         pushes++;
         log("adapter subscribed");
+        onSubscribe?.();
         pump();
         return;
       case "delivered":

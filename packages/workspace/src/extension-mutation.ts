@@ -27,7 +27,7 @@ function globalUpdateChildPath(root: string): string {
   return join(canonicalGlobalRoot(root), ".cotal-update-child");
 }
 
-export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; onWait?: () => void } = {}): () => void {
+export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; onWait?: () => void; repairAmbiguous?: () => void } = {}): () => void {
   const deadline = Date.now() + (opts.waitMs ?? 0);
   const canonicalRoot = canonicalGlobalRoot(root);
   const held = acquireLock(join(canonicalRoot, ".cotal-update.lock"), {
@@ -39,6 +39,17 @@ export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; 
     ),
   });
   try {
+    const path = globalUpdateChildPath(canonicalRoot);
+    const marker = readMarker(path);
+    if (marker?.phase === "ambiguous" && opts.repairAmbiguous) {
+      inspectGlobalUpdateChild(canonicalRoot);
+      if (sameProcessAlive(marker.owner, undefined)) throw new Error(`ambiguous update owner is still running (pid ${marker.owner}); retry once it finishes`);
+      const before = readFileSync(path, "utf8");
+      opts.repairAmbiguous();
+      if (readFileSync(path, "utf8") !== before) throw new Error("ambiguous update marker changed during repair; nothing was cleared");
+      if (sameProcessAlive(marker.owner, undefined)) throw new Error("ambiguous update owner became live during repair; nothing was cleared");
+      renameSync(path, `${path}.retained-${Date.now()}-${randomBytes(6).toString("hex")}`);
+    }
     assertNoProcessMutation(globalUpdateChildPath(canonicalRoot), "global cotal-ai update child", deadline);
     return () => held.release();
   } catch (e) {

@@ -612,7 +612,8 @@ words, because it serves only what it can still read. The read stays complete, a
 the broker serves. A broker whose log is not on this machine is not checked. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
 filter that window on this machine. They do not search the whole stream, and with older retained
 messages behind the window the report says that `--from` and `--grep` searched only the messages
-read. At `--limit 1000`, the most it reads, the report says older retained messages are not shown and
+read. Empty or whitespace-only `--from` and `--grep` values refuse with `USAGE_INVALID`, exit 1,
+before connecting. At `--limit 1000`, the most it reads, the report says older retained messages are not shown and
 names no larger limit. `result.window` says how many messages were read, whether older retained
 messages exist that the window did not reach, and whether the window goes back to `--since`. The report names the local time and the ISO instant a
 time `--since` resolved to, or the chat stream sequence a bare number was read as. A four-digit

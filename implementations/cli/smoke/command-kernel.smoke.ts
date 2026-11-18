@@ -22,6 +22,60 @@ import { compareSemver } from "../src/seed/reconcile.js";
 
 const noop = async (): Promise<void> => {};
 
+// Explicit empty values refuse before selection, account reads, connector seeding or network access.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-empty-args-"));
+  const config = join(root, "config");
+  const home = join(root, "cotal");
+  const env = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    HOME: join(root, "home"), COTAL_HOME: home, XDG_CONFIG_HOME: config,
+    COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1",
+  };
+  const run = (words: string[]) => spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), ...words], {
+    cwd: root, env, encoding: "utf8", timeout: 30_000,
+  });
+  try {
+    const cases: string[][] = [];
+    for (const value of ["", "   "]) {
+      cases.push(
+        ["use", value], ["space", "show", value], ["space", "forget", value],
+        ["spawn", value, "--dry-run"], ["persona", "create", "reviewer", "--file", value],
+        ["persona", "create", "reviewer", "--from", value, "--subscribe", ""],
+        ["history", "general", "--from", value], ["history", "general", "--grep", value],
+        ["models", "--harness", value], ["models", "-H", value], ["sync", "--idp", value],
+      );
+    }
+    for (const url of ["not-a-url", "http://example.test/auth", "https://user:secret@example.test/auth", "https://example.test/auth?q=1", "https://example.test/auth#part"])
+      cases.push(["sync", "--idp", url]);
+    for (const words of cases) {
+      for (const output of ["--json", "--plain", undefined]) {
+        const result = run([...words, ...(output ? [output] : [])]);
+        const label = JSON.stringify([...words, output]);
+        assert.equal(result.error, undefined, label);
+        assert.equal(result.status, 1, `${label}: ${result.stdout}${result.stderr}`);
+        if (output === "--json") {
+          assert.equal(JSON.parse(result.stdout).error.code, "USAGE_INVALID", label);
+          assert.equal(result.stderr, "", label);
+        } else {
+          if (output === "--plain") assert.match(result.stderr, /USAGE_INVALID/, label);
+          assert.match(result.stderr, /Usage|Next/, label);
+        }
+        assert.ok(!existsSync(join(config, "cotal", "extensions")), "invalid input never seeds connectors");
+        assert.ok(!existsSync(join(home, "current-mesh")), "invalid input never selects a space");
+      }
+    }
+    const sync = run(["sync", "--json"]);
+    assert.equal(sync.status, 0, sync.stdout + sync.stderr);
+    assert.deepEqual(JSON.parse(sync.stdout).result.accounts, []);
+    assert.ok(!existsSync(join(config, "cotal", "extensions")), "catalog refresh never seeds connectors");
+    for (const url of ["https://example.test/auth", "http://127.0.0.1:1234/auth", "http://[::1]:1234/auth"])
+      assert.doesNotThrow(() => findCommand(registry.all<Command>("command"), "sync")!.validate!({ values: { idp: url }, positionals: [], raw: [] }));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // Login's migration option is a value flag on the registered command, not a positional.
 {
   const providersBefore = new Set(registry.all("auth-provider").map(provider => provider.name));
@@ -1758,6 +1812,19 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     assert.equal(await executeUpdate(false, unattended.rt), 0);
     assert.ok(unattended.events.includes("reconcile"), "unattended child still reconciles the installed generation");
     assert.equal(readUpdateRecovery()?.phase, "replacing", "unattended child leaves activation to its parent's cleared journal");
+    clearUpdateRecovery();
+
+    writeUpdateRecovery({ previous: "0.13.0", target: "0.13.1", installed: "0.13.0", phase: "replacing", reason: "scoped parent" });
+    const scoped = updateRuntime({ env: { COTAL_UPDATE_TARGET_VERSION: "0.13.1", COTAL_UPDATE_PARENT: "99", COTAL_AUTO_UPDATE: "1" } });
+    scoped.rt.adoptUpdateChild = async () => true;
+    scoped.rt.waitForInstalledGeneration = async () => {
+      assert.equal(readUpdateRecovery()?.phase, "verified-ready");
+      scoped.events.push("generation-ready");
+    };
+    assert.equal(await executeUpdate(false, scoped.rt), 0);
+    assert.ok(scoped.events.indexOf("generation-ready") > scoped.events.indexOf("reconcile"), "scoped automatic child verifies the restarted daemon after reconciliation");
+    scoped.rt.waitForInstalledGeneration = async () => { throw new Error("target daemon unavailable"); };
+    assert.equal(await executeUpdate(false, scoped.rt), 1, "failed automatic activation returns to parent rollback");
     clearUpdateRecovery();
   } finally {
     if (priorJournalHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = priorJournalHome;
