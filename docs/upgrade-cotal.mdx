@@ -105,7 +105,9 @@ After a staged update, npm's listing can be behind; `cotal --version` is the ver
 Native ownership checks retain the bootstrap's validated logical installation identity when they
 run in a worker, so a restarted retained daemon still matches its recorded native launch source.
 A standalone Manager can keep its
-loaded generation without stopping seats. New launches still enforce extension generation
+loaded generation without stopping seats, including when the machine daemon is running.
+Plain `cotal update` retains that generation while reconciling the installed connectors.
+New launches still enforce extension generation
 compatibility. On Linux, an already-current installed package closure reports the same retained
 standalone Manager generation without asking you to stop it.
 Restarting the machine daemon still requires its existing hosted-seat admission

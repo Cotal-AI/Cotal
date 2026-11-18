@@ -137,15 +137,16 @@ const composed: Command = { ...command, async run(args) {
     } : {}), async prepareReconciliation(flags: Record<string, unknown>) {
     const entry = logicalExecutionEntry();
     if (!entry || updateRuntime.checkout() || !["linux", "darwin"].includes(process.platform) || process.env.COTAL_UPDATE_PARENT || readUpdateRecovery()) return;
+    let hostedInstances = new Set<string | undefined>();
     try {
       const daemon = await queryDaemon({ paths: daemonPaths() });
       if (!daemon.ok) throw new Error(`machine daemon custody is unreadable: ${daemon.error.message}`);
-      return; // Hosted daemon admission and restart handling remain unchanged.
+      hostedInstances = new Set((daemon.result.managers ?? []).map(manager => manager.instanceId));
     } catch (error) {
       if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) throw error;
       if (error.code === "NO_RUNTIME_DIR") assertDaemonReachable();
     }
-    const managers = localUpdateManagers(flags, entry);
+    const managers = localUpdateManagers(flags, entry).filter(manager => !hostedInstances.has(manager.instanceId));
     if (!managers.length) return;
     for (const manager of managers) {
       if (!manager.process || assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before reconciliation admission`);
