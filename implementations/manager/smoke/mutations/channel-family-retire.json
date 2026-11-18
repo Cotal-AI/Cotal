@@ -25,7 +25,7 @@
     },
     {
       "name": "R2 the fan-out copy does not name the family row",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "          ...(rec.channel !== channel ? { row: rec.channel } : {}),\n",
       "replace": "",
       "expectRed": "FAMILY-LEFT: the post fanned out against the family row, and the reader that dropped its entry removed it: 0 rows remain",

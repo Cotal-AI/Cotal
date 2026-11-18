@@ -14,7 +14,7 @@ try {
     writeJson(join(seedDir(cfg), "reconcile.cursor.json"), { nonce, package: "hermes", phase: "add" });
     writeJson(marker, { state: "pending", parentPid: 2147483646, nonce, ts: 1, ...extra });
   };
-  for (const args of [["ext", "seed", "--repair"], ["update"], ["sync"]]) {
+  for (const args of [["ext", "seed", "--repair"], ["update"], ["config", "unset", "color", "--user"]]) {
     pending();
     const result = cotal(cfg, args);
     check(`released marker: ${args.join(" ")} recovers`, result.status === 0 && /cleared an interrupted connector seed child marker/.test(result.stderr), result);

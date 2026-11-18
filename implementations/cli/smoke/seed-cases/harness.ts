@@ -72,8 +72,8 @@ const manifestPath = (cfg: string) => join(cfg, "cotal", "extensions", "extensio
 const readJson = (p: string) => JSON.parse(readFileSync(p, "utf8"));
 const writeJson = (p: string, v: unknown) => writeFileSync(p, JSON.stringify(v));
 /** A boot through the seed gate: a command that is not a read, so the gate reconciles before it runs.
- *  `sync` with no signed-in account then writes nothing and needs no network. */
-const boot = (cfg: string, extraEnv: Record<string, string> = {}): Run => cotal(cfg, ["sync"], extraEnv);
+ *  Unsetting an absent user color preference then writes nothing and needs no network. */
+const boot = (cfg: string, extraEnv: Record<string, string> = {}): Run => cotal(cfg, ["config", "unset", "color", "--user"], extraEnv);
 /** The connectors listed after a boot, or none when the boot refused. */
 const listNames = (cfg: string): string[] => {
   if (boot(cfg).status !== 0) return [];

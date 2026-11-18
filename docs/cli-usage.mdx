@@ -277,6 +277,8 @@ control character in the text it quotes, such as a file's bytes or an argument, 
 its own fix prints that line and its next step without the help: an `--on` value that is empty, a
 principal id or not an instance id, a `spawn --on` that needs a terminal or `-d`, `attach` with no
 name and no terminal, and a `run` command given no run id.
+The command an `--on` refusal tells you to rerun keeps the agent, endpoint, command, text or persona
+you gave, quoted for a shell, and the `--space` and `--server`, so only `--on` changes.
 Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
 terminal is written as one labeled record per row, so no value is cut off. A warning on stderr wraps
 to the terminal at spaces, each continuation line under its text.

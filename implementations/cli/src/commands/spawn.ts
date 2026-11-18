@@ -139,7 +139,7 @@ import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
-import { cliControl, failIfNotOk, onInstance } from "../lib/control.js";
+import { cliControl, failIfNotOk, onInstance, onRerun } from "../lib/control.js";
 import { askManagerFolder, askSpawnPlace, managerPin, managerSelection, managersWithPersona, rerunOn, rerunWithCwd, type FolderCheck } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
@@ -477,12 +477,19 @@ function seatExpiry(values: { "expires-in"?: string; "expires-at"?: string }, di
   return seatExpiryAt(values);
 }
 
+/** The spawn an `--on` refusal tells the caller to rerun: the persona and `-d` as given, with the
+ *  `--space` or `--server` given (#7644). */
+const spawnRerun = (values: { detach?: unknown; space?: unknown; server?: unknown }, positionals: readonly string[]): string =>
+  onRerun("cotal spawn", values, [...positionals, ...(values.detach === true ? ["-d"] : [])]);
+
 /** Check the public mode and spelling before catalog preparation or identity allocation. */
 export function validateSpawnArguments(args: ParsedArgs): void {
   const values = args.values as FlagValues<typeof spawnFlags>;
   const handoffRefusal = managedHandoffRefusal();
   if (handoffRefusal) throw handoffRefusal;
   presentationOf(values);
+  if (args.positionals[0] !== undefined && !args.positionals[0].trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "persona cannot be empty", { remedy: "name a persona, or omit it to use the default persona" });
   // `runCli` has already taken the handoff into custody and deleted its variable.
   const internal = holdsManagedHandoff() || Boolean(process.env[ENROLLMENT_URL_ENV] || process.env[ENROLLMENT_FILE_ENV]);
   if (!holdsManagedHandoff() && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined))
@@ -515,7 +522,7 @@ export function validateSpawnArguments(args: ParsedArgs): void {
   for (const field of ["harness", "agent", "model", "variant", "name"] as const) if (values[field] !== undefined && !values[field]!.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", `--${field} cannot be empty`);
   if (values.events && values["no-events"]) throw new CommandFailure("refused", "USAGE_INVALID", "choose --events or --no-events, not both");
-  if (values.on !== undefined) onInstance(values.on, "cotal spawn");
+  if (values.on !== undefined) onInstance(values.on, spawnRerun(values, args.positionals));
   try {
     parseLaunchOptions(values.opt);
     if (values.role !== undefined) assertValidRole(values.role);
@@ -634,7 +641,7 @@ export async function launchManagedPersona(
   // `COTAL_DEFAULT_PERSONA` > `default`). Identity is separate:
   // when `--name` is given it OVERRIDES the file's `name:` (foreground's `requested`), threaded
   // as the op's `identity` so it is never silently dropped in detached mode.
-  let on = await managerPin(values, "cotal spawn <persona>");
+  let on = await managerPin(values, spawnRerun(values, positionals));
   // From a managed seat's own shell the launch is the SEAT's, as its `cotal_spawn` tool is: the
   // manager records the seat as the spawner, so the seat can stop the child it asked for (#718).
   // `--on` keeps the pin on that path too.
@@ -1327,10 +1334,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     stderrLine("✗ ", `${policySpace} requires the event plane by registration policy; --no-events is not allowed`, c.red);
     process.exit(1);
   }
-  // Foreground is the operator's own in-process launch (no typed door, no epAdminReach) and is
-  // NOT gated: it keeps the default-on plane. `events` is now a tri-state (undefined when the
-  // operator passed neither flag), so default it on here the way the old boolean did.
-  const launchEvents = eventsRequired || events !== false;
   const { space, server, auth } = target;
   // Only a static mesh's seat carries an issuance whose expiry the person sets here.
   if ((values["expires-in"] !== undefined || values["expires-at"] !== undefined) && (target.mode === "user" || !auth))
@@ -1459,7 +1462,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(binaryPins[bin]?.trim() || bin));
   if (missing.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${agentType} needs ${missing.join(", ")} on PATH; nothing was launched`, {
     target: { space, path },
-    remedy: `install or repair ${missing.join(", ")} on this machine, then run the same spawn again`,
+    remedy: `Follow ${["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/"} to install ${missing.join(", ")}, then retry: ${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}`,
   });
   if (variant && !connector.supportsModelVariant) {
     stderrLine("✗ ", `${agentType} connector does not support model variants (variant)`, c.red);
@@ -1521,11 +1524,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
   // roll back. The GRANT cannot be derived yet, because it is keyed on the principal and in user
   // mode the owner is resolved inside the provisioning call below.
+  // Default events on only where supported. An explicit request or registration policy still refuses below.
+  const launchEvents = eventsRequired || events === true || (events !== false && !!connector.eventChannel);
   const eventPayloads = policy?.eventPayloads !== "withheld" && !values["no-event-payloads"] && def.eventPayloads !== false;
   if (launchEvents && !connector.eventChannel) {
     console.error(c.red(eventsRequired
       ? `✗ ${policySpace} requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
-      : `✗ connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events to launch it without one`));
+      : `✗ connector "${connector.name}" does not publish an AG-UI event plane; omit --events to launch it without one`));
     process.exit(1);
   }
   // A REMOTE user mesh (registered with `meshes add --from`) that advertises a provisioning
