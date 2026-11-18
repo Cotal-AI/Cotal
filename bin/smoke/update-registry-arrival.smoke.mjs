@@ -12,7 +12,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** Runs real npm and the built public entry against a registry with a listed, initially missing archive. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
-  assert(['arrives', 'unavailable', 'integrity', 'reset'].includes(scenario));
+  assert(['arrives', 'unavailable', 'integrity', 'reset', 'closed-scope'].includes(scenario));
   const root = mkdtempSync(join(parent, 'registry-arrival-'));
   const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
   const target = '99.0.0', archives = new Map(), requests = [];
@@ -40,7 +40,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       }
       return response.end(archives.get(version));
     }
-    const versions = Object.fromEntries([...archives].map(([version, bytes]) => [version, { name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' }, dist: { tarball: `${origin}/${version}.tgz`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` } }]));
+    const versions = Object.fromEntries([...archives].map(([version, bytes]) => [version, { name: 'cotal-ai', version, ...(armed && scenario === 'closed-scope' ? { dependencies: { '@cotal-ai/cli': version } } : {}), bin: { cotal: 'dist/cotal.js' }, dist: { tarball: `${origin}/${version}.tgz`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` } }]));
     response.setHeader('content-type', 'application/json');
     response.end(JSON.stringify({ name: 'cotal-ai', 'dist-tags': { latest: target }, versions }));
   });
@@ -65,11 +65,24 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const before = readFileSync(join(packageRoot, 'dist/cotal.js'));
     writeFileSync(join(packageRoot, 'preserve'), 'unchanged');
     armed = true;
+    if (scenario === 'closed-scope') {
+      const closed = createServer();
+      await new Promise(done => closed.listen(0, '127.0.0.1', done));
+      const port = closed.address().port;
+      await new Promise(done => closed.close(done));
+      writeFileSync(join(home, '.npmrc'), `@cotal-ai:registry=http://127.0.0.1:${port}/\n`);
+    }
     const started = Date.now();
     const update = await run(process.execPath, [entry, 'update', '--self'], 660000);
     const elapsedMs = Date.now() - started;
     const selected = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
-    if (scenario === 'integrity') {
+    if (scenario === 'closed-scope') {
+      assert.equal(update.code, 1, update.output);
+      assert.match(update.output, /metadata for @cotal-ai\/cli@99\.0\.0 is unavailable.*ECONNREFUSED/);
+      assert.match(update.output, /@cotal-ai:registry.*\.npmrc/);
+      assert.doesNotMatch(update.output, /still reaching|in a few minutes|Waiting for cotal-ai/);
+      assert(elapsedMs < 60000, `registry failure does not enter the propagation wait: ${elapsedMs}`);
+    } else if (scenario === 'integrity') {
       assert.equal(update.code, 1, update.output);
       assert.doesNotMatch(update.output, /Waiting for cotal-ai|Keeping cotal-ai/);
     } else {
@@ -93,6 +106,14 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       assert.deepEqual(readFileSync(join(packageRoot, 'dist/cotal.js')), before);
       assert.equal(readFileSync(join(packageRoot, 'preserve'), 'utf8'), 'unchanged');
     }
+    if (scenario === 'closed-scope') {
+      rmSync(join(home, '.npmrc'));
+      armed = false;
+      const retry = await run(process.execPath, [entry, 'update', '--self'], 60000);
+      assert.equal(retry.code, 0, retry.output);
+      assert.match(retry.output, /installed globally and reconciled/);
+      assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, target);
+    }
     const recovery = join(root, 'cotal/update-recovery.json');
     assert.equal(existsSync(recovery) ? JSON.parse(readFileSync(recovery, 'utf8')) : null, null);
     return { scenario, code: update.code, elapsedMs, selected, missing, requests, output: update.output };
@@ -103,7 +124,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'integrity', 'reset'];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'integrity', 'reset', 'closed-scope'];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }

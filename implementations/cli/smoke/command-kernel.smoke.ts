@@ -1285,7 +1285,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     "@cotal-ai/core": { peerDependencies: { "@cotal-ai/cli": ">=0.1.0" } },
     "@cotal-ai/optional": {},
   };
-  for (const scenario of ["ready", "ready-array", "empty-array", "multiple-array", "null-array", "nested-array", "array-wrong-version", "array-missing-integrity", "root-404", "transitive-404", "metadata-404", "target-missing", "invalid-json", "wrong-version", "missing-integrity", "skewed-dependency", "integrity", "unauthorized", "unstructured"] as const) {
+  for (const scenario of ["ready", "ready-array", "empty-array", "multiple-array", "null-array", "nested-array", "array-wrong-version", "array-missing-integrity", "root-404", "transitive-404", "metadata-404", "target-missing", "invalid-json", "wrong-version", "missing-integrity", "skewed-dependency", "integrity", "unauthorized", "unstructured", "connection-refused", "unsafe-code"] as const) {
     const downloaded: string[] = [], caches = new Set<string>();
     const fixture = updateRuntime({
       npm: (args) => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
@@ -1309,6 +1309,7 @@ async function completionOut(positionals: string[]): Promise<string> {
           if (scenario === "unstructured") return { status: 1, stderr: "npm error code E404" };
           return { status: 0 };
         }
+        if (name === "@cotal-ai/cli" && ["connection-refused", "unsafe-code"].includes(scenario)) return { status: 1, stdout: JSON.stringify({ error: { code: scenario === "connection-refused" ? "ECONNREFUSED" : "E401\nsecret-token", summary: "https://user:secret@registry.example/?token=secret" } }), stderr: "npm error secret-token" };
         if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stdout: JSON.stringify({ error: { code: "E404" } }) };
         if (name === "@cotal-ai/core" && scenario === "invalid-json") return { status: 0, stdout: "not json" };
         const metadata = {
@@ -1340,10 +1341,23 @@ async function completionOut(positionals: string[]): Promise<string> {
       assert.ok(!fixture.events.some(event => /^(global:|claim-global:|reconcile|refresh-connectors)/.test(event)), "refusal starts no installation or reconciliation");
       const error = fixture.events.filter(event => event.startsWith(arriving ? "out:" : "err:")).join("\n");
       if (arriving) assert.ok(error.includes("Waiting for cotal-ai@0.13.2") && error.includes("Keeping cotal-ai@0.13.1"), error);
-      else assert.ok(error.includes("release is still reaching the registry") && error.includes("again in a few minutes"), error);
+      else {
+        assert.ok(error.includes("update preflight failed") && error.includes("Correct the reported failure"), error);
+        assert.doesNotMatch(error, /still reaching|in a few minutes/);
+        if (scenario === "connection-refused") assert.match(error, /ECONNREFUSED: registry connection refused.*@cotal-ai:registry.*\.npmrc/);
+        if (scenario === "integrity") assert.match(error, /npm EINTEGRITY/);
+        if (scenario === "unauthorized") assert.match(error, /npm E401/);
+        assert.doesNotMatch(error, /secret-token|user:secret|token=secret/);
+      }
       assert.ok(!error.includes("npm error code E404"), "raw npm errors are not the user-facing diagnostic");
     }
   }
+}
+
+// Real npm can read the root package while a scoped registry refuses every connection.
+{
+  const result = spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/smoke/update-registry-arrival.smoke.mjs"), "closed-scope"], { encoding: "utf8", timeout: 90_000 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
 }
 
 // A listed release that becomes downloadable during the wait installs through the normal path.

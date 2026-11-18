@@ -1111,6 +1111,10 @@ function releaseReadError(result: CommandResult, detail: string): Error {
     try {
       const error = (JSON.parse(result.stdout) as { error?: { code?: unknown } }).error;
       if (error?.code === "E404" || error?.code === "ETARGET") return new ReleaseNotAvailable(detail);
+      if (typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code)) {
+        const registry = detail.includes("@cotal-ai/") ? "the @cotal-ai:registry setting in .npmrc" : "your npm registry settings";
+        return new Error(`${detail} (npm ${error.code}${error.code === "ECONNREFUSED" ? ": registry connection refused" : ""}); check ${registry}, authentication, proxy and TLS configuration`);
+      }
     } catch { /* An unstructured failure is not evidence of registry propagation. */ }
   }
   return new Error(detail);
@@ -1187,7 +1191,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.out(`✓ release archives checked (${((Date.now() - releaseChecksStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
-    rt.err(c.red(`✗ cotal-ai@${targetVersion} release is not ready: ${message(e)}. The release is still reaching the registry or registry access failed; no global install was attempted. Check registry access and run \`cotal update --self\` again in a few minutes.`));
+    rt.err(c.red(`✗ cotal-ai@${targetVersion} update preflight failed: ${message(e)}. No global install was attempted. ${e instanceof ReleaseNotAvailable ? "The release is still reaching the registry; run `cotal update --self` again in a few minutes." : "Correct the reported failure, then run `cotal update --self` again."}`));
     return 1;
   }
 
