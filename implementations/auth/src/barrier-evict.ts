@@ -20,7 +20,6 @@
  * ledgered infra-mint family (#30) lands — migrate there, do not invent it here.
  */
 import { EVICT_PRINCIPALS_MAX, type EvictionResult } from "@cotal-ai/core";
-import type { EvictPrincipal } from "./credential-ledger.js";
 import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
 import type { ServiceKeys } from "./store.js";
 
@@ -80,12 +79,14 @@ export function makeDeliveryAdminEvictor(opts: {
   dataAccount: ServiceKeys["dataAccount"];
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
-}): EvictPrincipal {
+}): (principal: string, connections?: import("@cotal-ai/core").KickTarget[]) => Promise<EvictionResult> {
   const failClosed = failClosedWith(opts);
-  return async (principal: string): Promise<EvictionResult> => {
+  return async (principal: string, connections?: import("@cotal-ai/core").KickTarget[]): Promise<EvictionResult> => {
     try {
       return await withDeliveryAdminEndpoint(opts, "supervisor", "auth-barrier-evict", async (ep) => {
-        const r = await ep.requestDeliveryAdmin("evictPrincipal", { principal }, 15_000);
+        const r = await ep.requestDeliveryAdmin(connections !== undefined ? "evictSessionConnections" : "evictPrincipal", { principal, ...(connections !== undefined ? { connections } : {}) }, 15_000);
+        if (connections !== undefined && JSON.stringify((r.data as { connections?: unknown } | undefined)?.connections) !== JSON.stringify(connections))
+          return failClosed(principal, "the delivery daemon did not confirm the exact connection filter");
         if (!r.ok) return failClosed(principal, `the delivery daemon refused the eviction: ${r.error ?? "(no error copy)"}`);
         return checkedEviction(principal, r.data, failClosed);
       });

@@ -94,6 +94,7 @@ function baseAuthorityWriterGrants(space: string, connId: string): { publish: st
       `$KV.${epAuthBucket(space)}.cred.>`,
       `$KV.${epAuthBucket(space)}.bysrc.>`,
       `$KV.${epAuthBucket(space)}.natkey.>`,
+      `$KV.${epAuthBucket(space)}.sessionconn.*`,
       `$KV.${recordsBucket(space)}.lifecycle.>`,
       `$KV.${recordsBucket(space)}.uid.>`,
     ],
@@ -189,6 +190,7 @@ export function calloutReplicaGrants(space: string, connId: string): { publish: 
       `$JS.API.DIRECT.GET.${records}`,
       `$JS.API.DIRECT.GET.${records}.>`,
       `$KV.${epAuthBucket(space)}.natkey.>`,
+      `$KV.${epAuthBucket(space)}.sessionconn.*`,
     ],
     subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`],
   };

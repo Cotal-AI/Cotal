@@ -43,7 +43,7 @@ const MAX_PAGES = 64; // fan-out pagination guard (mirrors the membership feed's
 
 /** One live connection, projected for eviction: which server holds it (KICK is per-server) and its
  *  attributed principal (the callout/mint-stamped `principal:` tag — NEVER the ephemeral nkey). */
-interface LiveConn {
+interface LiveConn extends KickTarget {
   cid: number;
   serverId: string;
   principal: string;
@@ -89,6 +89,8 @@ export interface EvictionResult {
 /** Options bounding the scan→kick→re-scan loop. Defaults suit a local single-server broker; the
  *  cluster case widens the settle window. */
 export interface EvictOptions {
+  /** Restrict eviction to these broker-authenticated connection coordinates, in addition to principal. */
+  connections?: readonly KickTarget[];
   /** How many verify re-scans to attempt before reporting `remaining` (default 3). */
   maxVerifyRounds?: number;
   /** Per-CONNZ-round settle window in ms after the last reply (default 250). */
@@ -302,6 +304,9 @@ export async function evictDeniedPrincipals(
   principals: readonly string[],
   options: EvictOptions = {},
 ): Promise<EvictionResult[]> {
+  if (options.connections !== undefined && (options.connections.length === 0 || options.connections.length > 256 ||
+    options.connections.some((t) => !t || !/^N[A-Z2-7]{55}$/.test(t.serverId) || !Number.isSafeInteger(t.cid) || t.cid <= 0)))
+    throw new Error("evictDeniedPrincipals: exact connections must be non-empty serverId and positive cid pairs");
   const opts = {
     maxVerifyRounds: options.maxVerifyRounds ?? 3,
     settleMs: options.settleMs ?? 250,
@@ -315,7 +320,10 @@ export async function evictDeniedPrincipals(
   const answer = () => principals.map((p) => out.get(p)!);
   const byPrincipal = (conns: LiveConn[], among: Iterable<string>) => {
     const m = new Map<string, LiveConn[]>([...among].map((p) => [p, []]));
-    for (const c of conns) m.get(c.principal)?.push(c);
+    for (const c of conns) {
+      if (options.connections !== undefined && !options.connections.some((t) => t.serverId === c.serverId && t.cid === c.cid)) continue;
+      m.get(c.principal)?.push(c);
+    }
     return m;
   };
 
