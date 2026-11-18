@@ -205,11 +205,15 @@ and asks for `cotal update --self`; unattended updates remain paused until manua
 A daemon that starts while an update is paused keeps running. `cotal daemon status` names the pause
 and the repair command, and the daemon loads no new version until the repair succeeds.
 
-An update the daemon installs on its own runs inside the daemon's service. It reconciles the new
-version, records the result and exits, and only then does the daemon restart into the new version.
-It does not wait for that restart, so it cannot restore the previous version if the restarted
-daemon fails. Read `cotal daemon status` after an unattended update, or run `cotal update --self`
-yourself to get the verified wait.
+From 0.167.1 on Linux, an automatic updater and its reconcile child move into an authenticated
+sibling systemd scope. After reconciliation, the updater restarts the owned service and waits
+for the target daemon. A failed activation restores and verifies the previous generation before
+recording the failed attempt. macOS and Windows retain their separate activation behavior.
+On Linux, manual `cotal update --self` also repairs a dead owner's ambiguous global child marker
+under the global update lock. It stops only this installation's service after empty hosted admission,
+requires this account's other application processes to exit, and retains the marker before continuing.
+Unreadable evidence or a live writer leaves the marker intact. It starts the enabled owned service
+again after the attempt. It does not enable a disabled service.
 
 A runtime bundled with the desktop app refuses `update --self` before changing its installation.
 Update that app with its signed platform installer so the app, CLI and runtime stay together.

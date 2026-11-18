@@ -16,6 +16,8 @@ if (process.platform !== "linux") {
   cpSync(join(repo, "bin/dist"), join(installed, "dist"), { recursive: true });
   cpSync(join(repo, "bin/package.json"), join(installed, "package.json"));
   const entry = realpathSync.native(join(installed, "dist/cotal.js"));
+  mkdirSync(join(root, "prefix/bin"));
+  symlinkSync(entry, join(root, "prefix/bin/cotal"));
   try {
     for (const checkout of [false, true]) {
       const home = join(root, String(checkout));
