@@ -85,11 +85,11 @@ export async function bootDeliveryDaemon(opts: {
   await ep.start();
   const dlvRevision = await ep.acquireDeliveryLease(0);
   await ep.startPlane3((owner, lifecycleUid) => ep.aclForOwner(owner, lifecycleUid), {
-    evictPrincipal: async (principal) => {
+    evictPrincipal: async (principal, connections) => {
       await opts.onEvict?.([principal]);
       return evictDeniedPrincipalWithCreds({
         servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal,
-        options: { maxVerifyRounds: 12 },
+        options: { maxVerifyRounds: 12, ...(connections !== undefined ? { connections } : {}) },
       });
     },
     evictPrincipals: async (principals) => {
