@@ -127,7 +127,7 @@ const manager = new Manager({ space: "smoke", workspaceRoot, runtime: "pty" });
     restart: { sessionStatePath: statePath },
   };
   await assert.rejects(
-    () => (manager as unknown as { awaitManagedSessionState(agent: typeof promptAgent): Promise<unknown> }).awaitManagedSessionState(promptAgent),
+    () => (manager as unknown as { sessionRecovery: { awaitManagedSessionState(agent: typeof promptAgent): Promise<unknown> } }).sessionRecovery.awaitManagedSessionState(promptAgent),
     (error: unknown) => error instanceof Error && error.message.includes("Trust project folder?") && error.message.includes(promptCwd) &&
       !error.message.includes("connector did not write session state"),
     "a failed Pi startup names the native prompt and directory",
