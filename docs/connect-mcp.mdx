@@ -60,7 +60,8 @@ with the terminal horizon in [SPEC §13.15](../SPEC.md#1315-issued-authority).
 They do not expire every 15 minutes and need no in-place renewal. Network reconnects use
 the same identity. Disconnecting, closing stdin or sending SIGINT or SIGTERM stops the
 agent and retires its identity. Failed retirement is reported and its recovery records stay
-for a later connection to clean up.
+for a later connection to clean up. The records are kept in the Cotal folder of your account,
+so a host that a crash or a restart of the computer ended is retired by the next connection.
 
 Signed-in spaces require a native conversation identity and are refused by this generic
 host. Use the space's hosted connector or a supported native connector. The server never

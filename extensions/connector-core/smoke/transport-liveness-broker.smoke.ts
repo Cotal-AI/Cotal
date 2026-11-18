@@ -21,7 +21,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { AgentConfig } from "../src/config.js";
-import { isReachable, chatStream, chatSubject, dmStream, unicastSubject, parsePrincipalKey, setupSpaceStreams } from "@cotal-ai/core";
+import { isReachable, chatStream, chatSubject, dmStream, unicastSubject, parsePrincipalKey, setupSpaceStreams } from "../../../packages/core/dist/index.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -609,7 +609,7 @@ try {
   orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-ordering-${port}` });
   await orderingAgent.start(100);
   await until(() => orderingAgent!.connected, 30_000);
-  const orderingEp = orderingAgent.ep as unknown as { kv?: unknown; status?: string };
+  const orderingEp = orderingAgent.ep as unknown as { kv?: unknown; presence: { status?: string } };
   const heldOrdering: Array<{ resolve: () => void; reject: (e: Error) => void; record: string }> = [];
   const liveOrderingKv = orderingEp.kv;
   orderingEp.kv = { put: (_key: string, record: string) => new Promise<void>((resolve, reject) => heldOrdering.push({ resolve, reject, record })) };
@@ -662,8 +662,8 @@ try {
   await drainUntil(orderingDone);
   check(
     "two overlapping status writes land in call order: the later call's puts start only after the earlier call's have settled",
-    !idleStartedWhileHeld && orderingAgent!.status === "idle" && orderingEp.status === "idle",
-    { idleStartedWhileHeld, agentStatus: orderingAgent!.status, epStatus: orderingEp.status },
+    !idleStartedWhileHeld && orderingAgent!.status === "idle" && orderingEp.presence.status === "idle",
+    { idleStartedWhileHeld, agentStatus: orderingAgent!.status, epStatus: orderingEp.presence.status },
   );
   // A status with an activity is one put: a peer never reads the new activity beside the old status.
   const statusRecord = JSON.parse(statusPut.record) as { status?: string; activity?: string };
@@ -693,8 +693,8 @@ try {
   await drainUntil(departureDone);
   check(
     "departure is ordered behind a status write already in flight",
-    !offlineStartedWhileHeld && orderingEp.status === "offline",
-    { offlineStartedWhileHeld, epStatus: orderingEp.status },
+    !offlineStartedWhileHeld && orderingEp.presence.status === "offline",
+    { offlineStartedWhileHeld, epStatus: orderingEp.presence.status },
   );
   orderingEp.kv = liveOrderingKv;
 
@@ -704,7 +704,7 @@ try {
   orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-ordering2-${port}` });
   await orderingAgent.start(100);
   await until(() => orderingAgent!.connected, 30_000);
-  const rejectEp = orderingAgent.ep as unknown as { kv?: unknown; status?: string };
+  const rejectEp = orderingAgent.ep as unknown as { kv?: unknown; presence: { status?: string } };
   const heldReject: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
   const liveRejectKv = rejectEp.kv;
   rejectEp.kv = { put: () => new Promise<void>((resolve, reject) => heldReject.push({ resolve, reject })) };
@@ -722,8 +722,8 @@ try {
   rejectEp.kv = liveRejectKv;
   check(
     "a rejected presence write does not stall the next one",
-    secondPutArrived && rejectEp.status === "idle",
-    { secondPutArrived, epStatus: rejectEp.status },
+    secondPutArrived && rejectEp.presence.status === "idle",
+    { secondPutArrived, epStatus: rejectEp.presence.status },
   );
   // Cell (d) rebinds orderingAgent, so this agent would otherwise be dropped unstopped and its
   // heartbeat/self-heal timers would keep the process alive after the banner (#2055 lane).

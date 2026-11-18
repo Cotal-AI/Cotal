@@ -21,7 +21,7 @@
     },
     {
       "name": "the restart budget ignores the spawn policy",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/session-recovery.ts",
       "find": "    const limit = restart.policy?.restarts ?? SESSION_RESTART_LIMIT;\n    const windowMs = restart.policy?.windowMs ?? SESSION_RESTART_WINDOW_MS;",
       "replace": "    const limit = SESSION_RESTART_LIMIT;\n    const windowMs = SESSION_RESTART_WINDOW_MS;",
       "expectRed": "spending the restart budget starts no further replacement",

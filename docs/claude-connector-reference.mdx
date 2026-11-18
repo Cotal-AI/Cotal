@@ -40,6 +40,12 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   channel did not bind joins the mesh, reports idle and never answers a turn or a direct message.
   `cotal status` reports the entry under `Claude wake channel`.
 
+- `--prompt` is Claude's first turn. The connector passes it as Claude's leading argument after one
+  space, so a prompt that names a Claude command or starts with `-` still arrives as the turn. An
+  empty prompt refuses the launch. A `--resume` id that starts with `-` is refused, because Claude
+  would read it as an option. Values given through `--opt` are passed to Claude as written and are
+  not covered by these rules.
+
 - **Tool permissions.** A managed seat has no human at its terminal, so it launches with
   `--permission-mode bypassPermissions`: a prompt under the default mode would stop its first mesh
   tool call until someone answered it, and nobody can. To get prompts back, pass
@@ -137,7 +143,7 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   a spawn there. A foreground `cotal spawn` keeps the trust dialog in your terminal.
 
 Inbound mesh messages arrive in context as
-`<channel source="cotal" from="bob" kind="dm" …>…</channel>`: each meta key a tag
+`<channel source="cotal" from="bob (unverified name)" from_id="local.bob" kind="dm" …>…</channel>`: each meta key a tag
 attribute the agent can read for routing.
 
 The consuming connector holds a crash-safe claim for its broker target, space, principal and
@@ -616,7 +622,12 @@ sender inside a single bracket pair. A message body, a sender name and role, and
 channel label are all peer-controlled, so each passes through the same neutralization the
 `cotal_inbox` reply uses: no line break a splitter may honour and no bracket survives into a
 rendered attribution. A sender name that is only whitespace is left out, and the frame names that
-sender by id. This matters more for an injected block than for a reply, because the agent
+sender by id. A sender writes its own name and role, so the frame marks them `(unverified name)`, or
+`(unverified role)` when the name is blank and the frame shows the sender's id. A label longer than
+the line it sits on is cut before the marker, never through it. A double quote in a name or role
+becomes a space, like a bracket. The `sender_id` beside them is the identity the broker checked. The
+`from` attribute of a `<channel>` tag carries the same marked label, and `from_id` the checked id.
+This matters more for an injected block than for a reply, because the agent
 did not ask for it and so never had the chance to distrust it.
 
 ## Presence mapping

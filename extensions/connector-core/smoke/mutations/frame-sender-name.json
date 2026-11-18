@@ -1,0 +1,76 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/frame-sender-name.smoke.ts"
+  ],
+  "guard": "a frame marks the sender's self-written name and role as unverified",
+  "command": "pnpm smoke:frame-sender-name",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/frame-sender-name.json",
+  "why": [
+    "The suite imports the connector-core source directly, so no rebuild is needed for those entries.",
+    "Every surface renders the sender through `fmtFrom`, so one mutation there reaches the wake",
+    "label, the preview rows, the injected block and the cotal_inbox reply together.",
+    "The quote scrub lives in core's `peerLabel`, which connector-core reads from the built `dist`,",
+    "so that entry rebuilds core before the suite and again after the restore."
+  ],
+  "mutations": [
+    {
+      "name": "the marker is dropped, so a frame prints the sender's chosen name as if it were its identity",
+      "file": "extensions/connector-core/src/framing.ts",
+      "find": "  const marker = named ? \" (unverified name)\" : i.fromRole ? \" (unverified role)\" : \"\";",
+      "replace": "  const marker = \"\";",
+      "expectRed": "the wake-hint label marks the claimed name and role as unverified",
+      "cell": "the wake-hint label marks the claimed name and role as unverified"
+    },
+    {
+      "name": "the label is no longer bounded inside fmtFrom, so a caller's cut drops the marker of a long name",
+      "file": "extensions/connector-core/src/framing.ts",
+      "find": "  return `${capped(label, maxCodePoints - marker.length)}${marker}`;",
+      "replace": "  return `${label}${marker}`.slice(0, maxCodePoints);",
+      "expectRed": "a 60-character name keeps the marker in the 40-character form",
+      "cell": "a 60-character name keeps the marker in the 40-character form"
+    },
+    {
+      "name": "a blank name with a role calls the authenticated id an unverified name",
+      "file": "extensions/connector-core/src/framing.ts",
+      "find": "  const marker = named ? \" (unverified name)\" : i.fromRole ? \" (unverified role)\" : \"\";",
+      "replace": "  const marker = named || i.fromRole ? \" (unverified name)\" : \"\";",
+      "expectRed": "a blank name with a role marks the role, not the authenticated id, as unverified",
+      "cell": "a blank name with a role marks the role, not the authenticated id, as unverified"
+    },
+    {
+      "name": "the channel push meta carries the raw name again",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const m: Record<string, string> = { kind: i.kind, from: fmtFrom(i), from_id: i.fromId };",
+      "replace": "  const m: Record<string, string> = { kind: i.kind, from: i.fromName, from_id: i.fromId };",
+      "expectRed": "the channel push meta carries the scrubbed, marked sender and the checked id",
+      "cell": "the channel push meta carries the scrubbed, marked sender and the checked id"
+    },
+    {
+      "name": "a double quote survives the peer label, so a name can write a second sender_id",
+      "file": "packages/core/src/peer-label.ts",
+      "find": ".replace(/[\\p{Cc}\\p{Zl}\\p{Zp}[\\]\"]+/gu, \" \");",
+      "replace": ".replace(/[\\p{Cc}\\p{Zl}\\p{Zp}[\\]]+/gu, \" \");",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:frame-sender-name",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "a name holding a quote and a sender_id field renders one sender_id, the checked one",
+      "cell": "a name holding a quote and a sender_id field renders one sender_id, the checked one"
+    },
+    {
+      "name": "a preview row's channel and role labels are no longer capped, so a long label pushes the marker past the row's cut",
+      "file": "extensions/connector-core/src/framing.ts",
+      "find": "  const label = (s: string | undefined) => attributionMax === undefined ? attributionSafe(s ?? \"\") : capped(attributionSafe(s ?? \"\"), LABEL_MAX_CODE_POINTS);",
+      "replace": "  const label = (s: string | undefined) => attributionSafe(s ?? \"\");",
+      "expectRed": "a channel row with a 300-code-point channel label and a 300-code-point name keeps the marker whole",
+      "cell": "a channel row with a 300-code-point channel label and a 300-code-point name keeps the marker whole"
+    },
+    {
+      "name": "fmtFrom accepts a bound too small to hold the marker",
+      "file": "extensions/connector-core/src/framing.ts",
+      "find": "  if (!Number.isInteger(maxCodePoints) || maxCodePoints < FROM_MIN_CODE_POINTS)\n    throw new RangeError(`a sender label bound must be a whole number of at least ${FROM_MIN_CODE_POINTS} code points, got ${maxCodePoints}`);\n",
+      "replace": "",
+      "expectRed": "fmtFrom refuses a bound too small to hold the marker",
+      "cell": "fmtFrom refuses a bound too small to hold the marker"
+    }
+  ]
+}

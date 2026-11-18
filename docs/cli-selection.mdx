@@ -473,7 +473,9 @@ A copied or moved project folder keeps a stack journal that names the folder it 
 --root <root>`, and `status` names the same command. `--adopt` takes the journal over: it rewrites it
 to name this folder, moves a broker store that lay under the recorded folder to the same place under
 this one, and records a stack that never ran here, so the next `cotal up` starts it from this folder
-with the copied store. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
+with the copied store. It also moves the recorded store identity path, keeping its directory pins.
+A renamed store therefore gives no replacement warning before startup, while a replaced or missing
+store still warns. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
 link, when the recorded folder still holds the journal, because this folder is then a copy of a stack
 that runs from there, when this machine records an instance of that stack, because the folder was
 then moved on this machine and moves back, and when the space is prepared or registered on this
@@ -715,6 +717,8 @@ that does not parse, or is missing a field every consumer reads (`server`, `mode
 it acts. The refusal names the file under `target` without repeating its stored values; `meshes`
 also says what is wrong with it. `status` is the exception: it lists the readable records, names the
 file and exits 4. Remove the file or restore the record; nothing repairs or invents a field for you.
+When the file is named for a space, the refusal names `cotal space forget <space>`, which removes
+that file. It reads no broker or folder from it, so it reports none.
 A registry directory that exists but cannot be read, such as one without read permission or a
 regular file in its place, refuses the same way, naming the directory, and `meshes` gives the read
 error. Only an absent directory is an empty registry. The folder of prepared spaces,

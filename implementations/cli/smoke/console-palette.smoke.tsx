@@ -179,4 +179,17 @@ await scenario("dm", async () => {
   await key("\r");
   assert.equal(query, "dm @local.blank ", query);
 }, undefined, {}, blankSnap);
+// The label is scrubbed for display, so a name it changes completes to the peer's id rather than to
+// a label that addresses someone else.
+const quoteSnap = {
+  agents: [{ card: { id: "local.quoted", name: 'Ada"x', role: "worker" }, status: "idle" }],
+  endpoints: [],
+  channels: [],
+} as unknown as MeshSnapshot;
+await scenario("dm", async () => {
+  await key("\r");
+  await screen("@Ada x");
+  await key("\r");
+  assert.equal(query, "dm @local.quoted ", query);
+}, undefined, {}, quoteSnap);
 console.log("✓ Command selection, recipient/seat/channel/role pickers, message entry, manager failure and blocked-action feedback");

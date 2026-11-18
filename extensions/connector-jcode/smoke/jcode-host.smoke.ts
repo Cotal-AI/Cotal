@@ -636,7 +636,7 @@ try {
   const hintTurns = () => entries().filter((entry) => entry.ev === "request" &&
     (entry.frame as { req?: string; no_reply?: boolean }).req === "send_message" &&
     !(entry.frame as { no_reply?: boolean }).no_reply &&
-    String((entry.frame as { content?: string }).content).includes("You were mentioned by operator on #team. Pull it with cotal_inbox."));
+    String((entry.frame as { content?: string }).content).includes("You were mentioned by operator (unverified name) on #team. Pull it with cotal_inbox."));
   const hintStart = hintTurns().length;
   const focusBody = "FOCUS-MENTION-BODY-MUST-NOT-BE-INJECTED";
   await operator.multicast(focusBody, { channel: "team", mentions: ["jcodepeer"] });
@@ -646,7 +646,7 @@ try {
   check("the focus wake hint never auto-injects the channel body", Boolean(focusTurn) &&
     !String((focusTurn?.frame as { content?: string } | undefined)?.content).includes(focusBody), focusTurn);
   await waitFor("focus wake turn completion", () => entries().find((entry) => entry.ev === "turn_done_emitted" &&
-    String(entry.content).includes("You were mentioned by operator on #team.")));
+    String(entry.content).includes("You were mentioned by operator (unverified name) on #team.")));
   await sleep(100);
   check("a successful focus hint leaves no empty wake loop", hintTurns().length === hintStart + 1, hintTurns());
   const busyMarker = "FOCUS-BUSY-DM-CONTROL";

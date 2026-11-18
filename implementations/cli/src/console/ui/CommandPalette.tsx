@@ -42,7 +42,10 @@ function suggest(query: string, snap: MeshSnapshot, managed: PsReply | undefined
       const named = p.card.name.trim();
       const duplicate = named !== "" && peers.some((other) => other.card.id !== p.card.id && other.card.name === p.card.name);
       const shown = peerLabel({ name: named ? p.card.name : p.card.id });
-      return { value: "@" + (duplicate ? p.card.id : shown),
+      // The label is scrubbed for display. When that changed the name, or the name holds a space the
+      // command line would split on, the label is not an address, so the completion is the id.
+      const address = !duplicate && named && shown === p.card.name && !/\s/.test(p.card.name);
+      return { value: "@" + (address || !named ? shown : p.card.id),
         label: "@" + shown + (duplicate ? ` (${p.card.id.slice(0, 8)})` : ""),
         summary: [p.card.role, p.status].filter(Boolean).join(" · "), run: command === "call" };
     });

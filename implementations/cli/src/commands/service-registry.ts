@@ -112,7 +112,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values);
     if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
     if (resolved?.stopped) return recordedManagerLogs(resolved.requested, { ...resolved.stopped, state: "stopped" }, space, root, args.values, presentation, commandName);
-    if (resolved) announcePresetTarget(resolved, space, presentation);
+    if (resolved) announcePresetTarget(resolved, space, presentation, args.values.space !== undefined);
     // A preset name reaches the stack member built on it. Starting that member by itself launches
     // its process and leaves the space unregistered, so it refuses before the start saves or launches.
     // A running member needs no start: the start reports it running, as for any running service.
@@ -292,7 +292,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   function savedService(requested: string): ServiceDefinitionSnapshot | undefined {
     const exact = store.read(requested), preset = exact ? undefined : findServicePreset(requested);
     const row = preset && presetDefinition(space, root, preset, requested, mode);
-    if (preset && row) announcePresetTarget({ requested, name: row.name, preset: preset.name, saved: null }, space, presentation);
+    if (preset && row) announcePresetTarget({ requested, name: row.name, preset: preset.name, saved: null }, space, presentation, args.values.space !== undefined);
     return exact ?? row;
   }
   function cancelled(title: string): void { writeResult(presentation, { command: "service", target, result: { kind: "service-definition-change", changed: false }, noOp: true }, () => ({ sections: [{ title, blocks: [{ kind: "lines", lines: ["No service definition, process or OS unit was changed."] }] }] })); }
@@ -349,12 +349,14 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
 }
 
 /** Say on stderr which saved service a preset name acts on, and what this command saved for it,
- *  before the action's own report. JSON carries the same in its target and result. */
-export function announcePresetTarget(resolved: PresetServiceTarget, space: string, presentation: ReturnType<typeof presentationOf>): void {
+ *  before the action's own report. JSON carries the same in its target and result. A space the
+ *  caller named with `--space` is named in the command it suggests, since a bare one from this
+ *  folder can resolve to another space (#7346). */
+export function announcePresetTarget(resolved: PresetServiceTarget, space: string, presentation: ReturnType<typeof presentationOf>, named: boolean): void {
   if (presentation === "json") return;
   const notes: string[] = [];
   if (resolved.name !== resolved.requested) notes.push(`${resolved.requested} in space ${space} is the saved service ${resolved.name}${resolved.name.startsWith("stack-") ? ", which `cotal up` started" : ""}`);
-  if (resolved.saved?.kind === "created") notes.push(`saved ${resolved.name} in space ${space} from the ${resolved.preset} preset${resolved.saved.options.length ? ` with ${resolved.saved.options.map((name) => `--${name}`).join(", ")}` : " with its defaults"}; \`cotal service show ${resolved.name}\` reads it`);
+  if (resolved.saved?.kind === "created") notes.push(`saved ${resolved.name} in space ${space} from the ${resolved.preset} preset${resolved.saved.options.length ? ` with ${resolved.saved.options.map((name) => `--${name}`).join(", ")}` : " with its defaults"}; \`cotal service show ${resolved.name}${named ? ` --space ${oneLine(space)}` : ""}\` reads it`);
   if (resolved.saved?.kind === "redefined") notes.push(`saved ${resolved.name} again with the new ${resolved.saved.options.map((name) => `--${name}`).join(", ")}`);
   for (const note of notes) process.stderr.write(`${note}\n`);
 }

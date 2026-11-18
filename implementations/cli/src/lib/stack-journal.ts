@@ -258,7 +258,8 @@ export function adoptionRefusal(root: string, found: { journal: StackJournal; re
 /** `space create --adopt`: rewrite, at `root`, the stack journal another folder recorded, as a copy
  *  from another machine or a folder moved after its stack stopped keeps it, so it names this root.
  *  It refuses as {@link stackAdoptionBlock} says. The adopted journal keeps the space, address, mode and
- *  broker inputs, with a store that lay under the recorded root moved under this one, and records an
+ *  broker inputs, with a store and its recorded identity path under the old root moved under this one,
+ *  keeping the directory identity pins so a replacement still warns, and records an
  *  up refused before any member started, as a stack that never ran here. Returns the recorded root. */
 export function adoptStackJournal(root: string, space: string): string {
   const canonical = canonicalRoot(root), path = stackJournalPath(canonical);
@@ -274,7 +275,11 @@ export function adoptStackJournal(root: string, space: string): string {
     const next: StackJournal = {
       schemaVersion: 1, kind: "cotal-stack-controller", root: canonical, space, server: found.journal.server, mode: found.journal.mode,
       members: STACK_ROLES.map((role) => ({ role, definition: STACK_DEFINITION[role], instanceId: null, state: "not-attempted" })),
-      ...(found.journal.broker ? { broker: { ...found.journal.broker, storeDir: under(found.journal.broker.storeDir) } } : {}),
+      ...(found.journal.broker ? { broker: {
+        ...found.journal.broker,
+        storeDir: under(found.journal.broker.storeDir),
+        ...(found.journal.broker.storeIdentity ? { storeIdentity: { ...found.journal.broker.storeIdentity, path: under(found.journal.broker.storeIdentity.path) } } : {}),
+      } } : {}),
       operation: { id: randomUUID(), kind: "up", phase: "refused", recordedAt: now, withAgents: false },
       updatedAt: now,
     };

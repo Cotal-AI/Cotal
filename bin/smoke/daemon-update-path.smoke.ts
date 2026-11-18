@@ -44,7 +44,7 @@ bare.stdout.on("data", chunk => bareOut += String(chunk));
 bare.stderr.on("data", chunk => bareErr += String(chunk));
 const bareCode = await new Promise(resolve => bare.once("exit", resolve));
 const bareDoc = JSON.parse(bareOut);
-if (bareCode !== 2 || bareDoc.error?.code !== "DEPENDENCY_UNAVAILABLE" || !bareErr.includes("Signing in to Cotal Cloud. For another host, use cotal login --idp <url>.")) throw new Error(`bare setup service refusal changed: ${bareOut}${bareErr}`);
+if (bareCode !== 2 || bareDoc.error?.code !== "DEPENDENCY_UNAVAILABLE" || !bareErr.includes("Signing in to Cotal Cloud. For another host, use `cotal login --idp <url>`.")) throw new Error(`bare setup service refusal changed: ${bareOut}${bareErr}`);
 if (existsSync(join(bareConfig, "cotal", "seed")) || existsSync(join(bareConfig, "cotal", "extensions.json")) || existsSync(join(home, "daemon")) || existsSync(join(bareConfig, "systemd")) || existsSync(usageNativeLog)) throw new Error("bare setup service refusal wrote connector, daemon or native service state");
 console.log("PASS bare setup selects Cloud then refuses unavailable service without writing state");
 for (const args of ["bad.space", "a".repeat(65), "bad space"].flatMap(space => [["--space", space], ["--no-manager", "--space", space, "--wait", "0"]])) {

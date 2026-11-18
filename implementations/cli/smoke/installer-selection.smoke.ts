@@ -37,12 +37,20 @@ if [ "\${1:-}" = update ]; then
   printf '%s\\n' "$*" >> "$FIXTURE_UPDATE_ARGS"
   [ "$#" = 1 ] || exit 42
 else
+  if [ "\${FIXTURE_CRASH:-}" = 1 ]; then
+    printf 'startup failed: package export unavailable\\n' >&2
+    exit 1
+  fi
   printf 'cotal-ai %s\\n' "$(cat "$FIXTURE_VERSION_FILE")"
 fi
 CLI
   chmod 755 "$INSTALL_DIR/bin/cotal"
 }
-main --no-setup --no-modify-path --version "\${FIXTURE_TARGET:-0.82.2}"
+if [ "\${FIXTURE_TARGET:-}" = latest ]; then
+  main --no-setup --no-modify-path
+else
+  main --no-setup --no-modify-path --version "\${FIXTURE_TARGET:-0.82.2}"
+fi
 `);
 const toolPath = `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`;
 function fixture(label: string) {
@@ -69,6 +77,21 @@ try {
   const quote = (value: string): string => "'" + value.replaceAll("'", "'\\''") + "'";
   for (const command of ["setup", "up --detach", "spawn"])
     assert(output(shadowed).includes(`${quote(join(shadow.newBin, "cotal"))} ${command}`), `installer next step uses its absolute safely quoted executable: ${command}`);
+
+  const broken = fixture("broken");
+  const crashed = spawnSync("/bin/sh", [driver, library], { env: { ...broken.env, FIXTURE_CRASH: "1", PATH: `${broken.newBin}:${toolPath}` }, encoding: "utf8" });
+  assert.equal(crashed.status, 1, output(crashed));
+  assert(output(crashed).includes("startup failed: package export unavailable"), "installer preserves the installed command's startup error");
+  assert(output(crashed).includes("without --version"), "installer gives a recovery command selection");
+  assert(!output(crashed).includes("✓ Cotal") && !output(crashed).includes("get your machine ready"), "failed startup never prints installation success or setup instructions");
+
+  const latestBroken = fixture("latest-broken");
+  const latestCrashed = spawnSync("/bin/sh", [driver, library], { env: { ...latestBroken.env, FIXTURE_TARGET: "latest", FIXTURE_CRASH: "1", PATH: `${latestBroken.newBin}:${toolPath}` }, encoding: "utf8" });
+  assert.equal(latestCrashed.status, 1, output(latestCrashed));
+  assert(output(latestCrashed).includes("startup failed: package export unavailable"), "latest failure preserves the startup error");
+  assert(output(latestCrashed).includes("The latest Cotal release could not start.") && output(latestCrashed).includes("Report the error above at https://github.com/Cotal-AI/Cotal/issues"), "latest failure names the issue tracker");
+  assert(!output(latestCrashed).includes("without --version"), "latest failure does not recommend the same installation again");
+  assert(!output(latestCrashed).includes("✓ Cotal") && !output(latestCrashed).includes("get your machine ready"), "latest failure prints no success or setup instructions");
 
   const selected = fixture("selected");
   const direct = spawnSync("/bin/sh", [driver, library], { env: { ...selected.env, PATH: `${selected.newBin}:${selected.oldBin}:${toolPath}` }, encoding: "utf8" });
@@ -135,7 +158,7 @@ cotal --version
   const nodeVersion = spawnSync(join(nodebin, "node"), ["--version"], { encoding: "utf8" });
   assert.equal(nodeVersion.stdout.trim(), process.version, "the relinked runtime remains executable");
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: 26, failed: 0 });
+  emitSentinel({ passed: 35, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

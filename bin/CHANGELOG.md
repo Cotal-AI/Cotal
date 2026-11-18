@@ -1,5 +1,37 @@
 # cotal-ai
 
+## 0.166.3
+
+### Patch Changes
+
+- 5b96741: Name commands in backticks in the selection notes, the sign-in hints, the update refusals and the Manager restart line, so a wrapped line keeps each command whole. `cotal mcp --help` now shows examples.
+- ef2247a: Correct desktop install smoke expectations for the service identity checks performed before a fresh installation.
+- 5217b90: Recover invalid desktop preferences with a preserved copy and a visible notice without changing Open at login.
+- 1a623d6: Explain how to stop hosted workflows on a default local stack.
+  
+  The workflow guide and issue-orchestrator example now name `cotal down --yes` for a manager started without a saved service and state its whole-stack impact. A retained manager addressed as `stack-manager` refuses stop and restart with the supported stop path instead of suggesting a service definition. Prepared controller stacks keep their manager stop followed by `cotal up` path.
+- 784144e: Allow slow entry version verification during self-update and report timeouts distinctly from version mismatches.
+- Updated dependencies [5b96741]
+- Updated dependencies [c1734e0]
+- Updated dependencies [fb871f5]
+- Updated dependencies [3eeb06f]
+- Updated dependencies [efa97b0]
+- Updated dependencies [ec9b5cb]
+- Updated dependencies [1a623d6]
+- Updated dependencies [9bd3a9c]
+- Updated dependencies [de1995a]
+- Updated dependencies [f4c46bb]
+  - @cotal-ai/cli@0.166.3
+  - @cotal-ai/auth@0.166.3
+  - @cotal-ai/workspace@0.166.3
+  - @cotal-ai/core@0.166.3
+  - @cotal-ai/connector-core@0.166.3
+  - @cotal-ai/manager@0.166.3
+  - @cotal-ai/delivery@0.166.3
+  - @cotal-ai/runtime@0.166.3
+  - @cotal-ai/registry@0.166.3
+  - @cotal-ai/seat@0.166.3
+
 ## 0.166.2
 
 ### Patch Changes

@@ -1,0 +1,2 @@
+# A Claude spawn refuses an initial prompt or resume id that claude would read as an option.
+smoke:claude-prompt-argv:live

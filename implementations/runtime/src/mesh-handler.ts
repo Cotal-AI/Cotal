@@ -40,6 +40,8 @@ import {
   presenceBucket,
   isPresenceRow,
   principalKey,
+  parseSubject,
+  isFromSubjectSender,
   liveKvEntries,
   IncompleteKvScan,
   openMembersRegistry,
@@ -1091,7 +1093,7 @@ export class MeshHandler {
     const timeoutAt = req.timeout === undefined ? undefined : this.now() + parseDuration(req.timeout);
     const idleFor = ev.event === "idle" ? parseDuration(ev.duration) : undefined;
     const matcher = ev.event === "message" && ev.matches !== undefined ? compileMatch(ev.matches) : undefined;
-    const from = ev.event === "message" ? ev.from : undefined;
+    const sender = ev.event === "message" && ev.from !== undefined ? this.waitSender(ev.from) : undefined;
 
     // ONE token per deadline, both derived, so a resume re-derives them instead of remembering. The
     // arm takes the tokens the binding recorded above, so it can never mint one the binding did not.
@@ -1151,7 +1153,7 @@ export class MeshHandler {
         }
         const batch = this.services
           ? (await this.services.waits.fetch(ctx.requestId)).map((message) => ({
-              seq: message.sequence, data: message.data,
+              seq: message.sequence, subject: message.subject, data: message.data,
               ack: () => this.services!.waits.ack(ctx.requestId, message.receipt),
             }))
           : await consumer!.fetch({ max_messages: 16, expires: WAIT_POLL_MS });
@@ -1164,7 +1166,7 @@ export class MeshHandler {
             await this.push(primary!, this.now() + idleFor);
             continue;
           }
-          if (msg === undefined || !matchesEvent(msg, from, matcher)) { await m.ack(); continue; }
+          if (msg === undefined || !matchesEvent(msg, m.subject, sender, matcher)) { await m.ack(); continue; }
           // BIND BEFORE ACK. The bind is durable; the ack is what makes the message unrecoverable.
           // In this order a crash in between redelivers it, and a crash after it is answered from
           // the recorded sequence — in the other order the match is simply lost.
@@ -2058,6 +2060,24 @@ export class MeshHandler {
     if (entry === undefined || (uid !== undefined && entry.uid !== uid)) return { why: "not-in-roster" };
     if (entry.owner === undefined || entry.actor === undefined) return { why: "no-floor" };
     return { address: { name, uid: entry.uid, owner: entry.owner, actor: entry.actor, ...(entry.host !== undefined ? { host: entry.host } : {}) } };
+  }
+
+  /**
+   * The principal a `message` wait's `from` handle names, as `<owner>.<actor>`: the coordinates
+   * this run's roster recorded when it spawned the seat or bound the participant. A message
+   * answers only when its subject's sender is that principal. A handle outside the roster, or one
+   * whose coordinates were never served, refuses: matching it on a display name would let any peer
+   * that names itself after the agent answer.
+   */
+  private waitSender(agent: string): string {
+    const { name, uid } = parseAgentHandle(agent);
+    const seat = this.seatAddress(name, uid);
+    if (seat.address === undefined) {
+      if (seat.why === "not-in-roster")
+        throw new Error(`wait(message(..., { from: ${name}#${uid} })) names an agent that is not in this run's roster; \`from\` takes a handle this run spawned or bound with participant()`);
+      throw new Error(`wait(message(..., { from: ${name}#${uid} })) has no sender to match: the spawn's acceptance floor was never served, so the seat's owner/actor coordinates are unknown`);
+    }
+    return principalKey(seat.address.owner, seat.address.actor).key;
   }
 
   private async relayAsk(
@@ -3323,10 +3343,13 @@ function decodeMessage(data: Uint8Array): CotalMessage | undefined {
   }
 }
 
-/** Does this message answer the await? `from` is matched on the SENDER'S NAME as the mesh records
- *  it, never on the subject: the subject carries a principal, and a program names an agent. */
-function matchesEvent(msg: CotalMessage, from: string | undefined, matcher: RegExp | undefined): boolean {
-  if (from !== undefined && msg.from?.name?.toLowerCase() !== from.toLowerCase()) return false;
+/** Does this message answer the await? It must come from the principal its subject names (SPEC
+ *  §5), and when the wait names a `sender` principal, the subject's sender must be that principal.
+ *  The payload's `from.name` is whatever the sender wrote, so it is never compared. */
+function matchesEvent(msg: CotalMessage, subject: string, sender: string | undefined, matcher: RegExp | undefined): boolean {
+  const parsed = parseSubject(subject);
+  if (parsed === null || !isFromSubjectSender(msg, parsed)) return false;
+  if (sender !== undefined && parsed.sender !== sender) return false;
   if (matcher === undefined) return true;
   const text = (msg.parts ?? [])
     .filter((p): p is { kind: "text"; text: string } => p.kind === "text" && typeof (p as { text?: unknown }).text === "string")
