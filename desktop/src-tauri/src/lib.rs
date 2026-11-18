@@ -63,6 +63,8 @@ pub enum DesktopRequest {
     Setup { space: String, idp: String },
     #[serde(rename = "space-intent")]
     SpaceIntent { space: String, enabled: bool },
+    #[serde(rename = "agent-stop", rename_all = "camelCase")]
+    AgentStop { space: String, lifecycle_uid: String },
     #[serde(rename = "connect-check")]
     ConnectCheck { space: String },
     #[serde(rename = "register")]
@@ -91,6 +93,7 @@ impl DesktopRequest {
                 }
             }
             Self::SpaceIntent { space, .. }
+            | Self::AgentStop { space, .. }
             | Self::ConnectCheck { space }
             | Self::Register { space }
             | Self::Connect { space }

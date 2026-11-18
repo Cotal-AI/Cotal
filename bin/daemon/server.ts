@@ -26,7 +26,7 @@ import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, typ
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
-import { homeCotalDir, isCommandFailure, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
+import { homeCotalDir, isCommandFailure, isConnectRefusal, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
@@ -261,6 +261,13 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           const cause = String(error instanceof Error ? error.message : error).replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
           log(`daemon: ${req.op} refused: ${cause}`);
           if (error instanceof HostedManagerRefusal) return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) } });
+          if (req.op === "agent-stop") {
+            const failure = isConnectRefusal(error) ? error.failure() : error;
+            if (isCommandFailure(failure)) {
+              const clean = (value: string) => value.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
+              return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: failure.code, message: clean(failure.message), ...(failure.remedy ? { remedy: clean(failure.remedy) } : {}) } });
+            }
+          }
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "MANAGER_UNAVAILABLE", message: `the daemon could not complete ${req.op}: ${cause}`, remedy: "read \`cotal daemon status\`, restore the Manager connection if needed, then run the same command again" } });
         }));
       };
@@ -327,6 +334,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "space-intent") {
         managerResult(async () => { await account.intent(req.space, req.enabled); return status(); });
+        return;
+      }
+      if (req.op === "agent-stop") {
+        managerResult(async () => { await managers.stopAgent(req.space, req.lifecycleUid); return status(); });
         return;
       }
       if (req.op === "connect-check") {

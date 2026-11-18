@@ -12,8 +12,8 @@ import {
 import { daemonArgv } from "@cotal-ai/cli/self-exec";
 import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
 import { loadIdpSession, retainManagerAuthorityRoute, withIdpSessionDir } from "@cotal-ai/auth";
-import { controlCaller, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
-import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, epRailFailure, notAdmittedRefusal } from "@cotal-ai/workspace/control";
+import { CommandFailure, controlCaller, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DIAL_TIMEOUT_MS, DialNotAdmitted, askManager, dialWithRetry, epRailFailure, managerFailure, notAdmittedRefusal } from "@cotal-ai/workspace/control";
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
@@ -673,6 +673,26 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   };
   return {
     start, status, refresh,
+    async stopAgent(space: string, lifecycleUid: string): Promise<void> {
+      const local = live.get(space);
+      const child = local?.child;
+      const instanceId = local?.view.instanceId;
+      if (!local || !child || !instanceId || local.stopping || local.view.state !== "answering")
+        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "The Manager for this local agent is not answering.");
+      const selected = (await readHostedAgents(child)).find(agent => agent.lifecycleUid === lifecycleUid);
+      if (!selected?.id || selected.state !== "running")
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", "The selected local agent is no longer running.");
+      const expectedTarget = { id: selected.id, lifecycleUid };
+      await withIdpSessionDir(home, async () => {
+        const target = await resolveControlTarget({ space }, "control-caller-admin", instanceId, { onRefusal: "throw" });
+        if (local.child !== child || local.stopping || local.view.instanceId !== instanceId)
+          throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "The local Manager changed before Stop was sent.");
+        const reply = await askManager({ versionSkew: text => text, roster: async () => [] }, space, target.server, "stop", { name: selected.name, graceful: true }, target.auth, target.auth.bearer ? "owner" : "any", undefined, { instanceId, expectedTarget });
+        if (!reply.ok) throw managerFailure(reply, "agent stop", { space, managerInstanceId: instanceId, agent: selected.name });
+        if ((reply.data as { stopped?: boolean } | undefined)?.stopped !== true)
+          throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "The Manager did not confirm that it stopped the agent. Check the agent list before trying again.");
+      });
+    },
     async agents(): Promise<HostedAgents[]> {
       const observations = await Promise.all([...live.values()].filter(l => l.view.state !== "stopped").map(async l => {
         const child = l.child;

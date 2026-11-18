@@ -8170,10 +8170,10 @@ export class Manager {
   hostedSeatCount(): number { return this.agents.size; }
 
   /** Public local-seat facts for the owning machine daemon. No mesh or secret reads. */
-  hostedAgents(): { name: string; application: string; model?: string; cwd: string; startedAt: string; state: "running" | "exited" }[] {
+  hostedAgents(): { name: string; id: string; lifecycleUid: string; application: string; model?: string; cwd: string; startedAt: string; state: "running" | "exited" }[] {
     if (this.agents.size > 50) throw new Error("local agent inventory exceeds its bound");
     return [...this.agents.values()].map(a => ({
-      name: a.name, application: a.agent, ...(a.launch.model ? { model: a.launch.model } : {}),
+      name: a.name, id: a.id, lifecycleUid: a.lifecycleUid, application: a.agent, ...(a.launch.model ? { model: a.launch.model } : {}),
       cwd: a.launch.cwd, startedAt: new Date(a.startedAt).toISOString(), state: a.handle.status(),
     }));
   }
