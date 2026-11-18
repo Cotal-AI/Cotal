@@ -36,7 +36,7 @@ import { InspectionJournal, inspectionExit } from "./inspection.js";
 import type { EngineCtx } from "./ctx.js";
 import type { WorkerFailure, WorkerRunRequest, WorkerRunResult } from "./worker.js";
 import { PACKAGE_VERSION } from "./package-version.js";
-import { ENGINE_HEAP_LIMITS, ENGINE_HEAP_MAX_MB } from "../limits.js";
+import { ENGINE_HEAP_LIMITS, ENGINE_HEAP_MAX_MB, MAX_CROSSING_IN_FLIGHT, assertCrossingFits } from "../limits.js";
 
 // Refuse before lockdown installs SES's uncaught-exception handler, so Worker reports the cause.
 if (parentPort === null) throw new Error("cotal-lang engine worker: no parent port; this module is a worker entry, not a library");
@@ -101,6 +101,31 @@ const { request, stop, bridge } = workerData as {
  */
 const stopLength = new Int32Array(stop, 0, 1);
 const stopBytes = new Uint8Array(stop, 4);
+
+/**
+ * The bytes of log lines posted that the host has not yet taken, after the stop reason. A host that
+ * predates the counter hands a buffer with no room for it, and its lines are posted unpaced.
+ */
+const LOG_IN_FLIGHT_AT = 516;
+const logInFlight = stop.byteLength >= LOG_IN_FLIGHT_AT + 4 ? new Int32Array(stop, LOG_IN_FLIGHT_AT, 1) : undefined;
+
+/**
+ * Post one log line to the host, bounded twice: the line itself (L4016 past
+ * {@link MAX_CROSSING_BYTES}, counted as the clone writes it), and the bytes of lines the host has
+ * not yet taken, which the thread waits on rather than letting a loop queue copies in the host's
+ * memory. The wait is bounded too, so a host that has stopped reading cannot hold the thread forever:
+ * its run is ended by that host in any case.
+ */
+const postLog = (scope: string, values: unknown[]): void => {
+  const bytes = assertCrossingFits("this log line", values);
+  if (logInFlight !== undefined) {
+    for (let waited = 0; Atomics.load(logInFlight, 0) + bytes > MAX_CROSSING_IN_FLIGHT && Atomics.load(logInFlight, 0) > 0 && waited < 600; waited += 1) {
+      Atomics.wait(logInFlight, 0, Atomics.load(logInFlight, 0), 100);
+    }
+    Atomics.add(logInFlight, 0, bytes);
+  }
+  port.postMessage({ kind: "log", ...(logInFlight !== undefined ? { bytes } : {}), line: { scope, values } });
+};
 const shouldStop = (): string | undefined => {
   const n = Atomics.load(stopLength, 0);
   // `.slice` copies out of shared memory: a decoder is not handed a buffer that can change under it.
@@ -197,7 +222,7 @@ async function run(): Promise<WorkerRunResult> {
     ...(request.seed !== undefined ? { seed: request.seed } : {}),
     ...(request.effectCeiling !== undefined ? { effectCeiling: request.effectCeiling } : {}),
     ...(request.stepBudget !== undefined ? { stepBudget: request.stepBudget } : {}),
-    onLog: (line) => port.postMessage({ kind: "log", line: { scope: line.scope, values: [...line.values] } }),
+    onLog: (line) => postLog(line.scope, [...line.values]),
   });
   let result;
   try {
@@ -225,6 +250,8 @@ async function run(): Promise<WorkerRunResult> {
   // would refuse the ordinary case. Measured: the first worker cell written refused its own fixture
   // with `undefined ... Use null when you mean "no value"` before this line said so.
   if (result.value !== undefined) assertCrossable(result.value, "the value this run returned");
+  // And bounded, as the clone writes it, before it is posted: see `MAX_CROSSING_BYTES`.
+  if (result.value !== undefined) assertCrossingFits("the value this run returned", result.value);
   return {
     ok: true,
     value: result.value,

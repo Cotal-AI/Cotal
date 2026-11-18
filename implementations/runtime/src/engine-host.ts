@@ -88,7 +88,7 @@ interface EngineHostRequest {
   readonly seed?: string;
   readonly effectCeiling?: number;
   readonly stepBudget?: number;
-  readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
+  readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => unknown;
 }
 
 /**

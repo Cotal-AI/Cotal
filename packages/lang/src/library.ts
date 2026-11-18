@@ -27,7 +27,7 @@ import { parseDuration } from "./duration.js";
 import type { ScopeFrame } from "./keys.js";
 import { scopePathString } from "./keys.js";
 import { NotCrossable, Prng, assertCrossable, born, deepFreeze } from "./values.js";
-import { assertArrayFits, assertJsonContainersFit, assertRecordFits, assertStringFits, canonicalUnits, flatElements, joinedUnits, numberArg, replacedUnits, sized, splitParts } from "./limits.js";
+import { assertArrayFits, assertJsonContainersFit, assertRecordFits, assertStringFits, canonicalUnits, distinctFields, flatElements, joinedUnits, numberArg, replacedUnits, sized, splitParts } from "./limits.js";
 
 /** A JSON text checked against the size bounds before the host parses it. A non-string goes to the host as before. */
 function assertedJson(v: unknown): string {
@@ -326,7 +326,9 @@ export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Metho
         const r = await f(frame, [xs[i], i, xs]);
         if (Array.isArray(r)) {
           assertArrayFits("flatMap", out.length + r.length);
-          out.push(...r);
+          // One element at a time: `push(...r)` puts every element on the host's stack, which ends
+          // in a RangeError well under the array bound (measured: 600,000 elements).
+          for (const x of r) out.push(x);
         } else {
           assertArrayFits("flatMap", out.length + 1);
           out.push(r);
@@ -445,12 +447,12 @@ export function stringMethods(): Readonly<Record<string, Method>> {
     },
     padStart: (_f, s, a) => {
       const length = numberArg("padStart", a[0]);
-      if (length !== undefined) assertStringFits("padStart", length);
+      if (length !== undefined && length > 0) assertStringFits("padStart", Math.floor(length));
       return s.padStart(length as number, a[1] as string | undefined);
     },
     padEnd: (_f, s, a) => {
       const length = numberArg("padEnd", a[0]);
-      if (length !== undefined) assertStringFits("padEnd", length);
+      if (length !== undefined && length > 0) assertStringFits("padEnd", Math.floor(length));
       return s.padEnd(length as number, a[1] as string | undefined);
     },
     at: (_f, s, a) => s.at(numberArg("at", a[0]) as number),
@@ -541,7 +543,8 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
     ["merge", fn("merge", (frame, a) => {
       const l = recordArg("merge", a[0]);
       const r = recordArg("merge", a[1]);
-      assertRecordFits("merge", Object.keys(l).length + Object.keys(r).length);
+      // Distinct keys: a key both sides carry is one field of the result.
+      assertRecordFits("merge", distinctFields(l, Object.entries(r)));
       return born({ ...l, ...r }, frame.depth);
     }, { any: [0, 1] })],
     // arrays
@@ -644,13 +647,21 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
     ["unique", fn("unique", (frame, a) => born([...new Set(listArg("unique", a[0]))], frame.depth), { any: [0] })],
     ["range", fn("range", (frame, a) => {
       const n = numberArg("range", a[0]);
-      if (n !== undefined) assertArrayFits("range", n);
+      // The host takes the count as a length (truncated, at least 0), so that is what is bounded.
+      if (n !== undefined && n > 0) assertArrayFits("range", Math.floor(n));
       return born(Array.from({ length: n as number }, (_, i) => i), frame.depth);
     })],
+    // `+` over the elements, bounded as `+` is: a step whose result is a string is checked before
+    // it is built, so one call over many strings is refused at the step that passes the bound.
     ["sum", fn("sum", (_f, a) => {
       const xs = listArg("sum", a[0]);
       for (const el of xs) noCoerce("sum", el);
-      return (xs as number[]).reduce((x, y) => x + y, 0);
+      let acc: unknown = 0;
+      for (const y of xs) {
+        if (typeof acc === "string" || typeof y === "string") assertStringFits("sum", String(acc).length + String(y).length);
+        acc = (acc as number) + (y as number);
+      }
+      return acc;
     }, { any: [0] })],
     // strings
     ["split", fn("split", (frame, a) => {

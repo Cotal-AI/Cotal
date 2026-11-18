@@ -41,6 +41,13 @@ import { ENGINE_HEAP_LIMITS } from "../limits.js";
 const STOP_HEADER = 4;
 /** Room for the reason. A reason is a sentence, and one that does not fit is truncated, not dropped. */
 const STOP_CAPACITY = 512;
+/**
+ * After the reason: the bytes of log lines the thread has posted that this host has not yet taken
+ * (an `Int32` the thread adds to and the host subtracts from), so a program that logs in a loop waits
+ * for the host instead of queueing copies in its memory. See {@link MAX_CROSSING_IN_FLIGHT}.
+ */
+const LOG_IN_FLIGHT_AT = STOP_HEADER + STOP_CAPACITY;
+const STOP_BYTES = LOG_IN_FLIGHT_AT + 4;
 
 /** The heap limits every run's thread is created with; see {@link ENGINE_HEAP_LIMITS}. */
 const WORKER_RESOURCE_LIMITS = ENGINE_HEAP_LIMITS;
@@ -198,8 +205,13 @@ export interface WorkerRunOptions {
    * A `file:` URL or an absolute path.
    */
   readonly entry: URL | string;
-  /** Called for each `log` the run emits, as it emits it. */
-  readonly onLog?: (line: { scope: string; values: readonly unknown[] }) => void;
+  /**
+   * Called for each `log` the run emits, as it emits it. A host that writes the line to a stream may
+   * return a promise that settles when the stream has taken it: the thread waits for lines it has
+   * posted past {@link MAX_CROSSING_IN_FLIGHT} bytes to be taken, so a program logging in a loop is
+   * paced by the stream rather than buffered in this process.
+   */
+  readonly onLog?: (line: { scope: string; values: readonly unknown[] }) => unknown;
   /**
    * The live seam a `"bridged"` request runs against: the host's handler and its durable store.
    * Required exactly when the request says `"bridged"`; see {@link WorkerRunRequest.handler}.
@@ -231,7 +243,8 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
         : `request ${request.runId} names a module handler and a bridge seam at once; a run's effects live in the thread or in the host, not both`,
     );
   }
-  const stop = new SharedArrayBuffer(STOP_HEADER + STOP_CAPACITY);
+  const stop = new SharedArrayBuffer(STOP_BYTES);
+  const logInFlight = new Int32Array(stop, LOG_IN_FLIGHT_AT, 1);
   let host: { readonly clock: SharedArrayBuffer; close(): void } | undefined;
   let bridge: { port: MessagePort; clock: SharedArrayBuffer } | undefined;
   // Assigned when the run's answer is set up below; the bridge hears only the thread, which does
@@ -267,14 +280,29 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
       answered = true;
       reject(e);
     };
-    worker.on("message", (m: { kind: "ready" } | { kind: "log"; line: { scope: string; values: readonly unknown[] } } | { kind: "result"; result: WorkerRunResult }) => {
+    worker.on("message", (m: { kind: "ready" } | { kind: "log"; bytes?: number; line: { scope: string; values: readonly unknown[] } } | { kind: "result"; result: WorkerRunResult }) => {
       if (m.kind === "ready" && !ready) {
         ready = true;
         worker.postMessage({ kind: "root-start", reason: cancellationReason ?? null } satisfies WorkerRootControl);
         return;
       }
       if (m.kind === "log") {
-        options.onLog?.(m.line);
+        // The line is taken when the sink says so: its bytes then leave the thread's allowance, and a
+        // thread waiting on it wakes. A sink that throws has still taken it.
+        const release = (): void => {
+          if (typeof m.bytes === "number") {
+            Atomics.sub(logInFlight, 0, m.bytes);
+            Atomics.notify(logInFlight, 0);
+          }
+        };
+        let taken: unknown;
+        try {
+          taken = options.onLog?.(m.line);
+        } catch {
+          taken = undefined;
+        }
+        if (taken instanceof Promise) taken.then(release, release);
+        else release();
         return;
       }
       // AN UNKNOWN KIND IS A DISAGREEMENT ABOUT THE PROTOCOL, and it is refused rather than read as

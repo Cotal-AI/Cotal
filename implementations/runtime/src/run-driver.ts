@@ -93,7 +93,7 @@ interface HostedEngineRequest {
     readonly file?: string;
     readonly effectCeiling?: number;
     readonly stepBudget?: number;
-    readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
+    readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => unknown;
   };
 }
 
@@ -307,7 +307,7 @@ export interface DriveRequest {
   /** An operator's pause, honoured at the next effect boundary. */
   readonly pause?: PauseToken;
   /** Where the program's `log(...)` lines go. They are not journalled. */
-  readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
+  readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => unknown;
   /** Root cancellation established by the hosting manager after observing its durable marker. */
   readonly cancellation?: RootCancellationSource;
   /** Shared host observation for classifying a revoked channel effect before root signalling. */

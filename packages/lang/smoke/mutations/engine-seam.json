@@ -521,8 +521,8 @@
     {
       "name": "log lines never leave the thread",
       "file": "packages/lang/src/engine/worker-entry.ts",
-      "find": "    onLog: (line) => port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }),",
-      "replace": "    onLog: () => {},",
+      "find": "  port.postMessage({ kind: \"log\", ...(logInFlight !== undefined ? { bytes } : {}), line: { scope, values } });",
+      "replace": "  void bytes;",
       "expectRed": "and its log lines reached the host",
       "completionMarker": "ok a run completes in its own locked-down thread, spawned from the BUILT package",
       "cell": "and its log lines reached the host",
@@ -840,8 +840,8 @@
     {
       "name": "the thread posts a kind the crossing table never cells",
       "file": "packages/lang/src/engine/worker-entry.ts",
-      "find": "    onLog: (line) => port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }),",
-      "replace": "    onLog: (line) => { if (request.runId === \"\\u0000never\") port.postMessage({ kind: \"trace\", line }); port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }); },",
+      "find": "  port.postMessage({ kind: \"log\", ...(logInFlight !== undefined ? { bytes } : {}), line: { scope, values } });",
+      "replace": "  if (request.runId === \"\\u0000never\") port.postMessage({ kind: \"trace\", line: { scope, values } }); port.postMessage({ kind: \"log\", ...(logInFlight !== undefined ? { bytes } : {}), line: { scope, values } });",
       "expectRed": "the thread posts exactly the 3 message kinds this table cells",
       "completionMarker": "ok and a reason past the buffer is truncated, not dropped",
       "cell": "the thread posts exactly the 3 message kinds this table cells",

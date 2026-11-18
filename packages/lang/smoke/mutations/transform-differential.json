@@ -54,8 +54,8 @@
     {
       "name": "a spread iterates natively, so a record stops being refused",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "        evals.push(`${t} = ${kind === \"array\" ? this.seam(\"iter\", this.expr(el.argument as AnyNode)) : this.expr(el.argument as AnyNode)}`);",
-      "replace": "        evals.push(`${t} = ${this.expr(el.argument as AnyNode)}`);",
+      "find": "        evals.push(`${t} = ${kind === \"array\" ? `[...${this.seam(\"iter\", operand)}]` : `{ ...${operand} }`}`);",
+      "replace": "        evals.push(`${t} = ${kind === \"array\" ? `[...${operand}]` : `{ ...${operand} }`}`);",
       "expectRed": "identical on both engines: refusals: not iterable",
       "cell": "identical on both engines: refusals: not iterable",
       "note": "L4015 says arrays and strings and nothing else. A native spread of a record throws a host TypeError instead, which is a different class the program cannot catch the same way."

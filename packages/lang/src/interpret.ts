@@ -30,7 +30,7 @@ export { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from
 import { KeyScope, digest, programHashOf, type PathKind, type ScopeKind } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock } from "./journal.js";
 import { Prng, assertWritable, born, crossedWrite, deepFreeze, setOwn, type WritingFrame } from "./values.js";
-import { assertArrayFits, assertRecordFits, assertSpreadFits, assertStringFits, sized } from "./limits.js";
+import { assertArrayFits, assertFieldWriteFits, assertRecordFits, assertStringFits, codePoints, distinctFields, sized, stringElements } from "./limits.js";
 import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "./library.js";
 import { bindPins, resolvePins, WALKER_LANGUAGE_VERSION, type RunPins } from "./pins.js";
@@ -557,6 +557,7 @@ class Interpreter {
     } else if (prop === "__proto__") {
       throw new RuntimeFault("L4014", "`__proto__` names an object's prototype, and there are no prototypes here");
     }
+    if (!Array.isArray(obj)) assertFieldWriteFits(obj as object, prop);
     setRecordMember(obj, prop, value);
   }
 
@@ -655,38 +656,33 @@ class Interpreter {
         return out;
       }
       case "ArrayExpression": {
-        // Every element is evaluated first, in order, and the spreads counted before anything is
-        // built, as the compiled engine does, so both refuse at the same point.
-        const parts = await this.spreadParts((node.elements as AnyNode[]) ?? [], env, frame);
-        assertSpreadFits("array", "this spread", parts.filter((p) => p.spread).map((p) => p.value), parts.filter((p) => !p.spread).length);
-        const out: unknown[] = [];
-        for (const p of parts) {
-          if (p.spread) out.push(...(p.value as unknown[]));
-          else out.push(p.value);
-        }
-        assertArrayFits("this array", out.length);
-        return born(out, frame.depth);
+        const elements = (node.elements as AnyNode[]) ?? [];
+        const spreads = elements.some((el) => el.type === "SpreadElement");
+        return born(await this.evaluateList(elements, env, frame, spreads ? "this spread" : "this array"), frame.depth);
       }
       case "ObjectExpression": {
+        // Each property in order, as JavaScript builds it and as main's walker did: a spread's fields
+        // are copied the moment it is evaluated, and a member the record may not have (a callable
+        // `then`, L4021) is refused before the next property runs. The distinct fields are counted
+        // at each spread, before it is copied, and once at the end, as the compiled engine counts.
+        const out: Record<string, unknown> = {};
         const props = (node.properties as AnyNode[]) ?? [];
-        const parts: { spread: boolean; key: string; value: unknown }[] = [];
+        const spreads = props.some((p) => p.type === "SpreadElement");
         for (const p of props) {
           if (p.type === "SpreadElement") {
-            parts.push({ spread: true, key: "", value: await this.evaluate(p.argument as AnyNode, env, frame) });
+            const src = await this.evaluate(p.argument as AnyNode, env, frame);
+            if (src !== null && src !== undefined) {
+              const entries = Object.entries(src as Record<string, unknown>);
+              assertRecordFits("this record spread", distinctFields(out, entries));
+              for (const [k, v] of entries) setRecordMember(out, k, v);
+            }
             continue;
           }
           const key = p.key as AnyNode;
-          parts.push({ spread: false, key: key.type === "Identifier" ? (key.name as string) : String(key.value), value: await this.evaluate(p.value as AnyNode, env, frame) });
+          const name = key.type === "Identifier" ? (key.name as string) : String(key.value);
+          setRecordMember(out, name, await this.evaluate(p.value as AnyNode, env, frame));
         }
-        if (parts.some((p) => p.spread)) assertSpreadFits("record", "this record spread", parts.filter((p) => p.spread).map((p) => p.value), parts.filter((p) => !p.spread).length);
-        const out: Record<string, unknown> = {};
-        for (const p of parts) {
-          if (!p.spread) setRecordMember(out, p.key, p.value);
-          else if (p.value !== null && p.value !== undefined) {
-            for (const [k, v] of Object.entries(p.value as Record<string, unknown>)) setRecordMember(out, k, v);
-          }
-        }
-        assertRecordFits("this record", Object.keys(out).length);
+        assertRecordFits(spreads ? "this record spread" : "this record", Object.keys(out).length);
         return born(out, frame.depth);
       }
       case "MemberExpression": {
@@ -834,21 +830,34 @@ class Interpreter {
     return v;
   }
 
-  /** Evaluate a list's elements in order, each spread operand turned into its elements' array (L4015 otherwise). */
-  private async spreadParts(nodes: readonly AnyNode[], env: Env, frame: Frame): Promise<{ spread: boolean; value: unknown }[]> {
-    const parts: { spread: boolean; value: unknown }[] = [];
+  /**
+   * Evaluate a list's elements in order into one array, as JavaScript builds an array literal or an
+   * argument list: a spread's elements are copied the moment the spread is evaluated, so a later
+   * element that changes the operand changes nothing already copied (`[...xs, xs.push(2)]` is
+   * `[1, 2]` for `xs = [1]`). The length is checked before each part is added, naming `where`, so a
+   * list over the bound is refused before the host builds it.
+   */
+  private async evaluateList(nodes: readonly AnyNode[], env: Env, frame: Frame, where: string): Promise<unknown[]> {
+    const out: unknown[] = [];
     for (const n of nodes) {
-      if (n.type === "SpreadElement") parts.push({ spread: true, value: this.spreadable(await this.evaluate(n.argument as AnyNode, env, frame)) });
-      else parts.push({ spread: false, value: await this.evaluate(n, env, frame) });
+      if (n.type === "SpreadElement") {
+        const items = this.spreadable(await this.evaluate(n.argument as AnyNode, env, frame));
+        assertArrayFits(where, out.length + items.length);
+        for (const x of items) out.push(x);
+      } else {
+        const v = await this.evaluate(n, env, frame);
+        assertArrayFits(where, out.length + 1);
+        out.push(v);
+      }
     }
-    return parts;
+    return out;
   }
 
   /** What `...x` and `for (const v of x)` may iterate: an array or a string, and nothing else (L4015). */
   private spreadable(v: unknown): unknown[] {
     if (Array.isArray(v)) return v;
     if (typeof v === "string") {
-      assertArrayFits("spreading this string", v.length);
+      assertArrayFits("spreading this string", codePoints(v));
       return [...v];
     }
     throw new RuntimeFault(
@@ -923,9 +932,11 @@ class Interpreter {
         const taken: string[] = [];
         for (const p of pattern.properties as AnyNode[]) {
           if (p.type === "RestElement") {
+            // Counted before it is built: the fields not taken by name, each once.
+            const entries = Object.entries(src).filter(([k]) => !taken.includes(k));
+            assertRecordFits("this rest element", entries.length);
             const rest: Record<string, unknown> = {};
-            for (const [k, v] of Object.entries(src)) if (!taken.includes(k)) setRecordMember(rest, k, v);
-            assertRecordFits("this rest element", Object.keys(rest).length);
+            for (const [k, v] of entries) setRecordMember(rest, k, v);
             await this.bindPattern(p.argument as AnyNode, born(rest, frame.depth), env, frame, mode);
             continue;
           }
@@ -940,8 +951,13 @@ class Interpreter {
         if (value === null || value === undefined) {
           throw new RuntimeFault("L4010", `cannot destructure ${String(value)}: there are no elements to take`);
         }
-        const src = this.spreadable(value);
         const els = pattern.elements as (AnyNode | null)[];
+        // A string gives only what the pattern takes, so an in-bound string destructures whatever its
+        // length; a rest element is the one part that builds an array, and it is bounded.
+        const restAt = els.findIndex((el) => el?.type === "RestElement");
+        const src = typeof value === "string"
+          ? stringElements(value, restAt === -1 ? els.length : restAt, restAt !== -1, "this rest element")
+          : this.spreadable(value);
         for (let i = 0; i < els.length; i += 1) {
           const el = els[i];
           if (el === null || el === undefined) continue;
@@ -982,13 +998,8 @@ class Interpreter {
       fn = await this.evaluate(callee, env, frame);
     }
     if ((fn === null || fn === undefined) && node.optional === true) throw SHORT_CIRCUIT;
-    const parts = await this.spreadParts(argNodes, env, frame);
-    if (parts.some((p) => p.spread)) assertSpreadFits("array", "this spread", parts.filter((p) => p.spread).map((p) => p.value), parts.filter((p) => !p.spread).length);
-    const args: unknown[] = [];
-    for (const p of parts) {
-      if (p.spread) args.push(...(p.value as unknown[]));
-      else args.push(p.value);
-    }
+    const spreads = argNodes.some((a) => a.type === "SpreadElement");
+    const args = await this.evaluateList(argNodes, env, frame, spreads ? "this spread" : "these arguments");
     if (typeof fn !== "function") {
       throw new RuntimeFault("L4011", `this value is not a function, so it cannot be called`);
     }

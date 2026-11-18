@@ -24,7 +24,7 @@ import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, ty
 import type { Journal } from "../journal.js";
 import type { RunPins } from "../pins.js";
 import { NotCrossable, Prng, assertNoCode, assertWritable, born as stampBirth, deepFreeze, setOwn } from "../values.js";
-import { assertArrayFits, assertRecordFits, assertSpreadFits, assertStringFits } from "../limits.js";
+import { assertArrayFits, assertFieldWriteFits, assertRecordFits, assertSpreadFits, assertStringFits, codePoints, stringElements } from "../limits.js";
 import { digest, type ScopeKind } from "../keys.js";
 import { currentFrame, withFrame, type EngineFrame } from "./frame.js";
 import { agentHandles, dispatchPrimitive, freeConstructors, onceBodyNotCallable, option, performScope, runScope, type EffectHost, type Frame as ScopeFrame } from "../perform.js";
@@ -45,10 +45,10 @@ export interface Site {
 }
 
 /**
- * The seam. Fourteen members, and the count is the point: a member added here without a joint rule
+ * The seam. Fifteen members, and the count is the point: a member added here without a joint rule
  * is a widening, and the transform's surface cell reddens on any call to a name not on this
  * interface. Thirteen came with the seam contract; `callee` is the fourteenth, added under the
- * adaptation invariant below.
+ * adaptation invariant below, and `spread` the fifteenth, the value-size bound.
  */
 export interface EngineCtx {
   /** L4013 step budget, plus the yield that keeps the macrotask queue alive and applies the cut. */
@@ -56,7 +56,7 @@ export interface EngineCtx {
   /**
    * Read a member: L4014 (no prototype reach, curated tables), L4020, L4018 on a computed key.
    *
-   * `binding` is the cell read, taken as a third argument rather than a fifteenth member. A binding
+   * `binding` is the cell read, taken as a third argument rather than another member. A binding
    * the transform classified as a CELL is emitted as `get(cell, "v", "x")`, and an absent OWN key
    * means the declaration has not run yet, which is L2004 for that binding by name. PRESENCE is
    * `hasOwn` and not truthiness, because `v: undefined` is a binding that HAS been initialised, to
@@ -77,7 +77,7 @@ export interface EngineCtx {
   /**
    * Call a member. The single L4020 exception: a method is resolved AT the call and nowhere else.
    *
-   * `optional` is `o.m?.()`, a flag rather than a fifteenth member. It guards a
+   * `optional` is `o.m?.()`, a flag rather than another member. It guards a
    * NULLISH MEMBER and nothing else (measured on the walker, `?.` softens neither L4014 nor L4011),
    * and a short-circuited call evaluates NO ARGUMENT, which is why the optional form takes a thunk.
    *
@@ -108,10 +108,17 @@ export interface EngineCtx {
   binary(op: string, l: unknown, r: unknown): unknown;
   /** `-`, `+`, `~` under the same law, and `update` for the operand of `++`/`--`. `!`/`typeof` are native. */
   unary(op: string, v: unknown): unknown;
-  /** The iterability law (L4015): arrays and strings, nothing else. */
-  iter(v: unknown): unknown[];
-  /** The value-size bound for a literal, call or rest that spreads, from its evaluated operands, before it is built. */
-  spread(kind: "array" | "record", operands: readonly unknown[], plain: number, where: string): void;
+  /**
+   * The iterability law (L4015): arrays and strings, nothing else. With `take`, a destructuring
+   * pattern's reading of a string: only the elements it names, or all of them past a bounded rest.
+   */
+  iter(v: unknown, take?: number, rest?: boolean): unknown[];
+  /**
+   * The value-size bound for a literal, call or rest that spreads, from its evaluated operands, before
+   * it is built. `plain` is the other elements' count for an array and the plain keys for a record,
+   * whose fields are counted as distinct keys; `excluded` is the keys a rest pattern took by name.
+   */
+  spread(kind: "array" | "record", operands: readonly unknown[], plain: number | readonly unknown[], where: string, excluded?: readonly unknown[]): void;
   /** The L4011 refusal at a non-function callee. Emitted behind a `typeof`, so only the refusal runs. */
   callee(v: unknown): unknown;
   /** At the head of every emitted catch: rethrow the uncatchable, else the program-visible error. */
@@ -775,6 +782,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       // rule at its record-member write sites, so what was the last declared divergence of this
       // reordering is a corpus row the differential can compare.
       if (prop === "then") refuseThenable({ then: v }, "this field write");
+      if (!Array.isArray(o)) assertFieldWriteFits(o as object, prop);
       setOwn(o, prop, v);
       return v;
     },
@@ -980,10 +988,11 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       }
     },
 
-    iter(v) {
+    iter(v, take, rest) {
       if (Array.isArray(v)) return v;
       if (typeof v === "string") {
-        assertArrayFits("spreading this string", v.length);
+        if (take !== undefined) return stringElements(v, take, rest === true, "this rest element");
+        assertArrayFits("spreading this string", codePoints(v));
         return [...v];
       }
       throw new RuntimeFault(
@@ -992,12 +1001,12 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       );
     },
 
-    spread(kind, operands, plain, where) {
-      assertSpreadFits(kind, where, operands, plain);
+    spread(kind, operands, plain, where, excluded) {
+      assertSpreadFits(kind, where, operands, plain, excluded);
     },
 
     callee(v) {
-      // Member 14, the last of the seam. The transform emits it behind a `typeof` so a real call
+      // Member 14. The transform emits it behind a `typeof` so a real call
       // stays a native call; this is only the refusal, and it is the walker's own words because the
       // differential suite compares the message, not merely the code.
       if (typeof v !== "function") {

@@ -273,24 +273,37 @@ the old host.
 **A run's thread has a 512 MB heap limit.** Everything the run holds counts toward it: the
 program's values and every journal entry the run has recorded, settled results included. A run
 whose effects return large results can reach the limit after many steps. A run that reaches it is
-stopped and recorded failed with a message naming the limit, and the process carries on. A V8 heap
-flag on the process, such as `--max-old-space-size` on the command line or in `NODE_OPTIONS`,
-replaces the thread's limit. A flag that raises it makes the thread refuse to run any program,
-naming the heap limit it found, and the run is released rather than failed, so a host started
-without the flag can take it back. A flag that lowers it is accepted.
+stopped and recorded failed with a message naming the limit, and the process carries on, provided
+the heap grew in allocations the bounds below keep small: those bounds are what make reaching the
+limit end the run rather than the process. A V8 heap flag on the process, such as
+`--max-old-space-size` on the command line or in `NODE_OPTIONS`, replaces the thread's limit. A flag
+that raises it makes the thread refuse to run any program, naming the heap limit it found, and the
+run is recorded released rather than failed. Nothing takes it back on its own: `cotal run resume
+<runId> --local` from a host started without the flag continues it. A flag that lowers it is
+accepted.
 
 **One value has a size bound.** An array holds at most 1,000,000 elements, a string at most
-4,000,000 UTF-16 units, and a record at most 250,000 fields. A larger value is refused (**L4016**)
-naming the operation, before it is built. The bound keeps each allocation small enough that
-reaching the heap limit stops the run rather than the process. Two operations are checked on the
-value they built, because only the host knows its size in advance: case mapping (`lower`, `upper`,
-`toLowerCase`, `toUpperCase`), whose result is at most three times a bounded input. A string
-literal is bounded by the program text. A count, length or position argument must be a number
-(**L4018**). Values that enter a program from an effect or a replayed journal entry are bounded by
-the journal's result bound (the broker's `max_payload` less 4096 bytes), not by the value bounds.
-With the default 1 MiB `max_payload` that keeps them under all three; a broker configured above
-4 MiB lets one result exceed the string bound. A journal built with no result bound does not bound
-them.
+4,000,000 UTF-16 units, and a record at most 250,000 fields, a key written twice counting once. A
+builtin, method, spread, rest, template, `+`, `+=`, `sum` or member write that would build a larger
+value is refused (**L4016**) naming the operation, before it is built. Case mapping (`lower`,
+`upper`, `toLowerCase`, `toUpperCase`) is checked on the value it built, because only the host
+knows that size in advance; its result is at most three times a bounded input. A string literal is
+bounded by the program text. A count, length or position argument is converted as the host converts
+it, and the converted number is what the bound is checked against. Destructuring a string takes the
+elements its pattern names, so `const [a, b] = s` works on any string a program may hold, and a rest
+element there is bounded like any other array. Values that enter a program from an effect or a
+replayed journal entry are bounded by the journal's result bound (the broker's `max_payload` less
+4096 bytes), not by the value bounds. With the default 1 MiB `max_payload` that keeps them under
+all three; a broker configured above 4 MiB lets one result exceed the string bound. A journal built
+with no result bound does not bound them.
+
+**What leaves a run's thread has a size bound too.** A log line, an effect's arguments and the
+run's returned value are each refused (**L4016**) when they would take more than 8,004,096 bytes
+out of the thread. Each reference to a string counts in full, as the copy to the host writes it, so
+a list of 120 references to one 4,000,000-unit string is refused even though the thread holds the
+string once. Log lines the host has not yet written are bounded together: a run that logs faster
+than the host writes waits for it. A printed log line is cut at 16,384 characters, with its full
+length named.
 
 ### Foreign error text
 

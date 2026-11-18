@@ -216,10 +216,13 @@ The [configured limits](../spec/cotal-lang.md#12-limits) cover steps per walk, e
 and journal payloads.
 
 One value a program builds has a size bound. An array holds at most 1,000,000 elements, a string
-at most 4,000,000 UTF-16 units, and a record at most 250,000 fields. A builtin, method, spread,
-rest, template, `+` or index write that would build a larger value raises L4016 naming the
-operation, before the value is built; case mapping is checked on its result. A count, length or
-position argument must be a number (L4018): `"x".repeat("3")` is refused.
+at most 4,000,000 UTF-16 units, and a record at most 250,000 fields, a repeated key counting once.
+A builtin, method, spread, rest, template, `+`, `+=`, `sum` or member write that would build a
+larger value raises L4016 naming the operation, before the value is built; case mapping is checked
+on its result. A count is converted as the host converts it (`"x".repeat("3")` is `"xxx"`) and the
+converted number is bounded. A log line, an effect's arguments and the run's value may take at most
+8,004,096 bytes out of the run, each reference to a string counted in full (L4016). A primitive's
+arguments cannot be spread (L1029).
 
 ## Top refusals
 
