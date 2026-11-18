@@ -321,16 +321,40 @@ function unconfirmedStart(cause: unknown, message = "the native manager child di
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { cause, ...(isCommandFailure(cause) && cause.remedy ? {} : { remedy }) });
 }
 
+/** A write callback only confirms the local IPC write, not that the daemon holds the fence. */
+function confirmMachineSetupCustody(pending: boolean): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (!process.connected || !process.send) {
+      reject(new Error("the owning daemon is no longer connected"));
+      return;
+    }
+    const finish = (error?: Error | null) => {
+      clearTimeout(timer);
+      process.off("message", receive);
+      process.off("disconnect", disconnected);
+      if (error) reject(error); else resolve();
+    };
+    const disconnected = () => finish(new Error("the owning daemon is no longer connected"));
+    const receive = (raw: unknown) => {
+      const frame = raw as { kind?: unknown; pending?: unknown; ok?: unknown } | null;
+      if (frame?.kind !== "machine-setup-ack" || frame.pending !== pending) return;
+      finish(frame.ok === true ? undefined : new Error("the owning daemon is stopping"));
+    };
+    const timer = setTimeout(() => finish(new Error("the owning daemon did not confirm setup custody")), 5000);
+    process.on("message", receive);
+    process.once("disconnect", disconnected);
+    process.send({ kind: "machine-setup-pending", pending }, error => { if (error) finish(error); });
+  });
+}
+
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
  *  `pty` ships with the manager; every other runtime needs a registered provider. The published
  *  CLI lazy-loads installed providers, while library roots import their integrations explicitly.
  *
  *  The operator CLIENTS of this daemon — detached launch (`cotal spawn --detach`), `stop`, `ps`,
  *  `attach` — live in `@cotal-ai/cli`: they are thin control-plane
- *  request/reply commands, not daemon code. This package registers only the daemon runner. */
-// `--runtime` forces the manager runtime; honored only on the `supervise` path (default
-// pty). `cmux` gives each teammate its own cmux tab — `cotal supervise --runtime cmux` is
-// the cmux-tab manager.
+ *  request/reply commands, not daemon code. This package registers only the daemon runner.
+ *  `--runtime` forces the manager runtime on the `supervise` path (default pty). */
 async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service?: ManagerServiceChild): Promise<void> {
   stampConsole();
   const { values: v, root: managerRoot } = service ? { values: args.values as Values, root: service.root } : superviseSelection(args.values as Values);
@@ -711,7 +735,10 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       ...(seatCap !== undefined ? { seatCap } : {}),
       ...(name !== undefined ? { name } : {}),
       installedExtensions: true,
-      ...(args.values["machine-parent"] === true && process.connected === true ? { machineSetupCommand: v["machine-setup-command"] } : {}),
+      ...(args.values["machine-parent"] === true && process.connected === true ? {
+        machineSetupCommand: v["machine-setup-command"],
+        onMachineSetupPending: confirmMachineSetupCustody,
+      } : {}),
       ...(typeof v["expected-connector-generation"] === "string" ? { expectedConnectorGeneration: v["expected-connector-generation"] } : {}),
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken,

@@ -18,8 +18,12 @@ export interface ConnectorSetupInput {
   /** The argv that runs this Cotal CLI, `[node, ...loaderFlags, entry]` by absolute path, so an asset
    *  the action installs can run the CLI without `cotal` on its PATH. */
   readonly cotal: readonly string[];
-  /** Prepare an unattended machine host without changing its Desktop or project integration. */
-  readonly machineHost?: boolean;
+  /** Prepare an unattended host using its pinned binaries and shutdown-owned command runner. */
+  readonly machineHost?: {
+    readonly binaries: Readonly<Record<string, string>>;
+    readonly signal: AbortSignal;
+    run(file: string, args: readonly string[], opts: { cwd: string; timeoutMs: number; maxBuffer: number }): Promise<{ status: number | null; output: string }>;
+  };
   /** Current authored skills for refreshing an already installed skills integration. */
   readonly skills?: ConnectorSkillsSetupInput;
   /** The space setup is for, when its members sign in. */

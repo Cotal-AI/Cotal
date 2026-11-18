@@ -78,6 +78,7 @@
  * Claude Code host setup: --hosting-only --claude-wake-only (stock connector, stand-in executable).
  * Add --late-claude to install into the running Manager's PATH, or --late-claude-failure
  * to exercise a refused registration and explicit setup retry after that install.
+ * Add --late-claude-disconnect to retire the Manager while native registration is held.
  * Add --hosting-only --updater-ownership-repro for two living updater clients' restart admission ownership.
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Manual empty-legacy admission: --hosting-only --update-repro --manual-admission-race-repro.
@@ -107,7 +108,7 @@ import {
   deleteIdpSession, deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadIdpSession, loadOwnerSecret, saveIdpSession,
   saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
-import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, removeMesh, recordMesh, resolveControlTarget, resolveOnPath, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
+import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, processGroupMembers, removeMesh, recordMesh, resolveControlTarget, resolveOnPath, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -134,7 +135,8 @@ const originalPath = process.env.PATH;
 const setupProgressOnly = process.argv.includes("--setup-progress-only");
 const claudeWakeOnly = process.argv.includes("--claude-wake-only");
 const lateClaudeFailure = claudeWakeOnly && process.argv.includes("--late-claude-failure");
-const lateClaude = lateClaudeFailure || (claudeWakeOnly && process.argv.includes("--late-claude"));
+const lateClaudeDisconnect = claudeWakeOnly && process.argv.includes("--late-claude-disconnect");
+const lateClaude = lateClaudeFailure || lateClaudeDisconnect || (claudeWakeOnly && process.argv.includes("--late-claude"));
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -1917,6 +1919,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       const claudeStub = join(claudeBin, "claude");
       const claudePending = join(home, "claude-registration-pending");
       const claudeAttempts = join(home, "claude-registration-attempts");
+      const heldClaude = join(home, "claude-registration-processes");
       if (claudeWakeOnly) {
         mkdirSync(claudeBin);
         writeFileSync(lateClaude ? join(root, "claude-to-install") : claudeStub, `#!${process.execPath}
@@ -1939,6 +1942,21 @@ if (family === 'mcp' && group === 'add') {
   appendFileSync(${JSON.stringify(claudeAttempts)}, 'add\\n');
   const [command, ...args] = tail.slice(tail.indexOf('--') + 1);
   const hold = ${JSON.stringify(claudePending)};
+  if (${lateClaudeDisconnect}) {
+    // A second native process in the same group could still publish the declaration after the shim dies.
+    const publisher = spawn(${JSON.stringify(process.execPath)}, ['-e', ${JSON.stringify(`
+      const { existsSync, writeFileSync } = require('node:fs');
+      const [hold, config, command, ...args] = process.argv.slice(1);
+      const deadline = Date.now() + 45_000;
+      const timer = setInterval(() => {
+        if (Date.now() >= deadline) { clearInterval(timer); process.exitCode = 98; }
+        else if (!existsSync(hold)) { clearInterval(timer); writeFileSync(config, JSON.stringify({ mcpServers: { cotal: { command, args } } })); }
+      }, 50);
+    `)}, hold, join(home, '.claude.json'), command, ...args], { stdio: 'ignore' });
+    writeFileSync(${JSON.stringify(heldClaude)}, JSON.stringify({ commandPid: process.pid, publisherPid: publisher.pid }));
+    publisher.once('exit', code => { process.exitCode = code ?? 98; });
+    return;
+  }
   const deadline = Date.now() + 20_000;
   const register = () => {
     if (!existsSync(hold)) {
@@ -2983,7 +3001,24 @@ process.stdin.once('data', () => {
               const explicitSetup = await cli("setup", "--space", ON);
               check("daemon setup reports pending registration without restarting the Manager", explicitSetup.code === 2
                 && explicitSetup.doc.error?.message?.includes("Claude wake channel setup is in progress") && same(await managerStatus()), explicitSetup);
+              if (lateClaudeDisconnect) {
+                for (let i = 0; i < 100 && !existsSync(heldClaude); i++) await sleep(50);
+                const { commandPid, publisherPid } = JSON.parse(readFileSync(heldClaude, "utf8")) as { commandPid: number; publisherPid: number };
+                const running = processGroupMembers(commandPid);
+                check("native setup holds a command and its publisher child before disconnect", running.includes(commandPid) && running.includes(publisherPid), running);
+                const disconnected = await cli("service-disconnect", "--space", ON);
+                const retired = await managerStatus();
+                const members = processGroupMembers(commandPid);
+                check("disconnect retires the same Manager gracefully while registration is still held", disconnected.code === 0 && retired.state === "stopped"
+                  && retired.instanceId === view.instanceId && retired.lastStop === "graceful" && retired.pid === undefined && existsSync(claudePending), { disconnected, retired });
+                check("disconnect confirms the native command group exited without publishing the entry", members.length === 0 && !existsSync(userConfig), members);
+              }
             } finally { rmSync(claudePending); }
+            if (lateClaudeDisconnect) {
+              await sleep(250);
+              check("releasing the hold after disconnect cannot publish a late user MCP entry", !existsSync(userConfig));
+              return;
+            }
             for (let i = 0; i < 20; i++) {
               manager = await managerStatus();
               if (claudeRow(manager)?.state === "available" || claudeRow(manager)?.reason?.startsWith("Claude wake channel setup failed:")) break;

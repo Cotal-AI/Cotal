@@ -100,7 +100,8 @@ Claude installed into a directory already on that PATH while the Manager is runn
 available after registration succeeds. If it is still in progress, check
 `cotal daemon status --space <space>` again before launching. If registration fails, correct the
 reported cause, let any seats on that Manager stop, and rerun `cotal daemon setup --space <space>`
-on that computer. You do not need to prepare a local space.
+on that computer. If you disconnect the space while registration is running, the Manager cancels
+setup and waits for the native command to exit. You do not need to prepare a local space.
 
 For a computer where you prepare the space yourself, run:
 

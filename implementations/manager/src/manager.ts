@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { checkEventStartup, EventStateConflictError, isPermissionDenied, chatStream, drainAndClose, requestSafeReconnect } from "@cotal-ai/core";
 import { hostname, homedir } from "node:os";
 import { Worker } from "node:worker_threads";
+import { transferableAbortSignal } from "node:util";
 import { listDirectory } from "./list-dir.js";
 import { credsAuthenticator, RequestError } from "@nats-io/transport-node";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
@@ -414,6 +415,8 @@ export interface ManagerOptions {
   installedExtensions?: boolean;
   /** The machine daemon's command for repairing host setup. Absent outside daemon hosting. */
   machineSetupCommand?: string;
+  /** Report wake setup custody to the owning daemon so it cannot force-stop over native work. */
+  onMachineSetupPending?: (pending: boolean) => Promise<void>;
   /** The {@link SecretStore} for EVERY secret this manager touches — the daemon-cred renewal write side
    *  (`remintDaemonCreds`) AND the per-agent standing-secret kinds (static creds / actor tokens /
    *  sentinel creds). ONE store, so a hosted composition (KMS/Vault) can never end up with the manager
@@ -1282,6 +1285,7 @@ export class Manager {
   private readonly installedExtensions: boolean;
   private readonly expectedConnectorGeneration: string;
   private readonly machineSetupCommand?: string;
+  private readonly onMachineSetupPending?: ManagerOptions["onMachineSetupPending"];
   private readonly executionState: { kind: "none" } | { kind: "runtime" };
   // Declared only: no own Runtime slot exists in the none arm.
   declare private readonly runtime: Runtime;
@@ -1829,6 +1833,7 @@ export class Manager {
     this.installedExtensions = opts.installedExtensions ?? false;
     this.expectedConnectorGeneration = MANAGER_VERSION;
     this.machineSetupCommand = opts.machineSetupCommand;
+    this.onMachineSetupPending = opts.onMachineSetupPending;
     this.pooled = opts.pooled === true;
     this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
     if (!this.remoteAuthority) {
@@ -5355,22 +5360,33 @@ export class Manager {
     wake.attempted = true;
     row.state = "unavailable";
     row.reason = "Claude wake channel setup is in progress. Wait for it to finish and try again.";
+    let settled = true;
     try {
+      const signal = transferableAbortSignal(this.shutdownReadiness.signal);
+      signal.throwIfAborted();
       const cotal = bearerEntryArgv();
       cotal[cotal.length - 1] = logicalExecutionEntry() ?? cotal.at(-1)!;
+      await this.onMachineSetupPending?.(true);
+      signal.throwIfAborted();
       await new Promise<void>((resolve, reject) => {
         const worker = new Worker(new URL("./machine-claude-wake.js", import.meta.url), {
-          workerData: { cotal, expectedGeneration: this.expectedConnectorGeneration },
+          workerData: { cotal, expectedGeneration: this.expectedConnectorGeneration, binaries: row.binaries, signal },
+          transferList: [signal],
         });
+        settled = false;
         let registered = false;
         let failure: Error | undefined;
-        worker.once("message", (message) => { registered = message === "registered"; });
+        worker.once("message", (message) => {
+          registered = message === "registered";
+          settled = registered || message === "settled";
+        });
         worker.once("error", (error) => { failure = error; });
         worker.once("exit", (code) => {
           if (code === 0 && registered) resolve();
           else reject(failure ?? new Error(`Claude wake channel setup worker exited without confirmation (code ${code})`));
         });
       });
+      if (signal.aborted) return;
       const wasEnabled = this.classSpawnEnabled();
       row.state = "available";
       delete row.reason;
@@ -5379,6 +5395,10 @@ export class Manager {
       const detail = oneLine(rejectionText(error).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 800));
       row.state = "unavailable";
       row.reason = `Claude wake channel setup failed: ${detail}. Correct the cause and run \`${this.machineSetupCommand}\` on this computer.`;
+    } finally {
+      // The daemon retains its fence if it could not receive the release. Losing IPC after
+      // native exit is expected when the daemon itself went away.
+      if (settled) await this.onMachineSetupPending?.(false).catch(() => {});
     }
   }
 

@@ -63,6 +63,7 @@ interface Live {
   healthTimer?: ReturnType<typeof setTimeout>;
   healthTask?: Promise<void>;
   stopping: boolean;
+  wakeSetupPending?: boolean;
   stopTask?: Promise<void>;
   failures: number;
   healthFailures?: number;
@@ -348,18 +349,22 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   async function stopChildOnce(l: Live): Promise<void> {
     closeProbeSession(l);
     const child = l.child;
+    const unconfirmedSetup = () => new HostedManagerRefusal("MANAGER_UNAVAILABLE",
+      `the hosted Manager for ${l.view.space} has not confirmed that Claude wake channel setup stopped`,
+      command(`read \`cotal daemon status --space ${l.view.space}\` and retry once wake channel setup has stopped`));
+    if (!child && l.wakeSetupPending) throw unconfirmedSetup();
     if (!child) return;
     // Entering retirement is not a new Manager observation.
     l.view = { ...l.view, state: "stopping" };
-    // Retirement and deregistration need broker round trips even with no seats. Observe over
-    // parent IPC before disconnecting, then allow five seconds per seat, capped at one minute.
+    // Keep the owning channel open to receive setup exit proof during cooperative shutdown.
+    // Retirement still needs broker round trips, even with no seats.
     let seats: number | undefined;
     if (child.connected) {
       try { seats = await generationCall(child, randomUUID(), "inspect"); }
       catch { /* Unknown inventory receives the ceiling, never an assumed empty inventory. */ }
     }
     const graceMs = seats === undefined ? 60_000 : Math.min(60_000, 15_000 + seats * 5000);
-    if (child.connected) child.disconnect();
+    if (child.connected) child.send({ kind: "machine-stop" }, () => {});
     // Signal only this retained ChildProcess. Never rediscover a child from a recorded pid.
     const ended = async (ms: number) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -368,14 +373,17 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     };
     if (await ended(graceMs)) l.view = { ...l.view, lastStop: "graceful" };
     else {
+      if (l.wakeSetupPending) throw unconfirmedSetup();
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
       if (await ended(2000)) l.view = { ...l.view, lastStop: "terminated" };
       else {
+        if (l.wakeSetupPending) throw unconfirmedSetup();
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
         if (!(await ended(2000))) throw new Error("the daemon's owned Manager child did not confirm exit after SIGKILL");
         l.view = { ...l.view, lastStop: "killed" };
       }
     }
+    if (l.wakeSetupPending) throw unconfirmedSetup();
     l.child = undefined;
   }
   const schedule = (l: Live) => {
@@ -493,7 +501,13 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     let ready = false;
     child.on("message", (message: unknown) => {
       if (!message || typeof message !== "object") return;
-      const frame = message as { kind?: unknown; instanceId?: unknown; reason?: unknown; terminal?: unknown; status?: unknown };
+      const frame = message as { kind?: unknown; instanceId?: unknown; reason?: unknown; terminal?: unknown; status?: unknown; pending?: unknown };
+      if (frame.kind === "machine-setup-pending" && typeof frame.pending === "boolean" && l.child === child) {
+        const ok = !frame.pending || (!closed && !l.stopping && !l.stopTask);
+        if (ok) l.wakeSetupPending = frame.pending;
+        if (child.connected) child.send({ kind: "machine-setup-ack", pending: frame.pending, ok }, () => {});
+        return;
+      }
       if (frame.kind === "manager-refusal" && typeof frame.reason === "string") {
         nativeReason = safeDiagnostic(frame.reason).slice(0, 1500);
         authorityTerminal = frame.terminal === true;
@@ -529,7 +543,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         const exitReason = `Manager exited (${signal ?? `code ${code}`})${lastLine ? `: ${lastLine}` : ""}`;
         l.view = { ...l.view, pid: undefined, lastExit: l.stopping && code === 0 && signal === null ? undefined : exitReason };
         if (!nativeReason) nativeReason = exitReason;
-        if (!l.stopping && !closed && (l.view.state === "answering" || (l.view.state === "starting" && !l.starting))) {
+        if (l.wakeSetupPending) {
+          l.view = { ...l.view, state: "refused", reason: "the hosted Manager exited without confirming that Claude wake channel setup stopped",
+            next: "confirm the setup process has exited before restarting the daemon" };
+        } else if (!l.stopping && !closed && (l.view.state === "answering" || (l.view.state === "starting" && !l.starting))) {
           l.view = { ...l.view, reason: exitReason };
           schedule(l);
         }
@@ -605,6 +622,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       live.set(space, l);
     }
     if (l.starting) return l.starting;
+    if (!l.child && l.wakeSetupPending) throw new HostedManagerRefusal("MANAGER_UNAVAILABLE", "Claude wake channel setup exit is unconfirmed", "confirm the setup process has exited before restarting the daemon");
     if (l.child && l.view.instanceId) {
       try {
         const reply = await probe(l, l.view.instanceId);

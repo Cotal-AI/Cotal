@@ -13,10 +13,15 @@ function report(frame: object): void {
 }
 
 let parentGone = false;
-process.once("disconnect", () => {
+function stopForParent(): void {
+  if (parentGone) return;
   parentGone = true;
   if (process.listenerCount("SIGTERM") === 0) process.exit(0);
   process.emit("SIGTERM", "SIGTERM");
+}
+process.once("disconnect", stopForParent);
+process.on("message", (frame: unknown) => {
+  if ((frame as { kind?: unknown } | null)?.kind === "machine-stop") stopForParent();
 });
 
 const stock = registry.resolve<Command>("command", "__daemon-manager");

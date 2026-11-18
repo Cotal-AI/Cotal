@@ -3,6 +3,7 @@ import { linkSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from 
 import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
 import { createPrivateRecord } from "./secret-fs.js";
+import { setTimeout as delay } from "node:timers/promises";
 
 /**
  * A machine-local, crash-safe advisory file lock, shared by every serialized workstation mutation
@@ -336,20 +337,22 @@ function lockTimeoutError(path: string, opts: AcquireOptions, owner: LockOwner, 
  * cancellation keep running while a live holder or a live reclaimer is outstanding. `opts.waitMs` is one
  * deadline for the whole wait, whichever of the two is in the way.
  */
-export async function acquireLockAsync(path: string, opts: AcquireOptions = {}): Promise<HeldLock> {
+export async function acquireLockAsync(path: string, opts: AcquireOptions & { signal?: AbortSignal } = {}): Promise<HeldLock> {
+  opts.signal?.throwIfAborted();
   const waitMs = opts.waitMs ?? 300000;
   const pollMs = opts.pollMs ?? 200;
   const attempt = newAttempt(path, opts);
   const deadline = Date.now() + waitMs;
 
   for (;;) {
+    opts.signal?.throwIfAborted();
     const result = tryAcquireOnce(attempt);
     if (result.kind === "acquired") return result.held;
     if (result.kind === "retry") continue;
     const left = deadline - Date.now();
     if (left <= 0) throw lockTimeoutError(path, opts, result.owner, waitMs);
     const interval = result.kind === "reclaiming" ? reclaimPollMs(pollMs) : pollMs;
-    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(interval, left)));
+    await delay(Math.min(interval, left), undefined, { signal: opts.signal });
   }
 }
 

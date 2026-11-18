@@ -6,11 +6,13 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   acquireLock,
+  acquireLockAsync,
   globalConfigPath,
   mcpServerProblem,
   registry,
   writePrivateRecord,
   type ConnectorSetupProvider,
+  type ConnectorSetupInput,
   type ConnectorSkillsSetupInput,
   type ConnectorStatusInput,
   type ConnectorStatusRow,
@@ -112,21 +114,24 @@ export function userServerState(current: unknown, desired: McpServerSpec): "curr
   return same ? "current" : "replace";
 }
 
-/** Register the user-scope entry through `claude mcp add`, replacing one that names another server,
- *  and read it back: a registration Claude did not keep is an error, not a seat that never wakes. */
-function registerUserServer(cotal: readonly string[]): string {
+/** Register the user-scope entry through Claude and read it back. */
+function* registerUserServerSteps(cotal: readonly string[]): SetupSteps<string> {
   const desired = userServerEntry(cotal);
   const state = userServerState(claudeUserMcpServers().cotal, desired);
   if (state === "current") return "user MCP entry cotal current";
   if (state === "replace") {
-    const removed = command("mcp", "remove", "--scope", "user", "cotal");
+    const removed = yield native("mcp", "remove", "--scope", "user", "cotal");
     if (removed.status !== 0) throw new Error(`mcp remove failed (cotal):\n${removed.output}`);
   }
-  const added = command("mcp", "add", "--scope", "user", "cotal", "--", desired.command, ...desired.args);
+  const added = yield native("mcp", "add", "--scope", "user", "cotal", "--", desired.command, ...desired.args);
   if (added.status !== 0) throw new Error(`mcp add failed (cotal):\n${added.output}`);
   if (userServerState(claudeUserMcpServers().cotal, desired) !== "current")
     throw new Error("the user-scope MCP entry cotal was not registered as requested");
   return `user MCP entry \`cotal\` ${state === "replace" ? "replaced" : "registered"}`;
+}
+
+function registerUserServer(cotal: readonly string[]): string {
+  return runSetupSteps(registerUserServerSteps(cotal));
 }
 
 /** Whether Claude Code's user config declares the `cotal` server the wake channel of a launched
@@ -229,13 +234,13 @@ function pluginCacheDir(): string {
 }
 
 /** Refuse before either shared registration moves, including a profile with only its MCP entry left. */
-function assertRegistrationHome(): void {
+function* assertRegistrationHomeSteps(): SetupSteps<void> {
   const canonical = (path: string) => existsSync(path) ? realpathSync(path) : resolve(path);
   const check = (home: string, registration: string) => {
     if (canonical(home) !== canonical(cotalHome()))
       throw new Error(`${registration} belongs to Cotal home ${home}, not ${cotalHome()}. Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache for this home.`);
   };
-  const result = command("plugin", "marketplace", "list", "--json");
+  const result = yield native("plugin", "marketplace", "list", "--json");
   if (result.status !== 0) throw new Error(`plugin marketplace list failed:\n${result.output}`);
   const entries: unknown = JSON.parse(result.output);
   if (!Array.isArray(entries)) throw new Error("Claude's marketplace list has an unsupported shape");
@@ -251,20 +256,26 @@ function assertRegistrationHome(): void {
   }
 }
 
+function assertRegistrationHome(): void { runSetupSteps(assertRegistrationHomeSteps()); }
+
+function pluginLockPaths(): string[] {
+  const paths = [
+    join(marketplaceDir(), ".setup.lock"),
+    join(process.env.CLAUDE_CONFIG_DIR?.trim() || homedir(), ".cotal-setup.lock"),
+    join(pluginCacheDir(), ".cotal-setup.lock"),
+  ].map((path) => {
+    const parent = dirname(path);
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    return join(realpathSync(parent), basename(path));
+  });
+  return [...new Set(paths)].sort();
+}
+
 /** Keep materialization, native registration and verification in one cross-process transaction. */
 function withPluginLock<T>(run: () => T): T {
   const locks: ReturnType<typeof acquireLock>[] = [];
   try {
-    const paths = [
-      join(marketplaceDir(), ".setup.lock"),
-      join(process.env.CLAUDE_CONFIG_DIR?.trim() || homedir(), ".cotal-setup.lock"),
-      join(pluginCacheDir(), ".cotal-setup.lock"),
-    ].map((path) => {
-      const parent = dirname(path);
-      mkdirSync(parent, { recursive: true, mode: 0o700 });
-      return join(realpathSync(parent), basename(path));
-    });
-    for (const path of [...new Set(paths)].sort())
+    for (const path of pluginLockPaths())
       locks.push(acquireLock(path, { label: "Claude plugin setup" }));
     return run();
   } finally {
@@ -324,15 +335,55 @@ export function materialize(name: string, root: string, assets: readonly string[
  *  1,782 records on one machine, past spawnSync's 1 MiB default, which cuts the output short and still
  *  reports exit 0. */
 const CLAUDE_OUTPUT_LIMIT = 64 * 1024 * 1024;
+const CLAUDE_COMMAND_TIMEOUT_MS = 120_000;
 
-function command(...args: string[]): { status: number | null; output: string } {
+type NativeResult = { status: number | null; output: string };
+type NativeCommand = { cwd: string; args: string[] };
+type SetupSteps<T> = Generator<NativeCommand, T, NativeResult>;
+const native = (...args: string[]): NativeCommand => ({ cwd: process.cwd(), args });
+
+/** One set of install steps, with only the command runner differing between CLI and host. */
+function runSetupSteps<T>(steps: SetupSteps<T>): T {
+  let step = steps.next();
+  while (!step.done) step = steps.next(commandIn(step.value.cwd, ...step.value.args));
+  return step.value;
+}
+
+async function registerMachineWake(cotal: readonly string[], host: NonNullable<ConnectorSetupInput["machineHost"]>): Promise<string> {
+  const { signal } = host;
+  signal.throwIfAborted();
+  if (claudeUserMcpServers().cotal !== undefined) return "user MCP entry cotal already declared";
+  const claude = host.binaries.claude;
+  if (!claude) throw new Error("machine setup did not receive a resolved Claude executable");
+  const run = (args: string[], cwd: string, timeoutMs: number) => host.run(claude, args, { cwd, timeoutMs, maxBuffer: CLAUDE_OUTPUT_LIMIT });
+  const locks: ReturnType<typeof acquireLock>[] = [];
+  try {
+    for (const path of pluginLockPaths()) locks.push(await acquireLockAsync(path, { label: "Claude plugin setup", signal }));
+    signal.throwIfAborted();
+    if (claudeUserMcpServers().cotal !== undefined) return "user MCP entry cotal already declared";
+    const version = await run(["--version"], process.cwd(), 5000);
+    if (version.status !== 0) throw new Error(`The installed Claude Code command could not run: ${version.output}`);
+    const steps = installWakeSteps(cotal, true);
+    let result: NativeResult | undefined;
+    for (;;) {
+      signal.throwIfAborted();
+      const step = steps.next(result!);
+      if (step.done) return step.value;
+      result = await run(step.value.args, step.value.cwd, CLAUDE_COMMAND_TIMEOUT_MS);
+    }
+  } finally {
+    for (const lock of locks.reverse()) lock.release();
+  }
+}
+
+function command(...args: string[]): NativeResult {
   return commandIn(process.cwd(), ...args);
 }
 
 /** A spawn error (output past the limit, a directory that cannot be entered) is a failure whatever the
  *  exit status says, and its message is the output. */
-function commandIn(cwd: string, ...args: string[]): { status: number | null; output: string } {
-  const result = spawnSync(claudeCommand(), args, { cwd, encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT, timeout: 120_000, killSignal: "SIGKILL" });
+function commandIn(cwd: string, ...args: string[]): NativeResult {
+  const result = spawnSync(claudeCommand(), args, { cwd, encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT, timeout: CLAUDE_COMMAND_TIMEOUT_MS, killSignal: "SIGKILL" });
   if (result.error) return { status: null, output: result.error.message };
   return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }
@@ -380,16 +431,18 @@ export function writeMarketplaceManifest(market: string): string {
   return path;
 }
 
-function writeMarketplace(): void {
+function* writeMarketplaceSteps(): SetupSteps<void> {
   const market = marketplaceDir();
   writeMarketplaceManifest(market);
-  const add = command("plugin", "marketplace", "add", market);
+  const add = yield native("plugin", "marketplace", "add", market);
   if (add.status !== 0 && !/already (?:exists|added|on disk)/i.test(add.output)) throw new Error(`plugin marketplace add failed:\n${add.output}`);
   // Claude Code re-reads the manifest on an update. Its answer to adding a marketplace it already has
   // changes wording between releases (2.1.295 says "already on disk"), so the update always runs.
-  const update = command("plugin", "marketplace", "update", MARKETPLACE);
+  const update = yield native("plugin", "marketplace", "update", MARKETPLACE);
   if (update.status !== 0) throw new Error(`plugin marketplace update failed:\n${update.output}`);
 }
+
+function writeMarketplace(): void { runSetupSteps(writeMarketplaceSteps()); }
 
 /** Read native records without creating directories or locks for an absent integration. */
 function installedPluginForRefresh(): string | undefined {
@@ -424,7 +477,11 @@ function installedForRefresh(): PluginEntry[] {
  *  installs of every project, each with its `projectPath`, but `enabled` says whether the plugin is
  *  enabled in `cwd`, not in the install's own project. */
 function listPlugins(cwd = process.cwd()): PluginEntry[] {
-  const result = commandIn(cwd, "plugin", "list", "--json");
+  return runSetupSteps(listPluginSteps(cwd));
+}
+
+function* listPluginSteps(cwd: string): SetupSteps<PluginEntry[]> {
+  const result = yield { cwd, args: ["plugin", "list", "--json"] };
   if (result.status !== 0) throw new Error(`plugin list failed:\n${result.output}`);
   let entries: unknown;
   try {
@@ -438,8 +495,8 @@ function listPlugins(cwd = process.cwd()): PluginEntry[] {
 
 /** Reads the install from Cotal's home, which no project's settings cover, so a project that turns the
  *  plugin off for itself does not fail a user-scope install that succeeded. */
-function verify(name: string, scope: string, expectedVersion?: string): void {
-  const match = listPlugins(cotalHome()).find((entry) => entry.id === `${name}@${MARKETPLACE}` && entry.scope === scope);
+function* verifyInstallSteps(name: string, scope: string, expectedVersion?: string): SetupSteps<void> {
+  const match = (yield* listPluginSteps(cotalHome())).find((entry) => entry.id === `${name}@${MARKETPLACE}` && entry.scope === scope);
   const where = `${scope} scope`;
   if (!match) throw new Error(`plugin ${name}@${MARKETPLACE} (${where}) is not installed`);
   if (match.enabled !== true || (match as { errors?: unknown[] }).errors?.length)
@@ -448,15 +505,27 @@ function verify(name: string, scope: string, expectedVersion?: string): void {
     throw new Error(`plugin ${name}@${MARKETPLACE} resolved payload does not match version ${expectedVersion}`);
 }
 
-function install(name: string, scope: string, expectedVersion?: string): void {
-  writeMarketplace();
-  const result = command("plugin", "install", `${name}@${MARKETPLACE}`, "--scope", scope);
+function* installSteps(name: string, scope: string, expectedVersion?: string): SetupSteps<void> {
+  yield* writeMarketplaceSteps();
+  const result = yield native("plugin", "install", `${name}@${MARKETPLACE}`, "--scope", scope);
   if (result.status !== 0 && !/already installed/i.test(result.output)) throw new Error(`plugin install failed (${name}):\n${result.output}`);
   if (/already installed/i.test(result.output)) {
-    const update = command("plugin", "update", `${name}@${MARKETPLACE}`, "--scope", scope);
+    const update = yield native("plugin", "update", `${name}@${MARKETPLACE}`, "--scope", scope);
     if (update.status !== 0) throw new Error(`plugin update failed (${name}):\n${update.output}`);
   }
-  verify(name, scope, expectedVersion);
+  yield* verifyInstallSteps(name, scope, expectedVersion);
+}
+
+function install(name: string, scope: string, expectedVersion?: string): void {
+  runSetupSteps(installSteps(name, scope, expectedVersion));
+}
+
+function* installWakeSteps(cotal: readonly string[], machineHost: boolean): SetupSteps<string> {
+  yield* assertRegistrationHomeSteps();
+  if (machineHost && offForAccount()) throw new Error(`Enable the Cotal plugin with \`claude plugin enable cotal@${MARKETPLACE}\` before registering the wake channel.`);
+  const version = materializeCotal(cotal);
+  yield* installSteps("cotal", "user", version);
+  return yield* registerUserServerSteps(cotal);
 }
 
 /** Update existing registrations through Claude, including caches from an earlier Git marketplace.
@@ -687,15 +756,9 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     explain: "Installs Cotal messaging for Claude Code, including supported local sessions in Desktop's Code tab. Reopen Claude after setup.",
     context: [DOCS_URL],
     run({ cotal, signedIn, machineHost }) {
-      if (machineHost && claudeUserMcpServers().cotal !== undefined) return "user MCP entry cotal already declared";
+      if (machineHost) return registerMachineWake(cotal, machineHost);
       return withPluginLock(() => {
-        if (machineHost && claudeUserMcpServers().cotal !== undefined) return "user MCP entry cotal already declared";
-        assertRegistrationHome();
-        if (machineHost && offForAccount()) throw new Error(`Enable the Cotal plugin with \`claude plugin enable cotal@${MARKETPLACE}\` before registering the wake channel.`);
-        const version = materializeCotal(cotal);
-        install("cotal", "user", version);
-        const entry = registerUserServer(cotal);
-        if (machineHost) return entry;
+        const entry = runSetupSteps(installWakeSteps(cotal, false));
         // Desktop first: a per-project install that cannot be removed fails the step after it.
         const app = desktop(cotal, true, signedIn);
         const removed = retireProjectInstalls();
