@@ -376,7 +376,9 @@ session revision and a MAC under the auth host's account signing secret, bound t
 record key and connection. A record without valid authentication never authorizes eviction.
 The auth service schedules a bounded 64-entry pass one second after each completed pass.
 Retained receipts have individual retry delays from 2 to 30 seconds, while healthy receipts
-keep the normal pass cadence. A terminal,
+keep the normal pass cadence. A whole-pass read failure backs off the pass interval up to
+30 seconds and reports one failure until a pass completes, which resets the interval to one
+second. A terminal,
 deleted or missing session row causes eviction only with authenticated evidence that the
 session existed when access was issued. Other sessions and control connections of the same actor
 stay connected. Invalid receipt records are quarantined with purge markers whose TTL is

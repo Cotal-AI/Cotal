@@ -831,6 +831,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   let sessionFlight: Promise<void> = Promise.resolve();
   const sessionRetryLogged = new Set<string>();
   const sessionRetries = new Map<string, { nextAt: number; delayMs: number }>();
+  let sessionPassDelayMs = 1000, sessionPassFailureLogged = false;
   const stopSessionSweep = async (): Promise<void> => { clearTimeout(sessionTimer); sessionAbort.abort(new Error("auth session sweep stopped")); await sessionFlight; };
   const scheduleSessionSweep = (): void => {
     if (closing || fatalReason !== undefined || sessionAbort.signal.aborted) return;
@@ -839,10 +840,18 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         jsm: sessionJsm, kv: registryStores(registry).authKv, space, secret: dataAccount.signingSeed, seq: sessionSeq, maxRows: 64,
         releaseWindowMs: (opts.sessionCalloutTimeoutMs ?? 2000) + 1000, signal: sessionAbort.signal, evict: sessionEvict,
         log, retryLogged: sessionRetryLogged, retries: sessionRetries,
-      }).then((next) => { sessionSeq = next ?? 1; }, (e: unknown) => {
-        if (!closing) log(`auth-plane: session connection eviction failed: ${e instanceof Error ? e.message : String(e)}`);
+      }).then((next) => {
+        sessionSeq = next ?? 1;
+        sessionPassDelayMs = 1000;
+        sessionPassFailureLogged = false;
+      }, (e: unknown) => {
+        sessionPassDelayMs = Math.min(sessionPassDelayMs * 2, 30_000);
+        if (!closing && !sessionPassFailureLogged) {
+          log(`auth-plane: session connection eviction failed: ${e instanceof Error ? e.message : String(e)}`);
+          sessionPassFailureLogged = true;
+        }
       }).then(scheduleSessionSweep);
-    }, 1000);
+    }, sessionPassDelayMs);
   };
   unwind.push(stopSessionSweep);
   scheduleSessionSweep();

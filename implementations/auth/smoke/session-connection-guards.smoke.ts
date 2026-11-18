@@ -233,6 +233,42 @@ try {
     check("T1 permanently unreadable receipt does not slow a healthy ended neighbor", healthyNeighbor.nc.isClosed() && performance.now() - neighborEndedAt < 4500 && !permanentlyUnreadable.nc.isClosed() && (await kv.get(permanentlyUnreadable.key))?.operation === "PUT");
   } finally { await timingHost?.close(); }
   await kv.purge(permanentlyUnreadable.key);
+  const outagePrototype = Object.getPrototypeOf(jsm.streams) as { getMessage: typeof jsm.streams.getMessage };
+  const outageRead = outagePrototype.getMessage;
+  const failureTimes: number[] = [];
+  let failingPasses = true, recoveredPass = false;
+  const consoleError = console.error;
+  let outageLogCount = 0;
+  console.error = (...args: unknown[]) => {
+    if (args.some((arg) => String(arg).includes("session connection eviction failed"))) outageLogCount++;
+    consoleError(...args);
+  };
+  outagePrototype.getMessage = async function (stream, query) {
+    if ((query as { next_by_subj?: string }).next_by_subj?.includes(".sessionconn.")) {
+      if (failingPasses) { failureTimes.push(performance.now()); throw new Error("fixture whole session stream read unavailable"); }
+      const result = await outageRead.call(this, stream, query);
+      recoveredPass = true;
+      return result;
+    }
+    return outageRead.call(this, stream, query);
+  };
+  let outageHost: Awaited<ReturnType<typeof startAuthService>> | undefined;
+  try {
+    outageHost = await startAuthService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: a.space, servers: fx.servers, stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity });
+    const failureDeadline = performance.now() + 12_000;
+    while (failureTimes.length < 3 && performance.now() < failureDeadline) await wait(25);
+    check("O1 whole-pass stream failures back off and log one outage line", failureTimes.length >= 3 && failureTimes[1]! - failureTimes[0]! >= 1800 && failureTimes[2]! - failureTimes[1]! >= 3800 && outageLogCount === 1);
+    failingPasses = false;
+    const recoverDeadline = performance.now() + 10_000;
+    while (!recoveredPass && performance.now() < recoverDeadline) await wait(25);
+    check("O2 whole-pass stream recovery completes", recoveredPass);
+    const recoveredNeighbor = await session();
+    await recordSessionConnection(kv, recoveredNeighbor.issuance, authority);
+    const recoveredEnd = performance.now();
+    await recoveredNeighbor.end();
+    while (!recoveredNeighbor.nc.isClosed() && performance.now() - recoveredEnd < 4500) await wait(25);
+    check("O3 completed recovery resets healthy ended-session cadence", recoveredNeighbor.nc.isClosed() && performance.now() - recoveredEnd < 4500 && outageLogCount === 1);
+  } finally { failingPasses = false; outagePrototype.getMessage = outageRead; console.error = consoleError; await outageHost?.close(); }
   const streamsPrototype = Object.getPrototypeOf(jsm.streams) as { getMessage: typeof jsm.streams.getMessage };
   const getMessage = streamsPrototype.getMessage;
   let entered = false, release!: () => void;
