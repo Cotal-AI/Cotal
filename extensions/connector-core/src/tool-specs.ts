@@ -1451,6 +1451,12 @@ export function cotalToolSpecs(
           const joined = agent.joinedChannels();
           const target = channel ?? defaultSendChannel(config, joined);
           if (target === undefined) return err(`Couldn't send: ${sendNoDefaultRemedy(config, joined)}.`);
+          // Bound by the post ACL before touching the mesh, as cotal_join is by the read ACL. Only a
+          // mesh that enforces ACLs refuses the post, so only there is it refused here.
+          if (isAuthed(config) && !channelInAllow(config.allowPublish, target))
+            return err(
+              `Can't post to #${target}: it's outside your post ACL (allowPublish: ${config.allowPublish.length ? config.allowPublish.map((c) => `#${c}`).join(", ") : "none"}). Nothing was sent.`,
+            );
           const receipt = await agent.describeSendChannel(target);
           const m = await agent.send(msg, target, mentions);
           return ok(sendResult(m.channel ?? target, m.mentions ?? [], receipt, agent.channelInfo(m.channel ?? target).replay));
