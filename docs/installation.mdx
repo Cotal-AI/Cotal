@@ -16,6 +16,17 @@ The installer supports x64 and arm64 machines.
 On Linux, use a glibc distribution such as Debian, Ubuntu, Fedora, or Arch.
 Alpine and other musl distributions are not supported.
 
+If the installer needs to download Node.js, it requires `curl` or `wget`, `tar` with gzip support,
+`mktemp`, and a SHA-256 tool (`sha256sum`, `shasum`, or `openssl`).
+Minimal cloud images may omit `tar`. On Rocky Linux 9, install it before running the installer:
+
+```bash
+sudo dnf install tar
+```
+
+This prerequisite step uses your system package manager.
+The Cotal installer does not run sudo or install system packages.
+
 Read the [installer script](https://get.cotal.ai) before you run it.
 To install without opening guided setup:
 

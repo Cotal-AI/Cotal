@@ -19,6 +19,7 @@ import { isContractDigest } from "./canonical.js";
 import {
   endpointToken, assertBoundedOwner, assertLifecycleToken, assertCommandToken, assertPoolToken,
   type EpAuthzMode,
+  type PrincipalAuthority,
 } from "./endpoint-subjects.js";
 import { EpEnvelopeError, EP_NO_LIVE_INSTANCES, lifecycleBlocked, type EpClass, type EpErrorCode, type EpErrorDetail, type EpNoLiveInstancesDetail } from "./endpoint-envelope.js";
 import {
@@ -1418,6 +1419,10 @@ export interface EpCommandAuthority {
   targeted: boolean;
   /** Admitted authorization modes; empty exactly when untargeted (§13.7). */
   modes: readonly EpAuthzMode[];
+  /** Principal-route authority words (SPEC 13.21), present exactly when the declaration carries
+   *  them. Such a command is never served on a service route, and `serveEndpoint` refuses a
+   *  surface that holds one. */
+  authorities?: readonly PrincipalAuthority[];
   capability: string;
   inputDigest: string;
   outputDigest: string;
@@ -1525,7 +1530,7 @@ export function authorizeTrustedServeSnapshot(args: {
   for (const n of [args.epoch, args.registrationRevision, args.nameAuthorityRevision])
     if (!Number.isSafeInteger(n) || n < 0) throw new EpEnvelopeError("internal", "trusted serve snapshot coordinates must be unsigned integers");
   const pools = [...(args.pools ?? [])].map(assertPoolToken).sort();
-  const surface = Object.freeze(Object.fromEntries(Object.entries(args.surface).map(([name, value]) => [name, Object.freeze({ ...value, modes: Object.freeze([...value.modes]), traits: Object.freeze([...value.traits]) })]))) as Readonly<Record<string, EpCommandAuthority>>;
+  const surface = Object.freeze(Object.fromEntries(Object.entries(args.surface).map(([name, value]) => [name, Object.freeze({ ...value, modes: Object.freeze([...value.modes]), traits: Object.freeze([...value.traits]), ...(value.authorities !== undefined ? { authorities: Object.freeze([...value.authorities]) } : {}) })]))) as Readonly<Record<string, EpCommandAuthority>>;
   const journalClass = args.journalClass ?? commands.some((name) => surface[name].class === "journal");
   const grant: EpServeGrant = Object.freeze({
     space: args.space,
@@ -1717,6 +1722,7 @@ async function verifiedServeSurface(
         class: cmd.class,
         targeted: cmd.targeted,
         modes: Object.freeze([...(cmd.modes ?? [])]) as readonly EpAuthzMode[],
+        ...(cmd.authorities !== undefined ? { authorities: Object.freeze([...cmd.authorities]) as readonly PrincipalAuthority[] } : {}),
         capability: cmd.capability,
         inputDigest: cmd.inputDigest,
         outputDigest: cmd.outputDigest,

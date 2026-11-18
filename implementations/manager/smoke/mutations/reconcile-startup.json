@@ -195,7 +195,7 @@
     },
     {
       "name": "the lease reader folds an unparseable row into absent (the parse throw dropped)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-lease.ts",
       "find": "    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; }\n    catch (err) { throw new Error(`delivery lease row \"${leaseKey(shardIndex)}\" exists but does not parse as a lease record (${(err as Error).message}) - it is unreadable, not absent`); }",
       "replace": "    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; } catch { return undefined; }",
       "expectRed": "a lease row that EXISTS but does not parse is UNREADABLE, not absent: the pass refuses and the manager holds no renewal lease",

@@ -20,7 +20,7 @@
     },
     {
       "name": "drop the custody reference on the way from deprovision to the static terminal",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/retirement.ts",
       "find": "      return this.driveStaticRetirement(a);",
       "replace": "      return this.driveStaticRetirement({ ...a, runtime: undefined });",
       "expectRed": "the rollback reaps the launched seat by the reference the spawn reserved",

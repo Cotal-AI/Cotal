@@ -139,12 +139,21 @@ check("control: a valid role token is created", roleOk.status === 0 && existsSyn
 for (const [argv, rerun] of [
   [["persona", "--on", "bad"], "cotal persona --on <instance>"],
   [["persona", "create", "h1", "--prompt", "x", "--on", "bad"], "cotal persona create h1 --on <instance>"],
+  // #7322: a verb that targets an agent keeps the agent, its other positionals and the space it named.
+  [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --on <instance>"],
+  [["input", "default_agent", "hello", "--on", "bad"], "cotal input default_agent <text> --on <instance>"],
+  [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
+  [["stop", "default_agent", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --space elsewhere --on <instance>"],
 ] as const) {
   const pinned = cotal(...argv, "--json");
   const said = `${pinned.envelope?.error?.message ?? ""} ${pinned.envelope?.error?.remedy ?? ""}`;
   check(`${argv.slice(0, -2).join(" ")} --on bad names ${rerun} and never --on twice`,
     pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as \`${rerun}\``) && !said.includes("--on --on"), shown(pinned));
 }
+// attach has no structured output, so its refusal is read from the terminal text.
+const attachPinned = cotal("attach", "default_agent", "--on", "bad");
+check("attach default_agent --on bad names cotal attach default_agent --on <instance> (#7322)",
+  attachPinned.status === 1 && attachPinned.stderr.includes("rerun it as `cotal attach default_agent --on <instance>`") && !attachPinned.stderr.includes("`cotal attach --on <instance>`"), shown(attachPinned));
 
 // The seeded default's agents launch as default_agent, so no create takes that name.
 for (const argv of [

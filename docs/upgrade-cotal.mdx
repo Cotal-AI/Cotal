@@ -43,6 +43,12 @@ Automatic connector reconciliation launches seed children through the same logic
 
 `pnpm smoke:seed-child:live <source-pack> <target-pack> <new-private-root>` exercises a real self-update and the other home's first plain `up`. It requires two normal guarded closure packs from one source revision and verifies the retained bootstrap, one logical target selection and all seven connector versions.
 
+Homes sharing one CLI installation keep separate built-in connector inventories.
+After another home updates the CLI, the next command that needs built-ins reconciles this home.
+Version and help remain read-only. A home-only version mismatch names `cotal update`, without `--self`.
+Automatic reconciliation leaves a canonical graph used by an older local Manager unchanged and prints that its connectors stay at their version until that Manager is restarted. The ordinary command continues. If the Manager cannot confirm its generation, automatic reconciliation also keeps the graph and continues. Explicit `cotal ext seed` and `cotal update` retain their reconciliation refusals. A validated separate connector selection can reconcile while the older Manager keeps its original graph.
+An active update holds reconciliation until its transaction finishes. Source checkouts do not seed installed homes.
+
 The `cotal` entry reads a versioned execution descriptor from its sibling retained-generation store.
 The descriptor name is bound to the logical package root. Its package name, original installed
 version and bootstrap hash select a retained package only after its inventory verifies.
@@ -68,7 +74,7 @@ restart obtains fresh zero-seat admission instead of reusing that earlier lifeti
 Rollback restores captured connector configuration before verifying the previous execution.
 It releases its own admission fences even when the daemon still runs the target generation.
 The updater pins recorded local Managers on Linux, macOS and Windows and continues with a mesh-naming notice if no local instance can be identified and the exchange refuses because several Managers are live.
-From 0.166.4, an update names and leaves untouched a Manager from an unregistered home, or one this home has no credentials to read, keeping its loaded version until it is restarted from its own home; on 0.166.3 or earlier, wait for or stop the other home's Manager from its own home, then run the same update.
+From 0.167.0, an update names and leaves untouched a Manager from an unregistered home, or one this home has no credentials to read, keeping its loaded version until it is restarted from its own home; on 0.166.3 or earlier, wait for or stop the other home's Manager from its own home, then run the same update.
 A successful manual update waits for the target daemon generation, not its updater's loaded version.
 If no machine daemon is installed, successful reconciliation completes the update without querying a daemon endpoint.
 An unwritable installation refuses before staging and names the owning install command.

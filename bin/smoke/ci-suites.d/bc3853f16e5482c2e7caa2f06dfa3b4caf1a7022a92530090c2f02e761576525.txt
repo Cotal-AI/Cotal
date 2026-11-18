@@ -1,0 +1,3 @@
+# The principal route and the agent endpoint, broker-free: subject grammar, the cluster
+# command's authority words, the envelope branch, the row builders and the two mint arms.
+smoke:principal-route

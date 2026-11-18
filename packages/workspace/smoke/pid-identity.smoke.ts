@@ -673,6 +673,43 @@ try {
     check("H8 a synchronous cleanup consumes its one-shot request before exiting", !consuming());
     rmSync(marker);
   }
+
+  // ── I. Native service custody clears a slot only when its holder is ESRCH-dead (#7343) ─────
+  // A dashboard that crashed, was killed or failed to connect left its slot behind, and every later
+  // start refused. Real processes and real pins; the claim is the shipped claimServicePid.
+  {
+    const { claimServicePid } = await import("../src/service-custody.js");
+    const { canonicalLocalProcessPath } = await import("../src/local-process.js");
+    const custody = join(root, "custody");
+    mkdirSync(join(custody, ".cotal"), { recursive: true, mode: 0o700 });
+    const context = { root: custody, space: "alpha" };
+    const slot = canonicalLocalProcessPath("web.pid", context);
+    const refusal = (): string | undefined => {
+      try { claimServicePid(context, "web.pid")(); return undefined; }
+      catch (error) { return `${(error as { code?: string }).code ?? ""} ${(error as Error).message}`; }
+    };
+    const dead = spawn(process.execPath, ["-e", "setTimeout(()=>{}, 50);"], { stdio: "ignore" });
+    writePidPair(slot, dead.pid!);
+    await new Promise<void>((r) => dead.once("exit", r));
+    await wait(100);
+    const release = claimServicePid(context, "web.pid");
+    check("I1 a slot whose pinned holder exited is cleared and claimed by this process",
+      readFileSync(slot, "utf8").trim() === String(process.pid) && verifyIdentityPin(slot).kind === "match");
+    release();
+    check("  ...and the claim's own release empties the slot", !existsSync(slot) && !existsSync(identityPinPath(slot)));
+    const holder = spawnTarget();
+    strays.push(holder.child);
+    await wait(150);
+    writePidPair(slot, holder.pid!);
+    const held = refusal();
+    check("I2 a slot whose pinned holder is alive refuses, naming the slot, and keeps the record",
+      held !== undefined && held.startsWith("LIFECYCLE_BLOCKED") && held.includes(slot) && readFileSync(slot, "utf8").trim() === String(holder.pid), held);
+    writeFileSync(identityPinPath(slot), formatRecord({ pid: holder.pid!, token: "reused-pid-start" }));
+    const reused = refusal();
+    check("I3 a slot whose pin names another process at a live pid still refuses and keeps the record",
+      reused !== undefined && reused.startsWith("LIFECYCLE_BLOCKED") && readFileSync(slot, "utf8").trim() === String(holder.pid), reused);
+    reap(holder.child);
+  }
 } catch (error) {
   suiteFailed = true;
   throw error;

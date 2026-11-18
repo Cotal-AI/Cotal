@@ -49,6 +49,9 @@ CLI, application connectors, a process manager, durable workflows and observatio
 
 ## Quick start
 
+On minimal Linux images, check the [installer prerequisites](docs/installation.mdx#use-the-shell-installer)
+first. Rocky Linux 9 needs `sudo dnf install tar` before running the installer.
+
 ```bash
 curl -fsSL https://get.cotal.ai | sh
 ```

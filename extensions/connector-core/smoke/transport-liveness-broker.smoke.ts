@@ -21,7 +21,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { AgentConfig } from "../src/config.js";
-import { isReachable, chatStream, chatSubject, dmStream, unicastSubject, parsePrincipalKey, setupSpaceStreams } from "@cotal-ai/core";
+import { isReachable, chatStream, chatSubject, dmStream, unicastSubject, parsePrincipalKey, setupSpaceStreams } from "../../../packages/core/dist/index.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -91,6 +91,8 @@ let jsAgent: MeshAgent | undefined;
 let jsBroker: ChildProcess | undefined;
 let jsClient: Client | undefined;
 let jsServer: McpServer | undefined;
+let backoffAgent: MeshAgent | undefined;
+let boBroker: ChildProcess | undefined;
 
 try {
   check("the owned throwaway broker starts", await until(() => false, 0) || await (async () => {
@@ -609,7 +611,7 @@ try {
   orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-ordering-${port}` });
   await orderingAgent.start(100);
   await until(() => orderingAgent!.connected, 30_000);
-  const orderingEp = orderingAgent.ep as unknown as { kv?: unknown; status?: string };
+  const orderingEp = orderingAgent.ep as unknown as { kv?: unknown; presence: { status?: string } };
   const heldOrdering: Array<{ resolve: () => void; reject: (e: Error) => void; record: string }> = [];
   const liveOrderingKv = orderingEp.kv;
   orderingEp.kv = { put: (_key: string, record: string) => new Promise<void>((resolve, reject) => heldOrdering.push({ resolve, reject, record })) };
@@ -662,8 +664,8 @@ try {
   await drainUntil(orderingDone);
   check(
     "two overlapping status writes land in call order: the later call's puts start only after the earlier call's have settled",
-    !idleStartedWhileHeld && orderingAgent!.status === "idle" && orderingEp.status === "idle",
-    { idleStartedWhileHeld, agentStatus: orderingAgent!.status, epStatus: orderingEp.status },
+    !idleStartedWhileHeld && orderingAgent!.status === "idle" && orderingEp.presence.status === "idle",
+    { idleStartedWhileHeld, agentStatus: orderingAgent!.status, epStatus: orderingEp.presence.status },
   );
   // A status with an activity is one put: a peer never reads the new activity beside the old status.
   const statusRecord = JSON.parse(statusPut.record) as { status?: string; activity?: string };
@@ -693,8 +695,8 @@ try {
   await drainUntil(departureDone);
   check(
     "departure is ordered behind a status write already in flight",
-    !offlineStartedWhileHeld && orderingEp.status === "offline",
-    { offlineStartedWhileHeld, epStatus: orderingEp.status },
+    !offlineStartedWhileHeld && orderingEp.presence.status === "offline",
+    { offlineStartedWhileHeld, epStatus: orderingEp.presence.status },
   );
   orderingEp.kv = liveOrderingKv;
 
@@ -704,7 +706,7 @@ try {
   orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-ordering2-${port}` });
   await orderingAgent.start(100);
   await until(() => orderingAgent!.connected, 30_000);
-  const rejectEp = orderingAgent.ep as unknown as { kv?: unknown; status?: string };
+  const rejectEp = orderingAgent.ep as unknown as { kv?: unknown; presence: { status?: string } };
   const heldReject: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
   const liveRejectKv = rejectEp.kv;
   rejectEp.kv = { put: () => new Promise<void>((resolve, reject) => heldReject.push({ resolve, reject })) };
@@ -722,8 +724,8 @@ try {
   rejectEp.kv = liveRejectKv;
   check(
     "a rejected presence write does not stall the next one",
-    secondPutArrived && rejectEp.status === "idle",
-    { secondPutArrived, epStatus: rejectEp.status },
+    secondPutArrived && rejectEp.presence.status === "idle",
+    { secondPutArrived, epStatus: rejectEp.presence.status },
   );
   // Cell (d) rebinds orderingAgent, so this agent would otherwise be dropped unstopped and its
   // heartbeat/self-heal timers would keep the process alive after the banner (#2055 lane).
@@ -1102,11 +1104,60 @@ try {
     await refused.stop(); await refusedStart;
     await refusedClient.close(); await refusedServer.close(); await sealedNc.close();
   }
+
+  // #7408: after a long outage the endpoint sleeps out a rebuild backoff that grows to a minute, and a
+  // send made once the broker was back waited for an attempt nobody had scheduled, then failed with
+  // the last attempt's "connection refused". Real broker, real terminal close and real failed
+  // rebuilds; only the wait for the fourth failure reads private state.
+  const boPort = await pickFreePort();
+  const boServers = `nats://127.0.0.1:${boPort}`;
+  assertEphemeralBroker(boServers);
+  const boConfig = join(dir, "backoff.conf");
+  writeFileSync(boConfig, `port: ${boPort}\njetstream { store_dir: "${join(dir, "backoff-js")}" }\n`);
+  boBroker = startBroker(boConfig);
+  releases.push(teardownOnSignal(boBroker, dir));
+  for (let i = 0; i < 80; i++) { if (await isReachable(boServers)) break; await sleep(50); }
+  const boCfg: AgentConfig = { ...cfg, space: `transport-backoff-${boPort}`, name: "backoff-agent", servers: boServers };
+  await setupSpaceStreams({ servers: boServers, space: boCfg.space });
+  backoffAgent = new MeshAgent(boCfg);
+  await backoffAgent.start(100);
+  const boEp = backoffAgent.ep as unknown as {
+    nc?: { close(): Promise<void>; isClosed(): boolean };
+    retryAttempt: number; reestablishing: boolean; rebuildPromise?: Promise<void>;
+  };
+  boBroker.kill("SIGKILL");
+  await awaitExit(boBroker);
+  const reconnectingNc = boEp.nc;
+  await until(() => !backoffAgent!.transportConnected);
+  backoffAgent.ep.retryNow();
+  check(
+    "retryNow leaves a link nats.js is still reconnecting alone",
+    reconnectingNc !== undefined && boEp.nc === reconnectingNc && !reconnectingNc.isClosed() && !boEp.reestablishing,
+    { same: boEp.nc === reconnectingNc, reestablishing: boEp.reestablishing },
+  );
+  // nats.js would retry for about 20 s before giving up. Closing the real connection is the same
+  // terminal close, so the endpoint's own rebuild loop starts now.
+  await reconnectingNc!.close();
+  // After four failed rebuilds the loop sleeps 12 to 24 s, longer than the send's 10 s wait.
+  const backedOff = await until(() => boEp.retryAttempt >= 4 && boEp.reestablishing && !boEp.rebuildPromise, 40_000);
+  boBroker = startBroker(boConfig);
+  releases.push(teardownOnSignal(boBroker, dir));
+  for (let i = 0; i < 80; i++) { if (await isReachable(boServers)) break; await sleep(50); }
+  const sentAt = Date.now();
+  const sent = await backoffAgent.send("after the outage", "lab").then(() => "sent", (e: Error) => e.message);
+  const took = Date.now() - sentAt;
+  check(
+    "a send made while the endpoint sleeps out a long rebuild backoff reconnects and goes out at once",
+    backedOff && sent === "sent" && took < 5_000,
+    { backedOff, sent, took, retryAttempt: boEp.retryAttempt },
+  );
 } finally {
   await jsClient?.close().catch(() => {});
   await jsServer?.close().catch(() => {});
   await jsAgent?.stop().catch(() => {});
   if (jsBroker) { jsBroker.kill("SIGKILL"); await awaitExit(jsBroker); }
+  await backoffAgent?.stop().catch(() => {});
+  if (boBroker) { boBroker.kill("SIGKILL"); await awaitExit(boBroker); }
   await orderingAgent?.stop().catch(() => {});
   await blocker2Agent?.stop().catch(() => {});
   await blockerAgent?.stop().catch(() => {});
@@ -1122,7 +1173,7 @@ try {
   for (const release of releases) release();
 }
 
-const EXPECTED_CELLS = 52;
+const EXPECTED_CELLS = 54;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);

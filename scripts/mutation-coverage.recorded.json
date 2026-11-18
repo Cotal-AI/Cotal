@@ -183,10 +183,6 @@
     "sha256": "ec5450f6fd7b0a1911a08e5e4938149dc11a7e824717a756bd1694c88580d111",
     "refusal": "mutation \"A1 the defect itself — gate on \"has static creds\" again, so a user-auth agent reads as open mode\" is missing \"cell\""
   },
-  "extensions/connector-core/smoke/mutations/presence-write-epoch-fence.json": {
-    "sha256": "7b100d99240ee5fc5c5676c953e5e20fe2b240ac53ff080450aeb9dfba4d6850",
-    "refusal": "mutation \"F1 the catch in publishPresence records unconditionally, so a put that outlives its epoch writes presence-refusal state belonging to a later connection: held across stop() it re-plants the record on the stopped endpoint, and held across a rebuild it plants one on the connection that replaced it (heartbeat 2s against a ~5s put timeout, so a rebuild finishing inside that window is the common case, not a corner). This suite imports @cotal-ai/core, which resolves to dist/, so the command builds core first and afterRestore rebuilds it: without that rebuild the tree keeps a dist/ compiled FROM THE MUTANT after the source is restored, and dist/ is gitignored so git cannot be the recovery.\" is missing \"cell\""
-  },
   "extensions/connector-core/smoke/mutations/seat-env-allowlist.json": {
     "sha256": "f2464994c6106bd674266378ccb8250afddc3b1736b28f488413d1b26d220e20",
     "refusal": "mutation \"strip the OS allow-list copy so PATH (and ~/.local/bin) never reaches the child\" targets extensions/connector-core/src/launch.ts, which none of [implementations/manager/smoke/env-isolate.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in extensions/connector-core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
@@ -431,14 +427,6 @@
     "sha256": "84b46ee665f7c1df1d5848d33348cdfef879609d937cfde5f954203f3fd5f911",
     "refusal": "mutation \"remove the public remote client namespace\" targets implementations/manager/src/index.ts, which none of [implementations/manager/smoke/public-remote-authority.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/manager that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "implementations/manager/smoke/mutations/reconcile-startup.json": {
-    "sha256": "0190282156066818a7a11e40fd785790659f73e74112e82d8c45fa82011de887",
-    "refusal": "mutation \"the lease reader folds an unparseable row into absent (the parse throw dropped)\" targets packages/core/src/endpoint.ts, which none of [implementations/manager/smoke/manager-reconcile-startup.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "implementations/manager/smoke/mutations/registration-executor-resume.json": {
-    "sha256": "233a14bac527bfe7184623fc3fb9233708729a610330db0607d926987108925d",
-    "refusal": "mutation \"same-op retry re-verifies holders the durable cursor already recorded\" targets packages/core/src/endpoint-service.ts, which none of [implementations/manager/smoke/registration-executor-resume.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "implementations/manager/smoke/mutations/spawn-action-seat-reap.json": {
     "sha256": "ad4a96fcc417cff50a4d19ec31bcf33983b9961d62dc058bd6b41ff6204c9c05",
     "refusal": "mutation \"the teardown never reaps (the leak reintroduced)\" is missing \"cell\""
@@ -554,14 +542,6 @@
   "packages/core/smoke/mutations/failed-bind-cleanup.json": {
     "sha256": "0d151c658bb77b6cb582fc78873eba3ebddea79d83bbc0b3799e2b90d0d6817d",
     "refusal": "mutation \"a probe timeout collapses to unreachable again, so a TLS-required target's slow link reads as a trust failure (#851)\" is missing \"cell\""
-  },
-  "packages/core/smoke/mutations/presence-watch-rebind.json": {
-    "sha256": "1ffe3f74ec5e278501c8dc6b38fb6f23f7ab08e0c247130b41b89a7e6152e83e",
-    "refusal": "mutation \"R1 the rebind call is dropped from sweep, so a dead consumer under a live connection leaves the view stale forever (a live deployment, 2026-09-09)\" is missing \"cell\""
-  },
-  "packages/core/smoke/mutations/presence-watch-stall.json": {
-    "sha256": "773a1248f8caed392ed112ab53dc9455ece2dd81b4f3b1d380ee27d1b59b565c",
-    "refusal": "mutation \"S1 the whole-bucket freshness gate is dropped, so the observer never reports its own view stale during a held link (the sidebar has nothing to surface, and the rebind that hangs off that gate never fires)\" is missing \"cell\""
   },
   "packages/core/smoke/mutations/run-caller-owner.json": {
     "sha256": "613047d38477c9358ad15194faeb26105c9b6f004b347f57e40b35c77fff451b",

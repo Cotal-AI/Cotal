@@ -13,7 +13,7 @@
     {
       "name": "resume consults roster liveness before an unresolved retirement hold",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        const held = this.retiring.get(entry.name);",
+      "find": "        const held = this.retirement.held(entry.name);",
       "replace": "        const held = undefined;",
       "expectRed": "resume refuses an unresolved retirement hold before launch",
       "cell": "resume refuses an unresolved retirement hold before launch"
@@ -28,7 +28,7 @@
     },
     {
       "name": "terminal confirmation does not record the predecessor coordinate",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/retirement.ts",
       "find": "        this.confirmedRetiredPredecessors.set(a.name, { principal: a.id, lifecycleUid: a.lifecycleUid });",
       "replace": "        this.confirmedRetiredPredecessors.delete(a.name);",
       "expectRed": "resume ignores only a terminal-confirmed exact predecessor row for a fresh lifecycle",

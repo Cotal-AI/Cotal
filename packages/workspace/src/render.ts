@@ -178,6 +178,10 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
         ? parts(`"${t.space}" is registered as an open mesh, but the broker at ${server} requires auth`, `copy that mesh's account + creds under ${t.root} and re-register with \`cotal meshes add ${t.space} --server <url> --mode auth --force\``)
         : parts(`open mesh "${t.space}" at ${server} no longer matches its registry entry (broker now requires auth - port reused?)`, `re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`);
     case "creds-rejected":
+      // Another space's broker named by `--server` rejects this space's credentials while this space
+      // still runs at its recorded address, so `cotal up` is not the step: name both addresses.
+      if ((t.source === "flag-server" || t.source === "flag-space-override") && t.recordedServer !== undefined && t.recordedServer !== t.server)
+        return parts(`credentials for "${t.space}" were rejected at ${server}, the broker address --server named; a different mesh may be running there`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
       return parts(`credentials for "${t.space}" were rejected at ${server}; a different mesh may be running there`, "run `cotal meshes` to check, or `cotal up` here to start yours");
     case "open-wants-auth":
       return parts(`broker at ${server} requires auth, but this mesh is open (no trust material)`, "use `--space <name>` for an auth mesh, or run `cotal up` here without `--open`");

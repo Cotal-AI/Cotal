@@ -253,6 +253,17 @@ check("message: an unreachable --server with no recorded broker names only that 
   preflightMessage("unreachable", { ...T, source: "flag-server" }, false));
 check("message: a --server that is the recorded broker still names the recorded mesh as not running",
   preflightMessage("unreachable", { ...T, source: "flag-server", recordedServer: DEAD }, false) === preflightMessage("unreachable", T, false));
+// Credentials rejected at a `--server` that is not the recorded broker: that space still runs where it
+// is recorded, so the step is that address, never `cotal up` (#7320).
+check("message: credentials rejected at an overriding --server name that address and the space's recorded broker", (() => {
+  const m = preflightMessage("creds-rejected", { ...T, source: "flag-space-override", recordedServer: "nats://127.0.0.1:14993" }, false);
+  return m === `✗ credentials for "alpha" were rejected at ${DEAD}, the broker address --server named; a different mesh may be running there - check that address, or drop --server to reach "alpha" at nats://127.0.0.1:14993, where it is recorded`;
+})(), preflightMessage("creds-rejected", { ...T, source: "flag-space-override", recordedServer: "nats://127.0.0.1:14993" }, false));
+check("message: credentials rejected at a --server recorded elsewhere for this folder name the recorded broker too",
+  preflightMessage("creds-rejected", { ...T, source: "flag-server", recordedServer: "nats://127.0.0.1:14993" }, false).includes(`drop --server to reach "alpha" at nats://127.0.0.1:14993`));
+check("message: credentials rejected with no other recorded broker keep the meshes-or-up step",
+  preflightMessage("creds-rejected", { ...T, source: "flag-server" }, false).endsWith("run `cotal meshes` to check, or `cotal up` here to start yours")
+    && preflightMessage("creds-rejected", { ...T, source: "flag-server", recordedServer: DEAD }, false) === preflightMessage("creds-rejected", T, false));
 for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-rejected", "open-wants-auth"] as const)
   check(`message: ${kind} names the server + leads with ✗`, (() => {
     const m = preflightMessage(kind, T, true);

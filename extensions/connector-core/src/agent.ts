@@ -77,6 +77,9 @@ export const SPAWN_TIMEOUT_MS = 40_000;
  *  control connection opened with it outlives the longest call it carries ({@link SPAWN_TIMEOUT_MS}). */
 const MANAGER_BEARER_MARGIN_MS = 120_000;
 
+/** A short reconnect or modest sender-clock skew must not turn a current request into history. */
+const CHANNEL_CATCHUP_AGE_MS = 5 * 60_000;
+
 /** Grace for a mesh op issued while the link is still coming up. `start()` deliberately returns
  *  immediately so the connector's MCP surface boots while the broker is absent — which means a
  *  host that auto-submits a prompt (`cotal spawn --prompt`) can call a mesh tool a second or two
@@ -1340,7 +1343,11 @@ export class MeshAgent extends EventEmitter {
     }
     if (!meta)
       throw new Error(`message ${m.id} delivered without MessageMeta — its class is unauthenticated`);
-    const item = this.toInboxItem(m, meta.kind, meta.historical);
+    // Only an aged durable channel copy is catch-up. Live copies and brief transport gaps must
+    // still wake, even when the sender's clock is a few seconds behind. Already buffered copies
+    // retain their classification through the dedupe above. DMs and role requests are unchanged.
+    const historical = meta.historical || (meta.kind === "channel" && delivery.durable && Date.now() - m.ts > CHANNEL_CATCHUP_AGE_MS);
+    const item = this.toInboxItem(m, meta.kind, historical);
     if (notice) item.notice = notice;
     // A notice asks for nothing and answers nothing. A role request awaiting its take is recorded
     // as asked of us only once it is taken, since a refused take drops it unseen.
@@ -2478,17 +2485,23 @@ export class MeshAgent extends EventEmitter {
    * already existed (joined, registry, or prior traffic) and close matches when it
    * did not. Does not refuse create. Graded before multicast so the new message cannot
    * make the name look pre-existing.
+   *
+   * #7401: only a channel list that was read supports calling the name new, as with mentions
+   * (#1229). When the read fails, `unchecked` carries its error and the name is neither known
+   * nor new; joined and registered names still count as known and still feed the hints.
    */
-  async describeSendChannel(channel: string): Promise<{ known: boolean; hints: string[] }> {
+  async describeSendChannel(channel: string): Promise<{ known: boolean; hints: string[]; unchecked?: string }> {
     if (this.ep.getChannelConfig(channel)) return { known: true, hints: [] };
     const known = new Set<string>(this.ep.joinedChannels().filter(isConcreteChannel));
+    let unchecked: string | undefined;
     try {
       for (const row of await this.ep.listChannels()) known.add(row.channel);
-    } catch {
-      /* no stream: joined + registry cache still distinguish a typo of a channel we are on */
+    } catch (e) {
+      unchecked = (e as Error).message;
     }
     if (known.has(channel)) return { known: true, hints: [] };
-    return { known: false, hints: closeChannelNames(channel, [...known]) };
+    const hints = closeChannelNames(channel, [...known]);
+    return unchecked === undefined ? { known: false, hints } : { known: false, hints, unchecked };
   }
 
   /** Throw if any name isn't a peer we've observed. Validates against the FULL roster
@@ -4043,6 +4056,8 @@ export class MeshAgent extends EventEmitter {
    *  so one race at spawn silenced the event plane for the whole session. */
   async whenConnected(timeoutMs: number = CONNECT_GRACE_MS): Promise<void> {
     if (this._connected) return;
+    // An endpoint waiting out its rebuild backoff would not try again inside this window (#7408).
+    this.ep.retryNow();
     if (!(await this.awaitConnection(timeoutMs))) throw new Error(this.notConnectedMessage());
   }
 

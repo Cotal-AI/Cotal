@@ -385,8 +385,8 @@ try {
   mkdirSync(bare);
   await assert.rejects(
     prepareRestore(bare, { restore: destination }),
-    (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "LIFECYCLE_BLOCKED" && error.message.endsWith("found none") && (error.remedy ?? "").includes("cotal down --preserve-state"),
-    "a restore with no maintenance journal is a refusal that names the preserve",
+    (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "LIFECYCLE_BLOCKED" && error.message.endsWith("found none") && (error.remedy ?? "").includes("start a stopped stack with `cotal up` first, then stop it with `cotal down --preserve-state`"),
+    "a restore with no maintenance journal is a refusal that names the start a stopped stack needs before the preserve",
   );
   assert.equal(existsSync(join(bare, ".cotal")), false, "the refused restore created no .cotal state");
 
@@ -400,8 +400,8 @@ try {
   try {
     await assert.rejects(
       backup({ positionals: ["create", join(root, "create-artifact")], values: {}, raw: [] }),
-      (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "LIFECYCLE_BLOCKED" && error.message.includes("records none") && (error.remedy ?? "").includes("cotal down --preserve-state"),
-      "a create with no preserved cut says so and names the preserve",
+      (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "LIFECYCLE_BLOCKED" && error.message.includes("records none") && (error.remedy ?? "").includes("start the stack with `cotal up`, stop it with `cotal down --preserve-state`, then create the backup"),
+      "a create with no preserved cut on a stopped stack says so and names the start before the preserve",
     );
     assert.equal(existsSync(join(createRoot, ".cotal", "maintenance")), false, "that refusal created no maintenance state");
     const createStore = join(createRoot, ".cotal", "nats");

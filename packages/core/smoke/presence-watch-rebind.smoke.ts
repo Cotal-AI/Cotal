@@ -327,7 +327,7 @@ try {
     };
     return held;
   };
-  const iterOf = (ep: CotalEndpoint) => (ep as unknown as { presenceWatchIter?: unknown }).presenceWatchIter;
+  const iterOf = (ep: CotalEndpoint) => (ep as unknown as { presence: { presenceWatchIter?: unknown } }).presence.presenceWatchIter;
   const mkObserver = (name: string, registerPresence = true, heartbeatMs = HEARTBEAT_MS) => {
     const ep = new CotalEndpoint({
       space, servers: SERVERS,
@@ -511,7 +511,7 @@ try {
     ok("9.5 no offline verdict was emitted for the observer itself across the recreation",
       !regTypes.includes("offline:regmgr"), regTypes);
     ok("9.6 the view became current on a DELIVERY, not on a hold (the empty marker is not set for a registering observer)",
-      (ep as unknown as { presenceWatchEmpty: boolean }).presenceWatchEmpty === false);
+      (ep as unknown as { presence: { presenceWatchEmpty: boolean } }).presence.presenceWatchEmpty === false);
     // NEGATIVE CONTROL: the bystander's key was wiped too and it has not rewritten it; it ages
     // out by the ordinary rule (the watch delivered a full window after its last heartbeat).
     const bystanderAged = await until(() => ep.getRoster().find((p) => p.card.name === "bystander")?.status === "offline", TTL_MS * 3);

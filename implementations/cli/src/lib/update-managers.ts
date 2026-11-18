@@ -286,6 +286,7 @@ export function localUpdateManagers(
     const space = option(argv, "space") ?? env.COTAL_SPACE ?? recorded?.space;
     if (space && typeof flags.space === "string" && flags.space !== space) continue;
     if (!root || !space || !isAbsolute(root)) blocked(`Manager pid ${pid} has no proven absolute root or space`);
+    if ("token" in pin && assertRecordIdentity(pin).kind === "gone") continue;
     if (!("token" in pin) || assertRecordIdentity(pin).kind !== "match") blocked(`Manager pid ${pid} changed or has no process creation identity`);
     // Compare every registered root, not just the selected space. Never read another home's
     // identity or infer its broker from an unrelated entry with the same space name.
@@ -320,6 +321,7 @@ export function localUpdateManagers(
     const server = option(argv, "server") ?? env.COTAL_SERVER ?? recorded?.server ?? entry?.server;
     if (!server) blocked(`Manager pid ${pid}, root ${root}, space ${space} has no broker address`);
     if (!matches(space, server)) continue;
+    if ("token" in pin && assertRecordIdentity(pin).kind === "gone") continue;
     if (!("token" in pin) || assertRecordIdentity(pin).kind !== "match") blocked(`Manager pid ${pid} changed or has no process creation identity`);
     const instanceId = readUpdateManagerIdentity(root, space);
     if (typeof flags.on === "string" && instanceId !== flags.on) continue;

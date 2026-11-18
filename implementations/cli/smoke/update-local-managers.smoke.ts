@@ -44,12 +44,20 @@ try {
   assert.equal(await reportRunningManagers({}, async () => { throw missing; }, () => [manager], retained), "none", "retained report uses known local Manager boundary");
   const foreign = { ownership: "foreign" as const, pid: process.pid, root: "/foreign", space: "foreign", process: ownProcess };
   assert.equal(await readUpdateManagerContinuity(foreign, {}, async () => { throw new Error("foreign must not resolve auth"); }), "none");
-  await assert.rejects(reportRunningManagers({ space: "foreign", on: "0123456789abcdefghijklmnopqrstuv" }, async () => { throw new Error("foreign must not route an unknown instance"); }, () => [foreign]), /does not name a local Manager/);
+  // Another home's Manager never changes the outcome of this home's own selection: every case
+  // below must read what an empty census reads, after one notice.
+  for (const flags of [{}, { server: "nats://127.0.0.1:4222" }, { space: "foreign", on: "0123456789abcdefghijklmnopqrstuv" }]) {
+    const reads: Record<string, unknown>[] = [];
+    const before = notices.length;
+    assert.equal(await reportRunningManagers(flags, async selected => { reads.push(selected); return "legacy"; }, () => [foreign], retained), "legacy", "the selected mesh is still read beside a foreign Manager");
+    assert.deepEqual(reads, [flags], "the read is the one an empty census makes");
+    assert.equal(notices.length, before + 1, "one notice names the foreign Manager");
+  }
+  await assert.rejects(reportRunningManagers({ on: "0123456789abcdefghijklmnopqrstuv" }, async () => "none", () => [foreign, manager]), /does not name a local Manager/, "an own local Manager still makes an unknown --on a refusal");
   await assert.rejects(readUpdateManagerContinuity(foreign, { creds: "/explicit.creds" }, async flags => {
     assert.deepEqual(flags, { creds: "/explicit.creds" });
     throw missing;
   }), actual => actual === missing);
-  assert.equal(await reportRunningManagers({}, async () => { throw new Error("foreign-only must not fall back to selected target"); }, () => [foreign]), "none");
   assert.equal(await readUpdateManagerContinuity(manager, {}, async () => "legacy"), "legacy", "answered legacy is unchanged");
   assert.equal(await readUpdateManagerContinuity(manager, {}, async () => "none"), "none");
   const processRecord = identityRecord(process.pid);
