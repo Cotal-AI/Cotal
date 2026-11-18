@@ -122,7 +122,7 @@ const item = (id: string): InboxItem => ({
   historical: false,
   text: `message ${id}`,
 });
-(agent as unknown as { inbox: Array<{ item: InboxItem; ack: () => void; pullOnly: boolean; receivedAt: number }> }).inbox = [
+((agent as unknown as { inboxState: unknown }).inboxState as unknown as { inbox: Array<{ item: InboxItem; ack: () => void; pullOnly: boolean; receivedAt: number }> }).inbox = [
   { item: item("one"), ack: () => acked.push("one"), pullOnly: false, receivedAt: oldestAutomaticReceivedAt },
   { item: item("two"), ack: () => acked.push("two"), pullOnly: true, receivedAt: Date.now() - 1_000 },
 ];
@@ -295,7 +295,7 @@ check(
   };
 
   type Slot = { item: InboxItem; ack: () => void; pullOnly: boolean; receivedAt: number };
-  const slots = wedgedAgent as unknown as { inbox: Slot[] };
+  const slots = (wedgedAgent as unknown as { inboxState: unknown }).inboxState as unknown as { inbox: Slot[] };
   // Well past the ten-minute bound, at the scale the issue reports: an oldest entry over two hours old.
   const wedgedSince = Date.now() - AUTOMATIC_QUEUE_STALL_MS - 2 * 60 * 60_000;
 

@@ -7,7 +7,7 @@
   "mutations": [
     {
       "name": "a role request skips its take and lands in the inbox at once",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "this.gated.push(pending);",
       "replace": "this.inbox.push(pending);",
       "expectRed": "1f a read before the take does not show it",
@@ -15,7 +15,7 @@
     },
     {
       "name": "a take refused with a drop keeps the copy it refused",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    if (outcome.drop) {\n      this.dropGated(p);\n      return;\n    }",
       "replace": "    if (outcome.drop) {\n      return;\n    }",
       "expectRed": "2c and drops its copy",
@@ -23,9 +23,9 @@
     },
     {
       "name": "a notice-shaped DM from any sender is read as the daemon's notice",
-      "file": "extensions/connector-core/src/agent.ts",
-      "find": "this.ingest(m, delivery, meta, holder !== undefined && holder === m.from.id);",
-      "replace": "this.ingest(m, delivery, meta, true);",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
+      "find": "this.ingest(m, delivery, meta, holder !== undefined && holder === m.from.id ? notice : undefined);",
+      "replace": "this.ingest(m, delivery, meta, notice);",
       "expectRed": "4a it arrives as a DM from its real sender",
       "cell": "4a it arrives as a DM from its real sender"
     },
@@ -57,7 +57,7 @@
     },
     {
       "name": "the take ignores the host's choice and takes every held request in scope",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "      .filter((p) => keys.has(p.item.recvKey) && this.mayOffer(p))",
       "replace": "      .filter((p) => this.mayOffer(p))",
       "expectRed": "6c the requests it left still read waiting",
@@ -66,16 +66,16 @@
     },
     {
       "name": "a request taken before a link drop stays showable while the link is down",
-      "file": "extensions/connector-core/src/agent.ts",
-      "find": "        for (const p of this.inbox.filter((x) => x.take && !this.inFlightIds.has(x.item.recvKey))) this.regate(p);",
-      "replace": "        void 0;",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
+      "find": "      for (const p of this.inbox.filter((x) => x.take && !this.inFlightIds.has(x.item.recvKey))) this.regate(p);",
+      "replace": "      void 0;",
       "expectRed": "7b when the link drops it is held again, not shown",
       "cell": "7b when the link drops it is held again, not shown",
       "note": "A request taken before the drop stays showable while the link is down, though this reader cannot vouch for its copy."
     },
     {
       "name": "an exact drain hands back a held request that was never taken",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    const regated = this.gated.filter((p) => wanted.has(p.item.recvKey) && p.takenOnce);",
       "replace": "    const regated = this.gated.filter((p) => wanted.has(p.item.recvKey));",
       "expectRed": "8a the drain returns nothing for it",
@@ -102,7 +102,7 @@
     },
     {
       "name": "a take the read waits on is announced as a new arrival",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "      if (!p.awaited) this.emit(\"incoming\", p.item);",
       "replace": "      this.emit(\"incoming\", p.item);",
       "expectRed": "10b a read that waits on the take shows the request and announces it no more",
@@ -111,7 +111,7 @@
     },
     {
       "name": "a take that answers after its read gave up is admitted silently",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "      if (!p.awaited) this.emit(\"incoming\", p.item);",
       "replace": "      if (false) this.emit(\"incoming\", p.item);",
       "expectRed": "10e a take that lands after its read stopped waiting is announced as an arrival",
@@ -120,7 +120,7 @@
     },
     {
       "name": "the pending list leaves out held role requests",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    const held = scope === \"pull-only\" ? [] : this.gated;\n    return [...this.inbox.filter((p) => this.inScope(p, scope)), ...held].map((p) => p.item);",
       "replace": "    return this.inbox.filter((p) => this.inScope(p, scope)).map((p) => p.item);",
       "expectRed": "10d the pending list a notice counts names a held request that a read cannot see yet",
@@ -129,7 +129,7 @@
     },
     {
       "name": "an answer that crossed a link drop is treated as the new link's",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      return;\n    }\n",
       "replace": "",
       "expectRed": "11c no held reason is reported for it",
@@ -138,7 +138,7 @@
     },
     {
       "name": "a take that ends after the link is back announces nothing",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      return;\n    }\n",
       "replace": "    if (this.transportDrops !== drops) {\n      return;\n    }\n",
       "expectRed": "18d with no read since the reconnect, the old take ending announces the request once more",
@@ -147,7 +147,7 @@
     },
     {
       "name": "a take that ended with the link is announced while the link is still down",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      return;\n    }\n",
       "replace": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      this.emit(\"incoming\", p.item);\n      return;\n    }\n",
       "expectRed": "11b the request is announced again, so its host reads it once more",
@@ -156,8 +156,8 @@
     },
     {
       "name": "a request held through the retry wait counts toward a wake",
-      "file": "extensions/connector-core/src/agent.ts",
-      "find": "    const held = this.mayAskTakes() ? this.gated.filter((p) => !skip?.(p.item)).length : 0;",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
+      "find": "    const held = this.mayAskTakes() ? this.gated.filter((p) =>\n      (p.taking === undefined || p.takingDrops !== this.transportDrops) && !skip?.(p.item)).length : 0;",
       "replace": "    const held = this.gated.filter((p) => !skip?.(p.item)).length;",
       "expectRed": "13b while the retry is waited out it counts toward no wake",
       "note": "A request held through the retry wait counts toward a wake, so a host is woken for a read that can take nothing until the wait ends.",
@@ -165,7 +165,7 @@
     },
     {
       "name": "a copy whose ack wait ran out still counts toward a wake",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    this.dropLapsedTakes();\n    const held = this.mayAskTakes()",
       "replace": "    const held = this.mayAskTakes()",
       "expectRed": "14a once its ack wait ran out it counts toward no wake",
@@ -210,7 +210,7 @@
     },
     {
       "name": "a read after a reconnect waits on the old link's take",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "(p.taking !== undefined && p.takingDrops === this.transportDrops ? p.taking : this.startTake(p))",
       "replace": "(p.taking ?? this.startTake(p))",
       "expectRed": "18a a read after the reconnect asks for the take again rather than waiting on the old link's",
@@ -219,7 +219,7 @@
     },
     {
       "name": "the old link's take ending announces the request while a newer take is asked",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "      if (p.takingDrops !== drops) return;\n",
       "replace": "",
       "expectRed": "18b the old take ending announces nothing while the new one is still asked",
@@ -228,7 +228,7 @@
     },
     {
       "name": "the old take ending clears the newer take a read started",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "      if (p.taking === run) p.taking = undefined;",
       "replace": "      p.taking = undefined;",
       "expectRed": "18c and a read then waits on the new take rather than asking a third time",
@@ -264,7 +264,7 @@
     },
     {
       "name": "a held request is offered to a read while the link is down",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    return this._transportConnected && (!this.heldTake || Date.now() >= this.heldTake.retryAt);",
       "replace": "    return !this.heldTake || Date.now() >= this.heldTake.retryAt;",
       "expectRed": "21a while the link is down a read is offered no held request, and none wakes",
@@ -273,7 +273,7 @@
     },
     {
       "name": "a request whose take is out is offered to a read while the link is down",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    return (p.taking !== undefined && this._transportConnected) || this.mayAskTakes();",
       "replace": "    return p.taking !== undefined || this.mayAskTakes();",
       "expectRed": "11h while the link is down a read is offered no request whose take was out when it dropped",
@@ -282,8 +282,8 @@
     },
     {
       "name": "the reconnect announces no held request",
-      "file": "extensions/connector-core/src/agent.ts",
-      "find": "        for (const p of this.gated) if (p.taking === undefined) this.emit(\"incoming\", p.item);\n",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
+      "find": "      for (const p of this.gated) if (p.taking === undefined) this.emit(\"incoming\", p.item);\n",
       "replace": "",
       "expectRed": "21b once the link is back the held request is announced again",
       "cell": "21b once the link is back the held request is announced again",
@@ -291,7 +291,7 @@
     },
     {
       "name": "the preview lists held requests after everything shown",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "].sort((a, b) => a.arrival - b.arrival).map((p) => p.item);",
       "replace": "].map((p) => p.item);",
       "expectRed": "22a the preview offers the request ahead of the chatter that arrived after it",
@@ -300,7 +300,7 @@
     },
     {
       "name": "a taken request joins the end of the inbox",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    while (at > 0 && this.inbox[at - 1]!.arrival > pending.arrival) at--;\n",
       "replace": "",
       "expectRed": "22b once taken it is shown in that place",

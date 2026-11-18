@@ -204,6 +204,10 @@ The shared connector marks a newly received durable channel copy historical when
 
 ## Acknowledgement [#acknowledgement-and-redelivery]
 
+`MeshAgent` forwards inbox reads, drains, delivery holds and focus recall to its internal inbox
+component. The component owns pending deliveries and their timers. Connector integrations keep
+using the same `MeshAgent` methods and exported inbox types.
+
 The connector acknowledges a durable message at its integration's handoff boundary.
 For Claude hooks, a clean stdout-write receipt commits the batch. That receipt proves OS acceptance, not that the model read or applied it.
 See [Hook acknowledgement](claude-connector-reference.mdx#hook-acknowledgement).

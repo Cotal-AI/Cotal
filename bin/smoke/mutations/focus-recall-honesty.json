@@ -41,7 +41,7 @@
     },
     {
       "name": "recallAmbient goes back to silently skipping a wildcard-joined channel instead of naming it dropped",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "      if (!isConcreteChannel(channel)) {\n        droppedChannels.push(channel);\n        continue;\n      }",
       "replace": "      if (!isConcreteChannel(channel)) continue;",
       "expectRed": "recall REPORTS the wildcard join as dropped, not silently",
