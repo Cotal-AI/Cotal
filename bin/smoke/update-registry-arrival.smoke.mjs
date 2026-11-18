@@ -21,7 +21,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   for (const version of [previous, target]) {
     writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
-    writeFileSync(join(root, 'payload/package/dist/cotal.js'), '#!/usr/bin/env node\nconsole.log("fixture reconciled");\n', { mode: 0o755 });
+    writeFileSync(join(root, 'payload/package/dist/cotal.js'), '#!/usr/bin/env node\nimport { mkdtempSync, rmSync } from "node:fs";\nimport { tmpdir } from "node:os";\nimport { join } from "node:path";\nconst scratch = mkdtempSync(join(tmpdir(), "reconcile-child-"));\nrmSync(scratch, { recursive: true });\nconsole.log("fixture reconciled with writable temporary directory");\n', { mode: 0o755 });
     const packed = spawnSync('tar', ['-czf', join(root, `${version}.tgz`), '-C', join(root, 'payload'), 'package']);
     assert.equal(packed.status, 0);
     archives.set(version, readFileSync(join(root, `${version}.tgz`)));
@@ -68,6 +68,9 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const before = readFileSync(join(packageRoot, 'dist/cotal.js'));
     writeFileSync(join(packageRoot, 'preserve'), 'unchanged');
     armed = true;
+    // The real npm archive reads, global install and target reconcile child must
+    // receive writable scratch even when the caller's TMPDIR cannot be used.
+    if (scenario === 'reset') env.TMPDIR = join(root, 'missing-temp');
     const filterConfig = scenario === 'before' ? 'before=2020-01-01\n' : 'min-release-age=365\n';
     if (dateFiltered) writeFileSync(join(home, '.npmrc'), filterConfig);
     const started = Date.now();
@@ -120,6 +123,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       } else if (scenario === 'reset') {
         assert.equal(selected, target);
         assert.match(update.output, /installed globally and reconciled/);
+        assert.match(update.output, /fixture reconciled with writable temporary directory/);
+        assert.equal(existsSync(env.TMPDIR), false, 'update does not create the unavailable caller TMPDIR');
         assert(missing >= 2 && elapsedMs < 60000, `bounded transient retry: ${elapsedMs}`);
       } else if (scenario === 'arrives') {
         assert.equal(selected, target);

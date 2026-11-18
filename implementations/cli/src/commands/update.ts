@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -248,6 +248,32 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
     }
     return;
   }
+  // npm and reconciliation children need the same writable private scratch as the updater.
+  // Select it before recovery or installation work so failure is a definite refusal.
+  let scratch: string | undefined;
+  const failures: string[] = [];
+  for (const parent of new Set([tmpdir(), ...(process.platform === "win32" ? [] : ["/tmp"]), homedir()])) {
+    try { scratch = mkdtempSync(join(parent, "cotal-update-")); break; }
+    catch (error) { failures.push(message(error)); }
+  }
+  if (!scratch) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `cannot create a private temporary directory for the update: ${failures.join("; ")}; no changes were made`, {
+    native: { outcome: "not-executed" }, remedy: "set TMPDIR to an existing writable folder, then run the update again",
+  });
+  const environments = [...new Set([process.env, rt.env])];
+  const previous = environments.map(env => ({ env, values: { TMPDIR: env.TMPDIR, TMP: env.TMP, TEMP: env.TEMP } }));
+  try {
+    for (const env of environments) Object.assign(env, { TMPDIR: scratch, TMP: scratch, TEMP: scratch });
+    await updateInstallation(args, rt);
+  } finally {
+    for (const { env, values } of previous) for (const [key, value] of Object.entries(values)) {
+      if (value === undefined) delete env[key];
+      else env[key] = value;
+    }
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
+async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<void> {
   if (args.values.check === true) return checkUpdate(args, rt);
   if (args.values.self === true && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) {
     throw new CommandFailure("refused", "UNSUPPORTED", "this Cotal runtime belongs to the desktop app; npm self-update would separate it from its bundled runtime", {
@@ -885,6 +911,10 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       // As with a registered gone root, leave its records and processes untouched.
       if (e.code === "not-started" && e.details.rootMissing === true) {
         console.log(`  ${e.details.space}: folder is gone; leaving its processes untouched, continuity not checked`);
+        return "none";
+      }
+      if (e.code === "not-started" && e.details.recordedRoot !== undefined) {
+        console.log(c.dim(`  ${e.details.stackSpace ?? e.details.root}: stack records in ${e.details.root} belong to ${e.details.recordedRoot}; leaving its records and processes untouched, continuity not checked`));
         return "none";
       }
       // A refused legacy start can leave a rendered broker config without ever starting a member.
