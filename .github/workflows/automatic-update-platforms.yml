@@ -47,16 +47,16 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       # On workflow_run this is the trusted default-branch workflow revision, never PR code.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Freeze applicability and immutable target
         id: plan
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const assert = require('node:assert/strict');
@@ -148,7 +148,7 @@ jobs:
             core.setOutput('applicable', String(plan.status === 'planned'));
             for (const [key, value] of Object.entries({ phase: plan.phase, source: plan.sourceSHA, target: plan.targetVersion, profile: plan.profile, matrix: JSON.stringify(jobsMatrix(cells)) })) core.setOutput(key, value ?? '');
             await core.summary.addHeading('Upgrade matrix selection').addRaw(plan.status === 'skipped' ? `Not applicable: ${plan.reason}` : `${plan.phase}: ${plan.sourceVersion} to ${plan.targetVersion} from ${plan.sourceSHA}, ${cells.filter(c => c.required).length} isolated cells`).write();
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: upgrade-plan
           path: ${{ runner.temp }}/upgrade-plan
@@ -170,11 +170,11 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.select.outputs.source }}
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
       - name: Compile Unix host primitives
@@ -199,12 +199,12 @@ jobs:
           if errorlevel 1 exit /b 1
           node packages/seat/scripts/build-native.mjs --host
           if errorlevel 1 exit /b 1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-seat-${{ matrix.platform }}-${{ matrix.arch }}
           path: packages/seat/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: matrix.platform != 'linux'
         with:
           name: release-workspace-${{ matrix.platform }}-${{ matrix.arch }}
@@ -219,17 +219,17 @@ jobs:
       artifact: ${{ steps.candidate.outputs.artifact-id }}
       digest: ${{ steps.candidate.outputs.artifact-digest }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.select.outputs.source }}
           path: product
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Require pack-runner disk budget
@@ -241,7 +241,7 @@ jobs:
         if: needs.select.outputs.phase == 'candidate'
         run: pnpm --workspace-concurrency 3 build
         working-directory: product
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-*
           path: ${{ runner.temp }}/release-natives
@@ -285,7 +285,7 @@ jobs:
           TARGET_VERSION: ${{ needs.select.outputs.target }}
           SOURCE_SHA: ${{ needs.select.outputs.source }}
         run: node scripts/fetch-published-candidate.mjs --version "$TARGET_VERSION" --source "$SOURCE_SHA" --source-root "$GITHUB_WORKSPACE/product" --output "$RUNNER_TEMP/release-candidate"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: candidate
         with:
           name: release-candidate
@@ -302,17 +302,17 @@ jobs:
       follow-on-artifact: ${{ steps.follow-on.outputs.artifact-id }}
       follow-on-digest: ${{ steps.follow-on.outputs.artifact-digest }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.select.outputs.source }}
           path: product
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Require pack-runner disk budget
@@ -320,7 +320,7 @@ jobs:
       - run: pnpm install --frozen-lockfile --child-concurrency=2
       - run: pnpm install --frozen-lockfile --child-concurrency=2
         working-directory: product
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-*
           path: ${{ runner.temp }}/release-natives
@@ -343,7 +343,7 @@ jobs:
           WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-workspace-win32-arm64
           WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-workspace-darwin-x64
           WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-workspace-darwin-arm64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.release-pack.outputs.artifact }}
           merge-multiple: true
@@ -352,13 +352,13 @@ jobs:
         run: |
           node scripts/pack-candidate-next.mjs --source-root "$GITHUB_WORKSPACE/product" --candidate "$RUNNER_TEMP/release-candidate" --output "$RUNNER_TEMP/release-next"
           node scripts/pack-candidate-next.mjs --source-root "$GITHUB_WORKSPACE/product" --candidate "$RUNNER_TEMP/release-candidate" --output "$RUNNER_TEMP/release-follow-on" --offset 2000
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: next
         with:
           name: release-next
           path: ${{ runner.temp }}/release-next
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: follow-on
         with:
           name: release-follow-on
@@ -375,28 +375,28 @@ jobs:
       max-parallel: 45
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'candidate-next-two-homes' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true || matrix.deadUpdater == true || matrix.otherHomeAuth == true
         with:
           artifact-ids: ${{ needs.release-pack.outputs.artifact }}
           merge-multiple: true
           path: ${{ runner.temp }}/release-candidate
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: matrix.scenario == 'candidate-next-two-homes' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true || matrix.deadUpdater == true || matrix.otherHomeAuth == true
         with:
           artifact-ids: ${{ needs.release-next.outputs.artifact }}
           merge-multiple: true
           path: ${{ runner.temp }}/release-next
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: matrix.followOnAction != null
         with:
           artifact-ids: ${{ needs.release-next.outputs.follow-on-artifact }}
@@ -454,7 +454,7 @@ jobs:
             writeFileSync(process.env.RUNNER_TEMP + '/upgrade-evidence/candidate-next-origin.json', JSON.stringify(originReceipt));
           }
           NODE
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: matrix.scenario == 'candidate-next-stopped-desktop-self'
         with:
           name: desktop-release-Linux-X64
@@ -589,7 +589,7 @@ jobs:
           process.exitCode = refusal ? 0 : cellExitCode(report);
           }
           NODE
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: upgrade-cell-${{ matrix.id }}
@@ -601,20 +601,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: upgrade-plan
           path: ${{ runner.temp }}/upgrade-plan
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         continue-on-error: true
         with:
           pattern: upgrade-cell-*
@@ -873,7 +873,7 @@ jobs:
           appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n## Expected coordinate census\n\n${verdict.passed.length}/${verdict.requiredCount} genuine upgrade passes. ${verdict.knownRefusals.length} expected refusals. Summary acceptance: ${verdict.acceptance}. Full upgrade acceptance: ${verdict.upgradeAcceptance}.\n\n${verdict.knownRefusals.map(r => `${r.id}: expected refusal ${r.issue}`).join('\n')}\n${verdict.failures.join('\n')}\n`);
           if (!verdict.acceptance) process.exitCode = 1;
           NODE
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: upgrade-summary
@@ -884,10 +884,10 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Install unchanged published native bindings
@@ -910,7 +910,7 @@ jobs:
       - name: Scheduled task job-object mutator lifetime falsifier
         shell: powershell
         run: ./scripts/windows-job-facts.ps1 -Output "$env:RUNNER_TEMP/upgrade-evidence" -PackageRoot "$env:PUBLISHED_PACKAGE_ROOT" -Node (Get-Command node).Source
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: windows-job-object-facts
@@ -921,10 +921,10 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Native one-shot demand task lifecycle facts
@@ -938,7 +938,7 @@ jobs:
         if: always() && !cancelled()
         shell: powershell
         run: ./scripts/windows-gate-facts.ps1 -Output "$env:RUNNER_TEMP/upgrade-evidence"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: windows-published-0.164.6-baseline
@@ -954,10 +954,10 @@ jobs:
       matrix:
         cell: [launchd, public-installer]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Capture native host provenance
@@ -971,7 +971,7 @@ jobs:
       - name: Upgrade through actual public installer host
         if: matrix.cell == 'public-installer'
         run: node scripts/automatic-update-platform-baseline.mjs --source 0.164.6 --layout installer --state configured --method installer --output "$RUNNER_TEMP/upgrade-evidence"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: next-release-macos-${{ matrix.cell }}
@@ -987,16 +987,16 @@ jobs:
       matrix:
         mode: [off-before-tick, killed-before-result]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
       - name: Retrieve original candidate without rebuilding
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const assert = require('node:assert/strict');
@@ -1051,7 +1051,7 @@ jobs:
         env:
           PROOF_MODE: ${{ matrix.mode }}
         run: node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate-A" --direction A --source latest --layout installer --state daemon --method scheduler --launchd-proof "$PROOF_MODE" --output "$RUNNER_TEMP/upgrade-evidence"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: mac-control-${{ matrix.mode }}
@@ -1073,12 +1073,12 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ env.PRODUCT_SOURCE }}
           path: product
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
       - name: Compile Unix host primitives
@@ -1105,12 +1105,12 @@ jobs:
           if errorlevel 1 exit /b 1
           node packages/seat/scripts/build-native.mjs --host
           if errorlevel 1 exit /b 1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: transition-seat-${{ matrix.platform }}-${{ matrix.arch }}
           path: product/packages/seat/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: matrix.platform != 'linux'
         with:
           name: transition-workspace-${{ matrix.platform }}-${{ matrix.arch }}
@@ -1122,16 +1122,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ env.PRODUCT_SOURCE }}
           path: product
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
@@ -1139,7 +1139,7 @@ jobs:
         working-directory: product
       - run: pnpm --workspace-concurrency 3 build
         working-directory: product
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: transition-*
           path: ${{ runner.temp }}/transition-natives
@@ -1164,7 +1164,7 @@ jobs:
           WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/transition-natives/transition-workspace-darwin-arm64
       - name: Pack candidate A from product source
         run: node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidate-A" --version A --source-root "$GITHUB_WORKSPACE/product"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: transition-candidate-A
@@ -1176,15 +1176,15 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: transition-candidate-A
           path: ${{ runner.temp }}/candidate-A
@@ -1208,7 +1208,7 @@ jobs:
           for mode in transition off-before-tick killed-before-result; do
             node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate-A" --direction A --source latest --layout installer --state daemon --method scheduler --launchd-proof "$mode" --output "$RUNNER_TEMP/upgrade-evidence"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: transition-mac-proof
@@ -1219,10 +1219,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Prepare disposable user manager
@@ -1239,7 +1239,7 @@ jobs:
       - name: Published installer 0.160.7 through daemon scheduler only
         shell: bash
         run: node scripts/automatic-update-platform-baseline.mjs --source 0.160.7 --layout installer --state daemon --method scheduler --output "$RUNNER_TEMP/upgrade-evidence"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: scheduler-proof-0.160.7-linux
@@ -1257,7 +1257,7 @@ jobs:
     steps:
       - name: Record Mac runner admission before any install
         id: admission
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           QUALIFICATION_RUNNER: ${{ matrix.os }}
         with:
@@ -1279,11 +1279,11 @@ jobs:
             writeFileSync(join(directory, 'runner-admission.json'), JSON.stringify(receipt, null, 2) + '\n');
             core.info(JSON.stringify(receipt));
             core.setOutput('admitted', String(admitted));
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         if: steps.admission.outputs.admitted == 'true'
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         if: steps.admission.outputs.admitted == 'true'
         with:
           node-version: 24
@@ -1307,7 +1307,7 @@ jobs:
           node scripts/automatic-update-platform-baseline.mjs --source latest --layout installer --state fresh --method installer --first-install true --installer-setup true --published-installer "$RUNNER_TEMP/fixed-installer.sh" --installer-source b4f30205f54cd468bf1914095b09974a5f17dee6 --installer-sha256 c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           node scripts/automatic-update-platform-baseline.mjs --source 0.164.0 --layout installer --state configured --method installer --installer-setup true --published-installer "$RUNNER_TEMP/fixed-installer.sh" --installer-source b4f30205f54cd468bf1914095b09974a5f17dee6 --installer-sha256 c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           exit "$failed"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: installer-proof-${{ matrix.os }}
@@ -1329,10 +1329,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Prepare disposable Linux user manager
@@ -1374,7 +1374,7 @@ jobs:
             node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state daemon --method scheduler "${scheduler_expectation[@]}" --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           fi
           exit "$failed"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: priority-${{ matrix.os }}-${{ matrix.source }}
@@ -1389,13 +1389,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: desktop-release-Linux-X64
           run-id: 43456519342
@@ -1415,7 +1415,7 @@ jobs:
       - name: Real released desktop daemon beside separate CLI
         shell: bash
         run: node scripts/automatic-update-platform-baseline.mjs --source 0.164.0 --layout npm --state daemon --method self --desktop-runtime "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" --desktop-node "$RUNNER_TEMP/released-desktop/usr/bin/cotal-node" --output "$RUNNER_TEMP/upgrade-evidence"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: desktop-beside-cli-linux
@@ -1442,16 +1442,16 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
       - run: pnpm --filter @cotal-ai/seat build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: upgrade-seat-${{ matrix.arch }}
           path: packages/seat/build/Release/linux-${{ matrix.arch }}/peercred.node
@@ -1462,16 +1462,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
       - run: pnpm --workspace-concurrency 3 build
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: ${{ runner.temp }}/native-inputs
       - name: Assemble the source-matched native closure
@@ -1493,13 +1493,13 @@ jobs:
         run: |
           node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidate-B" --version B
           node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidate-A" --version A
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: upgrade-candidate-B
           path: ${{ runner.temp }}/candidate-B
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: upgrade-candidate-A
@@ -1517,21 +1517,21 @@ jobs:
         source: ['0.164.0']
         layout: [npm]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: upgrade-candidate-B
           path: ${{ runner.temp }}/candidate-B
       - name: Candidate B synthetic registry, real native processes
         run: node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate-B" --direction B --source '${{ matrix.source }}' --layout '${{ matrix.layout }}' --state fresh --method self --output "$RUNNER_TEMP/upgrade-evidence"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: candidate-B-${{ matrix.source }}-${{ matrix.layout }}
@@ -1553,15 +1553,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: upgrade-candidate-B
           path: ${{ runner.temp }}/candidate-B
@@ -1576,7 +1576,7 @@ jobs:
             fi
           done
           exit "$failed"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: candidate-B-expanded-${{ matrix.os }}-${{ matrix.source }}-${{ matrix.layout }}
@@ -1618,15 +1618,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: upgrade-candidate-${{ matrix.direction }}
           path: ${{ runner.temp }}/candidate
@@ -1641,7 +1641,7 @@ jobs:
       - name: Candidate native daemon, synthetic registry and real supervisor
         shell: bash
         run: node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate" --direction '${{ matrix.direction }}' --candidate-installer "$RUNNER_TEMP/candidate/installer.sh" --source '${{ matrix.source }}' --layout '${{ matrix.layout }}' --state daemon --method '${{ matrix.method }}' --output "$RUNNER_TEMP/upgrade-evidence"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: candidate-native-${{ matrix.direction }}-${{ matrix.os }}-${{ matrix.source }}-${{ matrix.layout }}-${{ matrix.method }}
@@ -1653,21 +1653,21 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: upgrade-candidate-A
           path: ${{ runner.temp }}/candidate-A
       - name: Candidate A below-latest source, public target with installed-version overlay metadata
         run: node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate-A" --direction A --source latest --layout npm --state fresh --method self --output "$RUNNER_TEMP/upgrade-evidence"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: candidate-A-linux
@@ -1689,10 +1689,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Published self-update states
@@ -1712,7 +1712,7 @@ jobs:
             node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout installer --state "$state" --method installer --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           done
           exit "$failed"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: published-${{ matrix.os }}-${{ matrix.source }}-${{ matrix.layout }}
@@ -1737,10 +1737,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Prepare disposable Linux user manager
@@ -1758,7 +1758,7 @@ jobs:
       - name: Published automatic daemon state
         shell: bash
         run: node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout '${{ matrix.layout }}' --state daemon --method '${{ matrix.method }}' --output "$RUNNER_TEMP/upgrade-evidence"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: published-native-${{ matrix.os }}-${{ matrix.source }}-${{ matrix.layout }}-${{ matrix.method }}
