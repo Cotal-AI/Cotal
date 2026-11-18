@@ -214,7 +214,7 @@ export function bearerInboxConnId(bearer: string, nonce = `ibx${randomUUID().rep
  *
  *  USER MODE (`bearer` + `sentinelCreds`) mirrors the endpoint's callout-shaped connect: the
  *  sentinel creds land the connection in the callout account, the bearer rides `auth_token`, and
- *  {@link bearerInboxConnId} goes out as the connect `name` — the callout scopes `_INBOX_<connId>.>`
+ *  {@link bearerInboxConnId} goes out as the connect `name`. The callout scopes `_INBOX_<connId>.>`
  *  from it (the client cannot know its nkey pre-connect). Open mode (no auth) connects bare. */
 export function standaloneConnectOpts(auth: StandaloneAuth): Record<string, unknown> {
   // The `= {}` default is deliberately GONE. It was the omission hole: it let a caller build

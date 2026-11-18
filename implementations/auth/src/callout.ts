@@ -237,7 +237,7 @@ export interface StartAuthCalloutOpts {
   expectedServerIds?: string[];
   /** Permission builder for a validated principal (the flip feeds core's `permissionsFor` via a thin
    *  `@cotal-ai/auth` adapter). `connId` is the connection `name` (`req.connect_opts.name`), NOT the
-   *  NATS-minted `req.user_nkey` — the builder scopes the private reply inbox `_INBOX_<connId>.>` on it.
+   *  NATS-minted `req.user_nkey`. The builder scopes the private reply inbox `_INBOX_<connId>.>` on it.
    *  The callout has already checked it with core's `assertUserInboxConnId`: it is
    *  `<owner>-<actor>-<nonce>` for this bearer's own principal and carries no subject metacharacter.
    *  `readerId` is core's `calloutReaderId` of this connection, which keys the observer and admin

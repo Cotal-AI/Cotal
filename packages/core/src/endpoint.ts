@@ -990,7 +990,7 @@ export class CotalEndpoint extends EventEmitter {
   /** Consecutive failed rebuilds, driving {@link nextRetryDelayMs}. Reset on every success. */
   private retryAttempt = 0;
 
-  /** The connection's inbox id — dev: the creds' identity; user mode: the {@link userInboxConnId}
+  /** The connection's inbox id. Dev: the creds' identity; user mode: the {@link userInboxConnId}
    *  this endpoint names its connections with. Distinct from the {@link owner}+{@link actor}
    *  principal: it names the CONNECTION (the broker-authenticated user), and scopes the private reply inbox (`_INBOX_<connId>`) + the credId
    *  equality check. The principal (owner+actor) is what the WIRE grammar and every per-agent key use. */
