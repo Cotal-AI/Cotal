@@ -23,7 +23,7 @@ import {
   observePrincipalLivenessWithCreds, parseEndpointGate, principalKey,
   serverConfig, serveIssuanceGateKv, setupSpaceStreams, standaloneConnectOpts,
   type ControlReply, type EpServeLedgerRow,
-} from "@cotal-ai/core";
+} from "../../../packages/core/dist/index.js";
 import { authDir, loadManagerInstanceIdentity, recordMesh, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
