@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
-import { CotalEndpoint, createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, provisionAgentDurables, serverConfig, setupSpaceStreams, isReachable, acquireLock, localConsumerClaimPath, dmStream, dmDurable } from "@cotal-ai/core";
+import { CotalEndpoint, createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, provisionAgentDurables, serverConfig, setupSpaceStreams, isReachable, acquireLock, localConsumerClaimPath, dmStream, dmDurable, CONTROL_PROTOCOL_VERSION } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal, freePort, emitSentinel } from "@cotal-ai/smoke-kit";
@@ -57,8 +57,8 @@ try {
  const unknown=join(dir,"unknown.lock");writeFileSync(unknown,JSON.stringify({pid:process.pid,nonce:"unknown",ts:Date.now()}));
  assert.throws(()=>acquireLock(unknown,{waitMs:0}));check("live owner without start token is never reclaimed",true);
  const stale=join(dir,"stale.lock"),first=acquireLock(stale);rmSync(stale);const second=acquireLock(stale);first.release();check("stale release cannot remove successor claim",existsSync(stale));second.release();
- const dummy=new MeshAgent({...config,lifecycleUid:mintLifecycleUid()});const socket=join(dir,"control.sock");control=startControlServer(dummy,{path:socket,token:"first"},async()=>({}));await once(control,"listening");const before=readFileSync(claimPath,"utf8");
- contender=startControlServer(dummy,{path:socket,token:"second"},async()=>({}));let bindError: NodeJS.ErrnoException | undefined;contender.on("error",e=>{bindError=e;});await until(()=>bindError!==undefined||contender!.listening);check("second control listener cannot replace live owner",bindError?.code==="EADDRINUSE"&&control.listening&&readFileSync(claimPath,"utf8")===before);
+ const dummy=new MeshAgent({...config,lifecycleUid:mintLifecycleUid()});const socket=join(dir,"control.sock");control=startControlServer(dummy,{path:socket,token:"first",version:CONTROL_PROTOCOL_VERSION},async()=>({}));await once(control,"listening");const before=readFileSync(claimPath,"utf8");
+ contender=startControlServer(dummy,{path:socket,token:"second",version:CONTROL_PROTOCOL_VERSION},async()=>({}));let bindError: NodeJS.ErrnoException | undefined;contender.on("error",e=>{bindError=e;});await until(()=>bindError!==undefined||contender!.listening);check("second control listener cannot replace live owner",bindError?.code==="EADDRINUSE"&&control.listening&&readFileSync(claimPath,"utf8")===before);
  await stop(replacement);check("clean consumer stop releases its claim",!existsSync(claimPath));
 } catch(error){failed++;console.error(error);}
 finally {

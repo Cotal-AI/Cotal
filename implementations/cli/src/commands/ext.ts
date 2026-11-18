@@ -48,6 +48,16 @@ function atThisVersion(spec: string): string {
   return /^@cotal-ai\/[^/@]+$/.test(spec) ? `${spec}@${cliVersion()}` : spec;
 }
 
+export function validateExtArguments(args: ParsedArgs): void {
+  const [sub] = args.positionals;
+  const v = args.values as FlagValues<typeof extFlags>;
+  presentationOf(v);
+  if (sub !== "seed" && (v.repair || v.reset || v.force)) {
+    const flag = v.repair ? "--repair" : v.reset ? "--reset" : "--force";
+    throw usage(`${flag} belongs to \`cotal ext seed\``);
+  }
+}
+
 /**
  * `cotal ext` — operator-installed extensions. `add` installs an npm package into the
  * cotal-owned prefix (never the user's project), imports it ONCE so it self-registers into the
@@ -65,6 +75,7 @@ function atThisVersion(spec: string): string {
  */
 
 export async function ext(args: ParsedArgs): Promise<void> {
+  validateExtArguments(args);
   const [sub, ...rest] = args.positionals;
   const v = args.values as FlagValues<typeof extFlags>;
   // Bare `cotal ext` lists the inventory: it is the most natural probe for "what's installed / where",

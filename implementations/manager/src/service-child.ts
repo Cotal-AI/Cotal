@@ -90,10 +90,10 @@ export function managerServiceStopScope(observation: ManagerServiceObservation, 
     ...(impact.stopping ? ["stop-in-progress"] : []),
     ...Object.entries(pending).filter(([, count]) => count !== 0).map(([name]) => name),
   ];
-  if (blockers.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", impact.agentScope !== "manager" ? "the native manager returned owner-filtered impact; no whole-manager stop policy was accepted" : "the native manager did not meet its full-scope quiescence checks; no stop policy was accepted", {
+  if (blockers.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", impact.agentScope !== "manager" ? "the native manager returned owner-filtered impact; no whole-manager stop policy was accepted" : `the native manager has pending blockers (${blockers.map((name) => name in pending ? `${name}: ${pending[name as keyof typeof pending]}` : name).join(", ")}); no stop policy was accepted`, {
     target: { managerInstanceId: observation.registration.instanceId },
     native: { detail: { phase: "manager-stop-preflight", blockers, agentScope: impact.agentScope, maintenance: impact.maintenance, resumeRequired: impact.resumeRequired, stopping: impact.stopping, pending } },
-    remedy: impact.agentScope !== "manager" ? "ask the stack operator to stop this shared manager, or use an authorized admin-scoped caller; no wider caller was substituted" : "inspect the reported blockers and this manager's native status before another stop; no stop was submitted",
+    remedy: impact.agentScope !== "manager" ? "ask the stack operator to stop this shared manager, or use an authorized admin-scoped caller; no wider caller was substituted" : "inspect the agents with `cotal ps`; wait for the pending work to finish, then run the stop again; no stop was submitted",
   });
   const agents = impact.agents.map((row) => ({ ...row })).sort((a, b) => {
     const first = JSON.stringify([a.name, a.id, a.lifecycleUid]), second = JSON.stringify([b.name, b.id, b.lifecycleUid]);

@@ -17,6 +17,11 @@ For another application, see [Connectors](connectors.mdx).
 Use one connection path per conversation. The Desktop app's Code tab and its ordinary chat
 are different hosts.
 
+If a Cotal server on this computer can join the intended space, use it unless you ask for hosted
+access. When a session has both the `cotal` plugin server and the Desktop chat server, use the
+plugin for a signed-in space. Use the hosted connector only when no local server can join that
+space, or when you choose it explicitly.
+
 | Where you use Claude | Connection path | How the space is chosen |
 | --- | --- | --- |
 | A Code session started by Cotal | Keep the connection supplied by `cotal spawn` | The spawn's target space |

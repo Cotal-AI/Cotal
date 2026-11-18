@@ -526,9 +526,8 @@ An opaque low-level auth string alone does not establish receiver-side attenuati
 static-registry signature inspection also does not establish presenter binding or use authority,
 and is not a substitute for that gate.
 
-`endpoint describe --refresh` refuses as unsupported and sends nothing. This CLI keeps no resolved
-contract between calls: each describe makes a fresh describe request and fetches the contracts
-again, so there is no cache for the flag to bypass.
+`endpoint describe --refresh` performs the same fresh native resolution and contract fetch as bare
+`endpoint describe`, because this CLI keeps no resolved contract cache between calls.
 
 A saved-reference or paired-file invocation uses the described instance and epoch without bind-repair
 to a different handle. A pre-effect bind refusal remains a refusal, not permission to choose another

@@ -24,9 +24,9 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   for (const version of [previous, target]) {
     writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
     const contention = scenario === 'concurrent'
-      ? `if (process.argv.includes('update')) { const fs = require('node:fs'); const deadline = Date.now() + 30000; while (!fs.existsSync(${JSON.stringify(join(root, 'waiter-observed'))})) { if (Date.now() >= deadline) throw new Error('competing updater did not reach the reservation'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } }\n`
+      ? `if (process.argv.includes('update')) { const deadline = Date.now() + 30000; while (!existsSync(${JSON.stringify(join(root, 'waiter-observed'))})) { if (Date.now() >= deadline) throw new Error('competing updater did not reach the reservation'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } }\n`
       : '';
-    writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\n${contention}console.log("fixture reconciled");\n`, { mode: 0o755 });
+    writeFileSync(join(root, 'payload/package/dist/cotal.js'), `#!/usr/bin/env node\nimport { existsSync, mkdtempSync, rmSync } from "node:fs";\nimport { tmpdir } from "node:os";\nimport { join } from "node:path";\n${contention}const scratch = mkdtempSync(join(tmpdir(), "reconcile-child-"));\nrmSync(scratch, { recursive: true });\nconsole.log("fixture reconciled with writable temporary directory");\n`, { mode: 0o755 });
     const packed = spawnSync('tar', ['-czf', join(root, `${version}.tgz`), '-C', join(root, 'payload'), 'package']);
     assert.equal(packed.status, 0);
     archives.set(version, readFileSync(join(root, `${version}.tgz`)));
@@ -106,6 +106,9 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       await new Promise(done => closed.close(done));
       writeFileSync(join(home, '.npmrc'), `@cotal-ai:registry=http://127.0.0.1:${port}/\n`);
     }
+    // The real npm archive reads, global install and target reconcile child must
+    // receive writable scratch even when the caller's TMPDIR cannot be used.
+    if (scenario === 'reset') env.TMPDIR = join(root, 'missing-temp');
     const configuredCache = join(root, 'configured-cache');
     if (scenario === 'cache') {
       delete env.npm_config_cache;
@@ -204,6 +207,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       } else if (scenario === 'reset') {
         assert.equal(selected, target);
         assert.match(update.output, /installed globally and reconciled/);
+        assert.match(update.output, /fixture reconciled with writable temporary directory/);
+        assert.equal(existsSync(env.TMPDIR), false, 'update does not create the unavailable caller TMPDIR');
         assert(missing >= 2 && elapsedMs < 60000, `bounded transient retry: ${elapsedMs}`);
       } else if (scenario === 'arrives') {
         assert.equal(selected, target);

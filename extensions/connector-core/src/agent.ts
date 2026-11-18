@@ -22,12 +22,7 @@ import {
   EpEnvelopeError,
   isPublishPermissionDenied,
   unansweredRequest,
-  undeclaredArg,
-  undeclaredArgInstance,
   EP_UNANSWERED,
-  controlReplyFrom,
-  controlReplyFromThrown,
-  runAgentBearer,
   type EpAttributedReply,
   type RegistryEndpointsInput,
   type RegistryEndpointsOutput,
@@ -46,7 +41,6 @@ import {
   type AttentionMode,
   type ChannelMode,
   type CotalMessage,
-  type GoalResultFact,
   type InlinePersona,
   type PersonaEndpoint,
   turnNoticeFilter,
@@ -57,8 +51,7 @@ import { checkEventStartup, EventStateConflictError } from "./event-startup.js";
 import { TURN_PULL_RETRY_MS } from "./turn-poll.js";
 import { ONCE_HANDOFF_MS, claimOnceHandoff, confirmOnceHandoff, endOnceHandoff, exitOnceSeat, onOnceHandoffTimeout, onceHandoffState, sealOnceHandoff, stopOnceHandoffTimer } from "./once.js";
 import { attributionSafe } from "./framing.js";
-import { invokeUserManager, withUserManagerListing } from "./manager-call.js";
-import { CONNECTOR_VERSION } from "./version.generated.js";
+import { AgentManagerCalls, invokeUserManager } from "./manager-call.js";
 import { AgentInbox, deliveryNoticeOf, type InboxItem, type InboxSnapshot, type InboxScope, type ExactDrainResult, type RecallMark } from "./agent-inbox.js";
 export { afterRecallMark, MAX_INBOX } from "./agent-inbox.js";
 export type { InboxItem, InboxSnapshot, InboxScope, ExactDrainResult, RecallMark, DeliveryNotice } from "./agent-inbox.js";
@@ -72,9 +65,6 @@ export type { AttentionMode, ChannelMode };
  *  delivery margin. This floor still outlives the manager's generic 30s default and protects
  *  older responders whose acceptance predates that field. */
 export const SPAWN_TIMEOUT_MS = 40_000;
-/** A manager-call bearer is reused only while more than this remains before its `exp`, so a
- *  control connection opened with it outlives the longest call it carries ({@link SPAWN_TIMEOUT_MS}). */
-const MANAGER_BEARER_MARGIN_MS = 120_000;
 
 /** Grace for a mesh op issued while the link is still coming up. `start()` deliberately returns
  *  immediately so the connector's MCP surface boots while the broker is absent — which means a
@@ -191,13 +181,6 @@ function settledTurnError(goalId: string, t: { deadlineAt?: number; once?: unkno
   return `turn "${goalId}" was already settled ${t.once !== undefined ? "by its manager" : "by the run"}${deadline}, so this yield was not recorded`;
 }
 
-/** Order two `x.y.z` releases by their numbers, ignoring a prerelease or build suffix. */
-function compareRelease(a: string, b: string): number {
-  const [x, y] = [a, b].map((v) => v.split(/[-+]/)[0]!.split(".").map(Number));
-  for (let i = 0; i < 3; i++) if (x![i] !== y![i]) return (x![i] ?? 0) - (y![i] ?? 0);
-  return 0;
-}
-
 /** One relayed run turn this seat has pulled and not yet yielded. `surfaced` flips when the
  *  payload has been handed to the host session as context — only a surfaced turn auto-yields
  *  `done` at the turn boundary (an unseen payload was never worked on). */
@@ -303,28 +286,6 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
     + `\nAnswer with: \`cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'\``;
 }
 
-/** A bearer JWT's `exp` in milliseconds, or undefined when it names none. */
-function bearerExpiryMs(token: string): number | undefined {
-  try {
-    const exp = (JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as { exp?: unknown }).exp;
-    return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** `p`, or the signal's reason as soon as it aborts. A shared exchange keeps running for the
- *  other callers when one of them gives up. */
-function abortable<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return p;
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    p.then((v) => { signal.removeEventListener("abort", onAbort); resolve(v); }, (e) => { signal.removeEventListener("abort", onAbort); reject(e); });
-  });
-}
-
 /**
  * A thin, mesh-native agent: a {@link CotalEndpoint} plus a buffered inbox and
  * name-based peer resolution. This is the shared core behind the MCP server
@@ -346,6 +307,7 @@ export class MeshAgent extends EventEmitter {
   readonly ep: CotalEndpoint;
   readonly config: AgentConfig;
   private readonly launchEnv?: NodeJS.ProcessEnv;
+  private readonly managerCalls: AgentManagerCalls;
   private readonly options: MeshAgentOptions;
   private readonly inboxState = new AgentInbox({
     endpoint: () => this.ep,
@@ -433,6 +395,12 @@ export class MeshAgent extends EventEmitter {
     this.config = config;
     this.options = options;
     this.launchEnv = env === undefined ? undefined : { ...env };
+    this.managerCalls = new AgentManagerCalls(
+      () => this.config,
+      () => this.ep,
+      () => this.launchEnv,
+      (...args) => this.invokeEndpoint(...args),
+    );
     // Seed per-channel attention from the operator's file default (one-way: the runtime never writes
     // back — the persona file is a shared template). muted/quiet are validated disjoint at file load.
     this.inboxState.seedChannelModes(config);
@@ -873,7 +841,7 @@ export class MeshAgent extends EventEmitter {
     this._stopping = true;
     this.emit("stopping");
     this.inboxState.stop();
-    this.managerBearers.clear();
+    this.managerCalls.clear();
     if (this.turnRetryTimer !== undefined) {
       clearTimeout(this.turnRetryTimer);
       this.turnRetryTimer = undefined;
@@ -1655,44 +1623,16 @@ export class MeshAgent extends EventEmitter {
     | { unbound: true }
     | { unbound?: false; reply: EpAttributedReply; page?: RegistryEndpointsOutput }
   > {
-    const user = this.config.userAuth;
-    if (!user) return { none: "manager calls ride this session's own credential on this mesh, so the session view covers them" };
-    if (!user.bearerCmd) return { none: "this session's bearer comes from its host, which issues no manager-call bearer, so the manager view has no credential" };
-    const managerInstanceId = instance ?? this.config.managerInstanceId;
-    const token = await this.managerCallBearer([...user.bearerCmd, "--manager-call", ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : [])]).catch((e: unknown) => {
-      throw e instanceof Error ? new Error(e.message.replace("--manager-instance <instanceId>", "the instance argument")) : e;
-    });
-    const exp = bearerExpiryMs(token);
-    return withUserManagerListing({ ...this.config, managerInstanceId }, token, exp === undefined ? undefined : exp / 1000, async (nc, listing) =>
-      listing === undefined ? { unbound: true as const } : this.ep.listEndpointsOver(nc, listing, input));
+    return this.managerCalls.listManagerEndpoints(input, instance);
   }
 
-  /** Manager-call bearers this session holds, by the exact bearer argv (so by selected manager;
-   *  the space, owner, actor and lifecycle are this session's own). One exchange serves every call
-   *  until {@link MANAGER_BEARER_MARGIN_MS} before the bearer expires, and concurrent calls share it.
-   *  Each call still presents the bearer to the broker and checks its binding, so this keeps no
-   *  authorization decision; any failed call drops the entry, so the next one exchanges afresh. */
-  private managerBearers = new Map<string, { flight: Promise<string>; refreshAt?: number }>();
-
   private managerCallBearer(argv: string[], signal?: AbortSignal): Promise<string> {
-    const key = JSON.stringify(argv);
-    const held = this.managerBearers.get(key);
-    if (held && (held.refreshAt === undefined || Date.now() < held.refreshAt)) return abortable(held.flight, signal);
-    const entry: { flight: Promise<string>; refreshAt?: number } = { flight: this.execBearerCmd(argv) };
-    this.managerBearers.set(key, entry);
-    entry.flight.then((token) => {
-      const exp = bearerExpiryMs(token);
-      if (exp === undefined || exp - MANAGER_BEARER_MARGIN_MS <= Date.now()) { if (this.managerBearers.get(key) === entry) this.managerBearers.delete(key); }
-      else entry.refreshAt = exp - MANAGER_BEARER_MARGIN_MS;
-    }, () => { if (this.managerBearers.get(key) === entry) this.managerBearers.delete(key); });
-    return abortable(entry.flight, signal);
+    return this.managerCalls.managerCallBearer(argv, signal);
   }
 
   /** Run the spawner's bearer command with this session's environment on every credential path. */
   private async execBearerCmd(argv: string[], signal?: AbortSignal, timeoutMs?: number): Promise<string> {
-    const bearer = await runAgentBearer(argv, { env: this.launchEnv, signal, timeoutMs });
-    if (!bearer) throw new Error(`bearer command printed nothing (${argv[0]})`);
-    return bearer;
+    return this.managerCalls.execBearerCmd(argv, signal, timeoutMs);
   }
 
   /** Named seat reads use presence to select a manager, never the class queue. Presence confers
@@ -1737,7 +1677,7 @@ export class MeshAgent extends EventEmitter {
             throw new EpEnvelopeError("permission-denied", e.message, undefined, "not-executed");
           throw e;
         });
-        dropBearer = () => { this.managerBearers.delete(JSON.stringify(bearerArgv)); };
+        dropBearer = () => { this.managerCalls.dropBearer(bearerArgv); };
         const { instanceId: _instanceId, classInstanceId: _classInstanceId, follow: _follow, ...invokeOpts } = opts;
         reply = await invokeUserManager({ ...this.config, managerInstanceId: ownerInstance }, bearer, command, args, invokeOpts);
       } else {
@@ -1769,123 +1709,7 @@ export class MeshAgent extends EventEmitter {
     args: Record<string, unknown> | undefined,
     opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; instanceId?: string } = {},
   ): Promise<ControlReply & { instanceId?: string; outcome?: "executed" | "not-executed" | "unknown" }> {
-    const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
-    let r: EpAttributedReply;
-    let dropBearer: (() => void) | undefined;
-    try {
-      const input = clean && Object.keys(clean).length ? clean : undefined;
-      if (this.config.userAuth) {
-        const bearerCmd = this.config.userAuth.bearerCmd;
-        if (!bearerCmd)
-          return { ok: false, error: `${command}: this agent's bearer comes from its host, which issues no manager-call bearer, so manager operations are unavailable` };
-        const managerInstanceId = opts.instanceId ?? this.config.managerInstanceId;
-        const { instanceId: _instanceId, follow, ...invokeOpts } = opts;
-        // An ambiguity refusal names the bearer command's own selector. This caller passes it from
-        // the tool's `instance` argument, so the tool's caller is told that argument instead.
-        const bearerArgv = [...bearerCmd, "--manager-call", ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : [])];
-        const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal).catch((e: unknown) => {
-          throw e instanceof Error ? new Error(e.message.replace("--manager-instance <instanceId>", "the instance argument")) : e;
-        });
-        dropBearer = () => { this.managerBearers.delete(JSON.stringify(bearerArgv)); };
-        // Subscribe before submission on the renewing main connection. A long accepted launch
-        // must not inherit the short-lived control credential's expiry.
-        r = await invokeUserManager({ ...this.config, managerInstanceId }, bearer, command, input, {
-          ...invokeOpts,
-          follow: follow ? (submit, prepare) => this.ep.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, submit, opts.deadlineMs, {
-            prepare,
-            reconcile: async (goalId, attributed, context) => {
-              const instanceId = attributed.responder?.instanceId;
-              if (!instanceId) throw new Error("accepted goal has no broker-attributed manager instance");
-              const bearer = (signal?: AbortSignal) => this.execBearerCmd([
-                ...bearerCmd,
-                "--manager-call", "--manager-instance", instanceId,
-              ], signal, Math.min(30_000, context.deadlineMs));
-              // Validate the renewed bearer against the accepting identity, not mutable session state.
-              const config = {
-                ...this.config, managerInstanceId: instanceId, lifecycleUid: context.caller.uid,
-                userAuth: { ...this.config.userAuth!, owner: context.caller.owner, actor: context.caller.actor },
-              };
-              const queryRes = await invokeUserManager(config, bearer, "goal-result", { goalId }, {
-                signal: context.signal, deadlineMs: Math.min(invokeOpts.deadlineMs ?? 10_000, context.deadlineMs),
-              });
-              if (queryRes.reply.ok !== true) throw new Error(queryRes.reply.error?.message ?? "goal-result query refused");
-              return queryRes.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
-            },
-          }) : undefined,
-        });
-      } else {
-        // Static launches keep their class-only grants. Resolve the launching manager's
-        // attributed describe, then use the existing bind fence to refuse sibling deliveries
-        // before effects. An explicit instance retains its existing route and grant rules.
-        const launchLocal = command === "stop" || command === "spawn" || command === "define-persona";
-        const classInstanceId = this.config.creds && launchLocal && opts.instanceId === undefined
-          ? this.config.managerInstanceId : undefined;
-        r = await this.invokeEndpoint(BASELINE_LIFECYCLE_ENDPOINT, command, input, {
-          ...opts, ...(classInstanceId !== undefined ? { classInstanceId } : {}),
-        });
-      }
-    } catch (e) {
-      // The verdict "nobody answered" comes from core's answer-provenance marker, NEVER from the
-      // catalog code. `deadline-exceeded` has two producers that call for opposite responses: the
-      // describe drew no reply at all (nothing ran, and the likely causes are a manager down or a
-      // capability this credential does not hold), or a goal was ACCEPTED and its terminal did not
-      // arrive in time - where a responder took the request and the effect may already have landed.
-      // Keying on the code told every caller the first story for both, which is the peer-side twin
-      // of the blanket "no manager reachable" the CLI used to print, and it is the more dangerous
-      // half: this surface is read by agents, and "no responder answered" invites the retry that
-      // duplicates a spawn. Only the marker distinguishes them, and core sets it exactly where it
-      // observed silence.
-      dropBearer?.();
-      if (e instanceof EpEnvelopeError) {
-        const submitted = command === "spawn" && e.outcome === "unknown"
-          ? e.details?.find(d => d.kind === EP_UNANSWERED && d.endpoint === BASELINE_LIFECYCLE_ENDPOINT && d.command === command && typeof d.requestId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(d.requestId))
-          : undefined;
-        if (submitted) return {
-          ...controlReplyFromThrown(e, `${e.code}: ${e.message}`),
-          outcome: "unknown",
-          data: { goalId: submitted.requestId, submissionUnknown: true },
-        };
-        const undeclared = undeclaredArg(e);
-        if (undeclared !== undefined && command !== "status")
-          return { ...controlReplyFromThrown(e, await this.undeclaredArgMessage(command, e, undeclared)), ...(e.outcome ? { outcome: e.outcome } : {}) };
-        const unknownDefinition = command === "define-persona" && e.outcome !== "not-executed" &&
-          e.code === "deadline-exceeded" && e.details?.some(d => d.kind === EP_UNANSWERED && d.command === command);
-        const unknownYield = command === "turn-yield" && e.code === "deadline-exceeded" && e.outcome === "unknown" &&
-          e.details?.some(d => d.kind === EP_UNANSWERED && d.endpoint === BASELINE_LIFECYCLE_ENDPOINT && d.command === command);
-        const message = unknownYield
-          ? `${e.code}: ${e.message}. The yield may already have been recorded. After reconnecting, retry cotal_yield with the same turn id and intended status. An already-settled reply confirms the turn is terminal, not which attempt settled it. A successful reply records the yield if it is still active. This retry is not a read-only check.`
-          : unknownDefinition
-          ? `${e.code}: ${e.message}`
-          : unansweredRequest(e)
-          ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
-          : `${e.code}: ${e.message}`;
-        return { ...controlReplyFromThrown(e, message), ...(e.outcome ? { outcome: e.outcome } : {}) };
-      }
-      return { ok: false, error: (e as Error).message };
-    }
-    if (r.reply.ok !== true) dropBearer?.();
-    return {
-      ...controlReplyFrom(r.reply),
-      instanceId: r.responder?.instanceId,
-      ...(r.reply.error?.outcome ? { outcome: r.reply.error.outcome } : {}),
-    };
-  }
-
-  /** The refusal of an argument the manager's contract does not declare. This connector built the
-   *  args from its own release's schema, so the manager runs a different release. The version the
-   *  bound manager reports says which side to update; an unbound request names no manager to ask. */
-  private async undeclaredArgMessage(command: string, e: EpEnvelopeError, key: string): Promise<string> {
-    const head = `${e.code}: ${e.message}. The manager's ${command} does not take "${key}", which this connector at Cotal ${CONNECTOR_VERSION} sends`;
-    const instanceId = undeclaredArgInstance(e);
-    const answer = instanceId === undefined ? undefined : await this.managerInvoke("status", undefined, { instanceId }).catch(() => undefined);
-    const reported = answer?.ok === true && answer.instanceId === instanceId ? (answer.data as { version?: unknown } | undefined)?.version : undefined;
-    const manager = typeof reported === "string" && /^\d+\.\d+\.\d+/.test(reported) ? reported : undefined;
-    const updateManager = `on the manager's host run \`cotal update --self\`, then \`cotal manager restart\`, or, if you set "${key}", call again without it`;
-    if (manager === undefined) return `${head}, so the manager most likely runs an older Cotal: ${updateManager}`;
-    const order = compareRelease(CONNECTOR_VERSION, manager);
-    if (order > 0) return `${head}. The manager runs Cotal ${manager}, the older side: ${updateManager}`;
-    if (order < 0) return `${head}. The manager runs Cotal ${manager}, so this connector is the older side: run \`cotal update --self\` here and start a new session`;
-    return `${head}. The manager also reports Cotal ${manager}, so one side is another build of that version: reinstall that side`;
+    return this.managerCalls.managerInvoke(command, args, opts);
   }
 
   /** Resolve a managed agent's CURRENT principal triple (owner-mode targets are (owner, actor,

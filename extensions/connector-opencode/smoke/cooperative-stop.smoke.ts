@@ -9,7 +9,7 @@
  * the sequence below is what a healthy run does rather than a guarantee the mechanism carries.
  * The real path, end to end:
  *
- *   parent sends {token,op:"shutdown"}  →  the plugin's startControlServer first-frame auth
+ *   parent runs the control exchange with op "shutdown"  →  the plugin's startControlServer
  *     →  onShutdown  →  agent.stop()  →  offline presence published  →  the plugin process exits 0.
  *
  * The plugin runs in a SUBPROCESS (cooperative-stop-probe.ts) because its cooperative shutdown ends in
@@ -20,7 +20,6 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { connect } from "node:net";
 import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,6 +35,7 @@ import {
   newIdentity,
   setupSpaceStreams,
 } from "@cotal-ai/core";
+import { CONTROL_PROTOCOL_VERSION, controlCall } from "@cotal-ai/core";
 import { controlFromEnv } from "@cotal-ai/connector-core";
 import { opencodeConnector } from "../src/extension.js";
 import { pickFreePort } from "./_free-port.js";
@@ -64,30 +64,9 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
   }
 };
 
-// Send the manager's cooperative-shutdown frame to a control endpoint and return its reply.
+// Send the manager's cooperative shutdown to a control endpoint and return its reply ("" when none).
 function sendShutdown(path: string, token: string): Promise<string> {
-  return new Promise((resolve) => {
-    const sock = connect(path);
-    let reply = "";
-    let done = false;
-    const finish = (): void => {
-      if (done) return;
-      done = true;
-      try {
-        sock.destroy();
-      } catch {
-        /* ignore */
-      }
-      resolve(reply);
-    };
-    sock.setEncoding("utf8");
-    sock.on("connect", () => sock.write(JSON.stringify({ token, op: "shutdown" }) + "\n"));
-    sock.on("data", (d) => (reply += d));
-    sock.on("end", finish);
-    sock.on("close", finish);
-    sock.on("error", finish);
-    setTimeout(finish, 2000);
-  });
+  return controlCall({ path, token, version: CONTROL_PROTOCOL_VERSION }, { op: "shutdown" }, { timeoutMs: 2000, maxReplyBytes: 1024 }).catch(() => "");
 }
 
 // THE SEATS DO NOT INHERIT THE OPERATOR'S OWN SESSION. Ambient COTAL_* and OPENCODE_* belong to
@@ -214,7 +193,7 @@ try {
     "buildLaunch attaches the control endpoint: socket path in the child env, token in the launch material",
     !!spec.control &&
       spec.env?.COTAL_CONTROL_SOCKET === spec.control.path &&
-      spec.env?.COTAL_CONTROL_TOKEN === undefined &&
+      spec.env?.COTAL_CONTROL_KEY === undefined &&
       controlFromEnv(spec.env)?.token === spec.control.token,
     spec.control,
   );

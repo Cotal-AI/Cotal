@@ -194,7 +194,9 @@ authentication, proxy and TLS settings. An unavailable dependency stops the upda
 is followed by another reconcile attempt, then a verified reinstall
 and reconcile of the previous version. A private same-filesystem snapshot restores the previous seed
 stamp, connectors and operator extensions before Managers start. Interrupted restoration resumes on
-the next update or daemon start. The snapshot is removed after successful update or restoration.
+the next update or daemon start. A snapshot captured in the original config folder restores that
+folder even if the new release has already selected a retained connector set. The snapshot is removed
+after successful update or restoration.
 Starting in 0.167.1, reconciliation rebuilds an unfinished retained connector copy when neither
 selection record names it and no live or unproven seat holder needs it. Cleanup removes empty
 unpublished update journals and abandoned installation staging, including owned read-only folders,
@@ -225,6 +227,7 @@ Update that app with its signed platform installer so the app, CLI and runtime s
 ```bash
 cotal update [--self] [--space <s>] [--server <url>] [--creds <path>] [--on <instance>]
 cotal update --check [-j|--json|--plain]
+cotal update (--auto | --notify) [off|on] [-j|--json|--plain]
 ```
 
 | Flag | Default | Meaning |
@@ -233,7 +236,7 @@ cotal update --check [-j|--json|--plain]
 | `--space`, `--server`, `--creds` | resolved mesh | Select the running manager whose continuity state is reported |
 | `--on` | none | Name the manager whose continuity state is reported, by the instance id `cotal ps` prints or, on a user-auth mesh, by its name or host. The reconcile the new binary runs inherits it. |
 | `--check` | off | Read version availability and recorded extensions without installation or restart; takes no mesh selector or `--self` |
-| `--json`, `-j`, `--plain` | off | Choose the finite check report; requires `--check` |
+| `--json`, `-j`, `--plain` | off | Choose the finite report for `--check`, `--auto` or `--notify` |
 
 On a user-auth mesh where you run several managers, the exchange refuses to pick one and names `--on`; pass this machine's manager.
 Update reads the recorded mesh inventory without refreshing account space catalogues. An expired
@@ -394,6 +397,16 @@ If a previous update replaced the CLI but left first-party extensions on older v
 `cotal --version` and `cotal update --check` report pending reconciliation and the repair command.
 Run `cotal update --self` again to reconcile the installed generation. The same agent-consent
 checks apply even when no newer CLI is available.
+
+An update run inside a copied or renamed controller-stack folder leaves that folder's records
+and processes untouched. It names the folder and its recorded root and reports that continuity
+was not checked there. Updating software does not adopt or restart the stack.
+
+Updates create private temporary scratch and pass it to npm and reconciliation children.
+If the configured temporary directory cannot be used, Cotal tries `/tmp` on POSIX, then your
+home directory. It removes its scratch afterwards without changing the configured directory's
+permissions. If none can hold private scratch, the command refuses before changing packages
+or connector state, rather than reporting an unconfirmed outcome.
 
 When a newer release exists, Cotal first downloads and integrity-checks its `cotal-ai` archive and the archives
 of its first-party runtime dependency closure through npm, using a temporary cache and no install
@@ -562,8 +575,11 @@ cotal join --space <s> --creds <file> --lifecycle-uid <uid> --channel general
 ```
 
 The owner hands over the file and the lifecycle UID that mint reports. `--allow-subscribe` grants
-reading; `--allow-publish` is optional when the session will not post. Use the intended channel in
-both commands. `--provision` alone grants no channel access. A missing read grant is refused with
+reading; `--allow-publish` is optional when the session will not post. A credential without publish
+permission joins read-only, and the prompt says so instead of inviting broadcasts. Attempting to
+post confirms that nothing was sent and names the mint with `--allow-publish` for that channel.
+Reading, roster commands and DMs remain available. Use the intended channel in both commands.
+`--provision` alone grants no channel access. A missing read grant is refused with
 `PERMISSION_DENIED` naming the channel and `--allow-subscribe`. A mismatched lifecycle UID is
 refused separately, naming the UID and the mint that reported its pair. Neither refusal points at
 the delivery daemon. A credential minted without `--provision` has no inbox there; with its paired

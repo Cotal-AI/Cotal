@@ -1,0 +1,2 @@
+# The control exchange: stand-in servers and clients, version refusals, the private socket directory.
+smoke:control-exchange
