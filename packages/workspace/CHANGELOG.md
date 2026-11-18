@@ -1,5 +1,17 @@
 # @cotal-ai/workspace
 
+## 0.166.3
+
+### Patch Changes
+
+- 5b96741: Name commands in backticks in the selection notes, the sign-in hints, the update refusals and the Manager restart line, so a wrapped line keeps each command whole. `cotal mcp --help` now shows examples.
+- ec9b5cb: A durable leave refused by an older hosted delivery service now asks the space's host to update instead of telling the participant to restart a local daemon.
+- de1995a: Accept npm 12 release metadata arrays so self-updates can verify and install available releases.
+- Updated dependencies [c1734e0]
+- Updated dependencies [3eeb06f]
+- Updated dependencies [ec9b5cb]
+  - @cotal-ai/core@0.166.3
+
 ## 0.166.2
 
 ### Patch Changes

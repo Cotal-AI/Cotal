@@ -1,5 +1,15 @@
 # @cotal-ai/core
 
+## 0.166.3
+
+### Patch Changes
+
+- c1734e0: Remove the broker's default 1,000-consumer ceiling so existing spaces can accept new agent lifecycles after a configuration reload.
+- 3eeb06f: Fail a channel or presence registry read when its connection closes before the broker answers.
+  
+  A `cotal_send` made while the space was shutting down could wait forever on that read: the close cancels the read's own five-second timeout without ending it. The read now fails at the close, so the send goes on to report that the mesh is not connected.
+- ec9b5cb: A durable leave refused by an older hosted delivery service now asks the space's host to update instead of telling the participant to restart a local daemon.
+
 ## 0.166.2
 
 No changes in this release.
