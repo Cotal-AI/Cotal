@@ -152,7 +152,9 @@ try {
     }
     check(`control: the owned broker at ${s} is ready`, ready, s);
   }
-  const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner");
+  // A provisioner credential lives five minutes by default and this one stays connected for the
+  // whole suite, which runs longer than that on a loaded machine.
+  const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner", { expiresInSeconds: 3600 });
   await setupSpaceStreams({ servers, space, creds: provisionerCreds });
   await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: { replay: true, replayWindow: "24h" }, ops: { replay: false } } } });
   await setupSpaceStreams({ servers: openServers, space: openSpace });
