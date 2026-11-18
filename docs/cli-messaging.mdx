@@ -84,11 +84,15 @@ closest role a present participant holds, or lists the roles present when none i
 that is not current within two seconds adds no warning. A message over the broker's message limit, envelope included, refuses
 `UNSUPPORTED` (exit 2) with its size and the limit, and nothing is sent. A file or stdin body is read
 only to one byte past that limit. A pipe or a device such as `/dev/zero` has no size to report, so
-its refusal names the limit alone. A channel post the broker
-refuses was not stored, so it refuses `PERMISSION_DENIED` (exit 2): the channel does not exist in
-the space or this identity may not post to it. The remedy lists the channels this identity may post
-to, read from the grant ledger as `cotal whoami` reads it, or with `--creds` from an agent file's own
-claims. When the ledger is on another machine it says so and lists the space's registered channels
+its refusal names the limit alone. A channel, direct or role publication the broker refuses for
+its publish ACL was not stored, so it refuses `PERMISSION_DENIED` (exit 2). For a channel, the
+channel does not exist in the space or this identity may not post to it. The remedy lists the
+channels this identity may post to, read from the grant ledger as `cotal whoami` reads it, or with
+`--creds` from the file's own claims. Observer and admin credentials report no channel post grant.
+With `--creds`, the remedy names the credential profile and a send without `--creds` to use the
+space's operator credential. A channel refusal also names `cotal auth mint` with `--allow-publish`
+for that channel. The command never switches credentials or retries on its own.
+When the ledger is on another machine it says so and lists the space's registered channels
 instead. A broker whose JetStream store holds more
 than its cap refuses every write with JetStream error 10023 and stores nothing, so `send` refuses
 `DEPENDENCY_UNAVAILABLE` (exit 2), naming the store and the `--max-file-store` cap this machine

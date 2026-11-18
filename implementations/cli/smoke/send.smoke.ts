@@ -59,7 +59,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 113;
+const EXPECTED = 169;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -117,12 +117,13 @@ const isolatedEnv: NodeJS.ProcessEnv = {
 const run = (
   args: string[],
   extra: NodeJS.ProcessEnv = {},
+  cwd = operatorShell,
 ): Promise<{ code: number; stdout: string; stderr: string }> =>
   new Promise((resolve) => {
     execFile(
       process.execPath,
       ["--import", tsx, cli, ...args],
-      { cwd: operatorShell, env: { ...isolatedEnv, ...extra } },
+      { cwd, env: { ...isolatedEnv, ...extra } },
       (err, stdout, stderr) =>
         resolve({ code: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr }),
     );
@@ -229,8 +230,61 @@ try {
     presence: (await inspectorJsm.streams.info(`KV_${presenceBucket(space)}`)).state.consumer_count,
     channels: (await inspectorJsm.streams.info(`KV_${channelBucket(space)}`)).state.consumer_count,
   });
-  const consumersBefore = await watchConsumers();
+  // Publish ACL refusals are certain non-storage for every destination, not lost acknowledgements.
+  // Mint through the CLI, then compare native stream frontiers before and after the refused sends.
+  const permissionReader = await connect({
+    servers, authenticator: credsAuthenticator(new TextEncoder().encode(bobCreds)), inboxPrefix: `_INBOX_${bobIdentity.id}`,
+  });
+  try {
+    const roleJsm = await jetstreamManager(permissionReader);
+    const frontiers = async () => Promise.all([
+      inspectorJsm.streams.info(chatStream(space)), inspectorJsm.streams.info(dmStream(space)), roleJsm.streams.info(taskStream(space)),
+    ]).then((streams) => streams.map((stream) => [stream.state.messages, stream.state.last_seq]));
+    const beforeDenied = await frontiers();
+    const profiles = [
+      { label: "observer", profile: "observer", flags: ["--profile", "observer"], modes: ["-c", "-t", "-r"], post: [] },
+      { label: "admin", profile: "admin", flags: ["--profile", "admin"], modes: ["-c", "-t", "-r"], post: [] },
+      { label: "readonly", profile: "agent", flags: ["--allow-subscribe", "general", "--no-persona"], modes: ["-c"], post: [] },
+      { label: "restricted", profile: "agent", flags: ["--allow-publish", "other", "--no-persona"], modes: ["-c"], post: ["other"] },
+    ];
+    for (const fixture of profiles) {
+      const file = join(tmp, `${fixture.label}.creds`);
+      const minted = await run(["auth", "mint", fixture.label, ...fixture.flags, "--space", space, "--out", file, "--json"], {}, meshRoot);
+      check(`${fixture.label}: auth mint succeeds`, minted.code === 0, minted);
+      const identity = await run(["whoami", "--creds", file, "--json"]);
+      const claims = JSON.parse(identity.stdout).result as { profile: string; post: string[] };
+      check(`${fixture.label}: whoami confirms the profile and channel post grant`, identity.code === 0 && claims.profile === fixture.profile && JSON.stringify(claims.post) === JSON.stringify(fixture.post), identity);
+      for (const mode of fixture.modes) {
+        const destination = mode === "-c" ? "general" : mode === "-t" ? "bob" : "reviewer";
+        for (const style of ["text", "json"]) {
+          const denied = await run(["send", mode, destination, "never stored", "--space", space, "--creds", file, ...(style === "json" ? ["--json"] : [])]);
+          const envelope = style === "json" ? JSON.parse(denied.stdout) as { outcome: string; error: { code: string; message: string; remedy: string }; target: { post?: string[] } } : undefined;
+          const report = envelope ? `${envelope.error.message}\n${envelope.error.remedy}` : denied.stderr;
+          check(`${fixture.label} ${mode} ${style}: publish denied is PERMISSION_DENIED, refused exit 2, with nothing stored`,
+            denied.code === 2 && (envelope ? envelope.outcome === "refused" && envelope.error.code === "PERMISSION_DENIED" : report.includes("PERMISSION_DENIED")) && report.includes("not stored") && !report.includes("may have been stored"), denied);
+          check(`${fixture.label} ${mode} ${style}: remedy names the credential profile and an explicit operator send`,
+            report.includes(fixture.profile) && report.includes(`cotal send ${mode} ${destination} \"<message>\" --space ${space}`) && report.includes("without --creds") && !report.includes("cannot read this identity's post grant"), denied);
+          if (mode === "-c") check(`${fixture.label} channel ${style}: remedy names its post grant and an agent mint for general`,
+            report.includes(fixture.post.length ? "#other" : `no channel in ${space}`) && report.includes(`cotal auth mint <label> --space ${space} --allow-publish general --out <file>`)
+              && (envelope === undefined || JSON.stringify(envelope.target.post) === JSON.stringify(fixture.post)), denied);
+        }
+      }
+    }
+    check("all ACL-refused sends leave channel, DM and role message counts and sequence frontiers unchanged", JSON.stringify(await frontiers()) === JSON.stringify(beforeDenied));
+    const authorizedFile = join(tmp, "authorized-permission.creds");
+    const authorized = await run(["auth", "mint", "authorized_permission", "--allow-publish", "general", "--no-persona", "--space", space, "--out", authorizedFile, "--json"], {}, meshRoot);
+    check("positive control: mint an agent with channel publish permission", authorized.code === 0, authorized);
+    for (const credential of [[], ["--creds", authorizedFile]]) {
+      for (const [mode, destination] of [["-c", "general"], ["-t", "bob"], ["-r", "reviewer"]]) {
+        const sent = await run(["send", mode!, destination!, "authorized permission control", "--space", space, ...credential, "--json"]);
+        check(`${credential.length ? "agent" : "operator"} ${mode}: positive control confirms storage`, sent.code === 0 && (JSON.parse(sent.stdout).result as { stored: boolean }).stored === true, sent);
+      }
+    }
+  } finally {
+    await permissionReader.close();
+  }
 
+  const consumersBefore = await watchConsumers();
   const dmText = `outside-u-${randomUUID().slice(0, 6)}`;
   const msgText = `outside-m-${randomUUID().slice(0, 6)}`;
   const askText = `outside-a-${randomUUID().slice(0, 6)}`;

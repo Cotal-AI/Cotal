@@ -329,26 +329,33 @@ function storeFullRefusal(error: unknown, root: string | undefined, space: strin
   });
 }
 
-/** The broker refused a channel publication, so it was not stored. The remedy names what this
- *  identity may post to: its grant when this machine holds it, read as `cotal whoami` reads it, the
- *  post grant in the claims of a `--creds` agent file (`credsFile`), and otherwise the space's
- *  registered channels. */
-async function channelDenied(channel: string, target: { space: string }, connection: Connection, registered: readonly string[], credsFile?: string): Promise<CommandFailure> {
+/** A native publish ACL refusal stored nothing, for any destination. Explicit credentials report
+ *  their own profile and channel post grant, including read-only profiles, with an operator remedy. */
+async function publishDenied(input: SendInput, target: { space: string }, connection: Connection, registered: readonly string[], credsFile?: string): Promise<CommandFailure> {
   let post: string[] | undefined;
-  if (connection.mode === "user" && connection.root) {
+  let profile: string | undefined;
+  if (credsFile !== undefined) {
+    const claims = credsClaims(credsFile);
+    profile = claims.name;
+    post = agentGrants(claims.nats ?? {}, target.space).post;
+  } else if (connection.mode === "user" && connection.root) {
     try {
       const status = await resolveAuthProvider().userStatus({ store: workspaceSecretStore(connection.root), dir: userAuthStateDir(connection.root, connection.space), space: connection.space, actor: CLI_USER_ACTOR });
       post = status.grant === "not-granted" ? [] : status.grant?.allowPublish;
     } catch { /* the grant stays unknown */ }
-  } else if (credsFile !== undefined) {
-    const claims = credsClaims(credsFile);
-    if (claims.name === "agent") post = agentGrants(claims.nats ?? {}, target.space).post;
   }
   const list = (channels: readonly string[]) => channels.map((name) => `#${name}`).join(", ");
-  const remedy = post === undefined
+  let remedy = input.mode !== "msg" ? "ask the space's owner for permission to send to this destination" : post === undefined
     ? `this machine cannot read this identity's post grant${registered.length ? `; the channels registered in ${target.space} are ${list(registered)}` : ""}`
     : post.length ? `post to a channel this identity may post to: ${list(post)}` : `this identity may post to no channel in ${target.space}`;
-  return new CommandFailure("refused", "PERMISSION_DENIED", `#${channel} does not exist in ${target.space} or this identity may not post to it; the broker refused the message, so it was not stored`, { target: { ...target, post: post ?? null }, remedy });
+  if (credsFile !== undefined) {
+    remedy = `${profile ? `credential profile ${profile}; ` : ""}${remedy}; ${sendAgain(input, `"<message>" --space ${shellWord(target.space)}`)} without --creds to use the space's operator credential`;
+    if (input.mode === "msg") remedy += `, or ask the space's owner to mint an agent credential with ${codeSpan(`cotal auth mint <label> --space ${shellWord(target.space)} --allow-publish ${shellWord(input.target)} --out <file>`)}, then send with --creds <file>`;
+  }
+  const message = input.mode === "msg"
+    ? `#${input.target} does not exist in ${target.space} or this identity may not post to it; the broker refused the message, so it was not stored`
+    : `this identity may not send to ${input.mode === "dm" ? "participant" : "role"} ${input.target} in ${target.space}; the broker refused the message, so it was not stored`;
+  return new CommandFailure("refused", "PERMISSION_DENIED", message, { target: { ...target, ...(input.mode === "msg" ? { post: post ?? null } : {}) }, remedy });
 }
 
 /** The warning for a post to a channel with no registry entry. Whether the channel already holds
@@ -472,7 +479,7 @@ export async function send(args: ParsedArgs): Promise<void> {
       } else messageId = (await ep.multicast(text, { channel: input.target, mentions })).id;
     } catch (error) {
       if (payloadRefused(error)) throw tooLarge(bytes);
-      if (input.mode === "msg" && isPublishPermissionDenied(error)) throw await channelDenied(input.target, target, connection, registered, values.creds !== undefined ? connection.creds : undefined);
+      if (isPublishPermissionDenied(error)) throw await publishDenied(input, target, connection, registered, values.creds !== undefined ? connection.creds : undefined);
       const full = storeFullRefusal(error, connection.root, space, target);
       if (full) throw full;
       // Later stream absence cannot rule out storage before an acknowledgement was lost.
