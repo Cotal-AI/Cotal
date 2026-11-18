@@ -28,6 +28,7 @@ function globalUpdateChildPath(root: string): string {
 }
 
 export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number } = {}): () => void {
+  const deadline = Date.now() + (opts.waitMs ?? 0);
   const canonicalRoot = canonicalGlobalRoot(root);
   const held = acquireLock(join(canonicalRoot, ".cotal-update.lock"), {
     label: "a global cotal-ai update",
@@ -37,7 +38,7 @@ export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number }
     ),
   });
   try {
-    assertNoProcessMutation(globalUpdateChildPath(canonicalRoot), "global cotal-ai update child");
+    assertNoProcessMutation(globalUpdateChildPath(canonicalRoot), "global cotal-ai update child", deadline);
     return () => held.release();
   } catch (e) {
     held.release();
@@ -345,8 +346,12 @@ function beginProcessMutation(path: string, operation: string, intermediary: boo
   };
 }
 
-function assertNoProcessMutation(path: string, operation: string): void {
-  const marker = readMarker(path);
+function assertNoProcessMutation(path: string, operation: string, deadline = 0): void {
+  let marker = readMarker(path);
+  while (marker?.phase === "live" && sameProcessAlive(marker.pid, marker.start) && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Math.min(100, deadline - Date.now())));
+    marker = readMarker(path);
+  }
   if (!marker) return;
   if (marker.phase === "ambiguous") {
     throw new Error(`${marker.operation ?? operation} ended ambiguously (${marker.reason}; ${path}) - if no descendant process is running, remove the marker and retry`);

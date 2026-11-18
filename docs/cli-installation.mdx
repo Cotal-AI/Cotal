@@ -413,6 +413,12 @@ Then run `cotal update` as your normal account, without sudo, to reconcile your 
 extensions. Keep any `--space`, `--server`, `--creds` or `--on` selection from the original command.
 Do not run `sudo cotal update`: user configuration and reconciliation belong to your normal account.
 
+From 0.167.1, retrying `cotal update --self` after killing its updater waits up to ten minutes
+for its recorded live install or reconciliation child to finish. The reservation stays held during
+that wait. The command then restores the interrupted transaction and continues the requested
+self-update. An expired wait, an unpublished child PID or ambiguous descendant state still refuses
+without starting a competing replacement.
+
 Once global replacement starts, Ctrl-C waits for installation, verification and reconciliation to
 finish before returning exit code 130. SIGTERM waits the same way and returns 143. The command
 explains the wait, keeps its update lock and does not send terminal interrupts into the child
