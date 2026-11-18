@@ -427,10 +427,14 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
   const comparison = latest.ok ? compareSemver(latest.version, current) : null;
   const pending = readUpdatePending(current);
   if (pending.kind === "unreadable") warnings.push({ code: "RECONCILIATION_UNREADABLE", target: null, message: `Reconciliation state could not be read: ${pending.error}` });
+  if (pending.kind === "seed") warnings.push({ code: "SEED_RECONCILIATION_PENDING", target: null, message: pending.instruction });
   const result = { kind: "update-check", reconciliation: pending, current, latest: latest.ok ? latest.version : null, updateAvailable: comparison === null ? null : comparison > 0, extensions, scope: "registry version and recorded installation versions", installationChanged: false, processesRestarted: false };
   writeResult(presentationOf(args.values), {
     command: "update", target: null, result, warnings,
-    ...(warnings.length ? { completeness: "partial" as const, partial: { message: "Some update information could not be established.", remedy: "Check registry access or the unreadable inventory and repeat update --check." } } : {}),
+    ...(warnings.length ? { completeness: "partial" as const, partial: {
+      message: pending.kind === "seed" ? "Connector seeding needs reconciliation." : "Some update information could not be established.",
+      remedy: pending.kind === "seed" || pending.kind === "unreadable" && pending.source === "seed" ? pending.instruction : "Check registry access or the unreadable inventory and repeat update --check.",
+    } } : {}),
   }, (r) => ({ sections: [
     ...(pending.kind === "none" ? [] : [{ title: "Reconciliation", blocks: [{ kind: "lines" as const, lines: [pending.instruction] }] }]),
     { title: "Update availability", blocks: [{ kind: "fields", rows: [["Running CLI", r.current], ["Registry latest", r.latest ?? "not established"], ["CLI update", r.updateAvailable === null ? { text: "unknown", tone: "waiting" } : r.updateAvailable ? { text: "available", tone: "waiting" } : comparison === 0 ? "matches latest tag" : "running version is ahead of latest tag"]] }] },

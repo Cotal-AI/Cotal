@@ -449,6 +449,12 @@ If the extension manifest is corrupt, the check still reports the running and re
 leaves the manifest unchanged and exits 4. JSON reports `extensions: null`, partial completeness
 and the `EXTENSION_INVENTORY_UNREADABLE` warning.
 
+An unfinished connector seed is also pending reconciliation, even when recorded versions match.
+The check reads the seed cursor and recovery journal without changing them. It names
+`cotal ext seed --repair` in the Reconciliation section and exits 4. JSON reports
+`reconciliation.kind: "seed"`, partial completeness and `SEED_RECONCILIATION_PENDING`.
+An unreadable seed journal reports `RECONCILIATION_UNREADABLE` with the same repair command.
+
 The report compares first-party recorded versions with the running CLI. It does not inspect
 package contents, signatures or loaded process generations. `cotal update` and `update --self`
 keep the existing guarded update, continuity checks, download verification and current-generation
