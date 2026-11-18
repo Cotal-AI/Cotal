@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1090,
+    "total": 1095,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 868
+    "non-render/control": 873
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -7484,7 +7484,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "  const releaseGlobal = rt.claimGlobalUpdate(root);\n      try {\n        if",
+      "anchor": "rt.claimGlobalUpdate(root)",
       "class": "non-render/control",
       "rationale": "Recovery claims installation mutation custody for a validated npm root, not peer presence."
     },
@@ -7596,9 +7596,44 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "y {\n    releaseGlobal = rt.claimGlobalUpdate(root);\n  } catch (e) {\n    rt",
+      "anchor": "rt.claimGlobalUpdate(root, () => rt.out(\"Waiting up to 10 minutes for another updater to release npm's global root\"))",
       "class": "non-render/control",
       "rationale": "Global installation custody is acquired before a package replacement begins, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "rt.globalVersion?.(root)",
+      "class": "non-render/control",
+      "rationale": "The updater reads the installed package version after acquiring custody, not an agent work state."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "compareSemver(installed, current)",
+      "class": "non-render/control",
+      "rationale": "Release comparison detects another updater's completed replacement, not peer presence or activity."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "compareSemver(installed, targetVersion)",
+      "class": "non-render/control",
+      "rationale": "Release comparison prevents replacing a requested or newer installed package, not a presence claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "rt.verifyGlobalEntry(root, installed)",
+      "class": "non-render/control",
+      "rationale": "The selected global CLI entry is verified against its package version before dispatch, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "`Another update installed cotal-ai@${installed}; rechecking the installed CLI`",
+      "class": "non-render/control",
+      "rationale": "The notice reports a verified installed release and CLI recheck, not an agent's presence or work progress."
     },
     {
       "path": "implementations/cli/src/commands/update.ts",
