@@ -5,6 +5,7 @@ import { hardenPrivate } from "@cotal-ai/core";
 import { activeModelRoute, type RuntimeIdentity } from "./route-identity.js";
 
 type JcodeConnectorFailureCode =
+  | "project_mcp_config"
   | "model_prefix_rejected"
   | "model_refused"
   | "model_mismatch"
@@ -24,6 +25,18 @@ type JcodeConnectorFailureCode =
 export class JcodeConnectorError extends Error {
   constructor(readonly code: JcodeConnectorFailureCode, message: string, options?: ErrorOptions) {
     super(message, options);
+  }
+}
+
+/** Project MCP files Jcode would load from the working directory over the private cotal entry. */
+export const PROJECT_MCP_FILES = [".jcode/mcp.json", ".mcp.json", ".claude/mcp.json"] as const;
+
+/** The working directory holds project MCP configuration. The message names only which of the
+ * fixed {@link PROJECT_MCP_FILES} exist, never the directory or the file contents, and stays short
+ * enough that a launch failure's 160-character last-output line carries it whole. */
+export class JcodeProjectMcpConfig extends JcodeConnectorError {
+  constructor(found: readonly (typeof PROJECT_MCP_FILES)[number][]) {
+    super("project_mcp_config", `the working directory has ${found.join(", ")}; start the agent in another directory`);
   }
 }
 

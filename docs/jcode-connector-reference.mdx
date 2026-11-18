@@ -202,8 +202,10 @@ to the host's one `MeshAgent`. The Jcode/MCP child receives a per-launch relay c
 the Cotal broker credential or its launch-material pointer. Jcode also overlays project
 `.jcode/mcp.json`, `.mcp.json`, and `.claude/mcp.json`; a managed launch **refuses** a workspace
 containing any of those files, because one could replace the `cotal` bridge or add tools that were
-not explicitly shared. Operator MCP configuration is isolated in the private home and project MCP
-configuration is not supported yet.
+not explicitly shared. The refusal, `Jcode host startup failed (project_mcp_config)`, names the
+files it found. A home directory is refused too when it holds Jcode's own `.jcode/mcp.json`, so
+start the agent in a project directory with `--cwd`. Operator MCP configuration is isolated in the
+private home and project MCP configuration is not supported yet.
 
 Before the seat joins the mesh, the host runs a mandatory Jcode turn that calls
 `cotal_orientation`. The call counts whether Jcode makes it directly or through its deferred
