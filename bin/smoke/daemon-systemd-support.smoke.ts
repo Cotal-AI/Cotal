@@ -64,10 +64,27 @@ for (const path of unsupportedPaths) {
   }
   const auto = run(["update", "--auto", "on"], path);
   suite.check("automatic update guidance never suggests unsupported installation", auto.code === 0 && auto.text.includes("systemd") && auto.text.includes("cotal daemon serve") && auto.text.includes("cotal update --self") && !auto.text.includes("cotal daemon install"));
+  suite.check("automatic update guidance is complete prose", /\. The Linux background service requires systemd\b/.test(auto.text) && /\. Run `cotal daemon serve`/.test(auto.text) && auto.text.trimEnd().endsWith("."));
 }
 suite.check("unsupported commands never queried a native supervisor", (existsSync(log) ? readFileSync(log, "utf8") : "") === callsBefore);
 suite.check("unsupported commands never published a unit", !existsSync(join(config, "systemd")));
 if (!existsSync("/run/systemd/system")) {
+  // The desktop reads the account's application PATH. Keep that shell and every
+  // native tool inside this fixture, including when it appends Node's directory.
+  writeFileSync(join(blocked, "systemctl"), `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, 'unexpected desktop systemctl\\n'); process.exit(99);\n`, { mode: 0o700 });
+  for (const profile of [".bash_profile", ".bashrc", ".zprofile", ".zshrc", ".profile"]) writeFileSync(join(home, profile), `export PATH=${JSON.stringify(blocked)}\n`, { mode: 0o600 });
+  const beforeDesktop = existsSync(log) ? readFileSync(log, "utf8") : "";
+  for (const request of [{ op: "install" }, { op: "setup", space: "probe", idp: "http://127.0.0.1:1/auth" }]) {
+    for (const rt of [runtime, undefined]) {
+      const desktop = spawnSync(process.execPath, [cli, "daemon", "desktop"], { cwd: root, env: { ...env, PATH: blocked, XDG_RUNTIME_DIR: rt }, input: `${JSON.stringify(request)}\n`, encoding: "utf8", timeout: 15_000 });
+      if (desktop.error) throw desktop.error;
+      console.log(`desktop ${request.op}, runtime=${rt !== undefined}: exit ${desktop.status}\n${desktop.stdout}${desktop.stderr}`);
+      const frame = JSON.parse(desktop.stdout.trim().split("\n").at(-1)!);
+      suite.check(`desktop ${request.op} runtime=${rt !== undefined}: unsupported before recovery or runtime checks`, desktop.status === 0 && frame.ok === false && frame.error.code === "UNSUPPORTED" && frame.error.remedy.includes("cotal daemon serve") && frame.error.remedy.includes("cotal update --self") && !desktop.stdout.includes("logged-in session"));
+    }
+  }
+  suite.check("unsupported desktop requests never queried a native supervisor", (existsSync(log) ? readFileSync(log, "utf8") : "") === beforeDesktop);
+  suite.check("unsupported desktop requests never published a unit or receipt", !existsSync(join(config, "systemd")) && !existsSync(join(home, ".cotal", "daemon", "service-unit.json")));
   if (!existsSync(`/run/user/${process.geteuid!()}`)) {
     const missing = run(["daemon", "status", "--json"], native, { XDG_RUNTIME_DIR: undefined });
     const error = JSON.parse(missing.stdout).error;
@@ -88,6 +105,7 @@ if (!existsSync("/run/systemd/system")) {
     suite.check("foreground status identifies the owned daemon", status.code === 0 && result.state === "ready" && result.pid === child.pid);
     const advice = run(["update", "--auto"], absent);
     suite.check("foreground update advice avoids unsupported installation", advice.code === 0 && advice.text.includes("cotal update --self") && !advice.text.includes("cotal daemon install"));
+    suite.check("foreground update guidance is complete prose", /\. The Linux background service requires systemd\b/.test(advice.text) && /\. Run `cotal daemon serve`/.test(advice.text) && advice.text.trimEnd().endsWith("."));
   } finally {
     if (child.pid) await killAndAwaitExit(child, "SIGTERM");
     suite.check("foreground child is stopped", !child.pid || child.exitCode !== null || child.signalCode !== null);

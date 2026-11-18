@@ -1012,6 +1012,8 @@ is not enabled or started.
 
 Linux `install` and `setup` require `/run/systemd/system` and `systemctl` on `PATH`.
 Without either they refuse `UNSUPPORTED` before resolving the runtime directory or signing in.
+The desktop's install and setup requests make this check after reading the account's application
+`PATH`, before resolving the runtime directory or recovering an existing service receipt.
 On Linux without systemd, run `cotal daemon serve` under your own supervisor, such as an
 OpenRC user service, runit or s6, and run `cotal update --self` for manual updates.
 `cotal update --auto` names these alternatives instead of suggesting service installation.

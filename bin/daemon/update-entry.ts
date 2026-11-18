@@ -165,7 +165,9 @@ const composed: Command = { ...command, async run(args) {
     return currentPackages;
   }, async automaticUpdateAdvice() {
     const problem = daemonServiceProblem();
-    const installAdvice = problem ? `${problem.message}. ${problem.remedy}` : "Run `cotal daemon install`, then inspect `cotal daemon status`.";
+    const installAdvice = problem
+      ? "The Linux background service requires systemd, with /run/systemd/system present and systemctl on PATH. Run `cotal daemon serve` under your own supervisor (OpenRC, runit or s6), and use `cotal update --self` for manual updates."
+      : "Run `cotal daemon install`, then inspect `cotal daemon status`.";
     try {
       const reply = await queryDaemon({ paths: daemonPaths() });
       if (!reply.ok) throw new Error(`machine daemon update schedule is unreadable: ${reply.error.message}`);

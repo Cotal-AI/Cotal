@@ -8,7 +8,7 @@ import { CommandFailure, readLocalRecordSource, readUpdateSettings, setUpdateSet
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { loginViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
-import { applyInstall, planUninstall, startInstalled } from "./install.js";
+import { applyInstall, daemonServiceProblem, planUninstall, startInstalled } from "./install.js";
 import { nativeDaemonLog } from "./native-log.js";
 import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
@@ -170,9 +170,6 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       emit({ v: 1, event: "result", ok: true, result: { assets } }); return;
     }
     if (req.op === "status" || req.op === "install" || req.op === "setup") assertDesktopSetupComplete();
-    target = opts.resolveTarget();
-    const { paths, home } = target;
-    const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     if (req.op === "install" || req.op === "setup") {
       const discovered = await discoverDesktopApplicationPath();
       process.env.PATH = discovered.path;
@@ -181,7 +178,12 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         const detail = `left out relative PATH entries: ${omittedRelativePathEntries.join(", ")}`;
         emit({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } });
       }
+      const problem = daemonServiceProblem();
+      if (problem) throw problem;
     }
+    target = opts.resolveTarget();
+    const { paths, home } = target;
+    const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     const omittedResult = omittedRelativePathEntries.length ? { omittedRelativePathEntries } : {};
     if (req.op === "setup") {
       startedAt = Date.now();
