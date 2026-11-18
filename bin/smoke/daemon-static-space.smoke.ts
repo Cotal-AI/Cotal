@@ -2,7 +2,7 @@
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,49 +86,83 @@ let stackStarted = false;
 try {
   const created = await cli(["space", "create", space, "--root", project]);
   assert.equal(created.code, 0, created.out + created.err);
-  stackStarted = true;
-  const up = await cli(["up", "--space", space, "--root", project, "--detach"]);
-  assert.equal(up.code, 0, up.out + up.err);
-  const managerBefore = await cli(["manager", "start", "--space", space], false);
-  check("positive control: local stack Manager already answers", managerBefore.code === 0 && managerBefore.out.includes("Already running"));
-  await startDaemon();
-  const statusBefore = await cli(daemonArgs("service-status"));
-  console.log("initial service-status", statusBefore.code, statusBefore.doc.error);
-  check("unrequested static space reports UNSUPPORTED, not register first", statusBefore.code === 2 && statusBefore.doc.error?.code === "UNSUPPORTED" && localRemedy(statusBefore.doc.error.remedy));
-  for (const [label, flags] of [["manager", []], ["service-only", ["--no-manager", "--wait", "0"]]] as const) {
-    const setup = await cli(daemonArgs("setup", [...flags]));
-    console.log(`${label} setup`, setup.code, setup.doc.error, setup.err);
-    check(`${label} setup refuses UNSUPPORTED / NOT_USER_AUTH`, setup.code === 2 && setup.doc.error?.code === "UNSUPPORTED" && setup.doc.error.cause?.code === "NOT_USER_AUTH");
-    check(`${label} setup explains local stack and user-auth hosting`, setup.doc.error?.message?.includes("user sign-in") && localRemedy(setup.doc.error.remedy) && setup.doc.error.remedy?.includes("user-auth"));
-    check(`${label} setup prints no intent, host, registration or skipped sign-in progress`, !/turning on the space|starting the agent host|register:|sign-in: skipped/.test(setup.err));
-    noRecords(`${label} setup`);
+  if (process.argv.includes("--registry-failure-only")) {
+    stackStarted = true;
+    const up = await cli(["up", "--space", space, "--root", project, "--open", "--detach"]);
+    assert.equal(up.code, 0, up.out + up.err);
+    await startDaemon();
+    const before = await cli(["daemon", "status", "--daemon-home", machine]);
+    assert.equal(before.code, 0, before.out + before.err);
+    const beforeService = await cli(daemonArgs("service-status"));
+    check("healthy registry control reports local-space unsupported", beforeService.code === 2 && beforeService.doc.error?.code === "UNSUPPORTED" && localRemedy(beforeService.doc.error.remedy));
+    const pid = daemon!.pid;
+    const broken = join(home, "meshes", "unrelated-broken.json");
+    const variants = [
+      ["malformed", "{"],
+      ["unknown-mode", JSON.stringify({ space: "other", server: "nats://127.0.0.1:1", root: project, mode: "future-mode", ts: new Date().toISOString() })],
+    ] as const;
+    for (const [label, bytes] of variants) {
+      writeFileSync(broken, bytes, { mode: 0o600 });
+      try {
+        const refused = await cli(daemonArgs("service-status"));
+        console.log(`${label} service-status`, refused.code, refused.doc.error);
+        check(`${label}: status returns a structured refusal instead of losing the connection`, refused.code === 1 && refused.doc.error?.code === "USAGE_INVALID" && refused.doc.error.cause?.code === "MANAGER_UNAVAILABLE");
+        check(`${label}: refusal identifies the invalid registry record`, refused.doc.error?.message?.includes("unrelated-broken.json"));
+        check(`${label}: same daemon stays alive after the refusal`, daemon!.pid === pid && daemon!.exitCode === null && daemon!.signalCode === null);
+        check(`${label}: invalid record is not silently changed`, readFileSync(broken, "utf8") === bytes);
+        noRecords(label);
+      } finally {
+        renameSync(broken, join(root, `${label}.retained`));
+      }
+      const recovered = await cli(daemonArgs("service-status"));
+      const after = await cli(["daemon", "status", "--daemon-home", machine]);
+      check(`${label}: same daemon immediately restores local guidance after registry repair`, recovered.code === 2 && recovered.doc.error?.code === "UNSUPPORTED" && localRemedy(recovered.doc.error.remedy) && after.code === 0 && after.doc.result?.pid === pid && before.doc.result?.pid === pid);
+    }
+  } else {
+    stackStarted = true;
+    const up = await cli(["up", "--space", space, "--root", project, "--detach"]);
+    assert.equal(up.code, 0, up.out + up.err);
+    const managerBefore = await cli(["manager", "start", "--space", space], false);
+    check("positive control: local stack Manager already answers", managerBefore.code === 0 && managerBefore.out.includes("Already running"));
+    await startDaemon();
+    const statusBefore = await cli(daemonArgs("service-status"));
+    console.log("initial service-status", statusBefore.code, statusBefore.doc.error);
+    check("unrequested static space reports UNSUPPORTED, not register first", statusBefore.code === 2 && statusBefore.doc.error?.code === "UNSUPPORTED" && localRemedy(statusBefore.doc.error.remedy));
+    for (const [label, flags] of [["manager", []], ["service-only", ["--no-manager", "--wait", "0"]]] as const) {
+      const setup = await cli(daemonArgs("setup", [...flags]));
+      console.log(`${label} setup`, setup.code, setup.doc.error, setup.err);
+      check(`${label} setup refuses UNSUPPORTED / NOT_USER_AUTH`, setup.code === 2 && setup.doc.error?.code === "UNSUPPORTED" && setup.doc.error.cause?.code === "NOT_USER_AUTH");
+      check(`${label} setup explains local stack and user-auth hosting`, setup.doc.error?.message?.includes("user sign-in") && localRemedy(setup.doc.error.remedy) && setup.doc.error.remedy?.includes("user-auth"));
+      check(`${label} setup prints no intent, host, registration or skipped sign-in progress`, !/turning on the space|starting the agent host|register:|sign-in: skipped/.test(setup.err));
+      noRecords(`${label} setup`);
+    }
+    const managerAfter = await cli(["manager", "start", "--space", space], false);
+    check("positive control: refused setup leaves stack Manager answering", managerAfter.code === 0 && managerAfter.out.includes("Already running"));
+    await stopDaemon();
+    await startDaemon();
+    const restarted = await cli(daemonArgs("status"));
+    check("restart has no refused Manager", restarted.code === 0 && restarted.doc.result?.managers?.every(manager => manager.state !== "refused"));
+    noRecords("restart");
+    const register = await cli(daemonArgs("register"));
+    check("register shares UNSUPPORTED / NOT_USER_AUTH and local remedy", register.code === 2 && register.doc.error?.code === "UNSUPPORTED" && register.doc.error.cause?.code === "NOT_USER_AUTH" && localRemedy(register.doc.error.remedy));
+    const status = await cli(daemonArgs("service-status"));
+    check("status after refused register keeps local remedy", status.code === 2 && status.doc.error?.code === "UNSUPPORTED" && localRemedy(status.doc.error.remedy));
+    await stopDaemon();
+    // An older release's refusal is retained until explicit disconnect, not silently removed by setup.
+    mkdirSync(managerDir, { recursive: true, mode: 0o700 });
+    writeFileSync(refusal, JSON.stringify({ space, state: "refused", restarts: 0, reason: "hosted Managers require a registered user-auth participant space", lastRefusal: "hosted Managers require a registered user-auth participant space", next: "use `cotal manager start` from the folder that hosts the space" }), { mode: 0o600 });
+    await startDaemon();
+    const legacy = await cli(daemonArgs("status"));
+    check("legacy refused record is visible before disconnect", legacy.doc.result?.managers?.some(manager => manager.state === "refused"));
+    const disconnected = await cli(daemonArgs("service-disconnect"));
+    console.log("disconnect", disconnected.code, disconnected.doc.result?.manager);
+    check("disconnect clears legacy refusal with local-stack next step", disconnected.code === 0 && disconnected.doc.result?.manager?.state === "stopped" && localRemedy(disconnected.doc.result.manager.next));
+    noRecords("disconnect");
+    const finalManager = await cli(["manager", "start", "--space", space], false);
+    check("positive control: disconnect leaves stack Manager answering", finalManager.code === 0 && finalManager.out.includes("Already running"));
+    const calls = existsSync(nativeCalls) ? readFileSync(nativeCalls, "utf8").trim().split("\n").map(line => JSON.parse(line) as { tool: string; args: string }) : [];
+    check("all native calls are directory reads through the stand-in", calls.length > 0 && calls.every(call => call.tool === "systemctl" && call.args === "--user show-environment"));
   }
-  const managerAfter = await cli(["manager", "start", "--space", space], false);
-  check("positive control: refused setup leaves stack Manager answering", managerAfter.code === 0 && managerAfter.out.includes("Already running"));
-  await stopDaemon();
-  await startDaemon();
-  const restarted = await cli(daemonArgs("status"));
-  check("restart has no refused Manager", restarted.code === 0 && restarted.doc.result?.managers?.every(manager => manager.state !== "refused"));
-  noRecords("restart");
-  const register = await cli(daemonArgs("register"));
-  check("register shares UNSUPPORTED / NOT_USER_AUTH and local remedy", register.code === 2 && register.doc.error?.code === "UNSUPPORTED" && register.doc.error.cause?.code === "NOT_USER_AUTH" && localRemedy(register.doc.error.remedy));
-  const status = await cli(daemonArgs("service-status"));
-  check("status after refused register keeps local remedy", status.code === 2 && status.doc.error?.code === "UNSUPPORTED" && localRemedy(status.doc.error.remedy));
-  await stopDaemon();
-  // An older release's refusal is retained until explicit disconnect, not silently removed by setup.
-  mkdirSync(managerDir, { recursive: true, mode: 0o700 });
-  writeFileSync(refusal, JSON.stringify({ space, state: "refused", restarts: 0, reason: "hosted Managers require a registered user-auth participant space", lastRefusal: "hosted Managers require a registered user-auth participant space", next: "use `cotal manager start` from the folder that hosts the space" }), { mode: 0o600 });
-  await startDaemon();
-  const legacy = await cli(daemonArgs("status"));
-  check("legacy refused record is visible before disconnect", legacy.doc.result?.managers?.some(manager => manager.state === "refused"));
-  const disconnected = await cli(daemonArgs("service-disconnect"));
-  console.log("disconnect", disconnected.code, disconnected.doc.result?.manager);
-  check("disconnect clears legacy refusal with local-stack next step", disconnected.code === 0 && disconnected.doc.result?.manager?.state === "stopped" && localRemedy(disconnected.doc.result.manager.next));
-  noRecords("disconnect");
-  const finalManager = await cli(["manager", "start", "--space", space], false);
-  check("positive control: disconnect leaves stack Manager answering", finalManager.code === 0 && finalManager.out.includes("Already running"));
-  const calls = existsSync(nativeCalls) ? readFileSync(nativeCalls, "utf8").trim().split("\n").map(line => JSON.parse(line) as { tool: string; args: string }) : [];
-  check("all native calls are directory reads through the stand-in", calls.length > 0 && calls.every(call => call.tool === "systemctl" && call.args === "--user show-environment"));
 } finally {
   await stopDaemon();
   if (stackStarted) {
