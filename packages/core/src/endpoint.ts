@@ -953,6 +953,8 @@ export class CotalEndpoint extends EventEmitter {
    *  now instead of awaiting the full retryMs. */
   private backoffResolve?: () => void;
   private backoffTimer?: ReturnType<typeof setTimeout>;
+  /** Wakes for the membership retry loops' pauses (see {@link membershipPause}); stop() runs them all. */
+  private readonly membershipPauses = new Set<() => void>();
   private readonly retryMs = 3000;
   /** Consecutive failed rebuilds, driving {@link nextRetryDelayMs}. Reset on every success. */
   private retryAttempt = 0;
@@ -2395,6 +2397,21 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** Capped exponential pause between membership retries. stop() ends it early, so a loop waiting
+   *  on an absent delivery daemon never holds a stopped endpoint's process open for the delay. */
+  private membershipPause(attempt: number): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const wake = (): void => {
+        clearTimeout(timer);
+        this.membershipPauses.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, Math.min(30_000, 1000 * 2 ** attempt));
+      this.membershipPauses.add(wake);
+    });
+  }
+
   /** Manual reconnect: tear down the current connection and rebuild, WITHOUT the permanent
    *  stop (stopped/stopping stay false). Serialized with the self-heal supervisor via
    *  {@link rebuild}, and interruptible — if a backoff is in flight, kick it so the attempt
@@ -2431,6 +2448,7 @@ export class CotalEndpoint extends EventEmitter {
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
     // sleeping out retryMs; also clears the timer so it can't fire later.
     this.kickBackoff();
+    for (const wake of [...this.membershipPauses]) wake();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     this.cancelBearerRenewal?.();
@@ -7544,7 +7562,7 @@ export class CotalEndpoint extends EventEmitter {
       } catch (e) {
         if (attempt === 0)
           this.emitRecoverable(new Error(`channel "${channel}": Plane-3 durable membership (generation ${generation}) not yet tombstoned after a refused live sub - retrying; §7 boundary may be open until it succeeds (${(e as Error).message})`));
-        await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * 2 ** attempt)));
+        await this.membershipPause(attempt);
       }
     }
   }
@@ -7703,7 +7721,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.pendingBootJoins.has(channel)) return; // already reconciling
     this.pendingBootJoins.add(channel);
     for (let attempt = 0; ; attempt++) {
-      await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * 2 ** attempt)));
+      await this.membershipPause(attempt);
       if (this.stopped || !this.channels.includes(channel) || this.plane3Channels.has(channel)) {
         this.pendingBootJoins.delete(channel);
         return; // stopped, left, or another path established it
