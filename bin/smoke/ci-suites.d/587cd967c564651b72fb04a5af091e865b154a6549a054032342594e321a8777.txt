@@ -1,0 +1,2 @@
+# Direct spawn previews validate effective names with the foreground launch rule (#7533).
+smoke:spawn-preview-name

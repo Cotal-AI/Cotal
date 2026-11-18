@@ -1,7 +1,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
-import { agentFilePath, parseAgentFileSource, token, type AgentDef, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { agentFilePath, parseAgentFileSource, spawnNameError, token, type AgentDef, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { preflightRuntime } from "../ext-loader.js";
 import { callerHarness, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
@@ -101,6 +101,9 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
       throw new CommandFailure("refused", "SCHEMA_INVALID", "the local launch persona could not be read and validated; no contents were echoed and nothing was allocated", { target: { ...target, path }, remedy: "use a native persona file; a Mesh manifest belongs to `cotal team deploy <file>`" });
     }
   }
+  const requestedName = values.name ?? definition.name;
+  const nameRefusal = spawnNameError(requestedName, { userMode: targetMode === "user" });
+  if (nameRefusal) throw new CommandFailure("refused", "USAGE_INVALID", nameRefusal, { target });
   let cwd: string;
   try { cwd = realpathSync(values.cwd ? resolve(values.cwd) : process.cwd()); if (!statSync(cwd).isDirectory()) throw new Error(); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the direct launch's local working directory is unavailable; no directory was created"); }
@@ -110,7 +113,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     if (!isCommandFailure(error)) throw error;
     throw missingConnector(harness, { ...target, path });
   }
-  const result = { kind: "direct-launch-preview", dryRun: true, space, executionHost: hostname(), persona: { path, source: requested.source, write: personaWrite as "none" | "shipped-default" }, requestedName: values.name ?? definition.name, harness, cwd, role: values.role ?? definition.role ?? null, model: values.model ?? definition.model ?? null, variant: values.variant ?? definition.variant ?? null, promptProvided: values.prompt !== undefined, enrollment: "not-read-or-redeemed", connectorAvailability: "not-checked", authorization: "not-checked", allocated: false, launched: false };
+  const result = { kind: "direct-launch-preview", dryRun: true, space, executionHost: hostname(), persona: { path, source: requested.source, write: personaWrite as "none" | "shipped-default" }, requestedName, harness, cwd, role: values.role ?? definition.role ?? null, model: values.model ?? definition.model ?? null, variant: values.variant ?? definition.variant ?? null, promptProvided: values.prompt !== undefined, enrollment: "not-read-or-redeemed", connectorAvailability: "not-checked", authorization: "not-checked", allocated: false, launched: false };
   writeResult(presentationOf(values), { command: "spawn", target, result }, (data): Report => ({ sections: [
     { title: "Direct launch preview", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Execution host", data.executionHost], ["Persona file", data.persona.write === "shipped-default" ? `${data.persona.path} (the launch writes the shipped default persona here; the preview wrote nothing)` : data.persona.path], ["Source", sourceText(data.persona.source)], ["Requested name", data.requestedName], ["Harness", data.harness], ["Working directory", data.cwd], ["Role", data.role ?? "not declared"], ["Model", data.model ?? "application default; not checked"], ["Variant", data.variant ?? "not declared"], ["Enrollment", "not read or redeemed"], ["Binary/login/authority checks", "not performed"]] }, { kind: "lines", lines: ["Local selection and file validation only. No broker connection, connector import, provisioning, identity allocation or launch occurred. Native foreground execution is not a detachable Cotal view."] }] },
   ] }));
