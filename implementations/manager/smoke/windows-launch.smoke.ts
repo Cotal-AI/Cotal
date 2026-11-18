@@ -30,9 +30,11 @@ import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import { connect, createServer } from "node:net";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolveOnPath } from "@cotal-ai/workspace";
 import { CONTROL_PROTOCOL_VERSION, controlCall } from "@cotal-ai/core";
+import { controlTranscriptMac } from "@cotal-ai/smoke-kit";
 import { launchEnv, controlEndpoint, startControlServer, type MeshAgent } from "@cotal-ai/connector-core";
 import { quoteCmdArg, buildCmdCommandLine, resolveComspec, preparePtyLaunch } from "../src/runtime/windows-launch.js";
 import { controlShutdown } from "../src/control-shutdown.js";
@@ -354,7 +356,7 @@ if (isWin) {
  *  two ends do not hold the same key (the connection is dropped before any request is sent). */
 function sendFrame(path: string, frame: { token: string } & Record<string, unknown>): Promise<string> {
   const { token, ...request } = frame;
-  return controlCall({ path, token, version: CONTROL_PROTOCOL_VERSION }, request, { timeoutMs: 2000 }).catch(() => "");
+  return controlCall({ path, token, version: CONTROL_PROTOCOL_VERSION }, request, { timeoutMs: 2000, maxReplyBytes: 1 << 20 }).catch(() => "");
 }
 function waitListening(server: ReturnType<typeof startControlServer>): Promise<void> {
   return new Promise((resolve) => {
@@ -433,6 +435,38 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
   controlShutdown(ep2);
   for (let i = 0; i < 40 && !ws4; i++) await sleep(25);
   check("WS4: controlShutdown(endpoint) reaches the server's onShutdown", ws4);
+
+  // F8: controlShutdown bounds the reply. A server that proves it holds the key and then streams one
+  // reply line that never ends gets read only to the small cap (the acknowledgement is `{"ok":true}`),
+  // not until the call's 2 s timeout.
+  const ep3 = controlEndpoint("smoke", "ws4-flood", controlDirs);
+  let written = 0;
+  let floodDone = false;
+  const flood = createServer((sock) => {
+    sock.on("error", () => {});
+    sock.once("data", (hello) => {
+      const nc = (JSON.parse(hello.toString().split("\n")[0]) as { nonce: string }).nonce;
+      const ns = randomBytes(32).toString("base64url");
+      sock.write(JSON.stringify({ v: CONTROL_PROTOCOL_VERSION, nonce: ns, mac: controlTranscriptMac(ep3.token, "server", nc, ns) }) + "\n");
+      sock.once("data", () => {
+        const chunk = Buffer.alloc(1 << 16, 0x61);
+        sock.on("close", () => (floodDone = true));
+        sock.write(`${"A".repeat(43)} `);
+        const pump = (): void => {
+          while (!floodDone) {
+            written += chunk.length;
+            if (!sock.write(chunk)) return void sock.once("drain", pump);
+          }
+        };
+        pump();
+      });
+    });
+  });
+  await new Promise<void>((resolve) => flood.listen(ep3.path, () => resolve()));
+  controlShutdown(ep3);
+  for (let i = 0; i < 100 && !floodDone; i++) await sleep(25);
+  check(`controlShutdown stops reading a proven reply that never ends near its small cap (took ${written} bytes)`, floodDone && written < 1 << 20);
+  flood.close();
 
   server.close();
   server2.close();

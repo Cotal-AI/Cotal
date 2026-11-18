@@ -39,8 +39,8 @@
     {
       "name": "M1 the Python hooks read only the environment, as they did before the fix",
       "file": "extensions/connector-hermes/plugin/cotal/control_exchange.py",
-      "find": "    path = os.environ.get(\"COTAL_LAUNCH_MATERIAL\")\n",
-      "replace": "    path = None\n",
+      "find": "    path = (os.environ.get(\"COTAL_LAUNCH_MATERIAL\") or \"\").strip(_JS_WHITESPACE)\n",
+      "replace": "    path = \"\"\n",
       "expectRed": "H1: a managed launch relays one request proven with the key from the launch material",
       "note": "The shipped defect, restored: only the environment is read. H2 (standalone, key exported directly) stays green under it, which is the point: the broken build looked healthy on every path anyone was testing."
     },

@@ -93,8 +93,8 @@ async function standIn(path: string, act: (sock: Socket, line: string, n: number
     sock.on("close", () => lifetimes.push(Date.now() - opened));
     sock.on("error", () => {});
   });
-  // Off Windows a stand-in needs the socket's directory: the real server makes it when it binds, and
-  // a stand-in that comes first makes it the same way.
+  // Off Windows a stand-in needs the socket's directory: minting makes it, and a stand-in on a path
+  // nothing minted makes it the same way.
   if (!isWin && !existsSync(dirname(path))) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   server.listen(path);
   await listening(server);
@@ -181,7 +181,7 @@ try {
     await sleep(100);
     check("the hook's delivery receipt still arrives after a proven reply", delivered === true, delivered);
     if (process.platform === "linux") check("the key is not in the hook process's arguments (/proc/<pid>/cmdline)", argvHasKey === false, argvHasKey);
-    const session = await controlCall(ep, { op: "session" }, { timeoutMs: 2000 }).catch((e: Error) => e.message);
+    const session = await controlCall(ep, { op: "session" }, { timeoutMs: 2000, maxReplyBytes: 16 * 1024 }).catch((e: Error) => e.message);
     check("the Manager's call path round-trips a proven op", session === JSON.stringify({ ok: false, error: "session not ready" }), session);
     await closed(server);
   }
@@ -286,7 +286,7 @@ try {
   {
     const ep = await deadServerName("standin-manager");
     const s = await standIn(ep.path, (sock) => sock.write(JSON.stringify({ ok: true, sessionId: "forged" }) + "\n"));
-    const result = await controlCall(ep, { op: "session" }, { timeoutMs: 2000 }).then(() => "resolved", (e: Error) => e.message);
+    const result = await controlCall(ep, { op: "session" }, { timeoutMs: 2000, maxReplyBytes: 16 * 1024 }).then(() => "resolved", (e: Error) => e.message);
     check("the Manager's call refuses a stand-in's answer", result !== "resolved", result);
     check("the Manager's call never sends a stand-in the key", s.connections() === 1 && !s.received().includes(ep.token), s.received());
     await closed(s.server);
@@ -376,7 +376,7 @@ try {
       const ns = freshNonce();
       sock.write(JSON.stringify({ v: 1, nonce: ns, mac: specMac(ep.token, LABEL, "server", nc, ns), pad: "z".repeat(4096) }) + "\n");
     });
-    const got = await controlCall(ep, { op: "session" }, { timeoutMs: 1500 }).then(() => "resolved", (e: Error) => e.message);
+    const got = await controlCall(ep, { op: "session" }, { timeoutMs: 1500, maxReplyBytes: 16 * 1024 }).then(() => "resolved", (e: Error) => e.message);
     check("a proven but oversized challenge in one write is refused before the request is sent", /oversized/.test(got) && s.received().split("\n").filter(Boolean).length === 1, got);
     await closed(s.server);
   }
@@ -393,7 +393,7 @@ try {
       const mac = specMac(ep.token, LABEL, "server", nc, ns);
       sock.write(JSON.stringify({ v: 1, nonce: ns, mac: String.fromCharCode(mac.charCodeAt(0) + 256) + mac.slice(1) }) + "\n");
     });
-    const got = await controlCall(ep, { op: "session" }, { timeoutMs: 1500 }).then(() => "resolved", (e: Error) => e.message);
+    const got = await controlCall(ep, { op: "session" }, { timeoutMs: 1500, maxReplyBytes: 16 * 1024 }).then(() => "resolved", (e: Error) => e.message);
     check("a challenge MAC with a character raised by 256 is refused and gets no request", got !== "resolved" && s.received().split("\n").filter(Boolean).length === 1, got);
     await closed(s.server);
   }
@@ -477,6 +477,66 @@ try {
     );
     await closed(s.server);
   }
+  /** A stand-in that proves it holds `ep`'s key, then runs `after` on the request line. */
+  const provenStandIn = (ep: ControlEndpoint, onChallenge: (sock: Socket) => void, after: (sock: Socket) => void) =>
+    standIn(ep.path, (sock, line, n) => {
+      if (n === 0) {
+        const nc = (JSON.parse(line) as { nonce: string }).nonce;
+        const ns = freshNonce();
+        sock.write(JSON.stringify({ v: 1, nonce: ns, mac: specMac(ep.token, LABEL, "server", nc, ns) }) + "\n");
+        onChallenge(sock);
+      } else if (n === 1) after(sock);
+    });
+  {
+    // Proven, handed the event, then silent with the socket open: the hook's own deadline ends it.
+    const ep = await deadServerName("handled-silent");
+    const s = await provenStandIn(ep, () => {}, () => {});
+    const r = await runRelay(relayEnv(ep));
+    check(
+      "a proven server that reads the request and stays silent: at its deadline the hook says the event may have been handled",
+      r.out === "" && /may have been handled/.test(r.err) && s.connections() === 1,
+      r.err,
+    );
+    await closed(s.server);
+  }
+  {
+    // Proven, then gone before the request lands, so writing the request fails with a socket error.
+    const ep = await deadServerName("handled-reset");
+    const s = await provenStandIn(ep, (sock) => sock.destroy(), () => {});
+    const r = await runRelay(relayEnv(ep));
+    check(
+      "a socket error once the request is written: the hook says the event may have been handled",
+      r.out === "" && /may have been handled/.test(r.err),
+      r.err,
+    );
+    await closed(s.server);
+  }
+  {
+    // A proven server whose reply never ends: one line with no newline, streamed as fast as the hook
+    // reads it. The hook stops at its 1 MiB cap; without one it reads until its deadline.
+    const ep = await deadServerName("reply-flood");
+    let written = 0;
+    const s = await provenStandIn(ep, () => {}, (sock) => {
+      const chunk = Buffer.alloc(1 << 16, 0x61);
+      let open = true;
+      sock.on("close", () => (open = false));
+      sock.write(`${"A".repeat(43)} `);
+      const pump = (): void => {
+        while (open) {
+          written += chunk.length;
+          if (!sock.write(chunk)) return void sock.once("drain", pump);
+        }
+      };
+      pump();
+    });
+    const r = await runRelay(relayEnv(ep));
+    check(
+      "a proven reply that never ends: the hook stops reading near its 1 MiB cap and prints nothing",
+      r.out === "" && written < 3 << 20 && /may have been handled/.test(r.err),
+      { written, err: r.err },
+    );
+    await closed(s.server);
+  }
 
   // ---- versions --------------------------------------------------------------------------------
   {
@@ -518,7 +578,7 @@ try {
     const s = await standIn(ep.path, () => {});
     const r = await runRelay(env);
     check("a hook whose material is of another version prints nothing and dials nothing", r.out === "" && s.connections() === 0 && /could not be resolved/.test(r.err), { r, c: s.connections() });
-    const call = await controlCall(v2, { op: "shutdown" }, { timeoutMs: 1000 }).then(() => "resolved", (e: Error) => e.message);
+    const call = await controlCall(v2, { op: "shutdown" }, { timeoutMs: 1000, maxReplyBytes: 1024 }).then(() => "resolved", (e: Error) => e.message);
     check("the Manager's call refuses an endpoint of another version before dialing", /version 2/.test(call) && s.connections() === 0, call);
     let threw = "";
     try {
@@ -572,7 +632,7 @@ try {
   if (!isWin) {
     // The directory used to be `cotal-ctl-<uid>`, one per user: any local user who planted that name
     // first (a symlink, or a directory open to others) made every launch of that user refuse. Now
-    // each launch gets its own directory, named from the key, which the server makes when it binds.
+    // each launch gets its own directory, named from the key, which minting makes.
     const planted = join(tmpdir(), `cotal-ctl-${process.getuid!()}`);
     const plantedTarget = join(scratch, "planted-target");
     mkdirSync(plantedTarget, { mode: 0o700 });
@@ -602,11 +662,49 @@ try {
     const other = controlEndpoint("ctlx", "dir", artifacts);
     check("each launch gets its own socket directory, recorded as a launch artifact", dirname(ep.path) !== dirname(other.path) && artifacts.includes(dirname(ep.path)), ep.path);
     check("the directory name is not derived from the user alone", !dirname(ep.path).endsWith(`cotal-ctl-${process.getuid!()}`) && dirname(dirname(ep.path)) === tmpdir(), ep.path);
-    check("minting creates nothing on disk: the server makes the directory when it binds", !existsSync(dirname(ep.path)));
+    // The path is public once minted (the child's env, the reclaim watcher's argv), so the directory
+    // has to exist by then: made here, exclusively, never at bind.
+    const st = existsSync(dirname(ep.path)) ? statSync(dirname(ep.path)) : undefined;
+    check(
+      "minting makes the socket directory at once, owned by this user with mode 0700",
+      st !== undefined && st.isDirectory() && st.uid === process.getuid!() && (st.mode & 0o777) === 0o700,
+      st && (st.mode & 0o777).toString(8),
+    );
     const dirServer = await realServer(ep);
-    const st = statSync(dirname(ep.path));
-    check("the control socket's directory is owned by this user with mode 0700", st.uid === process.getuid!() && (st.mode & 0o777) === 0o700, (st.mode & 0o777).toString(8));
+    check("the server binds in the directory minting made", dirServer.server.listening);
     await closed(dirServer.server);
+
+    // Same pid and key give the same name, which stands in for another user who read the path and
+    // made the directory before this launch did.
+    const key = randomBytes(32).toString("base64url");
+    const taken = controlEndpoint("ctlx", "taken", artifacts, key);
+    rmSync(dirname(taken.path), { recursive: true });
+    mkdirSync(dirname(taken.path), { mode: 0o755 });
+    const before = artifacts.length;
+    let takenError = "";
+    try {
+      controlEndpoint("ctlx", "taken", artifacts, key);
+    } catch (e) {
+      takenError = (e as Error).message;
+    }
+    check(
+      "a directory that already exists is refused at mint and not recorded as this launch's",
+      /already exists/.test(takenError) && artifacts.length === before && existsSync(dirname(taken.path)),
+      takenError,
+    );
+    rmSync(dirname(taken.path), { recursive: true, force: true });
+
+    const gone = controlEndpoint("ctlx", "gone", artifacts);
+    rmSync(dirname(gone.path), { recursive: true });
+    let goneError = "";
+    const goneServer = startControlServer({} as MeshAgent, gone, async () => ({}));
+    goneServer.on("error", (e) => (goneError = e.message));
+    await sleep(100);
+    check(
+      "a server whose directory is missing refuses to bind and does not make it",
+      !goneServer.listening && /does not exist/.test(goneError) && !existsSync(dirname(gone.path)),
+      goneError,
+    );
 
     const open = join(scratch, "open");
     mkdirSync(open, { mode: 0o755 });
@@ -616,7 +714,7 @@ try {
     const r = await runRelay(relayEnv(exposed));
     check("a socket in a directory open to others: the hook connects to nothing and prints nothing", r.out === "" && s.connections() === 0, { r, c: s.connections() });
     check("the hook says once that the directory is not private", /not in a directory private/.test(r.err), r.err);
-    const call = await controlCall(exposed, { op: "session" }, { timeoutMs: 1000 }).then(() => "resolved", (e: Error) => e.message);
+    const call = await controlCall(exposed, { op: "session" }, { timeoutMs: 1000, maxReplyBytes: 16 * 1024 }).then(() => "resolved", (e: Error) => e.message);
     check("the Manager's call refuses the same directory before dialing", /not a private directory/.test(call) && s.connections() === 0, call);
     await closed(s.server);
     let bindError = "";

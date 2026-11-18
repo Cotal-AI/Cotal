@@ -62,7 +62,7 @@ if (process.argv.includes("--listener")) {
   };
   // A proven reply, or "" when the listener does not prove it holds `presented` (the control exchange).
   const request = (presented: string): Promise<string> =>
-    controlCall({ path, token: presented, version: CONTROL_PROTOCOL_VERSION }, { event: {} }, { timeoutMs: 1_000 }).catch(() => "");
+    controlCall({ path, token: presented, version: CONTROL_PROTOCOL_VERSION }, { event: {} }, { timeoutMs: 1_000, maxReplyBytes: 1 << 20 }).catch(() => "");
   try {
     const first = launch();
     await until(() => first.stdout().includes("READY"));

@@ -17,6 +17,14 @@ import { controlFromEnv, hasIdentity } from "./session-env.js";
 export { hasIdentity };
 
 const TIMEOUT_MS = 2000;
+/** The most reply JSON a hook takes, in bytes. A reply is the hook's output for its runtime, and the
+ *  largest today is the Claude Code hook's, whose injected context is capped at 9,000 characters:
+ *  under 64 KiB as JSON even if every character were escaped. 1 MiB, the request cap, leaves room for
+ *  that to grow and still bounds what a proven but runaway server can make a hook hold. */
+const MAX_HOOK_REPLY_BYTES = 1 << 20;
+const MAY_HAVE_BEEN_HANDLED =
+  "this session's control endpoint proved it holds the session's key and was sent the event, " +
+  "but no proven reply came back, so the event may have been handled. No reply was used.";
 /** A startup hook may run before the MCP process has bound its socket. Stay inside the existing
  * hook budget, but do not turn one early ENOENT into a permanently lost lifecycle event. */
 const CONNECT_RETRY_INITIAL_MS = 25;
@@ -191,7 +199,16 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
       }
     });
   };
-  const timer = setTimeout(() => finish(""), TIMEOUT_MS);
+  // Set once the event has been written to a proven server. Past that point every way of ending
+  // without a proven reply (the deadline, a socket error, the exchange refusing) says the event may
+  // have been handled, and nothing is retried.
+  let requestSent = false;
+  const unanswered = (): void => {
+    if (settled) return;
+    if (requestSent) warnOnce(MAY_HAVE_BEEN_HANDLED);
+    finish("");
+  };
+  const timer = setTimeout(unanswered, TIMEOUT_MS);
 
   const retryLater = (): void => {
     const wait = retryDelayMs;
@@ -222,24 +239,25 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
       if (settled || sock !== candidate) return;
       connected = true;
       try {
-        clientExchange(candidate, endpoint, { event, handoff: true }, (result) => {
-          if (settled || sock !== candidate) return;
-          if (result.ok) return finishWithReceipt(result.reply, result.receipt, candidate);
-          // Once the request has been written the server may have handled it, so say so rather than
-          // claim nothing happened. Either way nothing is retried and no reply is used.
-          if (result.requestSent)
-            warnOnce(
-              "this session's control endpoint proved it holds the session's key and was sent the event, " +
-                "but no proven reply came back, so the event may have been handled. No reply was used.",
-            );
-          // A stand-in on a dead server's name, or a connector from another release, both end here.
-          else
+        clientExchange(
+          candidate,
+          endpoint,
+          { event, handoff: true },
+          (result) => {
+            if (settled || sock !== candidate) return;
+            if (result.ok) return finishWithReceipt(result.reply, result.receipt, candidate);
+            // Once the request has been written the server may have handled it, so say so rather
+            // than claim nothing happened. Either way nothing is retried and no reply is used.
+            if (result.requestSent) return unanswered();
+            // A stand-in on a dead server's name, or a connector from another release, both end here.
             warnOnce(
               "this session's control endpoint did not prove it holds the session's key, so nothing was " +
                 "relayed and no reply was used. A connector from another release looks the same as a stand-in.",
             );
-          finish("");
-        });
+            finish("");
+          },
+          { maxReplyBytes: MAX_HOOK_REPLY_BYTES, onRequestSent: () => (requestSent = true) },
+        );
       } catch {
         finish("");
       }
@@ -254,7 +272,7 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
       // Only SessionStart may outpace creation of the connector process. Later hooks must preserve
       // immediate fail-open, and once the frame may have reached a connector any retry could deliver
       // one lifecycle event twice.
-      finish("");
+      unanswered();
     });
   };
 

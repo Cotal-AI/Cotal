@@ -24,6 +24,7 @@ import {
   parsePrincipalKey,
   principalKey,
   writeLaunchMaterial,
+  discardLaunchArtifacts,
   type ControlEndpoint,
   type LaunchMaterial,
   type McpServerSpec,
@@ -265,7 +266,9 @@ export function connectorLaunchOptions(
  * The file's private directory is appended to `artifacts`, the launch's artifact list (core
  * launch-artifacts), so the launcher that spawns the spec removes it once the child has exited, the
  * same way it removes a persona carrier. Call it after the connector's last refusal: a launch that
- * throws returns no spec, and then nothing owns the directory.
+ * throws returns no spec, and then nothing owns the directory. When it fails, it removes every
+ * artifact recorded so far (the control socket's directory included) before the error propagates,
+ * as `writeLaunchArtifact` does.
  *
  * Refuses a creds+userAuth combination here (one launch, one identity plane - U10), which is where
  * `userAuthEnv` refused it.
@@ -282,6 +285,15 @@ export function materialEnv(
   },
   artifacts: string[],
 ): Record<string, string> {
+  try {
+    return writeMaterial(opts, artifacts);
+  } catch (e) {
+    discardLaunchArtifacts(artifacts);
+    throw e;
+  }
+}
+
+function writeMaterial(opts: Parameters<typeof materialEnv>[0], artifacts: string[]): Record<string, string> {
   if (opts.userAuth && opts.creds)
     throw new Error("launch: creds (static auth) and userAuth (user-mode auth) are mutually exclusive — one launch carries one identity plane");
   const material: LaunchMaterial = {};

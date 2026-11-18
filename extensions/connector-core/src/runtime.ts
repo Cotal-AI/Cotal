@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
@@ -24,13 +25,15 @@ export const SUN_PATH_MAX_BYTES = process.platform === "darwin" ? 104 : 108;
  *
  * The id is `sha256(space\0name\0pid\0token)` (base64url, 22 characters): unguessable and
  * collision-free without leaking identity. Off Windows the socket is `ctl.sock` in a directory of
- * its own for this launch, `cotal-ctl-<id>` under `tmpdir()`. The server makes it with mode 0700
- * right before it binds and checks it for owner and mode, and every client checks it again before it
- * connects. Another user therefore cannot create a name there, even after the server has exited, and
- * cannot block the launch by planting the directory first, because nobody without the key can
- * compute its name. The directory is appended to `artifacts`, so the launcher removes it with the
- * launch's other artifacts once the child has exited; a launch that refuses after this call has
- * created nothing to remove. Windows has no filesystem socket Node can bind, so the path is
+ * its own for this launch, `cotal-ctl-<id>` under `tmpdir()`, which this call makes with mode 0700
+ * and refuses to reuse. It has to exist before the path leaves this process: the path rides the
+ * child's environment and the argv of the watcher `reclaimWithChild` starts, which any local user can
+ * read in `/proc`, so a directory that already exists is not this launch's. The server checks it for
+ * owner and mode before it binds, and every client checks it again before it connects, so another
+ * user cannot create a name there, even after the server has exited. The directory is appended to
+ * `artifacts`, so the launcher removes it with the launch's other artifacts once the child has
+ * exited. Call this after every refusal a launch can make, since it is the launch's first write.
+ * Windows has no filesystem socket Node can bind, so the path is
  * a named pipe (`\\.\pipe\…`) in the global namespace, where any local process can take a free
  * name. There the exchange is the boundary: a stand-in that cannot prove it holds the key gets no
  * request and its reply is never used.
@@ -67,6 +70,12 @@ export function controlEndpoint(
         `${SUN_PATH_MAX_BYTES - tail.length} bytes — TMPDIR is ${Buffer.byteLength(tmpdir())} bytes ` +
         `(${tmpdir()}). Point TMPDIR at a shorter directory.`,
     );
+  }
+  try {
+    mkdirSync(dir, { mode: 0o700 });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    throw new Error(`control socket directory ${dir} already exists, so another process made it before this launch did; refusing to use it`);
   }
   artifacts.push(dir);
   return { path, token, version: CONTROL_PROTOCOL_VERSION };

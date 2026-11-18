@@ -411,8 +411,10 @@ quartet, without a material file. A material file combined with direct material 
 
 Claude Code and jcode sessions require a local control endpoint. A hand-driven session supplies
 `COTAL_CONTROL_SOCKET`, a random secret in `COTAL_CONTROL_KEY`, and `COTAL_CONTROL_VERSION=1`.
-Off Windows the socket path must sit in a directory only that user can enter, such as one made with
-mode `0700`. OpenCode, Codex, and pi can start without them.
+The key is used as given, so a key with whitespace around it is refused, and the version must read
+`1` with nothing around it. A version set without a key is refused. Off Windows the socket path must
+sit in an existing directory only that user can enter, such as one made with mode `0700`; the server
+does not create it. OpenCode, Codex, and pi can start without them.
 
 `eventsRequired` is an additive boolean in launch material. The launcher derives it from the selected
 user-auth registration. A Claude, OpenCode, Codex, Jcode or Pi launch that carries it also sets
@@ -427,9 +429,9 @@ naming the missing part. The key travels with its protocol version (`controlKey`
 `controlVersion` in the material, `COTAL_CONTROL_KEY` and `COTAL_CONTROL_VERSION` for a hand-driven
 session). A key without a version, or with a version this release does not speak, is refused where
 it is read. A release before the control exchange carried the key as `controlToken` and
-`COTAL_CONTROL_TOKEN`. Such a release finds no key in a new launch and refuses it, and this release
-refuses the old names, so a launcher and a connector from different releases refuse each other in
-both directions. A session launched before the upgrade must be restarted. The lifecycle hook relay
+`COTAL_CONTROL_TOKEN`. A reader from such a release finds no key in a new launch, and this release
+refuses the old names. An older Hermes launcher mints its own key, so given a new launch it runs its
+own older sidecar and gateway together. A session launched before the upgrade must be restarted. The lifecycle hook relay
 catches this error, writes one warning to stderr without the values, and skips the relay so the hook
 does not block the session.
 

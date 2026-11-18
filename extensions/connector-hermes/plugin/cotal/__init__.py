@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import hooks, replies
-from .control_exchange import CONTROL_PROTOCOL_VERSION, ControlConfigError, control_key
+from .control_exchange import CONTROL_PROTOCOL_VERSION, ControlConfigError, control_key, env_set
 from .tools import register_tools
 
 
@@ -99,7 +99,7 @@ def _standalone_control_key() -> None:
     as it is, and half a pair, a version this plugin does not speak, two carriers, or the retired
     ``COTAL_CONTROL_TOKEN`` are refused before any sidecar starts rather than filled in."""
     carried = ("COTAL_CONTROL_KEY", "COTAL_CONTROL_VERSION", "COTAL_CONTROL_TOKEN", "COTAL_LAUNCH_MATERIAL")
-    if not any(os.environ.get(k) for k in carried):
+    if not any(env_set(k) for k in carried):
         os.environ["COTAL_CONTROL_KEY"] = secrets.token_urlsafe(32)
         os.environ["COTAL_CONTROL_VERSION"] = str(CONTROL_PROTOCOL_VERSION)
         return

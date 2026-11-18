@@ -166,6 +166,10 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
     if (v === undefined) return;
     if (typeof v !== "string" || !v.trim())
       throw new Error(`launch material: ${path} has a ${key} that is not a non-empty string`);
+    // A key is used as given by every reader, the Hermes Python one included, so one that a reader
+    // could be tempted to trim is refused instead.
+    if (key === "controlKey" && v !== v.trim())
+      throw new Error(`launch material: ${path} has a controlKey with whitespace around it`);
     material[key] = v;
   };
   str("servers");

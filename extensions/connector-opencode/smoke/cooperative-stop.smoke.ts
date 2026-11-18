@@ -66,7 +66,7 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
 
 // Send the manager's cooperative shutdown to a control endpoint and return its reply ("" when none).
 function sendShutdown(path: string, token: string): Promise<string> {
-  return controlCall({ path, token, version: CONTROL_PROTOCOL_VERSION }, { op: "shutdown" }, { timeoutMs: 2000 }).catch(() => "");
+  return controlCall({ path, token, version: CONTROL_PROTOCOL_VERSION }, { op: "shutdown" }, { timeoutMs: 2000, maxReplyBytes: 1024 }).catch(() => "");
 }
 
 // THE SEATS DO NOT INHERIT THE OPERATOR'S OWN SESSION. Ambient COTAL_* and OPENCODE_* belong to

@@ -18,7 +18,7 @@
  *
  * Run: pnpm smoke:temp-containment
  */
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -267,8 +267,8 @@ try {
   // platform grades the message it would actually get.
   const SUN_PATH_LIMIT = process.platform === "darwin" ? 104 : 108;
   const CONTROL_TAIL_BYTES = "/cotal-ctl-".length + 22 + "/ctl.sock".length;
-  // The control socket's directory goes on this list when it is minted; nothing here binds, so none
-  // is created, and the list is only what the call requires.
+  // Minting makes the control socket's directory and records it here; the cells below remove what
+  // they minted.
   const controlDirs: string[] = [];
   let deep = root;
   while (Buffer.byteLength(deep) <= SUN_PATH_LIMIT - CONTROL_TAIL_BYTES) deep = join(deep, "dddddddddd");
@@ -348,6 +348,7 @@ try {
     process.env.TMPDIR = TEMP_ROOT;
     const path = controlEndpoint("space", "name", controlDirs).path;
     process.env.TMPDIR = originalTmp;
+    for (const dir of controlDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
     check(
       "the minted control socket path is within the limit and is a .sock",
       Buffer.byteLength(path) <= SUN_PATH_LIMIT && path.endsWith(".sock"),

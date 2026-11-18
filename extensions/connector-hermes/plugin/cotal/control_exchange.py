@@ -17,9 +17,10 @@ and reply are the bytes between the single space and the newline)::
     Mc = HMAC(K, "cotal-control/1\\0client\\0" Nc "\\0" Ns "\\0" request)
     Mr = HMAC(K, "cotal-control/1\\0reply\\0"  Nc "\\0" Ns "\\0" reply)
 
-Every line is bounded in bytes before it is parsed or a MAC is computed over it; the hello and the
-challenge at 1 KiB. The hooks send no delivery receipt, so the fifth line the TypeScript relay can
-send does not occur here.
+Every line is bounded in bytes before it is parsed or a MAC is computed over it: the hello and the
+challenge at 1 KiB, the reply's JSON at 4 KiB. The challenge and the reply are decoded strictly as
+UTF-8, as the TypeScript client decodes them. The hooks send no delivery receipt, so the fifth line
+the TypeScript relay can send does not occur here.
 
 The bridge socket does not run the exchange. Its client presents :func:`bridge_token`, derived
 from the key, in its first frame, so the key crosses neither socket. That token authenticates the
@@ -48,8 +49,29 @@ CONTROL_PROTOCOL_VERSION = 1
 # How long a client waits, from connect, for the server to prove it holds the key.
 CLIENT_PROOF_DEADLINE_S = 1.0
 _MAX_HANDSHAKE_LINE = 1024
+# The hooks' replies are ``{}``; the cap only bounds what a proven but runaway server can send.
+_MAX_REPLY_JSON = 4096
 _BASE64URL_43 = re.compile(r"[A-Za-z0-9_-]{43}")
 _MAC_CHARS = 43
+# What JavaScript's String.prototype.trim removes, so that "set" and "has whitespace around it" mean
+# the same here as in the TypeScript readers. Python's own str.strip() removes a different set.
+_JS_WHITESPACE = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+# The direct variables the TypeScript reader refuses beside a material file (session-env.ts
+# DIRECT_MATERIAL_VARS): one launch carries one set of connection material.
+_DIRECT_MATERIAL_VARS = (
+    "COTAL_CREDS",
+    "COTAL_SERVERS",
+    "COTAL_TOKEN",
+    "COTAL_OWNER",
+    "COTAL_ACTOR",
+    "COTAL_SENTINEL_CREDS",
+    "COTAL_BEARER_CMD",
+    "COTAL_EVENTS_REQUIRED",
+    "COTAL_CONTROL_KEY",
+    "COTAL_CONTROL_VERSION",
+    "COTAL_CONTROL_TOKEN",
+    "COTAL_LINK",
+)
 
 
 class ControlConfigError(Exception):
@@ -78,8 +100,23 @@ def _mac_matches(presented: Any, expected: str) -> bool:
 
 
 def _is_version(value: Any) -> bool:
-    """Exactly the integer this module speaks: ``True`` equals 1 in Python, and is not a version."""
-    return type(value) is int and value == CONTROL_PROTOCOL_VERSION
+    """The version this module speaks, as a JSON number. JSON has one number type, so ``1.0`` is 1
+    here as it is to the TypeScript readers; ``True`` equals 1 in Python, and is not a version."""
+    return type(value) in (int, float) and value == CONTROL_PROTOCOL_VERSION
+
+
+def env_set(name: str) -> str | None:
+    """A variable's value when it is set, which means it holds something besides whitespace."""
+    value = os.environ.get(name)
+    return value if value and value.strip(_JS_WHITESPACE) else None
+
+
+def _usable_key(key: Any, where: str) -> str:
+    if not isinstance(key, str) or not key.strip(_JS_WHITESPACE):
+        raise ControlConfigError(f"{where} is not a non-empty string")
+    if key != key.strip(_JS_WHITESPACE):
+        raise ControlConfigError(f"{where} has whitespace around it; a key is used as given, never trimmed")
+    return key
 
 
 def bridge_token(key: str) -> str:
@@ -94,33 +131,39 @@ def control_key() -> str | None:
 
     A managed launch carries the key and its version in the launch material
     (``COTAL_LAUNCH_MATERIAL``, fields ``controlKey`` and ``controlVersion``); a standalone launch
-    exports ``COTAL_CONTROL_KEY`` and ``COTAL_CONTROL_VERSION``. Matches the TypeScript readers: raises
-    :class:`ControlConfigError` for both carriers at once, for half a pair, for a version other than
-    the integer this module speaks, for a material file that is unreadable, malformed or readable
-    beyond its owner, and for ``COTAL_CONTROL_TOKEN`` or ``controlToken``, where a release before the
-    exchange put the key for a hook that sends it.
+    exports ``COTAL_CONTROL_KEY`` and ``COTAL_CONTROL_VERSION``. Reads them by the rule the TypeScript
+    readers apply, which the hooks-control smoke checks in both languages over the same vectors. A
+    variable counts as set when it holds anything besides whitespace. Raises
+    :class:`ControlConfigError` for a material file beside any direct material variable, for half a
+    pair, for a key with whitespace around it, for a version other than the one this module speaks
+    (``COTAL_CONTROL_VERSION`` is exactly ``1``), for a material file that is
+    unreadable, malformed or readable beyond its owner, for a material field that is present but not
+    usable (``null`` included), and for ``COTAL_CONTROL_TOKEN`` or ``controlToken``, where a release
+    before the exchange put the key for a hook that sends it.
     """
-    if os.environ.get("COTAL_CONTROL_TOKEN"):
+    if env_set("COTAL_CONTROL_TOKEN"):
         raise ControlConfigError(
             "COTAL_CONTROL_TOKEN is the control key variable of a release before the control exchange; "
             "set COTAL_CONTROL_KEY and COTAL_CONTROL_VERSION instead"
         )
-    direct = os.environ.get("COTAL_CONTROL_KEY")
-    direct_version = os.environ.get("COTAL_CONTROL_VERSION")
-    path = os.environ.get("COTAL_LAUNCH_MATERIAL")
-    if path and (direct or direct_version):
-        raise ControlConfigError(
-            "this launch carries the control key both in COTAL_LAUNCH_MATERIAL and in COTAL_CONTROL_KEY or "
-            "COTAL_CONTROL_VERSION; one launch carries one, so drop one of them"
-        )
-    if direct or direct_version:
-        if not direct:
-            raise ControlConfigError("COTAL_CONTROL_VERSION is set without COTAL_CONTROL_KEY")
-        if (direct_version or "").strip() != str(CONTROL_PROTOCOL_VERSION):
-            raise ControlConfigError("COTAL_CONTROL_VERSION does not name the control protocol version this plugin speaks")
-        return direct
+    path = (os.environ.get("COTAL_LAUNCH_MATERIAL") or "").strip(_JS_WHITESPACE)
     if not path:
-        return None
+        direct = env_set("COTAL_CONTROL_KEY")
+        direct_version = env_set("COTAL_CONTROL_VERSION")
+        if direct is None:
+            if direct_version is not None:
+                raise ControlConfigError("COTAL_CONTROL_VERSION is set without COTAL_CONTROL_KEY")
+            return None
+        key = _usable_key(direct, "COTAL_CONTROL_KEY")
+        if direct_version != str(CONTROL_PROTOCOL_VERSION):
+            raise ControlConfigError("COTAL_CONTROL_VERSION does not name the control protocol version this plugin speaks")
+        return key
+    both = [name for name in _DIRECT_MATERIAL_VARS if env_set(name)]
+    if both:
+        raise ControlConfigError(
+            f"this launch carries connection material both in COTAL_LAUNCH_MATERIAL and as {', '.join(both)}; "
+            "one launch carries one, so drop one of them"
+        )
     try:
         if os.name != "nt" and (os.stat(path).st_mode & 0o077):
             raise ControlConfigError("the launch material is readable beyond its owner")
@@ -132,14 +175,14 @@ def control_key() -> str | None:
         raise ControlConfigError("the launch material is not a JSON object")
     if "controlToken" in material:
         raise ControlConfigError("the launch material carries controlToken, the control key field of a release before the control exchange")
-    key = material.get("controlKey")
-    version = material.get("controlVersion")
-    if key is None and version is None:
+    has_key, has_version = "controlKey" in material, "controlVersion" in material
+    if not has_key and not has_version:
         return None
-    if not isinstance(key, str) or not key:
-        raise ControlConfigError("the launch material has a controlVersion without a usable controlKey")
-    if not _is_version(version):
+    key = _usable_key(material["controlKey"], "the launch material's controlKey") if has_key else None
+    if has_version and not _is_version(material["controlVersion"]):
         raise ControlConfigError("the launch material's controlVersion is not the control protocol version this plugin speaks")
+    if key is None or not has_version:
+        raise ControlConfigError("the launch material carries half of the control key and its version; they travel together")
     return key
 
 
@@ -161,14 +204,14 @@ def socket_dir_problem(path: str) -> tuple[bool, str] | None:
     return None
 
 
-def _read_line(sock: socket.socket, buf: bytearray, deadline: float, cap: int | None) -> bytes:
+def _read_line(sock: socket.socket, buf: bytearray, deadline: float, cap: int) -> bytes:
     """One newline-terminated line, without its newline. A line longer than ``cap`` bytes is refused
     whether or not its newline has arrived, so a whole oversized line in one chunk is refused too."""
     while b"\n" not in buf:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ExchangeRefused("deadline passed before a full line arrived")
-        if cap is not None and len(buf) > cap:
+        if len(buf) > cap:
             raise ExchangeRefused("oversized line")
         sock.settimeout(remaining)
         try:
@@ -179,7 +222,7 @@ def _read_line(sock: socket.socket, buf: bytearray, deadline: float, cap: int | 
             raise ExchangeRefused("the connection closed before a full line arrived")
         buf.extend(chunk)
     line, _, rest = bytes(buf).partition(b"\n")
-    if cap is not None and len(line) > cap:
+    if len(line) > cap:
         raise ExchangeRefused("oversized line")
     buf[:] = rest
     return line
@@ -201,9 +244,9 @@ class ClientExchange:
         self._sock.sendall((json.dumps({"v": CONTROL_PROTOCOL_VERSION, "nonce": self._nc}) + "\n").encode("ascii"))
         line = _read_line(self._sock, self._buf, deadline, _MAX_HANDSHAKE_LINE)
         try:
-            hello = json.loads(line)
-        except ValueError as exc:
-            raise ExchangeRefused("the server's challenge is not JSON") from exc
+            hello = json.loads(line.decode("utf-8"))
+        except ValueError as exc:  # UnicodeDecodeError is a ValueError
+            raise ExchangeRefused("the server's challenge is not UTF-8 JSON") from exc
         if not isinstance(hello, dict) or not _is_version(hello.get("v")):
             raise ExchangeRefused("the server speaks another control protocol version")
         ns = hello.get("nonce")
@@ -215,9 +258,13 @@ class ClientExchange:
         body = json.dumps(request).encode("utf-8")
         self._sock.sendall(_mac(self._key, "client", self._nc, ns, body).encode("ascii") + b" " + body + b"\n")
 
-    def reply(self, timeout_s: float) -> bytes:
-        line = _read_line(self._sock, self._buf, time.monotonic() + timeout_s, None)
+    def reply(self, timeout_s: float) -> str:
+        """The reply's JSON text, once its MAC verifies and it decodes as UTF-8."""
+        line = _read_line(self._sock, self._buf, time.monotonic() + timeout_s, _MAC_CHARS + 1 + _MAX_REPLY_JSON)
         mac, sep, body = line.partition(b" ")
         if not sep or len(mac) != _MAC_CHARS or not _mac_matches(mac.decode("latin-1"), _mac(self._key, "reply", self._nc, self._ns, body)):
             raise ExchangeRefused("the reply's MAC does not verify")
-        return body
+        try:
+            return body.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ExchangeRefused("the reply is not UTF-8") from exc

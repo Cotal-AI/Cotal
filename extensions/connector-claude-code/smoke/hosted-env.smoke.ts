@@ -44,7 +44,7 @@ function carried(home: string, source: string) {
 async function hook(env: NodeJS.ProcessEnv, event: Record<string, unknown>): Promise<void> {
   // SessionStart waits the normal 10s initial-connect grace in this intentionally offline fixture.
   const endpoint = { path: env.COTAL_CONTROL_SOCKET!, token: env.COTAL_CONTROL_KEY!, version: CONTROL_PROTOCOL_VERSION };
-  JSON.parse(await controlCall(endpoint, { event }, { timeoutMs: 13000 }));
+  JSON.parse(await controlCall(endpoint, { event }, { timeoutMs: 13000, maxReplyBytes: 1 << 20 }));
 }
 
 async function child(): Promise<void> {

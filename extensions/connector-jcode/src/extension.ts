@@ -148,16 +148,14 @@ export const jcodeConnector: Connector = {
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("jcode connector: tool-sharing (connectors.jcode.mcpServers) is not implemented — the connector owns the private MCP configuration that carries cotal_*");
 
-    // The launch's artifact list (core launch-artifacts) starts here: the control socket's directory
-    // is the first entry, and the launcher removes every entry once the child has exited.
+    // The launch's artifact list (core launch-artifacts): the launcher removes every entry once the
+    // child has exited.
     const artifacts: string[] = [];
-    const control = controlEndpoint(opts.space, opts.name, artifacts);
     const env: Record<string, string> = {
       ...launchEnv({ envAllow: opts.envAllow }),
       ...aclEnv(opts),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
-      COTAL_CONTROL_SOCKET: control.path,
       COTAL_JCODE_HOME: opts.workspaceRoot ?? process.cwd(),
     };
     if (opts.resolvedBinaries?.jcode) env.COTAL_JCODE_BIN = opts.resolvedBinaries.jcode;
@@ -216,7 +214,10 @@ export const jcodeConnector: Connector = {
       );
 
     // Creds, broker URL and the control token ride a 0600 file written after every refusal above.
-    // Its directory is a launch artifact the launcher removes once the child has exited.
+    // Its directory is a launch artifact the launcher removes once the child has exited. The control
+    // endpoint is minted here too, after every refusal, because minting makes its socket directory.
+    const control = controlEndpoint(opts.space, opts.name, artifacts);
+    env.COTAL_CONTROL_SOCKET = control.path;
     Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
 
     // The fork's provenance is the seat's own record of it, written when the host forks.

@@ -307,10 +307,9 @@ export const claudeConnector: Connector = {
     // MCP server its material through the --mcp-config `env` block and giving the hooks a separate
     // control-only file, which depends on host behaviour that has to be verified against a live
     // `claude` first. Tracked separately rather than guessed at here.
-    // The launch's artifact list (core launch-artifacts) starts here: the control socket's directory
-    // is the first entry, and the launcher removes every entry once the child has exited.
+    // The launch's artifact list (core launch-artifacts): the launcher removes every entry once the
+    // child has exited.
     const artifacts: string[] = [];
-    const control = controlEndpoint(opts.space, opts.name, artifacts);
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, mcpKeys: [...mcpServerEnvKeys(shared), ...nativeEnvKeys, ...CLAUDE_MCP_KEYS], envAllow: opts.envAllow }),
       ...aclEnv(opts),
@@ -319,7 +318,6 @@ export const claudeConnector: Connector = {
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the
       // `claude/channel` capability back over MCP, so auto-detection would see it "off".
       COTAL_CHANNEL: "1",
-      COTAL_CONTROL_SOCKET: control.path,
     };
     // The AG-UI event plane. Supporting connectors arm by default; `events: false` is the explicit
     // opt-out. `COTAL_EVENTS` is what makes the matching grant meaningful:
@@ -402,7 +400,10 @@ export const claudeConnector: Connector = {
     // child has exited (core launch-artifacts).
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
     // shells, builds and third-party CLIs this session runs no longer inherit live authority. Its
-    // directory is an artifact, so a later writeLaunchArtifact failure removes it too.
+    // directory is an artifact, so a later writeLaunchArtifact failure removes it too. The control
+    // endpoint is minted here, after every refusal, because minting makes its socket directory.
+    const control = controlEndpoint(opts.space, opts.name, artifacts);
+    env.COTAL_CONTROL_SOCKET = control.path;
     Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
     // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
     // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude

@@ -38,6 +38,13 @@
  *       all relay nothing and say why
  *   H10 the standalone bootstrap mints the key and its version together only when the launch carries
  *       neither, and refuses half a pair instead of filling in the other half
+ *   H11 the Python client bounds and decodes what a key-holding server sends as the TypeScript client
+ *       does: a reply that never ends is refused at 4 KiB, and a challenge or reply that is not UTF-8
+ *       is refused
+ *   H12 one rule for the key's carriers, run over the same vectors through the TypeScript reader
+ *       (`controlFromEnv`) and the Python one (`control_key`): whitespace around a key, a version
+ *       that is not exactly 1, a version without a key, null material fields, and a material file
+ *       beside any direct material variable
  *
  * H3 is the one that turns this from a happy-path test into a cell. The defect's whole character was
  * that it produced no output; an assertion that only checks the good path would have gone green
@@ -48,13 +55,14 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { randomBytes } from "node:crypto";
-import { createServer } from "node:net";
+import { createHmac, randomBytes } from "node:crypto";
+import { createServer, type Socket } from "node:net";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { controlTranscriptMac as mac, skipSuite } from "@cotal-ai/smoke-kit";
+import { controlFromEnv } from "@cotal-ai/connector-core";
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
 
@@ -271,7 +279,7 @@ for (const [label, env] of [
     [
       "a direct key beside a material file",
       { COTAL_LAUNCH_MATERIAL: material("h9c.json", { controlKey: "material-key", controlVersion: 1 }), COTAL_CONTROL_KEY: TOKEN, COTAL_CONTROL_VERSION: "1" },
-      /both in COTAL_LAUNCH_MATERIAL and in COTAL_CONTROL_KEY/,
+      /both in COTAL_LAUNCH_MATERIAL and as COTAL_CONTROL_KEY/,
     ],
     ["COTAL_CONTROL_VERSION with no key", { COTAL_CONTROL_VERSION: "1" }, /without COTAL_CONTROL_KEY/],
   ];
@@ -319,6 +327,207 @@ for (const [label, env] of [
   check("H10: a version with no key is refused, not given a minted key", /without COTAL_CONTROL_KEY/.test(versionOnly.refused ?? ""), versionOnly);
   const both = outcome({ COTAL_CONTROL_KEY: TOKEN, COTAL_CONTROL_VERSION: "1" });
   check("H10: a complete pair is used as it is", both.key === TOKEN && both.version === "1", both);
+}
+
+// H11 - what the Python client takes from a server that holds the key.
+{
+  /** Run one exchange from Python against `path`; report how it ended. */
+  const exchangeFromPython = async (path: string): Promise<Record<string, string>> => {
+    const child = spawn(
+      PY,
+      [
+        "-c",
+        [
+          "import json, socket, sys",
+          "from cotal.control_exchange import ClientExchange, ExchangeRefused",
+          "s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])",
+          "try:",
+          "    ex = ClientExchange(s, sys.argv[2]); ex.open({'event': {}})",
+          "    try: print(json.dumps({'reply': ex.reply(1.0)}))",
+          "    except ExchangeRefused as e: print(json.dumps({'replyRefused': str(e)}))",
+          "except ExchangeRefused as e: print(json.dumps({'openRefused': str(e)}))",
+        ].join("\n"),
+        path,
+        TOKEN,
+      ],
+      { env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", PYTHONPATH: PLUGIN_DIR }, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let out = "";
+    let err = "";
+    child.stdout.setEncoding("utf8").on("data", (d: string) => (out += d));
+    child.stderr.setEncoding("utf8").on("data", (d: string) => (err += d));
+    await once(child, "exit");
+    try {
+      return JSON.parse(out.trim().split("\n").pop() ?? "") as Record<string, string>;
+    } catch {
+      return { unparseable: `${out} ${err}` };
+    }
+  };
+  /** A server holding TOKEN: `challenge` gives the challenge bytes, `reply` runs on the request. */
+  const keyServer = (name: string, challenge: (nc: string, ns: string) => Buffer, reply: (sock: Socket, nc: string, ns: string) => void) => {
+    const path = join(work, name);
+    const server = createServer((sock) => {
+      sock.on("error", () => {});
+      const ns = randomBytes(32).toString("base64url");
+      sock.once("data", (hello) => {
+        const nc = (JSON.parse(hello.toString().split("\n")[0]) as { nonce: string }).nonce;
+        sock.write(challenge(nc, ns));
+        sock.once("data", () => reply(sock, nc, ns));
+      });
+    });
+    server.listen(path);
+    return { path, server };
+  };
+  const proof = (nc: string, ns: string): Buffer => Buffer.from(JSON.stringify({ v: 1, nonce: ns, mac: mac(TOKEN, "server", nc, ns) }) + "\n");
+
+  let written = 0;
+  const flood = keyServer("h11-flood.sock", proof, (sock) => {
+    const chunk = Buffer.alloc(1 << 16, 0x61);
+    let open = true;
+    sock.on("close", () => (open = false));
+    sock.write(`${"A".repeat(43)} `);
+    const pump = (): void => {
+      while (open) {
+        written += chunk.length;
+        if (!sock.write(chunk)) return void sock.once("drain", pump);
+      }
+    };
+    pump();
+  });
+  await once(flood.server, "listening");
+  const flooded = await exchangeFromPython(flood.path);
+  check("H11: a proven reply that never ends is refused near the 4 KiB cap", /oversized/.test(flooded.replyRefused ?? "") && written < 1 << 20, { ...flooded, written });
+  flood.server.close();
+
+  const utf16 = keyServer(
+    "h11-utf16.sock",
+    (nc, ns) => Buffer.concat([Buffer.from(JSON.stringify({ v: 1, nonce: ns, mac: mac(TOKEN, "server", nc, ns) }), "utf16le"), Buffer.from("\n")]),
+    (sock, nc, ns) => sock.end(`${mac(TOKEN, "reply", nc, ns, "{}")} {}\n`),
+  );
+  await once(utf16.server, "listening");
+  const sixteen = await exchangeFromPython(utf16.path);
+  check("H11: a challenge encoded as UTF-16 is refused before any request", /not UTF-8 JSON/.test(sixteen.openRefused ?? ""), sixteen);
+  utf16.server.close();
+
+  const latin = keyServer("h11-latin1.sock", proof, (sock, nc, ns) => {
+    const body = Buffer.from('{"a":"\xff"}', "latin1");
+    const replyMac = createHmac("sha256", Buffer.from(TOKEN, "utf8"))
+      .update(Buffer.concat([Buffer.from(`cotal-control/1\0reply\0${nc}\0${ns}\0`, "utf8"), body]))
+      .digest("base64url");
+    sock.end(Buffer.concat([Buffer.from(`${replyMac} `), body, Buffer.from("\n")]));
+  });
+  await once(latin.server, "listening");
+  const notUtf8 = await exchangeFromPython(latin.path);
+  check("H11: a proven reply that is not UTF-8 is refused, not returned", /not UTF-8/.test(notUtf8.replyRefused ?? ""), notUtf8);
+  latin.server.close();
+}
+
+// H12 - one rule for the key's carriers, in both languages, over the same vectors. Each vector is a
+// set of variables and, optionally, the text of a launch-material file; it expects the key, no key,
+// or a refusal. "No key" is TypeScript's refusal of a socket with no key beside it, and Python's None.
+{
+  const K = "k".repeat(43);
+  const direct = (key: string, version = "1"): Record<string, string> => ({ COTAL_CONTROL_KEY: key, COTAL_CONTROL_VERSION: version });
+  const good = JSON.stringify({ controlKey: K, controlVersion: 1 });
+  const vectors: { name: string; env?: Record<string, string>; material?: string; expect: string }[] = [
+    { name: "a direct key and version 1", env: direct(K), expect: K },
+    { name: "a direct key with a leading space", env: direct(` ${K}`), expect: "refused" },
+    { name: "a direct key with a trailing space", env: direct(`${K} `), expect: "refused" },
+    { name: "a direct key with a leading tab", env: direct(`\t${K}`), expect: "refused" },
+    { name: "a direct key with a leading no-break space", env: direct(`\u00a0${K}`), expect: "refused" },
+    { name: "a direct key with a leading byte order mark", env: direct(`\ufeff${K}`), expect: "refused" },
+    { name: "a direct key starting with U+001F (Python whitespace, not JavaScript's)", env: direct(`\u001f${K}`), expect: `\u001f${K}` },
+    { name: "a direct key starting with U+0085 (Python whitespace, not JavaScript's)", env: direct(`\u0085${K}`), expect: `\u0085${K}` },
+    { name: "a whitespace-only key beside a version", env: direct("   "), expect: "refused" },
+    { name: "version 01", env: direct(K, "01"), expect: "refused" },
+    { name: "version ' 1'", env: direct(K, " 1"), expect: "refused" },
+    { name: "version '1 '", env: direct(K, "1 "), expect: "refused" },
+    { name: "version 2", env: direct(K, "2"), expect: "refused" },
+    { name: "version +1", env: direct(K, "+1"), expect: "refused" },
+    { name: "version 1.0", env: direct(K, "1.0"), expect: "refused" },
+    { name: "version in fullwidth digits", env: direct(K, "\uff11"), expect: "refused" },
+    { name: "a key with an empty version", env: { COTAL_CONTROL_KEY: K, COTAL_CONTROL_VERSION: "" }, expect: "refused" },
+    { name: "a key with no version", env: { COTAL_CONTROL_KEY: K }, expect: "refused" },
+    { name: "a version with no key", env: { COTAL_CONTROL_VERSION: "1" }, expect: "refused" },
+    { name: "neither key nor version", env: {}, expect: "none" },
+    { name: "the old COTAL_CONTROL_TOKEN", env: { COTAL_CONTROL_TOKEN: K }, expect: "refused" },
+    { name: "a whitespace-only COTAL_CONTROL_TOKEN", env: { COTAL_CONTROL_TOKEN: "  " }, expect: "none" },
+    { name: "a whitespace-only COTAL_LAUNCH_MATERIAL beside a direct pair", env: { ...direct(K), COTAL_LAUNCH_MATERIAL: "  " }, expect: K },
+    { name: "material with a key and version 1", material: good, expect: K },
+    ...[
+      "COTAL_CREDS",
+      "COTAL_SERVERS",
+      "COTAL_TOKEN",
+      "COTAL_OWNER",
+      "COTAL_ACTOR",
+      "COTAL_SENTINEL_CREDS",
+      "COTAL_BEARER_CMD",
+      "COTAL_EVENTS_REQUIRED",
+      "COTAL_CONTROL_KEY",
+      "COTAL_CONTROL_VERSION",
+      "COTAL_CONTROL_TOKEN",
+      "COTAL_LINK",
+    ].map((name) => ({ name: `material beside a direct ${name}`, env: { [name]: "x" }, material: good, expect: "refused" })),
+    { name: "material beside a whitespace-only COTAL_SERVERS", env: { COTAL_SERVERS: "  " }, material: good, expect: K },
+    { name: "material with a key that has a leading space", material: JSON.stringify({ controlKey: ` ${K}`, controlVersion: 1 }), expect: "refused" },
+    { name: "material with an empty key", material: JSON.stringify({ controlKey: "", controlVersion: 1 }), expect: "refused" },
+    { name: "material with a whitespace-only key", material: JSON.stringify({ controlKey: "  ", controlVersion: 1 }), expect: "refused" },
+    { name: "material with null key and version", material: JSON.stringify({ controlKey: null, controlVersion: null }), expect: "refused" },
+    { name: "material with a null version only", material: JSON.stringify({ controlVersion: null, servers: "nats://x" }), expect: "refused" },
+    { name: "material with a version and no key", material: JSON.stringify({ controlVersion: 1 }), expect: "refused" },
+    { name: "material with a key and no version", material: JSON.stringify({ controlKey: K }), expect: "refused" },
+    { name: "material with version 1.0", material: `{"controlKey":"${K}","controlVersion":1.0}`, expect: K },
+    { name: "material with version true", material: JSON.stringify({ controlKey: K, controlVersion: true }), expect: "refused" },
+    { name: 'material with version "1"', material: JSON.stringify({ controlKey: K, controlVersion: "1" }), expect: "refused" },
+    { name: "material with the old controlToken", material: JSON.stringify({ controlToken: K }), expect: "refused" },
+    { name: "material with no control fields", material: JSON.stringify({ servers: "nats://x" }), expect: "none" },
+  ];
+  const cases = vectors.map((v, i) => {
+    const env = { ...v.env };
+    if (v.material !== undefined) {
+      const path = join(work, `h12-${i}.json`);
+      writeFileSync(path, v.material, { mode: 0o600 });
+      env.COTAL_LAUNCH_MATERIAL = path;
+    }
+    return env;
+  });
+  const ts = cases.map((env) => {
+    try {
+      const ep = controlFromEnv({ COTAL_CONTROL_SOCKET: join(work, "h12.sock"), ...env });
+      return ep ? ep.token : "none";
+    } catch (e) {
+      return /no control key could be resolved/.test((e as Error).message) ? "none" : "refused";
+    }
+  });
+  const py = spawnSync(
+    PY,
+    [
+      "-c",
+      [
+        "import json, os, sys",
+        "from cotal.control_exchange import ControlConfigError, control_key",
+        "out = []",
+        "for env in json.load(sys.stdin):",
+        "    for k in [k for k in os.environ if k.startswith('COTAL_')]: del os.environ[k]",
+        "    os.environ.update(env)",
+        "    try:",
+        "        key = control_key()",
+        "        out.append('none' if key is None else key)",
+        "    except ControlConfigError:",
+        "        out.append('refused')",
+        "print(json.dumps(out))",
+      ].join("\n"),
+    ],
+    { input: JSON.stringify(cases), env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", PYTHONPATH: PLUGIN_DIR }, encoding: "utf8" },
+  );
+  let pyOut: string[] = [];
+  try {
+    pyOut = JSON.parse(py.stdout.trim().split("\n").pop() ?? "[]") as string[];
+  } catch {
+    check("H12: the Python reader ran over every vector", false, py.stderr);
+  }
+  for (const [i, v] of vectors.entries())
+    check(`H12: ${v.name}: both readers give ${v.expect === K ? "the key" : v.expect}`, ts[i] === v.expect && pyOut[i] === v.expect, { ts: ts[i], py: pyOut[i] });
 }
 
 if (failed) {

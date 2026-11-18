@@ -46,7 +46,7 @@
  * the pipe namespace is global, and the exchange is the boundary.
  */
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { lstatSync, mkdirSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { dirname } from "node:path";
 
@@ -144,7 +144,7 @@ function parseHandshake(line: Buffer): Record<string, unknown> | undefined {
  * being read now, MAC included; a line longer than that, complete or not, calls `oversize` instead.
  * `onLine` returns false to stop reading.
  */
-function lineReader(cap: () => number | undefined, onLine: (line: Buffer) => boolean, oversize: () => void): (chunk: Buffer) => void {
+function lineReader(cap: () => number, onLine: (line: Buffer) => boolean, oversize: () => void): (chunk: Buffer) => void {
   let buf: Buffer = Buffer.alloc(0);
   let stopped = false;
   return (chunk) => {
@@ -154,7 +154,7 @@ function lineReader(cap: () => number | undefined, onLine: (line: Buffer) => boo
       const limit = cap();
       const nl = buf.indexOf(NEWLINE);
       const length = nl < 0 ? buf.length : nl;
-      if (limit !== undefined && length > limit) {
+      if (length > limit) {
         stopped = true;
         return oversize();
       }
@@ -197,15 +197,24 @@ function assertPrivateDir(dir: string): void {
     );
 }
 
-/** Make the directory a control socket will be bound in, if it is missing, and check it is private.
- *  A server calls this before it binds, and the launcher when it mints the path. No-op on Windows. */
-export function ensureControlSocketDir(path: string): void {
+/** Check the directory a control socket is about to be bound in: it must already exist, as a real
+ *  directory owned by this user and closed to group and others. A server calls this before it binds.
+ *  It never makes the directory, because by then the path is public: the launcher makes it when it
+ *  mints the path, and a hand-driven path must name a directory its user made. No-op on Windows. */
+export function assertControlSocketDir(path: string): void {
   if (path.startsWith("\0"))
     throw new Error("control socket path is in the Linux abstract namespace, which any local user can bind; use a path in a private directory");
   const dir = socketDir(path);
   if (!dir) return;
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  assertPrivateDir(dir);
+  try {
+    assertPrivateDir(dir);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    throw new Error(
+      `control socket directory ${dir} does not exist. The launcher makes it when it mints the endpoint; ` +
+        `for a hand-driven COTAL_CONTROL_SOCKET, make it yourself with mode 0700.`,
+    );
+  }
 }
 
 /** What a client finds when it checks an endpoint's directory before dialing. `absent` means the
@@ -238,7 +247,10 @@ export type ClientExchangeResult =
  * The client half, on a socket that has just connected. Sends the hello, waits up to
  * {@link CONTROL_CLIENT_PROOF_DEADLINE_MS} for the server's proof, sends the MAC'd `request`, and
  * calls `done` with the reply's JSON text once its MAC verifies, plus the receipt line (`<Mk>\n`) a
- * caller writes back when it asked for one and the reply has reached its own output.
+ * caller writes back when it asked for one and the reply has reached its own output. Every caller
+ * bounds the reply: `maxReplyBytes` caps its JSON in bytes, complete or not. `onRequestSent` runs once
+ * the request has been written, so a caller whose own deadline or socket error ends the exchange
+ * later can say the server may have handled it.
  *
  * Any failure (a wrong version, a bad MAC or nonce, a malformed or oversized line, the proof
  * deadline, the connection closing first) destroys the socket and calls `done` with the reason.
@@ -250,7 +262,7 @@ export function clientExchange(
   endpoint: ControlEndpoint,
   request: Record<string, unknown>,
   done: (result: ClientExchangeResult) => void,
-  opts: { proofDeadlineMs?: number; maxReplyBytes?: number } = {},
+  opts: { proofDeadlineMs?: number; maxReplyBytes: number; onRequestSent?: () => void },
 ): void {
   assertControlEndpoint(endpoint);
   const nc = nonce();
@@ -287,6 +299,7 @@ export function clientExchange(
       } catch {
         return refuse("the connection closed before the request was sent");
       }
+      opts.onRequestSent?.();
       return true;
     }
     const proven = ns;
@@ -297,7 +310,7 @@ export function clientExchange(
     return false;
   };
   const onData = lineReader(
-    () => (ns === undefined ? MAX_HANDSHAKE_LINE_BYTES : opts.maxReplyBytes === undefined ? undefined : MAC_PREFIX_BYTES + opts.maxReplyBytes),
+    () => (ns === undefined ? MAX_HANDSHAKE_LINE_BYTES : MAC_PREFIX_BYTES + opts.maxReplyBytes),
     onLine,
     () => void refuse(ns === undefined ? "the server's challenge is oversized" : "the reply is oversized"),
   );
@@ -408,7 +421,7 @@ export function serverExchange(
 export function controlCall(
   endpoint: ControlEndpoint,
   request: Record<string, unknown>,
-  opts: { timeoutMs: number; maxReplyBytes?: number },
+  opts: { timeoutMs: number; maxReplyBytes: number },
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     assertControlEndpoint(endpoint);

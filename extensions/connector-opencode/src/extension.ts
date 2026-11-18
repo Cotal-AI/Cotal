@@ -237,11 +237,9 @@ export const opencodeConnector: Connector = {
       );
     // Identity rides the process env: the plugin runs in the opencode process and inherits it.
     // Provider inputs cross only through the connector's declared allow-list; spawn.env adds names.
-    // Minted before the env is built: the token goes into the launch material, the path into the env.
-    // The launch's artifact list (core launch-artifacts) starts here: the control socket's directory
-    // is the first entry, and the launcher removes every entry once the child has exited.
+    // The launch's artifact list (core launch-artifacts): the launcher removes every entry once the
+    // child has exited.
     const artifacts: string[] = [];
-    const control = controlEndpoint(opts.space, opts.name, artifacts);
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
@@ -358,9 +356,10 @@ export const opencodeConnector: Connector = {
     // Local control endpoint: the manager sends a cooperative {op:"shutdown"} here on a signal-less
     // runtime (ConPTY/Windows), where a hard kill skips cleanup and the agent lingers until its
     // presence TTL expires. The plugin (in the opencode server process) starts the control server and
-    // leaves the mesh cleanly on shutdown. Minted here; passed to the plugin in the child env (the
-    // token never on argv/logs) — opencode serve inherits this process env, the attached TUI strips
+    // leaves the mesh cleanly on shutdown. Minted here, after every refusal, because minting makes its
+    // socket directory; passed to the plugin in the child env (the key never on argv/logs) — opencode serve inherits this process env, the attached TUI strips
     // COTAL_*. Returned in the LaunchSpec so the manager holds it in memory to drive the stop.
+    const control = controlEndpoint(opts.space, opts.name, artifacts);
     env.COTAL_CONTROL_SOCKET = control.path;
 
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported. It is

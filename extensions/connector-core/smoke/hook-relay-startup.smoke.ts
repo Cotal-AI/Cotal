@@ -145,19 +145,16 @@ async function close(server: Server): Promise<void> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
-/** Mint an endpoint whose socket directory already exists, as it does once the server has made it
- *  but before it binds (a server restarting, or one between its mkdir and its listen). The relay
- *  then really dials and really fails, which is what these cells grade. A directory that does not
- *  exist yet is graded on its own below. */
-function mintWithDir(name: string, token: string): ControlEndpoint {
-  const endpoint = controlEndpoint("hook-relay-startup", name, controlDirs, token);
-  if (process.platform !== "win32") mkdirSync(dirname(endpoint.path), { recursive: true, mode: 0o700 });
-  return endpoint;
+/** Mint an endpoint as a launcher does. Minting makes the socket's directory, so before the server
+ *  binds the relay really dials and really fails, which is what these cells grade. A directory that
+ *  is missing is graded on its own below. */
+function mint(name: string, token: string): ControlEndpoint {
+  return controlEndpoint("hook-relay-startup", name, controlDirs, token);
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "cotal-hook-relay-startup-"));
 try {
-  const late = mintWithDir("late", "startup-race-token");
+  const late = mint("late", "startup-race-token");
   const event = { hook_event_name: "SessionStart", source: "startup" };
   const run = launchRelay(late, event);
   await within(run.ready, 3_000, "relay test shim to start");
@@ -190,7 +187,7 @@ try {
   check("startup race: relay exits cleanly", result.code === 0 && result.stderr === "", result);
 
   const absent = launchRelay(
-    mintWithDir("never-bound", "absent-race-token"),
+    mint("never-bound", "absent-race-token"),
     { hook_event_name: "SessionStart", source: "startup" },
   );
   await within(absent.ready, 3_000, "absent-socket relay to start");
@@ -206,7 +203,7 @@ try {
   );
 
   const later = launchRelay(
-    mintWithDir("later-hook", "later-hook-token"),
+    mint("later-hook", "later-hook-token"),
     { hook_event_name: "UserPromptSubmit" },
   );
   await within(later.ready, 3_000, "later hook relay to start");
@@ -232,28 +229,32 @@ try {
     { ...laterResult, timedOut: laterTimedOut },
   );
 
-  // POSIX: the socket's directory does not exist yet, because the server makes it when it binds. A
-  // SessionStart relay waits for it inside its budget and delivers once the server is up; a later
-  // hook fails open at once and says nothing, as it does for a missing socket.
+  // POSIX: the socket's directory is missing (removed, or a hand-driven path that names one not made
+  // yet). A SessionStart relay waits for it inside its budget and delivers once it exists and the
+  // server is up; a later hook fails open at once and says nothing, as it does for a missing socket.
   if (process.platform !== "win32") {
-    const early = controlEndpoint("hook-relay-startup", "no-dir-yet", controlDirs, "no-dir-yet-token");
+    const early = mint("no-dir-yet", "no-dir-yet-token");
+    rmSync(dirname(early.path), { recursive: true });
     const startEvent = { hook_event_name: "SessionStart", source: "startup" };
     const waiting = launchRelay(early, startEvent);
     waiting.firstDialFailed.catch(() => {}); // nothing to dial until the directory exists
     await within(waiting.ready, 3_000, "no-directory relay to start");
     await new Promise((resolve) => setTimeout(resolve, 200));
     const earlyFrames: unknown[] = [];
+    mkdirSync(dirname(early.path), { mode: 0o700 });
     const earlyServer = await listen(early, earlyFrames);
-    const earlyResult = await within(waiting.done, 3_000, "relay to deliver once the server made its directory and bound");
+    const earlyResult = await within(waiting.done, 3_000, "relay to deliver once its directory exists and the server bound");
     await close(earlyServer.server);
     const earlyReply = earlyResult.stdout.split("\n").filter((line) => line && line !== "RELAY_READY");
     check(
-      "no directory yet: SessionStart waits for the server to make it and bind, then delivers",
+      "no directory yet: SessionStart waits for it and the server's bind, then delivers",
       earlyFrames.length === 1 && earlyReply[0] === JSON.stringify({ handled: true }) && earlyResult.stderr === "",
       { frames: earlyFrames.length, ...earlyResult },
     );
 
-    const quiet = launchRelay(controlEndpoint("hook-relay-startup", "no-dir-later", controlDirs, "no-dir-later-token"), { hook_event_name: "UserPromptSubmit" });
+    const later = mint("no-dir-later", "no-dir-later-token");
+    rmSync(dirname(later.path), { recursive: true });
+    const quiet = launchRelay(later, { hook_event_name: "UserPromptSubmit" });
     quiet.firstDialFailed.catch(() => {});
     await within(quiet.ready, 3_000, "no-directory later hook to start");
     const quietStart = performance.now();

@@ -46,10 +46,16 @@ function sendFrame(ep: ControlEndpoint, frame: Record<string, unknown>, receipt 
       resolve(reply);
     };
     sock.on("connect", () =>
-      clientExchange(sock, ep, frame, (result) => {
-        if (result.ok && receipt) sock.write(result.receipt);
-        finish(result.ok ? result.reply : "");
-      }),
+      clientExchange(
+        sock,
+        ep,
+        frame,
+        (result) => {
+          if (result.ok && receipt) sock.write(result.receipt);
+          finish(result.ok ? result.reply : "");
+        },
+        { maxReplyBytes: 1 << 20 },
+      ),
     );
     sock.on("error", () => finish());
     setTimeout(() => finish(), 2000);

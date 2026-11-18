@@ -166,10 +166,13 @@ the endpoint as `LaunchSpec.control`, and the Manager keeps it in memory for its
 calls. The Hermes launcher mints its own endpoint for its sidecar and gateway and returns none.
 
 Off Windows each launch's socket sits in a directory of its own, `cotal-ctl-<id>` under the temp
-directory, where `<id>` is derived from the key. The server creates the directory with mode `0700`
-when it binds and checks its owner and mode, and every client checks them again before it connects.
-A directory that fails the check counts as no endpoint, and the refusal names the problem and how to
-recover. The launcher records the directory as a launch artifact and removes it once the child has
+directory, where `<id>` is derived from the key. The launcher creates the directory with mode `0700`
+when it mints the endpoint and refuses one that already exists, because from then on its path is
+public: it is in the command line of the process that removes the launch's artifacts, which other
+local users can read. The server checks the directory's owner and mode before
+it binds and never creates it, and every client checks them again before it connects. A directory
+that is missing or fails the check counts as no endpoint, and the refusal names the problem and how
+to recover. The launcher records the directory as a launch artifact and removes it once the child has
 exited. On Windows the endpoint is a named pipe in the global namespace, and the exchange is the only
 boundary.
 
@@ -207,13 +210,14 @@ confirm it.
 
 Every line is bounded in bytes before it is parsed or a MAC is computed over it, whether or not its
 newline has arrived. The hello and the challenge are bounded at 1 KiB, a request's JSON at 1 MiB, and
-a reply's JSON at the limit the client sets. The Manager's session call sets 16 KiB. The 44 bytes of
-MAC and space before a request or reply do not count against its limit.
+a reply's JSON at the limit the client sets: 1 MiB for the hook relay, 16 KiB for the Manager's
+session call, 1 KiB for its stop call, and 4 KiB for the Hermes hooks. The 44 bytes of MAC and space
+before a request or reply do not count against its limit.
 
 A client waits at most 1 second from connect for the server's proof. A server drops a connection that
 has not sent a proven request within 5 seconds of accept. Once a client has sent its request, a
-missing or unproven reply means the server may have handled it, and the hook relay says so. Nothing
-is sent twice.
+missing or unproven reply means the server may have handled it. The hook relay says so whether the
+connection closed, failed, or reached the relay's 2-second deadline. Nothing is sent twice.
 
 A client and a server of different versions refuse each other: the version is in the hello, the
 challenge and every MAC, and nothing is negotiated. A launch whose material carries a key without a
@@ -221,9 +225,11 @@ version, or a version the build does not speak, is refused where it is read.
 
 A release before the exchange carried the key as `controlToken` in the launch material and as
 `COTAL_CONTROL_TOKEN` in the environment, and its hook sent the key in its first frame. The key now
-travels under new names, so a hook or connector from that release finds no key in a new launch and
-refuses it. This release refuses the old names in turn. A session launched before the upgrade must be
-restarted.
+travels under new names, so a reader from that release finds no key in a new launch. A connector
+that requires a control endpoint then refuses to start, and one that can start without it runs with
+none. This release refuses the old names in turn. An older Hermes launcher mints its own key for its
+sidecar and gateway, so given a new launch it runs that older pair by itself. A session launched
+before the upgrade must be restarted.
 
 The Hermes bridge socket sits beside the control socket, in the same private directory. Its adapter
 opens each connection with a `subscribe` carrying a token derived from the key: HMAC-SHA256 keyed

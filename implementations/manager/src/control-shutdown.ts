@@ -3,6 +3,8 @@ import { controlCall, type ControlEndpoint } from "@cotal-ai/core";
 /** Window to deliver the cooperative shutdown frame before we give up and let the runtime's own
  *  grace timer hard-kill. Short — the frame is one small write; this only guards a hung connect. */
 const TIMEOUT_MS = 2_000;
+/** The reply is `{"ok":true}`; anything near this long is not a shutdown acknowledgement. */
+const MAX_REPLY_BYTES = 1024;
 
 /**
  * Ask a managed agent to shut down cleanly over its authenticated control endpoint.
@@ -18,7 +20,7 @@ const TIMEOUT_MS = 2_000;
  * key is held in memory only (never logged or persisted).
  */
 export function controlShutdown(endpoint: ControlEndpoint): void {
-  void controlCall(endpoint, { op: "shutdown" }, { timeoutMs: TIMEOUT_MS }).catch(() => {
+  void controlCall(endpoint, { op: "shutdown" }, { timeoutMs: TIMEOUT_MS, maxReplyBytes: MAX_REPLY_BYTES }).catch(() => {
     /* not running, refused, or unproven — the fallback hard-kill covers it */
   });
 }

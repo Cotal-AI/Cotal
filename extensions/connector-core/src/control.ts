@@ -12,7 +12,7 @@
  */
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { lstatSync, unlinkSync, type Stats } from "node:fs";
-import { assertControlEndpoint, ensureControlSocketDir, serverExchange, type ControlEndpoint, type SealedReply } from "@cotal-ai/core/control-exchange";
+import { assertControlEndpoint, assertControlSocketDir, serverExchange, type ControlEndpoint, type SealedReply } from "@cotal-ai/core/control-exchange";
 import type { MeshAgent, InboxItem } from "./agent.js";
 import { fmtDeliveryItem, fmtItem } from "./framing.js";
 
@@ -328,7 +328,7 @@ export function startControlServer(
     if (opts.fatalBind && !bound) process.exit(1);
   });
   try {
-    ensureControlSocketDir(path);
+    assertControlSocketDir(path);
   } catch (e) {
     // Report it the way a failed bind is reported, after the caller has attached its listeners, so
     // a managed listener exits rather than serving from a directory another user can enter.

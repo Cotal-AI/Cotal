@@ -45,7 +45,7 @@
 import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { CONTROL_SERVER_AUTH_DEADLINE_MS, MAX_CONTROL_REQUEST_BYTES, ensureControlSocketDir, type ControlEndpoint } from "@cotal-ai/core";
+import { CONTROL_SERVER_AUTH_DEADLINE_MS, MAX_CONTROL_REQUEST_BYTES, assertControlSocketDir, type ControlEndpoint } from "@cotal-ai/core";
 import {
   cotalToolSpecs,
   parseToolArgs,
@@ -130,7 +130,7 @@ function tokenMatches(presented: unknown, digest: Buffer): boolean {
  *  launch's control endpoint; the first frame must carry {@link bridgeToken} of its key. */
 export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, control: ControlEndpoint): BridgeServer {
   const digest = createHash("sha256").update(bridgeToken(control)).digest();
-  ensureControlSocketDir(socketPath);
+  assertControlSocketDir(socketPath);
 
   if (process.platform !== "win32" && existsSync(socketPath)) {
     try {

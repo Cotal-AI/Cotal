@@ -32,7 +32,7 @@ function check(name: string, passed: boolean, detail?: unknown): void {
 /** One control exchange, as the hook relay runs it. Resolves the reply, or undefined when the
  *  exchange was refused (a client without the session's key gets no reply). */
 async function hook(path: string, token: string, event: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
-  const reply = await controlCall({ path, token, version: CONTROL_PROTOCOL_VERSION }, { event }, { timeoutMs: 13000 }).catch((e: Error) => {
+  const reply = await controlCall({ path, token, version: CONTROL_PROTOCOL_VERSION }, { event }, { timeoutMs: 13000, maxReplyBytes: 1 << 20 }).catch((e: Error) => {
     if (/prove|MAC|closed/.test(e.message)) return undefined;
     throw e;
   });

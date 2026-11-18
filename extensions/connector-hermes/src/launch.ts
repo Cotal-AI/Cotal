@@ -297,6 +297,10 @@ function forkHermesSession(opts: { sourceHome: string; source: string; seatHome:
   return JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as HermesFork;
 }
 
+/** The control socket's per-launch directory, once minted. Shutdown removes it after the gateway has
+ *  exited, and a launch that fails before then removes it on its way out. */
+const controlDirs: string[] = [];
+
 async function main(): Promise<void> {
   // No identity → a plain run, not a launcher-spawned agent. Stay off the mesh.
   if (!hasIdentity()) {
@@ -336,10 +340,13 @@ async function main(): Promise<void> {
     log(`${fork.created ? "forked" : "continuing the fork of"} Hermes session ${fork.source}${fork.title ? ` ${JSON.stringify(fork.title)}` : ""} as ${fork.fork} (${fork.messages} messages, transcript sha256:${fork.transcriptSha256})`);
   }
 
+  // Fail loudly before we hand control to the gateway if the Hermes API line is wrong, and before the
+  // control endpoint is minted, since minting makes its socket directory.
+  if (!fork) assertHermesVersion();
+
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.
   // This launcher owns the control socket's per-launch directory and removes it at shutdown.
-  const controlDirs: string[] = [];
   const control = controlEndpoint(config.space, config.name, controlDirs);
   const bridgeSock = bridgeSocketPath(control.path);
   const toolsFile = join(home, "cotal-tools.json");
@@ -381,9 +388,6 @@ async function main(): Promise<void> {
 
   const sidecar = startSidecar();
 
-  // Fail loudly before we hand control to the gateway if the Hermes API line is wrong.
-  if (!fork) assertHermesVersion();
-
   // A managed gateway's temp files land inside the root a stop removes, not in the shared temp dir.
   const gatewayTmp = managed && join(managed.root, "tmp");
   if (gatewayTmp) mkdirSync(gatewayTmp, { recursive: true });
@@ -403,10 +407,11 @@ async function main(): Promise<void> {
   const child = spawnHermesGateway({ pkgDir: PKG_DIR, env: childEnv });
   const gatewayExit = new Promise<void>((done) => child.once("exit", () => done()));
 
-  // Remove the managed root, but only once the gateway can no longer write into it: let it drain,
-  // kill its tree if it is still up, and wait for its exit. Removing earlier would let a draining
-  // gateway recreate part of the directory after it was deleted.
-  const removeManaged = async (root: string): Promise<void> => {
+  // Let the gateway drain after SIGTERM, kill its tree if it is still up, and wait for its exit.
+  // Every stop waits for this before it removes the managed root or the control socket's directory:
+  // removing either earlier would let a draining gateway write into a directory after it was deleted,
+  // or dial a socket path whose directory is gone.
+  const drainGateway = async (): Promise<void> => {
     if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
       let timer: NodeJS.Timeout | undefined;
       const drained = await Promise.race([
@@ -415,7 +420,7 @@ async function main(): Promise<void> {
       ]);
       clearTimeout(timer);
       if (!drained) {
-        log(`gateway still running ${GATEWAY_DRAIN_MS}ms after SIGTERM; killing it before removing ${root}`);
+        log(`gateway still running ${GATEWAY_DRAIN_MS}ms after SIGTERM; killing it`);
         for (const pid of processTree(child.pid)) {
           try {
             process.kill(pid, "SIGKILL");
@@ -426,7 +431,6 @@ async function main(): Promise<void> {
         await gatewayExit;
       }
     }
-    rmSync(root, { recursive: true, force: true });
   };
 
   let shuttingDown = false;
@@ -443,9 +447,14 @@ async function main(): Promise<void> {
     const forked = managed && existsSync(join(home, HERMES_FORK_RECORD)) ? managed : undefined;
     if (forked) log(`keeping the managed profile ${forked.root}: it holds this seat's --resume fork`);
     const disposable = forked ? undefined : managed;
-    const [, removed] = await Promise.allSettled([sidecar.stop(), disposable && removeManaged(disposable.root)]);
-    if (removed.status === "rejected")
-      log(`could not remove the managed profile ${disposable!.root}, so it is left on disk: ${(removed.reason as Error).message}`);
+    const [, removed] = await Promise.allSettled([
+      sidecar.stop(),
+      drainGateway().then(() => disposable && rmSync(disposable.root, { recursive: true, force: true })),
+    ]);
+    if (removed.status === "rejected") {
+      const why = (removed.reason as Error).message;
+      log(disposable ? `could not remove the managed profile ${disposable.root}, so it is left on disk: ${why}` : `could not wait for the gateway to exit: ${why}`);
+    }
     try {
       discardLaunchArtifacts(controlDirs);
     } catch (e) {
@@ -466,6 +475,11 @@ async function main(): Promise<void> {
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   main().catch((e) => {
     log(e instanceof LaunchRefused ? `refused: ${e.message}` : `fatal: ${(e as Error).stack ?? String(e)}`);
+    try {
+      discardLaunchArtifacts(controlDirs);
+    } catch (err) {
+      log(`could not remove the control socket directory, so it is left on disk: ${(err as Error).message}`);
+    }
     process.exit(1);
   });
 }
