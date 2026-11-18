@@ -16,6 +16,7 @@
  * Run: pnpm smoke:history-reader-callout:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
 import { randomUUID } from "node:crypto";
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,9 +28,10 @@ import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
-  seedChannelRegistry, provisionAgent, mintLifecycleUid, chatStream, type CotalMessage,
+  seedChannelRegistry, provisionAgent, mintLifecycleUid, chatStream, eventPayloadStream, type CotalMessage,
 } from "@cotal-ai/core";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
+import { grantActor, ledgerAclResolver, ledgerAuthorizeConnect } from "../src/ledger.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -47,7 +49,9 @@ const auth = await createSpaceAuth(space);
 const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js"), extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }] }));
-const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
+let brokerLog = "";
+srv.stderr.on("data", (chunk: Buffer) => { brokerLog += chunk.toString(); });
 const releaseBroker = teardownOnSignal(srv, dir);
 
 const { publicKey, privateKey } = await generateKeyPair("EdDSA");
@@ -58,6 +62,21 @@ async function adminBearer(actor: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({ sub: OWNER, ver: USER_TOKEN_VER, act: { owner: OWNER, actor, scope: ["admin"], lifecycleUid: smokeUid, view: "admin" } })
     .setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISS).setAudience(space).setSubject(OWNER)
+    .setIssuedAt(now - 60).setNotBefore(now - 60).setExpirationTime(now + 600)
+    .sign(privateKey as CryptoKey);
+}
+
+const PAYLOAD_ACTOR = "payload_writer";
+const FOREIGN = deriveOwnerToken("s".repeat(32), "better-auth|payload-foreign");
+const participantRows = [
+  grantActor(dir, { owner: OWNER, actor: "payload_reader", scope: [], allowSubscribe: [], allowPublish: [] }),
+  grantActor(dir, { owner: FOREIGN, actor: "payload_explicit", scope: [], allowSubscribe: [`events.${OWNER}.${PAYLOAD_ACTOR}`], allowPublish: [] }),
+  grantActor(dir, { owner: FOREIGN, actor: "payload_broad", scope: [], allowSubscribe: [">", "events.>"], allowPublish: [] }),
+];
+async function participantBearer(row: typeof participantRows[number]): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  return new SignJWT({ ver: USER_TOKEN_VER, act: { owner: row.owner, actor: row.actor, scope: [], lifecycleUid: row.lifecycleUid } })
+    .setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISS).setAudience(space).setSubject(row.owner)
     .setIssuedAt(now - 60).setNotBefore(now - 60).setExpirationTime(now + 600)
     .sign(privateKey as CryptoKey);
 }
@@ -90,10 +109,13 @@ try {
     space,
     token: { key: publicKey as never, issuer: ISS },
     recordIssuance: async () => {},
-    authorizeActor: () => {},
-    permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: [], lifecycleUid: smokeUid, scope: ["admin"] })),
+    authorizeActor: (t) => { if (!t.act.view) ledgerAuthorizeConnect(dir)(t); },
+    permissionsFor: calloutPermissions((t) => t.act.view
+      ? { allowSubscribe: ["general"], allowPublish: [], lifecycleUid: smokeUid, scope: ["admin"] }
+      : ledgerAclResolver(dir)(t)),
     log: (l) => { if (/denied|drop|fail/i.test(l)) console.log("  [callout]", l); },
   });
+  await calloutNc.flush();
 
   // A test-only allow-all inspector in the data account: it counts consumers and sees the endpoint's
   // JetStream requests, reply subjects included, as any subscriber to those subjects would.
@@ -166,6 +188,44 @@ try {
   check("user mode: after a reconnect the read answers and leaves no consumer", again === 5 && afterReconnect === base, { again, afterReconnect, base, cidBefore, cidAfter: dashNc.info?.client_id });
   check("user mode: ...under reader names of the new connection, not the old one",
     moved.length > 0 && moved.every((p) => p !== victim.name.slice(0, victim.name.lastIndexOf("_"))), { moved, before: victim.name });
+
+  const payloadUid = mintLifecycleUid();
+  const payloadWriter = new CotalEndpoint({
+    space, servers: SERVERS, lifecycleUid: payloadUid,
+    creds: await mintCreds(auth, newIdentity(), "agent", { principal: { owner: OWNER, actor: PAYLOAD_ACTOR }, lifecycleUid: payloadUid }),
+    channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
+    card: { name: "payload_writer", kind: "endpoint", owner: OWNER, actor: PAYLOAD_ACTOR },
+  });
+  endpoints.push(payloadWriter);
+  await payloadWriter.start();
+  await payloadWriter.publishEventPayload({ id: "participant-payload-probe", expectedLastSubjectSeq: 0, parts: [{ kind: "text", text: "retained payload" }] });
+  const PAYLOAD = eventPayloadStream(space);
+  const payloadBase = (await jsm.streams.info(PAYLOAD)).state.consumer_count;
+  for (const row of participantRows) {
+    const participant = new CotalEndpoint({
+      space, servers: SERVERS, bearer: await participantBearer(row), sentinelCreds: callout.sentinelCreds,
+      channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
+      card: { name: row.actor, kind: "endpoint" },
+    });
+    endpoints.push(participant);
+    await participant.start();
+    const read = () => participant.eventPayloadHistory(OWNER, PAYLOAD_ACTOR, { limit: 10, signal: AbortSignal.timeout(5000) });
+    if (row.actor === "payload_broad") {
+      const logStart = brokerLog.length;
+      await assert.rejects(read(), /permission/i);
+      const refused = brokerLog.slice(logStart).split("\n").find(line => line.includes("Publish Violation")
+        && line.includes(`$JS.API.CONSUMER.CREATE.${PAYLOAD}.hist_`) && line.includes(`.evp.${OWNER}.${PAYLOAD_ACTOR}`));
+      assert.ok(refused, "the broker logs the foreign payload history permission violation");
+      console.log(refused);
+      console.log("PASS participant foreign payload history denied despite chat and event wildcards, with broker permission violation");
+    } else {
+      for (const rows of await Promise.all([read(), read()]))
+        assert.ok(rows.some(message => message.id === "participant-payload-probe"), `${row.actor} reads retained payload history`);
+      console.log(`PASS ${row.actor}: concurrent participant payload history reads`);
+    }
+    assert.equal((await jsm.streams.info(PAYLOAD)).state.consumer_count, payloadBase, "payload history leaves no consumer behind");
+    await participant.stop();
+  }
 
   console.log(`  counts ${JSON.stringify({ reads: READS, answered, base, afterReads, outcome, survives, again, afterReconnect })}`);
 } finally {

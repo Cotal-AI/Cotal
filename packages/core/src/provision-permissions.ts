@@ -713,12 +713,15 @@ export function permissionsFor(
   const subChat = allowSubscribe.map((ch) => chatSubject(space, "*", "*", ch));
   const payloadReads = eventPayloadReadSubjects(space, pr.owner, allowSubscribe);
   if (opts.eventPayloads !== false) pubAllow.push(eventPayloadSubject(space, pr.owner, pr.actor));
+  const payloadReaders = Array.from({ length: HISTORY_READERS }, (_, i) => historyReaderConsumer(pr.readerId ?? pr.connId, i));
   pubAllow.push(
     `$JS.API.STREAM.INFO.${PAYLOAD}`,
-    ...payloadReads.map(subject => `$JS.API.CONSUMER.CREATE.${PAYLOAD}.${chatHistD}.${subject}`),
-    `$JS.API.CONSUMER.INFO.${PAYLOAD}.${chatHistD}`,
-    `$JS.API.CONSUMER.MSG.NEXT.${PAYLOAD}.${chatHistD}`,
-    `$JS.API.CONSUMER.DELETE.${PAYLOAD}.${chatHistD}`,
+    ...payloadReaders.flatMap(name => [
+      ...payloadReads.map(subject => `$JS.API.CONSUMER.CREATE.${PAYLOAD}.${name}.${subject}`),
+      `$JS.API.CONSUMER.INFO.${PAYLOAD}.${name}`,
+      `$JS.API.CONSUMER.MSG.NEXT.${PAYLOAD}.${name}`,
+      `$JS.API.CONSUMER.DELETE.${PAYLOAD}.${name}`,
+    ]),
   );
   // Replies to this agent's durable join/leave/list requests ride `ctl.delivery.<o>.<a>.>` (NOT the
   // per-id _INBOX), so the scoped delivery daemon can answer without broad inbox-publish.
