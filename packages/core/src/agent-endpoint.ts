@@ -208,13 +208,12 @@ const OUTCOME = {
     closed(["kind"], { kind: { const: "expired" } }),
   ],
 };
-const STATE = {
-  oneOf: [
-    closed(["kind"], { kind: { const: "open" } }),
-    closed(["kind", "answer", "delivery"], { kind: { const: "sent" }, answer: ANSWER_REF, delivery: { enum: ["unconfirmed", "delivered"] } }),
-    closed(["kind", "at", "outcome"], { kind: { const: "closed" }, at: TIMESTAMP, outcome: OUTCOME }),
-  ],
-};
+const OPEN_STATE = closed(["kind"], { kind: { const: "open" } });
+const SENT_STATE = closed(["kind", "answer", "delivery"], { kind: { const: "sent" }, answer: ANSWER_REF, delivery: { enum: ["unconfirmed", "delivered"] } });
+const CLOSED_STATE = closed(["kind", "at", "outcome"], { kind: { const: "closed" }, at: TIMESTAMP, outcome: OUTCOME });
+/** `open` or `sent`: what `prompt` returns and what `prompts` lists in `open`. */
+const LIVE_STATE = { oneOf: [OPEN_STATE, SENT_STATE] };
+const STATE = { oneOf: [OPEN_STATE, SENT_STATE, CLOSED_STATE] };
 const SOURCE = closed(["harness"], { harness: text(128), scope: text(128), toolCallId: text(128) });
 
 // The form profile: the MCP elicitation `requestedSchema` profile, a flat object of primitive
@@ -272,12 +271,12 @@ const CONTENT = closed(["kind", "title", "options"], {
   form: closed(["schema"], { schema: FORM_SCHEMA }),
   source: SOURCE,
 });
-const SUMMARY = closed(["id", "digest", "openedAt", "expiresAt", "state", "kind", "title", "contentBytes"], {
-  id: PROMPT_ID, digest: DIGEST, openedAt: TIMESTAMP, expiresAt: TIMESTAMP, state: STATE, kind: KIND, title: TITLE,
+const summary = (state: unknown) => closed(["id", "digest", "openedAt", "expiresAt", "state", "kind", "title", "contentBytes"], {
+  id: PROMPT_ID, digest: DIGEST, openedAt: TIMESTAMP, expiresAt: TIMESTAMP, state, kind: KIND, title: TITLE,
   contentBytes: { type: "integer", minimum: 0, maximum: AGENT_PROMPT_CONTENT_MAX_BYTES }, source: SOURCE,
 });
 const PROMPT = closed(["id", "digest", "openedAt", "expiresAt", "state", "content"], {
-  id: PROMPT_ID, digest: DIGEST, openedAt: TIMESTAMP, expiresAt: TIMESTAMP, state: STATE, content: CONTENT,
+  id: PROMPT_ID, digest: DIGEST, openedAt: TIMESTAMP, expiresAt: TIMESTAMP, state: LIVE_STATE, content: CONTENT,
 });
 const VALUES = {
   type: "object",
@@ -288,8 +287,8 @@ export const AGENT_PROMPTS_INPUT_SCHEMA = deepFreeze(closed([], {}));
 export const AGENT_PROMPTS_OUTPUT_SCHEMA = deepFreeze(closed(["runtime", "seq", "open", "closed"], {
   runtime: closed(["id", "startedAt"], { id: { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$" }, startedAt: uint }),
   seq: uint,
-  open: { type: "array", maxItems: AGENT_PROMPT_LIST_MAX, items: SUMMARY },
-  closed: { type: "array", maxItems: AGENT_PROMPT_LIST_MAX, items: SUMMARY },
+  open: { type: "array", maxItems: AGENT_PROMPT_LIST_MAX, items: summary(LIVE_STATE) },
+  closed: { type: "array", maxItems: AGENT_PROMPT_LIST_MAX, items: summary(CLOSED_STATE) },
 }));
 export const AGENT_PROMPT_INPUT_SCHEMA = deepFreeze(closed(["id"], { id: PROMPT_ID }));
 export const AGENT_PROMPT_OUTPUT_SCHEMA = deepFreeze(closed(["prompt"], { prompt: PROMPT }));

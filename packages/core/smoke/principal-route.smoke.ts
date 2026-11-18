@@ -158,9 +158,20 @@ check("every state of revision 1 validates", [
 ].every((state) => out("prompt-answer", { state })));
 check("an answer by an authority outside the closed set is refused", !out("prompt-answer", { state: { kind: "sent", answer: { ...answer, by: { ...answer.by, authority: "exact" } }, delivery: "unconfirmed" } }));
 const summary = { id: prompt.id, digest: prompt.digest, openedAt: TS, expiresAt: TS, state: { kind: "open" }, kind: "permission", title: content.title, contentBytes: 10 };
+const closedSummary = { ...summary, state: { kind: "closed", at: TS, outcome: { kind: "expired" } } };
+const runtime = { id: RT, startedAt: 1 };
 check("prompts: 32 open and 32 closed validate, 33 do not",
-  out("prompts", { runtime: { id: RT, startedAt: 1 }, seq: 0, open: Array(32).fill(summary), closed: Array(32).fill(summary) })
-  && !out("prompts", { runtime: { id: RT, startedAt: 1 }, seq: 0, open: Array(33).fill(summary), closed: [] }));
+  out("prompts", { runtime, seq: 0, open: Array(32).fill(summary), closed: Array(32).fill(closedSummary) })
+  && !out("prompts", { runtime, seq: 0, open: Array(33).fill(summary), closed: [] }));
+check("prompts: open holds open or sent prompts and closed holds closed ones, and neither list takes the other's",
+  out("prompts", { runtime, seq: 0, open: [summary, { ...summary, state: { kind: "sent", answer, delivery: "delivered" } }], closed: [] })
+  && !out("prompts", { runtime, seq: 0, open: [], closed: [summary] })
+  && !out("prompts", { runtime, seq: 0, open: [closedSummary], closed: [] }));
+check("prompt returns a prompt only while it is open or sent",
+  out("prompt", { prompt: { ...prompt, state: { kind: "sent", answer, delivery: "unconfirmed" } } })
+  && !out("prompt", { prompt: { ...prompt, state: closedSummary.state } }));
+check("prompts: runtime is the id and startedAt of the presence runtime value, with no source",
+  !out("prompts", { runtime: { ...runtime, source: "endpoint-process" }, seq: 0, open: [], closed: [] }));
 check("prompts takes {} and refuses null", AGENT_CONTRACTS.prompts.input.validate({}) && !AGENT_CONTRACTS.prompts.input.validate(null));
 check("prompt-answer input: note up to 2000 characters, values of primitives and string lists",
   AGENT_CONTRACTS["prompt-answer"].input.validate({ id: prompt.id, digest: prompt.digest, option: "deny", note: "n".repeat(2000), values: { a: "x", b: 1, c: true, d: ["x"] } })

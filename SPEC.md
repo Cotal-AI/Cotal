@@ -6599,10 +6599,11 @@ digests. Every command is ephemeral, untargeted, and declares `authorities: ["ow
 | `prompt-answer` | `agent.prompts.answer` | `{ id, digest, option, note?, values? }` | `{ state: PromptState }` |
 
 `prompts` lists at most 32 prompts in `open`, those that are `open` or `sent`, and at most 32 in
-`closed`, the last prompts of this runtime to close. `runtime` is the process's presence `runtime`
-value (`startedAt` in epoch ms) and `seq` its presence counter (§6). `prompt` returns the full prompt
-while it is `open` or `sent`; a prompt id this runtime does not know is `not-found`, and a closed
-prompt is `failed-precondition` with its state in `details`. `note` is at most 2000 characters.
+`closed`, the last prompts of this runtime to close. `runtime` is the `id` and `startedAt` of the
+process's presence `runtime` value (`startedAt` in epoch ms) and `seq` its presence counter (§6).
+`prompt` returns the full prompt while it is `open` or `sent`; a prompt id this runtime does not know
+is `not-found`, and a closed prompt is `failed-precondition` with its state in `details`. `note` is
+at most 2000 characters.
 
 **The prompt.**
 
@@ -6612,18 +6613,19 @@ interface AgentPrompt {            // returned by `prompt`, only while open or s
   digest: string;        // "sha256:<hex>" of the RFC 8785 canonical JSON of `content`
   openedAt: string;      // the timestamp form below
   expiresAt: string;     // remote answering of an unanswered prompt ends here
-  state: PromptState;
+  state: PromptState;    // `open` or `sent`
   content: PromptContent;
 }
 interface PromptSummary {          // returned by `prompts`
-  id: string; digest: string; openedAt: string; expiresAt: string; state: PromptState;
+  id: string; digest: string; openedAt: string; expiresAt: string;
+  state: PromptState;              // `open` or `sent` in `open`, `closed` in `closed`
   kind: string; title: string;
   contentBytes: number;            // size of the canonical `content`
   source?: PromptSource;
 }
 interface PromptContent {          // set once when the prompt opens, never changed
   kind: string;          // "permission" | "question" | "plan" | "form", or a reverse-DNS name, at most 64 characters
-  title: string;         // one line, at most 200 characters
+  title: string;         // one line, 1 to 200 characters
   body?: { format: "text" | "markdown"; text: string };
   subject?: PromptSubject;
   options: PromptOption[];         // 1 to 16
@@ -6639,10 +6641,10 @@ type Shown   = { kind: "shown"; value: unknown };
 type Omitted = { kind: "omitted"; bytes: number };
 interface PromptOption {
   id: string;            // [a-z0-9-]{1,32}, unique within the prompt
-  label: string;         // at most 80 characters
+  label: string;         // 1 to 80 characters
   effect: "proceed" | "refuse" | "cancel";
-  description?: string;  // at most 500 characters
-  persists?: string;     // at most 500: what this option changes beyond this prompt; absent: nothing
+  description?: string;  // 1 to 500 characters
+  persists?: string;     // 1 to 500: what this option changes beyond this prompt; absent: nothing
   note?: "optional" | "required";
   form?: "required";     // this option submits `values` for `content.form`
 }
