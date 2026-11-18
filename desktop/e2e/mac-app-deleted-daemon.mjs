@@ -366,6 +366,12 @@ try {
       assert(sourcePackage, 'guarded source closure must contain cotal-ai');
       const sourceArchive = join(resolve(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE), sourcePackage.archive);
       assert.equal(createHash('sha256').update(readFileSync(sourceArchive)).digest('hex'), sourcePackage.sha256);
+      const sourceManifest = JSON.parse(ok(await call('guarded source archive npm lifecycle contract', '/usr/bin/tar', ['-xOf', sourceArchive, 'package/package.json'])).stdout);
+      assert.equal(sourceManifest.name, 'cotal-ai');
+      assert.equal(sourceManifest.version, candidateRegistry.identity.sourceVersion);
+      for (const script of ['preinstall', 'install', 'postinstall']) assert.equal(sourceManifest.scripts?.[script], undefined, `candidate A has npm ${script}`);
+      report.npmReplacementCandidateIdentity = { version: sourceManifest.version, archiveSha256: sourcePackage.sha256, npmLifecycleScriptsAbsent: true };
+      save();
       const sourceEntry = ok(await call('guarded source archive entry identity', '/usr/bin/tar', ['-xOf', sourceArchive, 'package/dist/cotal.js']));
       const replacement = ok(await npm('npm global candidate A replaces official installed 0.168.0 after deletion', ['install', '--global', '--prefix', freshPrefix, `cotal-ai@${candidateRegistry.identity.sourceVersion}`, '--no-audit', '--no-fund'], { callEnv: candidateEnv, timeout: 600000 }));
       const installed = JSON.parse(readFileSync(packagePath, 'utf8'));
