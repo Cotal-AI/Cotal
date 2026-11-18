@@ -17,7 +17,7 @@
  *
  * The route's 26 security cells, numbered the same in `pnpm smoke:principal-route` (cell 24 needs a
  * registry-authorized serve grant and runs in `pnpm smoke:ep-serve`), a serve and call round trip,
- * cell 27, a malformed nonce; cell 37, a cast; cell 28, a stored frame a Direct Get delivers on the caller's sentinel;
+ * cell 27, a malformed nonce; cell 37, a cast; cells 40 and 41, a deadline over 30 s; cell 28, a stored frame a Direct Get delivers on the caller's sentinel;
  * cell 29, a reply under another head that arrives first; cell 30, stopping the endpoint while a
  * handler runs and while `ready` waits; cells 31 and 32, `seq` across serves and endpoint objects of
  * one runtime, and a second server for one lifecycle in a process; cell 33, stop waits for a handler
@@ -504,6 +504,27 @@ try {
     const cast = await rawCall(webRaw, "prompt", { replyExpected: false }, { waitMs: 1500 });
     check("cell 37: a request with replyExpected false is refused: the agent's handler runs zero times, and no reply comes",
       cast === "none" && coder.calls.length === beforeCast, { ran: coder.calls.length - beforeCast, cast });
+
+    // cell 40: a principal-route deadline is at most 30 s, so a handler that ignores its signal
+    // cannot hold a serve's stop open longer. A larger one is refused before the handler runs.
+    const beforeLong = coder.calls.length;
+    const long = await rawCall(webRaw, "prompt", { deadlineMs: 30_001 });
+    check("cell 40: a request with deadlineMs 30001 on the owner's row is answered bad-request, not-executed, and the agent's handler runs zero times",
+      long !== "none" && !long.ok && long.error.code === "bad-request" && long.error.outcome === "not-executed" && coder.calls.length === beforeLong,
+      { ran: coder.calls.length - beforeLong, long });
+    const atCap = await rawCall(webRaw, "prompt", { deadlineMs: 30_000 });
+    check("control: the same request with deadlineMs 30000 is answered ok", atCap !== "none" && atCap.ok, atCap);
+
+    // cell 41: the caller refuses the same deadline before it publishes anything.
+    const webNc = (webEp as unknown as { nc: NatsConnection }).nc;
+    const publish = webNc.publish.bind(webNc);
+    let published = 0;
+    webNc.publish = (subject, ...rest) => { if (subject.startsWith(`${P}.ep.prin.`)) published++; return publish(subject, ...rest); };
+    const refusedLong = await settle(webEp.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: coderAt, command: "prompts", authority: "owner", args: {}, deadlineMs: 30_001 }));
+    webNc.publish = publish;
+    check("cell 41: callPrincipal with deadlineMs 30001 throws bad-request, not-executed, and publishes no request",
+      !refusedLong.ok && codeOf(refusedLong.error) === "bad-request/not-executed" && published === 0,
+      { published, got: refusedLong.ok ? refusedLong.value : codeOf(refusedLong.error) });
   }
 
   // ── cell 10: the agent publishes a reply under another principal's head ──

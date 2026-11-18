@@ -6,7 +6,7 @@ import { PermissionViolationError } from "@nats-io/nats-core";
 import { BROKER_REFUSAL_CAUSE, openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { carriesStoredReplyProvenance } from "./endpoint-provenance.js";
 import { spacePrefix } from "./subjects.js";
-import { epRequestSubject, parseEpSubject, callerRailTokens, epPlaneTokens, assertIdToken, assertLifecycleToken, assertBoundedOwner, epPrincipalRequestSubject, epPrincipalReplySubject, epPrincipalCallerReplyFilter, epPrincipalNoRespondersSubject, isIssuedCaller, type EpCaller, type EpPrincipal, type EpRoute, type EpTarget, type PrincipalAuthority } from "./endpoint-subjects.js";
+import { epRequestSubject, parseEpSubject, callerRailTokens, epPlaneTokens, assertIdToken, assertLifecycleToken, assertBoundedOwner, epPrincipalRequestSubject, epPrincipalReplySubject, epPrincipalCallerReplyFilter, epPrincipalNoRespondersSubject, isIssuedCaller, EP_PRINCIPAL_MAX_DEADLINE_MS, type EpCaller, type EpPrincipal, type EpRoute, type EpTarget, type PrincipalAuthority } from "./endpoint-subjects.js";
 import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, EP_UNDECLARED_ARG, EP_BIND_REFUSED, bindRefusalMarked, parseEndpointReply, assertArgsValid, assertOutputValid, type EndpointRequest, type EndpointReply, type EpCorrelation, type EpTargetBlock, type EpUnboundResponderDetail, type EpBindRefusedDetail, type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpErrorDetail, type EpBindBlock } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
 
@@ -601,6 +601,7 @@ export function buildPrincipalRequest(
   if (op.target !== undefined) throw new EpEnvelopeError("bad-request", "a principal-route request carries no target: the subject head is the target (SPEC 13.21)", undefined, "not-executed");
   if (op.bind !== undefined) throw new EpEnvelopeError("bad-request", "a principal-route request carries no bind: the runtime id in the subject pins the process (SPEC 13.21)", undefined, "not-executed");
   if (isIssuedCaller(op.caller)) throw new EpEnvelopeError("bad-request", "the principal route has no versioned form; it carries the caller triple only (SPEC 13.21)", undefined, "not-executed");
+  if (verb.deadlineMs > EP_PRINCIPAL_MAX_DEADLINE_MS) throw new EpEnvelopeError("bad-request", `deadlineMs ${verb.deadlineMs} exceeds the principal route's ${EP_PRINCIPAL_MAX_DEADLINE_MS}ms maximum (SPEC 13.21)`, undefined, "not-executed");
   const args = validatedArgs(op);
   const n = nonce();
   const subject = epPrincipalRequestSubject(space, {
@@ -619,7 +620,8 @@ export function buildPrincipalRequest(
  * pinned contract.
  *
  * Application-level failure is the returned reply's `ok: false`. This boundary throws only for its
- * own refusals: invalid args `bad-request`; no responder on the sentinel `unavailable`,
+ * own refusals: invalid args or a `deadlineMs` over {@link EP_PRINCIPAL_MAX_DEADLINE_MS}
+ * `bad-request`, `not-executed`, before anything is published; no responder on the sentinel `unavailable`,
  * `not-executed`; a refused publish `permission-denied`, `not-executed` (the caller holds no row);
  * the deadline `deadline-exceeded`, `unknown`; and a reply that does not parse, echo or validate
  * `internal`.

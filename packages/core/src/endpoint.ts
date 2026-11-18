@@ -667,7 +667,8 @@ export interface PrincipalServe {
    *  connection after `ready` resolved. Never rejects, and never resolves after `stop`. */
   readonly failed: Promise<Error>;
   /** Unsubscribe, abort every handler's `signal`, and wait for each handler in flight until its
-   *  request's deadline at most. A reply that comes after that is dropped. */
+   *  request's deadline at most, which the route caps at 30 s. A reply that comes after that is
+   *  dropped. */
   stop(): Promise<void>;
 }
 
@@ -2429,7 +2430,8 @@ export class CotalEndpoint extends EventEmitter {
    *
    *  Every principal serve ends first: its handlers' `signal` aborts, and stop waits for each
    *  handler in flight until its request's deadline at most, so a handler that never settles does
-   *  not hold stop open. A reply that comes after that is dropped.
+   *  not hold stop open longer than 30 s, the route's cap on a deadline. A reply that comes after
+   *  that is dropped.
    *
    *  The presence epoch moves first: a bind still awaiting the broker must find it moved
    *  before any await below gives it a window to install a watch on a stopped endpoint

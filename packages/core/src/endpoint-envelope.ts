@@ -14,7 +14,7 @@
  */
 import type { ContractValidator, ContractValidationError } from "./contract-validator.js";
 import { isContractDigest, isWellFormedUnicode } from "./canonical-json.js";
-import { assertCommandToken, assertIdToken, assertLifecycleToken, endpointToken, type ParsedEpPrincipalRequest, type ParsedEpRequest } from "./endpoint-subjects.js";
+import { assertCommandToken, assertIdToken, assertLifecycleToken, endpointToken, EP_PRINCIPAL_MAX_DEADLINE_MS, type ParsedEpPrincipalRequest, type ParsedEpRequest } from "./endpoint-subjects.js";
 import { SCHEMA_PROFILE } from "./schema-bounds.js";
 import type { ControlReply, EndpointRef } from "./types.js";
 // The error catalog + EpEnvelopeError live in a node-free module so the browser session bundle can
@@ -363,7 +363,7 @@ export function parseEndpointRequest(raw: unknown): EndpointRequest {
  *  `target.lifecycleUid` against the live mapping is the handler's fresh-read (`expired`),
  *  deliberately not checkable here. On the principal route (SPEC 13.21) the body carries no
  *  target (`target-mismatch`) and no bind (`bad-request`), it is never a cast (`bad-request`), and a
- *  deadline is required. */
+ *  deadline of at most {@link EP_PRINCIPAL_MAX_DEADLINE_MS} is required (`bad-request`). */
 export function checkRequestSubjectAgreement(env: EndpointRequest, subject: ParsedEpRequest | ParsedEpPrincipalRequest): void {
   if (env.op.endpoint !== subject.endpoint)
     fail("op-mismatch", `op.endpoint "${env.op.endpoint}" does not agree with the subject endpoint "${subject.endpoint}"`);
@@ -382,6 +382,8 @@ export function checkRequestSubjectAgreement(env: EndpointRequest, subject: Pars
       fail("bad-request", "a cast on the principal route is refused: every command on it is request/reply (SPEC 13.21)");
     if (env.deadlineMs === undefined)
       fail("bad-request", "deadlineMs is required on the principal route (SPEC 13.21)");
+    if (env.deadlineMs > EP_PRINCIPAL_MAX_DEADLINE_MS)
+      fail("bad-request", `deadlineMs ${env.deadlineMs} exceeds the principal route's ${EP_PRINCIPAL_MAX_DEADLINE_MS}ms maximum (SPEC 13.21)`);
     assertSender(env, subject.caller);
     return;
   }

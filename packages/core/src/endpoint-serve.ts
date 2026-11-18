@@ -763,7 +763,8 @@ export interface EpPrincipalServeHandle {
   /** Flush and confirm the subscription still stands: the check `ready` ran, run again. */
   check(): Promise<void>;
   /** Unsubscribe, abort every handler's `signal`, then await each handler in flight until its
-   *  request's deadline at most. A reply that comes after that is dropped. */
+   *  request's deadline at most, which the route caps at 30 s. A reply that comes after that is
+   *  dropped. */
   stop(): Promise<void>;
 }
 
@@ -785,7 +786,8 @@ export interface EpPrincipalServeHandle {
  *
  * Stopping aborts every handler's `signal` and waits for each handler in flight until its request's
  * `deadlineMs` has passed since the request arrived, and no longer: the caller has stopped waiting
- * by then. A reply that comes later is dropped.
+ * by then. The route refuses a `deadlineMs` over 30 s, so stop waits at most 30 s. A reply that comes
+ * later is dropped.
  */
 export function servePrincipalRoute(
   nc: NatsConnection,
@@ -898,7 +900,7 @@ export function servePrincipalRoute(
       const timed: typeof steps = {
         ...steps,
         context: (a) => {
-          // The agreement check made `deadlineMs` present on this route.
+          // The agreement check made `deadlineMs` present on this route, and at most 30 s.
           entry.endsAt = a.receivedAtMonotonicMs + a.env.deadlineMs!;
           return steps.context(a);
         },
