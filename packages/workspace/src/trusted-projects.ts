@@ -1,10 +1,10 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { acquireLock, globalConfigDir, writeSecretFileAtomic } from "@cotal-ai/core";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { acquireLock, globalConfigDir, loadAgentFile, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure } from "./output.js";
-import { localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
+import { localRecordAccess, prepareCotalHomeForWrite, protectedLocalDirectory } from "./protected-records.js";
 import { localWriteFailure } from "./local-write.js";
-import { canonicalRoot, readMeshRegistry } from "./mesh-registry.js";
+import { canonicalRoot, homeCotalDir, readMeshRegistry } from "./mesh-registry.js";
 import { readPreparedSpaces } from "./prepared-spaces.js";
 
 /**
@@ -17,9 +17,10 @@ import { readPreparedSpaces } from "./prepared-spaces.js";
  * trusted when its own canonical form equals a stored string. Trust follows the path: a folder
  * deleted and made again at a trusted path is trusted.
  *
- * `seeded` records that the one-time upgrade seed ran: the CLI writes the file, with every root a
- * space was registered or prepared at, before a command can register anything (see
- * {@link seedTrustedProjects}). A file that exists is never seeded again.
+ * `seeded` marks a file the upgrade seed could have written. Whether the seed ran is recorded apart
+ * from this file, beside the space registry it reads (see {@link seedTrustedProjects}), so removing,
+ * corrupting or never writing this file never runs the seed again, and a config folder that another
+ * shell selects sees the same record.
  */
 interface TrustedProjects {
   schemaVersion: 1;
@@ -36,7 +37,7 @@ export function trustedProjectsPath(): string {
 
 const invalid = (problem: string): CommandFailure =>
   new CommandFailure("refused", "SCHEMA_INVALID", `the trusted projects file ${trustedProjectsPath()} is invalid: ${problem}`, {
-    remedy: `fix or remove ${trustedProjectsPath()}, then run \`cotal trust <path>\` for each folder you trust`,
+    remedy: `fix ${trustedProjectsPath()}. If you remove it instead, no folder is trusted until you run \`cotal trust <path>\` for each one`,
   });
 
 /** The trusted roots as written, or undefined when there is no file yet. A linked or non-regular
@@ -50,7 +51,7 @@ function readFile(): TrustedProjects | undefined {
     if (stat.isSymbolicLink())
       throw new CommandFailure("refused", "PERMISSION_DENIED", `the trusted projects file ${path} is a symbolic link; it is kept only in a regular file, so nothing was read`, { target: { path }, remedy: `replace the link ${path} with a regular copy of the file it names` });
     if (typeof process.getuid === "function" && stat.uid !== process.getuid())
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `the trusted projects file ${path} belongs to another user, so nothing was read`, { target: { path }, remedy: `remove ${path}, then run \`cotal trust <path>\` for each folder you trust` });
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the trusted projects file ${path} belongs to another user, so nothing was read`, { target: { path }, remedy: `remove ${path}; no folder is trusted until you run \`cotal trust <path>\` for each one` });
     if ((stat.mode & 0o022) !== 0)
       throw new CommandFailure("refused", "PERMISSION_DENIED", `the trusted projects file ${path} can be written by other accounts, so nothing was read`, { target: { path }, remedy: `run \`chmod 600 ${path}\`` });
   }
@@ -110,13 +111,77 @@ function update(change: (current: TrustedProjects | undefined) => TrustedProject
   }
 }
 
-/** The one-time upgrade seed: when no trusted projects file exists, write one that trusts every root
- *  a space was registered or prepared at, so a project that worked before upgrading keeps working.
- *  The CLI calls it before a command runs, so a registration made after the upgrade is never seeded;
- *  a file that exists, even an empty one, is left as it is. */
+/** The record that the upgrade seed was attempted, kept in the Cotal home beside the space registry
+ *  it reads: the roots known at the first attempt, and when the trusted projects file received them.
+ *  It is written before the trusted projects file, so a seed attempt that fails is still recorded. */
+interface SeedRecord {
+  schemaVersion: 1;
+  attemptedAt: string;
+  roots: string[];
+  completedAt?: string;
+}
+
+/** `<Cotal home>/trusted-projects-seed.json`. */
+export function trustSeedPath(): string {
+  return join(homeCotalDir(), "trusted-projects-seed.json");
+}
+
+const seedInvalid = (problem: string): CommandFailure =>
+  new CommandFailure("refused", "SCHEMA_INVALID", `the trusted projects seed record ${trustSeedPath()} is invalid: ${problem}, so no folder was seeded`, {
+    remedy: "run `cotal trust <path>` for each folder you trust",
+  });
+
+/** The seed record, or undefined when the seed was never attempted. A record that is linked, owned
+ *  or writable by another account, or invalid refuses: it is never read as "not attempted". */
+function readSeedRecord(): SeedRecord | undefined {
+  const path = trustSeedPath();
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat) return undefined;
+  if (localRecordAccess() === "posix") {
+    if (stat.isSymbolicLink()) throw seedInvalid("it is a symbolic link");
+    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) throw seedInvalid("it belongs to another user");
+    if ((stat.mode & 0o022) !== 0) throw seedInvalid("other accounts can write it");
+  }
+  if (!stat.isFile()) throw seedInvalid("it is not a regular file");
+  let doc: unknown;
+  try { doc = JSON.parse(readFileSync(path, "utf8")); }
+  catch { throw seedInvalid("it is not JSON"); }
+  const { schemaVersion, attemptedAt, roots, completedAt, ...rest } = (doc ?? {}) as Record<string, unknown>;
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc) || Object.keys(rest).length || schemaVersion !== SCHEMA_VERSION || typeof attemptedAt !== "string"
+    || (completedAt !== undefined && typeof completedAt !== "string")
+    || !Array.isArray(roots) || roots.some((root) => typeof root !== "string" || !isAbsolute(root)))
+    throw seedInvalid("its fields do not match the record format");
+  return { schemaVersion: SCHEMA_VERSION, attemptedAt, roots: roots as string[], ...(completedAt !== undefined ? { completedAt } : {}) };
+}
+
+function writeSeedRecord(record: SeedRecord): void {
+  try {
+    prepareCotalHomeForWrite();
+    writeSecretFileAtomic(trustSeedPath(), `${JSON.stringify(record, null, 2)}\n`);
+  } catch (e) {
+    if (isCommandFailure(e)) throw e;
+    throw localWriteFailure(e, trustSeedPath(), {});
+  }
+}
+
+/** The one-time upgrade seed, so a project that worked before upgrading keeps working. The first
+ *  attempt records, beside the space registry, every root a space was registered or prepared at, and
+ *  then adds those roots to the trusted projects file. The CLI calls it before a command body runs,
+ *  so a registration made after the upgrade is never in that record.
+ *
+ *  Once a record exists the registry is never read for this again: an attempt whose file write
+ *  failed adds only the recorded roots when it later succeeds, and a completed seed adds nothing,
+ *  whether the trusted projects file was removed, is invalid, or lives in another config folder. */
 export function seedTrustedProjects(): void {
-  if (readFile() !== undefined) return;
-  update((current) => current ?? { schemaVersion: SCHEMA_VERSION, seeded: true, roots: knownSpaceRoots().map(canonicalRoot) });
+  let record = readSeedRecord();
+  if (record?.completedAt !== undefined) return;
+  if (record === undefined) {
+    record = { schemaVersion: SCHEMA_VERSION, attemptedAt: new Date().toISOString(), roots: [...new Set(knownSpaceRoots().map(canonicalRoot))].sort() };
+    writeSeedRecord(record);
+  }
+  const roots = record.roots;
+  update((current) => ({ schemaVersion: SCHEMA_VERSION, seeded: true, roots: [...(current?.roots ?? []), ...roots] }));
+  writeSeedRecord({ ...record, completedAt: new Date().toISOString() });
 }
 
 /** Whether the project at `root` is trusted: its canonical path equals a stored root. Stored roots
@@ -134,11 +199,15 @@ export function untrustedProjectRefusal(file: string, declared: readonly string[
 }
 
 /** The project folder a persona file belongs to, when it sits in one: the folder holding the
- *  `.cotal/agents` directory that contains it. Undefined for a file elsewhere. */
+ *  `.cotal/agents` directory the file is in, directly or in a folder below it. Matched by whole path
+ *  segments, so `foo.cotal/agents` is not a project's. Undefined for a file elsewhere. */
 export function personaProjectRoot(file: string): string | undefined {
-  const agents = dirname(resolve(file));
-  const control = dirname(agents);
-  return agents.endsWith(join(".cotal", "agents")) && dirname(control) !== control ? dirname(control) : undefined;
+  const parts = resolve(file).split(sep);
+  // The last `.cotal` followed by `agents`, with the file somewhere below that `agents` folder.
+  for (let i = parts.length - 3; i >= 1; i--) {
+    if (parts[i] === ".cotal" && parts[i + 1] === "agents") return parts.slice(0, i).join(sep) || sep;
+  }
+  return undefined;
 }
 
 /** Why a persona file may not contribute its `launchOptions` to a launch, or undefined when it may:
@@ -151,6 +220,25 @@ export function personaLaunchOptionsRefusal(file: string, launchOptions: Record<
   const root = personaProjectRoot(file);
   if (root === undefined || isTrustedProject(root)) return undefined;
   return untrustedProjectRefusal(file, keys.map((key) => `launchOptions.${key}`), root);
+}
+
+/** The same rule for a manifest launch, whose spec carries the persona's launch options already
+ *  merged with the manifest's own. The persona file it names is read again here, on the host that
+ *  launches: a key that file declares, in a project folder that is not trusted, refuses. The
+ *  manifest's own `launchOptions` are not gated. A file that is not on this host, as with a spec a
+ *  remote machine deployed, was checked where that machine read it. A file this host has but
+ *  cannot read refuses, since what it declares is unknown. */
+export function manifestPersonaLaunchOptionsRefusal(personaPath: string | undefined, launchOptions: Record<string, unknown> | undefined): string | undefined {
+  if (personaPath === undefined || !Object.keys(launchOptions ?? {}).length) return undefined;
+  const root = personaProjectRoot(personaPath);
+  if (root === undefined || isTrustedProject(root)) return undefined;
+  let declared: Record<string, unknown> | undefined;
+  try { declared = loadAgentFile(personaPath).launchOptions; }
+  catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    return `${personaPath} could not be read to check its launch options, and ${root} is not trusted, so nothing was launched. If you trust this folder, run \`cotal trust ${root}\``;
+  }
+  return personaLaunchOptionsRefusal(personaPath, declared);
 }
 
 /** Trust the project at `root`, which must be an existing folder whose `.cotal`, when it has one,

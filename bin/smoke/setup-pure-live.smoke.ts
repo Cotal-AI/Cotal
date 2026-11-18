@@ -13,7 +13,7 @@
  * Run: pnpm smoke:setup-pure:live
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { canonicalLocalProcessPath, findCotalRoot, localProcessPath, spaceKey, DELIVERY_LOGFILE, MANAGER_PIDFILE } from "@cotal-ai/workspace";
@@ -165,6 +165,18 @@ ok("provenance announces the onboarded stamp", /→ wrote onboarded stamp/.test(
 // and the folder, not the prefix.
 ok("the next step is `up`, run from the project",
   new RegExp(`Next\\s+\\S.*\\bup\\s+Run from ${proj.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(first.stdout), first.stdout.slice(-600));
+
+// Trust. This project's `.cotal` was made above, before setup ran, as a cloned repository brings
+// one, so setup did not trust it. A second project with no `.cotal` yet is trusted by the setup
+// that makes it.
+const trustedRoots = (): string[] => {
+  try { return (JSON.parse(readFileSync(join(configHome, "cotal", "trusted-projects.json"), "utf8")) as { roots: string[] }).roots; }
+  catch { return []; }
+};
+ok("setup does not trust a project whose .cotal was already there", !trustedRoots().includes(realpathSync(proj)), trustedRoots());
+const freshProj = mkdtempSync(join(tmpdir(), "cotal-setup-fresh-"));
+const freshSetup = cotal(["setup", "--destination", "local", "--harness", "codex", "--project", freshProj, "--space", "setupfresh", "--yes"], freshProj);
+ok("setup trusts a project whose .cotal it made", freshSetup.status === 0 && trustedRoots().includes(realpathSync(freshProj)), { status: freshSetup.status, roots: trustedRoots(), err: freshSetup.stderr.slice(-300) });
 
 // D — `--demo` on an already-configured machine adds the guided team without launching anything.
 const demo = cotal([...SETUP, "--demo"], proj);

@@ -161,7 +161,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "trust",
     group: "Setup",
-    summary: "trust a project folder, so its .cotal/config.json may declare MCP servers and spawn.env names",
+    summary: "trust a project folder, so its .cotal may declare MCP servers, spawn.env names and persona launch options",
     usage: "cotal trust <path> [--json|--plain]",
     positionals: "<path>",
     flags: trustFlags,

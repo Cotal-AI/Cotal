@@ -1218,6 +1218,44 @@ let openInventory: ManagerResumeAgent;
     const passed = await trusted.resumePreserved(inventoryOf(entry));
     check("and resumes it, launch options included, once the folder is trusted",
       passed.ok && capturedLaunch?.launchOptions?.["mcp-config"] === "./servers.json", { reply: passed.agents[0]?.reply ?? passed.error, launchOptions: capturedLaunch?.launchOptions });
+
+    // A manifest seat's resume reads its launch options from the retained run spec, which merged the
+    // persona's. The persona file that spec names, in a folder that is not trusted, refuses the same way.
+    const otherRoot = mkdtempSync(join(tmpdir(), "cotal-preserve-manifest-"));
+    mkdirSync(join(otherRoot, ".cotal", "agents"), { recursive: true });
+    const manifestPersona = join(otherRoot, ".cotal", "agents", "planted.md");
+    writeFileSync(manifestPersona, "---\nname: planted\nlaunchOptions:\n  mcp-config: ./servers.json\n---\nbody\n");
+    writeFileSync(join(runDir, "r2.json"), JSON.stringify({
+      apiVersion: "cotal-launch/v1", space: "preserve-smoke", runId: "r2",
+      agents: [{ name: "worker", agent: "preserve-connector", subscribe: ["general"], allowSubscribe: ["general"], allowPublish: [], hash: "abc124", launchOptions: { "mcp-config": "./servers.json" }, personaPath: manifestPersona }],
+    }));
+    mkdirSync(join(runDir, "r2", "agents"), { recursive: true });
+    const r2Persona = join(runDir, "r2", "agents", "worker.md");
+    writeFileSync(r2Persona, "---\nname: worker\n---\nworker persona\n");
+    const manifestIdentity = newIdentity();
+    const manifestCreds = join(credsDir, "manifest-worker.creds");
+    writeFileSync(manifestCreds, await mintCreds(auth, manifestIdentity, "agent", { lifecycleUid: uidFor(manifestIdentity.id) }), { mode: 0o600 });
+    const manifestEntry: ManagerResumeAgent = {
+      ...openInventory,
+      name: "manifest-worker",
+      identity: { mode: "static", id: manifestIdentity.id, lifecycleUid: uidFor(manifestIdentity.id), credential: { kind: "file", path: manifestCreds, sha256: digest(manifestCreds) } },
+      launch: { ...openInventory.launch, source: { kind: "manifest", runId: "r2", requested: "worker", hash: "abc124", configPath: r2Persona, configSha256: digest(r2Persona), manifestSha256: digest(join(runDir, "r2.json")) } },
+      dependencies: [join(runDir, "r2.json"), r2Persona],
+    };
+    const manifestUntrusted = managerWith((name) => fakeHandle(name));
+    (manifestUntrusted as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const manifestRefused = await manifestUntrusted.resumePreserved(inventoryOf(manifestEntry));
+    const manifestRefusal = manifestRefused.agents[0]?.reply.error ?? manifestRefused.error ?? "";
+    check("a manifest seat's resume refuses launch options its untrusted persona file declares",
+      !manifestRefused.ok && capturedLaunch === undefined && /launchOptions\.mcp-config/.test(manifestRefusal) && manifestRefusal.includes(`cotal trust ${otherRoot}`), { manifestRefusal, launched: capturedLaunch !== undefined });
+    trustProject(otherRoot);
+    const manifestTrusted = managerWith((name) => fakeHandle(name));
+    (manifestTrusted as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const manifestPassed = await manifestTrusted.resumePreserved(inventoryOf(manifestEntry));
+    check("and resumes the manifest seat with them once that folder is trusted",
+      manifestPassed.ok && capturedLaunch?.launchOptions?.["mcp-config"] === "./servers.json", { reply: manifestPassed.agents[0]?.reply ?? manifestPassed.error, launchOptions: capturedLaunch?.launchOptions });
   } finally {
     if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = prevXdg;

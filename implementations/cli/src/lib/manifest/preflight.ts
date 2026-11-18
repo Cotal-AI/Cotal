@@ -9,7 +9,7 @@
 import { existsSync } from "node:fs";
 import { basename, dirname, extname, join, relative } from "node:path";
 import { loadAgentFile, type AgentDef } from "@cotal-ai/core";
-import { findCotalRoot } from "@cotal-ai/workspace";
+import { findCotalRoot, personaLaunchOptionsRefusal } from "@cotal-ai/workspace";
 import type { ResolvedManifest } from "./model.js";
 import { prepareAgent, type AgentWarning, type PreparedAgent } from "./prepare.js";
 import { ManifestError, type ManifestIssue } from "./errors.js";
@@ -53,6 +53,15 @@ export function preparePersonas(manifest: ResolvedManifest): PreparedManifest {
           message: code === "ENOENT" ? missingPersona(a.persona, manifest.sourcePath) : (e as Error).message,
           path: ["agents", a.name],
         });
+        continue;
+      }
+      // A persona file in a project folder that is not trusted may contribute no launch options, on
+      // this path as on `cotal spawn`. Refused here, while the manifest resolves, so every manifest
+      // route stops before it contacts a broker or creates a channel. The manifest's own
+      // `launchOptions` are not gated.
+      const optionsRefused = personaLaunchOptionsRefusal(a.persona, persona.launchOptions);
+      if (optionsRefused) {
+        issues.push({ message: optionsRefused, path: ["agents", a.name] });
         continue;
       }
     }

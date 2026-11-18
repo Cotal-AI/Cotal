@@ -32,14 +32,15 @@ means no settings. Invalid JSON, a non-object top level, or an invalid shared se
 A project folder's own `.cotal` may declare these only when the folder is trusted:
 
 - `connectors.<name>.mcpServers` entries and `spawn.env` names in `.cotal/config.json`;
-- `launchOptions` in a persona file under `.cotal/agents/`, since the connector renders each key
-  into the application's own flags or config.
+- `launchOptions` in a persona file under `.cotal/agents/`, or a folder below it, since the
+  connector renders each key into the application's own flags or config. This includes a persona
+  file a manifest names for `cotal up -f` or `cotal team deploy`.
 
 A spawn that reads either from a folder that is not trusted refuses. The refusal names the file,
 the entries, the folder and the command that trusts it. Nothing launches. This applies to a spawn
 in this terminal and to one a manager runs. The config file's other fields, such as `modelPolicy`,
-apply whether or not the folder is trusted. A persona file outside any project folder, and `--opt`
-given on the command line, are not affected.
+apply whether or not the folder is trusted. A persona file outside any project folder, `--opt`
+given on the command line, and a manifest's own `launchOptions` on an agent are not affected.
 
 `cotal trust <path>` trusts one folder. It records the folder's canonical path in
 `trusted-projects.json` in the operator config folder. A trusted folder does not trust the folders
@@ -50,6 +51,11 @@ by a link does not pass its trust to the link's target.
 `cotal setup`, `cotal space create` and `cotal up` trust a folder only when they made its `.cotal`
 in that run. A folder that already had a `.cotal`, such as a cloned repository, is trusted only by
 `cotal trust`. Run it after you read the folder's `.cotal/config.json` and personas.
+
+The first command at the version that added this rule trusted every folder a space was registered
+or prepared at before it. That ran once per Cotal home, and `trusted-projects-seed.json` in the
+Cotal home records it. Removing `trusted-projects.json` does not run it again: no folder is trusted
+until `cotal trust` records it.
 
 A space-local file is refused whole when it, or the `.cotal` folder that holds it, belongs to
 another account. `cotal trust` refuses such a folder too. A trusted projects file that another

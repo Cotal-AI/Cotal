@@ -27,7 +27,7 @@ export function homeCotalDir(): string {
  *  checks that. */
 export const homeRecordEntries: ReadonlySet<string> = new Set([
   "agent-skills.json", "app-identities", "catalog", "chat-sessions", "current-mesh", "daemon", "idp-sessions.json", "idp-sessions.lock", "linear",
-  "meshes", "onboarded.json", "prepared", "service-launchd", "services",
+  "meshes", "onboarded.json", "prepared", "service-launchd", "services", "trusted-projects-seed.json",
   "update-settings.json", "update-recovery.json", "update-check.json", "update-check.lock", "update-attempt.json", "update-attempt.log",
   "update-launchd.json", "update-launchd-result.json",
   "update-windows.json", "update-windows-paused.json", "update-windows-clear.json", "update-windows-activation.json",

@@ -57,6 +57,7 @@ process.env.TRUST_SMOKE_NAME = "forwarded-1118";
 await import("../src/index.js");
 await import("@cotal-ai/connector-claude-code");
 const { runCli } = await import("../src/command.js");
+const { loadManifest } = await import("../src/lib/manifest/index.js");
 const { registry } = await import("@cotal-ai/core");
 const { recordMesh, trustedProjectsPath } = await import("@cotal-ai/workspace");
 
@@ -155,6 +156,42 @@ try {
     fresh();
     const r = await spawnIn(later);
     check("a space registered after the upgrade cannot run its declared server", r.exited === 1 && !reportText().includes(`RAN ${later.marker}`), r.out.slice(-300));
+    // The seed ran once for this Cotal home. Removing the trust file, as a refusal's remedy may say,
+    // trusts nothing new on the next command, and neither does another config folder that shares the
+    // registry, though both find no trust file.
+    rmSync(trustedProjectsPath());
+    await cli(box, ["trust", "--json", box]);
+    check("after the trust file is removed, the next command seeds nothing", !trustedRoots().includes(later.root) && !trustedRoots().includes(preUpgrade), trustedRoots());
+    const realXdg = process.env.XDG_CONFIG_HOME!;
+    process.env.XDG_CONFIG_HOME = join(box, "xdg-other");
+    mkdirSync(join(process.env.XDG_CONFIG_HOME, "cotal"), { recursive: true, mode: 0o700 });
+    await cli(box, ["trust", "--json", box]);
+    check("a second config folder sharing the registry seeds nothing", !trustedRoots().includes(later.root) && !trustedRoots().includes(preUpgrade), trustedRoots());
+    process.env.XDG_CONFIG_HOME = realXdg;
+  }
+
+  // A seed whose trust file write failed records its attempt first, so when it later succeeds it adds
+  // only the roots known at that first attempt, never one registered in between.
+  {
+    const realHome = process.env.COTAL_HOME!, realXdg = process.env.XDG_CONFIG_HOME!;
+    process.env.COTAL_HOME = join(box, "home-retry");
+    process.env.XDG_CONFIG_HOME = join(box, "xdg-retry");
+    mkdirSync(process.env.COTAL_HOME, { recursive: true, mode: 0o700 });
+    const before = mkdtempSync(join(box, "retry-before-"));
+    recordMesh({ space: "retrybefore", server, root: before, mode: "open", origin: "manual", ts: new Date().toISOString() } as never);
+    // A config folder other accounts may write: the trust file is refused, the seed attempt recorded.
+    mkdirSync(process.env.XDG_CONFIG_HOME, { mode: 0o777 });
+    chmodSync(process.env.XDG_CONFIG_HOME, 0o777);
+    const failed = await cli(box, ["meshes", "--json"]);
+    check("a seed that cannot write the trust file says no folder is trusted", !existsSync(trustedProjectsPath()) && failed.out.includes("no project folder is trusted"), failed.out.slice(-300));
+    const between = mkdtempSync(join(box, "retry-between-"));
+    recordMesh({ space: "retrybetween", server, root: between, mode: "open", origin: "manual", ts: new Date().toISOString() } as never);
+    chmodSync(process.env.XDG_CONFIG_HOME, 0o700);
+    await cli(box, ["meshes", "--json"]);
+    check("the retried seed adds the roots of its first attempt", trustedRoots().includes(before), trustedRoots());
+    check("and not a space registered after that attempt", !trustedRoots().includes(between), trustedRoots());
+    process.env.COTAL_HOME = realHome;
+    process.env.XDG_CONFIG_HOME = realXdg;
   }
 
   // CONTROL: a trusted folder's declared server runs, and its spawn.env name reaches the host.
@@ -232,6 +269,58 @@ try {
     fresh();
     const r = await cli(q.root, ["spawn", "--foreground", "--file", file, "--space", q.space, "--agent", "claude"]);
     check("a persona file outside any project keeps its launch options", r.exited === undefined && reportText().includes("RAN outside"), r.out.slice(-300));
+  }
+
+  // A persona file a manifest names follows the same rule. `team check` resolves the manifest as
+  // `team deploy` and `up -f` do, and is refused before any broker is contacted; the manifest's own
+  // launch options are not gated. A persona nested below `.cotal/agents` belongs to the project too.
+  {
+    const p = project(undefined);
+    mkdirSync(join(p.root, ".cotal", "agents", "team"), { recursive: true });
+    writeFileSync(join(p.root, ".cotal", "agents", "team", "opts.md"), "---\nname: opts\nrole: worker\nlaunchOptions:\n  mcp-config: /tmp/planted.json\n---\nbody\n");
+    const manifest = (agent: string) => `apiVersion: cotal/v1\nkind: Mesh\nspace: ${p.space}\nagent: claude\nbroker: { auth: false }\nagents:\n${agent}\nchannels:\n  general: { description: Open. }\n`;
+    writeFileSync(join(p.root, "nested.yaml"), manifest("  probe: ./.cotal/agents/team/opts.md"));
+    const nested = await cli(p.root, ["team", "check", join(p.root, "nested.yaml"), "--json"]);
+    // A classified refusal is written to the descriptor, so its text is read from the same resolution
+    // the command runs, and the command's own outcome from its exit code.
+    let reason = "";
+    try { loadManifest(join(p.root, "nested.yaml")); } catch (e) { reason = (e as Error).message; }
+    check("a manifest naming an untrusted project's persona with launch options is refused", nested.exited === 1 && reason.includes("launchOptions.mcp-config") && reason.includes(`cotal trust ${p.root}`), { exited: nested.exited, reason: reason.slice(0, 300) });
+    writeFileSync(join(p.root, "own.yaml"), manifest("  probe:\n    persona: ./.cotal/agents/probe.md\n    launchOptions: { mcp-config: /tmp/manifest.json }"));
+    const own = await cli(p.root, ["team", "check", join(p.root, "own.yaml"), "--json"]);
+    check("a manifest's own launch options are not gated", own.exited === undefined, own.out.slice(-300));
+    await cli(p.root, ["trust", p.root]);
+    const trusted = await cli(p.root, ["team", "check", join(p.root, "nested.yaml"), "--json"]);
+    check("CONTROL: the same manifest resolves once the folder is trusted", trusted.exited === undefined, trusted.out.slice(-300));
+    // `foo.cotal/agents` is not a project's `.cotal/agents`: matched by whole path segments.
+    const lookalike = mkdtempSync(join(box, "lookalike-"));
+    mkdirSync(join(lookalike, "foo.cotal", "agents"), { recursive: true });
+    const planted = join(lookalike, "planted-mcp.json");
+    writeFileSync(planted, JSON.stringify({ mcpServers: { lookalike: { command: "/bin/sh", args: ["-c", `echo RAN lookalike >> ${JSON.stringify(report)}`] } } }));
+    const file = join(lookalike, "foo.cotal", "agents", "probe.md");
+    writeFileSync(file, `---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nlaunchOptions:\n  mcp-config: ${planted}\n---\nbody\n`);
+    const q = project(undefined);
+    fresh();
+    const r = await cli(q.root, ["spawn", "--foreground", "--file", file, "--space", q.space, "--agent", "claude"]);
+    check("a persona under foo.cotal/agents is not taken for a project's", r.exited === undefined && reportText().includes("RAN lookalike"), r.out.slice(-300));
+  }
+
+  // Trust is stored canonically, so another spelling of a trusted folder is trusted: a path through a
+  // linked parent, and one with a trailing separator.
+  {
+    const p = project(declares);
+    await cli(p.root, ["trust", `${p.root}/`]);
+    fresh();
+    const viaSlash = await spawnIn(p);
+    check("a folder trusted with a trailing separator is trusted", viaSlash.exited === undefined && reportText().includes(`RAN ${p.marker}`), viaSlash.out.slice(-300));
+    const q = project(declares);
+    const alias = join(box, `alias-${q.space}`);
+    symlinkSync(join(q.root, ".."), alias);
+    const aliased = join(alias, q.root.split("/").pop()!);
+    await cli(box, ["trust", aliased]);
+    fresh();
+    const viaLink = await spawnIn(q);
+    check("a folder trusted through a linked parent is trusted", viaLink.exited === undefined && reportText().includes(`RAN ${q.marker}`), viaLink.out.slice(-300));
   }
 
   // Trust follows the stored path. A trusted path replaced by a link to another folder does not pass
@@ -316,7 +405,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.getuid?.() === 0 ? 28 : 30;
+const EXPECTED = process.getuid?.() === 0 ? 39 : 41;
 if (passed + failed !== EXPECTED) { failed++; console.log(`  ✗ FAIL: ${passed + failed - 1} cells reported, ${EXPECTED} expected`); }
 emitSentinel({ passed, failed });
 process.exit(failed === 0 ? 0 : 1);

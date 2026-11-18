@@ -16,7 +16,7 @@
  *      manager's own environment default.
  * Run: pnpm smoke:start-overrides
  */
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager } from "../src/manager.js";
@@ -317,6 +317,47 @@ const j = (v: unknown) => JSON.stringify(v);
   resetOpts();
   const allowed = await mgr2.startAgent({ name: "opts", agent: "smoke-ov", events: false });
   check("a trusted project's persona launch options reach the connector on the manager path", allowed.ok && lastOpts?.launchOptions?.["mcp-config"] === "/tmp/planted.json", j(allowed));
+}
+
+// A manifest launch carries the persona's launch options merged into its spec, so the manager reads
+// the persona file it names again: in a folder that is not trusted, a key that file declares refuses,
+// both for a spec pushed inline (before the spec is kept) and for one already on disk. The
+// manifest's own launch options, with a persona that declares none, are not gated.
+{
+  const manifestRoot = mkdtempSync(join(tmpdir(), "cotal-start-ov-manifest-"));
+  mkdirSync(join(manifestRoot, ".cotal", "agents", "team"), { recursive: true });
+  const personaPath = join(manifestRoot, ".cotal", "agents", "team", "opts.md");
+  writeFileSync(personaPath, "---\nname: opts\nlaunchOptions:\n  mcp-config: /tmp/planted.json\n---\n");
+  const barePath = join(manifestRoot, ".cotal", "agents", "bare.md");
+  writeFileSync(barePath, "---\nname: bare\n---\n");
+  const mgr3 = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot: manifestRoot });
+  (mgr3 as unknown as { runtime: object }).runtime = (mgr as unknown as { runtime: object }).runtime;
+  (mgr3 as unknown as { ep: object }).ep = {
+    ...(mgr as unknown as { ep: object }).ep,
+    getRoster: () => [...(mgr3 as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid })),
+  };
+  const agentOf = (name: string, persona: string, launchOptions: Record<string, unknown>): MeshLaunchAgent => ({
+    name, agent: "smoke-ov", role: "worker", body: "body", events: false, launchOptions,
+    subscribe: [], allowSubscribe: [], allowPublish: [], personaPath: persona, hash: `h${name}`,
+  });
+  const launch = (runId: string, a: MeshLaunchAgent) => (mgr3 as unknown as { opLaunch(a: Record<string, unknown>, c: string, admin: boolean): Promise<{ ok: boolean; error?: string }> })
+    .opLaunch({ runId, name: a.name, spec: { apiVersion: "cotal-launch/v1", space: "smoke", runId, agents: [a] } }, "smoke-caller", true);
+
+  resetOpts();
+  const inline = await launch("runinline01", agentOf("nested", personaPath, { "mcp-config": "/tmp/planted.json" }));
+  check("an inline manifest spec carrying an untrusted persona's launch options is refused and not kept",
+    !inline.ok && lastOpts === undefined && /launchOptions\.mcp-config/.test(String(inline.error)) && String(inline.error).includes(`cotal trust ${manifestRoot}`)
+      && !existsSync(join(manifestRoot, ".cotal", "run", "runinline01.json")), j(inline));
+  resetOpts();
+  const resolvedStart = await mgr3.startAgent({ name: "nested2", agent: "smoke-ov", events: false, config: personaPath, resolved: agentOf("nested2", personaPath, { "mcp-config": "/tmp/planted.json" }) });
+  check("a manifest start from a spec on disk with an untrusted persona's launch options is refused", !resolvedStart.ok && lastOpts === undefined && /launchOptions\.mcp-config/.test(String(resolvedStart.error)), j(resolvedStart));
+  resetOpts();
+  const own = await launch("runinline02", agentOf("ownopts", barePath, { "mcp-config": "/tmp/manifest.json" }));
+  check("a manifest's own launch options, with a persona that declares none, are not gated", own.ok && lastOpts?.launchOptions?.["mcp-config"] === "/tmp/manifest.json", j(own));
+  trustProject(manifestRoot);
+  resetOpts();
+  const trusted = await launch("runinline03", agentOf("nested3", personaPath, { "mcp-config": "/tmp/planted.json" }));
+  check("CONTROL: the same inline spec launches once the folder is trusted", trusted.ok && lastOpts?.launchOptions?.["mcp-config"] === "/tmp/planted.json", j(trusted));
 }
 
 console.log(failures ? `\nSTART-OVERRIDES SMOKE FAILED ❌ (${failures} failed)` : "\nstart-overrides smoke: all checks passed");

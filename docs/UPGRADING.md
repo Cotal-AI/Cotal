@@ -11,13 +11,18 @@ terminal and for one a manager runs.
 
 - The first command you run at this version writes `trusted-projects.json` in the operator config
   folder. It lists every root a space on this machine was registered or prepared at before that
-  command, so those projects keep working with no step. It is written once. A space registered
-  after it is not added.
+  command, so those projects keep working with no step. This happens once per Cotal home: a
+  record beside the space registry notes it, so a space registered later is never added, even if
+  `trusted-projects.json` is removed or another shell uses a different config folder. Removing
+  `trusted-projects.json` leaves no folder trusted until you run `cotal trust <path>` again.
 - `cotal setup`, `cotal space create` and `cotal up` trust a folder only when they made its
   `.cotal` in that run. A folder that already had one, such as a cloned repository, needs
   `cotal trust <path>` once if it declares servers, `spawn.env` or persona launch options.
-- A folder you use with no space registered before the upgrade, such as one you start with
-  `--file` or `--cwd` only, needs `cotal trust <path>` once for the same reason.
+- A folder you use with no space registered before the upgrade, such as one you spawn in with
+  `--cwd` only, needs `cotal trust <path>` once for the same reason. A persona file a manifest
+  names (`cotal up -f`, `cotal team deploy`) follows the same rule for its `launchOptions`. The
+  manifest's own `launchOptions` on an agent are not checked: a manifest you run is trusted as you
+  run it.
 - A project config in a `.cotal` that another account owns is refused. Move the project to a
   folder your own account owns.
 - Restart a running manager at this version so its spawns apply the rule.

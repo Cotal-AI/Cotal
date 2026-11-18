@@ -18,7 +18,8 @@ export function validateTrustArguments(args: ParsedArgs): void {
 }
 
 /** `cotal trust <path>`: record a project folder as trusted, so its `.cotal/config.json` may declare
- *  MCP servers and `spawn.env` names. A folder already trusted is a no-op. */
+ *  MCP servers and `spawn.env` names and its persona files may declare launch options. A folder
+ *  already trusted is a no-op. */
 export async function trust(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const { root, added } = trustProject(resolve(args.positionals[0]!));
@@ -31,7 +32,7 @@ function view(added: boolean): (r: TrustResult) => Report {
     sections: [{
       blocks: [
         { kind: "lines", lines: [added ? `Trusted ${r.root}` : `${r.root} was already trusted`] },
-        { kind: "lines", lines: [{ text: "Its .cotal/config.json may now declare MCP servers and spawn.env names for agents spawned there.", tone: "hint" }] },
+        { kind: "lines", lines: [{ text: "Its .cotal/config.json may now declare MCP servers and spawn.env names, and its persona files launch options, for agents spawned there.", tone: "hint" }] },
         { kind: "fields", rows: [["file", r.file]] },
       ],
     }],
