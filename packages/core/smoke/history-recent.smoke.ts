@@ -17,9 +17,10 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
 import { CotalEndpoint, chatSubject, isReachable, newIdentity, setupSpaceStreams } from "../src/index.js";
+import type { EndpointHistory } from "../src/endpoint-history.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
@@ -162,64 +163,96 @@ try {
   //    with no error, which is exactly what the pinned client does when a connection drops
   //    ("we don't propagate the error here", @nats-io/jetstream consumer.js).
   //
-  //    Deleting the completion checks from endpoint.ts must turn these red. That is the property an
+  //    Changing the completion checks in endpoint-history.ts must turn these red. That is the property an
   //    output-only assertion could never have, because the discarded stream-head algorithm returned
   //    identical values for every fixture in this file.
   const epNc = (ep as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc;
-  const priv = (ep as unknown as { history: unknown }).history as {
-    lastMatchingSeq(js: unknown, stream: string, subjects: string[]): Promise<number>;
-    drainWindow(js: unknown, stream: string, subjects: string[], start: number, ceiling: number, limit: number): Promise<unknown[]>;
-  };
+  const priv = (ep as unknown as { history: EndpointHistory }).history;
   const CHAT = `CHAT_${SPACE}`;
   const TALK = `cotal.${SPACE}.chat.*.*.talk`;
+  const manager = await jetstreamManager(epNc);
 
-  /** The real JetStream client, with every consumer's `fetch` truncated to `cut` messages and then
-   *  ended cleanly - the shape a dropped link produces. */
-  const truncatingJs = (cut: number) => {
-    const real = jetstream(epNc);
-    return {
-      ...real,
-      consumers: {
-        ...real.consumers,
-        get: async (...args: unknown[]) => {
-          const c = await (real.consumers.get as (...a: unknown[]) => Promise<Record<string, unknown>>).apply(real.consumers, args);
-          const truncate = (inner: AsyncIterable<unknown> & { stop?: () => void }) => {
-            const gen = (async function* () {
-              let n = 0;
-              for await (const m of inner) { if (n++ >= cut) return; yield m; }
-            })();
-            return Object.assign(gen, { stop: () => inner.stop?.() });
-          };
-          const realFetch = (c.fetch as (o?: unknown) => Promise<AsyncIterable<unknown> & { stop?: () => void }>).bind(c);
-          const realConsume = (c.consume as (o?: unknown) => Promise<AsyncIterable<unknown> & { stop?: () => void }>).bind(c);
-          return Object.assign(Object.create(c as object), {
-            fetch: async (o?: unknown) => truncate(await realFetch(o)),
-            consume: async (o?: unknown) => truncate(await realConsume(o)),
-          });
-        },
-      },
+  /** Acquire a real reader, then replace only its consumer bind's pull iterator with a clean end.
+   *  Creates, bind-time pending counts, messages and reader deletion still use the real broker. */
+  const truncatedRead = async (method: "lastMatchingSeq" | "drainWindow", cut: number) => {
+    const signal = new AbortController().signal;
+    const reader = await priv.acquireHistoryReader(epNc, manager, CHAT, signal);
+    const trace = { bound: 0, pending: 0, fetch: 0, consume: 0, yielded: 0, truncated: false, stopped: 0 };
+    const consumers = reader.js.consumers;
+    const originalBind = consumers.getConsumerFromInfo;
+    consumers.getConsumerFromInfo = function (...args: Parameters<typeof originalBind>) {
+      const consumer = originalBind.apply(this, args);
+      trace.bound++;
+      trace.pending = args[0].num_pending;
+      const truncate = (inner: Awaited<ReturnType<typeof consumer.fetch>>) => {
+        const gen = (async function* () {
+          try {
+            for await (const message of inner) {
+              if (trace.yielded >= cut) { trace.truncated = true; return; }
+              trace.yielded++;
+              yield message;
+            }
+          } finally { inner.stop(); }
+        })();
+        return new Proxy(inner, { get(target, key) {
+          if (key === Symbol.asyncIterator) return () => gen;
+          if (key === "stop") return (error?: Error) => { trace.stopped++; target.stop(error); };
+          const value = Reflect.get(target, key);
+          return typeof value === "function" ? value.bind(target) : value;
+        } });
+      };
+      const realFetch = consumer.fetch.bind(consumer);
+      const realConsume = consumer.consume.bind(consumer);
+      const fetch: typeof consumer.fetch = async (options) => {
+        trace.fetch++;
+        return truncate(await realFetch(options));
+      };
+      const consume: typeof consumer.consume = async (options) => {
+        trace.consume++;
+        return truncate(await realConsume(options));
+      };
+      return new Proxy(consumer, { get(target, key) {
+        if (key === "fetch") return fetch;
+        if (key === "consume") return consume;
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      } });
     };
+    let error: unknown;
+    try {
+      if (method === "lastMatchingSeq") await priv.lastMatchingSeq(reader, [TALK], signal);
+      else await priv.drainWindow(reader, [TALK], 1, 10_000, 100, signal);
+    } catch (e) { error = e; }
+    finally {
+      consumers.getConsumerFromInfo = originalBind;
+      priv.releaseHistoryReader(reader);
+    }
+    return { error, trace };
   };
 
   // 1. Last probe: bind says a message is pending, the fetch yields none, iterator ends cleanly.
-  //    Returning 0 here is what made streamHistory report a live channel as empty.
-  let lastThrew: unknown;
-  await priv.lastMatchingSeq(truncatingJs(0), CHAT, [TALK]).then(
-    (v) => { lastThrew = `RETURNED ${v}`; },
-    (e) => { lastThrew = e; },
-  );
-  check("Last probe: pending>0 with zero deliveries RAISES (never reports an empty channel)",
-    lastThrew instanceof Error, String(lastThrew));
+  const last = await truncatedRead("lastMatchingSeq", 0);
+  check("Last probe: real consumer bound, fetch entered and ended cleanly with zero deliveries",
+    last.trace.bound === 1 && last.trace.pending > 0 && last.trace.fetch === 1 && last.trace.consume === 0
+      && last.trace.truncated && last.trace.yielded === 0 && last.trace.stopped > 0, last.trace);
+  check("Last probe: pending>0 with zero deliveries RAISES the incomplete-read error (not a TypeError)",
+    last.error instanceof Error && !(last.error instanceof TypeError)
+      && last.error.message === `history: the broker reported messages on ${TALK} but delivered none - the read was cut short, not empty`,
+    String(last.error));
 
-  // 2. Window drain: cut after 3 of the pending batch, ending cleanly. Returning those 3 is what
-  //    made a cut-short read look like a convincing short page.
-  let drainThrew: unknown;
-  await priv.drainWindow(truncatingJs(3), CHAT, [TALK], 1, 10_000, 100).then(
-    (r) => { drainThrew = `RETURNED ${(r as unknown[]).length} messages`; },
-    (e) => { drainThrew = e; },
-  );
-  check("window drain: a partial batch ending cleanly RAISES (never a short page)",
-    drainThrew instanceof Error, String(drainThrew));
+  // 2. Window drain: cut after 3 of the pending batch, ending cleanly.
+  const drain = await truncatedRead("drainWindow", 3);
+  console.log("  truncation traces", JSON.stringify({
+    last: { ...last.trace, error: String(last.error) },
+    drain: { ...drain.trace, error: String(drain.error) },
+  }));
+  check("window drain: real consumer bound, consume entered and ended cleanly after three deliveries",
+    drain.trace.bound === 1 && drain.trace.pending > 3 && drain.trace.consume === 1 && drain.trace.fetch === 0
+      && drain.trace.truncated && drain.trace.yielded === 3 && drain.trace.stopped > 0, drain.trace);
+  check("window drain: a partial batch ending cleanly RAISES the incomplete-read error (not a TypeError)",
+    drain.error instanceof Error && !(drain.error instanceof TypeError)
+      && drain.error.message === `history: read 3 of ${drain.trace.pending} messages on ${TALK} before the stream ended early - the window was cut short, not empty`,
+    String(drain.error));
 
   // ── CROSS THE DOOR. The two gates above call the private helpers directly, so they prove the
   //    helpers raise but say NOTHING about whether the public entry point propagates that. If
