@@ -44,8 +44,8 @@ class Rpc {
   readonly pending = new Map<number, { resolve: (r: Reply) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   seq = 0;
   badOutput = "";
-  constructor(readonly space: string, tag: string) {
-    this.child = spawn(process.execPath, [bin, "mcp", "--space", space], { cwd: scratch, env, stdio: "pipe" });
+  constructor(readonly space: string, tag: string, childEnv = env) {
+    this.child = spawn(process.execPath, [bin, "mcp", "--space", space], { cwd: scratch, env: childEnv, stdio: "pipe" });
     children.push(this);
     let output = "", errors = "";
     this.child.stdout.on("data", (chunk) => { output += String(chunk); });
@@ -102,10 +102,18 @@ class Rpc {
 function run(args: string[]) {
   return spawnSync(process.execPath, [bin, ...args], { cwd: scratch, env, encoding: "utf8", timeout: 30_000 });
 }
-const identities = () => readdirSync(env.TMPDIR!).filter((name) => name.startsWith("cotal-app-identity-"));
+const identityRoot = join(env.COTAL_HOME!, "app-identities");
+const identities = () => existsSync(identityRoot) ? readdirSync(identityRoot).filter((name) => name.startsWith("cotal-app-identity-")) : [];
 
-async function competingNames(space: string, tag: string): Promise<void> {
-  const peers = [new Rpc(space, `${tag}-one`), new Rpc(space, `${tag}-two`), new Rpc(space, `${tag}-observer`)];
+async function competingNames(space: string, tag: string, separateTemps = false): Promise<void> {
+  const peers = ["one", "two", "observer"].map((suffix) => {
+    const childEnv = { ...env };
+    if (separateTemps) {
+      childEnv.TMPDIR = join(scratch, `${tag}-${suffix}-tmp`);
+      mkdirSync(childEnv.TMPDIR, { mode: 0o700 });
+    }
+    return new Rpc(space, `${tag}-${suffix}`, childEnv);
+  });
   const handle = (reply: Reply): string => {
     assert.ok(!reply.result?.isError, text(reply));
     const id = /connection_id: ([^\s]+)/.exec(text(reply))?.[1];
@@ -176,6 +184,7 @@ try {
   await sender.start();
 
   await competingNames(staticSpace, "static");
+  await competingNames(staticSpace, "static_split", true);
 
   const rpc = new Rpc(staticSpace, "static");
   await rpc.initialize();
@@ -239,7 +248,7 @@ try {
     check(`${signal ?? "stdin EOF"} finishes owned identity cleanup`, identities().length === 0);
   }
   const survivor = new Rpc(staticSpace, "survivor");
-  const killed = new Rpc(staticSpace, "killed");
+  const killed = new Rpc(staticSpace, "killed", { ...env, TMPDIR: mkdtempSync(join(scratch, "killed-private-tmp-")) });
   await survivor.initialize();
   await killed.initialize();
   assert.ok(text(await survivor.call("cotal_connect", { name: "alice" })).includes("Connected as alice"));
@@ -253,7 +262,7 @@ try {
   await restarted.initialize();
   const reclaimed = text(await restarted.call("cotal_connect", { name: "bob" }));
   console.log(`Restart result: ${reclaimed}`);
-  check("a killed conversation host reclaims its name immediately", reclaimed.startsWith("Connected as bob.\n") && !reclaimed.includes("was taken"));
+  check("a replacement with a different temp directory reclaims a killed host's name immediately", reclaimed.startsWith("Connected as bob.\n") && !reclaimed.includes("was taken"));
   check("restart retires only the abandoned identity", identities().length === 2 && abandoned.filter((dir) => identities().includes(dir)).length === 1);
   const collision = new Rpc(staticSpace, "collision");
   await collision.initialize();
@@ -279,6 +288,7 @@ try {
   await setupSpaceStreams({ servers, space: openSpace });
   recordMesh({ space: openSpace, server: servers, root, mode: "open", origin: "manual", ts: new Date().toISOString() });
   await competingNames(openSpace, "open");
+  await competingNames(openSpace, "open_split", true);
   const open = new Rpc(openSpace, "open");
   await open.initialize();
   const openReply = await open.call("cotal_connect", { name: "reader" });

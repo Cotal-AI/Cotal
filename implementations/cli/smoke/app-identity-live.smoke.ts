@@ -78,11 +78,11 @@ async function run(positionals: string[], values: Record<string, unknown>): Prom
 }
 
 /** Separate CLI processes compete for the same native conversation, not a shared JS invocation. */
-function provisionChild(values: Record<string, unknown>): Promise<{ ok: boolean; taken?: boolean; retire?: { dir: string } }> {
+function provisionChild(values: Record<string, unknown>, temp = tmpdir()): Promise<{ ok: boolean; taken?: boolean; retire?: { dir: string } }> {
   return new Promise((resolve, reject) => {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
     const child = spawn(process.execPath, [...process.execArgv, import.meta.filename, "--fixture-provision", JSON.stringify(values)], {
-      env: { ...env, COTAL_HOME: home, COTAL_NO_PROMPT: "1" }, stdio: ["ignore", "pipe", "ignore"],
+      env: { ...env, COTAL_HOME: home, COTAL_NO_PROMPT: "1", TMPDIR: temp }, stdio: ["ignore", "pipe", "ignore"],
     });
     let output = "";
     child.stdout.on("data", (chunk) => { output += String(chunk); });
@@ -224,17 +224,20 @@ try {
   const bare = await run(["provision"], { space: SPACE, name: "claude_app" });
   check("a caller with no native session opens nothing", bare.code === 1 && /needs its native session identity/.test(bare.reply?.error) && records(SPACE).length === 0, bare.out);
 
-  const competing = await Promise.all(["race_a", "race_b"].map((name) => provisionChild({ space: SPACE, name, session: "same-native-session" })));
+  const competing = await Promise.all(["race_a", "race_b"].map((name) =>
+    provisionChild({ space: SPACE, name, session: "same-native-session" }, mkdtempSync(join(tmpdir(), `session-${name}-`)))));
   const issued = competing.filter((result) => result.ok);
   for (const result of issued) await run(["retire"], { dir: result.retire!.dir });
-  check("concurrent processes cannot issue two names for one native session", issued.length === 1, { issued: issued.length });
+  check("concurrent processes with different temp directories cannot issue two names for one native session", issued.length === 1, { issued: issued.length });
 
   for (const space of [SPACE, OPEN]) {
     const name = "reserved_before_presence";
-    const competitors = await Promise.all(["one", "two"].map((suffix) => provisionChild({ space, name, session: `name-race-${space}-${suffix}` })));
+    const competitors = await Promise.all(["one", "two"].map((suffix) =>
+      provisionChild({ space, name, session: `name-race-${space}-${suffix}` }, mkdtempSync(join(tmpdir(), `split-${suffix}-`)))));
     const winners = competitors.filter((result) => result.ok);
-    check(`${space}: only one conversation reserves a name before either connects`,
+    check(`${space}: separate temp directories share one name reservation before either connects`,
       winners.length === 1 && competitors.filter((result) => result.taken).length === 1);
+    check(`${space}: the reservation lives beside the shared name lock`, winners.every((winner) => dirname(winner.retire!.dir) === recordRoot));
     for (const winner of winners) await run(["retire"], { dir: winner.retire!.dir });
     const reclaimed = await run(["provision"], { space, name, session: `name-reuse-${space}` });
     check(`${space}: retirement releases the pending name reservation`, reclaimed.reply.ok === true);

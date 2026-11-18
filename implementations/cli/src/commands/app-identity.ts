@@ -301,17 +301,26 @@ async function retireDir(dirArg: string): Promise<void> {
  *  left for a later provision. */
 function localRecords(): Array<{ dir: string; record: IdentityRecord }> {
   const uid = process.getuid?.();
-  return recordParents().flatMap((parent) => (existsSync(parent) ? readdirSync(parent) : []).flatMap((name) => {
-    if (!name.startsWith(CRED_DIR_PREFIX)) return [];
-    const dir = join(parent, name);
-    try {
-      const st = lstatSync(dir);
-      if (!st.isDirectory() || (uid !== undefined && st.uid !== uid)) return [];
-      return [{ dir, record: JSON.parse(readFileSync(join(dir, RECORD), "utf8")) as IdentityRecord }];
-    } catch {
-      return [];
+  // The temp root is read only for identities issued before records moved beside the locks.
+  return recordParents().flatMap((parent) => {
+    let names: string[];
+    try { names = readdirSync(parent); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
     }
-  }));
+    return names.flatMap((name) => {
+      if (!name.startsWith(CRED_DIR_PREFIX)) return [];
+      const dir = join(parent, name);
+      try {
+        const st = lstatSync(dir);
+        if (!st.isDirectory() || (uid !== undefined && st.uid !== uid)) return [];
+        return [{ dir, record: JSON.parse(readFileSync(join(dir, RECORD), "utf8")) as IdentityRecord }];
+      } catch {
+        return [];
+      }
+    });
+  });
 }
 
 /** Where credential directories are: {@link recordRoot}, then the OS temp dir earlier versions used. */

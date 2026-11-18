@@ -148,11 +148,12 @@ const appServer = async (root: string) => {
   return { p, conversation };
 };
 
+const identityRoot = join(cotalHome, "app-identities");
 /** The credential directories a static provision made for `space`, with their records. */
-const identities = (space: string) => readdirSync(tmpdir()).filter((n) => n.startsWith("cotal-app-identity-")).flatMap((n) => {
+const identities = (space: string) => (existsSync(identityRoot) ? readdirSync(identityRoot) : []).filter((n) => n.startsWith("cotal-app-identity-")).flatMap((n) => {
   try {
-    const record = JSON.parse(readFileSync(join(tmpdir(), n, "identity.json"), "utf8")) as { space: string; id: string; lifecycleUid: string; owner: number; session?: string };
-    return record.space === space ? [{ dir: join(tmpdir(), n), ...record }] : [];
+    const record = JSON.parse(readFileSync(join(identityRoot, n, "identity.json"), "utf8")) as { space: string; id: string; lifecycleUid: string; owner: number; session?: string };
+    return record.space === space ? [{ dir: join(identityRoot, n), ...record }] : [];
   } catch { return []; }
 });
 const pidAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };

@@ -30,8 +30,8 @@ for (const built of [CLI, MCP, MONITOR, HOOK]) assert(existsSync(built), `build 
 const dir = mkdtempSync(join(tmpdir(), "cotal-claude-local-"));
 const home = join(dir, "home"), config = join(dir, "config"), tmp = join(dir, "tmp");
 mkdirSync(tmp, { mode: 0o700 });
-// Every process here, this one included, keeps its sockets, session records and credential
-// directories in the suite's own temp directory.
+// Every process here, this one included, keeps its sockets and native session records in the
+// suite's own temp directory. Conversation credentials live in its private Cotal home.
 process.env.TMPDIR = tmp;
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && !k.startsWith("CLAUDE")));
 Object.assign(env, { HOME: dir, COTAL_HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache"),
@@ -50,11 +50,12 @@ const check = (name: string, condition: unknown, observed?: string) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
+const identityRoot = join(home, "app-identities");
 /** The credential directories local provisions made for `space`, with their records. */
-const identities = (space?: string) => readdirSync(tmp).filter((n) => n.startsWith("cotal-app-identity-")).flatMap((n) => {
+const identities = (space?: string) => (existsSync(identityRoot) ? readdirSync(identityRoot) : []).filter((n) => n.startsWith("cotal-app-identity-")).flatMap((n) => {
   try {
-    const record = JSON.parse(readFileSync(join(tmp, n, "identity.json"), "utf8")) as { space: string; id: string; owner: number; session?: string };
-    return space === undefined || record.space === space ? [{ dir: join(tmp, n), ...record }] : [];
+    const record = JSON.parse(readFileSync(join(identityRoot, n, "identity.json"), "utf8")) as { space: string; id: string; owner: number; session?: string };
+    return space === undefined || record.space === space ? [{ dir: join(identityRoot, n), ...record }] : [];
   } catch { return []; }
 });
 const secretShaped = /BEGIN NATS|NKEY SEED|-----BEGIN|\bSU[A-Z2-7]{50,}|agent\.creds/;

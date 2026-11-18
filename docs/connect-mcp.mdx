@@ -36,6 +36,8 @@ connection requires disconnecting the first, or a separate server process. Do no
 one connection between conversations. Hosts using the same local account and Cotal home reserve
 names before joining: simultaneous requests for `twin` receive `twin` and `twin_2`,
 with the renamed connection reporting that `twin` was taken.
+Reservations and recovery records live in that Cotal home, even when applications use
+different temporary directories.
 
 The default persona bounds channels, role and capabilities. A `cotal_connect` permission
 selection can narrow those grants, never widen them. A space requiring native activity
