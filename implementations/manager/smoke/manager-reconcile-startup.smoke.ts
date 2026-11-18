@@ -1,3 +1,5 @@
+const turnRelayOf = <T extends { turnRelay: unknown }>(manager: T): T["turnRelay"] => manager.turnRelay;
+
 /**
  * STARTUP RECONCILE availability smoke (#755) — a real JWT broker, real durable orphan slot
  * rows, and a real Manager process. It proves the manager's typed control service is registered
@@ -314,8 +316,10 @@ try {
     // seat: its own run has already thrown from its pause and its hold is expirable, so the seat
     // would be sent work whose yield is refused, and the live turn behind it would never surface.
     const seeded = booting as unknown as {
+      turnRelay: {
+        pendingTurns: Map<string, Record<string, unknown>>;
+      };
       goalReconcileDone: boolean;
-      pendingTurns: Map<string, Record<string, unknown>>;
     };
     seeded.goalReconcileDone = true;
     const turnRow = (goalId: string, acceptedAt: number, deadlineAt: number) => ({
@@ -324,8 +328,8 @@ try {
       holdToken: goalId.padEnd(20, "0"), holdEpoch: 0,
     });
     const t0 = Date.now();
-    seeded.pendingTurns.set("stale", turnRow("stale", t0 - 60_000, t0 - 1_000));
-    seeded.pendingTurns.set("live", turnRow("live", t0 - 30_000, t0 + 60_000));
+    turnRelayOf(seeded).pendingTurns.set("stale", turnRow("stale", t0 - 60_000, t0 - 1_000));
+    turnRelayOf(seeded).pendingTurns.set("live", turnRow("live", t0 - 30_000, t0 + 60_000));
     const served = doors.turnPendingFor(seat) as { turns: { goalId: string }[] };
     check("an ELAPSED turn is not served and does not dam the seat's queue: the live one behind it surfaces",
       served.turns.length === 1 && served.turns[0]?.goalId === "live", served);
@@ -334,14 +338,16 @@ try {
     // nothing and heard `not-found` — which a seat reads as "drop it", reporting failure for work
     // the run already has. The answer the first reply carried is served again instead.
     const retryDoors = seeded as unknown as {
+      turnRelay: {
+        turnAcceptances: Map<string, { acceptance: Record<string, unknown>; leftoverSince?: number; settled?: { state: string; at: number } }>;
+        sweepTurnDeadlines: () => Promise<void>;
+      };
       goalWriter?: unknown;
-      turnAcceptances: Map<string, { acceptance: Record<string, unknown>; leftoverSince?: number; settled?: { state: string; at: number } }>;
-      sweepTurnDeadlines: () => Promise<void>;
     };
     retryDoors.goalWriter = { ctx: {} };
-    seeded.pendingTurns.delete("stale");
-    seeded.pendingTurns.delete("live");
-    retryDoors.turnAcceptances.set("done-already", {
+    turnRelayOf(seeded).pendingTurns.delete("stale");
+    turnRelayOf(seeded).pendingTurns.delete("live");
+    turnRelayOf(retryDoors).turnAcceptances.set("done-already", {
       acceptance: { name: "s", owner: seat.owner, actor: seat.actor, uid: seat.uid, goalId: "done-already", fingerprint: "f", deadlineAt: t0 + 60_000, executor: { lifecycleUid: "x", epoch: 0 } },
       settled: { state: "succeeded", at: Date.now() },
     });
@@ -358,47 +364,52 @@ try {
     // AND THE ANSWER IS NOT KEPT FOREVER. It exists for the window a lost reply is retried in;
     // holding it past that is one entry per turn for the process lifetime, which is what the map
     // used to be. The sweep is what drops it.
-    retryDoors.turnAcceptances.set("long-done", {
+    turnRelayOf(retryDoors).turnAcceptances.set("long-done", {
       acceptance: { name: "s", owner: seat.owner, actor: seat.actor, uid: seat.uid, goalId: "long-done", fingerprint: "f", deadlineAt: t0, executor: { lifecycleUid: "x", epoch: 0 } },
       settled: { state: "succeeded", at: Date.now() - 10 * 60_000 },
     });
-    await retryDoors.sweepTurnDeadlines();
+    await turnRelayOf(retryDoors).sweepTurnDeadlines();
     check("the sweep drops a settled answer once its retry window has passed, and keeps a fresh one",
-      !retryDoors.turnAcceptances.has("long-done") && retryDoors.turnAcceptances.has("done-already"),
-      [...retryDoors.turnAcceptances.keys()]);
+      !turnRelayOf(retryDoors).turnAcceptances.has("long-done") && turnRelayOf(retryDoors).turnAcceptances.has("done-already"),
+      [...turnRelayOf(retryDoors).turnAcceptances.keys()]);
     // A FAILED DEADLINE COMMIT leaves an acceptance with no `settled` (pending was the latch
     // and is already gone). That entry used to pin the sweep forever once maybeStopTurnSweep
     // stopped wiping the map. Age it off leftoverSince (when the latch dropped), NEVER off
     // deadlineAt: a turn that expired after a long outage would otherwise be pruned on the
     // first tick and take the GoalRef with it. The two clocks are inverted so aging off
     // deadlineAt cannot pass.
-    retryDoors.turnAcceptances.set("stale-unsettled", {
+    turnRelayOf(retryDoors).turnAcceptances.set("stale-unsettled", {
       acceptance: { name: "s", owner: seat.owner, actor: seat.actor, uid: seat.uid, goalId: "stale-unsettled", fingerprint: "f", deadlineAt: Date.now() + 60_000, executor: { lifecycleUid: "x", epoch: 0 } },
       leftoverSince: Date.now() - 10 * 60_000,
     });
-    retryDoors.turnAcceptances.set("fresh-unsettled", {
+    turnRelayOf(retryDoors).turnAcceptances.set("fresh-unsettled", {
       acceptance: { name: "s", owner: seat.owner, actor: seat.actor, uid: seat.uid, goalId: "fresh-unsettled", fingerprint: "f", deadlineAt: t0 - 10 * 60_000, executor: { lifecycleUid: "x", epoch: 0 } },
       leftoverSince: Date.now(),
     });
-    await retryDoors.sweepTurnDeadlines();
+    await turnRelayOf(retryDoors).sweepTurnDeadlines();
     check("the sweep drops a stale unsettled acceptance once its retry window has passed, and keeps a fresh one",
-      !retryDoors.turnAcceptances.has("stale-unsettled") && retryDoors.turnAcceptances.has("fresh-unsettled"),
-      [...retryDoors.turnAcceptances.keys()]);
-    retryDoors.turnAcceptances.delete("fresh-unsettled");
+      !turnRelayOf(retryDoors).turnAcceptances.has("stale-unsettled") && turnRelayOf(retryDoors).turnAcceptances.has("fresh-unsettled"),
+      [...turnRelayOf(retryDoors).turnAcceptances.keys()]);
+    turnRelayOf(retryDoors).turnAcceptances.delete("fresh-unsettled");
     // AND THE SWEEP STOPS ONCE THE LAST ANSWER IS GONE. The settle-time callers of the stop check
     // run when an answer has just been remembered, so they never see the map empty; the prune is
     // the one event after which nothing is owed, and it is the sweep's own to notice.
-    const sweepDoors = seeded as unknown as { turnSweepTimer?: unknown; ensureTurnSweep: () => void };
-    retryDoors.turnAcceptances.set("done-already", {
-      acceptance: retryDoors.turnAcceptances.get("done-already")!.acceptance,
+    const sweepDoors = seeded as unknown as {
+      turnRelay: {
+        turnSweepTimer?: unknown;
+        ensureTurnSweep: () => void;
+      };
+    };
+    turnRelayOf(retryDoors).turnAcceptances.set("done-already", {
+      acceptance: turnRelayOf(retryDoors).turnAcceptances.get("done-already")!.acceptance,
       settled: { state: "succeeded", at: Date.now() - 10 * 60_000 },
     });
-    sweepDoors.ensureTurnSweep();
-    check("the sweep runs while a settled answer is still within its window", sweepDoors.turnSweepTimer !== undefined);
-    await retryDoors.sweepTurnDeadlines();
+    turnRelayOf(sweepDoors).ensureTurnSweep();
+    check("the sweep runs while a settled answer is still within its window", turnRelayOf(sweepDoors).turnSweepTimer !== undefined);
+    await turnRelayOf(retryDoors).sweepTurnDeadlines();
     check("and stops itself once the prune leaves it nothing to do: no pending turn, no answer to serve",
-      sweepDoors.turnSweepTimer === undefined && retryDoors.turnAcceptances.size === 0,
-      { timer: sweepDoors.turnSweepTimer !== undefined, answers: retryDoors.turnAcceptances.size });
+      turnRelayOf(sweepDoors).turnSweepTimer === undefined && turnRelayOf(retryDoors).turnAcceptances.size === 0,
+      { timer: turnRelayOf(sweepDoors).turnSweepTimer !== undefined, answers: turnRelayOf(retryDoors).turnAcceptances.size });
   }
 
   await starting;
@@ -415,9 +426,11 @@ try {
   {
     const adopting = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
     const doors = adopting as unknown as {
+      turnRelay: {
+        pendingTurns: Map<string, { acceptedAt: number; seatDiedAt?: number; seat: { name: string } }>;
+      };
       managerInstanceId: string;
       goalWriter?: unknown;
-      pendingTurns: Map<string, { acceptedAt: number; seatDiedAt?: number; seat: { name: string } }>;
       adoptTurnGoal: (e: { ref: GoalRef; iid: string; allocated?: { name: string; owner?: string; actor: string; uid: string }; note?: string }) => Promise<void>;
     };
     // The fixture writes through the LIVE manager's own goal-writer connection: these records are
@@ -475,7 +488,7 @@ try {
     });
 
     await doors.adoptTurnGoal({ ref, iid: doors.managerInstanceId, allocated, note });
-    const adopted = doors.pendingTurns.get(relayKey(goalId));
+    const adopted = turnRelayOf(doors).pendingTurns.get(relayKey(goalId));
     check("the boot sweep adopts a predecessor's accepted turn back into the pending index",
       adopted !== undefined && adopted.seat.name === "adopted-seat", adopted);
     check("stamped with the acceptance time its goal RECORDS, never the instant the manager booted",
@@ -544,8 +557,8 @@ try {
     await recordGoalIndex(actx, holdlessRef, doors.managerInstanceId, allocated, noteOf(holdless));
     await doors.adoptTurnGoal({ ref: holdlessRef, iid: doors.managerInstanceId, allocated, note: noteOf(holdless) });
     check("a turn whose hold was never minted is not adopted as pending: nothing could settle it",
-      !doors.pendingTurns.has(relayKey(holdless)) && !(adopting as unknown as { turnAcceptances: Map<string, unknown> }).turnAcceptances.has(relayKey(holdless)),
-      { pending: doors.pendingTurns.has(relayKey(holdless)) });
+      !turnRelayOf(doors).pendingTurns.has(relayKey(holdless)) && !turnRelayOf(adopting as unknown as { turnRelay: { turnAcceptances: Map<string, unknown> } }).turnAcceptances.has(relayKey(holdless)),
+      { pending: turnRelayOf(doors).pendingTurns.has(relayKey(holdless)) });
 
     // A FLOOR THAT NAMES NO OWNER, the record an older manager wrote with the owner in its note.
     // The seat is read from the floor alone, so this relay is garbled and left, hold and all.
@@ -570,7 +583,7 @@ try {
     });
     await doors.adoptTurnGoal({ ref: ownerlessRef, iid: doors.managerInstanceId, allocated: ownerlessFloor, note: olderNote });
     check("a turn whose floor names no owner is not adopted, even with an owner in its note",
-      !doors.pendingTurns.has(relayKey(ownerless)), { pending: doors.pendingTurns.get(relayKey(ownerless)) });
+      !turnRelayOf(doors).pendingTurns.has(relayKey(ownerless)), { pending: turnRelayOf(doors).pendingTurns.get(relayKey(ownerless)) });
 
     // #1262: a late yield after the deadline committed. The CI flake is not "the deny lost to a
     // success" — the deny held — and it is not the durable goal-index drop itself: the yield path
@@ -594,15 +607,17 @@ try {
     const LATE_ACCEPTED = Date.now() - 5_000;
     const LATE_DEADLINE = Date.now() - 1_000;
     const lateDoors = adopting as unknown as {
-      pendingTurns: Map<string, {
-        ref: GoalRef; goalId: string;
-        seat: { name: string; owner: string; actor: string; uid: string };
-        payload: string; acceptedAt: number; deadlineAt: number;
-        holdToken: string; holdEpoch: number;
-      }>;
-      turnAcceptances: Map<string, { acceptance: Record<string, unknown>; ref?: GoalRef; leftoverSince?: number; settled?: { state: string; at: number } }>;
-      expireTurnHold: (p: { ref: GoalRef; goalId: string; holdToken: string }) => Promise<{ settle?: string } | undefined>;
-      commitTurnDeadline: (p: { ref: GoalRef; goalId: string; holdToken: string; seat: { name: string; owner: string; actor: string; uid: string }; payload: string; acceptedAt: number; deadlineAt: number; holdEpoch: number }) => Promise<void>;
+      turnRelay: {
+        pendingTurns: Map<string, {
+          ref: GoalRef; goalId: string;
+          seat: { name: string; owner: string; actor: string; uid: string };
+          payload: string; acceptedAt: number; deadlineAt: number;
+          holdToken: string; holdEpoch: number;
+        }>;
+        turnAcceptances: Map<string, { acceptance: Record<string, unknown>; ref?: GoalRef; leftoverSince?: number; settled?: { state: string; at: number } }>;
+        expireTurnHold: (p: { ref: GoalRef; goalId: string; holdToken: string }) => Promise<{ settle?: string } | undefined>;
+        commitTurnDeadline: (p: { ref: GoalRef; goalId: string; holdToken: string; seat: { name: string; owner: string; actor: string; uid: string }; payload: string; acceptedAt: number; deadlineAt: number; holdEpoch: number }) => Promise<void>;
+      };
       serveTurnYield: (c: { owner: string; actor: string; uid: string }, raw: Record<string, unknown>) => Promise<{ goalId: string; state: string }>;
     };
     const armLate = async (goalId: string, fingerprint: string) => {
@@ -630,8 +645,8 @@ try {
         payload: "too late", acceptedAt: LATE_ACCEPTED, deadlineAt: LATE_DEADLINE,
         holdToken, holdEpoch: serveEpoch,
       };
-      lateDoors.pendingTurns.set(relayKey(goalId), pending);
-      lateDoors.turnAcceptances.set(relayKey(goalId), {
+      turnRelayOf(lateDoors).pendingTurns.set(relayKey(goalId), pending);
+      turnRelayOf(lateDoors).turnAcceptances.set(relayKey(goalId), {
         acceptance: {
           name: allocated.name, owner: "local", actor: allocated.actor, uid: seatUid, goalId,
           fingerprint, deadlineAt: LATE_DEADLINE,
@@ -645,15 +660,15 @@ try {
     {
       const lateId = "d".repeat(43);
       const { ref, pending } = await armLate(lateId, "fp-late-1");
-      const expired = await lateDoors.expireTurnHold(pending);
+      const expired = await turnRelayOf(lateDoors).expireTurnHold(pending);
       check("a due hold the manager owns expires as `expired` (the deny's predicate)",
         expired?.settle === "expired", expired);
-      await lateDoors.commitTurnDeadline(pending);
+      await turnRelayOf(lateDoors).commitTurnDeadline(pending);
       const deniedLate = await readGoalResult(actx, ref);
       check("the deadline deny is the goal's terminal, reason `turn-deadline`; no success over it",
         deniedLate?.state === "failed" && (deniedLate.data as { reason?: string } | undefined)?.reason === "turn-deadline",
         deniedLate);
-      const stamped = lateDoors.turnAcceptances.get(relayKey(lateId));
+      const stamped = turnRelayOf(lateDoors).turnAcceptances.get(relayKey(lateId));
       check("commitTurnDeadline stamps leftoverSince when the pending latch drops, not the original deadline",
         typeof stamped?.leftoverSince === "number" && stamped.leftoverSince > LATE_DEADLINE,
         stamped);
@@ -661,8 +676,8 @@ try {
       // answer not remembered. This is the window between pendingTurns.delete and
       // rememberSettledTurn (and the window a concurrent sweep's maybeStopTurnSweep can
       // drop the settled field while leaving the acceptance the yield still addresses).
-      lateDoors.pendingTurns.delete(relayKey(lateId));
-      const kept1 = lateDoors.turnAcceptances.get(relayKey(lateId));
+      turnRelayOf(lateDoors).pendingTurns.delete(relayKey(lateId));
+      const kept1 = turnRelayOf(lateDoors).turnAcceptances.get(relayKey(lateId));
       if (kept1) delete kept1.settled;
       const afterCommitBeforeIndexDrop = await lateDoors.serveTurnYield(adoptedSeat, { goalId: lateId, status: "done" }).then((r) => r, asValue);
       check("a yield after the deny committed, before the index drop, is told the turn ended failed, never `not-found`",
@@ -676,13 +691,13 @@ try {
     {
       const lateId = "e".repeat(43);
       const { ref, pending } = await armLate(lateId, "fp-late-2");
-      await lateDoors.expireTurnHold(pending);
-      await lateDoors.commitTurnDeadline(pending);
+      await turnRelayOf(lateDoors).expireTurnHold(pending);
+      await turnRelayOf(lateDoors).commitTurnDeadline(pending);
       // Ordering 2: terminal committed AND the index already cleared — the auth-mesh smoke's
       // observed state when it yields after resultOf returns the deny.
       await clearGoalIndex(actx, ref);
-      lateDoors.pendingTurns.delete(relayKey(lateId));
-      const kept2 = lateDoors.turnAcceptances.get(relayKey(lateId));
+      turnRelayOf(lateDoors).pendingTurns.delete(relayKey(lateId));
+      const kept2 = turnRelayOf(lateDoors).turnAcceptances.get(relayKey(lateId));
       if (kept2) delete kept2.settled;
       const afterIndexDrop = await lateDoors.serveTurnYield(adoptedSeat, { goalId: lateId, status: "done" }).then((r) => r, asValue);
       check("a yield after the deny committed AND the index dropped is still told the turn ended failed, never `not-found`",
