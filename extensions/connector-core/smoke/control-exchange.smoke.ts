@@ -678,7 +678,7 @@ try {
     // made the directory before this launch did.
     const key = randomBytes(32).toString("base64url");
     const taken = controlEndpoint("ctlx", "taken", artifacts, key);
-    rmSync(dirname(taken.path), { recursive: true });
+    rmSync(dirname(taken.path), { recursive: true, force: true });
     mkdirSync(dirname(taken.path), { mode: 0o755 });
     const before = artifacts.length;
     let takenError = "";
@@ -695,7 +695,7 @@ try {
     rmSync(dirname(taken.path), { recursive: true, force: true });
 
     const gone = controlEndpoint("ctlx", "gone", artifacts);
-    rmSync(dirname(gone.path), { recursive: true });
+    rmSync(dirname(gone.path), { recursive: true, force: true });
     let goneError = "";
     const goneServer = startControlServer({} as MeshAgent, gone, async () => ({}));
     goneServer.on("error", (e) => (goneError = e.message));

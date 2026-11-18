@@ -25,9 +25,9 @@
  *   G. a managed listener whose endpoint is squatted exits(1) — fatal bind, no degraded plane. [WS3,
  *      win32-only: a named pipe is the only transport where a live squatter yields EADDRINUSE]
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, delimiter } from "node:path";
+import { dirname, join, delimiter } from "node:path";
 import { connect, createServer } from "node:net";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -462,6 +462,8 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
       });
     });
   });
+  // This cell grades the reply cap, so it does not lean on minting having made the directory.
+  if (!isWin) mkdirSync(dirname(ep3.path), { recursive: true, mode: 0o700 });
   await new Promise<void>((resolve) => flood.listen(ep3.path, () => resolve()));
   controlShutdown(ep3);
   for (let i = 0; i < 100 && !floodDone; i++) await sleep(25);
