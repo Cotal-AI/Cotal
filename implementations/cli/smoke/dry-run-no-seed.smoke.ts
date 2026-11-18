@@ -277,7 +277,7 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   );
 }
 
-// ── 7. `up` still refuses a newer seed store before it writes anything ───────────────────────────
+// ── 7. manager startup still refuses a newer seed store before it writes anything ───────────────
 // Deferring the seed must not let an older `up` write its root first: the downgrade check stays at
 // the boot gate, and it names the store to restore.
 {
@@ -290,7 +290,7 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   writeFileSync(join(seedDir, "stamp.json"), stagedStamp);
   const r = spawnSync(
     "node",
-    [BIN, "up", "--no-manager"],
+    [BIN, "up"],
     { cwd: sandboxRoot, env: { ...HOST_ENV, COTAL_HOME: join(sandboxRoot, "home"), XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" }, encoding: "utf8" },
   );
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;

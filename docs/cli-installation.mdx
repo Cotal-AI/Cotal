@@ -663,7 +663,8 @@ same path.
 
 `cotal ext seed` is the maintenance entry for that seeding (it runs automatically before the first
 command of each boot that is not a read, so you rarely call it; `cotal up` runs it when it first
-starts a process). A read, such as `status`, `ps`,
+starts a process unless `--no-manager` is set). Broker-only startup leaves the connector store
+unchanged and does not require npm. A read, such as `status`, `ps`,
 bare `use`, `ext list` or `docs`, installs and refreshes nothing. An installed extension's `reads` declaration is
 cached when it is added. A bare read and a read subcommand skip that seed prelude; a subcommand
 without the declaration still seeds. After an upgrade, a read that would load a
