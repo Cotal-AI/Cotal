@@ -976,6 +976,12 @@ holder asks again, so its ack wait can run out, and the broker then redelivers t
 
 ## 9. NATS + JetStream security and authorization
 
+An agent credential authorized to publish `events.<owner>.<actor>` for its own principal MUST
+also permit its lifecycle-pinned single-filter CHAT history consumer to read that channel.
+This history-only authority does not add a live channel subscription, another principal's event
+channel or any payload-rail read. It lets a writer verify its own pending frame after the stream's
+duplicate window expires. Other channel history reads remain bounded by `allowSubscribe`.
+
 **Login discovery names.** A provider's root `/.well-known/cotal-mesh` document MAY
 carry an optional top-level `discoveryNames` array of canonical lowercase DNS hostnames
 (without a scheme, port, path, IP literal or trailing dot). A client resolving a typed

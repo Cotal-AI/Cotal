@@ -1,4 +1,6 @@
 import { eventPayloadReadSubjects, eventPayloadStream, eventPayloadSubject } from "./event-payloads.js";
+import { eventChannel } from "./event-channel.js";
+import { patternInAllow } from "./subjects.js";
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
@@ -465,11 +467,16 @@ export function permissionsFor(
   if (profile !== "agent")
     throw new Error(`permissionsFor: unhandled profile "${profile}" - add an explicit arm, do not fall through to agent`);
   const allowPublish = opts.allowPublish ?? []; // post ACL — DEFAULT-DENY (publish must be declared)
-  // Read ACL — DEFAULT-DENY for channels, exactly like allowPublish above. Omitted or empty mints
-  // NO channel row: no per-channel history-consumer create grant and no `chat.*.<ch>` sub.allow.
+  // Read ACL is default-deny for live channels. An event publisher's own history exception below
+  // adds only a single-filter consumer create, never a `chat.*.<ch>` live sub.allow.
   // The DM/presence/anycast/control rows below are unconditional, so a channel-less agent is still
   // a full mesh participant, reachable by DM and visible on the roster.
   const allowSubscribe = opts.allowSubscribe ?? [];
+  // A publisher can settle its own old lost acknowledgement without gaining a live subscription
+  // or payload access. Only the history consumer's single-filter create receives this exception.
+  const ownEvents = eventChannel(pr);
+  const historyReads = patternInAllow(allowPublish, ownEvents) && !patternInAllow(allowSubscribe, ownEvents)
+    ? [...allowSubscribe, ownEvents] : allowSubscribe;
   // Re-assert at the mint chokepoint (covers mint/spawn paths that bypass the file loader): a policy
   // channel must equal its wire token, or the minted grant would alias the logical ACL.
   for (const ch of [...allowSubscribe, ...allowPublish]) assertValidChannel(ch);
@@ -526,7 +533,7 @@ export function permissionsFor(
     // old unfiltered DIRECT.GET.<CHAT> (which could fetch ANY message regardless of channel). The
     // name is the agent's own, so info/fetch/delete can't reach a peer's consumer. NO broad
     // CONSUMER.CREATE.<CHAT> / .> deny here: NATS deny beats allow, which would also kill these.
-    ...allowSubscribe.map((ch) => `$JS.API.CONSUMER.CREATE.${CHAT}.${chatHistD}.${chatSubject(space, "*", "*", ch)}`),
+    ...historyReads.map((ch) => `$JS.API.CONSUMER.CREATE.${CHAT}.${chatHistD}.${chatSubject(space, "*", "*", ch)}`),
     `$JS.API.CONSUMER.INFO.${CHAT}.${chatHistD}`,
     `$JS.API.CONSUMER.MSG.NEXT.${CHAT}.${chatHistD}`,
     `$JS.API.CONSUMER.DELETE.${CHAT}.${chatHistD}`,
