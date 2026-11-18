@@ -1,4 +1,13 @@
-import { homeCotalDir, shellPath } from "@cotal-ai/workspace";
+import { findMesh, homeCotalDir, shellPath } from "@cotal-ai/workspace";
+
+export const NOT_USER_AUTH_MESSAGE = "this space does not use user sign-in, so the daemon cannot connect to it as its own service";
+export const NOT_USER_AUTH_REMEDY = "run `cotal up` from the folder that hosts this local space; its Manager runs under `cotal up`. The machine service hosts Managers only for user-auth participant spaces";
+
+/** Local registry facts suffice for guidance without contacting an auth provider. */
+export function localSpaceRemedy(space: string): string | undefined {
+  const entry = findMesh(space);
+  return entry && (entry.mode !== "user" || !entry.userAuth) ? NOT_USER_AUTH_REMEDY : undefined;
+}
 
 /** A copyable command for this daemon. Tuples keep option values distinct from boolean flags;
  *  leading-hyphen values need `=` even when shell-quoted. Windows copy targets PowerShell. */

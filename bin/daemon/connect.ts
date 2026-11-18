@@ -22,7 +22,7 @@ import { assertLifecycleToken, isAccountNkey, mintLifecycleUid, resolveAuthProvi
 import { claimIdentityRecord, codeSpan, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { fetchIdpJwt, IdpSessionRejectedError, IdpUnreachableError, loadIdpSession } from "@cotal-ai/auth";
 import type { ConnectCheckResult } from "./protocol.js";
-import { daemonCommandCopy } from "./guidance.js";
+import { daemonCommandCopy, NOT_USER_AUTH_MESSAGE, NOT_USER_AUTH_REMEDY } from "./guidance.js";
 
 /** The service name the daemon proposes for itself. Single-label names are reserved for reference
  *  endpoints and a third-party name must be reverse-DNS, so this is the reverse-DNS of cotal.ai.
@@ -74,7 +74,7 @@ export function readDaemonServiceIdentity(space: string, home: string): DaemonSe
 /** The fixed sentence per failure. Nothing from the remote side is quoted. */
 const SENTENCE = {
   "not-registered": "this space is not registered on this machine; add it with `cotal meshes add`",
-  "not-user-auth": "this space does not use user sign-in, so the daemon cannot connect to it as its own service",
+  "not-user-auth": NOT_USER_AUTH_MESSAGE,
   "not-signed-in": "this machine is not signed in to the space's provider",
   "unsupported-by-space": "the space's auth service does not host service endpoints, so the daemon cannot register with it",
   unreachable: "the space's auth service could not be reached",
@@ -88,7 +88,7 @@ export async function connectCheck(space: string, home: string = homeCotalDir(),
   const entry = findMesh(space);
   if (!entry) return { outcome: "not-registered", space, message: SENTENCE["not-registered"] };
   const ua = entry.mode === "user" ? entry.userAuth : undefined;
-  if (!ua) return { outcome: "not-user-auth", space, message: SENTENCE["not-user-auth"] };
+  if (!ua) return { outcome: "not-user-auth", space, message: SENTENCE["not-user-auth"], remedy: NOT_USER_AUTH_REMEDY };
   let session;
   try { session = loadIdpSession(home, ua.idp.url); } catch { session = undefined; }
   if (!session) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"],

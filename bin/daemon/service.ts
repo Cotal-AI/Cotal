@@ -44,7 +44,7 @@ import { codeSpan, FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuth
 import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness, registerDaemon } from "./register.js";
 import { ACCOUNT_MISMATCH_MESSAGE } from "./connect.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
-import { daemonCommandCopy } from "./guidance.js";
+import { daemonCommandCopy, localSpaceRemedy, NOT_USER_AUTH_MESSAGE } from "./guidance.js";
 import { removeServiceRecords } from "./service-records.js";
 
 /** Map registration outcomes consistently for setup and service status. */
@@ -184,6 +184,8 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   const result = (space: string): ServiceConnectionResult => {
     const l = live.get(space);
     const state = l?.state ?? (existsSync(daemonRegisterFile(space, home)) ? "disconnected" : "not-requested");
+    const localRemedy = state === "not-requested" || state === "unsupported" ? localSpaceRemedy(space) : undefined;
+    if (localRemedy) return { space, state: "unsupported", message: NOT_USER_AUTH_MESSAGE, remedy: localRemedy };
     const remedy = state === "not-requested" ? `run ${codeSpan(daemonCommandCopy("register", home, [["--space", space]]))} first`
       : state === "not-signed-in" ? l?.remedy : undefined;
     return { space, state, message: SENTENCE[state], ...(l?.instanceId ? { instanceId: l.instanceId } : {}),
