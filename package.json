@@ -308,6 +308,7 @@
     "smoke:injection-framing": "tsx extensions/connector-core/smoke/injection-framing.smoke.ts",
     "smoke:spawn-blank-name": "tsx extensions/connector-core/smoke/spawn-blank-name.smoke.ts",
     "smoke:broker-redelivery-framing": "tsx extensions/connector-core/smoke/broker-redelivery-framing.smoke.ts",
+    "smoke:frame-sender-name": "tsx extensions/connector-core/smoke/frame-sender-name.smoke.ts",
     "smoke:control-reply": "tsx extensions/connector-core/smoke/control-reply.smoke.ts",
     "smoke:tool-blank-name": "tsx extensions/connector-core/smoke/tool-blank-name.smoke.ts",
     "smoke:control-rebind": "tsx extensions/connector-core/smoke/control-rebind.smoke.ts",

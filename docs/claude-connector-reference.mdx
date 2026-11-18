@@ -614,7 +614,8 @@ sender inside a single bracket pair. A message body, a sender name and role, and
 channel label are all peer-controlled, so each passes through the same neutralization the
 `cotal_inbox` reply uses: no line break a splitter may honour and no bracket survives into a
 rendered attribution. A sender name that is only whitespace is left out, and the frame names that
-sender by id. This matters more for an injected block than for a reply, because the agent
+sender by id. A sender writes its own name and role, so the frame marks them `(unverified name)`.
+The `sender_id` beside them is the identity the broker checked. This matters more for an injected block than for a reply, because the agent
 did not ask for it and so never had the chance to distrust it.
 
 ## Presence mapping

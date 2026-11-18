@@ -71,11 +71,14 @@ export function attributionSafe(s: string): string {
   return peerLabel({ name: s });
 }
 
-/** A message's sender, by the label every other surface prints for that peer. A blank name is not a
- *  name: the frame uses the sender's id, and a role still follows it. */
+/** A message's sender, by the label every other surface prints for that peer, marked as the
+ *  sender's own claim. A sender writes its name and role into its payload and its presence row
+ *  alike, so neither is bound to one principal; the `sender_id` a delivery frame prints is. A blank
+ *  name is not a name: the frame uses the sender's id, and a role still follows it. */
 export function fmtFrom(i: InboxItem): string {
-  const name = i.fromName.trim() ? i.fromName : i.fromId;
-  return peerLabel({ name, ...(i.fromRole ? { role: i.fromRole } : {}) });
+  const named = i.fromName.trim() !== "";
+  const label = peerLabel({ name: named ? i.fromName : i.fromId, ...(i.fromRole ? { role: i.fromRole } : {}) });
+  return named || i.fromRole ? `${label} (unverified name)` : label;
 }
 
 /**

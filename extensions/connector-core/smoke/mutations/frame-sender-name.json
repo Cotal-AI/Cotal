@@ -1,0 +1,24 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/frame-sender-name.smoke.ts"
+  ],
+  "guard": "a frame marks the sender's self-written name and role as unverified",
+  "command": "pnpm smoke:frame-sender-name",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/frame-sender-name.json",
+  "why": [
+    "The suite imports the connector-core source directly, so no rebuild is needed.",
+    "Every surface renders the sender through `fmtFrom`, so one mutation there reaches the wake",
+    "label, the preview rows, the injected block and the cotal_inbox reply together."
+  ],
+  "mutations": [
+    {
+      "name": "the marker is dropped, so a frame prints the sender's chosen name as if it were its identity",
+      "file": "extensions/connector-core/src/framing.ts",
+      "find": "  return named || i.fromRole ? `${label} (unverified name)` : label;",
+      "replace": "  return label;",
+      "expectRed": "the wake-hint label marks the claimed name and role as unverified",
+      "cell": "the wake-hint label marks the claimed name and role as unverified"
+    }
+  ]
+}
