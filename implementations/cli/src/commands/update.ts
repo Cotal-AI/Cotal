@@ -877,6 +877,13 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
         console.log(`  ${e.details.space}: folder is gone; leaving its processes untouched, continuity not checked`);
         return "none";
       }
+      // A refused legacy start can leave a rendered broker config without ever starting a member.
+      // That file cannot prove custody or its absence. Leave the project alone without claiming
+      // continuity, rather than requiring a successful start before a software update.
+      if (e.code === "not-started" && e.details.lastRun === true) {
+        console.log(c.dim(`  ${e.details.stackSpace ?? e.details.root}: retained broker configuration in ${e.details.root}; leaving its records and processes untouched, continuity not checked`));
+        return "none";
+      }
       // A space prepared here that never started (`cotal setup --configure-only`, `space create`)
       // has no broker, no stack journal and no manager: a supervisor serves a started stack, and
       // this one never launched a member, so there is nothing this update could interrupt. Run from

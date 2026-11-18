@@ -1,17 +1,21 @@
-/** Prepared and stopped-controller projects must prove they have no live custody before update. */
-import assert from "node:assert/strict";
+/** Updates skip retained legacy configurations without claiming continuity and prove stopped controllers cold. */
+import nodeAssert from "node:assert/strict";
+import { countedAssert } from "@cotal-ai/smoke-kit";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { createSpaceAuth } from "@cotal-ai/core";
 import type { MeshTarget } from "@cotal-ai/workspace";
 import { isStoppedLocalMesh, readManagerContinuity } from "../src/commands/update.js";
-import { findPreparedSpace, readCurrent, recordPreparedSpace, setCurrent } from "@cotal-ai/workspace";
+import { authDir, clearCurrent, findPreparedSpace, readCurrent, recordPreparedSpace, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { writeStackJournal, STACK_ROLES, type StackJournal } from "../src/lib/stack-journal.js";
 import { serviceInstanceStore, processServiceHost, requireProcessIdentity } from "../src/lib/service-instances.js";
 
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 const root = mkdtempSync(join(tmpdir(), "cotal-update-unstarted-"));
 const other = mkdtempSync(join(tmpdir(), "cotal-update-deleted-"));
 const prior = process.env.COTAL_HOME;
@@ -90,13 +94,14 @@ try {
     process.chdir(cwd);
     assert.equal(await readManagerContinuity({ space: target.space }), "none", "a named stopped controller is eligible from another folder");
   } finally { process.chdir(cwd); }
+  const ambient = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
   // Use the public CLI to prepare and select a space that never starts, then delete
   // its project. Neither ordinary reconciliation nor repeated self-update needs it.
   const bin = resolve(import.meta.dirname, "../../../bin/dist/cotal.js");
   const home = join(other, "home");
   mkdirSync(home, { mode: 0o700 });
   const cli = (...args: string[]) => spawnSync(process.execPath, [bin, ...args], {
-    cwd: other, env: { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" },
+    cwd: other, env: { ...ambient, HOME: home, USERPROFILE: home, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" },
     encoding: "utf8", timeout: 120_000,
   });
   const deleted = join(other, "project"), space = `deleted-${randomUUID()}`;
@@ -116,7 +121,83 @@ try {
   }
   assert.equal(await readManagerContinuity({ space }, { readOnly: true, retainGraph: true }), "none", "staged pre-install skips the deleted prepared root too");
   await assert.rejects(readManagerContinuity({ space, creds: join(other, "missing.creds") }), "explicit credentials still refuse");
-  console.log("update-unstarted.smoke: 39 checks passed");
+  // Older up versions render these configurations before refusing an old broker binary.
+  // Exercise the real resolver and built update commands against both retained formats.
+  clearCurrent();
+  const privateHome = join(root, "private-home");
+  mkdirSync(privateHome, { mode: 0o700 });
+  for (const mode of ["open", "static"] as const) {
+    const project = join(root, `refused-${mode}`);
+    mkdirSync(join(project, ".cotal"), { recursive: true, mode: 0o700 });
+    if (mode === "static") saveSpaceAuth(authDir(project), await createSpaceAuth("refused"));
+    const config = mode === "static" ? join(authDir(project), "server.conf") : join(project, ".cotal", "server-open.conf");
+    const contents: string = `host: 127.0.0.1\nport: ${address.port}\n`;
+    writeFileSync(config, contents, { mode: 0o600 });
+    const cwd = process.cwd(), log = console.log;
+    let output = "";
+    try {
+      process.chdir(project);
+      console.log = (line?: unknown) => { output += `${line}\n`; };
+      assert.equal(await readManagerContinuity({}, { readOnly: true, retainGraph: true }), "none", `${mode}: staged read skips retained configuration`);
+      await new Promise<void>((resolve, reject) => { listener.once("error", reject); listener.listen(address.port, "127.0.0.1", resolve); });
+      assert.equal(await readManagerContinuity({}), "none", `${mode}: even a listener does not make retained configuration proof of custody`);
+      await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+      await assert.rejects(readManagerContinuity({ creds: join(project, "missing.creds") }), `${mode}: explicit credentials keep their own refusal`);
+    } finally { process.chdir(cwd); console.log = log; }
+    assert.ok(output.includes(project), `${mode}: skip names the folder`);
+    if (mode === "static") assert.ok(output.includes("refused:"), "static: skip names the space");
+    assert.match(output, /records and processes untouched, continuity not checked/, `${mode}: no false continuity claim`);
+    assert.doesNotMatch(output, /no manager running/, `${mode}: does not assert absence of custody`);
+    for (const args of [["update"], ["update", "--self"]]) {
+      const result = spawnSync(process.execPath, [resolve(import.meta.dirname, "../../../bin/dist/cotal.js"), ...args], {
+        cwd: project, encoding: "utf8", timeout: 120_000,
+        env: { ...ambient, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" },
+      });
+      assert.equal(result.status, 0, `${mode}: ${args.join(" ")} completes\n${result.stdout}\n${result.stderr}`);
+      assert.ok(result.stdout.includes(project), `${mode}: command names the skipped folder`);
+      assert.match(result.stdout, /continuity not checked/, `${mode}: command reports the limitation`);
+      assert.doesNotMatch(result.stderr, /running manager continuity check|start it again/, `${mode}: no circular start remedy`);
+      assert.equal(readFileSync(config, "utf8"), contents, `${mode}: update preserves the rendered broker configuration`);
+    }
+  }
+  // A clean legacy down also retains configuration when --space differs from the folder name.
+  // Run the public startup and stop commands so this covers actual stopped-project records.
+  const stoppedProject = join(root, "stopped-project");
+  const stoppedSpace = `explicit-${randomUUID()}`;
+  mkdirSync(join(stoppedProject, ".cotal"), { recursive: true, mode: 0o700 });
+  const stoppedCli = (...args: string[]) => spawnSync(process.execPath, [bin, ...args], {
+    cwd: stoppedProject, encoding: "utf8", timeout: 120_000,
+    env: { ...ambient, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" },
+  });
+  let started = false;
+  try {
+    const up = stoppedCli("up", "--detach", "--server", target.server, "--space", stoppedSpace);
+    started = up.status === 0;
+    assert.equal(up.status, 0, `explicit-space project starts\n${up.stdout}\n${up.stderr}`);
+    const sent = stoppedCli("send", "-c", "general", "hello");
+    assert.equal(sent.status, 0, `explicit-space project stores a message\n${sent.stdout}\n${sent.stderr}`);
+    const down = stoppedCli("down", "--yes");
+    assert.equal(down.status, 0, `explicit-space project stops cleanly\n${down.stdout}\n${down.stderr}`);
+    started = false;
+    const config = join(authDir(stoppedProject), "server.conf");
+    const contents = readFileSync(config, "utf8");
+    const cwd = process.cwd();
+    try {
+      process.chdir(stoppedProject);
+      assert.equal(await readManagerContinuity({}, { readOnly: true, retainGraph: true }), "none", "staged pre-install skips the stopped explicit-space project");
+    } finally { process.chdir(cwd); }
+    for (const args of [["update"], ["update", "--self"]]) {
+      const result = stoppedCli(...args);
+      assert.equal(result.status, 0, `stopped explicit-space ${args.join(" ")} completes\n${result.stdout}\n${result.stderr}`);
+      assert.ok(result.stdout.includes(stoppedProject), "update names the stopped project");
+      assert.match(result.stdout, /continuity not checked/, "update does not claim continuity from retained records");
+      assert.doesNotMatch(result.stderr, /running manager continuity check|start it again/, "no circular start remedy for a stopped project");
+      assert.equal(readFileSync(config, "utf8"), contents, "update preserves the stopped project's broker configuration");
+    }
+  } finally {
+    if (started) stoppedCli("down", "--yes");
+  }
+  console.log(`COTAL_SMOKE_SENTINEL cells=${counted.cells()} passed=${counted.cells()} failed=0`);
 } finally {
   if (listener.listening) await new Promise<void>((resolve) => listener.close(() => resolve()));
   if (prior === undefined) delete process.env.COTAL_HOME;
