@@ -21,8 +21,13 @@ cpSync(join(repo, "bin/package.json"), join(installed, "package.json"));
 symlinkSync(join(repo, "bin/node_modules"), join(installed, "node_modules"));
 const home = join(root, "home"), config = join(root, "config"), cotal = join(root, "cotal"), runtime = join(root, "runtime");
 for (const path of [home, config, cotal, runtime]) mkdirSync(path, { mode: 0o700 });
+// The sudo-specific command and argv assertions must not depend on the host's privilege tools.
+const pathbin = join(root, "pathbin");
+mkdirSync(pathbin);
+writeFileSync(join(pathbin, "sudo"), "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+symlinkSync("/bin/sh", join(pathbin, "sh"));
 const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
-const env = { ...clean, HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+const env = { ...clean, PATH: pathbin, HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
 const run = () => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "update", "--self"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
 const packageBefore = readFileSync(join(installed, "package.json"), "utf8");
 chmodSync(installed, 0o555); chmodSync(join(installed, "dist"), 0o555); chmodSync(join(prefix, "lib"), 0o555);
@@ -52,7 +57,7 @@ try {
     writeFileSync(attemptPath, JSON.stringify({ version: "99.0.0", failures: 1, result: "due", next: 0 }));
     writeFileSync(join(cotal, "update-check.json"), JSON.stringify({ v: 1, latest: "99.0.0", attemptedAt: Date.now(), checkedAt: Date.now(), firstSeenAt: Date.now() - 3_601_000 }));
     for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
-    Object.assign(process.env, { HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, DO_NOT_TRACK: "1", NO_COLOR: "1" });
+    Object.assign(process.env, { PATH: pathbin, HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, DO_NOT_TRACK: "1", NO_COLOR: "1" });
     const { automaticUpdates } = await import(pathToFileURL(join(installed, "dist/daemon/auto-update.js")).href) as typeof import("../daemon/auto-update.js");
     const reports: string[] = [];
     const daemon = automaticUpdates({ version: "0.0.1", eligible: () => true, prepare: async () => {}, abort: async () => {}, report: line => reports.push(line) });

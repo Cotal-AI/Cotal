@@ -191,18 +191,28 @@ try {
     });
     console.log(`execution generations: ${checks} checks passed; retained selection unavailable on this platform`);
   } else {
-  check("a non-writable package refuses before creating generation storage", () => {
-    chmodSync(root, 0o500);
-    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest; then run `cotal update` as your normal account, without sudo/); }
-    finally { chmodSync(root, 0o700); }
-    assert.equal(existsSync(executionStore(root)), false);
-  });
-  check("generation store refuses a non-writable installation before creating it", () => {
-    const parent = join(scratch, "prefix/lib"); chmodSync(parent, 0o500);
-    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest; then run `cotal update` as your normal account, without sudo/); }
-    finally { chmodSync(parent, 0o700); }
-    assert.equal(existsSync(executionStore(root)), false);
-  });
+  // Scope the sudo-specific refusal checks to a known executable, independent of the host PATH.
+  const pathbin = join(scratch, "pathbin"), previousPath = process.env.PATH;
+  mkdirSync(pathbin);
+  writeFileSync(join(pathbin, "sudo"), "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+  process.env.PATH = pathbin;
+  try {
+    check("a non-writable package refuses before creating generation storage", () => {
+      chmodSync(root, 0o500);
+      try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest; then run `cotal update` as your normal account, without sudo/); }
+      finally { chmodSync(root, 0o700); }
+      assert.equal(existsSync(executionStore(root)), false);
+    });
+    check("generation store refuses a non-writable installation before creating it", () => {
+      const parent = join(scratch, "prefix/lib"); chmodSync(parent, 0o500);
+      try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest; then run `cotal update` as your normal account, without sudo/); }
+      finally { chmodSync(parent, 0o700); }
+      assert.equal(existsSync(executionStore(root)), false);
+    });
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
   // Homebrew keeps `lib` group-writable and npm under a umask of 0002 creates the package that way.
   const managed = [root, join(scratch, "prefix/lib/node_modules"), join(scratch, "prefix/lib")];
   for (const path of managed) chmodSync(path, 0o775);
