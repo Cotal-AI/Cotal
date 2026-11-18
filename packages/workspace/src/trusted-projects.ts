@@ -1,6 +1,7 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { acquireLock, globalConfigDir, loadAgentFile, writeSecretFileAtomic } from "@cotal-ai/core";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, statSync, type Stats } from "node:fs";
+import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
+import { acquireLock, globalConfigDir, parseAgentFileSource, writeSecretFileAtomic, type AgentDef } from "@cotal-ai/core";
+import { parseLaunchPersonaSource, PersonaSourceError } from "./launch-persona.js";
 import { CommandFailure, isCommandFailure } from "./output.js";
 import { localRecordAccess, prepareCotalHomeForWrite, protectedLocalDirectory } from "./protected-records.js";
 import { localWriteFailure } from "./local-write.js";
@@ -53,7 +54,7 @@ function readFile(): TrustedProjects | undefined {
     if (typeof process.getuid === "function" && stat.uid !== process.getuid())
       throw new CommandFailure("refused", "PERMISSION_DENIED", `the trusted projects file ${path} belongs to another user, so nothing was read`, { target: { path }, remedy: `remove ${path}; no folder is trusted until you run \`cotal trust <path>\` for each one` });
     if ((stat.mode & 0o022) !== 0)
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `the trusted projects file ${path} can be written by other accounts, so nothing was read`, { target: { path }, remedy: `run \`chmod 600 ${path}\`` });
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the trusted projects file ${path} can be written by other accounts, so nothing was read`, { target: { path }, remedy: `check that every folder in its \`roots\` is one you trust, since another account may have added it, then run \`chmod 600 ${path}\`` });
   }
   if (!stat.isFile()) throw invalid("it is not a regular file");
   let doc: unknown;
@@ -143,7 +144,9 @@ function readSeedRecord(): SeedRecord | undefined {
   if (localRecordAccess() === "posix") {
     if (stat.isSymbolicLink()) throw seedInvalid("it is a symbolic link", seedRemoveRemedy());
     if (typeof process.getuid === "function" && stat.uid !== process.getuid()) throw seedInvalid("it belongs to another user", seedRemoveRemedy());
-    if ((stat.mode & 0o022) !== 0) throw seedInvalid("other accounts can write it", `run \`chmod 600 ${path}\``);
+    // Another account may have written its roots, which a retried seed would trust: never repaired
+    // in place, only removed.
+    if ((stat.mode & 0o022) !== 0) throw seedInvalid("other accounts can write it", seedRemoveRemedy());
   }
   if (!stat.isFile()) throw seedInvalid("it is not a regular file", seedRemoveRemedy());
   let doc: unknown;
@@ -204,7 +207,7 @@ export function untrustedProjectRefusal(file: string, declared: readonly string[
 /** The project folder a persona path belongs to, when it sits in one: the folder holding the
  *  `.cotal/agents` directory the path is in, directly or in a folder below it. Matched by whole path
  *  segments, so `foo.cotal/agents` is not a project's. Undefined for a path elsewhere. The path is
- *  judged as given; {@link untrustedPersonaRoot} also judges the file a read of it reaches. */
+ *  judged as given; {@link loadTrustCheckedPersona} judges every spelling on the way to the file. */
 export function personaProjectRoot(file: string): string | undefined {
   const parts = resolve(file).split(sep);
   // The last `.cotal` followed by `agents`, with the file somewhere below that `agents` folder.
@@ -214,51 +217,137 @@ export function personaProjectRoot(file: string): string | undefined {
   return undefined;
 }
 
-/** The untrusted project a persona file belongs to, judged twice: by the path as written and by the
- *  file a read of that path reaches, with every symbolic link resolved as the loaders follow them.
- *  A link outside any `.cotal/agents` to a persona inside an untrusted project's, and a link in a
- *  trusted project's `.cotal/agents` to a persona under an untrusted project, both belong to the
- *  untrusted project. Undefined when neither spelling lies under an untrusted project's
- *  `.cotal/agents`. `file` is the path as written; `read` is the resolved file, when there is one. */
-function untrustedPersonaRoot(file: string): { root: string; read?: string } | undefined {
-  const read = canonicalRoot(file);
-  for (const root of new Set([personaProjectRoot(file), personaProjectRoot(read)])) {
-    if (root !== undefined && !isTrustedProject(root)) return { root, ...(read !== resolve(file) ? { read } : {}) };
+/** The most symbolic links followed on the way to a persona file, as Linux allows in one lookup. */
+const MAX_LINK_HOPS = 40;
+
+/** A persona path resolved one link at a time: the file it ends at, with no link left in its path,
+ *  that file's status, and every absolute spelling met on the way. */
+interface WalkedPersona {
+  final: string;
+  stat: Stats;
+  spellings: string[];
+}
+
+const walkFailure = (code: string, message: string): NodeJS.ErrnoException => Object.assign(new Error(message), { code });
+
+/** Resolve `file` component by component with lstat and readlink, as the kernel does. It records the
+ *  path as written, each link's own path with the rest of the path after it, the path each link leads
+ *  to, every folder the walk steps through (so a path that enters a `.cotal/agents` and leaves it with
+ *  `..` is still judged by that folder), and the file reached. A relative link resolves against the
+ *  folder that holds it, and `..` leaves the real folder reached, never a link's own folder. More than
+ *  {@link MAX_LINK_HOPS} links, as a loop makes, throws `ELOOP`; a missing component throws `ENOENT`,
+ *  and any other failure its own error. */
+function walkPersonaPath(file: string): WalkedPersona {
+  const written = isAbsolute(file) ? file : `${process.cwd()}${sep}${file}`;
+  const spellings = [written];
+  const split = (p: string): string[] => p.slice(parse(p).root.length).split(/[\\/]/).filter(Boolean);
+  // Joined without collapsing `..`: a spelling is judged as the walk met it.
+  const at = (dir: string, rest: string[]): string => (rest.length ? `${dir.endsWith(sep) ? dir : dir + sep}${rest.join(sep)}` : dir);
+  let done = parse(written).root;
+  let todo = split(written);
+  let hops = 0;
+  while (todo.length) {
+    const part = todo.shift()!;
+    if (part === ".") continue;
+    if (part === "..") { done = dirname(done); continue; }
+    const next = join(done, part);
+    if (!lstatSync(next).isSymbolicLink()) {
+      done = next;
+      // A folder passed through, judged as if the persona were inside it.
+      if (todo.length) spellings.push(join(done, "_"));
+      continue;
+    }
+    if (++hops > MAX_LINK_HOPS)
+      throw walkFailure("ELOOP", `${file} passes through more than ${MAX_LINK_HOPS} symbolic links, as a loop does, so it was not read`);
+    const target = readlinkSync(next);
+    spellings.push(at(next, todo));
+    if (isAbsolute(target)) done = parse(target).root;
+    todo = [...split(target), ...todo];
+    spellings.push(at(done, todo));
+  }
+  spellings.push(done);
+  return { final: done, stat: lstatSync(done), spellings: [...new Set(spellings)] };
+}
+
+/** Read the file a walk ended at, refusing when it is no longer the file the walk judged: the last
+ *  component is opened without following a link, and the opened file must be the same one. */
+function readWalked(file: string, walked: WalkedPersona, as: "launch" | "agent"): string {
+  const notRegular = () => as === "launch" ? new PersonaSourceError(`persona is not a regular file: ${file}`) : new Error(`agent file ${file} is not a regular file`);
+  if (!walked.stat.isFile()) throw notRegular();
+  const fd = openSync(walked.final, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isFile()) throw notRegular();
+    if (localRecordAccess() === "posix" && (opened.dev !== walked.stat.dev || opened.ino !== walked.stat.ino))
+      throw walkFailure("ESTALE", `${file} changed while it was read, so it was not used`);
+    return readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The first spelling on the way to a persona file that lies under the `.cotal/agents` of a project
+ *  folder that is not trusted, with that folder. */
+function untrustedSpelling(walked: WalkedPersona): { root: string; spelling: string } | undefined {
+  for (const spelling of walked.spellings) {
+    const root = personaProjectRoot(spelling);
+    if (root !== undefined && !isTrustedProject(root)) return { root, spelling };
   }
   return undefined;
 }
 
-/** Why a persona file may not contribute its `launchOptions` to a launch, or undefined when it may:
- *  a file in a project folder that is not trusted may name none, since the connector renders each
- *  key into the host's own flags or config. Both the path as written and the file it reads are
- *  judged. A file outside any project, and a file whose project is trusted, may. */
-export function personaLaunchOptionsRefusal(file: string, launchOptions: Record<string, unknown> | undefined): string | undefined {
+function launchOptionsRefusal(file: string, walked: WalkedPersona, launchOptions: Record<string, unknown> | undefined): string | undefined {
   const keys = Object.keys(launchOptions ?? {});
   if (!keys.length) return undefined;
-  const untrusted = untrustedPersonaRoot(file);
+  const untrusted = untrustedSpelling(walked);
   if (untrusted === undefined) return undefined;
-  return untrustedProjectRefusal(untrusted.read ? `${file} (a link to ${untrusted.read})` : file, keys.map((key) => `launchOptions.${key}`), untrusted.root);
+  const shown = untrusted.spelling === resolve(file) ? file : `${file} (which leads to ${untrusted.spelling})`;
+  return untrustedProjectRefusal(shown, keys.map((key) => `launchOptions.${key}`), untrusted.root);
+}
+
+/** Read a persona file for a launch and say whether its `launchOptions` may apply. A file in a project
+ *  folder that is not trusted may name none, since the connector renders each key into the host's own
+ *  flags or config. The path is resolved one symbolic link at a time and every spelling met is judged:
+ *  the path as written, each link and the path it leads to, and the file reached. Any of them under
+ *  the `.cotal/agents` of a folder that is not trusted refuses. The persona is then read from the file
+ *  the walk reached, so the file judged is the file whose definition is returned. A file outside any
+ *  project, and one reached only through trusted projects, may declare launch options.
+ *
+ *  `as` picks the parser: `launch` refuses a Mesh manifest as {@link loadLaunchPersonaFile} does,
+ *  `agent` parses as `loadAgentFile`. A missing file throws `ENOENT` and a loop `ELOOP`, as a read
+ *  would. */
+export function loadTrustCheckedPersona(file: string, as: "launch" | "agent"): { def: AgentDef; refusal?: string } {
+  const walked = walkPersonaPath(file);
+  const source = readWalked(file, walked, as);
+  const def = as === "launch" ? parseLaunchPersonaSource(source, file) : parseAgentFileSource(source, file);
+  const refusal = launchOptionsRefusal(file, walked, def.launchOptions);
+  return { def, ...(refusal ? { refusal } : {}) };
 }
 
 /** The same rule for a manifest launch, whose spec carries the persona's launch options already
- *  merged with the manifest's own. The persona file it names is read again here, on the host that
- *  launches: a key that file declares, in a project folder that is not trusted, refuses. The
- *  manifest's own `launchOptions` are not gated. As on every launch path, the path as written and
- *  the file it reads are both judged. A file that is not on this host, as with a spec a
- *  remote machine deployed, was checked where that machine read it. A file this host has but
- *  cannot read refuses, since what it declares is unknown. */
+ *  merged with the manifest's own. The persona file it names is walked and judged again here, on the
+ *  host that launches; when a spelling lies under a folder that is not trusted, the file the walk
+ *  reached is read, and a key it declares refuses. The manifest's own `launchOptions` are not gated.
+ *  A file that is not on this host, as with a spec a remote machine deployed, was checked where that
+ *  machine read it. A path this host cannot resolve or read for any other reason, a loop included,
+ *  refuses. */
 export function manifestPersonaLaunchOptionsRefusal(personaPath: string | undefined, launchOptions: Record<string, unknown> | undefined): string | undefined {
   if (personaPath === undefined || !Object.keys(launchOptions ?? {}).length) return undefined;
-  const untrusted = untrustedPersonaRoot(personaPath);
-  if (untrusted === undefined) return undefined;
-  const root = untrusted.root;
-  let declared: Record<string, unknown> | undefined;
-  try { declared = loadAgentFile(personaPath).launchOptions; }
+  const unreadable = (e: unknown) => `${personaPath} could not be read to check its launch options (${(e as Error).message}), so nothing was launched`;
+  let walked: WalkedPersona;
+  try { walked = walkPersonaPath(personaPath); }
   catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    return `${personaPath} could not be read to check its launch options, and ${root} is not trusted, so nothing was launched. If you trust this folder, run \`cotal trust ${root}\``;
+    return unreadable(e);
   }
-  return personaLaunchOptionsRefusal(personaPath, declared);
+  if (untrustedSpelling(walked) === undefined) return undefined;
+  let declared: Record<string, unknown> | undefined;
+  try { declared = parseAgentFileSource(readWalked(personaPath, walked, "agent"), personaPath).launchOptions; }
+  catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    return unreadable(e);
+  }
+  return launchOptionsRefusal(personaPath, walked, declared);
 }
 
 /** Trust the project at `root`, which must be an existing folder whose `.cotal`, when it has one,

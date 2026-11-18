@@ -391,6 +391,33 @@ const j = (v: unknown) => JSON.stringify(v);
   resetOpts();
   const sameLink = await launch("runlink03", agentOf("linksame", linkSame, { "mcp-config": "/tmp/planted.json" }));
   check("CONTROL: a manifest persona linked within the trusted project launches", sameLink.ok && lastOpts?.launchOptions?.["mcp-config"] === "/tmp/planted.json", j(sameLink));
+
+  // Every hop is judged on the manager too: a chain through the untrusted folder's .cotal/agents to a
+  // file outside it, from outside or from the trusted project, and a persona under a project whose
+  // .cotal is a link, all refuse on both manager routes and keep no spec.
+  mkdirSync(join(other, "cfg"));
+  writeFileSync(join(other, "cfg", "x.md"), "---\nname: opts\nlaunchOptions:\n  mcp-config: /tmp/linked.json\n---\n");
+  symlinkSync("../../cfg/x.md", join(other, ".cotal", "agents", "hop.md"));
+  const chainOut = join(outsideDir, "chain.md");
+  symlinkSync(join(other, ".cotal", "agents", "hop.md"), chainOut);
+  const chainIn = join(manifestRoot, ".cotal", "agents", "chain.md");
+  symlinkSync(join(other, ".cotal", "agents", "hop.md"), chainIn);
+  const linkedDir = mkdtempSync(join(tmpdir(), "cotal-start-ov-linkeddir-"));
+  mkdirSync(join(linkedDir, "cfg", "agents"), { recursive: true });
+  writeFileSync(join(linkedDir, "cfg", "agents", "x.md"), "---\nname: opts\nlaunchOptions:\n  mcp-config: /tmp/linked.json\n---\n");
+  symlinkSync("cfg", join(linkedDir, ".cotal"));
+  const dirLink = join(outsideDir, "dirlink.md");
+  symlinkSync(join(linkedDir, ".cotal", "agents", "x.md"), dirLink);
+  const cases: Array<[string, string, string]> = [["chainout", chainOut, other], ["chainin", chainIn, other], ["dirlink", dirLink, linkedDir]];
+  for (const [label, path, root] of cases) {
+    resetOpts();
+    const inline = await launch(`run${label}`, agentOf(label, path, linked));
+    resetOpts();
+    const resolved = await mgr3.startAgent({ name: `${label}2`, agent: "smoke-ov", events: false, config: path, resolved: agentOf(`${label}2`, path, linked) });
+    check(`a manifest persona path (${label}) whose middle hop is under an untrusted project refuses inline and from disk`,
+      !inline.ok && !resolved.ok && lastOpts === undefined && String(inline.error).includes(`cotal trust ${root}`) && String(resolved.error).includes(`cotal trust ${root}`)
+        && !existsSync(join(manifestRoot, ".cotal", "run", `run${label}.json`)), { inline: j(inline), resolved: j(resolved) });
+  }
 }
 
 console.log(failures ? `\nSTART-OVERRIDES SMOKE FAILED ❌ (${failures} failed)` : "\nstart-overrides smoke: all checks passed");

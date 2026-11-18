@@ -210,6 +210,16 @@ try {
     check("a damaged seed record does not block cotal trust or a trusted folder",
       t.exited === undefined && trustedRoots().includes(other) && t.out.includes("the upgrade seed added no project folder") && t.out.includes(`remove ${seed}`)
         && r.exited === undefined && reportText().includes(`RAN ${p.marker}`), { trust: t.out.slice(-400), spawn: r.out.slice(-200) });
+    // A seed record other accounts may write is never repaired in place: its roots may be theirs, so
+    // the remedy is to remove it, and nothing it lists is added.
+    const listed = mkdtempSync(join(box, "writable-seed-"));
+    writeFileSync(seed, JSON.stringify({ schemaVersion: 1, attemptedAt: new Date().toISOString(), roots: [listed] }));
+    chmodSync(seed, 0o666);
+    const w = await cli(box, ["meshes", "--json"]);
+    writeFileSync(seed, kept);
+    chmodSync(seed, 0o600);
+    check("a seed record other accounts may write adds nothing and says to remove it",
+      !trustedRoots().includes(listed) && w.out.includes("other accounts can write it") && w.out.includes(`remove ${seed}`) && !w.out.includes("chmod 600"), w.out.slice(-400));
   }
 
   // CONTROL: a trusted folder's declared server runs, and its spawn.env name reaches the host.
@@ -358,7 +368,7 @@ try {
     const out = await spawnFile(linkOut);
     const outManifest = await checkManifest(linkOut);
     check("a link outside .cotal/agents to an untrusted project's persona is refused",
-      out.exited === 1 && !reportText().includes("RAN link-untrusted") && out.out.includes(`a link to ${target}`) && out.out.includes(`cotal trust ${untrusted.root}`)
+      out.exited === 1 && !reportText().includes("RAN link-untrusted") && out.out.includes(`which leads to ${target}`) && out.out.includes(`cotal trust ${untrusted.root}`)
         && outManifest.exited === 1 && outManifest.reason.includes(`cotal trust ${untrusted.root}`), { out: out.out.slice(-300), manifest: outManifest });
     fresh();
     const inside = await spawnFile(linkIn);
@@ -384,6 +394,58 @@ try {
     fresh();
     const outward = await spawnFile(linkOutward);
     check("a link in an untrusted project's .cotal/agents to a file outside it is refused", outward.exited === 1 && !reportText().includes("RAN link-untrusted") && outward.out.includes(`cotal trust ${untrusted.root}`), outward.out.slice(-300));
+
+    // Every hop is judged, not only the first and last spellings. U/.cotal/agents/hop.md is a link to
+    // ../../cfg/x.md, a persona outside U's .cotal/agents; a link from outside, or from the trusted
+    // project's .cotal/agents, names that middle link. A project whose .cotal is itself a link to
+    // another folder is judged by the path through it.
+    mkdirSync(join(untrusted.root, "cfg"));
+    const cfgPersona = join(untrusted.root, "cfg", "x.md");
+    writeFileSync(cfgPersona, `---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nlaunchOptions:\n  mcp-config: ${planted}\n---\nbody\n`);
+    symlinkSync("../../cfg/x.md", join(untrusted.root, ".cotal", "agents", "hop.md"));
+    const chainOut = join(outside, "chain.md");
+    symlinkSync(join(untrusted.root, ".cotal", "agents", "hop.md"), chainOut);
+    const chainIn = join(trusted.root, ".cotal", "agents", "chain.md");
+    symlinkSync(join(untrusted.root, ".cotal", "agents", "hop.md"), chainIn);
+    fresh();
+    const chainOutRun = await spawnFile(chainOut);
+    const chainOutManifest = await checkManifest(chainOut);
+    check("a two-link chain from outside through an untrusted project's .cotal/agents is refused",
+      chainOutRun.exited === 1 && !reportText().includes("RAN link-untrusted") && chainOutRun.out.includes(`cotal trust ${untrusted.root}`)
+        && chainOutManifest.exited === 1 && chainOutManifest.reason.includes(`cotal trust ${untrusted.root}`), { out: chainOutRun.out.slice(-300), manifest: chainOutManifest });
+    fresh();
+    const chainInRun = await spawnFile(chainIn);
+    const chainInManifest = await checkManifest(chainIn);
+    check("a two-link chain from a trusted project through an untrusted project's .cotal/agents is refused",
+      chainInRun.exited === 1 && !reportText().includes("RAN link-untrusted") && chainInRun.out.includes(`cotal trust ${untrusted.root}`)
+        && chainInManifest.exited === 1 && chainInManifest.reason.includes(`cotal trust ${untrusted.root}`), { out: chainInRun.out.slice(-300), manifest: chainInManifest });
+    const linkedDir = mkdtempSync(join(box, "linked-dir-"));
+    mkdirSync(join(linkedDir, "cfg", "agents"), { recursive: true });
+    writeFileSync(join(linkedDir, "cfg", "agents", "x.md"), `---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nlaunchOptions:\n  mcp-config: ${planted}\n---\nbody\n`);
+    symlinkSync("cfg", join(linkedDir, ".cotal"));
+    const dirLink = join(outside, "dirlink.md");
+    symlinkSync(join(linkedDir, ".cotal", "agents", "x.md"), dirLink);
+    fresh();
+    const dirRun = await spawnFile(dirLink);
+    const dirManifest = await checkManifest(dirLink);
+    check("a persona reached through a project's linked .cotal folder is refused",
+      dirRun.exited === 1 && !reportText().includes("RAN link-untrusted") && dirRun.out.includes(`cotal trust ${linkedDir}`)
+        && dirManifest.exited === 1, { out: dirRun.out.slice(-300), manifest: dirManifest });
+    // A chain that stays inside one trusted project keeps its launch options.
+    mkdirSync(join(trusted.root, "cfg"));
+    writeFileSync(join(trusted.root, "cfg", "own.md"), `---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nlaunchOptions:\n  mcp-config: ${ownPlanted}\n---\nbody\n`);
+    symlinkSync("../../cfg/own.md", join(trusted.root, ".cotal", "agents", "mid.md"));
+    symlinkSync("mid.md", join(trusted.root, ".cotal", "agents", "inner.md"));
+    fresh();
+    const innerRun = await spawnFile(join(trusted.root, ".cotal", "agents", "inner.md"));
+    check("a two-link chain inside one trusted project keeps its launch options", innerRun.exited === undefined && reportText().includes("RAN link-same"), innerRun.out.slice(-300));
+    // A loop is refused rather than followed.
+    symlinkSync("loop-b.md", join(outside, "loop-a.md"));
+    symlinkSync("loop-a.md", join(outside, "loop-b.md"));
+    fresh();
+    const loopRun = await spawnFile(join(outside, "loop-a.md"));
+    const loopManifest = await checkManifest(join(outside, "loop-a.md"));
+    check("a persona path that loops is refused", loopRun.exited === 1 && loopManifest.exited === 1 && !reportText().includes("ENV "), { out: loopRun.out.slice(-300), manifest: loopManifest });
   }
 
   // Trust is stored canonically, so another spelling of a trusted folder is trusted: a path through a
@@ -486,7 +548,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.getuid?.() === 0 ? 45 : 47;
+const EXPECTED = process.getuid?.() === 0 ? 51 : 53;
 if (passed + failed !== EXPECTED) { failed++; console.log(`  ✗ FAIL: ${passed + failed - 1} cells reported, ${EXPECTED} expected`); }
 emitSentinel({ passed, failed });
 process.exit(failed === 0 ? 0 : 1);

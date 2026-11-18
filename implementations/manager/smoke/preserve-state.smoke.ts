@@ -1261,6 +1261,21 @@ let openInventory: ManagerResumeAgent;
     const linkedRefusal = linkedRefused.agents[0]?.reply.error ?? linkedRefused.error ?? "";
     check("a persona seat whose file links to an untrusted project's persona refuses on resume",
       !linkedRefused.ok && capturedLaunch === undefined && linkedRefusal.includes(`cotal trust ${otherRoot}`), { linkedRefusal, launched: capturedLaunch !== undefined });
+    // The same seat through a chain whose middle hop is in the untrusted folder's .cotal/agents and
+    // whose file is outside it.
+    mkdirSync(join(otherRoot, "cfg"));
+    writeFileSync(join(otherRoot, "cfg", "x.md"), "---\nname: worker\nlaunchOptions:\n  mcp-config: ./servers.json\n---\nbody\n");
+    symlinkSync("../../cfg/x.md", join(otherRoot, ".cotal", "agents", "hop.md"));
+    const chainedPersona = join(agentsDir, "chained-worker.md");
+    symlinkSync(join(otherRoot, ".cotal", "agents", "hop.md"), chainedPersona);
+    const chainedEntry: ManagerResumeAgent = { ...entry, launch: { ...entry.launch, source: { kind: "persona", ref: "chained-worker", configPath: chainedPersona, configSha256: digest(chainedPersona) } }, dependencies: [chainedPersona] };
+    const chainedManager = managerWith((name) => fakeHandle(name));
+    (chainedManager as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const chainedRefused = await chainedManager.resumePreserved(inventoryOf(chainedEntry));
+    const chainedRefusal = chainedRefused.agents[0]?.reply.error ?? chainedRefused.error ?? "";
+    check("a persona seat whose file reaches its persona through an untrusted project's .cotal/agents refuses on resume",
+      !chainedRefused.ok && capturedLaunch === undefined && chainedRefusal.includes(`cotal trust ${otherRoot}`), { chainedRefusal, launched: capturedLaunch !== undefined });
     trustProject(otherRoot);
     const manifestTrusted = managerWith((name) => fakeHandle(name));
     (manifestTrusted as unknown as { auth: unknown }).auth = auth;

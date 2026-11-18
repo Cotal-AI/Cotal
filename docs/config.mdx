@@ -34,9 +34,10 @@ A project folder's own `.cotal` may declare these only when the folder is truste
 - `connectors.<name>.mcpServers` entries and `spawn.env` names in `.cotal/config.json`;
 - `launchOptions` in a persona file under `.cotal/agents/`, or a folder below it, since the
   connector renders each key into the application's own flags or config. This includes a persona
-  file a manifest names for `cotal up -f` or `cotal team deploy`. A persona file is judged both by
-  the path you give and by the file a read of it reaches through symbolic links: a link to a
-  persona under a folder that is not trusted is refused, wherever the link is.
+  file a manifest names for `cotal up -f` or `cotal team deploy`. Cotal resolves a persona path one
+  symbolic link at a time, refuses its launch options when the path you give, any link or folder on
+  the way, or the file reached lies under the `.cotal/agents` of a folder that is not trusted, and
+  reads the persona from the file it checked.
 
 A spawn that reads either from a folder that is not trusted refuses. The refusal names the file,
 the entries, the folder and the command that trusts it. Nothing launches. This applies to a spawn

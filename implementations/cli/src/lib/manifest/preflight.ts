@@ -8,8 +8,8 @@
  */
 import { existsSync } from "node:fs";
 import { basename, dirname, extname, join, relative } from "node:path";
-import { loadAgentFile, type AgentDef } from "@cotal-ai/core";
-import { findCotalRoot, personaLaunchOptionsRefusal } from "@cotal-ai/workspace";
+import { type AgentDef } from "@cotal-ai/core";
+import { findCotalRoot, loadTrustCheckedPersona } from "@cotal-ai/workspace";
 import type { ResolvedManifest } from "./model.js";
 import { prepareAgent, type AgentWarning, type PreparedAgent } from "./prepare.js";
 import { ManifestError, type ManifestIssue } from "./errors.js";
@@ -45,8 +45,13 @@ export function preparePersonas(manifest: ResolvedManifest): PreparedManifest {
   for (const a of manifest.agents) {
     let persona: AgentDef | undefined;
     if (a.persona) {
+      // A persona file in a project folder that is not trusted may contribute no launch options, on
+      // this path as on `cotal spawn`. Refused here, while the manifest resolves, so every manifest
+      // route stops before it contacts a broker or creates a channel. The file judged is the file
+      // read. The manifest's own `launchOptions` are not gated.
+      let optionsRefused: string | undefined;
       try {
-        persona = loadAgentFile(a.persona);
+        ({ def: persona, refusal: optionsRefused } = loadTrustCheckedPersona(a.persona, "agent"));
       } catch (e) {
         const code = (e as NodeJS.ErrnoException).code;
         issues.push({
@@ -55,11 +60,6 @@ export function preparePersonas(manifest: ResolvedManifest): PreparedManifest {
         });
         continue;
       }
-      // A persona file in a project folder that is not trusted may contribute no launch options, on
-      // this path as on `cotal spawn`. Refused here, while the manifest resolves, so every manifest
-      // route stops before it contacts a broker or creates a channel. The manifest's own
-      // `launchOptions` are not gated.
-      const optionsRefused = personaLaunchOptionsRefusal(a.persona, persona.launchOptions);
       if (optionsRefused) {
         issues.push({ message: optionsRefused, path: ["agents", a.name] });
         continue;

@@ -24,8 +24,8 @@ terminal and for one a manager runs.
   `--cwd` only, needs `cotal trust <path>` once for the same reason. A persona file a manifest
   names (`cotal up -f`, `cotal team deploy`) follows the same rule for its `launchOptions`. The
   manifest's own `launchOptions` on an agent are not checked: a manifest you run is trusted as you
-  run it. A persona file is judged by the path you give and by the file it reaches through
-  symbolic links, so a link to a persona under a folder that is not trusted is refused.
+  run it. Its launch options are refused when the path you give, any symbolic link or folder on the
+  way, or the file reached lies under the `.cotal/agents` of a folder that is not trusted.
 - A project config in a `.cotal` that another account owns is refused. Move the project to a
   folder your own account owns.
 - Restart a running manager at this version so its spawns apply the rule.
