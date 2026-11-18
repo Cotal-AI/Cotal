@@ -419,11 +419,12 @@ other accounts' directories unchanged. If write access still fails, it names the
 directory to repair without recommending sudo. An unwritable `node_modules` directory is checked
 before downloading archives or reserving the update lock.
 If an installation owned by another account is not writable, the update refuses before replacing it.
-For a root-owned npm installation, have an administrator run the printed
-`sudo npm install -g --prefix '<install-prefix>' cotal-ai@latest` command.
-Then run `cotal update` as your normal account, without sudo, to reconcile your connectors and
+For a root-owned npm installation, have an administrator run the printed command.
+It uses `sudo` when executable on PATH, otherwise `doas` when executable on PATH. With neither,
+it asks the administrator to run `npm install -g --prefix '<install-prefix>' cotal-ai@latest` as root.
+Then run `cotal update` as your normal account, without elevated privileges, to reconcile your connectors and
 extensions. Keep any `--space`, `--server`, `--creds` or `--on` selection from the original command.
-Do not run `sudo cotal update`: user configuration and reconciliation belong to your normal account.
+Do not run Cotal's reconciliation as root: user configuration belongs to your normal account.
 
 From 0.167.1, retrying `cotal update --self` after killing its updater waits up to ten minutes
 for its recorded live install or reconciliation child to finish. The reservation stays held during

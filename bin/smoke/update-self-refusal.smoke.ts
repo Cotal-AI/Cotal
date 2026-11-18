@@ -63,6 +63,41 @@ syncBuiltinESMExports();\n`);
   check.doesNotMatch(refused.stderr, /Outcome unconfirmed|OPERATION_UNKNOWN/);
   check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
   check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
+  // Model root ownership only. The real mode and access check still refuse this directory.
+  const rootOwned = join(root, "root-owned.mjs");
+  writeFileSync(rootOwned, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const lstat = fs.lstatSync;
+fs.lstatSync = (...args) => { const stat = lstat(...args); if (args[0] === ${JSON.stringify(installed)} && stat) Object.defineProperty(stat, 'uid', { value: 0 }); return stat; };
+syncBuiltinESMExports();\n`);
+  for (const name of ["both", "doas", "root", "nonexecutable", "directory"]) {
+    const pathbin = join(root, name);
+    mkdirSync(pathbin);
+    const toolBody = "#!/bin/sh\necho privilege-tool-was-invoked >&2\nexit 99\n";
+    if (name !== "root") writeFileSync(join(pathbin, "doas"), toolBody, { mode: 0o700 });
+    if (name === "both" || name === "nonexecutable") writeFileSync(join(pathbin, "sudo"), toolBody, { mode: name === "both" ? 0o700 : 0o600 });
+    if (name === "directory") mkdirSync(join(pathbin, "sudo"));
+    const tool = name === "both" ? "sudo" : name === "root" ? undefined : "doas";
+    const expected = `installation is not writable; have an administrator run${tool ? `: ${tool} ` : " as root: "}npm install -g --prefix '${prefix.replace(/'/g, "'\\''")}' cotal-ai@latest; then run \`cotal update\` as your normal account, ${tool ? `without ${tool}` : "not as root"}`;
+    const overrides = { PATH: pathbin, NODE_OPTIONS: `${nodeOptions ?? ""} --import=${pathToFileURL(rootOwned).href}` };
+    const systemRefused = run(overrides);
+    writeFileSync(join(root, `${name}.stderr.log`), systemRefused.stderr ?? "");
+    check.equal(systemRefused.status, 2, systemRefused.stderr);
+    check.ok(systemRefused.stderr.includes(expected), systemRefused.stderr);
+    check.match(systemRefused.stderr, /DEPENDENCY_UNAVAILABLE/);
+    check.match(systemRefused.stderr, /not-executed/);
+    check.match(systemRefused.stderr, /no changes were made/);
+    check.doesNotMatch(systemRefused.stderr, /privilege-tool-was-invoked/);
+    // Generation retention has its own destination check and must use the same remedy.
+    const retained = spawnSync(process.execPath, ["--input-type=module", "-e", `
+import { retainExecutionGeneration } from ${JSON.stringify(pathToFileURL(join(installed, "dist/execution-store.js")).href)};
+try { retainExecutionGeneration(${JSON.stringify(installed)}, ${JSON.stringify(installed)}); }
+catch (error) { console.error(error.message); process.exitCode = 2; }
+`], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 30_000 });
+    check.equal(retained.status, 2, retained.stderr);
+    check.equal(retained.stderr.trim(), expected);
+    check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
+    check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  }
   // On Linux the daemon of this installation runs the same updater when a newer release is due. It
   // records the refusal sentence once, counts no failed attempt and schedules no retry.
   if (process.platform === "linux") {

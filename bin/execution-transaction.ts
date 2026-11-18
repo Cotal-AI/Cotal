@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, selectExecutionProgram, type ExecutionBinding, type ExecutionDescriptor } from "./cotal.js";
-import { retainExecutionGeneration, type RetainedExecutionGeneration, writeExecutionDescriptor } from "./execution-store.js";
+import { retainExecutionGeneration, type RetainedExecutionGeneration, unwritableInstallationMessage, writeExecutionDescriptor } from "./execution-store.js";
 
 interface ExecutionTransaction {
   v: 1;
@@ -30,7 +30,7 @@ export function assertExecutionDestination(installed: string): void {
       accessSync(path, constants.W_OK);
     } catch {
       if (owned) throw new Error(`installation directory is not writable: ${path}; restore write access to this user-owned directory, then run \`cotal update --self\` again without sudo`);
-      throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installed))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run \`cotal update\` as your normal account, without sudo`);
+      throw new Error(unwritableInstallationMessage(installed));
     }
   }
   selectExecutionProgram(installed);
