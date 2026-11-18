@@ -43,7 +43,7 @@ The following guarantees combine broker enforcement with the required receiver c
 
 | Guarantee | Mechanism |
 | --- | --- |
-| Sender authenticity | Sender tokens in subjects are pinned by publish permissions. Receivers reject mismatched `from.id`. |
+| Sender authenticity | Sender tokens in subjects are pinned by publish permissions. Receivers reject mismatched `from.id`. The reference client also drops a message carrying the broker's stored-message headers (`Nats-Stream`, `Nats-Subject`, `Nats-Sequence`, `Nats-Time-Stamp`) on every messaging receive path. |
 | Space containment | NATS accounts isolate each space's subjects, streams, and KV buckets. |
 | Channel posting | The connection posts as itself and only to declared `allowPublish` channels. Posting is default-deny. |
 | Channel content reads | Live subscription grants follow `allowSubscribe`. History uses server-pinned single-channel consumers. |
