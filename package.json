@@ -22,6 +22,7 @@
     "smoke:server-intent:live": "tsx implementations/cli/smoke/server-intent-live.smoke.ts",
     "smoke:store-identity:live": "tsx implementations/cli/smoke/store-identity-live.smoke.ts",
     "smoke:store-identity": "tsx implementations/cli/smoke/store-identity.smoke.ts",
+    "smoke:broker-only-no-seed:live": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/broker-only-no-seed-live.smoke.ts",
     "smoke:no-manager-credential-warning:live": "tsx implementations/cli/smoke/no-manager-credential-warning-live.smoke.ts",
     "typecheck": "pnpm build && pnpm -r typecheck",
     "build": "pnpm -r build",

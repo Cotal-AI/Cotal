@@ -44,6 +44,8 @@ cotal up --detach
 
 This starts the stack in the background and reports the selected space and mesh address.
 Background startup is also the default for bare `cotal up`.
+Use `cotal up --no-manager` to start only the broker and, in authenticated mode, the delivery daemon.
+This route does not install or reconcile application connectors and does not require npm.
 For a terminal or service manager that must own the stack's lifetime, use `cotal up --foreground`.
 See [Supervise the stack](supervise-processes.mdx) before creating a systemd unit.
 

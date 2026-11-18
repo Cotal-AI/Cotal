@@ -277,9 +277,9 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   );
 }
 
-// ── 7. `up` still refuses a newer seed store before it writes anything ───────────────────────────
-// Deferring the seed must not let an older `up` write its root first: the downgrade check stays at
-// the boot gate, and it names the store to restore.
+// ── 7. Manager-enabled `up` refuses a newer seed store before it writes anything ────────────────
+// Deferring connector installation must preserve the manager startup downgrade check.
+// Broker-only startup does not use that store.
 {
   const cfg = mkdtempSync(join(tmpdir(), "cotal-dryrun-noseed-"));
   const sandboxRoot = mkdtempSync(join(tmpdir(), "cotal-dryrun-noseed-root-"));
@@ -290,12 +290,12 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   writeFileSync(join(seedDir, "stamp.json"), stagedStamp);
   const r = spawnSync(
     "node",
-    [BIN, "up", "--no-manager"],
+    [BIN, "up"],
     { cwd: sandboxRoot, env: { ...HOST_ENV, COTAL_HOME: join(sandboxRoot, "home"), XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" }, encoding: "utf8" },
   );
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   check(
-    "`up` refuses a newer seed store, naming the store to restore",
+    "manager-enabled `up` refuses a newer seed store, naming the store to restore",
     r.status === 1 && out.includes(`the connector seed store ${seedDir} is at generation 99.0.0`) && /from a backup taken before the store moved to 99\.0\.0/.test(out),
     { status: r.status, out: out.slice(0, 400) },
   );

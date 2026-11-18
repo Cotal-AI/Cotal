@@ -1,0 +1,2 @@
+# Broker-only startup and refresh leave application connectors untouched without npm on PATH.
+smoke:broker-only-no-seed:live
