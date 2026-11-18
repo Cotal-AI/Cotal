@@ -127,11 +127,17 @@ export function loopbackListeners(server: string): number[] {
 
 /** The state, ppid and pgrp fields of `/proc/<pid>/stat`, which follow the parenthesised name, or
  *  `undefined` when the process is gone. */
-function statFields(pid: number): string[] | undefined {
+function statFields(pid: number, strict = false): string[] | undefined {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    return stat.slice(stat.lastIndexOf(")") + 2).split(" ", 3);
-  } catch { return undefined; }
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ", 3);
+    if (strict && (fields.length !== 3 || !fields[0] || !/^\d+$/.test(fields[2] ?? "") || Number(fields[2]) > 0x7fffffff))
+      throw new Error(`cannot read process group for pid ${pid}`);
+    return fields;
+  } catch (error) {
+    if (strict && !["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    return undefined;
+  }
 }
 
 /** The process group `pid` belongs to, or `undefined` when it is gone or this is neither Linux nor
@@ -143,8 +149,9 @@ export function processGroupOf(pid: number): number | undefined {
 }
 
 /** The live processes in process group `pgid`. A zombie has exited and holds nothing, so it is not
- *  one. Linux and macOS; elsewhere none. A macOS read that fails throws rather than read as empty. */
-export function processGroupMembers(pgid: number): number[] {
+ *  one. Linux and macOS; elsewhere none. A macOS read that fails throws rather than read as empty.
+ *  Strict Linux inspection also throws on unreadable process state instead of omitting it. */
+export function processGroupMembers(pgid: number, options: { strict?: boolean } = {}): number[] {
   if (process.platform === "darwin") {
     const members = darwinProcessBinding().groupMembers(pgid);
     if (members === undefined) throw new Error(`process group ${pgid} is not a readable process group ID`);
@@ -153,7 +160,7 @@ export function processGroupMembers(pgid: number): number[] {
   if (process.platform !== "linux") return [];
   return readdirSync("/proc").flatMap((entry) => {
     const pid = parsePid(entry);
-    const fields = pid === undefined ? undefined : statFields(pid);
+    const fields = pid === undefined ? undefined : statFields(pid, options.strict);
     return fields && fields[0] !== "Z" && fields[0] !== "X" && parsePid(fields[2] ?? "") === pgid ? [pid!] : [];
   });
 }

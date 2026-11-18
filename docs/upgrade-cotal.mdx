@@ -433,7 +433,10 @@ keeps its original-host refusal rather than guessing a shutdown command.
 
 On Linux and macOS, global update children wait for their process group to be recorded before
 running. A plain retry can clear an abandoned preparatory marker or a signalled child's marker
-after its whole recorded group has exited. A live group still blocks installation and rollback.
+after its whole recorded group has exited. Group custody includes the boot identity and leader's
+start token, so a later boot or reused process ID does not block recovery. A group containing only
+exited zombies also releases custody. A live group still blocks installation and rollback.
+Unreadable group state retains the marker and names the inspection needed before manual removal.
 Older pending and ambiguous markers without this custody evidence remain fail-closed and retain
 their inspection guidance. Windows keeps its existing child-custody checks.
 
