@@ -388,7 +388,7 @@ of its first-party runtime dependency closure through npm, using a temporary cac
 scripts. Each registry request has a 15-second timeout. Package installs and archive checks retry
 transient network failures twice, waiting one second and then two seconds. The latest-version read
 keeps a single attempt. Missing release archives wait up to ten minutes before keeping the installed
-version. Invalid metadata, integrity failures and registry access errors refuse before global
+version. Invalid metadata, integrity failures and scoped registry access errors refuse before global
 installation or connector reconciliation. Since 0.167.1, registry access refusals report npm's error
 code rather than asking you to wait for publication. For a refused scoped connection, check the
 `@cotal-ai:registry` line in `.npmrc` and restore that registry's connectivity or correct the setting
@@ -471,6 +471,7 @@ a future follow-up. When `update --self` cannot reach the registry before select
 it reports that nothing changed and exits 0 without reconciling packages or inspecting Manager
 custody. From 0.167.1, losing registry connectivity during release checks, extension-dependency
 checks or target staging also reports that nothing changed and exits 0 before replacement.
+A failed first-party scoped metadata read still names the `@cotal-ai:registry` setting and exits 1.
 Authentication, permission, integrity and target pre-install refusals still exit nonzero.
 Retry `cotal update --self` when connectivity returns. The version read has no retries and a
 15-second network timeout. Unknown availability is not a claim that the installed version is current. A failed connector/extension install, npm metadata check after reconciliation, or requested global
