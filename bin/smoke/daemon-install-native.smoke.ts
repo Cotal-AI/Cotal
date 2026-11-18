@@ -588,7 +588,7 @@ try {
     const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
     // Drive the actual CLI under a stable symlink, then replace only its versioned Node target.
     // Native commands are recording stand-ins, never the host's service manager.
-    for (const spelling of ["absolute", "relative", "path", "custom", "different-runtime"] as const) {
+    for (const spelling of ["absolute", "relative", "path", "custom", "different-runtime", "fnm-file", "fnm-directory"] as const) {
       const dir = join(root, `node-${spelling}`);
       for (const name of ["", "home", "config", "rt", "native", "nodebin", "daemon", "cotal"])
         mkdirSync(join(dir, name), { mode: 0o700 });
@@ -596,6 +596,15 @@ try {
       const stable = join(dir, "nodebin", "node");
       copyFileSync(process.execPath, node22);
       symlinkSync("node-22", stable);
+      const transient = spelling === "fnm-file" || spelling === "fnm-directory";
+      const session = join(dir, "rt", "fnm_multishells", "123_456_789");
+      let invoked = stable;
+      if (transient) {
+        mkdirSync(join(dir, "rt", "fnm_multishells"));
+        if (spelling === "fnm-directory") symlinkSync(dir, session, "dir");
+        else { mkdirSync(session); mkdirSync(join(session, "nodebin")); symlinkSync(node22, join(session, "nodebin", "node")); }
+        invoked = join(session, "nodebin", "node");
+      }
       const home = join(dir, "daemon");
       const unit = `cotal-daemon-${sha(home).slice(0, 16)}.service`;
       const context = { home: join(dir, "home"), config: join(dir, "config"), calls: join(dir, "calls.jsonl"), units: [unit] };
@@ -608,7 +617,7 @@ try {
         const args = [cli, "daemon", verb, "--daemon-home", home, "--json", ...flags];
         const result = spelling === "path"
           ? spawnSync("/bin/sh", ["-c", 'exec node "$@"', "node-case", ...args], { cwd: dir, env, encoding: "utf8", timeout: 30_000 })
-          : spawnSync(spelling === "relative" ? "./nodebin/node" : stable, args, { cwd: dir, env, encoding: "utf8", timeout: 30_000, ...(spelling === "custom" ? { argv0: "not-a-node-command" } : spelling === "different-runtime" ? { argv0: process.execPath } : {}) });
+          : spawnSync(spelling === "relative" ? "./nodebin/node" : invoked, args, { cwd: dir, env, encoding: "utf8", timeout: 30_000, ...(spelling === "custom" ? { argv0: "not-a-node-command" } : spelling === "different-runtime" ? { argv0: process.execPath } : {}) });
         if (result.error || result.signal) throw new Error(`Node ${spelling} ${verb} did not exit normally: ${result.error ?? result.signal}`);
         const doc = JSON.parse(result.stdout) as { result?: { alreadyInstalled?: boolean }; error?: { code?: string; remedy?: string } };
         return { status: result.status, doc };
@@ -616,9 +625,16 @@ try {
       check(`Node ${spelling} installs through the shipped entry`, call("install").status === 0);
       const unitPath = join(context.config, "systemd", "user", unit), receiptFile = join(home, "service-unit.json");
       const source = readFileSync(unitPath, "utf8"), receipt = readFileSync(receiptFile, "utf8");
-      const expectedNode = spelling === "custom" || spelling === "different-runtime" ? node22 : stable;
+      const expectedNode = transient || spelling === "custom" || spelling === "different-runtime" ? node22 : stable;
       check(`Node ${spelling} keeps only a verified invoked runtime`, source.includes(`ExecStart="${expectedNode}" `));
       check(`Node ${spelling} positive control verifies its unchanged installation`, call("install").doc.result?.alreadyInstalled === true && call("start").status === 0);
+      if (transient) {
+        if (spelling === "fnm-directory") rmSync(session);
+        else rmSync(join(session, "nodebin", "node"));
+        invoked = node22;
+        check(`Node ${spelling} survives removal of its shell link`, existsSync(node22) && call("install").doc.result?.alreadyInstalled === true && call("start").status === 0 && readFileSync(unitPath, "utf8") === source && readFileSync(receiptFile, "utf8") === receipt);
+        continue;
+      }
       if (spelling === "custom" || spelling === "different-runtime") continue;
       copyFileSync(process.execPath, node24);
       rmSync(stable); symlinkSync("node-24", stable); rmSync(node22);
@@ -628,6 +644,19 @@ try {
       const status = call("status");
       check(`Node ${spelling} absent endpoint names the recorded service and selected home`, status.status === 2 && status.doc.error?.code === "TARGET_UNAVAILABLE" && status.doc.error.remedy?.includes(`systemctl --user status ${unit}`) === true && status.doc.error.remedy.includes(home) && !status.doc.error.remedy.includes("daemon serve"), status);
       check(`Node ${spelling} start still reaches the native adapter`, call("start").status === 0);
+      if (spelling === "absolute") {
+        for (const missing of ["unit", "manager"] as const) {
+          if (missing === "unit") rmSync(unitPath);
+          else writeFileSync(join(dir, "native", "systemctl"), `#!${process.execPath}\nprocess.exit(1);`, { mode: 0o700 });
+          const callsBefore = readFileSync(context.calls, "utf8");
+          const refused = call("status");
+          check(`Absent ${missing} preserves the endpoint refusal without native lookup`, refused.status === 2 && refused.doc.error?.code === "TARGET_UNAVAILABLE" && refused.doc.error.remedy?.includes(`systemctl --user status ${unit}`) === true && readFileSync(context.calls, "utf8") === callsBefore, refused);
+          const plain = spawnSync(stable, [cli, "daemon", "status", "--daemon-home", home, "--plain"], { cwd: dir, env, encoding: "utf8", timeout: 30_000 });
+          check(`Absent ${missing} plain status still names the missing endpoint`, plain.status === 2 && plain.stderr.includes("no daemon endpoint") && plain.stderr.includes("NOT_RUNNING") && !plain.stderr.includes("nothing was removed"), { stdout: plain.stdout, stderr: plain.stderr });
+          if (missing === "unit") writeFileSync(unitPath, source, { mode: 0o600 });
+          else writeFileSync(join(dir, "native", "systemctl"), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
+        }
+      }
       // Old releases wrote a resolved target. Keep ownership strict and offer explicit replacement.
       const legacy = source.replace(`ExecStart="${stable}"`, `ExecStart="${node22}"`);
       writeFileSync(unitPath, legacy, { mode: 0o600 });

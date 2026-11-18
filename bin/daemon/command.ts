@@ -167,8 +167,8 @@ async function status(args: ParsedArgs): Promise<void> {
   try {
     reply = await queryDaemon({ paths, peerUid, peerPid });
   } catch (e) {
-    if (process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" && readReceipt(paths)) {
-      const installed = planUninstall(paths, home);
+    const installed = process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" ? readReceipt(paths) : undefined;
+    if (e instanceof EndpointRefusal && installed && /^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(installed.unit)) {
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
         remedy: `inspect the recorded service with ${codeSpan(`systemctl --user status ${installed.unit}`)}; run ${codeSpan(daemonCommandCopy("install", home))} to verify its installation and read its repair guidance, then ${codeSpan(daemonCommandCopy("start", home))}`,
         native: { code: e.code },

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { cmdSpawnSpec, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -74,14 +74,14 @@ export const DAEMON_NODE_FLAGS: readonly string[] = ["--max-semi-space-size=1"];
 
 /** {@link selfArgv} for a long-lived daemon: the same verified entry, under {@link DAEMON_NODE_FLAGS}.
  *  The flags come before any inherited loader flag, so a node flag the operator passed explicitly
- *  still wins. Keep the invoked Node path when it resolves to this runtime, so a distribution's
- *  stable `node` symlink can move to its next supported version without stranding the service. */
+ *  still wins. Keep a same-directory alias of this runtime, so a distribution's stable `node`
+ *  symlink can move to its next supported version without pinning a shell's transient directory. */
 export function daemonArgv(): string[] {
   const [node, ...self] = selfArgv();
   const invoked = resolveOnPath(process.argv0);
-  // argv0 may be a custom label or name another runtime on PATH. Neither is authority to switch
-  // runtimes: only an executable resolving to the running Node can preserve its logical spelling.
-  const executable = invoked && realpathSync(invoked) === realpathSync(node!) ? invoked : node!;
+  // Only preserve a sibling alias, never a directory alias such as fnm's per-shell PATH entry.
+  // A custom argv0 or another runtime on PATH is not authority to change the running runtime.
+  const executable = invoked && dirname(invoked) === dirname(node!) && realpathSync(invoked) === node ? invoked : node!;
   const logical = logicalExecutionEntry();
   return [executable, ...DAEMON_NODE_FLAGS, ...self.slice(0, -1), logical ?? self.at(-1)!];
 }
