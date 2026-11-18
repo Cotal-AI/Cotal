@@ -1,7 +1,8 @@
 import { rmSync } from "node:fs";
-import { DEV_OWNER, firstFreeName, managedRetirementOpId, parsePrincipalKey, spawnNameError, type Presence } from "@cotal-ai/core";
+import { DEV_OWNER, firstFreeName, managedRetirementOpId, parsePrincipalKey, seatCapRefused, spawnNameError, type EpEnvelopeError, type Presence } from "@cotal-ai/core";
+import { SEAT_CAP_UNLIMITED, type SeatCap } from "@cotal-ai/workspace";
 import { MAX_AGENTS } from "./resume.js";
-import type { ManagedAgent, FreeSlotCause } from "./manager.js";
+import type { ManagedAgent, FreeSlotCause, StartAgentOpts } from "./manager.js";
 import type { RetirementHold, TeardownTarget } from "./retirement.js";
 import type { AttachEndReason } from "./session/index.js";
 
@@ -35,6 +36,9 @@ const FREE_SLOT_ATTACH_END: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, At
 /** Current manager-owned lifecycle operations used while allocating and releasing names. */
 export interface NamesCapacityDeps {
   userMode(): boolean;
+  seatCap(): SeatCap;
+  managerInstanceId(): string;
+  agents(): Iterable<ManagedAgent>;
   authEnabled(): boolean;
   maintenanceActive(): boolean;
   roster(): readonly Presence[];
@@ -261,5 +265,58 @@ export class NamesCapacity {
         ? `waiting frees a slot only if an unsettled launch fails (${o.launching} pending); otherwise despawn one`
         : "waiting frees no slot; despawn one";
     return `at capacity (${this.occupancyText(o)}); ${remedy}`;
+  }
+
+  /**
+   * The owner a launch belongs to, read ONCE so the per-owner ceiling, the agent's addressing
+   * triple and the user-mode provisioner cannot charge three different owners for one seat. A
+   * static or open mesh has one owner by construction; a user-auth mesh takes the spec's owner,
+   * else the owner of the principal that asked, which is what {@link provisionUserAgent} resolves
+   * from the same two values (it refuses outright where this falls back, so the two never disagree
+   * on an admitted launch).
+   */
+  launchOwner(opts: Pick<StartAgentOpts, "owner">, spawner?: string): string {
+    if (!this.deps.userMode()) return DEV_OWNER;
+    const asked = spawner === undefined ? undefined : parsePrincipalKey(spawner)?.owner;
+    return opts.owner ?? (asked?.startsWith("u_") ? asked : DEV_OWNER);
+  }
+
+  /** The owner of a seat this manager supervises, by the same rule {@link launchOwner} admitted it
+   *  under: a user-mode seat records its derived owner, and every other seat is the mesh's one owner. */
+  private seatOwner(a: Pick<ManagedAgent, "userOwner">): string {
+    return a.userOwner ?? DEV_OWNER;
+  }
+
+  /**
+   * Live seats this manager holds for one owner: the seats it supervises, plus the launches it has
+   * reserved for that owner and not yet placed. It deliberately does NOT count cooling stamps — a
+   * cooling slot is a seat that already freed, and the recycle floor it holds is a global
+   * fork-bomb bound (P4c), not one tenant's occupancy. Mirrors {@link occupancy}'s reserved rule,
+   * so a reservation stops being counted twice the moment its seat reaches `agents`.
+   */
+  ownerSeats(owner: string): number {
+    let seats = 0;
+    for (const a of this.deps.agents()) if (this.seatOwner(a) === owner) seats++;
+    seats += this.ownerReservations(owner);
+    return seats;
+  }
+
+  /**
+   * The per-owner ceiling, consulted at accept: `undefined` admits the launch, and a refusal
+   * carries the owner's count and the cap so a caller can render a remedy and a script can decide
+   * without re-reading prose. Distinct from {@link capacityRefusal}, which bounds the HOST: that
+   * one frees when anyone stops a seat or a cooling slot expires, this one frees only when THIS
+   * owner stops one of its own, or the operator raises the cap, so they cannot share a sentence.
+   */
+  seatCapRefusal(owner: string): EpEnvelopeError | undefined {
+    const cap = this.deps.seatCap();
+    if (cap === SEAT_CAP_UNLIMITED) return undefined;
+    const seats = this.ownerSeats(owner);
+    if (seats < cap) return undefined;
+    return seatCapRefused(
+      `owner ${owner} holds ${seats} of the ${cap} seat${cap === 1 ? "" : "s"} manager ${this.deps.managerInstanceId()} admits per owner; ` +
+        `stop one of that owner's seats, or ask the operator who runs this manager for a higher seat cap`,
+      { owner, seats, cap },
+    );
   }
 }
