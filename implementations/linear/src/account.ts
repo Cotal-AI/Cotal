@@ -11,15 +11,16 @@
  * `linear/<name>.token` when `--token-stdin` stored the token, or `linear/<name>.oauth.json` for an
  * OAuth login. All 0600.
  */
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { homeCotalDir } from "@cotal-ai/workspace";
 import { isLinearMode, type LinearMode } from "./origin.js";
 
-export type LinearAccount =
+export type LinearAccount = { allowedTools?: string[] } & (
   | { name: string; mode: LinearMode; auth: "token"; /** Absolute path of the 0600 file holding the bearer. */ tokenFile: string }
-  | { name: string; mode: LinearMode; auth: "oauth" };
+  | { name: string; mode: LinearMode; auth: "oauth" }
+);
 
 const NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
@@ -55,8 +56,17 @@ export function assertPrivateFile(path: string): void {
   if (process.platform !== "win32" && (st.mode & 0o077) !== 0) throw new Error(`${path} is readable by other users (mode ${(st.mode & 0o777).toString(8)}); chmod 600 it`);
 }
 
+function allowedTools(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some(name => typeof name !== "string" || !name.length || name.trim() !== name || /[\u0000-\u001f\u007f]/u.test(name)) || new Set(value).size !== value.length)
+    throw new Error("allowedTools must be an array of distinct nonempty tool names without surrounding whitespace or terminal controls");
+  return [...value] as string[];
+}
+
 export function saveAccount(account: LinearAccount, token?: string): void {
   assertAccountName(account.name);
+  const tools = allowedTools(account.allowedTools) ?? (existsSync(accountPath(account.name)) ? loadAccount(account.name).allowedTools : undefined);
+  const saved = { ...account, ...(tools === undefined ? {} : { allowedTools: tools }) };
   if (!isLinearMode(account.mode)) throw new Error(`mode must be "write" or "readonly"`);
   mkSecretDir(linearDir());
   if (account.auth === "token") {
@@ -67,7 +77,7 @@ export function saveAccount(account: LinearAccount, token?: string): void {
     }
     assertPrivateFile(account.tokenFile);
   } else if (token !== undefined) throw new Error("an oauth account takes no token");
-  writeSecretFileAtomic(accountPath(account.name), `${JSON.stringify(account, null, 2)}\n`);
+  writeSecretFileAtomic(accountPath(account.name), `${JSON.stringify(saved, null, 2)}\n`);
 }
 
 export function loadAccount(name: string): LinearAccount {
@@ -78,10 +88,12 @@ export function loadAccount(name: string): LinearAccount {
   } catch (e) {
     throw new Error(`no Linear account "${name}" (${path}): ${(e as Error).message}. Add one with \`cotal linear account add\``, { cause: e });
   }
-  const a = raw as { name?: unknown; mode?: unknown; auth?: unknown; tokenFile?: unknown };
+  const a = raw as { name?: unknown; mode?: unknown; auth?: unknown; tokenFile?: unknown; allowedTools?: unknown };
   if (a.name !== name || !isLinearMode(a.mode)) throw new Error(`${path} is not a valid Linear account record`);
-  if (a.auth === "token" && typeof a.tokenFile === "string") return { name, mode: a.mode, auth: "token", tokenFile: a.tokenFile };
-  if (a.auth === "oauth") return { name, mode: a.mode, auth: "oauth" };
+  const tools = allowedTools(a.allowedTools);
+  const policy = tools === undefined ? {} : { allowedTools: tools };
+  if (a.auth === "token" && typeof a.tokenFile === "string") return { name, mode: a.mode, auth: "token", tokenFile: a.tokenFile, ...policy };
+  if (a.auth === "oauth") return { name, mode: a.mode, auth: "oauth", ...policy };
   throw new Error(`${path} is not a valid Linear account record`);
 }
 

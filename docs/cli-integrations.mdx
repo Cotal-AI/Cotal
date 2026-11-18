@@ -42,7 +42,22 @@ at each use, so rotating it needs no restart. `account login` runs Linear's OAut
 registers a client, prints the authorize URL, and waits on a loopback redirect. It asks for scope
 `read` in `readonly` mode and `read write` in `write` mode, keeps the tokens in a 0600 file, and
 refreshes them before a request is sent. OAuth requests only go to `https://mcp.linear.app`.
-Redirects are refused so the credential is never forwarded.
+Redirects are refused so the credential is never forwarded. A callback with a missing or wrong
+`state` gets HTTP 400 and leaves the pending login open for the matching callback.
+
+The existing account record at `<cotal-home>/linear/<name>.json` accepts an optional `allowedTools`
+array. Edit that record to list the upstream tool names this account may call, for example
+`"allowedTools": ["get_issue", "list_issues"]`. Names are case-sensitive literals, not patterns.
+An empty array refuses all tool calls. With the field absent, every tool the upstream account and
+mode permit remains callable. Invalid lists refuse account loading. `account show` reports the
+list, and account add/login preserve it when replacing credentials. To remove a restriction,
+remove the field from the record. Restart a running Linear service after editing it.
+
+This policy applies to both direct `linear call` and endpoint `call-tool` requests. An unlisted
+tool is refused before credential access or upstream dispatch, with reason `tool-not-allowed`,
+endpoint code `permission-denied`, outcome `not-executed` and direct CLI exit 2. Inventory remains
+complete and unfiltered. Resource reads, prompts and completions are not tool calls and are not
+restricted by this list. The Linear token and mode still bound every operation.
 
 
 ### Native inventory
@@ -122,7 +137,8 @@ completed; a registration that fails part-way rolls its own record back and repo
 
 The endpoint serves five fixed commands: `inventory`, `call-tool`, `read-resource`, `get-prompt` and
 `complete`. Each needs the one `linear.mcp` capability. That capability is permission to call the
-endpoint; which tools a call can reach is decided by the Linear account and its mode. `inventory`
+endpoint; which tools a call can reach is bounded by the Linear account's optional `allowedTools`,
+its token and its mode. `inventory`
 replies in pages that fit a broker message: the first page carries the server, its capabilities,
 its instructions and per-section counts, and every page carries entries verbatim with an opaque
 cursor bound to the inventory digest. An entry is never cut: discovery refuses an inventory whose

@@ -191,7 +191,6 @@ export async function loginAccount(name: string, mode: LinearMode): Promise<void
         const expected = provider.stateFor();
         if (!expected || u.searchParams.get("state") !== expected) {
           res.writeHead(400).end("state mismatch");
-          bad(new Error("the authorization callback carried the wrong state; nothing was saved"));
           return;
         }
         const error = u.searchParams.get("error");

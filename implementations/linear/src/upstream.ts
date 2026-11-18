@@ -126,7 +126,7 @@ export type Outcome = "not-executed" | "unknown";
 export type UpstreamReply =
   | { kind: "result"; result: Json; inventoryDigest: string }
   | { kind: "protocol-error"; code: number; message: string; data?: unknown; outcome: Outcome }
-  | { kind: "refused"; reason: "queue-full" | "unknown-tool" | "not-advertised" | "stale-inventory" | "discovery-failed" | "deadline" | "closed"; detail: string; outcome: "not-executed" }
+  | { kind: "refused"; reason: "tool-not-allowed" | "queue-full" | "unknown-tool" | "not-advertised" | "stale-inventory" | "discovery-failed" | "deadline" | "closed"; detail: string; outcome: "not-executed" }
   | {
       kind: "failed";
       reason: "timeout" | "cancelled" | "output-too-large" | "session-expired" | "unauthenticated" | "permission-denied" | "rate-limited" | "transport";
@@ -300,9 +300,11 @@ export class LinearUpstream {
   private readonly slots: Slots;
   private readonly url: URL;
   private readonly credential: LinearCredential;
+  private readonly allowedTools?: ReadonlySet<string>;
 
   constructor(readonly account: LinearAccount, readonly limits: LinearLimits = DEFAULT_LIMITS) {
     this.url = linearMcpUrl(account.mode);
+    this.allowedTools = account.allowedTools === undefined ? undefined : new Set(account.allowedTools);
     this.credential = credentialFor(account);
     this.slots = new Slots(limits.maxConcurrent, limits.maxQueued);
   }
@@ -493,6 +495,8 @@ export class LinearUpstream {
 
   /** Forward `tools/call`. `inventoryDigest`, when given, must match the live inventory. */
   async callTool(req: { name: string; arguments?: Json; inventoryDigest?: string; timeoutMs?: number; signal?: AbortSignal }): Promise<UpstreamReply> {
+    if (this.allowedTools !== undefined && !this.allowedTools.has(req.name))
+      return { kind: "refused", reason: "tool-not-allowed", detail: `the tool "${req.name}" is not allowed by the Linear account's allowedTools`, outcome: "not-executed" };
     return this.forward(req, (inv) => {
       if (!inv.tools.some((t) => t.name === req.name)) return `the tool "${req.name}" is not in the current inventory`;
     }, { method: "tools/call", params: { name: req.name, ...(req.arguments !== undefined ? { arguments: req.arguments } : {}) } }, CallToolResultSchema);

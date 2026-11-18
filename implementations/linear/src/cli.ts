@@ -85,7 +85,7 @@ export function accountForRead(name: string) {
 }
 
 function emitAccount(args: ParsedArgs, account: ReturnType<typeof loadAccount>, saved: boolean): void {
-  writeResult(presentationOf(args.values), { command: "linear", target: { account: account.name }, result: { kind: saved ? "linear-account-saved" : "linear-account-metadata", name: account.name, mode: account.mode, auth: account.auth, credentialReference: account.auth === "token" ? account.tokenFile : null, nativeSave: saved ? "acknowledged" : "not-requested", credentialContentsReadForReport: false, upstreamChecked: false } }, (row): Report => ({ sections: [{ title: saved ? "Linear account save acknowledged" : "Recorded Linear account", blocks: [{ kind: "fields", rows: [["Account", row.name], ["Mode", row.mode], ["Authentication", row.auth], ["Credential reference", row.credentialReference ?? "private native OAuth state"], ["Upstream", "not checked"]] }, { kind: "lines", lines: ["This is recorded configuration, not proof of current upstream access. Credential contents are not printed. Native OAuth or token persistence retains its own authority and lifetime rules."] }] }] }));
+  writeResult(presentationOf(args.values), { command: "linear", target: { account: account.name }, result: { kind: saved ? "linear-account-saved" : "linear-account-metadata", name: account.name, mode: account.mode, auth: account.auth, allowedTools: account.allowedTools ?? null, credentialReference: account.auth === "token" ? account.tokenFile : null, nativeSave: saved ? "acknowledged" : "not-requested", credentialContentsReadForReport: false, upstreamChecked: false } }, (row): Report => ({ sections: [{ title: saved ? "Linear account save acknowledged" : "Recorded Linear account", blocks: [{ kind: "fields", rows: [["Account", row.name], ["Mode", row.mode], ["Authentication", row.auth], ["Allowed tools", row.allowedTools === null ? "all upstream tools" : row.allowedTools.join(", ") || "none"], ["Credential reference", row.credentialReference ?? "private native OAuth state"], ["Upstream", "not checked"]] }, { kind: "lines", lines: ["This is recorded configuration, not proof of current upstream access. Credential contents are not printed. Native OAuth or token persistence retains its own authority and lifetime rules."] }] }] }));
 }
 
 function fail(msg: string): never {
@@ -298,7 +298,7 @@ export async function linear(args: ParsedArgs): Promise<void> {
         if (!isLinearMode(mode)) fail("--mode must be write or readonly");
         try { await loginAccount(name, mode); }
         catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "native Linear OAuth did not confirm its final local save; authorization or private state may have changed. Login was not retried", { target: { account: name } }); }
-        emitAccount(args, { name, mode, auth: "oauth" }, true);
+        emitAccount(args, loadAccount(name), true);
         return;
       }
       if (action !== "add") fail(USAGE);
@@ -309,7 +309,7 @@ export async function linear(args: ParsedArgs): Promise<void> {
       const token = v["token-stdin"] ? await readStdin() : undefined;
       try { saveAccount(account, token); }
       catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native Linear account save did not confirm completion; a private token or record may have changed. The save was not retried", { target: { account: name } }); }
-      emitAccount(args, account, true);
+      emitAccount(args, loadAccount(name), true);
       return;
     }
     case "inventory": {
