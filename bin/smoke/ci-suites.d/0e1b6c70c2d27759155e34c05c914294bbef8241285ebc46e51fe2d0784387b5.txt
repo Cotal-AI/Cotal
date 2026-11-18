@@ -1,0 +1,3 @@
+# The agent's prompt desk, broker-free: its state table over every (state, event) pair, and the
+# largest prompts and prompt replies with their envelopes against the max_payload floor.
+smoke:prompt-desk

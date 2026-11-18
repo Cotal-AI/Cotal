@@ -1,0 +1,3 @@
+# The agent's prompt desk on a real broker through the shipped auth callout: a fake adapter drives
+# the answer checks in order, every named case and every interleaving, and end comes once per prompt.
+smoke:prompt-desk:auth

@@ -640,6 +640,8 @@
     "smoke:ep-grants": "tsx packages/core/smoke/endpoint-grants.smoke.ts",
     "smoke:principal-route": "tsx packages/core/smoke/principal-route.smoke.ts",
     "smoke:principal-route:auth": "tsx implementations/auth/smoke/principal-route-auth.smoke.ts",
+    "smoke:prompt-desk": "tsx extensions/connector-core/smoke/prompt-desk.smoke.ts",
+    "smoke:prompt-desk:auth": "tsx extensions/connector-core/smoke/prompt-desk-auth.smoke.ts",
     "smoke:native-service-gate": "tsx implementations/auth/smoke/native-service-gate.smoke.ts",
     "smoke:service-access-callout:auth": "tsx implementations/auth/smoke/service-access-callout.smoke.ts",
     "smoke:service-custody:auth": "tsx implementations/auth/smoke/service-custody.smoke.ts",
