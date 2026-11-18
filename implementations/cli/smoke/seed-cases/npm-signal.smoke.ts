@@ -2,6 +2,22 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { BIN, HOST_ENV, check, cotal, existsSync, finishScenario, freshCfg, join, readJson, spawn, track } from "./harness.js";
 
+function readMarker(path: string): { phase: string; pid?: number; intermediary?: boolean } | undefined {
+  try { return readJson(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return undefined;
+  }
+}
+
+function signalIfRunning(pid: number, signal: NodeJS.Signals): boolean {
+  try { return process.kill(pid, signal); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    return false;
+  }
+}
+
 try {
   if (process.platform !== "win32") {
     const cfg = track(freshCfg());
@@ -19,10 +35,12 @@ try {
         const deadline = Date.now() + 60_000;
         let npmPid: number | undefined;
         while (Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
-          if (existsSync(marker)) {
-            const record = readJson(marker) as { phase: string; pid?: number; intermediary?: boolean };
-            if (record.phase === "live") {
-              assert.equal(record.intermediary, false);
+          const record = readMarker(marker);
+          if (record?.phase === "live") {
+            assert.equal(record.intermediary, false);
+            assert.ok(record.pid);
+            // npm may finish between reading its marker and sending the signal.
+            if (signalIfRunning(record.pid, signal)) {
               npmPid = record.pid;
               break;
             }
@@ -30,7 +48,6 @@ try {
           await new Promise(resolve => setTimeout(resolve, 5));
         }
         assert.ok(npmPid, `the seed publishes its real npm child: ${output}`);
-        process.kill(npmPid, signal);
         assert.notEqual((await closed)[0], 0, "the interrupted seed still reports failure");
         assert.throws(() => process.kill(npmPid, 0), { code: "ESRCH" }, "npm was reaped before repair");
         assert.equal(existsSync(marker), false, "observed direct-child exit leaves no ambiguous marker");
@@ -41,12 +58,9 @@ try {
       } finally {
         if (child.exitCode === null && child.signalCode === null) {
           // Only terminate the npm process journaled by this fixture's seed.
-          if (existsSync(marker)) {
-            const record = readJson(marker) as { phase: string; pid?: number };
-            if (record.phase === "live" && record.pid) {
-              try { process.kill(record.pid, "SIGKILL"); }
-              catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-            }
+          const record = readMarker(marker);
+          if (record?.phase === "live" && record.pid) {
+            signalIfRunning(record.pid, "SIGKILL");
           }
           await closed;
         }
