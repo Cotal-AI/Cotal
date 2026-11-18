@@ -1051,7 +1051,7 @@ function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
   if (!names.length) return;
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
   try {
-    const result = rt.npm(["install", "--prefix", staging, "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
+    const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
     if (result.status !== 0) throw new Error(`installed extension dependency closure is unavailable: ${failure(result)}`);
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
@@ -1624,11 +1624,13 @@ async function runGlobalProcess(
   windowsVerbatimArguments = false,
 ): Promise<CommandResult> {
   const mutation = beginGlobalUpdateChild(root, operation);
+  let cache: string | undefined;
   let published = false;
   let preservePending = false;
   try {
+    cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
     const child = withInstallUmask(() => spawn(file, args, {
-      env,
+      env: { ...env, npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
       // A separate process group keeps terminal interrupts out of npm's live replacement.
       // Keep the ChildProcess referenced and await close; this is not a background update.
       detached: true,
@@ -1666,6 +1668,7 @@ async function runGlobalProcess(
     return { status: null, stdout: "", stderr: "", error: message(e) };
   } finally {
     if (!published && !preservePending) mutation.clear();
+    if (cache) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 
