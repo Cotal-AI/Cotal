@@ -1021,6 +1021,9 @@ on PATH. On Linux without systemd, such as Alpine with OpenRC, these commands re
 Run `cotal daemon serve` under your own supervisor, such as an OpenRC user service, runit or s6.
 Run `cotal update --self` by hand for updates. `cotal update --auto` saves the preference but cannot
 schedule automatic installation without a supported native daemon service.
+Managing or removing a recorded systemd service also requires those prerequisites. If they are
+unavailable, use an environment running systemd with `systemctl` on PATH as the same operating-system
+user to manage that service. The refusal does not mean its recorded unit was never installed.
 
 On macOS it is a LaunchAgent. It writes a plist to `~/Library/LaunchAgents`, then loads it into the
 user's GUI domain with `launchctl enable` and `launchctl bootstrap`. launchd starts the daemon when

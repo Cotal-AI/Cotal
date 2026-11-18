@@ -1,6 +1,7 @@
 /** Exercise Linux service prerequisites through the built CLI with private homes and native stand-ins. */
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -164,4 +165,36 @@ try {
 } finally { await killAndAwaitExit(child, "SIGTERM", 10_000); }
 assert.notEqual(child.exitCode, null);
 console.log("PASS foreground daemon serves without systemd and exits cleanly");
+
+// A retained receipt must not turn an unsupported operation into a claim that no unit exists.
+const unitPath = join(config, "systemd/user/cotal-daemon.service");
+const receiptPath = join(env.COTAL_HOME!, "daemon/service-unit.json");
+const unitBytes = "[Unit]\nDescription=private recorded-unit guidance probe\n";
+mkdirSync(dirname(unitPath), { recursive: true, mode: 0o700 });
+mkdirSync(dirname(receiptPath), { recursive: true, mode: 0o700 });
+writeFileSync(unitPath, unitBytes, { mode: 0o600 });
+const receiptBytes = JSON.stringify({ v: 1, mechanism: "systemd-user", unit: "cotal-daemon.service",
+  unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString() });
+writeFileSync(receiptPath, receiptBytes, { mode: 0o600 });
+const removalControl = run(["daemon", "uninstall", "--dry-run", "--json"]);
+assert.equal(removalControl.code, 0);
+assert.equal(JSON.parse(removalControl.text).result.state, "would-remove");
+const beforeRecorded = calls();
+for (const overrides of [{ PATH: missing }, { SMOKE_SYSTEMD: "absent" }]) {
+  for (const args of [["uninstall", "--dry-run"], ["uninstall", "--yes"], ["start"]]) {
+    for (const json of [false, true]) {
+      const result = run(["daemon", ...args, ...(json ? ["--json"] : [])], overrides);
+      assert.equal(result.code, 2);
+      assert.match(result.text, /requires systemd/);
+      assert.match(result.text, /environment running systemd with systemctl on PATH/);
+      assert.match(result.text, /same operating-system user/);
+      assert.doesNotMatch(result.text, /Cotal did not install|logged-in session/);
+      if (json) assert.equal(JSON.parse(result.text).error.code, "UNSUPPORTED");
+      assert.equal(readFileSync(unitPath, "utf8"), unitBytes);
+      assert.equal(readFileSync(receiptPath, "utf8"), receiptBytes);
+      assert.equal(calls(), beforeRecorded, "unsupported recorded-unit operations never invoke native tools");
+    }
+  }
+}
+console.log("PASS recorded-unit operations explain restoring systemd access without denying the installation");
 emitSentinel({ passed: counted.cells(), failed: 0 });

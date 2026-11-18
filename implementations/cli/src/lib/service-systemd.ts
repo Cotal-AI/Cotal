@@ -53,7 +53,7 @@ function systemdDirectoryValue(value: string): string {
 export function systemdUserServiceRequirement(): CommandFailure | undefined {
   if (process.platform !== "linux" || (existsSync("/run/systemd/system") && resolveOnPath("systemctl"))) return undefined;
   return new CommandFailure("refused", "UNSUPPORTED", "The Linux background service requires systemd, with /run/systemd/system present and systemctl on PATH; this environment does not provide it", {
-    remedy: "Run the process under your own supervisor, such as an OpenRC user service, runit or s6. Cotal did not install a native user service",
+    remedy: "Use an environment running systemd with systemctl on PATH as the same operating-system user to manage native user services. For a new installation without systemd, run the process under your own supervisor, such as an OpenRC user service, runit or s6",
   });
 }
 
