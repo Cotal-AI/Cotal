@@ -257,6 +257,11 @@ principal this run recorded for the handle when it spawned the seat or bound the
 payload's `from.name` is not compared, so a peer that gives itself the agent's name does not match.
 A `from` handle outside the run's roster refuses the wait.
 
+A wait with no `from` is satisfied by a message from any principal that can post on the channel.
+`matches` tests the message's text and identifies no sender, so a wait that must hear from one
+participant sets `from`. `from` names a principal, not one seat: a seat the same owner respawns
+under the same name has the same principal, so its messages still match.
+
 
 ## Cancellation [#cancellation]
 
