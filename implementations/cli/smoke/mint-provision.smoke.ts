@@ -751,6 +751,29 @@ try {
     check("  a --role flag replaces that role and mints", roled.code === 0 && existsSync(standing("spaced")), roled.out);
   }
 
+  // ── 13. invalid channels in --allow-subscribe / --allow-publish fail USAGE_INVALID without touching disk (#7528)
+  {
+    const unwantedDir = join(home, "unwanted_mint_out_dir");
+    const unwantedOut = join(unwantedDir, "alice.creds");
+    const hashBad = await runMint(["alice_bad", "--allow-subscribe", "#general", "--out", unwantedOut]);
+    check("#7528: --allow-subscribe '#general' exits 1 without creating --out parent folder or lock",
+      hashBad.code === 1 && !existsSync(unwantedDir) && !existsSync(`${unwantedOut}.mint.lock`) &&
+        hashBad.out.includes('--allow-subscribe channel "#general" starts with "#", which is not part of a channel name') &&
+        hashBad.out.includes("`--allow-subscribe general`"), hashBad.out);
+    const wildcardBad = await runMint(["alice_bad", "--allow-subscribe", "#team.>", "--out", unwantedOut]);
+    check("#7528: wildcard correction is shell-quoted and creates no output folder",
+      wildcardBad.code === 1 && !existsSync(unwantedDir) && wildcardBad.out.includes("`--allow-subscribe 'team.>'`"), wildcardBad.out);
+    for (const [flag, val, hint] of [
+      ["--allow-publish", "foo/bar", "`--allow-publish foo_bar`"],
+      ["--allow-subscribe", "foo..bar", "`--allow-subscribe foo.bar`"],
+      ["--allow-subscribe", "foo bar", "`--allow-subscribe foo_bar`"],
+    ] as const) {
+      const bad = await runMint(["alice_bad", flag, val, "--out", unwantedOut]);
+      check(`#7528: ${flag} '${val}' exits 1 naming the flag and channel without creating folders`,
+        bad.code === 1 && !existsSync(unwantedDir) && bad.out.includes(`${flag} channel "${val}" is not a valid channel pattern`) && bad.out.includes(hint), bad.out);
+    }
+  }
+
   // A legacy down removes a registration unless the space is named after its folder.
   // File-only signing still belongs to the retained local authority, not the default broker.
   {
@@ -774,8 +797,84 @@ try {
       check("offline rig: foreground static up completes", await until(() => output.includes("--no-manager starts no local"), 30_000), output);
       const live = await runMint(["live", "--provision", "--allow-subscribe", "test", "--allow-publish", "test"]);
       check("offline rig: live provisioned mint succeeds", live.code === 0, live.out);
+
+      // #7565: bare join with --expires-in retires cleanly at its requested lifetime instead of exiting 2 AUTH_REQUIRED.
+      const timedJoin = await runCotal(["join", "--space", "offlinecheck", "--name", "alice", "--expires-in", "2"]);
+      check("#7565: bare join --expires-in 2 exits 0 cleanly without AUTH_REQUIRED or doctor auth advice",
+        timedJoin.code === 0 && /leaving/.test(timedJoin.out) && !/AUTH_REQUIRED|doctor auth|re-mint/i.test(timedJoin.out), timedJoin);
+
+      const absoluteJoin = await runCotal(["join", "--space", "offlinecheck", "--name", "absolute", "--expires-at", String(Math.floor(Date.now() / 1000) + 4)]);
+      check("#7565: bare join --expires-at exits 0 without an authentication refusal",
+        absoluteJoin.code === 0 && /leaving/.test(absoluteJoin.out) && !/AUTH_REQUIRED|doctor auth|re-mint/i.test(absoluteJoin.out), absoluteJoin);
+      const longJoin = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "cotal-child", "join", "--space", "offlinecheck", "--name", "long_join", "--expires-in", "3000000"], { stdio: ["ignore", "pipe", "pipe"] });
+      let longOut = "";
+      longJoin.stdout.on("data", (c: Buffer) => { longOut += c.toString(); });
+      longJoin.stderr.on("data", (c: Buffer) => { longOut += c.toString(); });
+      const longClosed = new Promise<void>((resolve) => longJoin.once("close", () => resolve()));
+      const longStarted = await until(() => longOut.includes("holding presence in offlinecheck"), 15_000);
+      await wait(200);
+      const longStillRunning = longJoin.exitCode === null && longJoin.signalCode === null;
+      longJoin.kill("SIGTERM");
+      await longClosed;
+      check("#7565: a lifetime beyond Node's timer limit stays connected rather than overflowing to immediate expiry",
+        longStarted && longStillRunning && !/TimeoutOverflowWarning/.test(longOut), longOut);
+
+      // #7563: control commands refuse --creds before dialing as UNSUPPORTED (exit 2) with Next naming without --creds,
+      // and status --help / bare status --creds do not advertise --creds as a working named-agent read.
+      const admCreds = join(exports, "adm-ctrl.creds");
+      const admMinted = await runMint(["adm_ctrl", "--profile", "admin", "--out", admCreds]);
+      check("#7563 fixture: admin cred minted", admMinted.code === 0 && existsSync(admCreds), admMinted.out);
+      const statusHelp = await runCotal(["status", "--help"]);
+      check("#7563: status --help does not advertise --creds as a working named-agent credential",
+        statusHelp.code === 0 && !/named agent: use an explicit connection credential/.test(statusHelp.out), statusHelp.out);
+      const bareStatusCreds = await runCotal(["status", "--creds", admCreds]);
+      check("#7563: bare status --creds exits 2 UNSUPPORTED naming without --creds",
+        bareStatusCreds.code === 2 && /Code:\s+UNSUPPORTED/.test(bareStatusCreds.out) && /without --creds/.test(bareStatusCreds.out) && !/select a named agent read/.test(bareStatusCreds.out), bareStatusCreds);
+      for (const [label, argv] of [
+        ["status <agent>", ["status", "some_agent", "--space", "offlinecheck", "--creds", admCreds]],
+        ["ps", ["ps", "--space", "offlinecheck", "--creds", admCreds]],
+        ["stop", ["stop", "some_agent", "--space", "offlinecheck", "--creds", admCreds]],
+        ["input", ["input", "some_agent", "hi", "--space", "offlinecheck", "--creds", admCreds]],
+        ["attach", ["attach", "some_agent", "--space", "offlinecheck", "--creds", admCreds]],
+        ["models", ["models", "--space", "offlinecheck", "--creds", admCreds]],
+      ] as const) {
+        const res = await runCotal([...argv]);
+        check(`#7563: ${label} --creds exits 2 UNSUPPORTED with Next to drop --creds`,
+          res.code === 2 && /Outcome:\s+refused/.test(res.out) && /Code:\s+UNSUPPORTED/.test(res.out) && /Next[\s\S]*without --creds/.test(res.out), res);
+      }
+
+      // #7541: doctor auth includes --provision (and quotes paths) when repairing an expired exported --provision join credential.
+      const spacedJoinCreds = join(exports, "with space", "exp1s.creds");
+      const provMinted = await runMint(["j_exp", "--expires-in", "1", "--provision", "--allow-subscribe", "general", "--allow-publish", "general", "--out", spacedJoinCreds, "--json"]);
+      check("#7541 fixture: provisioned exported join cred minted", provMinted.code === 0 && existsSync(spacedJoinCreds), provMinted.out);
+      await wait(2100);
+      const docExp = await runCotal(["doctor", "auth", "--space", "offlinecheck", "--json"]);
+      const docExpLine = docExp.out.split("\n").find((t) => t.startsWith('{"schemaVersion"'));
+      const docExpEnv = docExpLine ? JSON.parse(docExpLine) as { result?: { exported?: { path: string; state: string; repair: string | null }[] } } : {};
+      const expRow = (docExpEnv.result?.exported ?? []).find((r) => r.path === spacedJoinCreds);
+      check("#7541: doctor auth expired repair includes --provision and shell-quotes the exported path",
+        expRow?.state === "expired" && expRow.repair?.includes("--provision") === true && expRow.repair.includes(`'${spacedJoinCreds}'`), expRow);
+      const remintedProv = await runMint(["j_exp", "--provision", "--identity", spacedJoinCreds, "--out", spacedJoinCreds, "--json"]);
+      const remintLine = remintedProv.out.split("\n").find((t) => t.startsWith('{"schemaVersion"'));
+      const newUid = remintLine ? (JSON.parse(remintLine) as { result?: { lifecycleUid?: string | null } }).result?.lifecycleUid ?? "" : "";
+      check("#7541: re-minting with --provision allocates and provisions a new lifecycleUid",
+        remintedProv.code === 0 && /^[a-z0-9]{26,32}$/.test(newUid), remintedProv.out);
+      const joinChild = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "cotal-child", "join", "--space", "offlinecheck", "--name", "alice", "--creds", spacedJoinCreds, "--lifecycle-uid", newUid, "--channel", "general"], { stdio: ["ignore", "pipe", "pipe"] });
+      let joinOut = "";
+      joinChild.stdout.on("data", (c: Buffer) => { joinOut += c.toString(); });
+      joinChild.stderr.on("data", (c: Buffer) => { joinOut += c.toString(); });
+      const joinClosed = new Promise<void>((resolve) => joinChild.once("close", () => resolve()));
+      const joined = await until(() => joinOut.includes("holding presence in offlinecheck"), 15_000);
+      const dm = await runCotal(["send", "--to", "alice", "renewed-inbox-proof"]);
+      const received = await until(() => joinOut.includes("renewed-inbox-proof"), 10_000);
+      joinChild.kill("SIGTERM");
+      await joinClosed;
+      check("#7541: renewed provisioned credential binds its new inbox and receives a DM",
+        joined && dm.code === 0 && received && !/dm-durable-missing/i.test(joinOut), { joinOut, dm });
+
       const stopped = await down();
       check("offline rig: normal down and foreground up exit successfully", stopped.code === 0 && await exited === 0, stopped.out);
+
       for (const profile of ["agent", "observer", "admin"]) {
         const minted = await runMint([`offline_${profile}`, "--profile", profile, "--plain"]);
         const file = agentSecretFilePaths(stoppedRoot, "offlinecheck", `offline_${profile}`).creds;

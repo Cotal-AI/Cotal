@@ -1,15 +1,16 @@
 /** Silent listeners stay distinct from refused ports across the shipped CLI's space reports. */
 import assert from "node:assert/strict";
-import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { emitSentinel, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { preflightTarget } from "@cotal-ai/workspace";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const bin = join(import.meta.dirname, "../../../bin/dist/cotal.js");
 process.umask(0o077);
-const root = mkdtempSync(join(tmpdir(), "cotal-silent-broker-"));
+const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}silent-broker-`));
 const hostEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
 let passed = 0;
 const failures: string[] = [];
@@ -112,6 +113,66 @@ const refused = createServer();
 const port = await listen(refused);
 await close(refused);
 await scenario("refused", port, () => 0);
+// A stopped locally owned space must not mistake a replacement listener for its broker.
+{
+  const home = join(root, "foreign");
+  const project = join(home, "project");
+  mkdirSync(join(project, ".cotal"), { recursive: true });
+  const env = { ...hostEnv, HOME: home, COTAL_HOME: join(home, "state"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+  async function run(args: string[]) {
+    const child = spawn(process.execPath, [bin, ...args], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stdout.on("data", chunk => { output += chunk; });
+    child.stderr.on("data", chunk => { output += chunk; });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
+    const code = await new Promise<number | null>(resolve => child.once("close", resolve)).finally(() => clearTimeout(timer));
+    console.log(JSON.stringify({ args, code, output }));
+    return { code, output };
+  }
+  const reservation = createServer();
+  const port = await listen(reservation);
+  await close(reservation);
+  assert.equal((await run(["up", "--server", `nats://127.0.0.1:${port}`])).code, 0);
+  assert.equal((await run(["down", "--yes"])).code, 0);
+  for (const kind of ["http", "silent"] as const) {
+    const sockets = new Set<Socket>();
+    const listener = createServer(socket => {
+      sockets.add(socket);
+      socket.on("error", () => {});
+      socket.on("close", () => sockets.delete(socket));
+      if (kind === "http") socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+    });
+    await new Promise<void>(resolve => listener.listen(port, "127.0.0.1", resolve));
+    try {
+      for (const command of [["status", "--plain"], ["ps", "--plain"]]) {
+        const result = await run(command);
+        check(`${kind} ${command[0]} names occupied port and usable remedy`, /non-NATS listener/.test(result.output) && /cotal up --server/.test(result.output) && !/overloaded/.test(result.output));
+        if (command[0] === "ps") check(`${kind} ps is target unavailable`, result.code === 2 && /TARGET_UNAVAILABLE/.test(result.output));
+      }
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await close(listener);
+    }
+  }
+  const config = join(root, "substitute.conf");
+  writeFileSync(config, `host: 127.0.0.1\nport: ${port}\n`);
+  const nats = spawn("nats-server", ["-c", config], { stdio: "ignore" });
+  const release = teardownOnSignal(nats);
+  try {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const status = await run(["status", "--plain"]);
+    check("plain NATS substitute is not reported reachable", /does not enforce Cotal authentication/.test(status.output) && !/Connection:\s+reachable/.test(status.output));
+    const ps = await run(["ps", "--plain"]);
+    check("plain NATS ps refuses with a remedy rather than unknown outcome", ps.code === 2 && /TARGET_UNAVAILABLE/.test(ps.output) && /Next/.test(ps.output) && /authentication/.test(ps.output));
+    const components = await run(["status", "--components"]);
+    check("plain NATS substitute does not replace the absent local broker component", /broker\s+absent/.test(components.output) && /does not enforce Cotal authentication/.test(components.output));
+    const open = await preflightTarget({ root: project, space: "foreign-open", server: `nats://127.0.0.1:${port}`, mode: "open", tlsRequired: false, source: "flag-server", personaRoot: join(project, ".cotal", "agents") });
+    check("foreign open NATS without JetStream still refuses without pruning", !open.ok && open.kind === "jetstream-unsupported" && !open.prune);
+  } finally {
+    await killAndAwaitExit(nats);
+    release();
+  }
+}
 console.log(`Retained sandbox: ${root}`);
 assert.deepEqual(failures, [], "silent broker regression failures");
 emitSentinel({ passed, failed: failures.length });
