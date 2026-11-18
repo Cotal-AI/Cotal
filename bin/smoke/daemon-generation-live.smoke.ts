@@ -43,7 +43,7 @@ if (args.includes("--cold-reconcile") || args.includes("--cold-reconcile-quota")
     const elapsedMs = Date.now()-start;
     if (${process.argv.includes("--cold-reconcile-quota")}) assert.ok(elapsedMs > 120000, 'cold reconciliation must cross the former deadline');
     console.log('cold hosted reconciliation passed', elapsedMs, 'ms, seven current built-ins');
-  `], { ...process.env, HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: join(home, "config"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), npm_config_cache: join(home, "npm"), COTAL_SKIP_CONNECTOR_SEED: "1" }, args.includes("--cold-reconcile-quota") ? "15%" : undefined);
+  `], { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: join(home, "config"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), npm_config_cache: join(home, "npm"), COTAL_SKIP_CONNECTOR_SEED: "1" }, args.includes("--cold-reconcile-quota") ? "15%" : undefined);
 } else {
   const cases = args.includes("--manual-admission-repros")
     ? [["--update-repro", "--manual-admission-race-repro"], ["--update-repro", "--manual-admission-empty-repro"]]
