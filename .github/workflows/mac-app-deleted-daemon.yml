@@ -1,0 +1,257 @@
+name: Deleted macOS app daemon measurement
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Measurement mode (all retains the existing signed-app matrix)
+        type: choice
+        options: [preserving-self-update, all]
+        default: preserving-self-update
+        required: true
+  push:
+    branches:
+      - measure/mac-app-deleted-daemon
+      - fix/macos-deleted-app-service
+      - fix/macos-missing-program-postcut
+permissions:
+  contents: read
+concurrency:
+  group: mac-app-deleted-daemon
+  cancel-in-progress: false
+jobs:
+  release-native:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { platform: linux, arch: x64, runner: ubuntu-24.04 }
+          - { platform: linux, arch: arm64, runner: ubuntu-24.04-arm }
+          - { platform: darwin, arch: x64, runner: macos-15-intel }
+          - { platform: darwin, arch: arm64, runner: macos-15 }
+          - { platform: win32, arch: x64, runner: windows-latest }
+          - { platform: win32, arch: arm64, runner: windows-11-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require native-runner disk budget
+        shell: bash
+        run: &disk-budget node -e "const s=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(s.bavail*s.bsize<30*1024**3)throw Error('Less than 30 GiB free before downloads, installation or build')"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Compile Unix host primitives
+        if: matrix.platform != 'win32'
+        shell: bash
+        run: |
+          node packages/seat/scripts/build-native.mjs --host
+          if [ '${{ matrix.platform }}' = darwin ]; then
+            node packages/workspace/scripts/build-native.mjs
+          fi
+      - name: Compile Windows host primitives and process identity
+        if: matrix.platform == 'win32'
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 1
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }} -host_arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }}
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-seat-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/seat/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform != 'linux'
+        with:
+          name: release-workspace-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/workspace/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+  release-pack:
+    needs: release-native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require pack-runner disk budget
+        run: *disk-budget
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - run: pnpm --workspace-concurrency 3 build
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/release-natives
+      - name: Assemble and guard complete source-matched native closure
+        run: &assemble |
+          node scripts/seat-assemble-natives.mjs
+          node scripts/workspace-assemble-natives.mjs
+          node packages/seat/scripts/assert-shipped-natives.mjs
+          node packages/workspace/scripts/assert-shipped-natives.mjs
+        env: &native-env
+          NATIVE_SOURCE: ${{ github.sha }}
+          SEAT_NATIVE_X64: ${{ runner.temp }}/release-natives/release-seat-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-seat-linux-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-seat-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-seat-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/release-natives/release-seat-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/release-natives/release-seat-win32-arm64/peercred.node
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/release-natives/release-workspace-win32-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-workspace-win32-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-workspace-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-workspace-darwin-arm64
+      - name: Pack ordinary full candidate A
+        run: |
+          VERSION="$(node -p "const v=require('./bin/package.json').version.split('.').map(Number);v[2]+=1000;v.join('.')")"
+          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/release-candidate" --version "$VERSION" --source-root "$GITHUB_WORKSPACE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repair-candidate
+          path: ${{ runner.temp }}/release-candidate
+          if-no-files-found: error
+  release-next:
+    needs: [release-native, release-pack]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      # A separate clean hosted checkout, not the stamped A source tree.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require next-pack-runner disk budget
+        run: *disk-budget
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/release-natives
+      - name: Assemble and guard complete source-matched native closure
+        run: *assemble
+        env: *native-env
+      - uses: actions/download-artifact@v4
+        with:
+          name: repair-candidate
+          path: ${{ runner.temp }}/release-candidate
+      - name: Pack guarded candidate B
+        run: node scripts/pack-candidate-next.mjs --source-root "$GITHUB_WORKSPACE" --candidate "$RUNNER_TEMP/release-candidate" --output "$RUNNER_TEMP/release-next"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repair-next
+          path: ${{ runner.temp }}/release-next
+          if-no-files-found: error
+  measure:
+    needs: [release-pack, release-next]
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        mode: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.mode == 'preserving-self-update' && '["preserving-self-update"]' || '["status","install","disabled","unreadable-source","self-update","unreadable-manager","occupied-manager","crash-prepared","crash-published","crash-prepared-mismatch","crash-prepared-concurrent","crash-prepared-changed-source"]') }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require measurement-runner disk budget
+        run: *disk-budget
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: actions/download-artifact@v4
+        with:
+          name: repair-candidate
+          path: ${{ runner.temp }}/release-candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: repair-next
+          path: ${{ runner.temp }}/release-next
+      - name: Verify exact source and full A/B package census
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const versions = [];
+          for (const name of ['release-candidate', 'release-next']) {
+            const manifest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/${name}/manifest.json`));
+            assert.equal(manifest.source, process.env.GITHUB_SHA);
+            assert.equal(manifest.packages.length, 24);
+            assert.equal(new Set(manifest.packages.map(pkg => pkg.name)).size, 24);
+            const version = manifest.packages[0].version;
+            assert(manifest.packages.every(pkg => pkg.version === version));
+            versions.push(version);
+          }
+          const next = versions[0].split('.').map(Number);
+          next[2] += 1000;
+          assert.equal(versions[1], next.join('.'));
+          NODE
+      - name: Prepare real fixture libraries and NATS
+        run: |
+          pnpm install --frozen-lockfile --child-concurrency=2
+          pnpm --workspace-concurrency 3 build
+          node packages/seat/scripts/build-native.mjs --host
+          node packages/workspace/scripts/build-native.mjs
+          brew install nats-server
+      - name: Install guarded observer CLI from candidate A
+        run: |
+          node --import tsx --input-type=module <<'NODE'
+          import { candidateRegistry } from './scripts/automatic-update-platform-baseline.mjs';
+          import { spawn } from 'node:child_process';
+          const registry = await candidateRegistry(`${process.env.RUNNER_TEMP}/release-candidate`, 'A', 'https://registry.npmjs.org/');
+          try {
+            const child = spawn('npm', ['install', '--global', '--prefix', `${process.env.RUNNER_TEMP}/repair-cli`, `cotal-ai@${registry.identity.version}`, '--no-audit', '--no-fund'], { stdio: 'inherit', env: { ...process.env, npm_config_registry: registry.url } });
+            const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
+            if (code !== 0) throw Error(`Candidate observer install failed: ${code}`);
+          } finally { await registry.close(); }
+          NODE
+      - name: Record released app deletion and CLI recovery
+        shell: bash
+        env:
+          DESKTOP_REPAIR_COMMAND: ${{ matrix.mode }}
+          DESKTOP_REPAIR_SOURCE_CLOSURE: ${{ runner.temp }}/release-candidate
+          DESKTOP_REPAIR_TARGET_CLOSURE: ${{ runner.temp }}/release-next
+        run: |
+          export NPM_BIN="$(command -v npm)"
+          export DESKTOP_REPAIR_CLI="$RUNNER_TEMP/repair-cli/lib/node_modules/cotal-ai/dist/cotal.js"
+          node --import tsx desktop/e2e/mac-app-deleted-daemon.mjs
+      - name: Check evidence publication gate
+        id: evidence
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$RUNNER_TEMP/mac-app-deleted-daemon/upload-safe"; then
+            echo 'safe=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'safe=false' >> "$GITHUB_OUTPUT"
+            echo 'Evidence upload refused because the secret scan did not finish.'
+          fi
+      - name: Retain command receipts
+        if: always() && steps.evidence.outputs.safe == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-app-deleted-daemon-${{ matrix.mode }}
+          path: ${{ runner.temp }}/mac-app-deleted-daemon/evidence
+          if-no-files-found: error
+          retention-days: 7
