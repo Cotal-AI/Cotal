@@ -220,7 +220,11 @@ its catalog keeps it. A stack `cotal up` started stays a prepared space at its r
 the record, and the refusal says so, unless the space is named after its folder: that `down` keeps the
 record, and the refusal names `space forget` again. A space whose root holds its stack journal counts as
 running while any stack member's process may still run. The refusal names one such member and
-writes nothing: the registration, the selection and the root's files stay. A member whose process
+writes nothing: the registration, the selection and the root's files stay. A space whose folder was
+deleted while it ran also refuses with `LIFECYCLE_BLOCKED` and keeps its record. A controller stack
+whose instance records show a member still running names `cotal down --space <space> --yes`. Any
+other such space refuses while something still listens at its recorded broker address that no other
+registration names, and names the process listening there to stop. A member whose process
 is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
 that it was never stopped cleanly. A prepared space is forgotten the same way, and the `.cotal/`
 that `space create` made stays. A prepared record that cannot be read names no folder, so forgetting
