@@ -15,7 +15,7 @@ import { followRecordedLog } from "./service-log-follow.js";
 import { managerLogPath } from "../lib/manager-proc.js";
 import { observeServiceProcess, serviceInstanceId, serviceInstances, instanceProjection } from "../lib/service-instances.js";
 import { readLocalServiceAttempts } from "../lib/service-census.js";
-import { readOwnedLogTail, readinessAddressSurvivors, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
+import { pruneEmptyServiceSpace, readOwnedLogTail, readinessAddressSurvivors, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
 import { addedDefinitionStep, isStackMember, STACK_ADAPTER, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { assertManagerLogin } from "./stack-user-auth.js";
 import { localRecordName } from "../lib/protected-records.js";
@@ -218,6 +218,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     store.commit(row.name, row, undefined, () => { instances = removeStoppedInstanceRecords(space, row.name); });
     // The logs go once the definition and records are gone, so a refused removal keeps every log.
     const logsRemoved = removeServiceLogs(space, instances);
+    pruneEmptyServiceSpace(space);
     writeResult(presentation, { command: "service", target: { ...target, name: row.name }, result: { kind: "service-definition-removed", name: row.name, removedRevision: row.record.revision, logsRemoved, processesChanged: false, supervisorChanged: false } }, (result): Report => ({ sections: [{ title: "Service definition forgotten", blocks: [{ kind: "fields", rows: [["Name", row.name], ["Space", space]] }, { kind: "lines", lines: [...(result.logsRemoved.length ? ["Deleted logs:", ...result.logsRemoved.map((path) => `  ${path}`)] : ["No instance log was found to delete."]), "The unchanged local definition and its stopped instances' records were removed. No process, OS unit, native registration or credential was changed."] }] }] }));
     return;
   }

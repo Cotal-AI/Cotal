@@ -58,6 +58,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { mkdirPrivate } from "../lib/private-directory.js";
 import { adoptionRefusal, adoptStackJournal, journalRecordedElsewhere, releaseStackDefinitions, runningStackRoles, stackRootGone } from "../lib/stack-journal.js";
+import { pruneEmptyServiceSpace } from "../lib/service-process.js";
 import {
   candidateTarget,
   checkDialPolicy,
@@ -714,6 +715,7 @@ function keptWarnings(name: string, kept: ReturnType<typeof releaseStackDefiniti
  *  it, so a later space of the same name starts without them. The registration is already gone when
  *  either removal fails, which leaves the run partial. */
 function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | "selectionCleared" | "removedPreferences" | "removedChatSessions">, preferencesRevision: number, warnings: OutputWarning[] = []): void {
+  if (!r.keptServices.length && !warnings.some((warning) => warning.code === "STACK_DEFINITIONS_KEPT")) pruneEmptyServiceSpace(r.space);
   const selectionCleared = getCurrent() === r.space;
   if (selectionCleared) clearCurrent();
   let removedPreferences: Partial<Record<string, string>> = {};

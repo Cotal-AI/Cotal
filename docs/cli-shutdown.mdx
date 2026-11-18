@@ -525,11 +525,13 @@ publish leaves the new record whole. A directory at the pin path is refused by n
 is kept, because no publish writes one and removing it could delete files Cotal did not write.
 
 The web dashboard service claims `web.pid` with an exclusive create, so a second dashboard for the
-same mesh is refused, and writes its pin right after the claim. A stop that runs between the two
-reads a legacy record. A `web.pid` whose process has exited (ESRCH) is stale: the start removes it
-and claims the slot, so a dashboard that crashed, was killed or could not connect does not block the
-next start. Any other existing `web.pid` refuses the start with its path, and the start never adopts
-it, including a pid now used by another process.
+same mesh is refused, and writes its pin right after the claim. When startup fails before the
+dashboard binds its listener, it releases that claim before exiting. A stop that runs between the
+claim and its pin reads a legacy record. A `web.pid` whose process has exited (ESRCH) or whose
+identity pin proves the PID was reused by a later process is stale: the start removes it and claims
+the slot, so a dashboard that crashed, was killed or could not connect does not block the next
+start even after OS PID reuse. Any other existing `web.pid` refuses the start with its path, and
+the start never adopts it.
 
 The pidfile pid and the pin pid are two coordinates. Automatic cleanup follows **proven death of
 the pidfile target** (ESRCH on that pid): a torn or unreadable sibling pin does not wedge a dead
