@@ -6,11 +6,12 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { Readable, Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
-import { emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { emitSentinel, freePort, killAndAwaitExit, skipSuite, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { AttachEndpoint } from "../../implementations/manager/dist/attach-endpoint.js";
 
 const DASHBOARD_POLICY = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
@@ -21,9 +22,29 @@ const check = (name: string, condition: unknown) => {
   if (condition) passed++; else failed++;
   console.log(`${condition ? "PASS" : "FAIL"} ${name}`);
 };
-const browser = (process.env.PATH ?? "").split(delimiter).flatMap((dir) =>
-  ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"].map((name) => join(dir, name))).find(existsSync);
-assert(browser, "a Chromium-family browser is required, with no substitute");
+// Extra stdio slots are POSIX file descriptors, not Chromium's named Windows pipe handles.
+if (process.platform === "win32") skipSuite("console browser security requires POSIX Chromium debugging pipes; Windows handle transport is not implemented");
+const browser = (() => {
+  const named = process.env.COTAL_SMOKE_BROWSER;
+  if (named) {
+    if (!existsSync(named)) throw new Error("COTAL_SMOKE_BROWSER names no file");
+    return named;
+  }
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    for (const name of ["chrome-headless-shell", "chromium", "chromium-browser", "google-chrome-stable", "google-chrome"]) {
+      const path = join(dir, name);
+      if (existsSync(path)) return path;
+    }
+  }
+  throw new Error("no Chromium-family browser on PATH and COTAL_SMOKE_BROWSER is unset; console browser security requires a real browser and has no substitute");
+})();
+const frame = Buffer.from('{"value":"界🙂"}\0');
+const splitDecoder = new StringDecoder("utf8");
+let decoded = "";
+for (const byte of frame) decoded += splitDecoder.write(Buffer.from([byte]));
+decoded += splitDecoder.end();
+check("browser pipe: split multi-byte UTF-8 frame decodes without corruption", decoded === frame.toString("utf8"));
 const profile = mkdtempSync(join(tmpdir(), "console-browser-"));
 const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const brokerPort = await freePort();
@@ -150,8 +171,9 @@ try {
   const dashboardToken = new URL(launchUrl).searchParams.get("k")!;
   const dashboardBase = new URL(launchUrl).origin;
   chrome = spawn(browser, ["--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--remote-debugging-pipe", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
+  const decoder = new StringDecoder("utf8");
   (chrome.stdio[4] as Readable).on("data", (data: Buffer) => {
-    wire += data.toString();
+    wire += decoder.write(data);
     for (let end; (end = wire.indexOf("\0")) !== -1;) {
       const message = JSON.parse(wire.slice(0, end)); wire = wire.slice(end + 1);
       if (message.id) {
