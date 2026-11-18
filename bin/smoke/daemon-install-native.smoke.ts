@@ -39,7 +39,7 @@
  */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +51,7 @@ import { launchAgentLabel, launchAgentService, renderLaunchAgent, xmlText } from
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
 
 import { recoverPausedTask } from "../daemon/restart-recovery.js";
+import { daemonCommandCopy } from "../daemon/guidance.js";
 
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -585,6 +586,64 @@ try {
   if (process.platform === "linux") {
     const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
     const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
+    // Drive the actual CLI under a stable symlink, then replace only its versioned Node target.
+    // Native commands are recording stand-ins, never the host's service manager.
+    for (const spelling of ["absolute", "relative", "path", "custom", "different-runtime"] as const) {
+      const dir = join(root, `node-${spelling}`);
+      for (const name of ["", "home", "config", "rt", "native", "nodebin", "daemon", "cotal"])
+        mkdirSync(join(dir, name), { mode: 0o700 });
+      const node22 = join(dir, "nodebin", "node-22"), node24 = join(dir, "nodebin", "node-24");
+      const stable = join(dir, "nodebin", "node");
+      copyFileSync(process.execPath, node22);
+      symlinkSync("node-22", stable);
+      const home = join(dir, "daemon");
+      const unit = `cotal-daemon-${sha(home).slice(0, 16)}.service`;
+      const context = { home: join(dir, "home"), config: join(dir, "config"), calls: join(dir, "calls.jsonl"), units: [unit] };
+      const configFile = join(dir, "context.json");
+      writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
+      for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
+      Object.assign(env, { HOME: context.home, USER: "smoke", LOGNAME: "smoke", COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: join(dir, "rt"), XDG_CACHE_HOME: join(dir, "cache"), XDG_DATA_HOME: join(dir, "data"), XDG_STATE_HOME: join(dir, "state"), PATH: `${join(dir, "native")}:${join(dir, "nodebin")}:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
+      const call = (verb: string, flags: string[] = []) => {
+        const args = [cli, "daemon", verb, "--daemon-home", home, "--json", ...flags];
+        const result = spelling === "path"
+          ? spawnSync("/bin/sh", ["-c", 'exec node "$@"', "node-case", ...args], { cwd: dir, env, encoding: "utf8", timeout: 30_000 })
+          : spawnSync(spelling === "relative" ? "./nodebin/node" : stable, args, { cwd: dir, env, encoding: "utf8", timeout: 30_000, ...(spelling === "custom" ? { argv0: "not-a-node-command" } : spelling === "different-runtime" ? { argv0: process.execPath } : {}) });
+        if (result.error || result.signal) throw new Error(`Node ${spelling} ${verb} did not exit normally: ${result.error ?? result.signal}`);
+        const doc = JSON.parse(result.stdout) as { result?: { alreadyInstalled?: boolean }; error?: { code?: string; remedy?: string } };
+        return { status: result.status, doc };
+      };
+      check(`Node ${spelling} installs through the shipped entry`, call("install").status === 0);
+      const unitPath = join(context.config, "systemd", "user", unit), receiptFile = join(home, "service-unit.json");
+      const source = readFileSync(unitPath, "utf8"), receipt = readFileSync(receiptFile, "utf8");
+      const expectedNode = spelling === "custom" || spelling === "different-runtime" ? node22 : stable;
+      check(`Node ${spelling} keeps only a verified invoked runtime`, source.includes(`ExecStart="${expectedNode}" `));
+      check(`Node ${spelling} positive control verifies its unchanged installation`, call("install").doc.result?.alreadyInstalled === true && call("start").status === 0);
+      if (spelling === "custom" || spelling === "different-runtime") continue;
+      copyFileSync(process.execPath, node24);
+      rmSync(stable); symlinkSync("node-24", stable); rmSync(node22);
+      const preview = call("install", ["--dry-run"]), installed = call("install");
+      check(`Node ${spelling} stream switch keeps preview and install idempotent`, preview.status === 0 && preview.doc.result?.alreadyInstalled === true && installed.status === 0 && installed.doc.result?.alreadyInstalled === true);
+      check(`Node ${spelling} stream switch preserves unit and receipt bytes`, readFileSync(unitPath, "utf8") === source && readFileSync(receiptFile, "utf8") === receipt);
+      const status = call("status");
+      check(`Node ${spelling} absent endpoint names the recorded service and selected home`, status.status === 2 && status.doc.error?.code === "TARGET_UNAVAILABLE" && status.doc.error.remedy?.includes(`systemctl --user status ${unit}`) === true && status.doc.error.remedy.includes(home) && !status.doc.error.remedy.includes("daemon serve"), status);
+      check(`Node ${spelling} start still reaches the native adapter`, call("start").status === 0);
+      // Old releases wrote a resolved target. Keep ownership strict and offer explicit replacement.
+      const legacy = source.replace(`ExecStart="${stable}"`, `ExecStart="${node22}"`);
+      writeFileSync(unitPath, legacy, { mode: 0o600 });
+      writeFileSync(receiptFile, JSON.stringify({ ...JSON.parse(receipt), unitSha256: sha(legacy) }), { mode: 0o600 });
+      const refusal = call("install");
+      const repair = `${daemonCommandCopy("uninstall", home, ["--yes"])} && ${daemonCommandCopy("install", home)}`;
+      check(`Node ${spelling} legacy unit refuses with a copyable explicit repair`, refusal.status === 2 && refusal.doc.error?.code === "CONFLICT" && refusal.doc.error.remedy?.includes(repair) === true && readFileSync(unitPath, "utf8") === legacy, refusal);
+      // A changed source still refuses before replacement guidance can grant any native effect.
+      writeFileSync(unitPath, `${legacy}\n# edited\n`);
+      const callsBefore = readFileSync(context.calls, "utf8");
+      const changed = call("install");
+      check(`Node ${spelling} changed source refuses without native mutation`, changed.status === 2 && changed.doc.error?.code === "CONFLICT" && readFileSync(context.calls, "utf8").slice(callsBefore.length).trim().split("\n").every(line => JSON.parse(line).operation === "directory-read"), changed);
+      writeFileSync(unitPath, legacy, { mode: 0o600 });
+      const repaired = spawnSync("/bin/sh", ["-c", `cotal() { "${stable}" "${cli}" "$@"; }\n${repair}`], { cwd: dir, env, encoding: "utf8", timeout: 30_000 });
+      check(`Node ${spelling} copied legacy repair installs the stable runtime`, repaired.status === 0 && readFileSync(unitPath, "utf8").includes(`ExecStart="${stable}" `) && call("install").doc.result?.alreadyInstalled === true, { status: repaired.status, stdout: repaired.stdout, stderr: repaired.stderr });
+    }
     const quotedRoot = join(root, "quoted"); mkdirSync(quotedRoot, { mode: 0o700 });
     const quotedNative = join(quotedRoot, "native"); mkdirSync(quotedNative, { mode: 0o700 });
     const quotedHome = join(quotedRoot, "home with space"); mkdirSync(quotedHome, { mode: 0o700 });

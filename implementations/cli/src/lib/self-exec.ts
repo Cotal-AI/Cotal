@@ -74,11 +74,16 @@ export const DAEMON_NODE_FLAGS: readonly string[] = ["--max-semi-space-size=1"];
 
 /** {@link selfArgv} for a long-lived daemon: the same verified entry, under {@link DAEMON_NODE_FLAGS}.
  *  The flags come before any inherited loader flag, so a node flag the operator passed explicitly
- *  still wins. */
+ *  still wins. Keep the invoked Node path when it resolves to this runtime, so a distribution's
+ *  stable `node` symlink can move to its next supported version without stranding the service. */
 export function daemonArgv(): string[] {
   const [node, ...self] = selfArgv();
+  const invoked = resolveOnPath(process.argv0);
+  // argv0 may be a custom label or name another runtime on PATH. Neither is authority to switch
+  // runtimes: only an executable resolving to the running Node can preserve its logical spelling.
+  const executable = invoked && realpathSync(invoked) === realpathSync(node!) ? invoked : node!;
   const logical = logicalExecutionEntry();
-  return [node!, ...DAEMON_NODE_FLAGS, ...self.slice(0, -1), logical ?? self.at(-1)!];
+  return [executable, ...DAEMON_NODE_FLAGS, ...self.slice(0, -1), logical ?? self.at(-1)!];
 }
 
 /** True when launched via `npx` — the package is unpacked under `~/.npm/_npx/<hash>/…`. */
