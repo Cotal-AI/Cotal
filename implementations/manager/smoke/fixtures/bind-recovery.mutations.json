@@ -7,7 +7,10 @@
       "find": "        for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && r.reply.ok === false\n          && (replyRefusedBeforeEffect(r.reply.error) || unmappedHere(r)); reissues++) {",
       "replace": "        for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && r.reply.ok === false\n          && (false || unmappedHere(r)); reissues++) {",
       "expectRed": "the stale (epoch 0) bind was replaced by the successor's",
-      "cell": "...and the stale (epoch 0) bind was replaced by the successor's, inside that one call"
+      "cell": "...and the stale (epoch 0) bind was replaced by the successor's, inside that one call",
+      "note": "The suite imports core from packages/core/dist by path, so this mutation of core's source is loaded only after the command rebuilds core; afterRestore rebuilds it again from the restored source.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:manager-restart-fence",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "the recovery stops counting the split (handled, and the split rate goes with it)",
@@ -15,7 +18,10 @@
       "find": "          this.splitsRecovered++;\n",
       "replace": "",
       "expectRed": "the silent recovery was COUNTED",
-      "cell": "...and the silent recovery was COUNTED (the split stays measurable while being handled)"
+      "cell": "...and the silent recovery was COUNTED (the split stays measurable while being handled)",
+      "note": "The suite imports core from packages/core/dist by path, so this mutation of core's source is loaded only after the command rebuilds core; afterRestore rebuilds it again from the restored source.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:manager-restart-fence",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "the recovery stops announcing itself",
@@ -23,7 +29,10 @@
       "find": "          this.emit(\"split-recovered\", {\n",
       "replace": "          this.emit(\"split-recovered-MUTANT-NOT-ANNOUNCED\", {\n",
       "expectRed": "it was announced to anyone listening",
-      "cell": "...and it was announced to anyone listening, naming the instance that refused"
+      "cell": "...and it was announced to anyone listening, naming the instance that refused",
+      "note": "The suite imports core from packages/core/dist by path, so this mutation of core's source is loaded only after the command rebuilds core; afterRestore rebuilds it again from the restored source.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:manager-restart-fence",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "issue #367: stop releases the lease at its cached revision again, so a renew in flight moves the row out from under the CAS delete and the key survives the clean stop",
