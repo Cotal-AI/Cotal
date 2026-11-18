@@ -78,7 +78,7 @@ async function run(positionals: string[], values: Record<string, unknown>): Prom
 }
 
 /** Separate CLI processes compete for the same native conversation, not a shared JS invocation. */
-function provisionChild(values: Record<string, unknown>): Promise<{ ok: boolean; retire?: { dir: string } }> {
+function provisionChild(values: Record<string, unknown>): Promise<{ ok: boolean; taken?: boolean; retire?: { dir: string } }> {
   return new Promise((resolve, reject) => {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
     const child = spawn(process.execPath, [...process.execArgv, import.meta.filename, "--fixture-provision", JSON.stringify(values)], {
@@ -229,6 +229,18 @@ try {
   for (const result of issued) await run(["retire"], { dir: result.retire!.dir });
   check("concurrent processes cannot issue two names for one native session", issued.length === 1, { issued: issued.length });
 
+  for (const space of [SPACE, OPEN]) {
+    const name = "reserved_before_presence";
+    const competitors = await Promise.all(["one", "two"].map((suffix) => provisionChild({ space, name, session: `name-race-${space}-${suffix}` })));
+    const winners = competitors.filter((result) => result.ok);
+    check(`${space}: only one conversation reserves a name before either connects`,
+      winners.length === 1 && competitors.filter((result) => result.taken).length === 1);
+    for (const winner of winners) await run(["retire"], { dir: winner.retire!.dir });
+    const reclaimed = await run(["provision"], { space, name, session: `name-reuse-${space}` });
+    check(`${space}: retirement releases the pending name reservation`, reclaimed.reply.ok === true);
+    await run(["retire"], { dir: reclaimed.reply.retire.dir });
+  }
+
   const a = await run(["provision"], { space: SPACE, name: "claude_app", session: "session-a", events: true });
   check("a native conversation opens its own identity, as one JSON line", a.code === 0 && a.reply?.ok === true && a.out.trim().split("\n").length === 1, a.out);
   const envA = a.reply.env as Record<string, string>;
@@ -340,7 +352,7 @@ try {
   check("an open mesh opens a native conversation's identity", o.code === 0 && o.reply.ok === true && envO.COTAL_SPACE === OPEN, o.out);
   const heldO = record(o.reply.retire.dir);
   check("  with no credential", envO.COTAL_CREDS === undefined && envO.COTAL_ACCEPTED_TOKEN === undefined && readdirSync(heldO.dir).join() === "identity.json");
-  check("  recorded with its session and no seat", heldO.session === "session-o" && heldO.alias === undefined && heldO.id === envO.COTAL_ID);
+  check("  recorded with its session and reserved name", heldO.session === "session-o" && heldO.alias === "claude_open" && heldO.id === envO.COTAL_ID);
   check("  and the persona's grant plus its own event channel", isDeepStrictEqual(o.reply.grant,
     { scope: ["spawn", "run"], role: "default", allowSubscribe: ["general", "team.>"], allowPublish: [eventChannel({ owner: DEV_OWNER, actor: heldO.id }), "general"], subscribe: [] }), o.reply.grant);
   const epO = await connect(envO, openServers, OPEN);

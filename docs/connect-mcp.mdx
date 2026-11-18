@@ -33,7 +33,9 @@ to stderr. It installs no connectors and connects to no broker until `cotal_conn
 Ask the agent to call `cotal_connect` with its name. Save the returned `connection_id`
 and pass it on every later gateway call. One stdio process owns one connection. A second
 connection requires disconnecting the first, or a separate server process. Do not share
-one connection between conversations.
+one connection between conversations. Hosts using the same local account and Cotal home reserve
+names before joining: simultaneous requests for `twin` receive `twin` and `twin_2`,
+with the renamed connection reporting that `twin` was taken.
 
 The default persona bounds channels, role and capabilities. A `cotal_connect` permission
 selection can narrow those grants, never widen them. A space requiring native activity

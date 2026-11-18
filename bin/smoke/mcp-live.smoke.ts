@@ -103,6 +103,43 @@ function run(args: string[]) {
   return spawnSync(process.execPath, [bin, ...args], { cwd: scratch, env, encoding: "utf8", timeout: 30_000 });
 }
 const identities = () => readdirSync(env.TMPDIR!).filter((name) => name.startsWith("cotal-app-identity-"));
+
+async function competingNames(space: string, tag: string): Promise<void> {
+  const peers = [new Rpc(space, `${tag}-one`), new Rpc(space, `${tag}-two`), new Rpc(space, `${tag}-observer`)];
+  const handle = (reply: Reply): string => {
+    assert.ok(!reply.result?.isError, text(reply));
+    const id = /connection_id: ([^\s]+)/.exec(text(reply))?.[1];
+    assert.ok(id, text(reply));
+    return id;
+  };
+  try {
+    await Promise.all(peers.map((peer) => peer.initialize()));
+    const sequential = `${tag}_seq`;
+    const first = await peers[0]!.call("cotal_connect", { name: sequential });
+    const second = await peers[1]!.call("cotal_connect", { name: sequential });
+    check(`${tag}: sequential positive control keeps the name and reports the suffix`,
+      text(first).startsWith(`Connected as ${sequential}.\n`) && text(second).startsWith(`Connected as ${sequential}_2 (`));
+    await peers[0]!.call("cotal_disconnect", { connection_id: handle(first) });
+    await peers[1]!.call("cotal_disconnect", { connection_id: handle(second) });
+
+    const name = `${tag}_twin`;
+    const replies = await Promise.all(peers.slice(0, 2).map((peer) => peer.call("cotal_connect", { name })));
+    const handles = replies.map(handle);
+    const names = replies.map((reply) => /Connected as ([^ .\n]+)/.exec(text(reply))?.[1]);
+    console.log(`${tag} concurrent names: ${JSON.stringify(names)}`);
+    check(`${tag}: simultaneous connects get one requested name and one reported suffix`,
+      [...names].sort().join(",") === `${name},${name}_2` && replies.some((reply) => text(reply).includes(`("${name}" was taken)`)));
+    const observerId = handle(await peers[2]!.call("cotal_connect", { name: `${tag}_observer` }));
+    const dm = await peers[2]!.call("cotal_dm", { connection_id: observerId, to: name, text: "unambiguous name proof" });
+    check(`${tag}: a third MCP process can DM the requested name`, !dm.result?.isError && dm.error === undefined);
+    const winner = names.indexOf(name);
+    const mail = await peers[winner]!.call("cotal_wait", { connection_id: handles[winner], seconds: 5 });
+    check(`${tag}: the requested-name winner receives the DM`, !mail.result?.isError && text(mail).includes("unambiguous name proof"));
+  } finally {
+    for (const peer of peers) await peer.end();
+  }
+}
+
 const persona = "---\nname: default\nsubscribe: [general]\nallowSubscribe: [general, team.>]\nallowPublish: [general]\ncapabilities: []\n---\n\nA local conversation.\n";
 const staticSpace = `mcpstatic${process.pid}`;
 const auth = await createSpaceAuth(staticSpace);
@@ -137,6 +174,8 @@ try {
   sender = new CotalEndpoint({ space: staticSpace, servers: broker.servers, creds: await mintCreds(auth, newIdentity(), "operator"), channels: [], card: { name: "sender", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
   sender.on("error", () => {});
   await sender.start();
+
+  await competingNames(staticSpace, "static");
 
   const rpc = new Rpc(staticSpace, "static");
   await rpc.initialize();
@@ -239,6 +278,7 @@ try {
   await until(async () => openBroker!.exitCode === null && await isReachable(servers), "owned open broker did not start");
   await setupSpaceStreams({ servers, space: openSpace });
   recordMesh({ space: openSpace, server: servers, root, mode: "open", origin: "manual", ts: new Date().toISOString() });
+  await competingNames(openSpace, "open");
   const open = new Rpc(openSpace, "open");
   await open.initialize();
   const openReply = await open.call("cotal_connect", { name: "reader" });
