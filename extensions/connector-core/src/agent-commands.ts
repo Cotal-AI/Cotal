@@ -1,22 +1,25 @@
 /**
- * An agent's own harness commands and skills on its `agent` endpoint (SPEC 13.22): the `commands`
- * and `command` handlers, and the queue between a `command` request and the connector's next idle
- * turn.
+ * An agent's own harness commands and skills on its `agent` endpoint (SPEC 13.22): the `commands`,
+ * `command`, `command-cancel` and `command-state` handlers, and the queue between a `command` request
+ * and the connector's next idle turn.
  *
  * A command starts only while no turn runs, which only the connector can see, so the connector takes
- * each waiting command with {@link CommandQueue.dispatchNext}.
+ * each queued command with {@link CommandQueue.dispatchNext}.
  */
+import { randomBytes } from "node:crypto";
 import {
-  AGENT_COMMAND_DESCRIPTION_MAX, AGENT_COMMAND_INPUT_HINT_MAX, AGENT_COMMAND_LIST_MAX, AGENT_CONTRACTS, EpEnvelopeError,
-  isAgentCommandName,
-  type CommandEntry, type CommandInput, type CommandTarget, type CommandsOutput, type EpErrorCode, type EpPrincipalCommandDef,
+  AGENT_COMMAND_DESCRIPTION_MAX, AGENT_COMMAND_INPUT_HINT_MAX, AGENT_COMMAND_LIST_MAX, AGENT_COMMAND_MESSAGE_MAX, AGENT_COMMAND_STATE_DETAIL,
+  AGENT_CONTRACTS, EpEnvelopeError, isAgentCommandName,
+  type CommandEntry, type CommandIdInput, type CommandInput, type CommandOutput, type CommandState, type CommandStateOutput, type CommandTarget,
+  type CommandsOutput, type EpErrorCode, type EpPrincipalCommandDef,
 } from "@cotal-ai/core";
 
-/** A `command` reply waits at most this long for the harness to accept the command, and a `commands`
- *  reply this long for the harness's list. */
-export const COMMAND_REPLY_MS = 10_000;
-/** How many commands may wait for an idle turn at once. */
+/** A `commands` reply waits at most this long for the harness's list. */
+export const COMMAND_LIST_MS = 10_000;
+/** How many commands may be queued at once. */
 export const MAX_QUEUED_COMMANDS = 8;
+/** How many ended commands the agent remembers. An older id is `not-found`. */
+export const ENDED_COMMANDS_KEPT = 32;
 
 /** One command a caller asked this agent to run. `args` is empty when the caller sent none. */
 export interface AgentCommand {
@@ -46,39 +49,43 @@ export class CommandRefused extends Error {
   }
 }
 
-/** What {@link CommandQueue.dispatchNext} did: nothing waited, the harness accepted the command, or
- *  it did not. */
+/** What {@link CommandQueue.dispatchNext} did: nothing was queued, the harness accepted the command,
+ *  or it did not. */
 export type CommandDispatch = "empty" | "dispatched" | "failed";
 
 /** The connector's side of the queue. */
 export interface CommandQueue {
-  /** How many commands wait for an idle turn. */
+  /** How many commands are queued. */
   readonly queued: number;
-  /** Hand the oldest waiting command to the dispatcher. It leaves the queue before the dispatch is
+  /** Take the oldest queued command and hand it to the dispatcher. It is taken before the dispatch is
    *  awaited, so two calls never take one command. */
   dispatchNext(): Promise<CommandDispatch>;
 }
 
 export interface CommandLane extends CommandQueue {
   readonly handlers: EpPrincipalCommandDef[];
-  /** Refuse every waiting command, and every later one, as `unavailable`, not-executed, and answer
-   *  every command the harness is still being asked to start as `unavailable` with an unknown
-   *  outcome. */
+  /** Refuse every queued command as `unavailable`, and refuse every later `command`. A taken command
+   *  stays taken, and its dispatch still ends it. */
   close(): void;
 }
 
-interface Waiting {
+interface Entry {
+  readonly id: string;
   readonly command: AgentCommand;
-  tryReply(result: Record<string, never> | EpEnvelopeError): boolean;
+  state: CommandState;
 }
 
+const B32 = "abcdefghijklmnopqrstuvwxyz234567";
 const refused = (code: EpErrorCode, message: string) => new EpEnvelopeError(code, message, undefined, "not-executed");
 const what = (c: AgentCommand) => `the ${c.target} "${c.name}"`;
 
-function fitText(text: unknown, max: number): string | undefined {
-  if (typeof text !== "string" || text === "") return undefined;
+function cut(text: string, max: number): string {
   const chars = [...text];
   return chars.length <= max ? text : `${chars.slice(0, max - 1).join("")}…`;
+}
+
+function fitText(text: unknown, max: number): string | undefined {
+  return typeof text === "string" && text !== "" ? cut(text, max) : undefined;
 }
 
 function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
@@ -87,16 +94,29 @@ function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
   return Promise.race([Promise.resolve().then(work), late]).finally(() => clearTimeout(timer));
 }
 
-export function createCommandLane(dispatcher: CommandDispatcher | undefined, opts: { onQueued(): void; warn(msg: string): void }): CommandLane {
-  const queue: Waiting[] = [];
-  const starting = new Set<Waiting>();
+export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQueued: () => void): CommandLane {
+  // Every command not yet forgotten, in the order it was queued, so the first queued entry is the oldest.
+  const entries = new Map<string, Entry>();
+  const ended: string[] = [];
   let closed = false;
+
+  const queued = (): Entry[] => [...entries.values()].filter((e) => e.state.kind === "queued");
+  const known = (id: string): Entry => {
+    const e = entries.get(id);
+    if (!e) throw refused("not-found", `command ${id} is not known to this agent`);
+    return e;
+  };
+  function end(e: Entry, state: CommandState): void {
+    e.state = state;
+    ended.push(e.id);
+    while (ended.length > ENDED_COMMANDS_KEPT) entries.delete(ended.shift()!);
+  }
 
   async function list(): Promise<CommandsOutput> {
     if (!dispatcher) return { supported: false };
     let listed: unknown;
     try {
-      listed = await within(() => dispatcher.list(), COMMAND_REPLY_MS);
+      listed = await within(() => dispatcher.list(), COMMAND_LIST_MS);
     } catch (e) {
       throw refused("unavailable", `the harness did not list its commands: ${(e as Error).message}`);
     }
@@ -114,69 +134,56 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, opt
     return { supported: true, commands };
   }
 
-  function run(input: CommandInput): Promise<Record<string, never>> {
+  function run(input: CommandInput): CommandOutput {
     if (!dispatcher) throw refused("unimplemented", "this agent's connector runs no commands or skills");
     if (!dispatcher.targets.has(input.target)) throw refused("unimplemented", `this agent's connector runs no ${input.target}s`);
     if (closed) throw refused("unavailable", "this agent is stopping");
-    if (queue.length >= MAX_QUEUED_COMMANDS) throw refused("resource-exhausted", `${MAX_QUEUED_COMMANDS} commands already wait for a turn`);
-    const command: AgentCommand = { target: input.target, name: input.name, args: input.args ?? "" };
-    return new Promise((resolve, reject) => {
-      let done = false;
-      const w: Waiting = {
-        command,
-        tryReply: (result) => {
-          if (done) return false;
-          done = true;
-          clearTimeout(bound);
-          if (result instanceof EpEnvelopeError) reject(result);
-          else resolve(result);
-          return true;
-        },
-      };
-      const bound = setTimeout(() => {
-        if (starting.has(w)) {
-          w.tryReply(new EpEnvelopeError("deadline-exceeded", `the harness did not answer within ${COMMAND_REPLY_MS / 1000} s, so ${what(command)} may have started`, undefined, "unknown"));
-          return;
-        }
-        queue.splice(queue.indexOf(w), 1);
-        w.tryReply(refused("unavailable", `the agent took no new turn within ${COMMAND_REPLY_MS / 1000} s, so ${what(command)} did not start`));
-      }, COMMAND_REPLY_MS);
-      queue.push(w);
-      opts.onQueued();
-    });
+    if (queued().length >= MAX_QUEUED_COMMANDS) throw refused("resource-exhausted", `${MAX_QUEUED_COMMANDS} commands are already queued`);
+    let id: string;
+    do id = Array.from(randomBytes(26), (b) => B32[b & 31]).join(""); while (entries.has(id));
+    entries.set(id, { id, command: { target: input.target, name: input.name, args: input.args ?? "" }, state: { kind: "queued" } });
+    onQueued();
+    return { id };
+  }
+
+  function cancel({ id }: CommandIdInput): CommandStateOutput {
+    const e = known(id);
+    if (e.state.kind === "queued") end(e, { kind: "cancelled" });
+    else if (e.state.kind !== "cancelled")
+      throw new EpEnvelopeError("conflict", `command ${id} is ${e.state.kind}, so it can no longer be cancelled`,
+        [{ kind: AGENT_COMMAND_STATE_DETAIL, state: e.state }], "not-executed");
+    return { state: e.state };
   }
 
   return {
     handlers: [
       { command: "commands", contract: AGENT_CONTRACTS.commands, handler: () => list() },
       { command: "command", contract: AGENT_CONTRACTS.command, handler: (ctx) => run(ctx.request.args as unknown as CommandInput) },
+      { command: "command-cancel", contract: AGENT_CONTRACTS["command-cancel"], handler: (ctx) => cancel(ctx.request.args as unknown as CommandIdInput) },
+      { command: "command-state", contract: AGENT_CONTRACTS["command-state"], handler: (ctx) => ({ state: known((ctx.request.args as unknown as CommandIdInput).id).state }) },
     ],
     get queued() {
-      return queue.length;
+      return queued().length;
     },
     async dispatchNext() {
-      const w = queue.shift();
-      if (!w) return "empty";
-      starting.add(w);
+      const e = queued()[0];
+      if (!e) return "empty";
+      e.state = { kind: "taken" };
       try {
-        await dispatcher!.dispatch(w.command);
-        if (!w.tryReply({})) opts.warn(`${what(w.command)} started after its caller was answered`);
+        await dispatcher!.dispatch(e.command);
+        end(e, { kind: "started" });
         return "dispatched";
-      } catch (e) {
-        const message = (e as Error)?.message ?? String(e);
-        const reply = e instanceof CommandRefused ? refused(e.code, message)
-          : new EpEnvelopeError("internal", `the harness failed, so ${what(w.command)} may have started: ${message}`, undefined, "unknown");
-        if (!w.tryReply(reply)) opts.warn(`${what(w.command)} failed after its caller was answered: ${message}`);
+      } catch (err) {
+        const message = String((err as Error)?.message ?? err);
+        end(e, err instanceof CommandRefused
+          ? { kind: "refused", code: err.code, message: cut(message, AGENT_COMMAND_MESSAGE_MAX) }
+          : { kind: "unknown", code: "internal", message: cut(`the harness failed, so ${what(e.command)} may have started: ${message}`, AGENT_COMMAND_MESSAGE_MAX) });
         return "failed";
-      } finally {
-        starting.delete(w);
       }
     },
     close() {
       closed = true;
-      for (const w of queue.splice(0)) w.tryReply(refused("unavailable", `the agent stopped before ${what(w.command)} started`));
-      for (const w of starting)
-        w.tryReply(new EpEnvelopeError("unavailable", `the agent stopped while the harness was being asked to start ${what(w.command)}, so it may have started`, undefined, "unknown"));
+      for (const e of queued()) end(e, { kind: "refused", code: "unavailable", message: `the agent stopped before ${what(e.command)} started` });
     },
   };
 }

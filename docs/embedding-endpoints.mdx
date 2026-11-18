@@ -165,7 +165,8 @@ The complete reply, responder-state, grant, reply-target validation, and rebindi
 `servePrincipal({ handlers })` serves this process's `agent` endpoint on the principal route: the
 core-defined command set about this process, whose cluster and compiled contracts are
 `AGENT_CLUSTER` and `AGENT_CONTRACTS`. The cluster is at revision 2: `prompts`, `prompt` and
-`prompt-answer` admit the `owner` and `grant` words, and `commands` and `command` admit `owner` only.
+`prompt-answer` admit the `owner` and `grant` words, and `commands`, `command`, `command-cancel` and
+`command-state` admit `owner` only.
 It takes no endpoint or cluster, and refuses either. It throws on an open mesh, under a static
 credential, without a lifecycle UID, for handlers that are not the cluster's commands with those
 contracts, and when another endpoint in the process already serves `agent` for the lifecycle.

@@ -898,9 +898,9 @@ export class MeshAgent extends EventEmitter {
       this._transportConnected = false;
       this.emit("transport", { connected: false });
     }
-    // The close answers every prompt and command caller at once, and those replies must go out
-    // before the departure closes the connection. A drain on a connection that is down settles only
-    // on its close, so the wait is bounded.
+    // The close answers every prompt caller at once, and those replies must go out before the
+    // departure closes the connection. A drain on a connection that is down settles only on its
+    // close, so the wait is bounded.
     await Promise.race([agentEndpointClosed, sleep(3_000)]);
     // Unconditional: a background self-heal can flip _connected without us, so a `_connected`
     // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop()

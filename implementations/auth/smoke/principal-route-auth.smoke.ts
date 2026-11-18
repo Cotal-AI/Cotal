@@ -254,6 +254,8 @@ function testAgent(ep: CotalEndpoint, w: Who): TestAgent {
     } },
     { command: "commands", contract: AGENT_CONTRACTS.commands, handler: () => ({ supported: false }) },
     { command: "command", contract: AGENT_CONTRACTS.command, handler: () => { throw new EpEnvelopeError("unimplemented", "this test agent runs no commands", undefined, "not-executed"); } },
+    ...(["command-cancel", "command-state"] as const).map((command) => ({ command, contract: AGENT_CONTRACTS[command],
+      handler: () => { throw new EpEnvelopeError("not-found", "this test agent queues no commands", undefined, "not-executed"); } })),
   ];
   agent.serve = ep.servePrincipal({ handlers });
   return agent;
@@ -352,7 +354,7 @@ try {
   check("cell 1: describe answers the fixed cluster inline, public, under the agent's owner",
     answer?.public === true && answer.descriptor.endpoint === "agent" && answer.descriptor.owner === A
     && answer.descriptor.clusters[0].digest === agentClusterArtifacts().closureDigest
-    && JSON.stringify(answer.descriptor.clusters[0].commands) === JSON.stringify(["prompts", "prompt", "prompt-answer", "commands", "command"]), describe);
+    && JSON.stringify(answer.descriptor.clusters[0].commands) === JSON.stringify(["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state"]), describe);
   check("cell 1: the agent's handlers saw three requests, each under the owner word from alice.web's triple",
     coder.calls.length === 3 && coder.calls.every((c) => c.authority === "owner" && c.caller === `${A}.web.${W.web.uid}`), coder.calls);
   await until(() => webEp.getRoster().find((p) => p.card.id === `${A}.coder`)?.prompts?.seq === coder.seq, 8000);
@@ -808,7 +810,7 @@ try {
   }
 
   // ── cell 30: stopping the endpoint ends its principal serve ──
-  const stubHandlers = (prompts?: EpPrincipalCommandDef["handler"]): EpPrincipalCommandDef[] => (["prompts", "prompt", "prompt-answer", "commands", "command"] as const).map((command) => ({
+  const stubHandlers = (prompts?: EpPrincipalCommandDef["handler"]): EpPrincipalCommandDef[] => (["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state"] as const).map((command) => ({
     command, contract: AGENT_CONTRACTS[command],
     handler: command === "prompts" && prompts ? prompts : (ctx) => ({ runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] }),
   }));

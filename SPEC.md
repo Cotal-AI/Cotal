@@ -6503,7 +6503,7 @@ validators of §13.2, so `<pUid>` is a lifecycle UID and no row can name the sen
 | Mint | Serve rows | Caller rows |
 | --- | --- | --- |
 | User-auth, ledger row of kind `managed-agent` | yes | none |
-| User-auth, ledger row of kind `interactive` | yes | `owner` rows for `describe`, `prompts`, `prompt`, `prompt-answer`, `commands` and `command`, and the reply read |
+| User-auth, ledger row of kind `interactive` | yes | `owner` rows for `describe`, `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel` and `command-state`, and the reply read |
 | Static credential | no | no |
 | Open mesh | no rows exist | |
 | Every view, service credential and infrastructure profile | no | no |
@@ -6615,12 +6615,13 @@ questions its harness stops to ask (a tool permission, a question, a plan to app
 about the harness commands and skills it runs. Its contract is a core constant: cluster URN
 `ai.cotal.agent`, revision 2, every schema closed and frozen, nothing published to the contract
 store. A caller embeds the artifacts and pins their digests. Every command is ephemeral and
-untargeted. The prompt commands declare `authorities: ["owner", "grant"]`; `commands` and `command`
-declare `authorities: ["owner"]`, so only the owner's interactive session runs an agent's commands.
+untargeted. The prompt commands declare `authorities: ["owner", "grant"]`; `commands`, `command`,
+`command-cancel` and `command-state` declare `authorities: ["owner"]`, so only the owner's interactive
+session runs an agent's commands.
 
-Revision 2 adds `commands` and `command`. The three prompt commands and their digests are unchanged,
-so a caller pinned to revision 1 still calls them. An agent that serves revision 1 answers `commands`
-and `command` with `unimplemented`, `not-executed`.
+Revision 2 adds `commands`, `command`, `command-cancel` and `command-state`. The three prompt commands
+and their digests are unchanged, so a caller pinned to revision 1 still calls them. An agent that
+serves revision 1 answers the four with `unimplemented`, `not-executed`.
 
 | Command | Capability | Args | Output |
 | --- | --- | --- | --- |
@@ -6629,7 +6630,9 @@ and `command` with `unimplemented`, `not-executed`.
 | `prompt` | `agent.prompts.read` | `{ id }` | `{ prompt: AgentPrompt }` |
 | `prompt-answer` | `agent.prompts.answer` | `{ id, digest, option, note?, values? }` | `{ state: PromptState }` |
 | `commands` | `agent.commands.read` | `{}` | `{ supported: false }` or `{ supported: true, commands: CommandEntry[] }` |
-| `command` | `agent.commands.run` | `{ target, name, args? }` | `{}` |
+| `command` | `agent.commands.run` | `{ target, name, args? }` | `{ id }` |
+| `command-cancel` | `agent.commands.run` | `{ id }` | `{ state: CommandState }` |
+| `command-state` | `agent.commands.read` | `{ id }` | `{ state: CommandState }` |
 
 `prompts` lists at most 32 prompts in `open`, those that are `open` or `sent`, and at most 32 in
 `closed`, the last prompts of this runtime to close. `runtime` is the `id` and `startedAt` of the
@@ -6832,9 +6835,11 @@ harness, whatever arrives while the receipt is pending.
 | `ai.cotal.agent.prompt-state` | `{ state }` | `conflict`, and `failed-precondition` on a closed prompt |
 | `ai.cotal.agent.prompt-digest` | `{ digest }` | `failed-precondition` on a digest that differs from the prompt's |
 | `ai.cotal.agent.prompt-size` | `{ bytes, limit }` | `resource-exhausted` |
+| `ai.cotal.agent.command-state` | `{ state }` | `conflict` on `command-cancel` |
 
-**Commands.** `commands` lists the harness commands and skills the agent runs, and `command` runs one
-of them as the harness's own command, never as text for its model.
+**Commands.** `commands` lists the harness commands and skills the agent runs, and `command` queues
+one of them to run as the harness's own command, never as text for its model. `command-cancel`
+cancels a queued command, and `command-state` reads how far a command got.
 
 ```ts
 interface CommandEntry {
@@ -6849,27 +6854,77 @@ interface CommandEntry {
 empty list means it runs commands and has none. A list carries at most 512 entries and nothing else
 the harness keeps about a command, such as a file path or a skill's body. The agent leaves out a
 command whose name `command` cannot carry and shortens a longer text, marking the cut. A failed or
-unanswered list is `unavailable`, `not-executed`, never an empty list.
+unanswered list is `unavailable`, `not-executed`, never an empty list. The agent waits at most 10 s
+for the harness's list.
 
 `command` names an entry by its `target` and `name`. `args` is what the harness gives it, empty when
-absent. The effect is that the harness accepted the command. A command that runs the model runs as a
-turn of its own, and the reply does not wait for that turn to finish. Some commands, such as
-OpenCode's `goal clear`, run no turn. The agent starts a command only while no turn runs, holds at
-most 8 commands waiting to start, and waits at most 10 s for the harness to accept a command. A
-caller waits at least 15 s for the reply.
+absent. The effect is that the agent queued the command: the reply carries the command's `id` at
+once and never waits for a turn. The agent starts a queued command only while no turn runs. A command
+that runs the model runs as a turn of its own, and some, such as OpenCode's `goal clear`, run no
+turn. After a command's turn, the messages waiting for the agent go before its next queued command.
 
-| Case | Result |
+```ts
+type CommandState =
+  | { kind: "queued" }
+  | { kind: "taken" }
+  | { kind: "started" }
+  | { kind: "cancelled" }
+  | { kind: "refused"; code: "not-found" | "failed-precondition" | "unavailable"; message: string }
+  | { kind: "unknown"; code: "internal"; message: string };
+```
+
+The `id` matches `[a-z2-7]{26}`, is random and is never reused. A `message` is at most 2048
+characters, and the agent cuts a longer one.
+
+| State | Claim |
 | --- | --- |
-| The agent's connector runs no commands, or none of this `target` | `unimplemented`, `not-executed` |
-| The agent is stopping, or stops while the command waits | `unavailable`, `not-executed` |
-| 8 commands already wait for a turn | `resource-exhausted`, `not-executed` |
-| 10 s pass while the command waits for a turn | `unavailable`, `not-executed`: it did not start |
-| The harness has no command or skill by that name | `not-found`, `not-executed` |
-| The harness refuses the command, and nothing started | `failed-precondition`, `not-executed` |
-| The harness fails in a way that does not say whether it started | `internal`, `unknown` |
-| 10 s pass while the harness is being asked | `deadline-exceeded`, `unknown`: it may have started |
-| The agent stops while the harness is being asked | `unavailable`, `unknown`: it may have started |
-| The harness accepts it | `ok`, `executed`, with `{}` |
+| `queued` | The command waits for the agent to take it. A caller can still cancel it. |
+| `taken` | The agent took the command and is asking the harness to start it. |
+| `started` | The harness accepted the command. It does not say that the command's turn finished. |
+| `cancelled` | A caller cancelled the command before the agent took it. It did not start. |
+| `refused`, `not-found` | The harness has no command or skill by that name. It did not start. |
+| `refused`, `failed-precondition` | The harness refused the command. It did not start. |
+| `refused`, `unavailable` | The agent stopped while the command was queued. It did not start. |
+| `unknown`, `internal` | The harness failed in a way that does not say whether the command started. |
+
+A command is `queued` when `command` accepts it. What else moves it, from the state it is in:
+
+| Event | From `queued` | From `taken` |
+| --- | --- | --- |
+| The agent takes it on an idle turn | `taken` | (already taken) |
+| `command-cancel` | `cancelled` | no change |
+| The agent stops serving | `refused`, `unavailable` | no change |
+| The harness accepts it | (not asked yet) | `started` |
+| The harness refuses it, and nothing started | (not asked yet) | `refused`, `not-found` or `failed-precondition` |
+| The harness fails in any other way | (not asked yet) | `unknown`, `internal` |
+
+`started`, `cancelled`, `refused` and `unknown` are final, and nothing moves a final state. A command
+that is `taken` when the agent stops stays `taken`: its start may still finish while the process
+stops, and its outcome leaves with the process.
+
+| Command | Case | Result |
+| --- | --- | --- |
+| `command` | The agent's connector runs no commands, or none of this `target` | `unimplemented`, `not-executed` |
+| `command` | The agent is stopping | `unavailable`, `not-executed` |
+| `command` | 8 commands are `queued` | `resource-exhausted`, `not-executed` |
+| `command` | Otherwise | `ok`, with `{ id }`, at once. The command is `queued`. |
+| `command-cancel` | `id` is not known to the agent, or forgotten | `not-found`, `not-executed` |
+| `command-cancel` | The command is `cancelled` | `ok`, with `{ state }`. Nothing changes. |
+| `command-cancel` | The command is in another state that is not `queued` | `conflict`, `not-executed`, with the state in `details` |
+| `command-cancel` | The command is `queued` | `ok`, with `{ state }`: the command leaves the queue as `cancelled` |
+| `command-state` | `id` is not known to the agent, or forgotten | `not-found`, `not-executed` |
+| `command-state` | Otherwise | `ok`, with `{ state }` |
+
+The bounds:
+
+- At most 8 commands are `queued`. Only `queued` commands count.
+- A queued command waits until the agent takes it, a caller cancels it, or the agent stops. It has no
+  time bound, and it lives at most for the agent's lifecycle.
+- When the agent stops serving, every `queued` command becomes `refused` with `unavailable` before
+  the serve stops. A `taken` command may have started.
+- The agent remembers the last 32 commands to end. An older id is `not-found`, which is safe because
+  ids are never reused.
+- A process that exits takes its queue with it.
 
 **Reader rules.**
 
@@ -6885,8 +6940,10 @@ caller waits at least 15 s for the reply.
   of a `conflict` or `failed-precondition`, is a snapshot. For one runtime and one prompt id a reader
   ranks them `open`, then `sent` and `unconfirmed`, then `sent` and `delivered`, then `closed`, keeps
   the state further along, whichever reply carried it, and never goes back from `closed`.
-- A caller waits at least 15 s for a `prompt-answer` or `command` reply, longer than the agent's 10 s
-  bounds.
+- A caller waits at least 15 s for a `prompt-answer` or `commands` reply, longer than the agent's
+  10 s bounds.
+- A reader that gets `unavailable` from `command-state` or `command-cancel` because no process
+  answered, for a command it never saw end, treats that command's outcome as unknown.
 - A reader keeps two values per agent: the `(runtime.id, seq)` it last saw in presence (§6) and the
   `(runtime.id, seq)` of its last successful `prompts` reply. It is dirty while they differ. While
   dirty it calls `prompts`: when it first reads presence, on every presence event, and after it
@@ -7601,7 +7658,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - minted by the auth callout from a ledger row of either kind (§13.21): `P.ep.prin-reply.agent.<owner>.<actor>.<uid>.*.*.*.*.*`,
   replies under its own principal-route head; from an `interactive` row also
   `P.ep.prin.agent.<owner>.*.*.*.<command>.owner.<owner>.<actor>.<uid>.*` for each of `describe`,
-  `prompts`, `prompt`, `prompt-answer`, `commands` and `command`. The kind is the ledger row's, never a scope token's. A
+  `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel` and `command-state`. The kind is the ledger row's, never a scope token's. A
   static mint, a principal outside the ledger's row spaces such as a chat session, every view, and
   every observer, admin, delivery, supervisor, serve and infrastructure profile hold no
   principal-route row
@@ -7966,7 +8023,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
-| 2026-11-18 | **An agent's own commands and skills on the `agent` endpoint (§13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 2 with `commands`, which lists the harness commands and skills an agent runs as `{ name, target, description?, inputHint? }` entries or answers `{ supported: false }`, and `command`, which runs one by `{ target, name, args? }` and answers `{}` once the harness accepted it. Both declare the `owner` authority word only, so an interactive ledger row gets their two caller rows and no grant row can name them. A command waits at most 10 s for the harness, at most 8 wait for a turn, and every refusal carries a fixed code and outcome: one that never started is `not-executed`, and one whose start is not known is `unknown`. The prompt commands and their digests are unchanged, and an agent on revision 1 answers the two new commands `unimplemented`. |
+| 2026-11-18 | **An agent's own commands and skills on the `agent` endpoint (§13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 2 with four commands. `commands` lists the harness commands and skills an agent runs as `{ name, target, description?, inputHint? }` entries or answers `{ supported: false }`, and the agent waits at most 10 s for the harness's list. `command` queues one by `{ target, name, args? }` and answers its `{ id }` at once, without waiting for a turn. `command-cancel` cancels a queued command by `id`, and `command-state` reads its state: `queued`, `taken`, `started`, `cancelled`, `refused` with `not-found`, `failed-precondition` or `unavailable`, or `unknown` with `internal`. A state only moves forward, and a cancel of a command that is no longer queued is `conflict` with its state in `details`. The four declare the `owner` authority word only, so an interactive ledger row gets their four caller rows and no grant row can name them. At most 8 commands are queued, with no time bound. Stopping the agent moves every queued command to `refused` with `unavailable`, and the agent remembers the last 32 commands to end. The prompt commands and their digests are unchanged, and an agent on revision 1 answers the four new commands `unimplemented`. |
 | 2026-11-18 | **Principal-route follow-ups (§6, §13.3, §13.5, §13.21), corrections.** A serve of the `agent` endpoint takes a fresh `prompts.seq` when it starts, so one `(runtime.id, seq)` never names two states, and `spec/cotal.schema.json` gives `prompts.open` and `prompts.seq` as non-negative integers, as §6 already said. A caller drops any message on the no-responders sentinel other than the broker's no-responders status and keeps waiting, on every route, where it used to end the call `internal`: a JetStream API request can name the sentinel as its reply subject. §13.5 now states that a service call drops a stored message on its reply read, as the principal route does; clients already did. The principal route has no cast: a request with `replyExpected: false` is refused before its handler runs. Stopping a principal serve waits for a handler in flight only until its request's `deadlineMs` has passed since the request arrived, and drops a reply that comes later. A principal-route `deadlineMs` is at most 30000: the serve refuses a larger one as `bad-request` before its handler runs, and a caller refuses it before publishing, so stop waits at most 30 s. A refused reply read is still `permission-denied` when the deadline passes first. |
 | 2026-11-18 | **Principal-route and prompt-desk corrections (§6, §13.14, §13.21, §13.22), additive.** A caller drops a stored message that reaches its reply read, one a JetStream read such as a Direct Get delivers on any subject its requester names, the sentinel included, and keeps waiting past a message under another head. Stopping a client ends its principal serves and waits for their handlers before the connection closes, and a process serves an endpoint once for its lifecycle. Under one `runtime.id` the presence `prompts.seq` never goes back, also across a stopped serve. The desk's admission refusals the schemas cannot express are now stated, and a reader drops a prompt with two options that share an id. No subject or schema changes. |
 | 2026-11-17 | **The agent's prompt desk (§13.22), additive.** An agent serves the `agent` endpoint from one prompt desk per process, the only writer of its prompts' states, which applies every event in one step in the order it arrives. §13.22 now states the two bounds every prompt has (offered for 1 s to 7 days, and settled 1 s to 24 h after an accepted answer), the desk's limits (32 prompts open or sent, the last 32 closed, 262144 bytes of content, 4096 bytes per summary in every state the prompt can reach, and a 524288-byte `max_payload` floor checked on every connection), the eleven `prompt-answer` checks in their order, when two answers are the same, the reply's 10 s bound and what state it carries, what else moves a prompt from each state, and that a caller waits at least 15 s for an answer's reply. No subject or schema changes. |

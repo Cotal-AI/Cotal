@@ -12,7 +12,7 @@ export interface AgentEndpoint {
   readonly prompts: PromptDesk;
   /** The commands waiting for an idle turn, which the connector runs one per turn. */
   readonly commands: CommandQueue;
-  /** Close every prompt, refuse every waiting command and reply to every caller still waiting, then
+  /** Close every prompt and reply to every caller still waiting, refuse every queued command, then
    *  stop serving and wait for the handlers in flight. Does not wait for a `deliver` call that has
    *  not ended. */
   close(): Promise<void>;
@@ -45,7 +45,7 @@ export async function openAgentEndpoint(
     } catch { /* a logger that throws stops nothing */ }
   };
   const desk = createPromptDesk(ep, warn);
-  const lane = createCommandLane(opts.dispatcher, { onQueued: opts.onQueued ?? (() => {}), warn });
+  const lane = createCommandLane(opts.dispatcher, opts.onQueued ?? (() => {}));
   const serve = ep.servePrincipal({ handlers: [...desk.handlers(), ...lane.handlers] });
   desk.served(serve.ready);
 

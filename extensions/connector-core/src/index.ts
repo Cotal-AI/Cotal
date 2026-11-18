@@ -25,7 +25,7 @@ export * from "./control.js";
 export * from "./relay.js";
 export { openAgentEndpoint, type AgentEndpoint } from "./agent-endpoint.js";
 export {
-  COMMAND_REPLY_MS, CommandRefused, MAX_QUEUED_COMMANDS,
+  COMMAND_LIST_MS, CommandRefused, ENDED_COMMANDS_KEPT, MAX_QUEUED_COMMANDS,
   type AgentCommand, type CommandDispatch, type CommandDispatcher, type CommandQueue,
 } from "./agent-commands.js";
 export {

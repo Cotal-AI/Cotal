@@ -3,17 +3,22 @@
  * through the shipped auth callout. A fake dispatcher stands in for the harness: it lists what a
  * harness would hand over, junk included, and records every command it is asked to start.
  *
- * Covered: the owner's interactive session lists the exact entries and runs a command and a skill
- * under the names the list gave; the broker refuses a sibling agent of the same owner, another
- * owner's session and another owner's agent that holds a prompts grant; an endpoint with no
- * dispatcher answers `supported: false` and refuses `command`; each harness answer maps to its code
- * and outcome; a failed list is an error, never an empty list; the reply bytes carry no field a
- * harness keeps; the queue bound; a command still waiting at the 10 s bound did not start, and one
- * still being started there has an unknown outcome; and closing refuses what waits. A `MeshAgent`
- * opens its endpoint once it joined a per-user mesh, with or without a dispatcher, runs a command that
- * arrived before the broker confirmed its serve, refuses what waits when it stops, answers a command
- * its harness is still being asked to start as `unavailable` with an unknown outcome when it stops,
- * within the stop's 3 s bound, and on an open mesh starts as before and serves nothing.
+ * Covered: the owner's interactive session lists the exact entries and queues a command and a skill
+ * under the names the list gave, each answered with an id at once and read as started once taken; the
+ * broker refuses a sibling agent of the same owner, another owner's session and another owner's agent
+ * that holds a prompts grant, on all four command commands; an endpoint with no dispatcher answers
+ * `supported: false`, refuses `command` and knows no id. The queue: N commands get N distinct ids, it
+ * holds 8 and refuses the ninth, a cancel before the agent takes a command makes room and the harness
+ * never sees it, a retried cancel changes nothing, a queued command has no time bound, the oldest is
+ * taken first, and a taken or started command is not cancelled. Each harness answer maps to its
+ * state, a longer message is cut to 2048 characters, an id never issued is not-found, and an ended id
+ * is forgotten after 32 later ones end; a failed list is an error, never an empty list; the reply
+ * bytes carry no field a harness keeps; closing the lane refuses every queued command as unavailable
+ * and leaves a taken one taken; closing the endpoint returns at once. A `MeshAgent` opens its endpoint
+ * once it joined a per-user mesh, with or without a dispatcher, runs a command that arrived before
+ * the broker confirmed its serve, never runs a command still queued when it stops, stops within 4 s
+ * while its harness is being asked to start a command, and on an open mesh starts as before and
+ * serves nothing.
  *
  * Run: pnpm smoke:agent-commands:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -28,12 +33,12 @@ import {
   AGENT_CONTRACTS, AGENT_ENDPOINT, CotalEndpoint, EpEnvelopeError, createSpaceAuth, epPrincipalCallerReplyFilter, epPrincipalGrantRows,
   epPrincipalNoRespondersSubject, epPrincipalReplySubject, epPrincipalRequestSubject, isReachable, mintCreds, mintLifecycleUid,
   newIdentity, processRuntime, provisionAgentDurables, serverConfig, setupSpaceStreams,
-  type CommandEntry, type CommandTarget, type EndpointReply, type EpPrincipal, type Presence,
+  type CommandEntry, type CommandState, type CommandTarget, type EndpointReply, type EpPrincipal, type Presence,
 } from "@cotal-ai/core";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER, type AclResolver, type ValidatedUserToken } from "@cotal-ai/auth";
 import { SMOKE_BROKER_TOKEN, createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { openAgentEndpoint, type AgentEndpoint } from "../src/agent-endpoint.js";
-import { COMMAND_REPLY_MS, CommandRefused, MAX_QUEUED_COMMANDS, type AgentCommand, type CommandDispatcher } from "../src/agent-commands.js";
+import { CommandRefused, createCommandLane, type AgentCommand, type CommandDispatcher } from "../src/agent-commands.js";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import { pickFreePort } from "./_free-port.js";
@@ -50,7 +55,11 @@ async function until(done: () => boolean, ms = 5000): Promise<boolean> {
 async function settled<T>(p: Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
   try { return { ok: true, value: await p }; } catch (error) { return { ok: false, error }; }
 }
-const WAIT = COMMAND_REPLY_MS + 5_000;
+const WAIT = 15_000;
+/** SPEC 13.22: at most 8 commands are queued, and the agent remembers the last 32 to end. */
+const QUEUE_BOUND = 8, ENDED_KEPT = 32;
+const ID = /^[a-z2-7]{26}$/;
+const label = (s: CommandState): string => ("code" in s ? `${s.kind}/${s.code}` : s.kind);
 
 const PORT = await pickFreePort(), OPEN_PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`, OPEN_SERVERS = `nats://127.0.0.1:${OPEN_PORT}`;
@@ -96,7 +105,7 @@ const resolveAcl: AclResolver = (t) => {
   return { allowSubscribe: [], allowPublish: [], lifecycleUid: w.uid, scope: [], kind: w.kind };
 };
 // The shipped mint, plus one test-only edit: `builder` holds every grant row the shipped builder
-// makes for alice.coder out of prompts, commands and command. It refuses the last two.
+// makes for alice.coder out of prompts and the four command commands. It refuses the last four.
 type Perm = { pub?: { allow?: string[] }; sub?: { allow?: string[] }; [k: string]: unknown };
 const shipped = calloutPermissions(resolveAcl, async () => {});
 const builderGrants: string[] = [];
@@ -105,7 +114,7 @@ const mintFor = async (t: ValidatedUserToken, connId: string, readerId: string):
   const uid = t.act.lifecycleUid!;
   if (uid === W.foreignGrantee.uid) {
     const pub: string[] = [], sub: string[] = [];
-    for (const command of ["prompts", "commands", "command"]) {
+    for (const command of ["prompts", "commands", "command", "command-cancel", "command-state"]) {
       try {
         const r = epPrincipalGrantRows(space, { owner: B, actor: "builder", uid }, { owner: A, actor: "coder", uid: W.withDispatcher.uid }, [command]);
         pub.push(...r.pub);
@@ -242,6 +251,27 @@ try {
   const bobWebEp = await userEndpoint(W.foreignSession);
   const builderEp = await userEndpoint(W.foreignGrantee);
 
+  const queue = async (to: Who, args: Record<string, unknown>): Promise<{ verdict: string; id?: string; data?: unknown }> => {
+    const r = await settled(call(webEp, to, "command", args));
+    const data = r.ok && r.value.ok ? r.value.data : undefined;
+    const id = (data as { id?: unknown } | undefined)?.id;
+    return { verdict: verdict(r), ...(typeof id === "string" ? { id } : {}), data };
+  };
+  const readState = async (to: Who, id: string | undefined): Promise<{ label: string; state?: CommandState }> => {
+    const r = await settled(call(webEp, to, "command-state", { id }));
+    if (!r.ok || !r.value.ok) return { label: verdict(r) };
+    const { state } = r.value.data as { state: CommandState };
+    return { label: label(state), state };
+  };
+  const stateOf = async (to: Who, id: string | undefined): Promise<string> => (await readState(to, id)).label;
+  const finalState = async (to: Who, id: string | undefined): Promise<string> => {
+    let s = await stateOf(to, id);
+    for (const end = Date.now() + 5000; (s === "queued" || s === "taken") && Date.now() < end; s = await stateOf(to, id)) await wait(20);
+    return s;
+  };
+  const cancel = (to: Who, id: string | undefined) => settled(call(webEp, to, "command-cancel", { id }));
+  const stateDetail = (r: Awaited<ReturnType<typeof cancel>>) => (r.ok && !r.value.ok ? r.value.error.details : undefined);
+
   console.log("\nan agent endpoint with a dispatcher, called by the owner's interactive session");
   const logs: string[] = [];
   const coderHarness = fake();
@@ -259,29 +289,39 @@ try {
   const entries = catalog?.commands ?? [];
   const review = entries.find((e) => e.target === "command" && e.name === "review");
   const browser = entries.find((e) => e.target === "skill");
-  const ranCommand = await settled(call(webEp, W.withDispatcher, "command", { target: review?.target, name: review?.name, args: "src/" }));
-  const ranSkill = await settled(call(webEp, W.withDispatcher, "command", { target: browser?.target, name: browser?.name }));
-  check("a listed command and a listed skill each run: ok, executed, and the reply data is {}",
-    verdict(ranCommand) === "ok" && verdict(ranSkill) === "ok" && ranCommand.ok && same(ranCommand.value.data, {}), [verdict(ranCommand), verdict(ranSkill)]);
+  const t0 = Date.now();
+  const ranCommand = await queue(W.withDispatcher, { target: review?.target, name: review?.name, args: "src/" });
+  const ranSkill = await queue(W.withDispatcher, { target: browser?.target, name: browser?.name });
+  const acceptedIn = Date.now() - t0;
+  check("a listed command and a listed skill are each accepted at once: ok, and the reply data is { id } with an id of the grammar",
+    [ranCommand, ranSkill].every((r) => r.verdict === "ok" && same(Object.keys(r.data ?? {}), ["id"]) && ID.test(r.id ?? "")) && acceptedIn < 2000,
+    { acceptedIn, command: ranCommand, skill: ranSkill });
+  const ranStates = [await finalState(W.withDispatcher, ranCommand.id), await finalState(W.withDispatcher, ranSkill.id)];
+  check("each reads started once the connector took it", same(ranStates, ["started", "started"]), ranStates);
   check("the harness was asked to start exactly those two, under the listed names, args absent read as empty",
     same(coderHarness.ran, [{ target: "command", name: "review", args: "src/" }, { target: "skill", name: "browser", args: "" }]), coderHarness.ran);
 
   console.log("\nwho else may call");
   {
     const before = coderHarness.ran.length + coderHarness.lists;
-    const sibling = await Promise.all(["commands", "command"].map((cmd) => settled(call(coder2Ep, W.withDispatcher, cmd, cmd === "command" ? { target: "command", name: "review" } : {}))));
-    check("a sibling agent of the same owner: both commands are permission-denied, not-executed", sibling.every((r) => verdict(r) === "permission-denied/not-executed"), sibling.map(verdict));
+    const FOUR = ["commands", "command", "command-cancel", "command-state"] as const;
+    const argsFor = (cmd: string): Record<string, unknown> => (cmd === "commands" ? {} : cmd === "command" ? { target: "command", name: "review" } : { id: ranCommand.id });
+    const sibling = await Promise.all(FOUR.map((cmd) => settled(call(coder2Ep, W.withDispatcher, cmd, argsFor(cmd)))));
+    check("a sibling agent of the same owner: commands, command, command-cancel and command-state are each permission-denied, not-executed",
+      sibling.every((r) => verdict(r) === "permission-denied/not-executed"), sibling.map(verdict));
     const coder2Raw = await seat(W.sibling);
-    const siblingRaw = await Promise.all((["commands", "command"] as const).flatMap((cmd) => (["owner", "grant"] as const).map((word) => publishRefused(coder2Raw, W.withDispatcher, cmd, word))));
-    check(`...and the broker refuses ${siblingRaw.filter(Boolean).length}/4 of its raw publishes, under owner and grant`, siblingRaw.every(Boolean));
-    const foreign = await Promise.all(["commands", "command"].map((cmd) => settled(call(bobWebEp, W.withDispatcher, cmd, cmd === "command" ? { target: "command", name: "review" } : {}))));
-    check("another owner's interactive session: permission-denied, not-executed", foreign.every((r) => verdict(r) === "permission-denied/not-executed"), foreign.map(verdict));
-    check("the shipped grant builder makes rows for prompts and refuses commands and command", same(builderGrants, ["prompts"]), builderGrants);
+    const siblingRaw = await Promise.all(FOUR.flatMap((cmd) => (["owner", "grant"] as const).map((word) => publishRefused(coder2Raw, W.withDispatcher, cmd, word))));
+    check(`...and the broker refuses ${siblingRaw.filter(Boolean).length}/${FOUR.length * 2} of its raw publishes, under owner and grant`, siblingRaw.every(Boolean));
+    const foreign = await Promise.all(FOUR.map((cmd) => settled(call(bobWebEp, W.withDispatcher, cmd, argsFor(cmd)))));
+    check("another owner's interactive session: permission-denied, not-executed, on all four", foreign.every((r) => verdict(r) === "permission-denied/not-executed"), foreign.map(verdict));
+    check("the shipped grant builder makes rows for prompts and refuses the four command commands", same(builderGrants, ["prompts"]), builderGrants);
     const granted = await settled(call(builderEp, W.withDispatcher, "prompts", {}, "grant"));
-    const viaGrant = await Promise.all(["commands", "command"].map((cmd) => settled(call(builderEp, W.withDispatcher, cmd, cmd === "command" ? { target: "command", name: "review" } : {}, "grant"))));
-    check("another owner's agent with a prompts grant reads prompts, and runs no command: permission-denied, not-executed",
+    const viaGrant = await Promise.all(FOUR.map((cmd) => settled(call(builderEp, W.withDispatcher, cmd, argsFor(cmd), "grant"))));
+    check("another owner's agent with a prompts grant reads prompts, and lists, runs, cancels and reads no command: permission-denied, not-executed",
       verdict(granted) === "ok" && viaGrant.every((r) => verdict(r) === "permission-denied/not-executed"), [verdict(granted), ...viaGrant.map(verdict)]);
-    check("the harness heard nothing from any of them", coderHarness.ran.length + coderHarness.lists === before, coderHarness.ran);
+    const still = await stateOf(W.withDispatcher, ranCommand.id);
+    check("the harness heard nothing from any of them, and the command they named still reads started",
+      coderHarness.ran.length + coderHarness.lists === before && still === "started", { ran: coderHarness.ran, still });
   }
 
   console.log("\nan agent endpoint with no dispatcher");
@@ -293,11 +333,14 @@ try {
     check("commands answers { supported: false }", list.ok && list.value.ok && same(list.value.data, { supported: false }), list.ok ? list.value : verdict(list));
     const run = await settled(call(webEp, W.noDispatcher, "command", { target: "command", name: "review" }));
     check("command is unimplemented, not-executed", verdict(run) === "unimplemented/not-executed", verdict(run));
+    const byId = await Promise.all(["command-cancel", "command-state"].map((cmd) => settled(call(webEp, W.noDispatcher, cmd, { id: "a".repeat(26) }))));
+    check("command-cancel and command-state know no id: not-found, not-executed", byId.every((r) => verdict(r) === "not-found/not-executed"), byId.map(verdict));
   }
 
-  console.log("\nthe harness's answers, the queue bound and the 10 s bound");
+  console.log("\nthe queue: ids, the bound, cancel and taking");
   const laneEp = await userEndpoint(W.byHand, { registerPresence: true });
-  let mode: "ok" | "unknown-name" | "refused" | "error" | "hang" = "ok";
+  let mode: "ok" | "unknown-name" | "refused" | "long" | "error" | "hold" = "ok";
+  let held = Promise.resolve();
   let laneList: () => Promise<unknown[]> = async () => structuredClone(LISTED);
   const laneHarness = fake({
     targets: ["command"],
@@ -305,33 +348,107 @@ try {
     dispatch: async () => {
       if (mode === "unknown-name") throw new CommandRefused("not-found", 'the harness has no command named "nope"');
       if (mode === "refused") throw new CommandRefused("failed-precondition", "the harness refused it: no session");
+      if (mode === "long") throw new CommandRefused("failed-precondition", "r".repeat(3000));
       if (mode === "error") throw new Error("socket hang up");
-      if (mode === "hang") await new Promise(() => {});
+      if (mode === "hold") await held;
     },
   });
-  let queued = 0;
-  const lane: AgentEndpoint = await openAgentEndpoint(laneEp, { warn: (m) => logs.push(`lane: ${m}`), dispatcher: laneHarness, onQueued: () => { queued++; } });
+  let told = 0;
+  const lane: AgentEndpoint = await openAgentEndpoint(laneEp, { warn: (m) => logs.push(`lane: ${m}`), dispatcher: laneHarness, onQueued: () => { told++; } });
   stops.push(() => lane.close());
-  async function runOne(args: Record<string, unknown>): Promise<string> {
-    const reply = settled(call(webEp, W.byHand, "command", args));
-    await until(() => lane.commands.queued > 0);
-    await lane.commands.dispatchNext();
-    return verdict(await reply);
-  }
+  const names = () => laneHarness.ran.map((c) => c.name);
   {
     const before = laneHarness.ran.length;
     const skill = await settled(call(webEp, W.byHand, "command", { target: "skill", name: "browser" }));
     check("a target the dispatcher does not run is unimplemented, not-executed, and nothing is queued or started",
-      verdict(skill) === "unimplemented/not-executed" && laneHarness.ran.length === before && queued === 0, [verdict(skill), queued]);
+      verdict(skill) === "unimplemented/not-executed" && laneHarness.ran.length === before && told === 0, [verdict(skill), told]);
+  }
+  {
+    const t0 = Date.now();
+    const accepted: Awaited<ReturnType<typeof queue>>[] = [];
+    for (let i = 0; i < QUEUE_BOUND; i++) accepted.push(await queue(W.byHand, { target: "command", name: `q-${i}` }));
+    const took = Date.now() - t0;
+    const ids = accepted.map((a) => a.id);
+    const distinct = new Set(ids.filter((id) => ID.test(id ?? ""))).size;
+    check(`${QUEUE_BOUND} commands are each answered at once with an id, ${distinct} distinct ids of the grammar`,
+      accepted.every((a) => a.verdict === "ok") && distinct === QUEUE_BOUND && took < 3000, { took, accepted: accepted.map((a) => a.id ?? a.verdict) });
+    const states = await Promise.all(ids.map((id) => stateOf(W.byHand, id)));
+    check(`each reads queued, the connector was told ${QUEUE_BOUND} times, and the harness started none`,
+      states.every((s) => s === "queued") && told === QUEUE_BOUND && lane.commands.queued === QUEUE_BOUND && laneHarness.ran.length === 0,
+      { states, told, queued: lane.commands.queued, ran: names() });
+    const over = await queue(W.byHand, { target: "command", name: "one-too-many" });
+    check(`with ${QUEUE_BOUND} queued, one more is resource-exhausted, not-executed, at once`,
+      over.verdict === "resource-exhausted/not-executed" && lane.commands.queued === QUEUE_BOUND, [over.verdict, lane.commands.queued]);
+    const cancelled = await cancel(W.byHand, ids[3]);
+    const retried = await cancel(W.byHand, ids[3]);
+    const afterCancel = await stateOf(W.byHand, ids[3]);
+    check("cancelling a queued command is ok with the state cancelled, a retried cancel is ok and changes nothing, and it leaves the queue",
+      [cancelled, retried].every((r) => r.ok && r.value.ok && same(r.value.data, { state: { kind: "cancelled" } }))
+      && afterCancel === "cancelled" && lane.commands.queued === QUEUE_BOUND - 1, [verdict(cancelled), verdict(retried), afterCancel, lane.commands.queued]);
+    const room = await queue(W.byHand, { target: "command", name: "q-8" });
+    check(`the cancel made room: one more is accepted, and ${QUEUE_BOUND} are queued again`,
+      room.verdict === "ok" && ID.test(room.id ?? "") && lane.commands.queued === QUEUE_BOUND, [room.verdict, lane.commands.queued]);
+    await wait(Math.max(0, t0 + 11_000 - Date.now()));
+    const all = [...ids, room.id];
+    const later = await Promise.all(all.map((id) => stateOf(W.byHand, id)));
+    check("11 s after the first was queued, every queued command still reads queued: a queued command has no time bound",
+      same(later, all.map((_, i) => (i === 3 ? "cancelled" : "queued"))), later);
+
+    mode = "hold";
+    let release!: () => void;
+    held = new Promise<void>((resolve) => { release = resolve; });
+    const taking = settled(lane.commands.dispatchNext());
+    const whileTaken = await stateOf(W.byHand, ids[0]);
+    check("the connector takes the oldest queued command first: it reads taken, and the harness was asked to start it",
+      whileTaken === "taken" && same(names(), ["q-0"]), [whileTaken, names()]);
+    const cancelTaken = await cancel(W.byHand, ids[0]);
+    check("cancelling a taken command is conflict, not-executed, with the state taken in details",
+      verdict(cancelTaken) === "conflict/not-executed" && same(stateDetail(cancelTaken), [{ kind: "ai.cotal.agent.command-state", state: { kind: "taken" } }]),
+      [verdict(cancelTaken), stateDetail(cancelTaken)]);
+    release();
+    const firstTake = await taking;
+    const tookFirst = firstTake.ok ? firstTake.value : `threw ${(firstTake.error as Error).message}`;
+    const startedFirst = await stateOf(W.byHand, ids[0]);
+    const cancelStarted = await cancel(W.byHand, ids[0]);
+    check("once the harness accepted it, dispatchNext answers dispatched, it reads started, and cancelling it is conflict, not-executed, with the state started in details",
+      tookFirst === "dispatched" && startedFirst === "started" && verdict(cancelStarted) === "conflict/not-executed"
+      && same(stateDetail(cancelStarted), [{ kind: "ai.cotal.agent.command-state", state: { kind: "started" } }]),
+      [tookFirst, startedFirst, verdict(cancelStarted), stateDetail(cancelStarted)]);
+    mode = "ok";
+    while (lane.commands.queued > 0) await lane.commands.dispatchNext();
+    const ended = await Promise.all(all.map((id) => stateOf(W.byHand, id)));
+    check(`the harness ran the ${QUEUE_BOUND} not cancelled, in the order they were queued, each reads started, and the cancelled one never reached it`,
+      same(names(), ["q-0", "q-1", "q-2", "q-4", "q-5", "q-6", "q-7", "q-8"]) && same(ended, all.map((_, i) => (i === 3 ? "cancelled" : "started"))),
+      { ran: names(), ended });
+  }
+
+  console.log("\nthe harness's answers, as states");
+  {
+    async function runOne(name: string): Promise<{ label: string; state?: CommandState }> {
+      const q = await queue(W.byHand, { target: "command", name });
+      await lane.commands.dispatchNext();
+      return readState(W.byHand, q.id);
+    }
+    const message = (s?: CommandState) => (s && "message" in s ? s.message : "");
     mode = "unknown-name";
-    const unknown = await runOne({ target: "command", name: "nope" });
+    const unknown = await runOne("nope");
     mode = "refused";
-    const refused = await runOne({ target: "command", name: "review" });
+    const refusedOne = await runOne("review");
+    mode = "long";
+    const long = await runOne("review");
     mode = "error";
-    const failed = await runOne({ target: "command", name: "review" });
-    check("the harness has no such command: not-found, not-executed", unknown === "not-found/not-executed", unknown);
-    check("the harness refused it before it started: failed-precondition, not-executed", refused === "failed-precondition/not-executed", refused);
-    check("the harness failed and cannot say how far it got: internal, unknown", failed === "internal/unknown", failed);
+    const failed = await runOne("review");
+    mode = "ok";
+    check("the harness has no such command: refused, not-found, with the harness's message",
+      unknown.label === "refused/not-found" && message(unknown.state) === 'the harness has no command named "nope"', unknown);
+    check("the harness refused it before it started: refused, failed-precondition, with the harness's message",
+      refusedOne.label === "refused/failed-precondition" && message(refusedOne.state) === "the harness refused it: no session", refusedOne);
+    check("a 3000-character message is cut to 2048 characters, marking the cut",
+      long.label === "refused/failed-precondition" && [...message(long.state)].length === 2048 && message(long.state).endsWith("…"), [long.label, [...message(long.state)].length]);
+    check("the harness failed and cannot say how far it got: unknown, internal, with the harness's reason",
+      failed.label === "unknown/internal" && message(failed.state).includes("socket hang up"), failed);
+    const never = await Promise.all(["command-state", "command-cancel"].map((cmd) => settled(call(webEp, W.byHand, cmd, { id: "b".repeat(26) }))));
+    check("an id the agent never issued is not-found, not-executed, for command-state and command-cancel", never.every((r) => verdict(r) === "not-found/not-executed"), never.map(verdict));
     laneList = async () => { throw new Error("skill index unavailable"); };
     const down = await settled(call(webEp, W.byHand, "commands"));
     check("a failed list is unavailable with the harness's reason, never an empty list",
@@ -340,35 +457,72 @@ try {
     const stray = await settled(call(webEp, W.byHand, "commands"));
     check("a listed target the dispatcher does not run is the connector's fault: internal", verdict(stray).startsWith("internal/"), stray.ok ? stray.value : verdict(stray));
   }
+
+  console.log("\nforgetting");
   {
-    mode = "hang";
-    const started = settled(call(webEp, W.byHand, "command", { target: "command", name: "slow" }));
-    await until(() => lane.commands.queued === 1);
-    void lane.commands.dispatchNext();
-    const t0 = Date.now();
-    const waiting = Array.from({ length: MAX_QUEUED_COMMANDS }, (_, i) => settled(call(webEp, W.byHand, "command", { target: "command", name: `wait-${i}` })));
-    await until(() => lane.commands.queued === MAX_QUEUED_COMMANDS);
-    const over = await settled(call(webEp, W.byHand, "command", { target: "command", name: "one-too-many" }));
-    check(`with ${MAX_QUEUED_COMMANDS} waiting, one more is resource-exhausted, not-executed, at once`,
-      verdict(over) === "resource-exhausted/not-executed" && Date.now() - t0 < COMMAND_REPLY_MS - 2000, [verdict(over), lane.commands.queued]);
-    const late = await Promise.all(waiting);
-    const slow = await started;
-    const took = Date.now() - t0;
-    check(`the ${MAX_QUEUED_COMMANDS} still waiting for a turn at the 10 s bound did not start: unavailable, not-executed, and they leave the queue`,
-      late.every((r) => verdict(r) === "unavailable/not-executed") && lane.commands.queued === 0, late.map(verdict));
-    check("the one being started when the bound passed has an unknown outcome: deadline-exceeded, unknown, never a refusal that says it did not start",
-      verdict(slow) === "deadline-exceeded/unknown" && slow.ok && took >= COMMAND_REPLY_MS - 1500 && took < WAIT - 1000, [verdict(slow), took]);
-    check("none of the waiting ones reached the harness", !laneHarness.ran.some((c) => c.name.startsWith("wait-") || c.name === "one-too-many"), laneHarness.ran.map((c) => c.name));
+    const endOne = async (name: string): Promise<string | undefined> => {
+      const q = await queue(W.byHand, { target: "command", name });
+      await cancel(W.byHand, q.id);
+      return q.id;
+    };
+    const first = await endOne("forget-me");
+    const later: (string | undefined)[] = [];
+    for (let i = 0; i < ENDED_KEPT - 1; i++) later.push(await endOne(`later-${i}`));
+    const kept = await stateOf(W.byHand, first);
+    later.push(await endOne(`later-${ENDED_KEPT - 1}`));
+    const forgotten = await Promise.all(["command-state", "command-cancel"].map((cmd) => settled(call(webEp, W.byHand, cmd, { id: first }))));
+    const newest = await Promise.all(later.map((id) => stateOf(W.byHand, id)));
+    check(`an ended command still reads cancelled after ${ENDED_KEPT - 1} later ones end`, kept === "cancelled", kept);
+    check(`once ${ENDED_KEPT} later ones ended, its id is not-found, not-executed, for command-state and command-cancel, and those ${ENDED_KEPT} still read cancelled`,
+      forgotten.every((r) => verdict(r) === "not-found/not-executed") && newest.length === ENDED_KEPT && newest.every((s) => s === "cancelled"),
+      { forgotten: forgotten.map(verdict), newest: newest.filter((s) => s !== "cancelled") });
+  }
+
+  console.log("\nclosing");
+  {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const harness = fake({ dispatch: () => gate });
+    let toldDirect = 0;
+    const direct = createCommandLane(harness, () => { toldDirect++; });
+    const handle = (command: string, args: Record<string, unknown>) => {
+      const def = direct.handlers.find((h) => h.command === command);
+      return settled(Promise.resolve().then(() => (def ? def.handler({ request: { args } } as never) : Promise.reject(new Error(`the lane has no ${command} handler`)))));
+    };
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await handle("command", { target: "command", name: `close-${i}` });
+      ids.push(r.ok ? String((r.value as { id?: unknown })?.id) : `refused: ${(r.error as Error).message}`);
+    }
+    const taking = settled(direct.dispatchNext());
+    direct.close();
+    const read = await Promise.all(ids.map((id) => handle("command-state", { id })));
+    const stateAt = (i: number): CommandState | undefined => (read[i].ok ? (read[i].value as { state?: CommandState })?.state : undefined);
+    check("closing the lane leaves the taken command taken and moves both queued ones to refused, unavailable, which command-state then reads",
+      stateAt(0)?.kind === "taken" && [1, 2].every((i) => { const s = stateAt(i); return s?.kind === "refused" && s.code === "unavailable" && s.message !== ""; })
+      && direct.queued === 0 && toldDirect === 3, { ids, states: [0, 1, 2].map(stateAt), queued: direct.queued });
+    const late = await handle("command", { target: "command", name: "late" });
+    // A lane that kept a queued command would take it here and wait on the gate, which opens only below.
+    const left = await Promise.race([direct.dispatchNext(), wait(1000).then(() => "still taking")]);
+    check("after close, command is unavailable, not-executed, and nothing is left to take",
+      !late.ok && late.error instanceof EpEnvelopeError && late.error.code === "unavailable" && late.error.outcome === "not-executed" && left === "empty",
+      [late.ok ? late.value : (late.error as Error).message, left]);
+    release();
+    const took = await taking;
+    const finished = took.ok ? took.value : `threw ${(took.error as Error).message}`;
+    const after = await handle("command-state", { id: ids[0] });
+    check("the taken command's start still finishes after close: dispatched, it reads started, and the harness saw only that one",
+      finished === "dispatched" && after.ok && same((after.value as { state?: CommandState })?.state, { kind: "started" }) && same(harness.ran.map((c) => c.name), ["close-0"]),
+      [finished, after.ok ? after.value : (after.error as Error).message, harness.ran.map((c) => c.name)]);
   }
   {
-    mode = "ok";
-    const pending = [settled(call(webEp, W.byHand, "command", { target: "command", name: "a" })), settled(call(webEp, W.byHand, "command", { target: "command", name: "b" }))];
-    await until(() => lane.commands.queued === 2);
+    const pending = [await queue(W.byHand, { target: "command", name: "a" }), await queue(W.byHand, { target: "command", name: "b" })];
     const t0 = Date.now();
     await lane.close();
-    const after = await Promise.all(pending);
-    check("closing the endpoint refuses each waiting command at once: unavailable, not-executed",
-      after.every((r) => verdict(r) === "unavailable/not-executed") && Date.now() - t0 < 3000, after.map(verdict));
+    const took = Date.now() - t0;
+    const after = await Promise.all(pending.map((p) => stateOf(W.byHand, p.id)));
+    check("closing the endpoint with commands queued returns at once, and then no one answers for them: unavailable, not-executed",
+      pending.every((p) => p.verdict === "ok") && took < 3000 && after.every((s) => s === "unavailable/not-executed"), { pending: pending.map((p) => p.verdict), took, after });
   }
 
   console.log("\na MeshAgent on a per-user mesh");
@@ -382,16 +536,19 @@ try {
     await agent.start();
     check("a MeshAgent with a dispatcher serves its agent endpoint once it joined: presence shows the prompts field", await servedBy(W.meshWithDispatcher));
     const list = await settled(call(webEp, W.meshWithDispatcher, "commands"));
-    const run = await settled(call(webEp, W.meshWithDispatcher, "command", { target: "skill", name: "browser", args: "open the docs" }));
-    check(`its commands answer the same ${EXPECTED.length} entries, and a listed skill runs through dispatchNextCommand`,
-      list.ok && list.value.ok && same(list.value.data, { supported: true, commands: EXPECTED }) && verdict(run) === "ok"
-      && same(harness.ran, [{ target: "skill", name: "browser", args: "open the docs" }]), { list: verdict(list), run: verdict(run), ran: harness.ran });
+    const run = await queue(W.meshWithDispatcher, { target: "skill", name: "browser", args: "open the docs" });
+    const ran = await finalState(W.meshWithDispatcher, run.id);
+    check(`its commands answer the same ${EXPECTED.length} entries, and a listed skill is accepted with an id and started through dispatchNextCommand`,
+      list.ok && list.value.ok && same(list.value.data, { supported: true, commands: EXPECTED }) && run.verdict === "ok" && ran === "started"
+      && same(harness.ran, [{ target: "skill", name: "browser", args: "open the docs" }]), { list: verdict(list), run: run.verdict, ran, harness: harness.ran });
     agent.removeAllListeners("command");
-    const pending = settled(call(webEp, W.meshWithDispatcher, "command", { target: "command", name: "review" }));
-    await until(() => agent.queuedCommands === 1);
+    const pending = await queue(W.meshWithDispatcher, { target: "command", name: "review" });
+    const before = await stateOf(W.meshWithDispatcher, pending.id);
     await agent.stop();
-    check("stopping the MeshAgent refuses its waiting command: unavailable, not-executed, and the harness never saw it",
-      verdict(await pending) === "unavailable/not-executed" && harness.ran.length === 1, harness.ran);
+    const taken = await agent.dispatchNextCommand();
+    check("a command still queued when the MeshAgent stops never runs: it read queued, and after stop() nothing is left to dispatch and the harness never saw it",
+      pending.verdict === "ok" && before === "queued" && agent.queuedCommands === 0 && taken === "empty" && harness.ran.length === 1,
+      { pending: pending.verdict, before, taken, harness: harness.ran });
   }
   {
     const plain = new MeshAgent(meshConfig(W.meshNoDispatcher), {});
@@ -419,11 +576,14 @@ try {
     early.ep.servePrincipal = (s) => { const served = serve(s); return { ...served, ready: served.ready.then(() => held) }; };
     await early.start();
     await servedBy(W.meshEarly);
-    const reply = settled(call(webEp, W.meshEarly, "command", { target: "command", name: "review" }));
-    await until(() => harness.ran.length > 0, 1500);
+    const accepted = await queue(W.meshEarly, { target: "command", name: "review" });
+    const whileHeld = await stateOf(W.meshEarly, accepted.id);
+    const ranWhileHeld = harness.ran.length;
     release();
-    check("a command that arrives before the agent confirmed its serve runs once it did: ok, and the harness started it once",
-      verdict(await reply) === "ok" && harness.ran.length === 1, harness.ran);
+    const ran = await finalState(W.meshEarly, accepted.id);
+    check("a command that arrives before the agent confirmed its serve is accepted at once and waits queued; once the agent confirmed, it runs: started, and the harness started it once",
+      accepted.verdict === "ok" && whileHeld === "queued" && ranWhileHeld === 0 && ran === "started" && harness.ran.length === 1,
+      { accepted: accepted.verdict, whileHeld, ranWhileHeld, ran, harness: harness.ran });
   }
   {
     const harness = fake({ dispatch: () => new Promise<void>(() => {}) });
@@ -433,15 +593,16 @@ try {
     stops.push(() => stopping.stop());
     await stopping.start();
     await servedBy(W.meshStopping);
-    let answeredAt = 0;
-    const reply = settled(call(webEp, W.meshStopping, "command", { target: "command", name: "review" })).finally(() => { answeredAt = Date.now(); });
+    const accepted = await queue(W.meshStopping, { target: "command", name: "review" });
     await until(() => harness.ran.length === 1);
+    const whileStarting = await stateOf(W.meshStopping, accepted.id);
     const t0 = Date.now();
     await stopping.stop();
     const stopTook = Date.now() - t0;
-    const stopped = verdict(await reply);
-    check("stopping a MeshAgent while its harness is being asked to start a command answers that caller at once: unavailable, unknown, and stop() returns within 4 s",
-      stopped === "unavailable/unknown" && answeredAt - t0 < 4000 && stopTook < 4000, { verdict: stopped, stopTook, answeredIn: answeredAt - t0 });
+    const afterStop = await stateOf(W.meshStopping, accepted.id);
+    check("a command the harness is still being asked to start reads taken; stop() returns within 4 s, and then no one answers for it: unavailable, not-executed",
+      accepted.verdict === "ok" && whileStarting === "taken" && stopTook < 4000 && afterStop === "unavailable/not-executed",
+      { accepted: accepted.verdict, whileStarting, stopTook, afterStop });
   }
 
   console.log("\nan open mesh");

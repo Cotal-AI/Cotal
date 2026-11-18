@@ -245,7 +245,8 @@ Serving there is follow-up work.
 
 ## Agent commands [#agent-commands]
 
-The agent owner's interactive session can list an agent's own harness commands and skills and run one, with `commands` and `command` on the agent's endpoint.
+The agent owner's interactive session can list an agent's own harness commands and skills and queue one to run, with `commands` and `command` on the agent's endpoint.
+It cancels a queued command with `command-cancel` and reads how far a command got with `command-state`.
 No one else can call them: the broker refuses a sibling agent of the same owner, any other owner, and every grant.
 
 A connector hands `MeshAgent` a dispatcher as the `commands` option:
@@ -258,13 +259,13 @@ The runtime sends only those four fields of an entry. It leaves out a name `comm
 Without a dispatcher, `commands` answers `{ supported: false }` and `command` is `unimplemented`.
 In this release only OpenCode 2.x has one.
 
-A `command` request waits for the connector's next idle turn.
+`command` answers the command's `id` at once, and the command waits in a queue for the connector's next idle turn.
 `MeshAgent` emits `command`, and the connector calls `dispatchNextCommand()` while no turn runs. It answers `dispatched`, `failed`, or `empty`.
-At most 8 commands wait.
-After 10 s, a command still waiting leaves the queue and its caller learns it did not start, and one the harness is still being asked to start is reported with an unknown outcome.
-Stopping the agent refuses every command still waiting.
-It answers a command the harness is still being asked to start at once, as `unavailable` with an unknown outcome, and waits at most 3 s for those replies to go out before it leaves the mesh.
-The codes and outcomes are in [SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
+At most 8 commands are queued. A queued command has no time bound: it waits until the connector takes it, a caller cancels it, or the agent stops.
+`command-state` reads `queued` while the command waits and `taken` while the harness is being asked to start it. It then reads `started`, `cancelled`, `refused` or `unknown`, and that state is final.
+Stopping the agent moves every queued command to `refused` with `unavailable`. A command the harness is still being asked to start stays `taken`, and its outcome leaves with the process.
+The agent remembers the last 32 commands to end, and an older id is `not-found`.
+The states, codes and outcomes are in [SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
 
 ## Prompt desk [#prompt-desk]
 

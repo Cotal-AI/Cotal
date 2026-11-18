@@ -31,13 +31,13 @@ only while no other turn runs. One that runs the model runs as a turn of its own
 some commands, such as `goal clear`, without starting a turn, so when no turn starts within 5 s of
 OpenCode's answer, the plugin stops waiting for one and sends what waits. OpenCode answers a command
 only once its template's shell snippets finish, and a client that leaves first cancels it, so the
-plugin waits for that answer with no timeout until it stops. The caller still gets
-`deadline-exceeded` with an unknown outcome after 10 s, and the command runs when OpenCode answers.
-Right after a command, waiting messages go before the next waiting command. The first turn the
-plugin submits carries the agent's persona in the `system` field, also when that turn is a command.
-OpenCode 2.2.5 does not pass that field to the model, for a message or a command. An unknown name is
-`not-found`, any other 4xx answer is `failed-precondition`, and any other failure leaves the outcome
-unknown. The 1.x plugin runs no commands, so its agent answers `supported: false`.
+plugin waits for that answer with no timeout until it stops. The command reads `taken` until then,
+and `started` once OpenCode answers. Right after a command, waiting messages go before the next
+queued command. The first turn the plugin submits carries the agent's persona in the `system` field,
+also when that turn is a command. OpenCode 2.2.5 does not pass that field to the model, for a message
+or a command. An unknown name ends `refused` with `not-found`, any other 4xx answer ends `refused`
+with `failed-precondition`, and any other failure ends `unknown`. The 1.x plugin runs no commands, so
+its agent answers `supported: false`.
 
 ## Tool configuration
 
