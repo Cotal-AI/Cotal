@@ -149,6 +149,27 @@ check("clean with no target has the same shape and names the targets", usageShap
 const noForce = run(["clean", "store"]);
 check("clean store without --force has the same shape, with the remedy on its own line", usageShape(noForce, /requires --force/) && /cotal clean store --force/.test(noForce.stderr), shown(noForce));
 
+// The command that refusal prints keeps every flag that picks what is deleted. Without --store-dir,
+// following it deleted the default store and left the one the user named (#7517).
+for (const [args, remedy] of [
+  [["clean", "store", "--store-dir", "custom"], "cotal clean store --store-dir custom --force"],
+  [["clean", "all", "--store-dir", "my store"], "cotal clean all --store-dir 'my store' --force"],
+  [["clean", "history", "--space", "s1", "--dms"], "cotal clean history --space s1 --dms --force"],
+  [["clean", "history", "--server", "nats://127.0.0.1:4999", "--creds", "/tmp/a b.creds"], "cotal clean history --server nats://127.0.0.1:4999 --creds '/tmp/a b.creds' --force"],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} without --force prints a command that keeps its target`, usageShape(r, /requires --force/) && r.stderr.includes(`\n  ${remedy}\n`), shown(r));
+}
+const twoStores = join(home, "two-stores");
+mkdirSync(join(twoStores, ".cotal", "nats", "jetstream"), { recursive: true });
+mkdirSync(join(twoStores, "custom", "jetstream"), { recursive: true });
+const asked = run(["clean", "store", "--store-dir", "custom"], {}, twoStores);
+const printed = /\n {2}cotal (clean store [^\n]*--force)\n/.exec(asked.stderr)?.[1].split(" ") ?? [];
+const followed = run(printed, {}, twoStores);
+check("following that printed command removes the store that was named and leaves the default store",
+  followed.status === 0 && !existsSync(join(twoStores, "custom", "jetstream")) && existsSync(join(twoStores, ".cotal", "nats", "jetstream")),
+  { printed, followed: shown(followed) });
+
 const helpPath = run(["help", "service", "nosuch"]);
 check("help with an unknown subcommand names it and lists the command's subcommands", usageShape(helpPath, /cotal service has no subcommand "nosuch"/) && /\bstart\b/.test(helpPath.stderr) && /\bstop\b/.test(helpPath.stderr), shown(helpPath));
 

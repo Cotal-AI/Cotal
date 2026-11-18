@@ -1,7 +1,7 @@
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, isCommandFailure, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, isCommandFailure, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
 import { cliVersion } from "./version.js";
@@ -219,6 +219,12 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   catch (error) {
     if (!isCommandFailure(error) || error.code !== "SCHEMA_INVALID" || error.remedy !== undefined) throw error;
     throw new CommandFailure(error.outcome, error.code, error.message, { target: error.target, remedy: `see what each option takes with \`${line} --help\`` });
+  }
+  // The dashboard posts only with a separate posting credential, so each posting flag needs the other.
+  // Its launch refuses one without the other, and a saved definition would offer a start that cannot run.
+  if (preset.adapter === WEB_SERVICE_ADAPTER && (options["read-only"] === false) !== (typeof options["posting-creds"] === "string")) {
+    const given = options["read-only"] === false ? "--no-read-only" : "--posting-creds";
+    throw new CommandFailure("refused", "USAGE_INVALID", `${given} requires ${given === "--no-read-only" ? "--posting-creds <file>" : "--no-read-only"}: the dashboard posts only when it is not read-only, with a separate posting credential; nothing was saved or started`, { remedy: `${line} --no-read-only --posting-creds <file>`, selfContained: true, remedyIsCommand: true });
   }
   // Saving the native auth preset must not offer a start its hosting root cannot support.
   // Read only the existing marker, without preparing authority or importing provider code.

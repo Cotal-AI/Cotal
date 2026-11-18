@@ -1,5 +1,48 @@
 # @cotal-ai/manager
 
+## 0.168.0
+
+### Patch Changes
+
+- 5c54061: Keep static chat sessions, credential renewal, and lifecycle reconciliation in a dedicated internal component without changing their behavior.
+- 818992b: Move the manager instance liveness lease into its own module. Behaviour and the package exports are unchanged; `ManagerInstanceLeaseHeld` is still exported from the package entry.
+- f60af89: Keep manager name reservations and capacity accounting in one internal component while preserving spawn, resume and slot-release behavior.
+- bd5b41b: The dashboard and manager console restrict browser scripts to their own assets and omit referrers.
+  
+  Both surfaces send Content-Security-Policy and X-Content-Type-Options headers. Dashboard launch links retain their single-use exchange. The manager console removes its launch token from the address bar after its page scripts load.
+- Updated dependencies [4ad482d]
+- Updated dependencies [6546892]
+- Updated dependencies [97a8f1a]
+- Updated dependencies [b0e70a5]
+  - @cotal-ai/core@0.168.0
+  - @cotal-ai/seat@0.168.0
+  - @cotal-ai/workspace@0.168.0
+
+## 0.167.0
+
+### Patch Changes
+
+- 735dcd2: Keep managed lifecycle retirement state in an internal coordinator without changing the manager API or teardown ordering.
+- 5b5d19e: Keep seat custody and successor recovery in a dedicated internal component without changing managed agent behavior.
+- b7b152b: Keep control-service registration, recovery and session authority in an internal coordinator without changing manager APIs.
+- 6f4c67b: Keep managed session recovery and transcript provenance in a dedicated internal component without changing restart behavior.
+- Updated dependencies [186fc68]
+- Updated dependencies [ded2be1]
+- Updated dependencies [dbf310b]
+- Updated dependencies [211142b]
+- Updated dependencies [ad38504]
+- Updated dependencies [6f3c77d]
+- Updated dependencies [eead187]
+- Updated dependencies [c1cf22c]
+- Updated dependencies [6c2c27f]
+- Updated dependencies [7bf5e73]
+- Updated dependencies [70842a1]
+- Updated dependencies [d97f549]
+- Updated dependencies [3705c35]
+  - @cotal-ai/workspace@0.167.0
+  - @cotal-ai/core@0.167.0
+  - @cotal-ai/seat@0.167.0
+
 ## 0.166.3
 
 ### Patch Changes

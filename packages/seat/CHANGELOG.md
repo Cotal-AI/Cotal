@@ -1,5 +1,15 @@
 # @cotal-ai/seat
 
+## 0.168.0
+
+### Patch Changes
+
+- 97a8f1a: Show the exit status, signal, stderr and any process error when a Windows native build cannot download the Node SDK.
+
+## 0.167.0
+
+No changes in this release.
+
 ## 0.166.3
 
 No changes in this release.

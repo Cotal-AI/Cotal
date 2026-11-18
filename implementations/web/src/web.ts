@@ -1836,6 +1836,9 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // to a 500, never take down the server. Reply only when nothing has been written yet — a /feed
   // stream (or any partially-sent response) is already committed to its status line.
   const httpServer = createServer((req, res) => {
+    res.setHeader("content-security-policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+    res.setHeader("referrer-policy", "no-referrer");
+    res.setHeader("x-content-type-options", "nosniff");
     void handleRequest(req, res).catch((e: unknown) => {
       const why = e instanceof Error ? e.message : String(e);
       // A caller error and a server fault are different facts and must not share a status. Before

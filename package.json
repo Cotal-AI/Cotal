@@ -9,6 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
+    "smoke:console-browser-security": "tsx bin/smoke/console-browser-security.smoke.ts",
     "smoke:update-extension-set": "tsx implementations/cli/smoke/extension-promotion.smoke.ts && tsx implementations/cli/smoke/extension-promotion-crash.smoke.ts && tsx implementations/cli/smoke/update-set-atomic.smoke.ts",
     "smoke:discovery-login": "tsx packages/workspace/smoke/discovery-login.smoke.ts && tsx bin/smoke/daemon-discovery-login.smoke.ts",
     "smoke:login-service-stores": "tsx implementations/auth/smoke/login-private-group.smoke.ts && tsx packages/workspace/smoke/service-login-stores.smoke.ts && tsx implementations/auth/smoke/service-session-isolation.smoke.ts && tsx implementations/auth/smoke/logout-session-race.smoke.ts && tsx implementations/auth/smoke/login-service-stores.smoke.ts",
@@ -155,6 +156,7 @@
     "smoke:pi-sdk": "tsx extensions/pi/pi-sdk.smoke.ts",
     "smoke:pi-once": "tsx extensions/pi/smoke/once-handoff.smoke.ts",
     "smoke:codex-args": "tsx extensions/connector-codex/smoke/codex-args.smoke.ts",
+    "smoke:claude-refresh-readonly:live": "tsx bin/smoke/claude-refresh-readonly-live.smoke.ts",
     "smoke:codex-setup-refresh": "tsx extensions/connector-codex/smoke/setup-refresh.smoke.ts",
     "smoke:codex-plugin-list-buffer": "tsx extensions/connector-codex/smoke/plugin-list-buffer.smoke.ts",
     "smoke:codex-failed-turn-redrive": "tsx extensions/connector-codex/smoke/failed-turn-redrive.smoke.ts",
@@ -639,6 +641,8 @@
     "smoke:ep-grants": "tsx packages/core/smoke/endpoint-grants.smoke.ts",
     "smoke:principal-route": "tsx packages/core/smoke/principal-route.smoke.ts",
     "smoke:principal-route:auth": "tsx implementations/auth/smoke/principal-route-auth.smoke.ts",
+    "smoke:prompt-desk": "tsx extensions/connector-core/smoke/prompt-desk.smoke.ts",
+    "smoke:prompt-desk:auth": "tsx extensions/connector-core/smoke/prompt-desk-auth.smoke.ts",
     "smoke:native-service-gate": "tsx implementations/auth/smoke/native-service-gate.smoke.ts",
     "smoke:service-access-callout:auth": "tsx implementations/auth/smoke/service-access-callout.smoke.ts",
     "smoke:service-custody:auth": "tsx implementations/auth/smoke/service-custody.smoke.ts",
@@ -817,6 +821,7 @@
     "smoke:seat-exit-cause": "tsx implementations/manager/smoke/seat-exit-cause.smoke.ts",
     "smoke:exit-watch": "tsx implementations/manager/smoke/exit-watch.smoke.ts",
     "smoke:lease-loss-keeps-serving": "tsx implementations/manager/smoke/lease-loss-keeps-serving.smoke.ts",
+    "smoke:instance-lease": "tsx implementations/manager/smoke/instance-lease.smoke.ts",
     "smoke:serve-stop-outage": "tsx implementations/manager/smoke/serve-stop-outage.smoke.ts",
     "smoke:preserve-state": "tsx implementations/manager/smoke/preserve-state.smoke.ts",
     "smoke:manager-console-label": "tsx implementations/manager/smoke/console-blank-label.smoke.ts",
@@ -1343,7 +1348,7 @@
     "smoke:auto-update-snapshot": "tsx bin/smoke/auto-update-snapshot.smoke.ts",
     "smoke:daemon-install-native": "tsx bin/smoke/daemon-ownership-imports.smoke.ts && tsx bin/smoke/daemon-ownership-win32.smoke.ts && tsx bin/smoke/daemon-install-native.smoke.ts && tsx bin/smoke/daemon-install-entry.smoke.ts && tsx bin/smoke/daemon-ownership-responsive.smoke.ts && tsx bin/smoke/daemon-ownership-responsive.smoke.ts --retry && tsx bin/smoke/daemon-ownership-responsive.smoke.ts --pending && tsx bin/smoke/daemon-owned-uninstall.smoke.ts && tsx bin/smoke/auto-update-snapshot.smoke.ts",
     "smoke:daemon-desktop": "pnpm --filter cotal-ai... build && tsx bin/smoke/desktop-setup.smoke.ts && tsx bin/smoke/daemon-desktop.smoke.ts && tsx bin/smoke/daemon-desktop-install.smoke.ts && tsx bin/smoke/daemon-desktop-setup.smoke.ts && tsx bin/smoke/daemon-startup-context.smoke.ts",
-    "smoke:execution-generations": "tsx bin/smoke/execution-generations.smoke.ts && tsx bin/smoke/execution-generation-cli.smoke.ts && tsx bin/smoke/execution-transaction.smoke.ts && tsx bin/smoke/execution-store-cleanup.smoke.ts && tsx bin/smoke/connector-set-cleanup.smoke.ts && tsx bin/smoke/execution-preinstall.smoke.ts && tsx bin/smoke/execution-preinstall-client.smoke.ts && tsx bin/smoke/manager-generation-owner.smoke.ts && tsx bin/smoke/preinstall-preservation.smoke.ts && tsx packages/workspace/smoke/execution-identity.smoke.ts",
+    "smoke:execution-generations": "tsx bin/smoke/daemon-generation-poll.smoke.ts && tsx bin/smoke/execution-generations.smoke.ts && tsx bin/smoke/execution-generation-cli.smoke.ts && tsx bin/smoke/execution-transaction.smoke.ts && tsx bin/smoke/execution-store-cleanup.smoke.ts && tsx bin/smoke/connector-set-cleanup.smoke.ts && tsx bin/smoke/execution-preinstall.smoke.ts && tsx bin/smoke/execution-preinstall-client.smoke.ts && tsx bin/smoke/manager-generation-owner.smoke.ts && tsx bin/smoke/preinstall-preservation.smoke.ts && tsx packages/workspace/smoke/execution-identity.smoke.ts",
     "smoke:migration-execution:live": "tsx bin/smoke/migration-execution.smoke.ts",
     "smoke:daemon-transport": "tsx bin/smoke/daemon-shutdown-probe.smoke.ts && tsx bin/smoke/daemon-peer-close-guards.smoke.ts && tsx bin/smoke/daemon-transport.smoke.ts"
   },

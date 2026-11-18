@@ -566,10 +566,12 @@
       "description": "How many prompts a process holds `open` or `sent`, and a counter that goes up by one each time a prompt opens or changes state. The counter restarts with the process, so it means something only together with `runtime.id`.",
       "properties": {
         "open": {
-          "type": "number"
+          "type": "integer",
+          "minimum": 0
         },
         "seq": {
-          "type": "number"
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [

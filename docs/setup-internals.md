@@ -468,6 +468,9 @@ record:
 - It compares the prefix tree with its lock once. An optional entry can leave this host out through
   its `os`, `cpu`, or `libc` list, under npm's own `checkPlatform` rule with negations and `any`
   included. Such an entry is absent by design, and verify mode does not count it as missing.
+- Extension installs and removals explicitly include optional dependencies, even when npm configuration
+  sets `omit=optional`. Host-compatible native packages are installed, and npm still excludes packages
+  for other platforms. The operator's npm configuration is not rewritten.
 - It reinstalls a built-in only when something differs, so a current install pays no reinstall. An
   operator-managed entry always counts as a difference.
 

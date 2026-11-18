@@ -1,9 +1,24 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { verifyOtherHomeAuthEvidence } from './other-home-auth-evidence.mjs';
+// A connector set links each connector's core to the CLI's copy, outside the set, so a link is recorded as its target.
+function connectorInventory(root) {
+  const rows = [];
+  const walk = (dir, prefix) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : 1)) {
+      const path = join(dir, entry.name), name = prefix + entry.name;
+      if (entry.isSymbolicLink()) rows.push({ path: name, link: readlinkSync(path) });
+      else if (entry.isDirectory()) walk(path, name + '/');
+      else if (entry.isFile()) rows.push({ path: name, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') });
+    }
+  };
+  walk(root, '');
+  return rows;
+}
 const ok = r => { assert.equal(r.exit, 0, r.stdout + r.stderr); assert.equal(r.signal, null); assert.equal(r.timeout, false); return r; };
 export async function prepareOtherHomeAuth(context) {
   const { root, env, cli, pkg, report, call, options } = context;
@@ -41,12 +56,13 @@ export async function prepareOtherHomeAuth(context) {
     const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
     assert.notEqual(fields[0], 'Z');
     const argv = readFileSync(`/proc/${m.pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
-    const entry = realpathSync(argv[1]), loadedRoot = dirname(dirname(entry));
+    // A daemon runs as `node <node flags> <entry> ...`, so the entry is the first argument that is not a flag.
+    const entry = realpathSync(argv.slice(1).find(arg => !arg.startsWith('-'))), loadedRoot = dirname(dirname(entry));
     assert.equal(JSON.parse(readFileSync(join(loadedRoot, 'package.json'))).version, e.sourceVersion);
     const statusScript = `const{control}=await import(${JSON.stringify(pathToFileURL(join(pkg, 'node_modules/@cotal-ai/workspace/dist/control/index.js')).href)});const r=await control({versionSkew:s=>s,roster:async()=>{throw Error('unexpected ambiguous Manager')}},${JSON.stringify({ space: e.space })},'managerStatus');if(!r.ok)throw Error(JSON.stringify(r));console.log(JSON.stringify(r.data));`;
     const status = JSON.parse(ok(await call('other home loaded version', process.execPath, ['--input-type=module', '-e', statusScript], undefined, scope)).stdout);
     assert.equal(status.instanceId, m.instanceId);
-    return { pid: m.pid, birth: fields[19], reportedVersion: status.version, connectorRoot: e.connectorRoot, connectorGraph: executionInventory(e.connectorRoot), instanceId: m.instanceId, root: m.root, argv, cwd: readlinkSync(`/proc/${m.pid}/cwd`), loadedRoot, loadedVersion: e.sourceVersion, graph: graph(loadedRoot) };
+    return { pid: m.pid, birth: fields[19], reportedVersion: status.version, connectorRoot: e.connectorRoot, connectorGraph: connectorInventory(e.connectorRoot), instanceId: m.instanceId, root: m.root, argv, cwd: readlinkSync(`/proc/${m.pid}/cwd`), loadedRoot, loadedVersion: e.sourceVersion, graph: graph(loadedRoot) };
   };
   return Object.assign(cleanup, {
     async beforeUpdate() {
@@ -67,7 +83,7 @@ export async function prepareOtherHomeAuth(context) {
     },
     async afterUpdate() {
       // Capture bytes before invoking the selected new CLI, then verify those read calls changed nothing.
-      const graphBeforeReads = graph(e.before.loadedRoot), connectorsBeforeReads = executionInventory(e.connectorRoot);
+      const graphBeforeReads = graph(e.before.loadedRoot), connectorsBeforeReads = connectorInventory(e.connectorRoot);
       assert.deepEqual(graphBeforeReads, e.before.graph);
       assert.deepEqual(connectorsBeforeReads, e.before.connectorGraph);
       ok(await run('other home Manager after', ['ps', '--space', e.space, '--json']));

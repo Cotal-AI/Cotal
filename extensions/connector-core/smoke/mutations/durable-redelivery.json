@@ -4,7 +4,7 @@
   ],
   "guard": "a JetStream redelivery of an item that is still pending re-announces it through the ordinary incoming path and commits the freshest ack handle, so a wake the host dropped comes back on its own",
   "command": "pnpm smoke:cross-path-dedup",
-  "progressPattern": "  ✓ ",
+  "progressPattern": "  \u2713 ",
   "completionMarker": "CROSS-PATH DEDUP SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/durable-redelivery.json",
   "why": [
@@ -33,7 +33,7 @@
   "mutations": [
     {
       "name": "R1 a durable redelivery of a still-pending item refreshes the ack handle without re-announcing it",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "        else if (existing.take && existing.takenCount !== existing.item.deliveryCount) this.regate(existing);\n        this.emit(\"incoming\", existing.item);",
       "replace": "        else if (existing.take && existing.takenCount !== existing.item.deliveryCount) this.regate(existing);",
       "expectRed": "live-first/durable-second: the durable pending duplicate re-announces through incoming",
@@ -42,7 +42,7 @@
     },
     {
       "name": "R2 a durable redelivery re-announces but keeps the stale ack handle, so the commit lands on a handle the server has already replaced",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "        existing.ack = delivery.ack;",
       "replace": "",
       "expectRed": "live-first/durable-second: the DURABLE ack committed (upgraded from the live no-op)",

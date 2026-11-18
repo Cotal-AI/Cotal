@@ -1,0 +1,2 @@
+# Real Chromium loads both shipped console pages and checks their browser policies.
+smoke:console-browser-security

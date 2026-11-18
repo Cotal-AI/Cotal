@@ -4,8 +4,9 @@ import { base64url } from "./base64url.js";
 import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node";
 import { PermissionViolationError } from "@nats-io/nats-core";
 import { BROKER_REFUSAL_CAUSE, openPublishDenialWatch } from "./endpoint-publish-denial.js";
+import { carriesStoredReplyProvenance } from "./endpoint-provenance.js";
 import { spacePrefix } from "./subjects.js";
-import { epRequestSubject, parseEpSubject, callerRailTokens, epPlaneTokens, assertIdToken, assertLifecycleToken, assertBoundedOwner, epPrincipalRequestSubject, epPrincipalReplySubject, epPrincipalCallerReplyFilter, epPrincipalNoRespondersSubject, isIssuedCaller, type EpCaller, type EpPrincipal, type EpRoute, type EpTarget, type PrincipalAuthority } from "./endpoint-subjects.js";
+import { epRequestSubject, parseEpSubject, callerRailTokens, epPlaneTokens, assertIdToken, assertLifecycleToken, assertBoundedOwner, epPrincipalRequestSubject, epPrincipalReplySubject, epPrincipalCallerReplyFilter, epPrincipalNoRespondersSubject, isIssuedCaller, EP_PRINCIPAL_MAX_DEADLINE_MS, type EpCaller, type EpPrincipal, type EpRoute, type EpTarget, type PrincipalAuthority } from "./endpoint-subjects.js";
 import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, EP_UNDECLARED_ARG, EP_BIND_REFUSED, bindRefusalMarked, parseEndpointReply, assertArgsValid, assertOutputValid, type EndpointRequest, type EndpointReply, type EpCorrelation, type EpTargetBlock, type EpUnboundResponderDetail, type EpBindRefusedDetail, type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpErrorDetail, type EpBindBlock } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
 
@@ -500,10 +501,13 @@ export async function epCall(
 }
 
 /** The exchange every call shares (SPEC 13.5): subscribe the reply filter BEFORE publishing,
- *  publish with the no-responders sentinel as the transport reply, and settle on the first message.
- *  The broker's no-responders status counts only on the sentinel, which no responder holds a
- *  publish grant for: there it is `unavailable`, `not-executed`; a 503 on any other subject is a
- *  responder frame and takes the ordinary reply path. A refused publish is `permission-denied`
+ *  publish with the no-responders sentinel as the transport reply, and settle on the first message
+ *  that counts. A stored message never counts (see {@link carriesStoredReplyProvenance}): a
+ *  JetStream read, such as a Direct Get, delivers one on any subject its requester names.
+ *  With `accepts`, a message on a reply subject it refuses does not count either, and the wait goes
+ *  on. The broker's no-responders status counts only on the sentinel, which no responder holds a
+ *  publish grant for: there it is `unavailable`, `not-executed`, and any other message there is
+ *  dropped; a 503 on any other subject is a responder frame and takes the ordinary reply path. A refused publish is `permission-denied`
  *  (the watch is registered before the publish it watches), the deadline is `deadline-exceeded`,
  *  `unknown`, and an abort is `unavailable`, `unknown`. Subscription and publication share one
  *  promise executor, so a closed or draining connection cannot strand a rejected reply wait.
@@ -514,10 +518,14 @@ async function exchange(
     subject: string; body: Uint8Array; requestId: string; deadlineMs: number; signal?: AbortSignal;
     replyFilter: string; sentinel: string; what: string; unanswered: EpUnansweredDetail;
     refusal: () => EpEnvelopeError;
+    /** The reply subjects that count. A message on the reply filter whose subject this refuses is
+     *  not this call's reply, and the wait goes on. By default every subject counts. */
+    accepts?: (subject: string) => boolean;
     /** How a broker refusal of the reply subscription reads. By default it is `unavailable`. With
      *  `permission` it is a permission refusal, and it waits one flush first: the request went out
      *  in the same tick and the broker answers in order, so a refusal of the publish too, which says
-     *  nothing ran, settles the call before it. */
+     *  nothing ran, settles the call before it. The deadline bounds that wait, and a read refusal
+     *  still waiting at the deadline is what the call throws. */
     readRefused?: "permission";
   },
 ): Promise<{ subject: string; data: Uint8Array }> {
@@ -526,6 +534,8 @@ async function exchange(
   let denialWatch: { denied: Promise<never>; release(): void } | undefined;
   let onAbort: (() => void) | undefined;
   let published = false;
+  /** A refused reply read, waiting for its flush. */
+  let readRefusal: EpEnvelopeError | undefined;
   const cancelled = new Promise<never>((_, reject) => {
     onAbort = () => reject(new EpEnvelopeError("unavailable", `${x.what} observation cancelled; the request may have executed`, published ? [{ ...x.unanswered, requestId: x.requestId }] : undefined, "unknown"));
     x.signal?.addEventListener("abort", onAbort, { once: true });
@@ -537,12 +547,13 @@ async function exchange(
         callback: (err, msg) => {
           if (err) {
             if (x.readRefused === "permission" && err instanceof PermissionViolationError) {
-              void nc.flush().catch(() => undefined).then(() => new Promise<void>((resolve) => setImmediate(resolve))).then(() =>
-                reject(new EpEnvelopeError("permission-denied", `the broker refused this caller's reply read "${x.replyFilter}" for ${x.what}: the request was published and may have run, and its reply cannot be read here; ${BROKER_REFUSAL_CAUSE}`, [{ ...x.unanswered, requestId: x.requestId }], "unknown")));
+              const refusal = readRefusal = new EpEnvelopeError("permission-denied", `the broker refused this caller's reply read "${x.replyFilter}" for ${x.what}: the request was published and may have run, and its reply cannot be read here; ${BROKER_REFUSAL_CAUSE}`, [{ ...x.unanswered, requestId: x.requestId }], "unknown");
+              void nc.flush().catch(() => undefined).then(() => new Promise<void>((resolve) => setImmediate(resolve))).then(() => reject(refusal));
               return;
             }
             reject(new EpEnvelopeError("unavailable", `the caller's reply subscription failed: ${err.message}`)); return;
           }
+          if (carriesStoredReplyProvenance(msg)) return;
           // Broker no-responders is authoritative ONLY on the reserved sentinel reply-to: no responder
           // holds a publish grant for it (§13.9), so only the broker's control frame reaches it. A 503
           // status header on a NORMAL responder subject is just a responder frame carrying a status
@@ -552,8 +563,11 @@ async function exchange(
             // On that sentinel the answer is the broker's attestation that no subscriber received the
             // request, so nothing ran: `not-executed`, never `unknown` (§13.3).
             if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${x.what} (SPEC 13.5)`, [x.unanswered], "not-executed")); return; }
-            reject(new EpEnvelopeError("internal", `a non-503 message reached the reserved no-responders sentinel for ${x.what}; nothing but the broker control frame is addressable there`)); return;
+            // Anything else there means nothing: a peer can name the sentinel as the reply subject of
+            // a JetStream API request, which the broker answers there. The wait goes on.
+            return;
           }
+          if (x.accepts && !x.accepts(msg.subject)) return;
           resolve({ subject: msg.subject, data: msg.data });
         },
       });
@@ -561,7 +575,7 @@ async function exchange(
       nc.publish(x.subject, x.body, { reply: x.sentinel });
       published = true;
     });
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${x.what} within the ${x.deadlineMs}ms budget (SPEC 13.5)`, [{ ...x.unanswered, requestId: x.requestId }], "unknown")), x.deadlineMs); });
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(readRefusal ?? new EpEnvelopeError("deadline-exceeded", `no reply to ${x.what} within the ${x.deadlineMs}ms budget (SPEC 13.5)`, [{ ...x.unanswered, requestId: x.requestId }], "unknown")), x.deadlineMs); });
     return await Promise.race([outcome, timeout, denialWatch.denied, cancelled]);
   } finally {
     sub?.unsubscribe();
@@ -587,6 +601,7 @@ export function buildPrincipalRequest(
   if (op.target !== undefined) throw new EpEnvelopeError("bad-request", "a principal-route request carries no target: the subject head is the target (SPEC 13.21)", undefined, "not-executed");
   if (op.bind !== undefined) throw new EpEnvelopeError("bad-request", "a principal-route request carries no bind: the runtime id in the subject pins the process (SPEC 13.21)", undefined, "not-executed");
   if (isIssuedCaller(op.caller)) throw new EpEnvelopeError("bad-request", "the principal route has no versioned form; it carries the caller triple only (SPEC 13.21)", undefined, "not-executed");
+  if (verb.deadlineMs > EP_PRINCIPAL_MAX_DEADLINE_MS) throw new EpEnvelopeError("bad-request", `deadlineMs ${verb.deadlineMs} exceeds the principal route's ${EP_PRINCIPAL_MAX_DEADLINE_MS}ms maximum (SPEC 13.21)`, undefined, "not-executed");
   const args = validatedArgs(op);
   const n = nonce();
   const subject = epPrincipalRequestSubject(space, {
@@ -599,11 +614,14 @@ export function buildPrincipalRequest(
  * Call one command of a principal's own endpoint on the principal route (SPEC 13.21) and await its
  * reply within `deadlineMs`. The caller subscribes its reply read for this nonce with the head
  * wildcarded, so the one subscription receives the reply and the sentinel, then publishes with the
- * sentinel as the transport reply. A reply counts only when its subject is the one the addressed
- * process derives, its id echoes the request and its output validates against the pinned contract.
+ * sentinel as the transport reply. A message on any other head is not this reply, and the wait goes
+ * on; a frame with stored-message provenance is dropped. A reply counts only when its subject is the
+ * one the addressed process derives, its id echoes the request and its output validates against the
+ * pinned contract.
  *
  * Application-level failure is the returned reply's `ok: false`. This boundary throws only for its
- * own refusals: invalid args `bad-request`; no responder on the sentinel `unavailable`,
+ * own refusals: invalid args or a `deadlineMs` over {@link EP_PRINCIPAL_MAX_DEADLINE_MS}
+ * `bad-request`, `not-executed`, before anything is published; no responder on the sentinel `unavailable`,
  * `not-executed`; a refused publish `permission-denied`, `not-executed` (the caller holds no row);
  * the deadline `deadline-exceeded`, `unknown`; and a reply that does not parse, echo or validate
  * `internal`.
@@ -625,14 +643,13 @@ export async function epPrincipalCall(
     sentinel: epPrincipalNoRespondersSubject(space, op.caller, req.n),
     what: `${op.endpoint}.${op.command}`,
     unanswered: { kind: EP_UNANSWERED, endpoint: op.endpoint, command: op.command, rail: PRINCIPAL_RAIL },
+    // The head is wildcarded in the subscription, so a message from any other head is not this reply.
+    accepts: (subject) => subject === expected,
     // A credential minted before the rows lacks the reply read and the request row both.
     readRefused: "permission",
     refusal: () => new EpEnvelopeError("permission-denied",
       `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}", the "${to.authority}" form for ${to.principal.owner}.${to.principal.actor}. The agent may be serving; ${BROKER_REFUSAL_CAUSE}`, undefined, "not-executed"),
   });
-  // The head is wildcarded in the subscription, so a message from any other head is not this reply.
-  if (msg.subject !== expected)
-    throw new EpEnvelopeError("internal", `a message on the caller's principal-route reply read came from "${msg.subject}", not from the addressed process "${expected}" (SPEC 13.21)`);
   let raw: unknown;
   try { raw = JSON.parse(new TextDecoder().decode(msg.data)); }
   catch (e) { throw new EpEnvelopeError("internal", `the reply body is not JSON (${e instanceof Error ? e.message : String(e)}); an unparseable reply is a responder bug (SPEC 13.3)`); }

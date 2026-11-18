@@ -1,5 +1,5 @@
 export function registryArrivalCell(options: {
-  scenario: "arrives" | "unavailable" | "integrity" | "reset" | "cache";
+  scenario: "arrives" | "unavailable" | "integrity" | "reset" | "cache" | "orphan";
   entry?: string;
   parent?: string;
 }): Promise<{

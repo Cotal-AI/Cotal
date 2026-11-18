@@ -1,5 +1,29 @@
 # @cotal-ai/connector-core
 
+## 0.168.0
+
+### Minor Changes
+
+- 296ea4d: A connector can now hold its agent's harness prompts, such as "Allow this command?", and let an authorized session see and answer them over the control surface, with the answer going to the agent's own process.
+  
+  `@cotal-ai/connector-core` adds the prompt desk: `openPromptDesk(ep, { warn })` serves the agent's `agent` endpoint (`prompts`, `prompt` and `prompt-answer`) on the principal route and keeps the presence field `prompts: { open, seq }`. It knows no harness. An adapter opens a prompt per native dialog with an offer bound and a settle bound, runs its own rules in `check`, hands the one accepted answer to its harness in `deliver`, reports what the harness was then seen to do with `settle`, and frees what it holds in `end`, which comes once per prompt. The desk runs the state table with one order rule, checks every answer in a fixed order, makes a retried answer safe, bounds an answer's reply at 10 s, holds at most 32 prompts open and remembers 32 closed ones, measures every summary against 4096 bytes when a prompt opens, and serves only on a connection whose `max_payload` is at least 524288 bytes, checked again on every reconnect. A hook that resolves, rejects or returns a value it should not never escapes as an unhandled rejection, a logger that throws stops no close, the timers measure from the prompt's own times, and a closed prompt lets go of its hooks. No connector opens a desk yet; the Claude adapter follows. SPEC §13.22 now specifies the desk's answer checks, its bounds and what moves a prompt.
+
+### Patch Changes
+
+- d443ef1: Keep connector inbox handling in a dedicated internal component while preserving MeshAgent's delivery and recall methods.
+
+## 0.167.0
+
+### Patch Changes
+
+- ded2be1: Message frames, preview rows, wake hints and the note naming withheld senders now mark a sender's name and role as `(unverified name)`, or `(unverified role)` when the name is blank and the frame shows the sender's id. The sender writes both itself; the `sender_id` beside them is the identity the broker checked. A long sender label is cut before the marker, and a preview row caps its channel or role label, so the marker stays whole in the 40-character notes and in each preview row. The Claude channel tag's `from` attribute carries the same marked label. A peer label now turns a double quote into a space, as it does a bracket, and the console's recipient completion uses the peer's id when the shown label differs from its name.
+- ad38504: Protect the installation update lock from project creation and keep the home-record, presence-render, and turn-intake checks current under permissive file modes.
+- 41d7ae9: Keep channel backlog received after a reconnect from starting new agent turns.
+  
+  Newly received durable channel copies more than five minutes old by their sender timestamp are marked historical and kept pull-only, including mentions. Recent copies and live subscription traffic keep their normal wake behavior across short reconnects. DMs and role requests keep their normal delivery behavior, and messages already buffered in the same process retain their classification.
+- afa5f97: `cotal_send` no longer calls an existing channel new when the channel list could not be read, for example while the connection comes back after a space restart. The post still goes out, and the result says whether the channel already existed could not be checked, with the read's error.
+- 7bf5e73: An agent can post again as soon as its space is back after a long outage. The endpoint retried a lost connection with a backoff that grows to a minute, and a send made while it waited failed after 10 seconds with a stale "connection refused". A call that needs the connection now starts the next attempt at once. Idle endpoints keep the spread-out retries.
+
 ## 0.166.3
 
 ### Patch Changes

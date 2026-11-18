@@ -14,7 +14,7 @@
   "mutations": [
     {
       "name": "retirement no longer drains the renewal accepted before its latch",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
       "find": "    if (acceptedRenewal) await acceptedRenewal.catch(() => {});",
       "replace": "    void acceptedRenewal;",
       "expectRed": "the durable terminal does not pass an accepted renewal still in flight",
@@ -22,7 +22,7 @@
     },
     {
       "name": "the accepted renewal is not published for terminalization to drain",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
       "find": "    a.staticCredentialRenewal = renewal;\n    return renewal;",
       "replace": "    return renewal;",
       "expectRed": "renewal publishes its accepted flight",
@@ -30,7 +30,7 @@
     },
     {
       "name": "a post-latch renewal joins the older accepted flight instead of refusing",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
       "find": "    if (a.terminalizing) throw new Error(\"renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins\");\n    if (a.staticCredentialRenewal) return a.staticCredentialRenewal;",
       "replace": "    if (a.staticCredentialRenewal) return a.staticCredentialRenewal;\n    if (a.terminalizing) throw new Error(\"renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins\");",
       "expectRed": "a renewal arriving after the terminal latch is refused",
@@ -38,7 +38,7 @@
     },
     {
       "name": "a settled renewal keeps occupying the per-agent single-flight slot forever",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
       "find": "      if (a.staticCredentialRenewal === renewal) a.staticCredentialRenewal = undefined;",
       "replace": "      void a.staticCredentialRenewal;",
       "expectRed": "a settled renewal releases its single-flight slot",
@@ -46,7 +46,7 @@
     },
     {
       "name": "the synchronous terminal admission check is deleted",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
       "find": "    if (a.terminalizing) throw new Error(\"renewManagedStaticCred: the lifecycle is terminalizing; no credential is minted after the terminal begins\");",
       "replace": "    void a.terminalizing;",
       "expectRed": "a renewal arriving after the terminal latch is refused",
@@ -62,9 +62,9 @@
     },
     {
       "name": "natural process exit no longer closes the terminal latch in freeSlot",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "    this.logSeatReaped(a, cause);\n    a.terminalizing = true;\n    this.agents.delete(a.name);",
-      "replace": "    this.logSeatReaped(a, cause);\n    void a.terminalizing;\n    this.agents.delete(a.name);",
+      "file": "implementations/manager/src/names-capacity.ts",
+      "find": "    this.deps.logSeatReaped(a, cause);\n    a.terminalizing = true;\n    this.deps.removeAgent(a.name);",
+      "replace": "    this.deps.logSeatReaped(a, cause);\n    void a.terminalizing;\n    this.deps.removeAgent(a.name);",
       "expectRed": "racer_exit: the terminal latch closes synchronously",
       "cell": "racer_exit: the terminal latch closes synchronously"
     },
@@ -86,15 +86,15 @@
     },
     {
       "name": "static retirement leaves the hosted secret-store credential key intact",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "        await attemptCleanup(failed, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.space)));\n",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
+      "find": "        await attemptCleanup(failed, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.deps.space())));\n",
       "replace": "",
       "expectRed": "the secret-store credential key is deleted",
       "cell": "the secret-store credential key is deleted"
     },
     {
       "name": "static retirement leaves the local credential materialization intact",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
       "find": "        await attemptCleanup(failed, `file ${creds}`, () => rmSync(creds, { force: true }));\n",
       "replace": "",
       "expectRed": "no credential file remains after retirement",

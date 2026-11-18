@@ -19,9 +19,11 @@ import {
   JcodeConnectorError,
   JcodeModelMismatch,
   JcodeCursorStateUnreadable,
+  JcodeProjectMcpConfig,
   JcodeSessionsEnumerationFailure,
   JcodeSessionsUnwritableFailure,
   jcodeEffortRefusal,
+  PROJECT_MCP_FILES,
   writeJcodeDiagnostic,
 } from "./startup-diagnostics.js";
 import {
@@ -208,13 +210,11 @@ function publicConfig(config: AgentConfig): AgentConfig {
 /** Jcode deliberately overlays project `.jcode/mcp.json`, `.mcp.json`, and `.claude/mcp.json`
  * over its private home. A same-name project entry could replace the connector's cotal bridge, or
  * add a server the operator never opted to share. The Harness API has no isolation switch for this
- * source set, so refuse the whole launch instead of claiming our private home is sufficient. */
+ * source set, so refuse the whole launch instead of claiming our private home is sufficient. A home
+ * directory counts too: its `.jcode/mcp.json` is Jcode's own global file, read here as a project's. */
 function assertNoProjectMcpConfig(cwd: string): void {
-  const found = [".jcode/mcp.json", ".mcp.json", ".claude/mcp.json"].filter((relative) => existsSync(join(cwd, relative)));
-  if (found.length)
-    throw new Error(
-      `jcode connector: project MCP configuration (${found.join(", ")}) is not supported — Jcode overlays it over the managed cotal MCP bridge. Remove it or use a workspace without project MCP configuration; tool-sharing is not implemented.`,
-    );
+  const found = PROJECT_MCP_FILES.filter((relative) => existsSync(join(cwd, relative)));
+  if (found.length) throw new JcodeProjectMcpConfig(found);
 }
 
 function mcpEntry(): { command: string; args: string[] } {

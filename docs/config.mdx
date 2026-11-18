@@ -553,6 +553,7 @@ that root as `cwd` is also required to isolate a probe.
 | `services/<key>/` | Saved service definitions and instance records, including a controller stack's `stack-*` members |
 | the Claude plugin marketplace (`claude-plugin/`) | The installed `cotal-mesh` plugin assets |
 | `idp-sessions.json` · `space-catalogs.json` | Cached IdP sessions and discovered space catalogs |
+| `.update-closure.lock` | Installation writer ownership barrier. This machine record cannot be used as a project root, including under a redirected `COTAL_HOME` |
 
 ### Configuration files
 
