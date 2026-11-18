@@ -218,6 +218,8 @@ interface Held {
   readonly hooks: PromptHooks;
   readonly settleMs: number;
   readonly expiresAtMs: number;
+  /** When the settle time passes: the accepted answer's time plus `settleMs`. */
+  settleAtMs?: number;
   /** Every summary field but `state`. */
   readonly base: Omit<PromptSummary, "state">;
   /** Kept while the prompt is open or sent, the only states served in full. */
@@ -495,7 +497,8 @@ class Desk implements PromptDesk {
     this.held.set(id, h);
     this.live++;
     this.bump();
-    h.expiry = timer(spec.openMs, () => this.expire(h));
+    // Validation, the form and the summary bound ran since `expiresAt` was fixed.
+    h.expiry = timer(Math.max(0, expiresAtMs - Date.now()), () => this.expire(h));
     if (!this.stepping) this.flushPresence();
     return Object.freeze({
       id,
@@ -514,6 +517,16 @@ class Desk implements PromptDesk {
       return;
     }
     this.defer(() => this.apply(h, { kind: "expiry" }));
+  }
+
+  /** T fires at the settle time. A timer that runs early arms itself again for what is left. */
+  private settleTime(h: Held): void {
+    const left = h.settleAtMs! - Date.now();
+    if (left > 0) {
+      h.settle = timer(left, () => this.settleTime(h));
+      return;
+    }
+    this.defer(() => this.apply(h, { kind: "settle-time" }));
   }
 
   // ---- steps ----
@@ -704,13 +717,15 @@ class Desk implements PromptDesk {
     // 10.
     if (Date.now() >= h.expiresAtMs) throw refused("expired", `prompt ${h.id} expired at ${h.base.expiresAt}`);
     // 11. Accept: event A. The state, the fingerprint, the settle time and the `deliver` call are one step.
-    const answer: PromptAnswerRef = { by, option: option.id, effect: option.effect, at: iso(Date.now()) };
+    const acceptedAt = Date.now();
+    const answer: PromptAnswerRef = { by, option: option.id, effect: option.effect, at: iso(acceptedAt) };
     const step = stepPrompt(h.state, { kind: "accept", answer }, answer.at);
     if (step.kind !== "move" || !step.deliver) throw refused("internal", "prompt desk bug: an open prompt did not accept");
     h.state = deepFreeze(step.next);
     h.fingerprint = fingerprint;
     this.bump();
-    h.settle = timer(h.settleMs, () => this.defer(() => this.apply(h, { kind: "settle-time" })));
+    h.settleAtMs = acceptedAt + h.settleMs;
+    h.settle = timer(h.settleMs, () => this.settleTime(h));
     const wait = new Promise<PromptState>((resolve) => {
       const w: Waiter = {
         resolve,

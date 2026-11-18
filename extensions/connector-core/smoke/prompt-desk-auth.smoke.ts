@@ -757,6 +757,37 @@ try {
       closeThrew === "" && same(endThrows.ends, [false]) && same(after.ends, [false]) && warns.some((w) => w.startsWith("loud: ") && w.includes("end exploded"))
       && !served.ok && served.error instanceof EpEnvelopeError && served.error.code === "unavailable",
       { closeThrew, ends: [endThrows.ends, after.ends], served: served.ok ? verdictOf(served.value) : (served.error as Error).message });
+
+  }
+
+  console.log("\ndesk 1: the timers measure from the desk's own clock");
+  {
+    // Whatever runs in `open` after it fixed expiresAt, X still fires at expiresAt. A spec getter the
+    // desk reads after that holds the loop for 600 ms.
+    let reads = 0, endedAt = 0;
+    const spec = { content: permission("Allow Bash: expiry from expiresAt?"), openMs: 1000, get settleMs() { if (++reads === 2) hold(600); return 60_000; } };
+    const x = openFake(desk1, "expiry from expiresAt", { spec, end: () => { endedAt = Date.now(); } });
+    const expiresAt = await expiresAtOf(x);
+    await until(() => x.ends.length === 1, 4000);
+    check("expiry is armed for what is left until expiresAt: the prompt closes expired at expiresAt, not 600 ms after it",
+      same(x.ends, [false]) && reads >= 2 && endedAt - expiresAt >= 0 && endedAt - expiresAt < 250, { late: endedAt - expiresAt, reads });
+
+    // The wall clock steps back 500 ms after the answer is accepted, so the settle timer runs before
+    // the settle time by the desk's clock.
+    const realNow = Date.now;
+    const early = openFake(desk1, "the settle timer runs early", { settleMs: 1000 });
+    const reply = (await accept(early)).reply;
+    Date.now = () => realNow() - 500;
+    try {
+      await reply;
+      await until(() => early.ends.length === 1, 4000);
+    } finally {
+      Date.now = realNow;
+    }
+    const s = await stateOf(early);
+    const waited = s?.kind === "closed" && s.outcome.kind === "unconfirmed" ? Date.parse(s.at) - Date.parse(s.outcome.answer.at) : -1;
+    check("a settle timer that runs before the settle time by the desk's clock arms itself again: the prompt closes unconfirmed no earlier than settleMs after the answer",
+      show(s) === "closed/unconfirmed/none" && waited >= 1000, { state: show(s), waited });
   }
 
   // ── desk 1 closes, desk 2 opens: the closed memory, the caps, the bounds on the wire ──
