@@ -8231,8 +8231,11 @@ export class CotalEndpoint extends EventEmitter {
   private async backfillChannel(channel: string, upToSeq: number, sinceMs?: number, floorSeq?: number): Promise<number> {
     if (floorSeq !== undefined && floorSeq >= upToSeq) return 0;
     const subject = chatSubject(this.space, "*", "*", channel);
+    // A window that reaches back before 1970 covers the whole retained window (#7323). Its start time
+    // would be a date JetStream does not read, or not a valid date at all, and the read replayed nothing.
+    const since = sinceMs === undefined ? undefined : Date.now() - sinceMs;
     const start =
-      floorSeq !== undefined ? { seq: floorSeq + 1 } : sinceMs === undefined ? { seq: 1 } : { time: new Date(Date.now() - sinceMs) };
+      floorSeq !== undefined ? { seq: floorSeq + 1 } : since === undefined || !(since > 0) ? { seq: 1 } : { time: new Date(since) };
     let msgs: JsMsg[];
     try {
       msgs = await this.collectHistory(subject, start, { untilSeq: upToSeq });

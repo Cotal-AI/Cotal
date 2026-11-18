@@ -102,7 +102,7 @@ space. An operator sets an age, a different per-sender count or both with
 post past either bound. A lower limit deletes the posts it no longer keeps at once. `cotal up` never
 changes the limit. The same command sets the limits of DMs and of stored copies.
 `replayWindow` only bounds what a joiner is backfilled, so it cannot reach further back than the
-limit.
+limit. A window longer than the retained history, however long, backfills all of it.
 
 The per-sender count means a busy sender's oldest posts on a channel go first, while other senders'
 posts from the same time stay. A durable member's copy of a post, once the delivery daemon has taken
