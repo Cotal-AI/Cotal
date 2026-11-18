@@ -128,11 +128,15 @@ export interface SpaceDetail extends Omit<SpaceRow, "catalog"> {
   readonly catalog: (NonNullable<SpaceRow["catalog"]> & { readonly id: string | null; readonly slug: string | null; readonly kind: string | null; readonly role: string | null }) | null;
 }
 
+/** Refuse empty names and directory flags before reading or changing space records. */
 export function validateSpaceArguments(args: ParsedArgs): void {
-  presentationOf(args.values);
+  const values = args.values as FlagValues<typeof spaceFlags>;
+  presentationOf(values);
   const [sub, name] = args.positionals;
   if ((sub === "show" || sub === "forget") && name !== undefined && !name.trim())
     throw usage(`space ${sub} takes a nonempty space name`);
+  if ((sub === "add" || sub === "create") && values.root !== undefined && !values.root.trim())
+    throw usage("--root cannot be empty");
 }
 
 /**

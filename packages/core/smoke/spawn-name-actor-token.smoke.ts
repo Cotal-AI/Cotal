@@ -153,6 +153,23 @@ check("numbering past the bound without the cap still yields the numbered name (
 // there — an existing `my-agent` persona has to keep spawning across an upgrade.
 check("static/open mode still ACCEPTS a hyphenated name", spawnNameError("my-agent", { userMode: false }) === undefined);
 
+// #7613: MAX_NAME_LENGTH (128) and leading-hyphen names are refused in static/open mode as well as user mode.
+check("a 128-character name is accepted in static/open mode",
+  spawnNameError("d".repeat(128), { userMode: false }) === undefined);
+for (const over of ["d".repeat(129), "d".repeat(260)]) {
+  const staticErr = spawnNameError(over, { userMode: false });
+  const userErr = spawnNameError(over, { userMode: true });
+  check(`overlength ${over.length}-character name is refused in static/open and user modes (#7613)`,
+    staticErr !== undefined && /exceeds the 128-character limit/.test(staticErr) && userErr !== undefined,
+    { staticErr, userErr });
+}
+for (const leadingDash of ["-dash1", "-a", "--flag"]) {
+  check(`leading-hyphen name ${JSON.stringify(leadingDash)} is refused in BOTH modes (#7613)`,
+    spawnNameError(leadingDash, { userMode: true }) !== undefined &&
+      spawnNameError(leadingDash, { userMode: false }) !== undefined &&
+      /cannot start with "-"/.test(spawnNameError(leadingDash, { userMode: false }) ?? ""));
+}
+
 // The traversal guard is unconditional and survives the narrowing.
 for (const bad of ["../escape", "a/b", "a\\b", "with space", "dot.name", ""]) {
   check(`path-hostile name ${JSON.stringify(bad)} is refused in BOTH modes`,

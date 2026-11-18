@@ -137,7 +137,8 @@ export function checkDialPolicy(server: string, policy: DialPolicy): Check<JoinT
  *  flag, the nearest genuine project up-tree — and `findCotalRoot` returns its STARTING directory
  *  when it finds none, so the inferred case must prove the `.cotal` is really there. */
 export function checkRoot(flag: string | undefined, cwd: string): Check<string> {
-  if (flag) {
+  if (flag !== undefined) {
+    if (!flag.trim()) return bad("✗ --root cannot be empty", "USAGE_INVALID");
     const dir = resolve(flag);
     return isDir(dir)
       ? good(dir)

@@ -424,6 +424,7 @@ function addedView(r: SpaceAdded | AddCancelled): Report {
  */
 export async function spaceCreate(rest: readonly string[], rootFlag: string | undefined, adopt: boolean, presentation: Presentation): Promise<void> {
   if (rest.length !== 1 || rest[0]!.trim() === "") throw usage("usage: cotal space create <name> [--root <dir>] [--adopt]");
+  if (rootFlag !== undefined && !rootFlag.trim()) throw usage("--root cannot be empty");
   const name = rest[0]!;
   const root = resolve(rootFlag ?? process.cwd());
   if (!isDir(root)) throw usage(`--root ${root} is not a directory`, "create the folder first, or pass an existing one");

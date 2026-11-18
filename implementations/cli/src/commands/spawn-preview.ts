@@ -1,13 +1,13 @@
 import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
-import { agentFilePath, parseAgentFileSource, token, type AgentDef, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { agentFilePath, parseAgentFileSource, resolveReadAcl, token, type AgentDef, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { CommandFailure, isCommandFailure, oneLine, parseCommaList, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { preflightRuntime } from "../ext-loader.js";
 import { callerHarness, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
-import type { spawnFlags } from "./spawn.js";
+import { validateSpawnChannels, type spawnFlags } from "./spawn.js";
 
 type Values = FlagValues<typeof spawnFlags>;
 
@@ -32,6 +32,8 @@ function unknownHarness(harness: string | undefined, explicit: boolean, space: s
  *  two name the same one. */
 export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> & { values: Values }): Promise<void> {
   const values = args.values;
+  if (values.cwd !== undefined && !values.cwd.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--cwd cannot be empty");
+  validateSpawnChannels(values);
   let root: string;
   let space: string;
   let broker: string | null = null;
@@ -104,6 +106,11 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   let cwd: string;
   try { cwd = realpathSync(values.cwd ? resolve(values.cwd) : process.cwd()); if (!statSync(cwd).isDirectory()) throw new Error(); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the direct launch's local working directory is unavailable; no directory was created"); }
+  try {
+    resolveReadAcl(parseCommaList(values.subscribe) ?? definition.subscribe ?? [], parseCommaList(values["allow-subscribe"]) ?? definition.allowSubscribe);
+  } catch (error) {
+    throw new CommandFailure("refused", "USAGE_INVALID", `${oneLine((error as Error).message)}; every --subscribe channel must be within --allow-subscribe`);
+  }
   const harness = resolveAgentType({ flag: values.agent, pin: definition.agent, callerDefault: callerHarness(space) });
   try { checkHarness(harness); }
   catch (error) {

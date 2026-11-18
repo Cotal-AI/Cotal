@@ -96,7 +96,8 @@ shell. Single and double quotes and backslashes work as in a terminal. A pipe, a
 would not mean here what it means in a terminal; for those, run a shell yourself with
 `--exec "sh -c '<command line>'"`. A bare program name is looked up on `PATH` as `add` saves it, and
 a relative path is saved as the absolute path it names in `--cwd`, which defaults to the folder you
-run `add` in. The service is ready once its process runs. `--file` keeps the full definition shape
+run `add` in. An explicit empty or whitespace-only `--cwd` refuses `USAGE_INVALID` (exit 1)
+before a definition is saved. The service is ready once its process runs. `--file` keeps the full definition shape
 below, for readiness over HTTP, environment references or a credential file.
 
 The presets built into the CLI are `auth-service`, `broker`, `delivery`, `exec-endpoint`,
