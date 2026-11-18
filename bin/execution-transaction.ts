@@ -13,19 +13,25 @@ interface ExecutionTransaction {
   target: RetainedExecutionGeneration;
 }
 
-/** The admission check runs before creating staging, records or configuration directories. */
+/** Restore owner write on owned update directories before creating staging, records or configuration. */
 export function assertExecutionDestination(installed: string): void {
   if (existsSync(join(installed, "desktop-runtime.json"))) throw new Error("staged execution updates are unavailable on the desktop runtime");
   if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("staged execution updates are unavailable on this platform");
-  for (const path of [installed, dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))]) {
+  for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))]) {
     const stat = lstatSync(path);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe staged update destination: ${path}`);
     executionLocation(path);
   }
-  try {
-    for (const path of [installed, join(installed, "dist"), dirname(dirname(installed))]) accessSync(path, constants.W_OK);
-  } catch {
-    throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installed))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run \`cotal update\` as your normal account, without sudo`);
+  for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed))]) {
+    const stat = lstatSync(path);
+    const owned = stat.uid === process.getuid?.();
+    try {
+      if (owned && stat.isDirectory() && (stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
+      accessSync(path, constants.W_OK);
+    } catch {
+      if (owned) throw new Error(`installation directory is not writable: ${path}; restore write access to this user-owned directory, then run \`cotal update --self\` again without sudo`);
+      throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installed))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run \`cotal update\` as your normal account, without sudo`);
+    }
   }
   selectExecutionProgram(installed);
 }

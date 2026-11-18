@@ -191,17 +191,13 @@ try {
     });
     console.log(`execution generations: ${checks} checks passed; retained selection unavailable on this platform`);
   } else {
-  check("a non-writable package refuses before creating generation storage", () => {
-    chmodSync(root, 0o500);
-    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest; then run `cotal update` as your normal account, without sudo/); }
-    finally { chmodSync(root, 0o700); }
-    assert.equal(existsSync(executionStore(root)), false);
-  });
-  check("generation store refuses a non-writable installation before creating it", () => {
-    const parent = join(scratch, "prefix/lib"); chmodSync(parent, 0o500);
-    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest; then run `cotal update` as your normal account, without sudo/); }
-    finally { chmodSync(parent, 0o700); }
-    assert.equal(existsSync(executionStore(root)), false);
+  check("retention restores owner write on user-owned installation directories", () => {
+    const directories = [root, join(root, "dist"), join(scratch, "prefix/lib/node_modules"), join(scratch, "prefix/lib")];
+    for (const path of directories) chmodSync(path, 0o500);
+    const retained = retainExecutionGeneration(root, source);
+    for (const path of directories) assert.equal(lstatSync(path).mode & 0o777, 0o700);
+    assert.equal(retained.version, "0.2.0");
+    rmSync(executionStore(root), { recursive: true });
   });
   // Homebrew keeps `lib` group-writable and npm under a umask of 0002 creates the package that way.
   const managed = [root, join(scratch, "prefix/lib/node_modules"), join(scratch, "prefix/lib")];
