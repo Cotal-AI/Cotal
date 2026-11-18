@@ -16,7 +16,7 @@ import {
 } from "../lib/persona-files.js";
 import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { yesRequired } from "../lib/confirmation-required.js";
+import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { checkHarness } from "./config.js";
 
 export const personaFlags = [
@@ -39,8 +39,19 @@ type Values = PersonaValues;
 const usage = (message: string) => new CommandFailure("refused", "USAGE_INVALID", message);
 const createOnly = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
 
+export function validatePersonaArguments(args: ParsedArgs): void {
+  presentationOf(args.values);
+  if (args.positionals[0] !== "create") return;
+  const values = args.values as Values;
+  for (const flag of ["file", "from"] as const) {
+    if (values[flag] !== undefined && !values[flag]!.trim())
+      throw new CommandFailure("refused", "USAGE_INVALID", `--${flag} takes a nonempty path`, { remedy: `provide a path with --${flag} <path>, or use --${flag} - to read standard input` });
+  }
+}
+
 /** Local files only: no enrollment, broker connection, catalog refresh or manager authority. */
 export async function persona(args: ParsedArgs): Promise<void> {
+  validatePersonaArguments(args);
   const values = args.values as Values;
   const presentation = presentationOf(values);
   const [sub, name, ...extra] = args.positionals;
@@ -95,7 +106,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
     const seeded = name === "default";
     const question = seeded ? `Remove the seeded default persona '${name}' at ${path}? A bare \`cotal spawn\` launches it.` : `Remove '${name}' at ${path}?`;
     if (!values.yes) {
-      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with \`cotal persona remove ${name} --yes\`` });
+      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with \`cotal persona remove ${name}${targetWords(values)} --yes\`` });
       let confirmed = false;
       if (presentation === "plain") {
         confirmed = (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";

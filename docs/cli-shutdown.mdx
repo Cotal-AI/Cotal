@@ -676,7 +676,9 @@ cotal clean restore-fallback --attempt <id> --force [--discard-history]
 One configurable cleanup verb; every target requires `--force`, except a `--dry-run` of `store` or `all`.
 It takes one target and no extra positional arguments. A channel name after `history` refuses
 `USAGE_INVALID` (exit 1); it does not narrow the purge. The dry run quotes an explicit `--store-dir`
-value in its printed force command so it stays one shell argument.
+value in its printed force command so it stays one shell argument. A run without `--force` refuses
+`USAGE_INVALID` (exit 1) and prints the command to run, keeping `--store-dir` for `store` and `all`
+and `--space`, `--server`, `--creds` and `--dms` for `history`, so that command acts on the same target.
 Only `history` takes `--space`, `--server` or `--creds`. Every other target acts on the root of the
 folder it runs in, so it refuses them `USAGE_INVALID` (exit 1) before local cleanup inspects or removes
 root state.
@@ -690,7 +692,11 @@ root state.
   store's `jetstream` directory, its `.cotal-store-id` marker and the broker's `ocsp` folder, then
   the empty store directory. A
   store directory that holds anything else refuses `CONFLICT` (exit 2), names those entries and
-  removes nothing; move them out and run it again.
+  removes nothing; move them out and run it again. Cleanup and reset check that the store root and
+  each directory inside it are readable, writable and searchable before moving or removing the store.
+  A permission failure refuses `PERMISSION_DENIED` (exit 2), keeps the store in place and names
+  `chmod -R u+rwX` on its root. A stopped named open space is identified by its retained broker
+  configuration, so its own streams do not count as another space's data.
 - `all` is `store` plus the space identity (`.cotal/auth`), the local creds and markers tied to
   it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
   registry entry; the next `cotal up` mints a fresh identity. On a root deployed with `up -f`, plain

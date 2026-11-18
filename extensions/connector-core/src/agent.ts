@@ -1696,8 +1696,8 @@ export class MeshAgent extends EventEmitter {
   }
 
   /** Named seat reads use presence to select a manager, never the class queue. Presence confers
-   *  no authority: an instance route the credential cannot publish remains permission-denied.
-   *  Generic user-auth invocation keeps its existing credential path. */
+   *  no authority: an instance route or manager-call exchange the caller cannot obtain remains
+   *  permission-denied. Other user-auth invocations keep their existing credential path. */
   async invokeEndpoint(
     endpoint: string,
     command: string,
@@ -1705,12 +1705,15 @@ export class MeshAgent extends EventEmitter {
     opts: Parameters<CotalEndpoint["invokeService"]>[3] = {},
   ): Promise<EpAttributedReply> {
     let ownerInstance = opts.instanceId;
-    const seatRead = endpoint === BASELINE_LIFECYCLE_ENDPOINT && !this.config.userAuth &&
+    const seatRead = endpoint === BASELINE_LIFECYCLE_ENDPOINT &&
       command === "inspect" && typeof args?.name === "string";
     let selected: Presence | undefined;
+    let dropBearer: (() => void) | undefined;
     if (seatRead) {
       const roster = await this.ep.readPresence();
-      const peer = resolvePeerInRoster(roster.filter(p => p.status !== "offline"), args!.name as string);
+      const live = roster.filter(p => p.status !== "offline" &&
+        (!this.config.userAuth || p.card.id.startsWith(`${this.config.userAuth.owner}.`)));
+      const peer = resolvePeerInRoster(live, args!.name as string);
       if (!peer) throw new EpEnvelopeError("not-found", `no agent ${JSON.stringify(args!.name)} is held in live presence`, undefined, "not-executed");
       const instance = peer.card.meta?.["ai.cotal.manager.instance"];
       if (typeof instance !== "string")
@@ -1723,7 +1726,23 @@ export class MeshAgent extends EventEmitter {
       args = { ...args, name: peer.card.name };
     }
     try {
-      const reply = await this.ep.invokeService(endpoint, command, args, opts);
+      let reply: EpAttributedReply;
+      if (seatRead && this.config.userAuth) {
+        const bearerCmd = this.config.userAuth.bearerCmd;
+        if (!bearerCmd)
+          throw new EpEnvelopeError("failed-precondition", `${command}: this agent's bearer comes from its host, which issues no manager-call bearer, so manager operations are unavailable`, undefined, "not-executed");
+        const bearerArgv = [...bearerCmd, "--manager-call", "--manager-instance", ownerInstance!];
+        const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal).catch((e: unknown) => {
+          if (e instanceof Error && e.message.startsWith("agent-bearer: exchange refused:"))
+            throw new EpEnvelopeError("permission-denied", e.message, undefined, "not-executed");
+          throw e;
+        });
+        dropBearer = () => { this.managerBearers.delete(JSON.stringify(bearerArgv)); };
+        const { instanceId: _instanceId, classInstanceId: _classInstanceId, follow: _follow, ...invokeOpts } = opts;
+        reply = await invokeUserManager({ ...this.config, managerInstanceId: ownerInstance }, bearer, command, args, invokeOpts);
+      } else {
+        reply = await this.ep.invokeService(endpoint, command, args, opts);
+      }
       if (selected && reply.reply.ok) {
         const row = reply.reply.data as { id?: string; lifecycleUid?: string };
         if ((row.id !== selected.card.id && `${this.ep.principal.owner}.${row.id}` !== selected.card.id) || row.lifecycleUid !== selected.lifecycleUid)
@@ -1731,6 +1750,7 @@ export class MeshAgent extends EventEmitter {
       }
       return reply;
     } catch (error) {
+      dropBearer?.();
       if (seatRead && ownerInstance !== undefined && unansweredRequest(error))
         throw new EpEnvelopeError("unavailable", `TARGET_UNAVAILABLE: manager instance ${ownerInstance} did not answer ${endpoint}.${command}`, (error as EpEnvelopeError).details, (error as EpEnvelopeError).outcome);
       throw error;

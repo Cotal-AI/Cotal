@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const root = fileURLToPath(new URL("..", import.meta.url));
+const root = fileURLToPath(new URL("../..", import.meta.url));
 
 // A `/** */` block documents the declaration directly below it. When a second doc block sits
 // directly below the first, the first documents nothing: TypeScript attaches only the nearer block,
@@ -20,11 +20,15 @@ const files = execFileSync("git", ["ls-files", "-z", "--", "packages", "implemen
 // The doc blocks of a file, in source order. Comments live only in the trivia before a token, so
 // this walks the parser's tokens and scans that trivia: a `/**` inside a string, a template literal,
 // JSX text or another comment is text, never a doc block.
+/** @param {string} name @param {string} text */
 function docBlocks(name, text) {
   const file = ts.createSourceFile(name, text, ts.ScriptTarget.Latest);
   const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, text);
+  /** @param {ts.SyntaxKind} kind */
   const isTrivia = (kind) => kind >= ts.SyntaxKind.FirstTriviaToken && kind <= ts.SyntaxKind.LastTriviaToken;
+  /** @type {{ start: number, end: number }[]} */
   const blocks = [];
+  /** @param {ts.Node} node @returns {void} */
   const visit = (node) => {
     if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) return;
     if (!ts.isToken(node)) return node.getChildren(file).forEach(visit);
@@ -44,6 +48,7 @@ function docBlocks(name, text) {
 const failures = [];
 for (const name of files) {
   const text = readFileSync(`${root}/${name}`, "utf8");
+  /** @param {number} offset */
   const line = (offset) => text.slice(0, offset).split(/\r\n|[\r\n\u2028\u2029]/).length;
   const blocks = docBlocks(name, text);
   for (const block of blocks) {

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beginGlobalUpdateChild, inspectGlobalUpdateChild, updateCustodyPrivateGroup, type UpdateCustodyAccounts } from "../src/extension-mutation.js";
+import { beginGlobalUpdateChild, claimGlobalNpmUpdateLock, inspectGlobalUpdateChild, updateCustodyPrivateGroup, type UpdateCustodyAccounts } from "../src/extension-mutation.js";
 import { acquireLock } from "../src/advisory-lock.js";
 
 const uid = process.getuid!(), gid = process.getgid!();
@@ -53,5 +53,21 @@ try {
     assert.throws(() => inspectGlobalUpdateChild(root, accounts), /not protected/);
     rmSync(markerPath);
   } finally { lock.release(); }
+  chmodSync(ancestor, 0o755);
+  const markerPath = join(root, ".cotal-update-child");
+  const marker = { phase: "ambiguous", owner: process.pid, nonce: "a".repeat(24), operation: "global reconcile", reason: "interrupted" };
+  writeFileSync(markerPath, JSON.stringify(marker));
+  assert.throws(() => claimGlobalNpmUpdateLock(root, { repairAmbiguous: () => assert.fail("live owner must not enter repair") }), /owner is still running/);
+  writeFileSync(markerPath, JSON.stringify({ ...marker, owner: 2147483647 }));
+  assert.throws(() => claimGlobalNpmUpdateLock(root), /ended ambiguously/);
+  assert.throws(() => claimGlobalNpmUpdateLock(root, { repairAmbiguous: () => { throw new Error("live writer"); } }), /live writer/);
+  assert.equal(JSON.parse(readFileSync(markerPath, "utf8")).phase, "ambiguous");
+  let checked = false;
+  const release = claimGlobalNpmUpdateLock(root, { repairAmbiguous: () => { checked = true; } });
+  try {
+    assert.equal(checked, true);
+    assert.equal(readdirSync(root).filter(name => name.startsWith(".cotal-update-child.retained-")).length, 1);
+    assert.throws(() => claimGlobalNpmUpdateLock(root), /another cotal-ai update/);
+  } finally { release(); }
 } finally { rmSync(scratch, { recursive: true, force: true }); }
 console.log("update-custody.smoke: local primary-group proof and real-path marker inspection passed");

@@ -26,7 +26,7 @@
     },
     {
       "name": "the endpoint never consults start-up before adopting",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "      if (this.plane3?.startupComplete?.() === false)\n",
       "replace": "      if (this.plane3?.startupComplete?.() === false && Date.now() < 0)\n",
       "expectRed": "an adoption landing before start-up finished was refused as not started, nothing adopted",

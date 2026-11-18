@@ -3,14 +3,16 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readDocument } from "@cotal-ai/docs-content";
 
-const docsDir = fileURLToPath(new URL("../docs/", import.meta.url));
+const docsDir = fileURLToPath(new URL("../../docs/", import.meta.url));
 
 // docs/design holds working lane documents: frozen review artifacts with their
 // own vocabulary. The published-docs voice gate deliberately does not apply
 // there. Every other subdirectory of docs/ is scanned.
 const exemptDirs = new Set(["design"]);
 
+/** @type {string[]} */
 const files = [];
+/** @param {string} dir @returns {void} */
 const walk = (dir) => {
   for (const name of readdirSync(dir).sort()) {
     const path = join(dir, name);

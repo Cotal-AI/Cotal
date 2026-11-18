@@ -55,6 +55,12 @@ try {
 
   const v2 = fakeOpenCode("oc2", "opencode v2.2.5", `cat '${replyFile}'`);
   const listed = await list(v2);
+  const reference = readFileSync(new URL("../../../docs/opencode-connector-reference.mdx", import.meta.url), "utf8");
+  check(
+    "the reference describes the available 2.x catalog without an obsolete limitation",
+    listed.catalog?.source === "opencode api --standalone GET /api/model" &&
+      reference.includes(`\`${listed.catalog.source}\``) && !reference.includes("lists no OpenCode catalog"),
+  );
   const effort = (...names: string[]) => names.map((name) => ({ name }));
   check(
     "on 2.x the catalog lists the server's models as provider/model ids with their variants",
