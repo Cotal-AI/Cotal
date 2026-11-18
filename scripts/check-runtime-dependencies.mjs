@@ -3,8 +3,8 @@ import { execFileSync } from 'node:child_process';
 import { isBuiltin } from 'node:module';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { isMainEntry } from './main-entry.mjs';
 
 export function runtimeImports(text, file = 'output.js') {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
@@ -101,7 +101,7 @@ export function auditRepository(root) {
   return packages.map(row => auditPackage(row.path));
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainEntry(import.meta.url)) {
   const results = auditRepository(resolve(import.meta.dirname, '..'));
   const violations = results.flatMap(result => result.violations);
   if (process.argv.includes('--json')) console.log(JSON.stringify(results, null, 2));

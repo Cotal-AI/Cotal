@@ -93,12 +93,12 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       // account record that will not load, so it names no space. A folder above it this account
       // cannot enter is named with no chmod, as it may belong to another account.
       if (d.space === undefined && d.records !== undefined)
-        return parts(`the trust material under ${d.root} holds ${d.records.length === 1 ? "an account record" : `${d.records.length} account records`} that will not load (${d.records.map(oneLine).join(", ")}), so which spaces it holds is unknown`, `repair or remove ${d.records.length === 1 ? "that record" : "those records"}, or name a space with \`--space <name>\``);
+        return parts(`the trust material under ${d.root} holds ${d.records.length === 1 ? "an account record" : `${d.records.length} account records`} that will not load (${d.records.map(oneLine).join(", ")}), so which spaces it holds is unknown`, `restore ${d.records.map(oneLine).join(", ")} from backup; do not remove other account records, or name a space with \`--space <name>\``);
       if (d.space === undefined)
         return parts(`the trust material under ${d.root} cannot be read (${err.message}), so which spaces it holds is unknown`, d.folder === undefined
           ? `make ${join(d.root!, ".cotal", "auth")} a folder this account can read and enter, or name a space with \`--space <name>\``
           : `this account cannot enter ${d.folder}, which holds the trust material; get access to that folder from its owner, or name a space with \`--space <name>\``);
-      return parts(`space "${d.space}"'s trust material under ${d.root} will not load (${err.message})`, "repair or remove the account record, then re-run `cotal up`");
+      return parts(`space "${d.space}"'s trust material under ${d.root} will not load (${err.message})`, d.trustRemedy ?? "restore the unreadable trust file named above from backup; do not remove other account records, then re-run `cotal up`");
     case "not-started": {
       // A prepared space names itself, and the stack operation its root records with no outcome,
       // which `up` may refuse to settle while `status` names the step that does. A root whose stack
