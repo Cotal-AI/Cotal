@@ -18,9 +18,10 @@
  *   5. on the compiled engine, the same five-look bound, measured through durable appends;
  *   6. a resumed wait whose journal holds four looks, under a ceiling of 5, makes one more look and
  *      ends L4009;
- *   7-27. on both engines: caught deadline, handler fault, refused retry/history/deadline,
+ *   7-29. on both engines: caught deadline, handler fault, refused retry/history/deadline,
  *      cancellation, already-spent effects, effectful and throwing probes, 999/1000ms boundaries,
- *      catchable subsecond resume, and static no-expression template literals.
+ *      catchable subsecond resume, caught probe admission refusal inside a reserved look,
+ *      and static no-expression template literals.
  *
  * Run: pnpm smoke:runtime-wait-until-bounds   (needs nats-server on PATH and a built `bin/dist`)
  */
@@ -55,7 +56,7 @@ teardownOnSignal(broker);
 const servers = `nats://127.0.0.1:${PORT}`;
 const root = mkdtempSync(join(tmpdir(), "cotal-wub-root-"));
 
-const DECLARED = 27;
+const DECLARED = 29;
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log("  ✓", n); } else { fail++; console.error("  ✗ FAIL:", n, extra ?? ""); } };
 process.on("exit", () => {
@@ -249,6 +250,22 @@ for (const engine of ["walker", "compiled"] as const) {
     const replayed = await execute(engine, source, `${engine}-probe`, 5, r.rows.slice(0, prefixCut + 1));
     const seed = new Journal({ run: `${engine}-probe`, entries: r.rows }).dispatchedEffects();
     c(`${engine}: probe effects share ceiling with recorded looks on fresh and resume`, r.code === "L4009" && replayed.code === "L4009" && looks(r.rows) === 2 && looks(replayed.rows) === 2 && settledSleeps(r.rows) === 2 && seed === 4, { code: r.code, looks: looks(r.rows), seed });
+  }
+  {
+    // The wait key and first probe sleep spend two effects. The next look reserves the third,
+    // so its probe sleep is refused. Catching that L4009 must leave room for the final sleep:
+    // only the reservation is refunded, and rejected effect admission must not increment.
+    const id = `${engine}-caught-probe-ceiling`;
+    const source = caught(`await waitUntil(async () => { await sleep("1s", { name: "probe" }); return "pending"; }, { name: "w", every: "1s", deadline: "1h", ${NEVER} });`, "L4009") + 'await sleep("1s", { name: "after-catch" });';
+    const fresh = await execute(engine, source, id, 3);
+    // Probe admission faults leave the parent wait pending. Resume the durable first-look
+    // prefix to exercise the same reserved-look refusal, not an assumed failed settlement.
+    const cut = fresh.rows.findIndex(e => e.kind === "waitUntil" && e.observations?.length === 1);
+    const prefix = fresh.rows.slice(0, cut + 1);
+    const replayed = await execute(engine, source, id, 3, prefix);
+    const seed = new Journal({ run: id, entries: prefix }).dispatchedEffects();
+    const finished = (rows: readonly JournalEntry[]) => rows.some(e => e.kind === "sleep" && e.name === "after-catch" && e.status === "ok");
+    c(`${engine}: caught probe L4009 inside reserved look leaves one effect on fresh and resume`, cut >= 0 && seed === 2 && looks(prefix) === 1 && fresh.ok && replayed.ok && settledSleeps(fresh.rows) === 2 && settledSleeps(replayed.rows) === 2 && finished(fresh.rows) && finished(replayed.rows), { fresh: fresh.code, resumed: replayed.code, seed, looks: looks(prefix), freshSleeps: settledSleeps(fresh.rows), resumedSleeps: settledSleeps(replayed.rows) });
   }
   {
     const source = `await race({ fast: async () => { await sleep("500ms", { name: "winner" }); return "done"; }, slow: async () => { ${POLL} } }, { name: "r" });` + SLEEPS;
