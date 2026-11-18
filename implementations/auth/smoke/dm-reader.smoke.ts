@@ -42,7 +42,7 @@ import { createUser } from "@nats-io/nkeys";
 import {
   CotalEndpoint, DmBindRefusedError, DmDurableMissingError, chatSubject, dlvDurable, dlvStream, dmDurable, dmStream,
   idFromCreds, isConsumerNotFound, mintCreds, mintLifecycleUid, newIdentity, permissionsFor, presenceBucket, principalKey,
-  setupSpaceStreams, unicastSubject, type CotalMessage, type EndpointOptions, type SignerAnchor,
+  setupSpaceStreams, unicastSubject, type CotalMessage, type EndpointOptions, type SignerAnchor, bearerInboxConnId
 } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { spaceSegment } from "@cotal-ai/workspace";
@@ -166,7 +166,7 @@ try {
   }
   /** Connect through the callout with a user bearer; the inbox nonce rides the connect name. */
   async function bearerConn(bearer: string): Promise<NatsConnection> {
-    const nonce = `ibx${newIdentity().id.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 24)}`;
+    const nonce = bearerInboxConnId(bearer);
     const nc = await connect({ servers: fx.servers, authenticator: [credsAuthenticator(enc(a.sentinelCreds)), tokenAuthenticator(bearer)], name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0, timeout: 4000 });
     conns.push(nc);
     return nc;

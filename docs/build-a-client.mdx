@@ -83,7 +83,9 @@ Connect with the minted credential and use its assigned principal as the wire id
 Before any request, consumer pull, or KV watch, set the reply inbox prefix to `_INBOX_<connId>`.
 Use the connection identifier, not the owner and actor principal.
 In static mode the identifier is the connection nkey.
-In user mode it is the client-chosen nonce.
+In user mode it is `<owner>-<actor>-<nonce>`: the bearer's owner and actor, then a nonce of letters, digits and underscores.
+Send it as the connection name as well.
+The auth callout refuses a name outside the bearer's own owner and actor, and refuses a bare nonce.
 See [SPEC sections 2 and 10](../SPEC.md#10-connection-and-onboarding).
 
 For verification, check that a valid credential connects and an invalid credential is refused.

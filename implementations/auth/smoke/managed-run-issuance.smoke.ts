@@ -31,7 +31,7 @@ import {
   registry, RUN_HOST_KIND, COTAL_LANG_RUN_HOST, type RunHost,
   identityFromCreds, credsFromJwt,
   CotalEndpoint, type Connector, type LaunchOpts, type RuntimeProvider, type AgentHandle,
-  runDriverCaller, epRequestSubject,
+  runDriverCaller, epRequestSubject, bearerInboxConnId, userInboxConnId,
 } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import {
@@ -146,8 +146,9 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return result;
 }
 const authority = (request: import("@cotal-ai/core").RemoteManagerAuthorityRequest) => post<RemoteManagerAuthorityMaterial>("/manager-service-authority", { idpToken, request });
-async function dial(actor: string, actorToken?: string, nonce = mintLifecycleUid()) {
+async function dial(actor: string, actorToken?: string, connId?: string) {
   const exchange = await post<{ token: string }>("/exchange", { ...(actorToken ? { owner, actorToken } : { idpToken }), actor, view: "manager-caller", managerInstanceId: state.instanceId });
+  const nonce = connId ?? bearerInboxConnId(exchange.token, mintLifecycleUid());
   const nc = await connect({ servers: fx.servers, authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(exchange.token)], name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0, timeout: 5000 });
   conns.push(nc);
   return { nc, nonce, token: exchange.token };
@@ -565,7 +566,7 @@ try {
     assert.ok(result.error?.details?.some((detail) => detail.kind === EP_UNBOUND_CALLER_AUTHORITY));
     const exchange = await post<{ token: string }>("/exchange", { owner, actor: "denied", actorToken: secret.actorToken, view: "manager-caller", managerInstanceId: state.instanceId });
     grantActor(a.stateDir, { owner, actor: "norun", scope: ["spawn"], allowSubscribe: [], allowPublish: [] });
-    const nonce = mintLifecycleUid();
+    const nonce = bearerInboxConnId(exchange.token, mintLifecycleUid());
     const nc = await connect({ servers: fx.servers, authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(exchange.token)], name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0 });
     conns.push(nc);
     await assert.rejects(issuedUserCaller(nc, a.space, nonce, expected), /Permissions Violation/);
@@ -579,7 +580,7 @@ try {
     grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, owner, actor: "freshparent", scope: ["run"], allowSubscribe: [], allowPublish: [], parent: `${owner}.changing`, lifecycleUid, tokenHash: secret.tokenHash });
     const exchange = await post<{ token: string }>("/exchange", { owner, actor: "freshparent", actorToken: secret.actorToken, view: "manager-caller", managerInstanceId: state.instanceId });
     grantActor(a.stateDir, { ...parent, scope: ["admin"] });
-    const nonce = mintLifecycleUid();
+    const nonce = bearerInboxConnId(exchange.token, mintLifecycleUid());
     const nc = await connect({ servers: fx.servers, authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(exchange.token)],
       name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0 });
     conns.push(nc);
@@ -600,7 +601,7 @@ try {
       const row = JSON.parse(readFileSync(file, "utf8"));
       if (parent !== undefined) row.parent = parent;
       writeFileSync(file, JSON.stringify(row));
-      const nonce = mintLifecycleUid();
+      const nonce = bearerInboxConnId(exchanged.token, mintLifecycleUid());
       const nc = await connect({ servers: fx.servers, authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(exchanged.token)], name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0 });
       conns.push(nc);
       await assert.rejects(issuedUserCaller(nc, a.space, nonce, { owner, actor, uid: lifecycleUid }), /Permissions Violation/);
@@ -617,7 +618,7 @@ try {
   });
   await cell(23, async () => {
     // The generation and accepted row a callout without the listing row issued for this nonce.
-    const nonce = mintLifecycleUid();
+    const nonce = userInboxConnId(owner, "runner", mintLifecycleUid());
     const generation = mintGeneration(Math.floor(Date.now() / 1000) + 600);
     const ref = { space: a.space, owner, actor: "runner", uid, generation };
     const acceptedToken = connectionAcceptedToken(nonce);

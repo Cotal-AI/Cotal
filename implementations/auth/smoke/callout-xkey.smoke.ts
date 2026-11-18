@@ -32,7 +32,7 @@ import { Algorithms, decode, encode } from "@nats-io/jwt";
 import { createCurve, createServer, createUser, fromCurveSeed, type KeyPair } from "@nats-io/nkeys";
 import nacl from "tweetnacl";
 import { SignJWT, generateKeyPair } from "jose";
-import { createSpaceAuth, isReachable, serverConfig } from "@cotal-ai/core";
+import { createSpaceAuth, isReachable, serverConfig, bearerInboxConnId } from "@cotal-ai/core";
 import { createCalloutAuth, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER, type CalloutAuth, type CalloutConnection, type CalloutMsg } from "../src/index.js";
 import { XKEY_SHARED_KEY_CAP } from "../src/callout.js";
 import { pickFreePort } from "./_free-port.js";
@@ -224,10 +224,10 @@ const bearer = async () => {
 async function connects(k: number): Promise<number> {
   let ok = 0;
   for (let i = 0; i < k; i++) {
-    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
     try {
+      const token = await bearer(), nonce = bearerInboxConnId(token);
       const nc = await connect({ servers: SERVERS, maxReconnectAttempts: 0, timeout: 4000, name: nonce, inboxPrefix: `_INBOX_${nonce}`,
-        authenticator: [credsAuthenticator(enc(live.sentinelCreds)), tokenAuthenticator(await bearer())] });
+        authenticator: [credsAuthenticator(enc(live.sentinelCreds)), tokenAuthenticator(token)] });
       conns.push(nc);
       ok++;
       await nc.close();

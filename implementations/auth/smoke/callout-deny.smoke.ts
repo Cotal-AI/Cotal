@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
-import { createSpaceAuth, isReachable, serverConfig, mintLifecycleUid } from "@cotal-ai/core";
+import { createSpaceAuth, isReachable, serverConfig, mintLifecycleUid, bearerInboxConnId } from "@cotal-ai/core";
 // One lifecycle for the smoke's minted agent grants (SPEC 13.1: grants are lifecycle-keyed).
 const smokeUid = mintLifecycleUid();
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
@@ -86,7 +86,7 @@ try {
   // asserts the client gets a PROMPT signed refusal, not a hang.
   const denyConnect = async (timeoutMs: number) => {
     const b = await bearer("agentx");
-    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
+    const nonce = bearerInboxConnId(b);
     const t0 = Date.now();
     try {
       const nc = await connect({

@@ -24,7 +24,7 @@ A principal is an `owner.actor` pair. The owner identifies the human or organiza
 
 Open development meshes use owner `local`. Per-user authentication derives an opaque owner token, `u_` followed by 26 base32 characters. The token avoids putting the person's identity in routing subjects.
 
-A locally generated nkey authenticates a connection. The signer receives its public key. The nkey is distinct from the principal, and static connections use it to scope their reply inbox.
+A locally generated nkey authenticates a connection. The signer receives its public key. The nkey is distinct from the principal, and static connections use it to scope their reply inbox. Under per-user authentication the client names its reply inbox `<owner>-<actor>-<nonce>` from its own bearer, and the auth callout grants that inbox only to a bearer of the same owner and actor.
 
 The broker pins sender tokens in publish subjects to the connection's principal. A peer cannot publish as another owner or as a sibling actor. Receivers must also reject a payload whose `from.id` differs from the subject sender. Both checks are required for sender authenticity ([SPEC §3](../SPEC.md#3-subject-layout), [§5](../SPEC.md#5-envelopes)).
 

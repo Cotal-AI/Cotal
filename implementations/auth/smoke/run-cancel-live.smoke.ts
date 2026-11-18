@@ -12,7 +12,7 @@ import {
   resolveService, invokeCommand, registry, type RuntimeProvider, type IssuedCaller,
   RUN_HOST_KIND, COTAL_LANG_RUN_HOST, recordsBucket, recordStatusKey, RECORD_KINDS, admissionBucket, revocationKey, type RunHost,
   type RemoteManagerAuthorityMaterial, type RemoteRunAdmissionResult, type RemoteRunAttemptResult,
-  type RemoteRunCancelResult, type RunCancelResult, type RunStatusView, type EndpointReply,
+  type RemoteRunCancelResult, type RunCancelResult, type RunStatusView, type EndpointReply, bearerInboxConnId
 } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import {
@@ -143,7 +143,7 @@ const authority = (request: import("@cotal-ai/core").RemoteManagerAuthorityReque
   post<RemoteManagerAuthorityMaterial>("/manager-service-authority", { idpToken, request });
 async function dial(actor: string, uid: string) {
   const exchange = await post<{ token: string }>("/exchange", { idpToken, actor, view: "manager-caller", managerInstanceId: state.instanceId });
-  const nonce = mintLifecycleUid();
+  const nonce = bearerInboxConnId(exchange.token, mintLifecycleUid());
   const nc = await connect({ servers: fx.servers, authenticator: [credsAuthenticator(new TextEncoder().encode(account.sentinelCreds)), tokenAuthenticator(exchange.token)],
     name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0, timeout: 5000 });
   connections.push(nc);

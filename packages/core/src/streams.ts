@@ -14,7 +14,7 @@ import {
 } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
 import { tokenAuthenticator, nanos, type NatsConnection } from "@nats-io/transport-node";
-import { dialerFor, isPublishPermissionDenied } from "./endpoint.js";
+import { decodeBearerPrincipal, dialerFor, isPublishPermissionDenied } from "./endpoint.js";
 import { Kvm } from "@nats-io/kv";
 import { Objm } from "@nats-io/obj";
 import {
@@ -49,6 +49,7 @@ import {
   principalKey,
   memberKey,
   deprovisionTargetPrincipal,
+  userInboxConnId,
 } from "./subjects.js";
 import type { KV } from "@nats-io/kv";
 import { idFromCreds } from "./identity.js";
@@ -197,6 +198,14 @@ export interface StandaloneAuth {
   tls: boolean;
 }
 
+/** The user-mode connId for a connection that presents `bearer`: core's `userInboxConnId` over the
+ *  bearer's own owner and actor and `nonce`, a fresh random one when absent. The bearer is decoded,
+ *  not verified; the auth callout verifies it and admits this name only for that same principal. */
+export function bearerInboxConnId(bearer: string, nonce = `ibx${randomUUID().replace(/-/g, "")}`): string {
+  const { owner, actor } = decodeBearerPrincipal(bearer);
+  return userInboxConnId(owner, actor, nonce);
+}
+
 /** Connection options for a privileged STANDALONE helper (`setupSpaceStreams`, `clearSpaceHistory`,
  *  `clearChannel`, the channel-registry helpers): pin the reply inbox to the connection's own
  *  identity. A scoped cred (provisioner/purger/operator) subscribes only `_INBOX_<id>.>`, so without
@@ -204,8 +213,8 @@ export interface StandaloneAuth {
  *  (Permissions Violation), hanging every `jetstreamManager`/`streams.*` request.
  *
  *  USER MODE (`bearer` + `sentinelCreds`) mirrors the endpoint's callout-shaped connect: the
- *  sentinel creds land the connection in the callout account, the bearer rides `auth_token`, and a
- *  client-chosen inbox NONCE goes out as the connect `name` — the callout scopes `_INBOX_<nonce>.>`
+ *  sentinel creds land the connection in the callout account, the bearer rides `auth_token`, and
+ *  {@link bearerInboxConnId} goes out as the connect `name`. The callout scopes `_INBOX_<connId>.>`
  *  from it (the client cannot know its nkey pre-connect). Open mode (no auth) connects bare. */
 export function standaloneConnectOpts(auth: StandaloneAuth): Record<string, unknown> {
   // The `= {}` default is deliberately GONE. It was the omission hole: it let a caller build
@@ -228,10 +237,10 @@ export function standaloneConnectOpts(auth: StandaloneAuth): Record<string, unkn
     if (!auth.sentinelCreds)
       throw new Error("user-mode standalone connect requires sentinelCreds alongside the bearer");
     if (auth.creds) throw new Error("standalone connect takes creds OR bearer+sentinelCreds, never both");
-    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
+    const connId = bearerInboxConnId(auth.bearer);
     return {
-      name: nonce,
-      inboxPrefix: `_INBOX_${nonce}`,
+      name: connId,
+      inboxPrefix: `_INBOX_${connId}`,
       authenticator: [nativeCredsAuthenticator(auth.sentinelCreds), tokenAuthenticator(auth.bearer)],
       ...tlsOpt,
     };

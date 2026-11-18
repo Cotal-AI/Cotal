@@ -2,16 +2,16 @@
  * An auth-callout connection's history-reader deletes are keyed on what the server assigned it (#4123).
  *
  * The observer and admin profiles may delete their own history readers, `hist_<readerId>_<n>`. Under
- * the auth callout a connection's connId is the inbox nonce the client chose and passed as its
- * connection name, so deletes keyed on it let one connection claim another's readers by naming the
- * same nonce. The callout now keys them on the server's id and the client id the server assigned the
- * connection, which the client reads from the server's INFO and does not choose.
+ * the auth callout a connection's connId is the inbox name the client chose and passed as its
+ * connection name, so it cannot key those deletes. The callout keys them on the server's id and the
+ * client id the server assigned the connection, which the client reads from the server's INFO and
+ * does not choose.
  *
  * The suite runs the shipped callout and permission builder with two admin-view principals. It reads
- * history through a user-mode endpoint, learning that endpoint's nonce and reader name from its
+ * history through a user-mode endpoint, learning that endpoint's inbox name and reader name from its
  * requests on the wire, as any responder sees a reply subject. It then connects as the other principal
- * under the same nonce and tries to delete a reader under the endpoint's name. Last, it reconnects the
- * endpoint, whose reader names move with the new connection, and reads again.
+ * and tries to delete a reader under the endpoint's name. Last, it reconnects the endpoint, whose
+ * reader names move with the new connection, and reads again.
  *
  * Run: pnpm smoke:history-reader-callout:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -26,7 +26,7 @@ import { encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import {
-  CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
+  CotalEndpoint, bearerInboxConnId, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
   seedChannelRegistry, provisionAgent, mintLifecycleUid, chatStream, type CotalMessage,
 } from "@cotal-ai/core";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
@@ -106,7 +106,7 @@ try {
   const CHAT = chatStream(space);
   const count = async () => (await jsm.streams.info(CHAT)).state.consumer_count;
   const exists = async (name: string) => jsm.consumers.info(CHAT, name).then(() => true, () => false);
-  /** Each history-reader create on CHAT: the consumer name and the inbox nonce its reply names. */
+  /** Each history-reader create on CHAT: the consumer name and the inbox name its reply names. */
   const seen: { name: string; nonce: string }[] = [];
   for (const subject of [`$JS.API.CONSUMER.CREATE.${CHAT}`, `$JS.API.CONSUMER.CREATE.${CHAT}.>`])
     control.subscribe(subject, { callback: (err, m) => {
@@ -135,21 +135,22 @@ try {
   const afterReads = await count();
   check(`user mode: ${READS} sequential reads all answer and leave no consumer`, answered === READS && afterReads === base, { answered, first, base, afterReads });
 
-  // 2. Another principal names the endpoint's nonce and tries to delete a reader under its name.
+  // 2. Another principal tries to delete a reader under the endpoint's name.
   const victim = seen[0];
-  check("positive control: the endpoint's reader name and nonce were seen on the wire", victim !== undefined && /^ibx[0-9a-f]{32}$/.test(victim.nonce), seen.slice(0, 1));
+  check("positive control: the endpoint's reader name and inbox name were seen on the wire", victim !== undefined && /^u_[a-z2-7]{26}-dashboard-ibx[0-9a-f]{32}$/.test(victim.nonce), seen.slice(0, 1));
   await jsm.consumers.add(CHAT, { name: victim.name, ack_policy: AckPolicy.None, mem_storage: true, inactive_threshold: 60_000_000_000 });
+  const intruderBearer = await adminBearer("intruder"), intruderName = bearerInboxConnId(intruderBearer);
   const intruder = await connect({
-    servers: SERVERS, name: victim.nonce, inboxPrefix: `_INBOX_${victim.nonce}`, maxReconnectAttempts: 0,
-    authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(await adminBearer("intruder"))],
+    servers: SERVERS, name: intruderName, inboxPrefix: `_INBOX_${intruderName}`, maxReconnectAttempts: 0,
+    authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(intruderBearer)],
   });
   raws.push(intruder);
   const intruderJsm = await jetstreamManager(intruder);
   const admitted = await intruderJsm.streams.info(CHAT).then(() => true, () => false);
-  check("positive control: the other principal is admitted as an admin view under the same nonce", admitted);
+  check("positive control: the other principal is admitted as an admin view", admitted);
   const outcome = await intruderJsm.consumers.delete(CHAT, victim.name).then(() => "deleted", (e: Error) => e.message);
   const survives = await exists(victim.name);
-  check("user mode: a connection naming another's nonce may not delete a reader under the other's name",
+  check("user mode: another principal's connection may not delete a reader under the endpoint's name",
     /permission/i.test(outcome) && survives, { outcome, survives });
   await jsm.consumers.delete(CHAT, victim.name).catch(() => {});
 

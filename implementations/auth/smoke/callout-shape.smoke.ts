@@ -13,7 +13,7 @@ import { Algorithms, decode, encode } from "@nats-io/jwt";
 import { SignJWT, generateKeyPair } from "jose";
 import { createAccount, createCurve, createServer, createUser } from "@nats-io/nkeys";
 import { CALLOUT_TIMEOUT_REASON, createCalloutAuth, startAuthCallout, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
-import { createSpaceAuth } from "@cotal-ai/core";
+import { createSpaceAuth, userInboxConnId } from "@cotal-ai/core";
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean) => {
@@ -34,7 +34,7 @@ const serverCurve = createCurve();
 const serverXkey = serverCurve.getPublicKey();
 
 /** Build a sealed callout request. Overrides let each case bend exactly one property. */
-async function sealedRequest(opts: { signer?: ReturnType<typeof createServer>; serverIdInClaim?: string; xkeyInClaim?: string; sealWith?: string; token?: string } = {}) {
+async function sealedRequest(opts: { signer?: ReturnType<typeof createServer>; serverIdInClaim?: string; xkeyInClaim?: string; sealWith?: string; token?: string; name?: string } = {}) {
   const userNkey = createUser().getPublicKey();
   const claim = {
     aud: calloutXkeyPub,
@@ -42,7 +42,7 @@ async function sealedRequest(opts: { signer?: ReturnType<typeof createServer>; s
     nats: {
       user_nkey: userNkey,
       server_id: { name: "n", host: "127.0.0.1", id: opts.serverIdInClaim ?? serverId, xkey: opts.xkeyInClaim ?? serverXkey },
-      connect_opts: { auth_token: opts.token ?? "irrelevant.for.shape", name: userNkey },
+      connect_opts: { auth_token: opts.token ?? "irrelevant.for.shape", name: opts.name ?? userNkey },
       client_info: { id: 1 },
       type: "authorization_request",
       version: 2,
@@ -147,7 +147,9 @@ const options: StartAuthCalloutOpts = {
   expectedServerIds: [serverId], recordIssuance: async () => {}, authorizeActor: () => {},
   permissionsFor: () => ({ pub: { deny: [">"] }, sub: { deny: [">"] } }), log: () => {},
 };
-const boundedMessages = await Promise.all(Array.from({ length: 40 }, async () => msg(await sealedRequest({ token }), serverXkey)));
+// The callout admits only a connection name under the bearer's own principal.
+const boundedName = userInboxConnId(owner, "bounded", "ibxboundedshape");
+const boundedMessages = await Promise.all(Array.from({ length: 40 }, async () => msg(await sealedRequest({ token, name: boundedName }), serverXkey)));
 const firstRelease = deferred(), tailRelease = deferred(), atCapacity = deferred(), atTail = deferred();
 let active = 0, peak = 0, entered = 0, yielded = 0, settled = false;
 const bounded = startAuthCallout({ async *subscribe() {
@@ -183,7 +185,7 @@ check("all admitted responses complete without exceeding the bound", boundedMess
 // A worker can fail after the input iterator ended; that failure still rejects done.
 const failureRelease = deferred(), failureEntered = deferred();
 const failure = new Error("fixture logger failed");
-const failed = startAuthCallout({ async *subscribe() { yield msg(await sealedRequest({ token }), serverXkey); } }, {
+const failed = startAuthCallout({ async *subscribe() { yield msg(await sealedRequest({ token, name: boundedName }), serverXkey); } }, {
   ...options,
   async authorizeActor() {
     failureEntered.resolve();
@@ -220,7 +222,7 @@ const tracked = async (actor: string): Promise<Tracked> => {
     .setProtectedHeader({ alg: "EdDSA" }).setSubject(owner).setAudience("shape").setIssuer("https://auth.test")
     .setIssuedAt(t).setNotBefore(t).setExpirationTime(t + 300).sign(privateKey);
   const m: Tracked = {
-    data: await sealedRequest({ token: bearer }),
+    data: await sealedRequest({ token: bearer, name: userInboxConnId(owner, actor, "ibxdeadlineshape") }),
     headers: { get: (k) => (k === "Nats-Server-Xkey" ? serverXkey : undefined) },
     answers: 0,
     respond(d) { m.answers++; m.answeredAt ??= performance.now(); m.reply ??= d; },

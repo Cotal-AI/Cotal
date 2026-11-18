@@ -60,9 +60,11 @@ export type AclResolver = (
 
 /**
  * Build the callout's `permissionsFor` hook. Maps `ValidatedUserToken` → `MintPrincipal` → core's
- * `permissionsFor("agent", …)`. `connId` here is the CLIENT-CHOSEN inbox nonce the callout reads from
- * `req.connect_opts.name` (NOT `req.user_nkey`, which the client cannot know pre-connect); it scopes the
- * reply inbox `_INBOX_<connId>.>`. `readerId` is the connection's server-assigned history-reader id
+ * `permissionsFor("agent", …)`. `connId` here is the connection `name` the callout reads from
+ * `req.connect_opts.name` (NOT `req.user_nkey`, which the client cannot know pre-connect). The callout
+ * has already checked it with core's `assertUserInboxConnId`: it is `<owner>-<actor>-<nonce>` for
+ * this bearer's own principal. It scopes the reply inbox `_INBOX_<connId>.>`. `readerId` is the
+ * connection's server-assigned history-reader id
  * (core's `calloutReaderId`), which keys the admin view's reader deletes.
  *
  * Invariants enforced HERE (not in core):

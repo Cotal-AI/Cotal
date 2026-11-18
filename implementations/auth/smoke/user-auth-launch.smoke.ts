@@ -89,7 +89,7 @@ childEnv.COTAL_ID = "cli_send";
 
 const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
 const { jetstreamManager } = await import("@nats-io/jetstream");
-const { channelBucket, chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity, presenceBucket } = await import("@cotal-ai/core");
+const { channelBucket, chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity, presenceBucket, bearerInboxConnId } = await import("@cotal-ai/core");
 const { authDir, loadLaunchPersonaFile, loadSoleSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo, loadIdpSession } = await import("../src/index.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
@@ -472,12 +472,13 @@ try {
     actor: "cli",
     view: "purger",
   });
+  const copiedName = bearerInboxConnId(copiedElevated.bearer);
   const copiedConnect = () => connect({
     servers: SERVER,
     maxReconnectAttempts: 0,
     timeout: 4_000,
-    name: "copied-elevated-probe",
-    inboxPrefix: "_INBOX_copied_elevated_probe",
+    name: copiedName,
+    inboxPrefix: `_INBOX_${copiedName}`,
     authenticator: [
       credsAuthenticator(new TextEncoder().encode(copiedElevated.sentinelCreds)),
       tokenAuthenticator(copiedElevated.bearer),

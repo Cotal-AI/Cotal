@@ -183,7 +183,7 @@ import {
   MENTION_NOTICE_KEY,
   parseSubject,
   isPrincipalOwnerToken,
-  assertInboxConnId,
+  userInboxConnId,
   type ParsedSubject,
   presenceBucket,
   channelBucket,
@@ -879,9 +879,9 @@ export class CotalEndpoint extends EventEmitter {
   /** Consecutive failed rebuilds, driving {@link nextRetryDelayMs}. Reset on every success. */
   private retryAttempt = 0;
 
-  /** The connection's authenticated nkey — dev: the creds' identity; user mode: the per-connection
-   *  ephemeral. Distinct from the {@link owner}+{@link actor} principal: it names the CONNECTION (the
-   *  broker-authenticated user), and scopes the private reply inbox (`_INBOX_<connId>`) + the credId
+  /** The connection's inbox id. Dev: the creds' identity; user mode: the {@link userInboxConnId}
+   *  this endpoint names its connections with. Distinct from the {@link owner}+{@link actor}
+   *  principal: it names the CONNECTION (the broker-authenticated user), and scopes the private reply inbox (`_INBOX_<connId>`) + the credId
    *  equality check. The principal (owner+actor) is what the WIRE grammar and every per-agent key use. */
   private readonly connId: string;
   /** This endpoint's owner token (principal half 1) — `"local"` in the dev default. */
@@ -974,8 +974,9 @@ export class CotalEndpoint extends EventEmitter {
       // USER MODE. The owner+actor PRINCIPAL comes from the bearer (server-authored: owner is callout-
       // derived, actor is the spawn-ledger actor) — never from the card. The connection nkey is minted
       // per-connect by NATS and is unknown to the client pre-connect, so the client cannot key its inbox
-      // on it; instead it picks its OWN random inbox NONCE (the connId), passes it as the connect `name`,
-      // and the callout scopes `_INBOX_<connId>.>` on that. `card.id`, if given, must match the bearer.
+      // on it; instead it names its own inbox `<owner>-<actor>-<nonce>` (the connId, see
+      // userInboxConnId), passes it as the connect `name`, and the callout scopes `_INBOX_<connId>.>` on
+      // that for this principal only. `card.id`, if given, must match the bearer.
       this.userMode = true;
       if (typeof opts.bearer === "function") {
         // Bearer SOURCE: no token exists yet, so the principal must be declared up front; every
@@ -995,7 +996,7 @@ export class CotalEndpoint extends EventEmitter {
         this.actor = claims.actor;
         this.currentBearer = opts.bearer;
       }
-      this.connId = assertInboxConnId(`ibx${randomUUID().replace(/-/g, "")}`);
+      this.connId = userInboxConnId(this.owner, this.actor, `ibx${randomUUID().replace(/-/g, "")}`);
       this.sentinelCreds = opts.sentinelCreds;
       // User mode's actor is SERVER-AUTHORED (bearer claims or a declared card checked against
       // them), never self-minted — the ephemeral value here is the inbox nonce, which is the
@@ -1755,7 +1756,7 @@ export class CotalEndpoint extends EventEmitter {
       servers: this.servers,
       // Keep native failures without eagerly capturing a request-origin stack on every operation.
       noAsyncTraces: true,
-      // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
+      // In USER MODE the connection `name` carries the principal-bound connId the callout
       // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
       name: this.userMode ? this.connId : `cotal:${this.card.name}`,
       // Per-CONNECTION inbox namespace (the "Private Inbox" pattern), keyed on the connection nkey
@@ -7229,7 +7230,7 @@ class RepeatedRefusal extends Error {}
  *  bearer) is the real boundary, so a client that lied to itself would just be denied. Per the token
  *  claim semantics the OWNER is the JWT `sub` (`act.owner` merely restates it) and the ACTOR is
  *  `act.actor`. Throws on a structurally-unusable bearer (fail-loud). */
-function decodeBearerPrincipal(bearer: string): { owner: string; actor: string } {
+export function decodeBearerPrincipal(bearer: string): { owner: string; actor: string } {
   const payload = bearer.split(".")[1];
   if (!payload) throw new Error("user-mode bearer is not a JWT (no payload segment)");
   let claims: { sub?: unknown; act?: { actor?: unknown } };

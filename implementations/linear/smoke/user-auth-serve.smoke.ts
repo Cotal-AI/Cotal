@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import {
   CotalEndpoint, EpEnvelopeError, contractDigest, invokeCommand, mintCreds, newIdentity, parseServiceAuthorityRequest, resolveService,
-  setupSpaceStreams, type AuthProvider, type ServiceAuthorityRequest,
+  setupSpaceStreams, type AuthProvider, type ServiceAuthorityRequest, bearerInboxConnId
 } from "@cotal-ai/core";
 import { startHostedAuthFixture, MemoryStore } from "../../auth/smoke/_hosted-auth-fixture.js";
 import { deriveOwnerForIdpSubject } from "../../auth/src/derive.js";
@@ -153,7 +153,7 @@ try {
   };
   const dial = async (actor: string) => {
     const token = await bearer(actor);
-    const nonce = rid();
+    const nonce = bearerInboxConnId(token);
     const nc = await connect({ servers: fx.servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0,
       authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(token)] });
     conns.push(nc); return nc;

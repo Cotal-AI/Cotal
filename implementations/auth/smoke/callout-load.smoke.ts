@@ -77,7 +77,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { SignJWT, exportJWK, generateKeyPair, importJWK, type CryptoKey, type JWK } from "jose";
-import { createSpaceAuth, chatSubject, isReachable, serverConfig, mintLifecycleUid, standaloneConnectOpts } from "@cotal-ai/core";
+import { createSpaceAuth, chatSubject, isReachable, serverConfig, mintLifecycleUid, standaloneConnectOpts, bearerInboxConnId } from "@cotal-ai/core";
 import { ConnectLimiter, createCalloutAuth, calloutPermissions, deriveOwnerToken, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { assertLoopbackListener, remoteJobCommand } from "./_callout-load-ssh.js";
@@ -215,7 +215,7 @@ async function runChild(): Promise<void> {
    *  as both `name` and `inboxPrefix` (the user-mode contract the callout scopes the reply inbox
    *  on). `keep` decides whether this models connect churn or a resident endpoint. */
   const once = async (bearer: string, keep: boolean): Promise<void> => {
-    const nonce = signing === "core" ? undefined : `ibx${randomUUID().replace(/-/g, "")}`;
+    const nonce = signing === "core" ? undefined : bearerInboxConnId(bearer);
     const t0 = performance.now();
     try {
       const nc = await connect({

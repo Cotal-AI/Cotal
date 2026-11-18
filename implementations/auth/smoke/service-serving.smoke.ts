@@ -24,7 +24,7 @@ import {
   serveAuthenticityOf, type GuestServeAuthenticity,
   endpointToken, epAuthBucket, epgateKey, mintCreds, newIdentity, parseServiceAuthorityResult, publishContractArtifact, RECORD_KINDS, recordSpecKey,
   recordStatusKey, recordsBucket, registerServiceInstance, serviceAuthorityRequestDigest, serviceWitnessDigest, setupSpaceStreams, singleDocumentClosure,
-  type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness,
+  type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness, bearerInboxConnId
 } from "@cotal-ai/core";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { cotalAuthProvider } from "../src/provider.js";
@@ -222,7 +222,7 @@ try {
     } catch (e) { return (e as Error).message; }
   };
   const dial = async (bearer: string) => {
-    const nonce = randomBytes(16).toString("hex");
+    const nonce = bearerInboxConnId(bearer);
     const nc = await connect({ servers: fx.servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 4000, reconnect: false, maxReconnectAttempts: 0,
       authenticator: [credsAuthenticator(enc.encode(a.sentinelCreds)), tokenAuthenticator(bearer)] });
     conns.push(nc);

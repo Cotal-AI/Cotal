@@ -28,6 +28,7 @@ import { assertGoalResultFactShape, goalOutcomeDigestMismatch } from "./goal-res
 import { DIGEST_PREFIX, canonicalJson } from "./canonical-json.js";
 import { issuedCallerOfToken } from "./issued-accepted.js";
 import { managerCallerBinding } from "./manager-caller.js";
+import { userInboxConnId } from "./subjects.js";
 
 // The stock classifiers, from THIS entry's own module instance: a host that imported them from the
 // package root would hold a second EpEnvelopeError class, and `instanceof` would miss every error.
@@ -210,8 +211,9 @@ export async function openBrowserManagerCaller(opts: BrowserManagerCallerOptions
   const bound = managerCallerBinding(authority.bearer, {
     space: opts.space, owner: opts.owner, actor: opts.actor, lifecycleUid: opts.lifecycleUid, instanceId: opts.instanceId,
   });
-  // The user-mode connect of `standaloneConnectOpts`: a fresh nonce names the connection and its inbox.
-  const connId = `ibx${globalThis.crypto.randomUUID().replace(/-/g, "")}`;
+  // The user-mode connect of `standaloneConnectOpts`: the principal the binding checked, and a fresh
+  // nonce, name the connection and its inbox.
+  const connId = userInboxConnId(opts.owner, opts.actor, `ibx${globalThis.crypto.randomUUID().replace(/-/g, "")}`);
   const nc = await wsconnect({
     servers: opts.servers,
     name: connId,

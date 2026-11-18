@@ -26,7 +26,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import {
   acceptedBucket, acceptedReadGrant, connectionAcceptedToken, connzRequestSubject, issuedBucket, issuedUserCaller, MEMBERSHIP_INBOX_PREFIX,
   mintConnectionEvictorCreds, mintCreds, mintLifecycleUid, mintMembershipObserverCreds, newIdentity, registry, serverKickSubject, setupSpaceStreams,
-  type AgentHandle, type Connector, type RemoteManagerAuthorityMaterial, type RemoteRunAdmissionResult, type RemoteRunAttemptResult, type RuntimeProvider,
+  type AgentHandle, type Connector, type RemoteManagerAuthorityMaterial, type RemoteRunAdmissionResult, type RemoteRunAttemptResult, type RuntimeProvider, bearerInboxConnId
 } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { deriveOwnerForIdpSubject, ensurePinnedIdp, grantActor, loadOwnerSecret, revokeActor, startAuthService, type AuthServiceHandle } from "../src/index.js";
@@ -141,7 +141,7 @@ async function startContext(acct: HostedAuthAccount, i: number, issuerSessionTtl
 /** One `manager-caller` exchange for the human, as the CLI makes it. */
 const exchange = async (ctx: Ctx, actor = "cli") =>
   (await post<{ token: string }>(ctx, "/exchange", { actor, view: "manager-caller", managerInstanceId: ctx.instanceId, idpToken })).token;
-/** Connect under `nonce`: the callout issues this connection's view and accepted row. */
+/** Connect under `nonce`, a principal-bound connId: the callout issues this connection's view and accepted row. */
 async function dial(ctx: Ctx, token: string, nonce: string): Promise<NatsConnection> {
   const nc = await connect({ servers: fx.servers, authenticator: [credsAuthenticator(enc(ctx.acct.sentinelCreds)), tokenAuthenticator(token)], name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0, timeout: 5000 });
   conns.push(nc);
@@ -155,8 +155,9 @@ async function tokens(ctx: Ctx, n: number): Promise<string[]> {
 }
 /** Connect, read the generation the issuer accepted for this connection, and close. */
 async function issueOnce(ctx: Ctx, nonce = mintLifecycleUid(), token?: string): Promise<string> {
-  const nc = await dial(ctx, token ?? await exchange(ctx), nonce);
-  try { return (await issuedUserCaller(nc, ctx.acct.space, nonce, { owner: ctx.owner, actor: "cli", uid: ctx.uid })).generation; }
+  const bearer = token ?? await exchange(ctx), connId = bearerInboxConnId(bearer, nonce);
+  const nc = await dial(ctx, bearer, connId);
+  try { return (await issuedUserCaller(nc, ctx.acct.space, connId, { owner: ctx.owner, actor: "cli", uid: ctx.uid })).generation; }
   finally { await nc.close(); }
 }
 
@@ -246,7 +247,7 @@ async function burst(ctx: Ctx, n: number, cut: () => Promise<unknown>) {
   const sub = h.nc.subscribe(`$KV.${issuedBucket(ctx.acct.space)}.v1.>`, { max: 1, callback: () => { cutting = cut(); } });
   await h.nc.flush();
   const results = await Promise.all(all.map(async (token) => {
-    const nonce = mintLifecycleUid();
+    const nonce = bearerInboxConnId(token, mintLifecycleUid());
     try {
       await (await dial(ctx, token, nonce)).close();
       return { nonce, admitted: true };

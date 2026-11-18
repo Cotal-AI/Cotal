@@ -19,14 +19,13 @@
  *
  * Run: pnpm smoke:connect-limit:auth  (needs nats-server on PATH)
  */
-import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SignJWT, exportJWK, generateKeyPair, type CryptoKey } from "jose";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity, runAgentBearer, setupSpaceStreams } from "@cotal-ai/core";
+import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity, runAgentBearer, setupSpaceStreams, bearerInboxConnId } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import {
   ConnectLimiter, ConnectRateLimited, USER_TOKEN_VER, calloutPermissions, deriveOwnerForIdpSubject, deriveOwnerToken, grantActor,
@@ -87,7 +86,7 @@ const realConsoleError = console.error;
 try {
   /** One user-mode connect: ok, or the client's error message. */
   const dial = async (bearer: string): Promise<{ ok: boolean; msg: string; ms: number }> => {
-    const nonce = `ibx${randomUUID().replace(/-/g, "")}`, t = Date.now();
+    const nonce = bearerInboxConnId(bearer), t = Date.now();
     try {
       const nc = await connect({ servers: fx.servers, authenticator: [credsAuthenticator(enc(a.sentinelCreds)), tokenAuthenticator(bearer)],
         name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 15_000, maxReconnectAttempts: 0 });

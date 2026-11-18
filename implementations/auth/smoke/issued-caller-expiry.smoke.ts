@@ -39,7 +39,7 @@ import {
   setupSpaceStreams, standaloneConnectOpts, withIssuerSession, CotalEndpoint, epRequestSubject, readRunAdmission,
   createRunSpec, credsClaims, newTakeoverId, openRecordsBucket, writeRunStatus, type RunAdmission,
   registry, type Connector, type LaunchOpts, type RuntimeProvider, type AgentHandle,
-  type IssuedCaller, type RemoteManagerAuthorityMaterial, type RemoteRunAdmissionResult,
+  type IssuedCaller, type RemoteManagerAuthorityMaterial, type RemoteRunAdmissionResult, bearerInboxConnId
 } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import {
@@ -491,7 +491,7 @@ try {
         view: "manager-caller",
         managerInstanceId: state.instanceId,
       });
-      const nonce = `ibxexp5a${mintLifecycleUid()}`;
+      const nonce = bearerInboxConnId(ex.token, `ibxexp5a${mintLifecycleUid()}`);
       const nc = await connect({
         servers: fx.servers,
         authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(ex.token)],

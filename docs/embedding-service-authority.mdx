@@ -73,7 +73,8 @@ credential-root records cannot use this service binding. This is not proof of br
 the opt-in authority plane now composes this evidence, while terminal retirement remains unfinished.
 
 `mintServiceCalloutJwt` is a host-only mint seam. It uses the native serving grant, the actual
-principal name and tags, the authenticated broker user key and a separate client inbox nonce.
+principal name and tags, the authenticated broker user key and the client's inbox name, which the
+callout has already checked is under the service principal's own owner and actor.
 Expiry stays bounded by the original admission and access deadline. It does not authenticate the
 callout request, record natkey evidence or release an encrypted response; the host must do those.
 

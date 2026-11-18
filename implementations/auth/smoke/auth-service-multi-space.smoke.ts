@@ -53,7 +53,7 @@ if (process.argv[2] === "__daemon-auth-service") {
 
   const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
   const { jetstreamManager } = await import("@nats-io/jetstream");
-  const { createBrokerAuth, createSpaceAccountAuth, epAuthBucket, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams, standaloneConnectOpts } = await import("@cotal-ai/core");
+  const { createBrokerAuth, createSpaceAccountAuth, epAuthBucket, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams, standaloneConnectOpts, bearerInboxConnId } = await import("@cotal-ai/core");
   const { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const { cotalAuthProvider, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, newActorToken, parseAuthHostManifest } = await import("@cotal-ai/auth");
   const { saveIdpSession } = await import("../src/login.js");
@@ -148,7 +148,7 @@ if (process.argv[2] === "__daemon-auth-service") {
   };
   /** One connect through the real callout. Resolves the broker's view of the connection. */
   const connectOnce = async (space: Space, bearer: string) => {
-    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
+    const nonce = bearerInboxConnId(bearer);
     const nc = await connect({
       servers, authenticator: [credsAuthenticator(new TextEncoder().encode(space.sentinelCreds)), tokenAuthenticator(bearer)],
       name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 10_000, maxReconnectAttempts: 0,
