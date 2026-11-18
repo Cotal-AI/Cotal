@@ -252,6 +252,7 @@ cotal spawn --harness claude --resume <session-id>
 ```
 
 Cotal passes `--resume <id> --fork-session` to Claude.
+An ID that starts with `-` is refused, since Claude would read it as an option.
 The new session gets its own ID and uses the selected Cotal persona.
 The original session stays unchanged.
 To use the direct application path, add `--foreground`.
