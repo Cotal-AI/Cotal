@@ -59,7 +59,7 @@ import { epPrincipalCall } from "./endpoint-call.js";
 import type { ClusterDocument } from "./endpoint-cluster.js";
 import type { EndpointReply } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
-import { AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
+import { AGENT_CLUSTER, AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
 import { processRuntime } from "./process-runtime.js";
 import { importNativeSubjectPermissions, issuedPermitsSubject, readAcceptedRow, type IssuedSubjectPermission } from "./issued-authority.js";
 import { REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsInput, type RegistryEndpointsOutput } from "./registry-contract.js";
@@ -644,8 +644,9 @@ interface PrincipalServeIntent {
   readonly self: EpPrincipal;
   /** Its key in {@link principalServers}. */
   readonly serverKey: string;
-  /** The binding on the connection it was made on, and every binding made, so `stop` awaits the
-   *  handlers each one still runs. */
+  /** The binding on the connection it was made on, and every binding not yet retired: the current
+   *  one and those on replaced connections whose handlers are still finishing, so `stop` awaits
+   *  them. */
   binding?: { nc: NatsConnection; handle: EpPrincipalServeHandle };
   readonly handles: EpPrincipalServeHandle[];
   /** The connection on which the broker last accepted the subscription. */
@@ -665,7 +666,9 @@ export interface PrincipalServe {
   /** Resolves with the refusal that ended the serve, including one that arrives on a replaced
    *  connection after `ready` resolved. Never rejects, and never resolves after `stop`. */
   readonly failed: Promise<Error>;
-  /** Unsubscribe and wait for the handlers in flight. */
+  /** Unsubscribe, abort every handler's `signal`, and wait for each handler in flight until its
+   *  request's deadline at most, which the route caps at 30 s. A reply that comes after that is
+   *  dropped. */
   stop(): Promise<void>;
 }
 
@@ -2440,7 +2443,14 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  /** The presence epoch moves first: a bind still awaiting the broker must find it moved
+  /** Stop the endpoint and close its connection.
+   *
+   *  Every principal serve ends first: its handlers' `signal` aborts, and stop waits for each
+   *  handler in flight until its request's deadline at most, so a handler that never settles does
+   *  not hold stop open longer than 30 s, the route's cap on a deadline. A reply that comes after
+   *  that is dropped.
+   *
+   *  The presence epoch moves first: a bind still awaiting the broker must find it moved
    *  before any await below gives it a window to install a watch on a stopped endpoint
    *  (see {@link startPresenceWatch}). */
   stop(): Promise<void> {
@@ -2456,7 +2466,8 @@ export class CotalEndpoint extends EventEmitter {
     this.activeGoalFollowers.clear();
     this.presenceEpoch++;
     // Every principal serve ends now, so a `ready` still waiting for the broker rejects and no new
-    // request is taken. Its handlers in flight finish below, before the connection they reply on closes.
+    // request is taken. Its handlers in flight finish below, before the connection they reply on
+    // closes, or their requests' deadlines pass.
     const principalStops = [...this.principalServes.values()].map((intent) => this.stopPrincipalServe(intent, false));
     this.presence.cancelRebind();
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
@@ -5121,9 +5132,10 @@ export class CotalEndpoint extends EventEmitter {
         }
         if (s.type !== "error") continue;
         if (s.error instanceof PermissionViolationError && this.chatSubRefusals.has(s.error)) continue;
-        // A principal-route refusal belongs to the call that throws it or the serve that ends on it
-        // (SPEC 13.21); nothing else on this private connection publishes or subscribes there.
-        if (s.error instanceof PermissionViolationError && this.isPrincipalRouteSubject(s.error.subject)) continue;
+        // A refused principal-route request publish or subscription belongs to the call that throws
+        // it or the serve that ends on it (SPEC 13.21). A refused reply publish has no owner, so it
+        // is reported below.
+        if (s.error instanceof PermissionViolationError && this.ownedPrincipalRouteRefusal(s.error)) continue;
         if (s.error instanceof PermissionViolationError && handedToRequest.has(s.error)) continue;
         // The predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
         // history reads, whose refusal can arrive after that delete timed out.
@@ -6803,23 +6815,28 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /**
-   * Serve this process's own endpoint on the principal route (SPEC 13.21): a core-defined command
-   * set about this principal, addressed by its own principal, lifecycle UID and runtime id, with no
-   * registration. Revision 1 defines one endpoint, `agent` (SPEC 13.22).
+   * Serve this process's `agent` endpoint on the principal route (SPEC 13.21, 13.22): the
+   * `AGENT_CLUSTER` command set about this principal, addressed by its own principal, lifecycle UID
+   * and runtime id, with no registration. `handlers` serves the cluster's commands with
+   * `AGENT_CONTRACTS`; `describe` is built in.
    *
    * Throws on an open mesh and on a static credential, where no row names who may call, without a
-   * lifecycle UID, before the endpoint has started, for an endpoint it already serves, and for a
-   * cluster with a command that declares no `authorities` (see {@link servePrincipalRoute}). It
-   * subscribes this process's own subject with no queue group.
+   * lifecycle UID, before the endpoint has started, while it already serves `agent`, for an
+   * `endpoint` or `cluster` field, which this entry point does not take, and for a set of handlers
+   * that is not the cluster's commands with its contracts. It subscribes this process's own subject
+   * with no queue group.
    *
    * `ready` is a positive check: it resolves only after the broker accepted the subscription
    * (subscribe, flush, and no permission violation for that subject), and rejects with the
    * refusal, which a credential minted before the rows existed gets. The serve is INTENT: every
    * replaced connection subscribes again and runs the check again, and a refusal there ends the
-   * serve, resolves `failed` and clears the presence field. `stop` unsubscribes and waits for the
-   * handlers in flight.
+   * serve, resolves `failed` and clears the presence field. `stop` unsubscribes, aborts the
+   * handlers' `signal`, and waits for each handler in flight until its request's deadline at most.
    */
-  servePrincipal(serve: { endpoint: string; cluster: ClusterDocument; handlers: EpPrincipalCommandDef[] }): PrincipalServe {
+  servePrincipal(spec: { handlers: EpPrincipalCommandDef[] }): PrincipalServe {
+    if ("endpoint" in spec || "cluster" in spec)
+      throw new Error(`servePrincipal serves only the "${AGENT_ENDPOINT}" endpoint with AGENT_CLUSTER and takes handlers alone; an endpoint or cluster is refused, never ignored (SPEC 13.22)`);
+    const serve = { endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: spec.handlers };
     if (!this.authed)
       throw new Error("the principal route is served only on an authenticated mesh: on an open mesh no row says who may call (SPEC 13.21)");
     if (!this.userMode)
@@ -6847,6 +6864,9 @@ export class CotalEndpoint extends EventEmitter {
     const handle = this.bindPrincipalHandle(intent, nc);
     this.principalServes.set(serve.endpoint, intent);
     principalServers.set(serverKey, intent);
+    // A fresh `seq` per serve: the last serve may have ended with prompts open, and the pair
+    // `(runtime.id, seq)` it showed then must not name this serve's empty list (SPEC §6).
+    if (serve.endpoint === AGENT_ENDPOINT) this.promptsPresence = { open: 0, seq: this.nextPromptsSeq() };
     void this.armPrincipalServe(intent, nc, handle);
     return { ready, failed, stop: () => this.stopPrincipalServe(intent) };
   }
@@ -6856,16 +6876,24 @@ export class CotalEndpoint extends EventEmitter {
     return servePrincipalRoute(nc, this.space, intent.self, intent.serve);
   }
 
-  /** A request or reply subject (or filter) of the principal route in this space. */
-  private isPrincipalRouteSubject(subject: string): boolean {
+  /** A principal-route refusal a call or a serve reports itself: a request publish, a serve
+   *  subscription or a reply read. Only a reply publish is left, which no call or serve awaits. */
+  private ownedPrincipalRouteRefusal(err: PermissionViolationError): boolean {
     const p = `${spacePrefix(this.space)}.ep.`;
-    return subject.startsWith(`${p}prin.`) || subject.startsWith(`${p}prin-reply.`);
+    if (err.operation === "publish") return err.subject.startsWith(`${p}prin.`);
+    return err.subject.startsWith(`${p}prin.`) || err.subject.startsWith(`${p}prin-reply.`);
   }
 
   /** Track one binding: a refusal ends the serve, and an accepted subscription on the current
    *  connection shows the presence field. */
   private async armPrincipalServe(intent: PrincipalServeIntent, nc: NatsConnection, handle: EpPrincipalServeHandle): Promise<void> {
     intent.binding = { nc, handle };
+    // Every earlier binding is on a replaced connection: retire it once its handlers finish.
+    for (const old of intent.handles)
+      void old.stop().finally(() => {
+        const i = intent.handles.indexOf(old);
+        if (i >= 0) intent.handles.splice(i, 1);
+      });
     intent.handles.push(handle);
     intent.readyOn = undefined;
     void handle.refused.then((err) => {
@@ -6945,7 +6973,8 @@ export class CotalEndpoint extends EventEmitter {
     if (principalServers.get(intent.serverKey) === intent) principalServers.delete(intent.serverKey);
   }
 
-  /** Stop serving `intent` and wait for its handlers in flight. The ending is synchronous, so a
+  /** Stop serving `intent` and wait for its handlers in flight, each until its request's deadline
+   *  at most. The ending is synchronous, so a
    *  `ready` still waiting for the broker rejects before the caller's next step. `republish` writes
    *  presence without the `prompts` field; the endpoint's own stop writes it offline instead. */
   private async stopPrincipalServe(intent: PrincipalServeIntent, republish = true): Promise<void> {
@@ -6968,8 +6997,8 @@ export class CotalEndpoint extends EventEmitter {
    * prompts it holds `open` or `sent`, and a counter that goes up by one each time a prompt opens or
    * changes state. The field shows only while the `agent` endpoint is served and the broker accepted
    * its subscription on the current connection. Until this is called it shows `open: 0` with the
-   * highest `seq` this process used under its runtime id, or 0. Throws when the `agent` endpoint is
-   * not served, and a RangeError for a `seq` below one this runtime already used.
+   * fresh `seq` the serve took from {@link nextPromptsSeq} when it started. Throws when the `agent`
+   * endpoint is not served, and a RangeError for a `seq` below one this runtime already used.
    */
   async setPromptsPresence(prompts: PresencePrompts): Promise<void> {
     for (const k of ["open", "seq"] as const)
@@ -7002,7 +7031,7 @@ export class CotalEndpoint extends EventEmitter {
   private servedPrompts(): PresencePrompts | undefined {
     const intent = this.principalServes.get(AGENT_ENDPOINT);
     if (!intent || intent.ended || !this.nc || intent.readyOn !== this.nc) return undefined;
-    return this.promptsPresence ?? { open: 0, seq: promptsSeqs.get(intent.self.runtimeId) ?? 0 };
+    return this.promptsPresence;
   }
 
   /**
