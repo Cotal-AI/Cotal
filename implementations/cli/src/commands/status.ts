@@ -2846,14 +2846,16 @@ async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | u
       const verdict = processVerdict(record);
       if (verdict) return { name: "broker", verdict, facts: [`registered ${address}`, ...pidFacts(record), ...(record.kind === "dead" ? ["stale pidfile"] : [])] };
     }
+    const storeFailure = store?.state === "write-failed" ? `store write failed: ${store.cause}`
+      : store?.state === "full" ? `store full: ${store.used} bytes exceeds ${store.cap} bytes at ${store.path}` : undefined;
     if (target.mode !== "user") {
       const preflight = await preflightTarget(target);
       if (!preflight.ok) return { name: "broker", verdict: "not-serving", facts: [`registered ${address}`, workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false }).message] };
-      return { name: "broker", verdict: "serving", facts: [`registered ${address}`, "reachable"] };
+      return { name: "broker", verdict: storeFailure ? "not-serving" : "serving", facts: [`registered ${address}`, "reachable", ...(storeFailure ? [storeFailure] : [])] };
     }
     const reachable = await isReachable(target.server, target.tlsRequired ? { tls: true } : {});
-    if (store?.state === "write-failed" || store?.state === "full")
-      return { name: "broker", verdict: "not-serving", facts: [`registered ${address}`, reachable ? "reachable" : "unreachable", store.state === "write-failed" ? `store write failed: ${store.cause}` : `store full: ${store.used} bytes exceeds ${store.cap} bytes at ${store.path}`] };
+    if (storeFailure)
+      return { name: "broker", verdict: "not-serving", facts: [`registered ${address}`, reachable ? "reachable" : "unreachable", storeFailure] };
     return reachable
       ? { name: "broker", verdict: "serving", facts: [`registered ${address}`, "reachable"] }
       : { name: "broker", verdict: "not-serving", facts: [`registered ${address}`, "unreachable"] };
