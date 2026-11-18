@@ -2427,6 +2427,9 @@ export class CotalEndpoint extends EventEmitter {
     }
     this.activeGoalFollowers.clear();
     this.presenceEpoch++;
+    // Every principal serve ends now, so a `ready` still waiting for the broker rejects and no new
+    // request is taken. Its handlers in flight finish below, before the connection they reply on closes.
+    const principalStops = [...this.principalServes.values()].map((intent) => this.stopPrincipalServe(intent, false));
     this.presence.cancelRebind();
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
     // sleeping out retryMs; also clears the timer so it can't fire later.
@@ -2465,6 +2468,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.channelWatchIter) this.retireKvWatch(this.channelWatchIter);
     this.channelWatchIter = undefined;
     this.stopDeliveryLeaseWatch();
+    await Promise.all(principalStops);
     try {
       if (this.doRegister) {
         await this.presence.publishOffline();
@@ -6890,7 +6894,10 @@ export class CotalEndpoint extends EventEmitter {
     if (wasReady) this.emitRecoverable(new Error(`stopped serving "${intent.serve.endpoint}" on the principal route: ${err.message}`, { cause: err }));
   }
 
-  private async stopPrincipalServe(intent: PrincipalServeIntent): Promise<void> {
+  /** Stop serving `intent` and wait for its handlers in flight. The ending is synchronous, so a
+   *  `ready` still waiting for the broker rejects before the caller's next step. `republish` writes
+   *  presence without the `prompts` field; the endpoint's own stop writes it offline instead. */
+  private async stopPrincipalServe(intent: PrincipalServeIntent, republish = true): Promise<void> {
     if (!intent.ended) {
       intent.ended = true;
       intent.readyOn = undefined;
@@ -6901,7 +6908,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       if (intent.serve.endpoint === AGENT_ENDPOINT) {
         this.promptsPresence = undefined;
-        this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+        if (republish) this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
       }
     }
     await Promise.all(intent.handles.map((handle) => handle.stop()));

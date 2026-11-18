@@ -6528,7 +6528,8 @@ Serving is ready only on a positive check: the subscription was made, the connec
 the broker reported no permission violation for that subject. A credential minted before the rows
 existed fails this check, and the process does not serve. The check runs again on every replaced
 connection, including one the client library re-subscribed on a reconnect, and a refusal there ends
-the serve. Stopping unsubscribes and waits for the handlers in flight.
+the serve. Stopping unsubscribes and waits for the handlers in flight, and stopping the client does
+the same before it closes the connection those handlers reply on.
 
 Each request runs the §13.3 pipeline of a service, with these differences: a request whose head is
 not this process is dropped with no reply, because it was not addressed to it; the class MUST be

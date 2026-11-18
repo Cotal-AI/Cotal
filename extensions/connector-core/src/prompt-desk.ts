@@ -721,7 +721,8 @@ function answerFingerprint(a: PromptAnswerInput, caller: EpCaller): string {
  * refuses the subscription (a credential minted before the rows existed), and when the connection's
  * `max_payload` is under {@link PROMPT_DESK_MIN_MAX_PAYLOAD}. Then the connector leaves every dialog to
  * the harness, and presence shows no `prompts` field. The same checks run on every replaced
- * connection, and a failure there closes the desk and warns. Call `close()` before stopping `ep`.
+ * connection, and a failure there closes the desk and warns. Stopping `ep` ends the serve and not the
+ * prompts, so call `close()` first: it ends every prompt and gives each open dialog back.
  */
 export async function openPromptDesk(ep: CotalEndpoint, opts: { warn(msg: string): void }): Promise<PromptDesk> {
   if (typeof opts?.warn !== "function") throw new TypeError("openPromptDesk needs opts.warn");

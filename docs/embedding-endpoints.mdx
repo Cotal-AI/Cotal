@@ -169,7 +169,8 @@ credential, without a lifecycle UID, and for a cluster command that declares no 
 The returned `ready` resolves only after the broker accepted the subscription. It rejects when the
 credential holds no serve row, which a credential minted before this release does not. The serve
 subscribes again after every reconnect, and a refusal there resolves `failed` and is reported on
-`warning`. `stop()` unsubscribes and waits for the handlers in flight.
+`warning`. `stop()` unsubscribes and waits for the handlers in flight, and the endpoint's own
+`stop()` does the same for every serve before it closes the connection.
 
 `setPromptsPresence({ open, seq })` sets the presence field above and writes presence at once. It
 throws while the `agent` endpoint is not served.

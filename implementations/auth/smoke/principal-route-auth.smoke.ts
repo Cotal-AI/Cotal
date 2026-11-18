@@ -90,6 +90,8 @@ const W = {
   helper: who(A, "helper", "managed-agent"),
   tester: who(A, "tester", "managed-agent"),
   legacy: who(A, "legacy", "managed-agent"),
+  stopper: who(A, "stopper", "managed-agent"),
+  stopper2: who(A, "stopper2", "managed-agent"),
   web: who(A, "web", "interactive"),
   term: who(A, "term", "interactive"),
   oldWeb: who(A, "oldweb", "interactive"),
@@ -716,6 +718,45 @@ try {
     liar.unsubscribe();
     check("cell 29: a reply under another head is not this call's reply: the caller keeps waiting and takes the one the addressed process derives",
       received === 1 && r.ok && r.value.ok && (r.value.data as { seq: number }).seq === 7, r.ok ? r.value : codeOf(r.error));
+  }
+
+  // ── cell 30: stopping the endpoint ends its principal serve ──
+  const stubHandlers = (prompts?: EpPrincipalCommandDef["handler"]): EpPrincipalCommandDef[] => (["prompts", "prompt", "prompt-answer"] as const).map((command) => ({
+    command, contract: AGENT_CONTRACTS[command],
+    handler: command === "prompts" && prompts ? prompts : (ctx) => ({ runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] }),
+  }));
+  {
+    const stopperEp = await userEndpoint(W.stopper);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered = false, finished = false;
+    const serve = stopperEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers(async (ctx) => {
+      entered = true;
+      await gate;
+      finished = true;
+      return { runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] };
+    }) });
+    await serve.ready;
+    const reply = settle(call(webEp, addressOf(W.stopper, processRuntime(W.stopper.uid).id), "prompts", "owner", {}, 6000));
+    await until(() => entered);
+    let stopped = false;
+    const stopping = settle(stopperEp.stop().then(() => { stopped = true; }));
+    await wait(500);
+    const stoppedWhileRunning = stopped;
+    release();
+    await stopping;
+    const r = await reply;
+    check("cell 30: stop() waits for a principal-route handler in flight: it had not returned while the handler ran",
+      entered && !stoppedWhileRunning && finished && stopped, { entered, stoppedWhileRunning, finished, stopped });
+    check("cell 30: ...so its reply went out on the open connection, and the caller reads it", r.ok && r.value.ok, r.ok ? r.value : codeOf(r.error));
+    const stopper2Ep = await userEndpoint(W.stopper2);
+    const pending = stopper2Ep.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() });
+    const stop2 = stopper2Ep.stop();
+    const readyOutcome = await Promise.race([settle(pending.ready), wait(3000).then(() => "still pending" as const)]);
+    await stop2.catch(() => {});
+    check("cell 30: stop() right after servePrincipal settles ready with a refusal that says the serve stopped, never a ready on a stopped endpoint",
+      readyOutcome !== "still pending" && !readyOutcome.ok && String((readyOutcome.error as Error).message).includes("stopped serving"),
+      readyOutcome === "still pending" ? readyOutcome : readyOutcome.ok ? "ready resolved" : (readyOutcome.error as Error).message);
   }
 
   // ── mixed versions that need no 0.165 release ──

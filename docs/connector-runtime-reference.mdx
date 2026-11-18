@@ -247,7 +247,7 @@ The adapter supplies three hooks:
 
 The adapter reports what the harness was then seen to do with `settle` on the prompt's hold: `confirmed`, `local`, `observed` with a sighting tied to the prompt, to its subject or to nothing, or `withdrawn`.
 The desk never upgrades a report, and it ignores a report for a closed prompt with a warning.
-Call `close()` before stopping the endpoint. It closes every prompt and answers every waiting caller, and it does not wait for a `deliver` that has not ended.
+Stopping the endpoint ends the serve and not the prompts, so call `close()` first. It closes every prompt and answers every waiting caller, and it does not wait for a `deliver` that has not ended.
 The answer checks, the bounds and the states are in [SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
 
 ## Connector contracts
