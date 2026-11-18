@@ -39,7 +39,7 @@ if (process.argv[2] === "__daemon-auth-service") {
   const { encodeUser, fmtCreds } = await import("@nats-io/jwt");
   const { createUser, fromPublic, fromSeed } = await import("@nats-io/nkeys");
   const { Kvm } = await import("@nats-io/kv");
-  const { createSpaceAuth, epAuthBucket, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
+  const { createSpaceAuth, epAuthBucket, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams, bearerInboxConnId } = await import("@cotal-ai/core");
   const { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const { cotalAuthProvider, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, newActorToken } = await import("@cotal-ai/auth");
   const { revokeManagedActorIf } = await import("../src/ledger.js");
@@ -318,7 +318,7 @@ if (process.argv[2] === "__daemon-auth-service") {
 
     // ---- live ledger reads -----------------------------------------------------------------------------------
     const tryConnect = async (bearer: string): Promise<"connected" | "denied"> => {
-      const nonce = `ibx${newIdentity().id.replace(/[^A-Za-z0-9]/g, "")}`;
+      const nonce = bearerInboxConnId(bearer);
       try {
         const nc = await connect({ servers, authenticator: [credsAuthenticator(enc(sentinelCreds)), tokenAuthenticator(bearer)], name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 10_000, maxReconnectAttempts: 0 });
         await nc.close();

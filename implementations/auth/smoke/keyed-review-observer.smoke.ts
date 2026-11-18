@@ -21,7 +21,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { connect, credsAuthenticator, tokenAuthenticator } from "@nats-io/transport-node";
 import {
   mintCreds, newIdentity, mintLifecycleUid, setupSpaceStreams, issuedUserCaller, resolveService,
-  invokeCommand, epRequestSubject,
+  invokeCommand, epRequestSubject, bearerInboxConnId
 } from "@cotal-ai/core";
 import {
   deriveOwnerForIdpSubject, ensurePinnedIdp, grantActor, loadOwnerSecret, startAuthService,
@@ -74,7 +74,7 @@ try {
   assert.equal(remote.owner, owner);
   async function dial() {
     const exchange = await post<{ token: string }>("/exchange", { idpToken, actor: "cli", view: "manager-caller", managerInstanceId: remote!.state.instanceId });
-    const nonce = mintLifecycleUid();
+    const nonce = bearerInboxConnId(exchange.token, mintLifecycleUid());
     const nc = await connect({ servers: fx.servers,
       authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(exchange.token)],
       name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0, timeout: 5000 });

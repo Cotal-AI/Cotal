@@ -365,19 +365,59 @@ export function parsePrincipalKey(key: string): { owner: string; actor: string }
 
 /** Validate a connection's **connId** — the single token that fills `_INBOX_<connId>.>`, the private
  *  reply-inbox grant. In dev/static mode connId is the agent's own nkey (56 uppercase base32 chars); in
- *  user mode it is a client-CHOSEN random inbox nonce (the auth callout can't know the NATS-minted
- *  per-connection nkey pre-connect, and the client can't either, so the client picks its own nonce and
- *  passes it via the connection `name`). Because that nonce is untrusted client input, the grant builder
+ *  user mode it is the client-chosen {@link userInboxConnId} (the auth callout can't know the NATS-minted
+ *  per-connection nkey pre-connect, and the client can't either, so the client names its own inbox and
+ *  passes it via the connection `name`). Because that name is client input, the grant builder
  *  MUST reject any subject metacharacter here: a connId of `>` would mint `_INBOX_>.>` (every inbox) and a
- *  `*`/`.` would widen it too. `[A-Za-z0-9_-]{8,120}` admits nkeys and high-entropy nonces while barring
+ *  `*`/`.` would widen it too. `[A-Za-z0-9_-]{8,255}` admits nkeys and principal-bound names while barring
  *  `* > . space` — so `_INBOX_<connId>.>` can never escalate past one connection's own inbox. Fail-loud. */
 export function assertInboxConnId(connId: string): string {
-  if (typeof connId !== "string" || !/^[A-Za-z0-9_-]{8,120}$/.test(connId))
+  if (typeof connId !== "string" || !/^[A-Za-z0-9_-]{8,255}$/.test(connId))
     throw new Error(
-      `invalid connId/inbox nonce ${JSON.stringify(connId)} - must match [A-Za-z0-9_-]{8,120} ` +
+      `invalid connId/inbox nonce ${JSON.stringify(connId)} - must match [A-Za-z0-9_-]{8,255} ` +
         `(no subject metacharacters; guards the _INBOX_<connId>.> grant against wildcard escalation)`,
     );
   return connId;
+}
+
+/** The first client release that names a user-mode connection with {@link userInboxConnId}. An auth
+ *  callout refuses a connection name without the bearer's principal and names this version. */
+export const USER_INBOX_MIN_CLIENT_VERSION = "0.167.0";
+
+/** The per-connection part of a user-mode connId: no `-`, so it cannot end the principal early. */
+const USER_INBOX_NONCE = /^[A-Za-z0-9_]{8,128}$/;
+
+/** A user-mode connection's connId, `<owner>-<actor>-<nonce>`: the principal name-form of
+ *  {@link principalKey}, then a per-connection nonce. The client sends it as the connection `name` and
+ *  uses `_INBOX_<connId>` as its inbox prefix. The auth callout admits that name only for a bearer of
+ *  the same owner and actor ({@link assertUserInboxConnId}), so the private inbox grant it mints is
+ *  bound to the bearer's principal. `-` occurs in none of the three parts, so two principals never
+ *  share a connId. */
+export function userInboxConnId(owner: string, actor: string, nonce: string): string {
+  if (typeof nonce !== "string" || !USER_INBOX_NONCE.test(nonce))
+    throw new Error(`invalid user inbox nonce ${JSON.stringify(nonce)} - must match ${USER_INBOX_NONCE.source}`);
+  return assertInboxConnId(`${principalKey(owner, actor).name}-${nonce}`);
+}
+
+/** The auth callout's check of a user-mode connection `name` against the validated bearer's owner and
+ *  actor. Returns the name as the connId when it is `<owner>-<actor>-<nonce>` for that principal.
+ *  Throws for any other name: a bare nonce (the form clients before
+ *  {@link USER_INBOX_MIN_CLIENT_VERSION} send) is refused with that version, and a name under any other
+ *  prefix is refused as outside the bearer's own inbox. */
+export function assertUserInboxConnId(name: unknown, owner: string, actor: string): string {
+  const prefix = `${principalKey(owner, actor).name}-`;
+  if (typeof name === "string" && name.startsWith(prefix) && USER_INBOX_NONCE.test(name.slice(prefix.length)))
+    return assertInboxConnId(name);
+  if (typeof name === "string" && /^[A-Za-z0-9_]{8,120}$/.test(name))
+    throw new Error(
+      `connection name ${JSON.stringify(name)} is a bare inbox nonce. This auth service binds the reply inbox ` +
+        `to the bearer's principal and admits clients at ${USER_INBOX_MIN_CLIENT_VERSION} or later, which name ` +
+        `the connection <owner>-<actor>-<nonce>. Upgrade the client to cotal-ai ${USER_INBOX_MIN_CLIENT_VERSION} or later.`,
+    );
+  throw new Error(
+    `connection name ${JSON.stringify(name)} is outside this bearer's own inbox prefix "${prefix}": ` +
+      `a connection may name only its own principal's reply inbox`,
+  );
 }
 
 /** The `tags` prefix carrying a connection's principal dot-form in its minted user JWT. CONNZ

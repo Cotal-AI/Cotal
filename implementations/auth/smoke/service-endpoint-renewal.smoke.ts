@@ -41,7 +41,7 @@ import { Kvm, type KV } from "@nats-io/kv";
 import { connect, credsAuthenticator, tokenAuthenticator } from "@nats-io/transport-node";
 import {
   CotalEndpoint, VOID_SCHEMA_DIGEST, endpointToken, epAuthBucket, mintCreds, newIdentity, serviceWitnessDigest, setupSpaceStreams, singleDocumentClosure,
-  type ServiceAuthorityRequest, type ServiceRegistrationWitness,
+  type ServiceAuthorityRequest, type ServiceRegistrationWitness, bearerInboxConnId
 } from "@cotal-ai/core";
 import { cotalAuthProvider } from "../src/provider.js";
 import { deriveOwnerForIdpSubject } from "../src/derive.js";
@@ -177,7 +177,7 @@ try {
   };
   const expOf = (jwt: string) => JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString("utf8")).exp as number;
   const dialOk = async (bearer: string) => {
-    const nonce = randomBytes(16).toString("hex");
+    const nonce = bearerInboxConnId(bearer);
     try {
       const nc = await connect({ servers: fx.servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 4000, reconnect: false, maxReconnectAttempts: 0,
         authenticator: [credsAuthenticator(enc.encode(a.sentinelCreds)), tokenAuthenticator(bearer)] });

@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { SignJWT, decodeJwt, generateKeyPair, type CryptoKey } from "jose";
 import { decode } from "@nats-io/jwt";
-import { createSpaceAuth, isReachable, mintLifecycleUid, serverConfig } from "@cotal-ai/core";
+import { createSpaceAuth, isReachable, mintLifecycleUid, serverConfig, bearerInboxConnId } from "@cotal-ai/core";
 import { createCalloutAuth, createIdpBridge, createUserTokenIssuer, generateSigningKey, startAuthCallout, type UserTokenIssuer } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -118,7 +118,7 @@ try {
   });
   /** Connect through the callout with `token`; returns the minted NATS user JWT's `exp`. */
   async function natsExp(token: string): Promise<number | undefined> {
-    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
+    const nonce = bearerInboxConnId(token);
     const before = minted.length;
     const nc = await connect({ servers: SERVERS, authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(token)], maxReconnectAttempts: 0, timeout: 4000, name: nonce, inboxPrefix: `_INBOX_${nonce}` });
     conns.push(nc);

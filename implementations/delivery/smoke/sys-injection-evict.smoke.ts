@@ -64,7 +64,7 @@ import {
   composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, newIdentity,
   mintConnectionEvictorCreds, mintMembershipObserverCreds, principalKey, rotateSystemAccount,
   serverConfig, setupSpaceStreams, waitForDeliveryLease, BROKER_FLOOR, CotalEndpoint, DEV_OWNER,
-  meetsBrokerFloor, type ParsedArgs, type SecretStore, type SpaceAuth,
+  meetsBrokerFloor, type ParsedArgs, type SecretStore, type SpaceAuth, bearerInboxConnId
 } from "@cotal-ai/core";
 import {
   calloutPermissions, createCalloutAuth, createUserTokenIssuer, deriveOwnerToken, generateSigningKey,
@@ -334,7 +334,7 @@ try {
     !vB.closed(), { principal: sharedPrincipal });
 
   // ---------- CELL 1: evict a live CALLOUT-MINTED principal in A ----------
-  const nonceP = `ibx${randomUUID().replace(/-/g, "")}`;
+  const nonceP = bearerInboxConnId(bearerP);
   ncP = await connect({
     servers: SERVERS,
     authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(bearerP)],

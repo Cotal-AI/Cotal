@@ -47,7 +47,7 @@ The following guarantees combine broker enforcement with the required receiver c
 | Space containment | NATS accounts isolate each space's subjects, streams, and KV buckets. |
 | Channel posting | The connection posts as itself and only to declared `allowPublish` channels. Posting is default-deny. |
 | Channel content reads | Live subscription grants follow `allowSubscribe`. History uses server-pinned single-channel consumers. |
-| DM and task confidentiality against peers | Per-identity inboxes and provisioner-created bind-only consumers prevent reads of other inboxes and other roles' queues. A trusted reader reauthorizes durable-channel backstop reads. See [Delivery daemon](delivery-daemon.mdx). |
+| DM and task confidentiality against peers | Per-identity inboxes and provisioner-created bind-only consumers prevent reads of other inboxes and other roles' queues. Under per-user authentication the callout grants a reply inbox only under the bearer's own owner and actor. A trusted reader reauthorizes durable-channel backstop reads. See [Delivery daemon](delivery-daemon.mdx). |
 | Carried resume transcripts | Only the target manager instance's transfer reader can read its transfer bucket. The operator's writer is pinned to one transcript. Seats and peers have no transfer-bucket grant. |
 | Optional transport secrecy | `cotals://` requires TLS for the agent-to-broker hop. The broker still sees plaintext. |
 

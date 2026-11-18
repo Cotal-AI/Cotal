@@ -33,7 +33,7 @@ import {
 } from "@nats-io/jwt";
 import { createAccount, createCurve, fromCurveSeed, fromPublic, fromSeed, NKeysError, NKeysErrorCode } from "@nats-io/nkeys";
 import nacl from "tweetnacl";
-import { assertInboxConnId, calloutReaderId, decodeNatsJwt, nativeNkeySigner, newIdentity, principalKey, principalTags, token } from "@cotal-ai/core";
+import { assertUserInboxConnId, calloutReaderId, decodeNatsJwt, nativeNkeySigner, newIdentity, principalKey, principalTags, token } from "@cotal-ai/core";
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { expiredBearerPrincipal, validateUserToken, type ValidatedUserToken } from "./token.js";
 import { ConnectLimiter, ConnectRateLimited } from "./connect-limit.js";
@@ -236,13 +236,12 @@ export interface StartAuthCalloutOpts {
    *  the list is safe today; startup logs a WARNING so the over-trust is never silent. */
   expectedServerIds?: string[];
   /** Permission builder for a validated principal (the flip feeds core's `permissionsFor` via a thin
-   *  `@cotal-ai/auth` adapter). `connId` is the client-chosen inbox nonce (`req.connect_opts.name`), NOT
-   *  the NATS-minted `req.user_nkey` — the builder scopes the private reply inbox `_INBOX_<connId>.>` on
-   *  it. The client picks and passes this nonce because neither it nor this callout knows the per-connect
-   *  nkey pre-connect; core's `assertInboxConnId` rejects a nonce with subject metacharacters, so it
-   *  cannot widen the grant. An absent/invalid nonce makes the builder throw → a signed deny.
+   *  `@cotal-ai/auth` adapter). `connId` is the connection `name` (`req.connect_opts.name`), NOT the
+   *  NATS-minted `req.user_nkey` — the builder scopes the private reply inbox `_INBOX_<connId>.>` on it.
+   *  The callout has already checked it with core's `assertUserInboxConnId`: it is
+   *  `<owner>-<actor>-<nonce>` for this bearer's own principal and carries no subject metacharacter.
    *  `readerId` is core's `calloutReaderId` of this connection, which keys the observer and admin
-   *  profiles' history-reader deletes: the client chooses the nonce, so the nonce cannot key them. */
+   *  profiles' history-reader deletes: the client chooses the connId, so the connId cannot key them. */
   permissionsFor: (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
   /** REQUIRED: durably record the minted JWT's broker user key (`req.user_nkey`) against the validated
    *  principal BEFORE the response leaves (SPEC 13.1 `natkey.`). Awaited; a throw becomes the signed
@@ -489,6 +488,16 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       c.actor = validated.act.actor;
       // Before any ledger read or issuance write: a reconnect loop stops here once it is limited.
       limiter.take({ owner: validated.owner, actor: validated.act.actor });
+      // The private reply inbox (`_INBOX_<connId>.>`) must scope on a token the CLIENT knows
+      // pre-connect, and the connection nkey (`req.user_nkey`) is minted per-connect by NATS. So the
+      // client names its own inbox as `<owner>-<actor>-<nonce>` and passes it as the connection `name`.
+      // The name is not secret: replies under it cross the wire to other subscribers. What makes the
+      // grant private is that it is admitted only under the bearer's own owner and actor, so a
+      // connection can never be granted another principal's inbox. Checked HERE, where client input
+      // enters and before either arm reads a ledger, rather than inside an injected permissionsFor
+      // hook. A bare nonce, a missing name or another principal's prefix throws, and the catch below
+      // turns it into a signed deny (fail-closed).
+      const connId = assertUserInboxConnId(req.connect_opts?.name, validated.owner, validated.act.actor);
       if (validated.act.view === "service-endpoint") {
         if (!serviceAuthority)
           throw new Error("callout: service-endpoint requires dedicated native service authority; ordinary actor hooks refuse it");
@@ -497,7 +506,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           throw new Error("service callout requires an authenticated broker client id");
         const minted = await step(c, "ledger", () => issueNativeServiceCallout(serviceAuthority, validated, {
           connection: { userNkey: req.user_nkey, serverId: req.server_id.id, clientId },
-          inboxNonce: assertInboxConnId(req.connect_opts?.name ?? ""), admittedAt: c.admittedAt,
+          inboxNonce: connId, admittedAt: c.admittedAt,
         }));
         const sealed = await step(c, "sign", () => seal(c, { jwt: minted.jwt }));
         if (minted.exp <= Math.floor(Date.now() / 1000))
@@ -506,24 +515,13 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         return;
       }
       await step(c, "ledger", () => opts.authorizeActor(validated));
-      // The private reply-inbox (`_INBOX_<connId>.>`) must scope on a token the CLIENT knows pre-connect
-      // — but under the callout the connection nkey (`req.user_nkey`) is minted per-connect by NATS, so
-      // the client cannot set its `inboxPrefix` to match it. So the client picks its own random inbox
-      // nonce and passes it as the connection `name`; we scope the grant on THAT (empirically: a scoped
-      // `_INBOX_<nonce>.>` round-trips through the rebind, and the nonce is a per-connection secret, the
-      // same security model as NATS's default random mux inbox). core's `assertInboxConnId` (via
-      // permissionsFor) rejects a nonce carrying subject metacharacters, so a client cannot widen the
-      // grant to `_INBOX_>.>`; a missing/garbled name throws → this becomes a signed deny (fail-closed).
-      // Validate the nonce HERE, at the boundary where untrusted client input enters — not inside the
-      // injected permissionsFor hook (which could be any implementation). assertInboxConnId throws on a
-      // missing/wildcard name → the catch below turns it into a signed deny (fail-closed).
-      const inboxNonce = assertInboxConnId(req.connect_opts?.name ?? "");
       // The history-reader deletes key on what the SERVER assigned this connection, never on the
-      // nonce: a client that named another connection's nonce would otherwise be granted the
-      // deletes of that connection's readers. A request without a client id throws → signed deny.
+      // client-chosen connId: two connections of one principal may name the same connId, and neither
+      // may be granted the deletes of the other's readers. A request without a client id throws →
+      // signed deny.
       const readerId = calloutReaderId(req.server_id.id, req.client_info?.id as number);
       const { [SESSION_EXP]: sessionExp, [ENDPOINT_CALLER_EXP]: endpointExp, [ENDPOINT_CALLER_RECHECK]: endpointRecheck, ...perms } =
-        await step(c, "policy", () => opts.permissionsFor(validated, inboxNonce, readerId));
+        await step(c, "policy", () => opts.permissionsFor(validated, connId, readerId));
       // #2312: a session-caller connection carries EXACTLY the static arm's expiry, the grant's,
       // and only when the permission builder vouched for it from the live session row.
       const exp = validated.act.view === "session-caller" ? sessionExp : endpointExp === undefined ? validated.exp : Math.min(validated.exp, endpointExp as number);
@@ -548,7 +546,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         );
         return { userJwt: jwt, iat: signedIat(jwt) };
       });
-      await step(c, "ledger", () => opts.recordIssuance({ userNkey: req.user_nkey, token: validated, connId: inboxNonce, iat, exp }));
+      await step(c, "ledger", () => opts.recordIssuance({ userNkey: req.user_nkey, token: validated, connId, iat, exp }));
       if (endpointRecheck !== undefined) {
         if (typeof endpointRecheck !== "function") throw new Error("callout: invalid endpoint caller final check");
         await step(c, "policy", () => endpointRecheck());

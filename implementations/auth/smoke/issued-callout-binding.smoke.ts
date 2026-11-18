@@ -10,7 +10,7 @@ import { createUser, fromPublic, fromSeed } from "@nats-io/nkeys";
 import { SignJWT, generateKeyPair } from "jose";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { createSpaceAuth, serverConfig, createEndpointStreams, epAuthBucket, recordsBucket, lifecycleHeadKey, credRowKey, isReachable } from "@cotal-ai/core";
+import { createSpaceAuth, serverConfig, createEndpointStreams, epAuthBucket, recordsBucket, lifecycleHeadKey, credRowKey, isReachable, userInboxConnId } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createCalloutAuth, type StartAuthCalloutOpts } from "../src/callout.js";
 import { activateLifecycle, openLifecycleRegistry } from "../src/lifecycle-registry.js";
@@ -143,7 +143,9 @@ try {
   const requests = operator.subscribe(`cotal.${space}.ep.v1.one.>`, { queue: "proof-bound" });
   void (async () => { for await (const msg of requests) seen.add(new TextDecoder().decode(msg.data)); })();
   await operator.flush();
-  async function open(generation: string, name = issuedCalloutName(generation, random()), token: string | null = bearer, reconnect = false) {
+  async function open(generation: string, nonce = issuedCalloutName(generation, random()), token: string | null = bearer, reconnect = false) {
+    // The shipped callout admits only a name under the bearer's own principal.
+    const name = userInboxConnId(owner, actor, nonce);
     const nc = await connect({ servers: server, authenticator: token ? [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(token)] : credsAuthenticator(enc(callout.sentinelCreds)), name, inboxPrefix: `_INBOX_${name}`, reconnect, maxReconnectAttempts: reconnect ? 3 : 0, reconnectTimeWait: 25, reconnectJitter: 0, timeout: 4000 });
     connections.push(nc);
     return { nc, ref: Object.freeze(refFor(generation)) };

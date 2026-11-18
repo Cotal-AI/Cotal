@@ -1,0 +1,2 @@
+# A per-user-auth connection's reply inbox is admitted only under its bearer's own principal.
+smoke:user-inbox-binding:auth

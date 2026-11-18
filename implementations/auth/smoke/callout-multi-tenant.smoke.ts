@@ -52,7 +52,7 @@ if (process.argv[2] === "__daemon-auth-service") {
   process.env.COTAL_HOME = home;
 
   const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
-  const { createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
+  const { createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams, bearerInboxConnId } = await import("@cotal-ai/core");
   const { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const { admitsServiceEndpoints, cotalAuthProvider, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, newActorToken, parseSpaceManifest } = await import("@cotal-ai/auth");
   const { saveIdpSession } = await import("../src/login.js");
@@ -204,7 +204,7 @@ if (process.argv[2] === "__daemon-auth-service") {
   /** One connect through the real callout, as a client makes it. Resolves the broker's view of the
    *  connection it produced, which names the account the minted JWT bound it into. */
   const connectOnce = async (space: Space, bearer: string) => {
-    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
+    const nonce = bearerInboxConnId(bearer);
     const nc = await connect({
       servers, authenticator: [credsAuthenticator(new TextEncoder().encode(space.sentinelCreds)), tokenAuthenticator(bearer)],
       name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 10_000, maxReconnectAttempts: 0,
@@ -392,7 +392,7 @@ if (process.argv[2] === "__daemon-auth-service") {
       let eAuthorized = 0;
       const eSeen: Array<{ account: string | null; reason: string | null }> = [];
       for (let i = 0; i < eAttempts; i++) {
-        const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
+        const nonce = bearerInboxConnId(E.bearers[0]!);
         try {
           const nc = await connect({ servers, authenticator: [credsAuthenticator(new TextEncoder().encode(E.sentinelCreds)), tokenAuthenticator(E.bearers[0])],
             name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 10_000, maxReconnectAttempts: 0 });

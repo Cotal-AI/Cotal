@@ -12,7 +12,7 @@ import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } 
 import { Kvm } from "@nats-io/kv";
 import { authorizeServeGrant, compileContract, contractArtifactCanonicalBytes, contractDigest, contractStoreContext, epAuthBucket,
   invokeCommand, mintCreds, newIdentity, publishContractArtifact, recordSpecKey, RECORD_KINDS, resolveService, serveEndpoint,
-  setupSpaceStreams, singleDocumentClosure, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness } from "@cotal-ai/core";
+  setupSpaceStreams, singleDocumentClosure, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness, bearerInboxConnId } from "@cotal-ai/core";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 import { mintServiceCallerPayloadObserverCreds } from "../src/service-caller-payload-bootstrap.js";
 import { SERVICE_CALLER_PAYLOAD_FLOOR } from "../src/service-caller-payload.js";
@@ -111,7 +111,7 @@ try {
   const grant = await authorizeServeGrant({ get: async key => key === specKey ? { operation: "PUT", value: enc.encode(JSON.stringify(snapshot.spec.value)), revision: snapshot.spec.revision } : null },
     { space: a.space, endpoint, instanceId, epoch: witness.processEpoch, holder: { owner }, authority: { authorize: () => ({ authorized: true, revision: snapshot.name.revision }) },
       readProcessEpoch: () => snapshot.processEpoch, readClusterArtifact: digest => digest === cluster.closureDigest ? cluster.manifest : digest === contractDigest(document) ? document : undefined });
-  const nonce = rid(), serving = await connect({ servers: fx.servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0,
+  const nonce = bearerInboxConnId(credential.accessBearer), serving = await connect({ servers: fx.servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0,
     authenticator: [credsAuthenticator(enc.encode(a.sentinelCreds)), tokenAuthenticator(credential.accessBearer)] }); connections.push(serving);
   serve = serveEndpoint(serving, a.space, grant, [{ command, contract: { input: compiled, output: outputCompiled }, handler: ctx => { runs++; return second ? { squared: Number((ctx.request.args as { n: number }).n) ** 2 } : {}; } }], { public: true });
   await serving.flush();
@@ -175,7 +175,7 @@ try {
     }
   }
   const dial = async (actor: string) => {
-    const exchange = await post("/exchange", actor === "managed" ? { owner, actor, actorToken: managedToken } : { idpToken, actor }); const nonce = rid();
+    const exchange = await post("/exchange", actor === "managed" ? { owner, actor, actorToken: managedToken } : { idpToken, actor }); const nonce = bearerInboxConnId(exchange.token);
     const nc = await connect({ servers: fx.servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0, timeout: 5000,
       authenticator: [credsAuthenticator(enc.encode(a.sentinelCreds)), tokenAuthenticator(exchange.token)] }); connections.push(nc); return nc;
   };
