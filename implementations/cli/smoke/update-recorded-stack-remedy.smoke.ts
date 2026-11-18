@@ -5,9 +5,10 @@ import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertSmokeSandboxDown, countedAssert, emitSentinel, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { resolveOnPath } from "@cotal-ai/workspace";
 import { shellWord } from "../src/lib/endpoint-errors.js";
 
 const counted = countedAssert(strictAssert);
@@ -17,6 +18,7 @@ const project = join(root, "project with spaces"), home = join(root, "home"), fi
 for (const path of [project, home, fixture, join(root, "tmp"), join(root, "rt")]) mkdirSync(path, { recursive: true, mode: 0o700 });
 const repo = join(import.meta.dirname, "../../..");
 const packed = process.env.COTAL_REMEDY_TEST_ENTRY;
+const packedBin = packed ? resolve(dirname(packed), "../../../../bin") : undefined;
 const entry = packed ?? join(repo, "bin/cotal.ts");
 const env: NodeJS.ProcessEnv & { COTAL_HOME: string; XDG_CONFIG_HOME: string } = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))), HOME: home, COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: join(root, "rt"), TMPDIR: join(root, "tmp"), COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
 const sandbox = recordSmokeSandbox({ root: project, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
@@ -41,16 +43,28 @@ writeFileSync(join(fixture, "package.json"), JSON.stringify({ name: "cotal-stack
 writeFileSync(seat, `import{CotalEndpoint}from${JSON.stringify(core)};const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});await ep.start();setInterval(()=>{},1000);for(const s of['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`);
 writeFileSync(join(fixture, "index.js"), `import{registry}from${JSON.stringify(core)};registry.register({kind:'connector',name:'stack-remedy-seat',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))),COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
 let started = false;
-async function cli(args: string[], updating = false, path = env.PATH): Promise<{ code: number | null; output: string }> {
-  const options = { cwd: project, env: { ...env, PATH: path, ...(updating ? { npm_config_registry: registry } : {}) }, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+async function cli(args: string[], mode: "default" | "registry" | "replay" = "default"): Promise<{ code: number | null; output: string }> {
+  const commandEnv: NodeJS.ProcessEnv = { ...env, ...(mode === "default" ? {} : { npm_config_registry: registry }) };
+  const options = { cwd: project, env: commandEnv, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+  let executable = process.execPath;
+  if (mode === "replay") {
+    assert.ok(packed && packedBin);
+    commandEnv.PATH = packedBin + (env.PATH ? delimiter + env.PATH : "");
+    // Check again after update, which can replace the bin link. Never use another install on PATH.
+    const installed = resolveOnPath("cotal", commandEnv);
+    assert.equal(installed, join(packedBin, "cotal"), "replay PATH must select the fixture's installed cotal");
+    assert.equal(realpathSync.native(installed), realpathSync.native(packed), "installed cotal must resolve to the packed entry");
+    executable = installed;
+  }
+  const argv = mode === "replay" ? args : [...(packed ? [] : ["--import", import.meta.resolve("tsx")]), entry, ...args];
   assertSmokeSandboxDown(sandbox, args, options);
-  const child = spawn(process.execPath, [...(packed ? [] : ["--import", import.meta.resolve("tsx")]), entry, ...args], options);
+  const child = spawn(executable, argv, options);
   let output = "";
   child.stdout.on("data", bytes => output += bytes); child.stderr.on("data", bytes => output += bytes);
   const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
   return { code, output };
 }
-async function ok(args: string[], updating = false, path = env.PATH): Promise<string> { const r = await cli(args, updating, path); assert.equal(r.code, 0, r.output); return r.output; }
+async function ok(args: string[], mode?: "replay"): Promise<string> { const r = await cli(args, mode); assert.equal(r.code, 0, r.output); return r.output; }
 const journal = join(project, ".cotal/stack-controller.json");
 function digest(path: string): string { return createHash("sha256").update(readFileSync(path)).digest("hex"); }
 function records(): Record<string, string> {
@@ -61,7 +75,7 @@ function records(): Record<string, string> {
 }
 async function report(proven: boolean, seats: number): Promise<string> {
   const before = records();
-  const r = await cli(["update", "--self", "--stop-agents"], true);
+  const r = await cli(["update", "--self", "--stop-agents"], "registry");
   assert.equal(r.code, 1, r.output);
   assert.match(r.output, new RegExp(`: ${seats} seats`));
   assert.deepEqual(records(), before, "the report changes no stack journal or service record");
@@ -112,7 +126,7 @@ try {
   const held = `${journal}.test-held`;
   renameSync(journal, held);
   try {
-    const r = await cli(["update", "--self", "--stop-agents"], true);
+    const r = await cli(["update", "--self", "--stop-agents"], "registry");
     assert.equal(r.code, 1, r.output);
     assert.match(r.output, /Cannot determine this Manager's original hosting command/);
     assert.doesNotMatch(r.output, /Recorded stack root:/);
@@ -142,9 +156,8 @@ try {
     assert.deepEqual(commands, steps.map(args => atRoot + args.map(shellWord).join(" ")));
     const version = await ok(["version", "--json"]);
     latest = JSON.parse(version).result.version;
-    const path = `${join(dirname(packed), "../../../../bin")}:${env.PATH ?? ""}`;
     // A shell startup file can change the environment after the sandbox guard checks it.
-    for (const args of steps) await ok(args, true, path);
+    for (const args of steps) await ok(args, "replay");
     const final = JSON.parse(await ok(["ps", "--space", "remedy-proof", "--json"]));
     assert.equal(final.result.items.length, 0, "the exact printed sequence restarts no seats");
     assert.match(await ok(["status", "--space", "remedy-proof"]), /Manager:.*answering/);
