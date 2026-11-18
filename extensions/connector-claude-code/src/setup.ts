@@ -391,25 +391,31 @@ function writeMarketplace(): void {
   if (update.status !== 0) throw new Error(`plugin marketplace update failed:\n${update.output}`);
 }
 
-/** A missing executable must not make an already installed integration disappear from an upgrade.
- * Only inspect native records to detect that obligation; never rewrite them ourselves. */
-function installedForRefresh(): PluginEntry[] {
+/** Read native records without creating directories or locks for an absent integration. */
+function installedPluginForRefresh(): string | undefined {
   const path = join(pluginCacheDir(), "installed_plugins.json");
-  if (!existsSync(path)) return [];
   let records: unknown;
   try {
     records = (JSON.parse(readFileSync(path, "utf8")) as { plugins?: unknown }).plugins;
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw new Error("Claude's plugin records could not be read, so Cotal cannot verify their upgrade");
   }
   if (!records || typeof records !== "object" || Array.isArray(records))
     throw new Error("Claude's plugin records have an unsupported shape, so Cotal cannot verify their upgrade");
   for (const name of ["cotal", "cotal-skills"]) {
     const entries = (records as Record<string, unknown>)[`${name}@${MARKETPLACE}`];
-    if (entries !== undefined && (!Array.isArray(entries) || entries.length > 0)) {
-      if (!claudeAvailable()) throw new Error(`${name}@${MARKETPLACE} is installed, but Claude Code is unavailable. Restore Claude Code or open Desktop's Code tab, then retry the Cotal update.`);
-      return listPlugins();
-    }
+    if (entries !== undefined && (!Array.isArray(entries) || entries.length > 0)) return name;
+  }
+  return undefined;
+}
+
+/** A missing executable must not make an already installed integration disappear from an upgrade. */
+function installedForRefresh(): PluginEntry[] {
+  const name = installedPluginForRefresh();
+  if (name) {
+    if (!claudeAvailable()) throw new Error(`${name}@${MARKETPLACE} is installed, but Claude Code is unavailable. Restore Claude Code or open Desktop's Code tab, then retry the Cotal update.`);
+    return listPlugins();
   }
   return [];
 }
@@ -700,6 +706,9 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     explain: "Rewrites the copy of the Cotal plugin that Claude Code sessions load, and Cotal's entry in Claude Desktop, for this release.",
     context: [DOCS_URL],
     run({ cotal, skills }) {
+      const path = desktopConfigPath();
+      if (!installedPluginForRefresh() && (path === undefined || readDesktopEntry(path) === undefined)) return "not installed";
+      // Re-read installed state under the mutation locks before changing any integration.
       return withPluginLock(() => {
         const entries = installedForRefresh();
         const installs = entries.filter((entry) => entry.id === `cotal@${MARKETPLACE}`);

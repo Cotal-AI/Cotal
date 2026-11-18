@@ -253,6 +253,9 @@ cotal update
 ```
 
 This reconciles installed extensions and connector integrations with the running CLI's release.
+When no Cotal Claude plugin or Desktop integration is installed, reconciliation only reads Claude's
+installation records. It creates no Claude directories or lock files, including in a read-only
+configuration directory. Unreadable or damaged installation records still refuse the update.
 After a manual `npm install -g`, the first command that runs the launch gate also brings installed
 first-party extensions to the running CLI's release, or refuses with `cotal update --self` if an
 extension cannot be reconciled. When automatic updates are enabled, the daemon's scheduled check
