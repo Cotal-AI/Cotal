@@ -52,6 +52,11 @@ writeFileSync(
     connectors: { "smoke-ov": { mcpServers: { alpha: { command: "true" }, beta: { command: "true" } } } },
   }),
 );
+// A project config that declares servers applies only in a folder the operator trusts. The trust
+// record lives in this suite's own config folder.
+process.env.XDG_CONFIG_HOME = join(workspaceRoot, "xdg");
+const { trustProject } = await import("@cotal-ai/workspace");
+trustProject(workspaceRoot);
 
 const mgr = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
 const fakeSession = {

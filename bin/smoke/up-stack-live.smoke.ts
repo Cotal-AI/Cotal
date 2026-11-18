@@ -781,6 +781,9 @@ try {
   mkdirSync(join(fgRoot, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(fgRoot, ".cotal", "agents", "seat.md"), "---\nname: seat\nrole: worker\nsubscribe: []\nallowPublish: []\n---\nA supervised seat that exists to be spared.\n");
   writeFileSync(join(fgRoot, ".cotal", "config.json"), JSON.stringify({ spawn: { env: ["CORE_DIST", "PIDFILE", "SHIM_BODY"] } }));
+  // A project config that names spawn.env applies only in a folder the operator trusts.
+  const fgTrust = cliIn(fgRoot, "trust", fgRoot);
+  ok("the foreground project folder is trusted", fgTrust.status === 0, plain(fgTrust.stderr));
   // Seeding installs the connector, not Claude's user configuration. Declare its wake-channel
   // server in this project so the shim launch does not depend on the host's Claude setup.
   writeFileSync(join(fgRoot, ".mcp.json"), JSON.stringify({

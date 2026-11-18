@@ -18,8 +18,7 @@ import { spawn as spawnProcess, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { emitSentinel, skipSuite } from "../../../bin/smoke/sentinel.mjs";
+import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, skipSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") skipSuite("the stand-in harness is a POSIX script");
 
