@@ -26,9 +26,18 @@ for (const [name, header] of [
   const preload = join(scratch, `${name}.mjs`);
   writeFileSync(preload, `Object.defineProperty(process, "platform", { value: "linux" });
 process.report.getReport = () => ({ header: ${JSON.stringify(header)} });\n`);
-  for (const args of [["--version"], ["up", "--foreground"], ["setup", "--no-input"], ["__daemon-manager"]]) {
+  for (const args of [["--version"], ["up", "--foreground"], ["setup", "--no-input"], ["__daemon-manager"], ["spawn"], ["sp"]]) {
+    const handoff = join(scratch, `${name}-${args[0]}-handoff.json`);
+    const managed = args[0] === "spawn" || args[0] === "sp";
+    const key = args[0] === "sp" ? "Cotal_Managed_Handoff_File" : "COTAL_MANAGED_HANDOFF_FILE";
+    const childEnv = { ...env };
+    if (managed) {
+      writeFileSync(handoff, JSON.stringify({ actorToken: "platform-smoke-placeholder" }), { mode: 0o600 });
+      childEnv[key] = handoff;
+      childEnv.COTAL_MANAGER_INSTANCE = "platform-smoke";
+    }
     const result = spawnSync(process.execPath, ["--import", preload, entry, ...args], {
-      env, cwd: scratch, encoding: "utf8", timeout: 10_000,
+      env: childEnv, cwd: scratch, encoding: "utf8", timeout: 10_000,
     });
     assert.equal(result.error, undefined);
     assert.equal(result.signal, null);
@@ -37,6 +46,7 @@ process.report.getReport = () => ({ header: ${JSON.stringify(header)} });\n`);
     assert.match(result.stderr, /^Cotal requires glibc on Linux\./);
     assert.match(result.stderr, /Alpine and other musl distributions are not supported/);
     assert.match(result.stderr, /Use a glibc distribution or container/);
+    if (managed) assert(!existsSync(handoff), "unsupported-platform refusal must remove the managed handoff");
     assert(!existsSync(env.COTAL_HOME), "refusal must precede Cotal state creation");
     assert(!existsSync(join(scratch, ".cotal")), "refusal must precede stack setup");
     console.log(`PASS: ${name} ${args.join(" ")} refused at the real CLI entry`);

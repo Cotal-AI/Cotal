@@ -5,6 +5,20 @@ import { setFlagsFromString } from "node:v8";
 setFlagsFromString("--no-maglev");
 setFlagsFromString("--no-concurrent-sparkplug");
 const MIN_NODE = "22.10";
+async function refuseStartup(): Promise<never> {
+  const { unlinkSync } = await import("node:fs");
+  const command = process.argv.slice(2).find((arg) => !arg.startsWith("-"));
+  for (const [key, path] of Object.entries(process.env)) {
+    if (key.toUpperCase() !== "COTAL_MANAGED_HANDOFF_FILE") continue;
+    delete process.env[key];
+    if (!path || (command !== "spawn" && command !== "sp")) continue;
+    try { unlinkSync(path); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") process.stderr.write(`cannot remove the managed handoff file: ${(error as Error).message}\n`);
+    }
+  }
+  process.exit(1);
+}
 const [MIN_MAJOR, MIN_MINOR] = MIN_NODE.split(".").map(Number) as [number, number];
 const [nodeMajor, nodeMinor] = process.versions.node.split(".").map((part) => Number.parseInt(part ?? "", 10));
 if (!Number.isInteger(nodeMajor) || !Number.isInteger(nodeMinor) || nodeMajor! < MIN_MAJOR ||
@@ -21,16 +35,7 @@ if (!Number.isInteger(nodeMajor) || !Number.isInteger(nodeMinor) || nodeMajor! <
   process.stderr.write(`\ncotal-ai requires Node.js >= ${MIN_NODE}, but this is ${process.version}.\n` +
     `Below Node ${MIN_MAJOR}, npm silently skips the bundled nats-server broker and the CLI's UI\n` +
     `stack cannot parse. Below ${MIN_NODE}, Node has no module compile cache and a seat refuses to\nstart.\n\n` + remedy);
-  const { unlinkSync } = await import("node:fs");
-  const command = process.argv.slice(2).find((arg) => !arg.startsWith("-"));
-  for (const [key, path] of Object.entries(process.env)) {
-    if (key.toUpperCase() !== "COTAL_MANAGED_HANDOFF_FILE" || !path || (command !== "spawn" && command !== "sp")) continue;
-    try { unlinkSync(path); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") process.stderr.write(`cannot remove the managed handoff file: ${(error as Error).message}\n`);
-    }
-  }
-  process.exit(1);
+  await refuseStartup();
 }
 // Package managers may skip lifecycle scripts. Refuse before loading the native PTY layer.
 if (process.platform === "linux") {
@@ -41,7 +46,7 @@ if (process.platform === "linux") {
   report.excludeNetwork = excludeNetwork;
   if (!header.glibcVersionRuntime) {
     process.stderr.write("Cotal requires glibc on Linux. Alpine and other musl distributions are not supported. Use a glibc distribution or container such as Debian, Ubuntu, or Fedora.\n");
-    process.exit(1);
+    await refuseStartup();
   }
 }
 const emitWarning = process.emitWarning.bind(process) as (...args: unknown[]) => void;

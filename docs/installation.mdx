@@ -55,6 +55,7 @@ npm install -g cotal-ai
 On Linux, this route also requires glibc. A package manager can install Cotal on Alpine and other musl distributions,
 but the command refuses to start there because the bundled terminal library cannot run.
 This startup check does not depend on package install scripts.
+A delegated `spawn` or `sp` also removes its managed handoff file before this refusal.
 
 Use this route on Windows.
 The shell installer does not support Windows shells.
