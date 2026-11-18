@@ -1355,6 +1355,15 @@ for (const assistant of [
       /mutually exclusive/,
     );
     ok(piConnector.supportsResume === true, "Pi declares operator fork-resume support");
+    for (const resume of ["--help", "-v", "-"]) {
+      assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", resume, events: false }), /session id cannot start with '-'/);
+      checks++;
+    }
+    const stateBeforePreview = join(root, ".cotal", "pi-sessions", "preview-life.json");
+    mkdirSync(dirname(stateBeforePreview), { recursive: true });
+    writeFileSync(stateBeforePreview, "keep this session");
+    const preview = piConnector.buildLaunch({ space: "test", name: "preview", lifecycleUid: "life", workspaceRoot: root, events: false, validateOnly: true });
+    ok(!preview.artifacts?.length && readFileSync(stateBeforePreview, "utf8") === "keep this session", "validation creates no artifacts and preserves existing session state");
     ok(piConnector.supportsSessionContinuation === true, "Pi declares exact-session crash continuation support");
     const forked = piConnector.buildLaunch({ space: "test", name: "pi", resume: "session weird;$(nope)", events: false });
     const forkAt = forked.args.indexOf("--fork");

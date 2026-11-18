@@ -1,8 +1,10 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
+import { discardLaunchArtifacts, LAUNCH_MATERIAL_ENV, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { aclEnv, controlEndpoint, launchEnv, MODEL_PROVIDER_KEYS, materialEnv, SUN_PATH_MAX_BYTES } from "@cotal-ai/connector-core";
 import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
@@ -116,12 +118,34 @@ export const hermesConnector: Connector = {
     // mints the control endpoint itself and merges the token into a file of its own (see launch.ts).
     // This one is written after every refusal above, and its directory is a launch artifact the
     // launcher removes once the child has exited.
+    if (opts.validateOnly) return { command: "", args: [] };
     const artifacts: string[] = [];
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+    const control = controlEndpoint(opts.space, opts.name);
+    try {
+      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+      // Both sockets live with their credential carrier, so the launch's exit watcher removes them
+      // even when the launcher cannot run its own shutdown handlers.
+      const carrier = dirname(env[LAUNCH_MATERIAL_ENV]!);
+      control.path = join(carrier, "c.sock");
+      env.COTAL_CONTROL_SOCKET = control.path;
+      env.COTAL_BRIDGE_SOCKET = join(carrier, "b.sock");
+      if (Buffer.byteLength(control.path) > SUN_PATH_MAX_BYTES)
+        throw new Error(`Hermes socket path exceeds the ${SUN_PATH_MAX_BYTES}-byte limit; point TMPDIR at a shorter directory`);
+      const seat = hermesSeatHome(opts.space, opts.name);
+      if (!adoptHome && !opts.resume && !existsSync(join(seat.home, HERMES_FORK_RECORD))) {
+        const root = mkdtempSync(join(tmpdir(), "cotal-hermes-"));
+        artifacts.push(root);
+        env.COTAL_HERMES_SEAT_HOME = join(root, "profiles", basename(seat.home));
+      }
+    } catch (error) {
+      discardLaunchArtifacts(artifacts);
+      throw error;
+    }
     return {
       command: LAUNCH_COMMAND,
       args: [LAUNCH_ENTRY],
       env,
+      control,
       ...(resumeRecordPath ? { resumeRecordPath } : {}),
       ...(artifacts.length > 0 ? { artifacts } : {}),
     };

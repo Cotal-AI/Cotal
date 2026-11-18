@@ -15,6 +15,9 @@ export interface UserAuthLaunch {
 
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
 export interface LaunchOpts {
+  /** Validate and render without creating launch files or changing session state. The returned
+   * spec is not executable. Launchers use this before provisioning and for offline previews. */
+  validateOnly?: boolean;
   space: string;
   name: string;
   role?: string;

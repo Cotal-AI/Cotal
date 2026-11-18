@@ -4,7 +4,7 @@ import { checkEventStartup, EventStateConflictError, isPermissionDenied, chatStr
 import { hostname, homedir } from "node:os";
 import { listDirectory } from "./list-dir.js";
 import { credsAuthenticator, RequestError } from "@nats-io/transport-node";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import Headless from "@xterm/headless";
@@ -5586,6 +5586,7 @@ export class Manager {
     }
     try {
       if (!statSync(cwd).isDirectory()) return { refusal: "path is not a directory" };
+      accessSync(cwd, constants.X_OK);
     } catch (error) {
       return { refusal: rejectionText(error) };
     }

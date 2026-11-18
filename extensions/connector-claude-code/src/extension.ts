@@ -406,6 +406,7 @@ export const claudeConnector: Connector = {
     const passthrough = connectorLaunchOptions("claude", opts.launchOptions).map(([k, v]) => [k, String(v)] as const);
     // The private files this launch writes. The launcher that spawns the spec removes them once the
     // child has exited (core launch-artifacts).
+    if (opts.validateOnly) return { command: "", args: [] };
     const artifacts: string[] = [];
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
     // shells, builds and third-party CLIs this session runs no longer inherit live authority. Its

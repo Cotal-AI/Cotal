@@ -1528,6 +1528,19 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       : `✗ connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events to launch it without one`));
     process.exit(1);
   }
+  try {
+    const preview = connector.buildLaunch({
+      validateOnly: true, space, name, role, servers: server, configPath: path,
+      model, variant, launchOptions, subscribe, allowSubscribe, allowPublish,
+      endpoints: copyPersonaEndpoints(def.endpoints) ?? [], prompt: values.prompt,
+      resume: values.resume, events: launchEvents, eventPayloads, eventsRequired,
+      mcpServers, mcpServersExclusive: shareTools !== undefined, envAllow,
+      workspaceRoot: target.root,
+    });
+    discardLaunchArtifacts(preview.artifacts);
+  } catch (error) {
+    throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message, { target: { space, path } });
+  }
   // A REMOTE user mesh (registered with `meshes add --from`) that advertises a provisioning
   // endpoint: the mesh grants the row and pre-creates the durables inside the owner's envelope,
   // because the material to do that locally — the space's owner secret and account signer — only
@@ -1549,8 +1562,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const endpointCapabilities = lowerPersonaEndpoints(def.endpoints);
   // Said once every check above has passed, so a refusal is never read as a launch that started.
   console.error(renderReport({ space, sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", process.stderr));
-  // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the
-  // launch (e.g. `buildLaunch` throws on a rejected `--opt`) and before the child execs. The SAME
+  // Auth mode provisions the identity and writes its creds after launch-argument validation, but
+  // launch materialization or child exec can still fail. The SAME
   // retirement serves a failed provisioning or launch (rollback) and the normal foreground
   // departure: each spawn mints a fresh identity, so an exited agent's footprint (creds file, DM/DLV
   // durables, ACL row) is dead weight no future spawn reuses — mirror the manager's `deprovision`
@@ -1739,41 +1752,45 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       console.error(`"${requested}" is already on the mesh - spawning as ${name} instead`);
     if (target.source === "registry" || target.source === "current")
       console.error(c.dim(`→ joining mesh ${space} (${server}) as ${name}`));
-    spec = connector.buildLaunch({
-      space,
-      name,
-      role,
-      id,
-      creds: credsPath,
-      ...(acceptedToken !== undefined ? { acceptedToken } : {}),
-      userAuth,
-      lifecycleUid,
-      servers: server,
-      configPath: path,
-      model,
-      variant,
-      launchOptions,
-      subscribe,
-      allowSubscribe,
-      allowPublish,
-      // The endpoint commands this launch minted (on a static mesh) or names (on an open one), so the
-      // session reads them from the launch rather than from a persona file that may change.
-      endpoints: copyPersonaEndpoints(def.endpoints) ?? [],
-      prompt: values.prompt,
-      // Fork an existing session into the mesh. `prompt + resume` is a supported combo (claude accepts
-      // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
-      resume: values.resume,
-      events: launchEvents,
-      eventPayloads,
-      eventsRequired,
-      mcpServers,
-      mcpServersExclusive: shareTools !== undefined,
-      envAllow,
-      // Where a connector that keeps per-agent local state roots it. The manager passes its own
-      // workspace root here; the foreground path did not, so an armed session refused at launch
-      // construction because its write-ahead log had nowhere to live that a later start would look.
-      workspaceRoot: target.root,
-    });
+    try {
+      spec = connector.buildLaunch({
+        space,
+        name,
+        role,
+        id,
+        creds: credsPath,
+        ...(acceptedToken !== undefined ? { acceptedToken } : {}),
+        userAuth,
+        lifecycleUid,
+        servers: server,
+        configPath: path,
+        model,
+        variant,
+        launchOptions,
+        subscribe,
+        allowSubscribe,
+        allowPublish,
+        // The endpoint commands this launch minted (on a static mesh) or names (on an open one), so the
+        // session reads them from the launch rather than from a persona file that may change.
+        endpoints: copyPersonaEndpoints(def.endpoints) ?? [],
+        prompt: values.prompt,
+        // Fork an existing session into the mesh. `prompt + resume` is a supported combo (claude accepts
+        // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
+        resume: values.resume,
+        events: launchEvents,
+        eventPayloads,
+        eventsRequired,
+        mcpServers,
+        mcpServersExclusive: shareTools !== undefined,
+        envAllow,
+        // Where a connector that keeps per-agent local state roots it. The manager passes its own
+        // workspace root here; the foreground path did not, so an armed session refused at launch
+        // construction because its write-ahead log had nowhere to live that a later start would look.
+        workspaceRoot: target.root,
+      });
+    } catch (error) {
+      throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message, { target: { space, path } });
+    }
     applyHandoffManagerInstance(spec, handoffManagerInstanceId);
     artifacts = spec.artifacts;
     scrubEnrollmentEnv(spec.env);

@@ -214,6 +214,7 @@ export const jcodeConnector: Connector = {
 
     // Creds, broker URL and the control token ride a 0600 file written after every refusal above.
     // Its directory is a launch artifact the launcher removes once the child has exited.
+    if (opts.validateOnly) return { command: "", args: [] };
     const artifacts: string[] = [];
     Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
 

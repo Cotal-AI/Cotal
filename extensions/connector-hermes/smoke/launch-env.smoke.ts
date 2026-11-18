@@ -17,6 +17,7 @@ import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
 import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
 import { briefing } from "@cotal-ai/connector-core";
+import { LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
 
 /**
  * Count every assertion, so the terminal tally is derived from what actually ran.
@@ -48,7 +49,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 168;
+const EXPECTED_CELLS = 172;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -103,7 +104,12 @@ for (const k of HOST_MARKERS)
   assert.ok(!(k in env), `${k} leaked from this process into the child: a host-session marker must be withheld`);
 
 for (const k of PER_SESSION)
-  assert.ok(!(k in env), `${k} leaked from this process into the child: a per-session name must be reset, not inherited`);
+  assert.ok(k === "COTAL_LAUNCH_MATERIAL" || k === "COTAL_CONTROL_SOCKET" ? env[k] !== `parent-${k}` : !(k in env), `${k} leaked from this process into the child: a per-session name must be reset, not inherited`);
+
+assert.ok(readLaunchMaterial(env[LAUNCH_MATERIAL_ENV]).controlToken, "the tracked launch carrier already holds the control token");
+assert.equal(join(env[LAUNCH_MATERIAL_ENV], "..", "c.sock"), env.COTAL_CONTROL_SOCKET, "control socket belongs to the tracked material directory");
+assert.equal(join(env[LAUNCH_MATERIAL_ENV], "..", "b.sock"), env.COTAL_BRIDGE_SOCKET, "bridge socket belongs to the tracked material directory");
+assert.ok(env.COTAL_HERMES_SEAT_HOME?.includes("/profiles/cotal-"), "disposable profile is named before launch so its root can be tracked");
 
 assert.equal(env.COTAL_SPACE, "smoke", "the connector supplies this child's space");
 assert.equal(env.COTAL_NAME, "hermes-1", "the connector supplies this child's name");
@@ -124,7 +130,7 @@ assert.ok(!("GH_TOKEN" in confined), "an undeclared name is withheld under conta
 assert.ok(!("SOME_UNRELATED_SECRET" in confined), "containment means the OS allow-list plus the declared names, nothing else");
 assert.ok(confined.PATH !== undefined, "the OS allow-list still carries what the child needs to run");
 for (const k of PER_SESSION)
-  assert.ok(!(k in confined), `${k} must be absent under containment too`);
+  assert.ok(k === "COTAL_LAUNCH_MATERIAL" || k === "COTAL_CONTROL_SOCKET" ? confined[k] !== `parent-${k}` : !(k in confined), `${k} must be absent under containment too`);
 for (const k of HOST_MARKERS)
   assert.ok(!(k in confined), `${k} must stay withheld when spawn.env names something else`);
 

@@ -136,6 +136,8 @@ export const piConnector: Connector = {
   listModels: listPiModels,
   eventChannel,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    if (opts.resume?.startsWith("-"))
+      throw new Error(`pi connector: cannot resume ${JSON.stringify(opts.resume)}: a session id cannot start with '-' (pi reads it as an option)`);
     if ([opts.resume, opts.continueSession, opts.reopenSession].filter(Boolean).length > 1)
       throw new Error("pi connector: resume (fork source), continueSession and reopenSession (same session) are mutually exclusive");
     if (opts.variant) throw new Error("pi connector: model variants (variant) are not implemented");
@@ -150,8 +152,6 @@ export const piConnector: Connector = {
     const control = controlEndpoint(opts.space, opts.name);
     const stateRoot = opts.workspaceRoot ? join(opts.workspaceRoot, ".cotal", "pi-sessions") : undefined;
     const sessionStatePath = stateRoot ? join(stateRoot, `${opts.name}-${opts.lifecycleUid ?? "unmanaged"}.json`) : undefined;
-    if (stateRoot) mkSecretDir(stateRoot);
-    if (sessionStatePath) rmSync(sessionStatePath, { force: true });
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
@@ -205,6 +205,9 @@ export const piConnector: Connector = {
     }
     // The persona rides a private file the launcher removes once the child has exited (core
     // launch-artifacts). The extension also removes it at session start, once Pi has read it.
+    if (opts.validateOnly) return { command: "", args: [] };
+    if (stateRoot) mkSecretDir(stateRoot);
+    if (sessionStatePath) rmSync(sessionStatePath, { force: true });
     const artifacts: string[] = [];
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
     // extension drops even that once it has read it, so a shell this seat runs inherits neither. Its

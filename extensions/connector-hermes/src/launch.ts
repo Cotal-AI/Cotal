@@ -17,11 +17,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
-import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
+import { hasIdentity, configFromEnv, controlEndpoint, controlFromEnv, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
 import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
@@ -321,9 +321,13 @@ async function main(): Promise<void> {
   // Managed (default): a disposable profile under tmp, regenerated every launch and removed when the
   // seat stops, unless it holds a `--resume` fork. Adopted (opt-in): the operator's own profile, into
   // which only this connector's plugin directory is written, and which is never removed.
-  const managed = adopt ? undefined : hermesSeatHome(config.space, config.name);
-  const home = adopt ?? managed!.home;
+  const disposableHome = process.env.COTAL_HERMES_SEAT_HOME;
+  let managed = adopt ? undefined : disposableHome
+    ? { root: dirname(dirname(disposableHome)), home: disposableHome }
+    : hermesSeatHome(config.space, config.name);
   const moved = managed && moveLegacyHermesFork(config.space, config.name);
+  if (moved) managed = hermesSeatHome(config.space, config.name);
+  const home = adopt ?? managed!.home;
   if (moved) log(`moved this seat's --resume fork from ${moved} to ${home}`);
   if (adopt) setupAdoptedProfile(home, { persona });
   else setupProfile(home, { model: process.env.HERMES_MODEL, persona, config });
@@ -347,27 +351,17 @@ async function main(): Promise<void> {
 
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.
-  const control = controlEndpoint(config.space, config.name);
-  const bridgeSock = bridgeSocketPath(config.space, config.name, control.token);
+  const suppliedControl = controlFromEnv();
+  const control = suppliedControl ?? controlEndpoint(config.space, config.name);
+  const bridgeSock = process.env.COTAL_BRIDGE_SOCKET ?? bridgeSocketPath(config.space, config.name, control.token);
   const toolsFile = join(home, "cotal-tools.json");
-  // This launcher mints the control endpoint itself, so it has to hand the token onward to two
-  // readers: the in-process sidecar below, and the gateway child. It rides the launch-material file
-  // rather than an environment variable, so that the gateway's descendants do not INHERIT a
-  // control-plane bearer none of them asked for.
-  //
-  // Say what that does and does not buy, because the stronger sentence that used to be here was
-  // wrong. This connector keeps the material POINTER in the gateway's environment, because the
-  // gateway child is a later reader. So a descendant running as the same user can still open the
-  // file deliberately. What changes is that nothing receives the token by accident, which is the
-  // narrowed contract this whole change is honest about rather than a claim that the token is out of
-  // reach.
-  //
-  // MERGED onto the material this launcher was itself launched with, not written fresh over it: the
-  // sidecar re-parses the environment for its mesh config, and a control-only file would leave it
-  // reading a launch with no creds in it, which is open mode wearing the wrong hat. Merging keeps
-  // one carrier per launch, which is the invariant configFromEnv enforces.
+  // buildLaunch supplies a tracked carrier containing both mesh credentials and the control token.
+  // Reuse it so the launch's exit watcher owns the file and both sockets even after SIGKILL.
+  // Direct legacy invocations without a supplied endpoint still merge their material here.
+  // The gateway keeps the material pointer for later readers. Same-user descendants can open it
+  // deliberately, but do not inherit the credential or token as an environment value.
   const inherited = process.env[LAUNCH_MATERIAL_ENV]?.trim();
-  const material = writeLaunchMaterial({
+  const material = suppliedControl && inherited ? inherited : writeLaunchMaterial({
     ...(inherited ? readLaunchMaterial(inherited) : {}),
     controlToken: control.token,
   });
@@ -380,10 +374,18 @@ async function main(): Promise<void> {
   // Same discard the sessions use, so the superseded copy's private directory goes with it instead
   // of being left behind empty, and so this connector cannot grow its own idea of what is safe to
   // delete.
-  if (inherited) discardLaunchMaterial(inherited);
+  if (inherited && inherited !== material) discardLaunchMaterial(inherited);
   process.env.COTAL_CONTROL_SOCKET = control.path;
   process.env.COTAL_BRIDGE_SOCKET = bridgeSock;
   process.env.COTAL_TOOLS_FILE = toolsFile;
+
+  process.once("exit", () => {
+    discardLaunchMaterial(material);
+    rmSync(control.path, { force: true });
+    rmSync(bridgeSock, { force: true });
+    if (managed && !existsSync(join(home, HERMES_FORK_RECORD)))
+      rmSync(managed.root, { recursive: true, force: true });
+  });
 
   const sidecar = startSidecar();
 

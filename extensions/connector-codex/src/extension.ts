@@ -278,6 +278,7 @@ export const codexConnector: Connector = {
     // host drops even that once it has read it, so a shell this seat runs inherits neither. Written
     // after every refusal above, and its directory is a launch artifact the launcher removes once the
     // child has exited (core launch-artifacts).
+    if (opts.validateOnly) return { command: "", args: [] };
     const artifacts: string[] = [];
     Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
 

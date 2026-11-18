@@ -370,6 +370,7 @@ export const opencodeConnector: Connector = {
     // executes the session's tool calls, so a shell this seat runs inherits neither the material
     // nor a reference to it. The shim itself keeps the reference, because the server it starts is
     // the reader; it runs no tools of its own.
+    if (opts.validateOnly) return { command: "", args: [] };
     const artifacts: string[] = [];
     Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
 

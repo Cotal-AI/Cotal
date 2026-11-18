@@ -237,7 +237,8 @@ there it runs the enrollment consumer above without redeeming anything. See
 
 A direct `--dry-run` refuses an unknown effective harness with `DEPENDENCY_UNAVAILABLE` (exit 2),
 whether it came from `--harness`, the persona or a preference. Harness names are case-sensitive.
-Known names can be previewed without importing a connector or checking its binary or login.
+The direct preview imports the installed connector and validates resume, prompt, variant and
+native-option arguments without creating launch files or checking its binary or login.
 A managed preview warns about an unknown local harness and reports `not-checked`, since the
 selected manager checks its own connectors at launch.
 
