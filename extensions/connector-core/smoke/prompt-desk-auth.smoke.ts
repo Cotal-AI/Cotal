@@ -400,8 +400,16 @@ try {
     const readOwn = await call(termEp, "prompts", {}, { to: termAt });
     check("check 1: the same actor may read its own prompts, and the prompt is still open with nothing handed over",
       readOwn.ok && (readOwn.data as PromptsOutput).open[0]?.state.kind === "open" && T1.verdicts.length === 0 && T1.checks === 0, readOwn);
+    const termSeq = (readOwn.data as PromptsOutput).seq;
     await termDesk.close();
     check("closing the interactive actor's desk withdraws its prompt and releases it", same(T1.ends, [false]));
+    // seq goes on across endpoint objects of one lifecycle in this process.
+    const termNext = await userEndpoint(W.term);
+    const next = await settled(deskOn(termNext, "term, a new endpoint"));
+    const firstSeq = next.ok ? (await list(termAt)).seq : -1;
+    check("a desk on a new endpoint object for the same lifecycle goes on counting: its first seq is above every seq the last desk used",
+      next.ok && firstSeq > termSeq + 1, { termSeq, firstSeq, opened: next.ok ? "yes" : (next.error as Error).message });
+    if (next.ok) await next.value.close();
 
     // 2.
     const r2 = await call(webEp, "prompt-answer", { id: "z".repeat(26), digest: `sha256:${"0".repeat(64)}`, option: "nope" });

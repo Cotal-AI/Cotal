@@ -308,17 +308,15 @@ function largestSummaryBytes(base: Omit<PromptSummary, "state">, options: readon
   return max;
 }
 
-/** The last `seq` each endpoint's desk used, so a desk opened again in the same process goes on
- *  counting: a reader orders lists by `seq` within one `runtime.id`. */
-const lastSeq = new WeakMap<CotalEndpoint, number>();
-
 class Desk implements PromptDesk {
   /** Every prompt in memory, in the order it opened. */
   private readonly held = new Map<string, Held>();
   /** The closed prompts in memory, in the order they closed. */
   private readonly closedOrder: string[] = [];
   private live = 0;
-  private seq: number;
+  /** Taken from the endpoint, which keeps the highest for this process's runtime id, so a desk opened
+   *  again in the process goes on counting: a reader orders lists by `seq` within one `runtime.id`. */
+  private seq = 0;
   private stepping = false;
   private readonly later: (() => void)[] = [];
   private presenceOwed = false;
@@ -327,9 +325,6 @@ class Desk implements PromptDesk {
   serve?: PrincipalServe;
 
   constructor(private readonly ep: CotalEndpoint, private readonly warn: (msg: string) => void) {
-    const last = lastSeq.get(ep);
-    this.seq = last === undefined ? 0 : last + 1;
-    lastSeq.set(ep, this.seq);
   }
 
   get waiting(): number {
@@ -344,6 +339,7 @@ class Desk implements PromptDesk {
       { command: "prompt-answer", contract: AGENT_CONTRACTS["prompt-answer"], handler: (ctx) => this.answer(ctx) },
     ];
     const serve = this.ep.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers });
+    this.seq = this.ep.nextPromptsSeq();
     this.serve = serve;
     this.ep.on("transport", this.onTransport);
     void serve.failed.then((err) => {
@@ -554,8 +550,7 @@ class Desk implements PromptDesk {
   }
 
   private bump(): void {
-    this.seq++;
-    lastSeq.set(this.ep, this.seq);
+    this.seq = this.ep.nextPromptsSeq();
     this.presenceOwed = true;
   }
 

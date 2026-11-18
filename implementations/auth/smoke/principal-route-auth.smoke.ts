@@ -17,9 +17,13 @@
  *
  * The route's 26 security cells, numbered the same in `pnpm smoke:principal-route` (cell 24 needs a
  * registry-authorized serve grant and runs in `pnpm smoke:ep-serve`), a serve and call round trip,
- * a reconnect that rebinds, a reconnect whose new credential lacks the rows, and the mixed-version
- * cases that need no 0.165 release: an agent that serves nothing, a caller or an agent whose
- * credential predates the rows, and a caller pinned to a later revision.
+ * cell 27, a malformed nonce; cell 28, a stored frame a Direct Get delivers on the caller's sentinel;
+ * cell 29, a reply under another head that arrives first; cell 30, stopping the endpoint while a
+ * handler runs and while `ready` waits; cells 31 and 32, `seq` across serves and endpoint objects of
+ * one runtime, and a second server for one lifecycle in a process; a reconnect that rebinds, a
+ * reconnect whose new credential lacks the rows, and the mixed-version cases that need no 0.165
+ * release: an agent that serves nothing, a caller or an agent whose credential predates the rows,
+ * and a caller pinned to a later revision.
  *
  * Run: pnpm smoke:principal-route:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -92,6 +96,7 @@ const W = {
   legacy: who(A, "legacy", "managed-agent"),
   stopper: who(A, "stopper", "managed-agent"),
   stopper2: who(A, "stopper2", "managed-agent"),
+  cycler: who(A, "cycler", "managed-agent"),
   web: who(A, "web", "interactive"),
   term: who(A, "term", "interactive"),
   oldWeb: who(A, "oldweb", "interactive"),
@@ -267,7 +272,7 @@ try {
   const provisioner = own(new CotalEndpoint({ space, servers: SERVERS, creds: provisionerCreds, card: { name: "provisioner", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false }), "provisioner");
   await provisioner.start();
   // The agents that register presence prove their lifecycle with their own DM durable.
-  for (const w of [W.coder, W.legacy]) await provisionAgentDurables(provisioner, { owner: w.owner, actor: w.actor, lifecycleUid: w.uid }, { durableMembership: false });
+  for (const w of [W.coder, W.legacy, W.cycler]) await provisionAgentDurables(provisioner, { owner: w.owner, actor: w.actor, lifecycleUid: w.uid }, { durableMembership: false });
 
   calloutNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(callout.calloutCreds)) });
   startAuthCallout(calloutNc as never, {
@@ -757,6 +762,43 @@ try {
     check("cell 30: stop() right after servePrincipal settles ready with a refusal that says the serve stopped, never a ready on a stopped endpoint",
       readyOutcome !== "still pending" && !readyOutcome.ok && String((readyOutcome.error as Error).message).includes("stopped serving"),
       readyOutcome === "still pending" ? readyOutcome : readyOutcome.ok ? "ready resolved" : (readyOutcome.error as Error).message);
+  }
+
+  // ── cells 31 and 32: seq never goes back under one runtime id, and one server per lifecycle ──
+  {
+    const cyclerSeq = () => webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.prompts?.seq;
+    const cyclerEp = await userEndpoint(W.cycler, { registerPresence: true });
+    const first = cyclerEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() });
+    await first.ready;
+    await cyclerEp.setPromptsPresence({ open: 2, seq: 50 });
+    await until(() => cyclerSeq() === 50, 8000);
+    await first.stop();
+    await until(() => cyclerSeq() === undefined, 8000);
+    const again = cyclerEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() });
+    await again.ready;
+    await until(() => cyclerSeq() !== undefined, 8000);
+    check("cell 31: serving agent again on the same endpoint shows the counter where it was, { open: 0, seq: 50 }, never seq 0",
+      cyclerSeq() === 50 && webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.prompts?.open === 0, webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.prompts);
+    let below = "";
+    try { await cyclerEp.setPromptsPresence({ open: 0, seq: 49 }); } catch (e) { below = (e as Error).message; }
+    check("cell 31: a seq below one this runtime already used is refused", below.includes("never goes back"), below);
+    const twin = await userEndpoint(W.cycler);
+    let twinRefusal = "";
+    try { twin.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() }); } catch (e) { twinRefusal = (e as Error).message; }
+    check("cell 32: a second endpoint for the same lifecycle in this process may not serve agent while the first does: it would answer the same subject",
+      twinRefusal.includes("already serves") && twinRefusal.includes(W.cycler.uid), twinRefusal);
+    await twin.stop();
+    await cyclerEp.stop();
+    const nextEp = await userEndpoint(W.cycler, { registerPresence: true });
+    const third = nextEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() });
+    await third.ready;
+    await until(() => cyclerSeq() !== undefined, 8000);
+    let next = -1;
+    try { next = nextEp.nextPromptsSeq(); } catch { /* not there */ }
+    check("cell 31: a new endpoint object for the same lifecycle, after the first stopped, serves again: same runtime id, the counter at 50, and the next seq 51",
+      cyclerSeq() === 50 && webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.runtime?.id === processRuntime(W.cycler.uid).id && next === 51,
+      { seq: cyclerSeq(), next });
+    await third.stop();
   }
 
   // ── mixed versions that need no 0.165 release ──
