@@ -418,10 +418,17 @@ PIDs. The daemon remains in its service. Restart decisions stay with the existin
 The custody inspector accepts group-writable owned paths only for the caller's primary group
 when bounded local account records show no other member or account using that group. Unknown
 or external account sources are refused. This inspector does not examine extended ACLs.
-This preserves updater availability during a service stop, but does not add startup verification
-or rollback guarantees. If migration is refused, the package has already been replaced and
+From 0.167.1, the scoped Linux updater restarts the recorded service after reconciliation,
+waits for the target daemon and restores the previous generation if activation fails.
+If migration is refused, the package has already been replaced and
 reconciliation has not started. The parent may retry or restore its previous package. Keep the
 reported failure and inspect the installed version and daemon state before retrying.
+
+From 0.167.1 on Linux, `cotal update --self` can retain an ambiguous global update-child marker
+when its owner is dead. Repair holds the global update lock, prepares empty hosted admission,
+stops only the owned service and requires the account's other application processes to exit.
+A live writer or unreadable process evidence leaves the marker unchanged. The enabled owned
+service is started again after the attempt. Close the process named by a refusal and retry.
 
 ## Update a standalone stack
 

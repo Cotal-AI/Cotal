@@ -1695,6 +1695,19 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     assert.ok(unattended.events.includes("reconcile"), "unattended child still reconciles the installed generation");
     assert.equal(readUpdateRecovery()?.phase, "replacing", "unattended child leaves activation to its parent's cleared journal");
     clearUpdateRecovery();
+
+    writeUpdateRecovery({ previous: "0.13.0", target: "0.13.1", installed: "0.13.0", phase: "replacing", reason: "scoped parent" });
+    const scoped = updateRuntime({ env: { COTAL_UPDATE_TARGET_VERSION: "0.13.1", COTAL_UPDATE_PARENT: "99", COTAL_AUTO_UPDATE: "1" } });
+    scoped.rt.adoptUpdateChild = async () => true;
+    scoped.rt.waitForInstalledGeneration = async () => {
+      assert.equal(readUpdateRecovery()?.phase, "verified-ready");
+      scoped.events.push("generation-ready");
+    };
+    assert.equal(await executeUpdate(false, scoped.rt), 0);
+    assert.ok(scoped.events.indexOf("generation-ready") > scoped.events.indexOf("reconcile"), "scoped automatic child verifies the restarted daemon after reconciliation");
+    scoped.rt.waitForInstalledGeneration = async () => { throw new Error("target daemon unavailable"); };
+    assert.equal(await executeUpdate(false, scoped.rt), 1, "failed automatic activation returns to parent rollback");
+    clearUpdateRecovery();
   } finally {
     if (priorJournalHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = priorJournalHome;
     rmSync(journalHome, { recursive: true, force: true });
