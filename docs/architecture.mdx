@@ -96,6 +96,8 @@ Two packages are independent of core and NATS. `@cotal-ai/lang` implements the w
 interpreter, and journal. `@cotal-ai/seat` supplies detached PTY custody and identity-checked adoption
 and reaping on Linux. Its other-platform operations throw.
 The manager's built-in PTY runtime normally owns seats in-process.
+Its internal seat custody component records runtime references and successor records, adopts surviving
+seats, and checks supervised restart and orphan reaping before lifecycle retirement.
 See [process supervision](cli-processes.mdx#supervise) for successor recovery.
 
 Extensions peer-depend on the host's core instance and self-register when imported.
