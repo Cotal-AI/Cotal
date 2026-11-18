@@ -220,18 +220,20 @@ try {
   assert.match(report.bundledVersion, preserving ? /0\.163\.2/ : /0\.164\.16/);
   const cutoff = { ...env, npm_config_before: '2026-11-16T19:38:00.000Z' };
   await installArchive('historical', preserving ? '0.163.2' : '0.164.16', oldPrefix, preserving ? env : cutoff);
-  if (preserving) await installArchive('published floor', '0.167.0', freshPrefix);
+  if (preserving) await installArchive('published baseline', '0.168.0', freshPrefix);
   if (selfUpdate) {
     const { candidatePairRegistry } = await import(pathToFileURL(resolve('scripts/candidate-pair-registry.mjs')).href);
     candidateRegistry = await candidatePairRegistry(resolve(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE), resolve(process.env.DESKTOP_REPAIR_TARGET_CLOSURE));
     assert.equal(candidateRegistry.identity.source, process.env.GITHUB_SHA, 'both guarded closures must bind to this exact product source');
     report.selfUpdatePair = candidateRegistry.identity;
     candidateEnv = { ...env, npm_config_registry: candidateRegistry.url };
-    const installedPrefix = join(root, 'candidate-install');
+    const installedPrefix = preserving ? freshPrefix : join(root, 'candidate-install');
     candidateEnv = { ...candidateEnv, npm_config_prefix: installedPrefix };
-    ok(await npm('install real candidate A before app deletion', ['install', '--global', '--prefix', installedPrefix, `cotal-ai@${candidateRegistry.identity.sourceVersion}`, '--no-audit', '--no-fund'], { callEnv: candidateEnv, timeout: 600000 }));
+    if (!preserving) {
+      ok(await npm('install real candidate A before app deletion', ['install', '--global', '--prefix', installedPrefix, `cotal-ai@${candidateRegistry.identity.sourceVersion}`, '--no-audit', '--no-fund'], { callEnv: candidateEnv, timeout: 600000 }));
+      assert.equal(JSON.parse(readFileSync(join(installedPrefix, 'lib/node_modules/cotal-ai/package.json'), 'utf8')).version, candidateRegistry.identity.sourceVersion);
+    }
     candidateEntry = join(installedPrefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
-    assert.equal(JSON.parse(readFileSync(join(installedPrefix, 'lib/node_modules/cotal-ai/package.json'), 'utf8')).version, candidateRegistry.identity.sourceVersion);
   }
   if (repairCommand.startsWith('crash-')) {
     const { candidateRegistry: openCandidateRegistry } = await import(pathToFileURL(resolve('scripts/automatic-update-platform-baseline.mjs')).href);
@@ -340,8 +342,6 @@ try {
   await snapshot('after-delete', before.pid, manager.pid);
   if (candidateEntry) {
     assert(existsSync(candidateEntry), 'source-built deployed candidate entry exists');
-    report.candidate = { entry: candidateEntry, version: ok(await candidate('candidate version before repair', ['--version'])).stdout,
-      entrySha256: createHash('sha256').update(readFileSync(candidateEntry)).digest('hex') };
     const sessionPath = join(cotalHome, 'idp-sessions.json');
     const stateBefore = readFileSync(sessionPath, 'utf8');
     if (preserving) {
@@ -349,23 +349,43 @@ try {
       assert(!existsSync(bundledNode) && !existsSync(bundledEntry));
       const { spaceSegment } = await import(pathToFileURL(resolve('packages/workspace/dist/index.js')).href);
       const hostingPath = join(cotalHome, 'daemon', spaceSegment(report.participant.space), 'manager-host.json');
-      const protectedFiles = [plist, receiptPath, sessionPath, hostingPath, oldEntry, freshEntry];
-      const protectedBytes = protectedFiles.map(file => readFileSync(file));
-      const nativeBefore = ok(await call('published floor native before', '/bin/launchctl', ['print', target])).stdout;
+      const packagePath = join(freshPrefix, 'lib/node_modules/cotal-ai/package.json');
+      const published = JSON.parse(readFileSync(packagePath, 'utf8'));
+      assert.equal(published.version, '0.168.0');
+      for (const script of ['preinstall', 'install', 'postinstall']) assert.equal(published.scripts?.[script], undefined, `published baseline has npm ${script}`);
+      const baselineVersion = ok(await fresh('official installed 0.168.0 baseline version', ['--version'])).stdout.split(/\r?\n/, 1)[0];
+      assert.match(baselineVersion, /\b0\.168\.0\b/);
+      report.npmReplacementBaselineIdentity = { version: published.version, versionOutput: baselineVersion, registry: 'https://registry.npmjs.org/', archive: report['published baselineArchive'], entry: freshEntry, canonicalEntry: realpathSync(freshEntry), entrySha256: createHash('sha256').update(readFileSync(freshEntry)).digest('hex'), npmLifecycleScriptsAbsent: true };
+      const lockPath = join(cotalHome, '.update-closure.lock');
+      const protectedFiles = [plist, receiptPath, sessionPath, hostingPath, oldEntry, lockPath];
+      const protectedBytes = protectedFiles.map(file => file === lockPath && !existsSync(file) ? null : readFileSync(file));
+      const nativeBefore = ok(await call('npm replacement native before', '/bin/launchctl', ['print', target])).stdout;
+      assert.equal(Number(/^\s*pid = (\d+)\s*$/m.exec(nativeBefore)?.[1]), before.pid);
+      const canonicalPrefix = realpathSync(freshPrefix);
+      const sourcePackage = candidateRegistry.identity.sourcePackages.find(pkg => pkg.name === 'cotal-ai');
+      assert(sourcePackage, 'guarded source closure must contain cotal-ai');
+      const sourceArchive = join(resolve(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE), sourcePackage.archive);
+      assert.equal(createHash('sha256').update(readFileSync(sourceArchive)).digest('hex'), sourcePackage.sha256);
+      const sourceEntry = ok(await call('guarded source archive entry identity', '/usr/bin/tar', ['-xOf', sourceArchive, 'package/dist/cotal.js']));
+      const replacement = ok(await npm('npm global candidate A replaces official installed 0.168.0 after deletion', ['install', '--global', '--prefix', freshPrefix, `cotal-ai@${candidateRegistry.identity.sourceVersion}`, '--no-audit', '--no-fund'], { callEnv: candidateEnv, timeout: 600000 }));
+      const installed = JSON.parse(readFileSync(packagePath, 'utf8'));
+      assert.equal(installed.version, candidateRegistry.identity.sourceVersion);
+      assert.equal(realpathSync(freshPrefix), canonicalPrefix);
+      assert.equal(realpathSync(candidateEntry), join(canonicalPrefix, 'lib/node_modules/cotal-ai/dist/cotal.js'));
+      assert.equal(realpathSync(join(freshPrefix, 'bin/cotal')), realpathSync(candidateEntry));
+      const installedEntrySha256 = createHash('sha256').update(readFileSync(candidateEntry)).digest('hex');
+      assert.equal(installedEntrySha256, sourceEntry.stdoutSha256, 'installed A entry must match guarded source archive');
+      for (const [index, file] of protectedFiles.entries()) assert.deepEqual(existsSync(file) ? readFileSync(file) : null, protectedBytes[index], `npm replacement changed ${file}`);
+      assert(!existsSync(app) && !existsSync(bundledNode) && !existsSync(bundledEntry));
+      const nativeAfter = ok(await call('npm replacement native after', '/bin/launchctl', ['print', target])).stdout;
+      assert.equal(Number(/^\s*pid = (\d+)\s*$/m.exec(nativeAfter)?.[1]), before.pid);
+      report.preservingImmediatelyBeforeCandidate = await assertPreserving('old public preserving immediately after npm replacement before candidate update');
+      report.npmReplacementAcceptance = { exit: replacement.exit, signal: replacement.signal, timedOut: replacement.timedOut, baselineVersion: published.version, installedVersion: installed.version, canonicalPrefix, installedEntrySha256, source: candidateRegistry.identity.source, sourceManifestSha256: candidateRegistry.identity.sourceManifestSha256, sourcePackage, protectedStateUnchanged: true, originalLifetimesPreserved: true };
+      save();
       candidateRegistry.activateTarget();
-      const refused = await call('published 0.167.0 plain update --self floor refusal', process.execPath, [freshEntry, 'update', '--self'], { callEnv: { ...candidateEnv, npm_config_prefix: freshPrefix } });
-      assert(!refused.timedOut && !refused.signal, 'a timeout is not a floor refusal');
-      assert.notEqual(refused.exit, 0);
-      assert.match(refused.stdout + refused.stderr, /staged pre.?install check refused/i);
-      assert.match(refused.stdout + refused.stderr, /manager is in preserving mode; hold age .+; seats 0; update owner /);
-      assert.match(refused.stdout + refused.stderr, /No hold was released by this check/);
-      assert.match(refused.stdout + refused.stderr, /no installed packages or connector state were changed/i);
-      for (const [index, file] of protectedFiles.entries()) assert.deepEqual(readFileSync(file), protectedBytes[index], `published floor changed ${file}`);
-      const nativeAfter = ok(await call('published floor native after', '/bin/launchctl', ['print', target])).stdout;
-      assert.equal(/^\s*pid = (\d+)\s*$/m.exec(nativeAfter)?.[1], /^\s*pid = (\d+)\s*$/m.exec(nativeBefore)?.[1]);
-      report.publishedFloorRefusal = { version: '0.167.0', exit: refused.exit, unchanged: true, floor: 'installed staged preinstall preserving refusal', target: candidateRegistry.identity.targetVersion };
-      report.preservingImmediatelyBeforeCandidate = await assertPreserving('old public preserving immediately before candidate update');
     }
+    report.candidate = { entry: candidateEntry, version: ok(await candidate('candidate version before repair after installation', ['--version'])).stdout,
+      entrySha256: createHash('sha256').update(readFileSync(candidateEntry)).digest('hex') };
     if (repairCommand.startsWith('crash-')) {
       await ownedService();
       const { interruptRepairAtPhase } = await import('./mac-repair-interruption.mjs');
