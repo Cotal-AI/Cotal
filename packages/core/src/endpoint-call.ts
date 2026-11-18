@@ -506,8 +506,8 @@ export async function epCall(
  *  JetStream read, such as a Direct Get, delivers one on any subject its requester names.
  *  With `accepts`, a message on a reply subject it refuses does not count either, and the wait goes
  *  on. The broker's no-responders status counts only on the sentinel, which no responder holds a
- *  publish grant for: there it is `unavailable`, `not-executed`; a 503 on any other subject is a
- *  responder frame and takes the ordinary reply path. A refused publish is `permission-denied`
+ *  publish grant for: there it is `unavailable`, `not-executed`, and any other message there is
+ *  dropped; a 503 on any other subject is a responder frame and takes the ordinary reply path. A refused publish is `permission-denied`
  *  (the watch is registered before the publish it watches), the deadline is `deadline-exceeded`,
  *  `unknown`, and an abort is `unavailable`, `unknown`. Subscription and publication share one
  *  promise executor, so a closed or draining connection cannot strand a rejected reply wait.
@@ -560,7 +560,9 @@ async function exchange(
             // On that sentinel the answer is the broker's attestation that no subscriber received the
             // request, so nothing ran: `not-executed`, never `unknown` (§13.3).
             if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${x.what} (SPEC 13.5)`, [x.unanswered], "not-executed")); return; }
-            reject(new EpEnvelopeError("internal", `a non-503 message reached the reserved no-responders sentinel for ${x.what}; nothing but the broker control frame is addressable there`)); return;
+            // Anything else there means nothing: a peer can name the sentinel as the reply subject of
+            // a JetStream API request, which the broker answers there. The wait goes on.
+            return;
           }
           if (x.accepts && !x.accepts(msg.subject)) return;
           resolve({ subject: msg.subject, data: msg.data });

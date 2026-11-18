@@ -21,7 +21,8 @@
  * cell 29, a reply under another head that arrives first; cell 30, stopping the endpoint while a
  * handler runs and while `ready` waits; cells 31 and 32, `seq` across serves and endpoint objects of
  * one runtime, and a second server for one lifecycle in a process; cell 33, stop waits for a handler
- * in flight only until its request's deadline; a reconnect that rebinds, a
+ * in flight only until its request's deadline; cell 34, a JetStream API answer on the caller's
+ * sentinel; a reconnect that rebinds, a
  * reconnect whose new credential lacks the rows, and the mixed-version cases that need no 0.165
  * release: an agent that serves nothing, a caller or an agent whose credential predates the rows,
  * and a caller pinned to a later revision.
@@ -725,6 +726,38 @@ try {
     liar.unsubscribe();
     check("cell 29: a reply under another head is not this call's reply: the caller keeps waiting and takes the one the addressed process derives",
       received === 1 && r.ok && r.value.ok && (r.value.data as { seq: number }).seq === 7, r.ok ? r.value : codeOf(r.error));
+  }
+
+  // ── cell 34: a JetStream API reply on the caller's sentinel ──
+  // Any client that may make a JetStream API request can name the caller's sentinel as its reply
+  // subject, and the broker answers there with plain JSON and no headers. The agent's raw
+  // connection, with its whole stock credential, serves another runtime id, sends `$JS.API.INFO`
+  // with the caller's sentinel as reply, then sends the real reply.
+  {
+    const rt = `${coderAt.runtimeId.slice(0, 30)}j`;
+    const onSentinel: Msg[] = [];
+    const watch = webRaw.nc.subscribe(`${P}.ep.prin-reply._nr._nr._nr._nr._nr.${A}.web.${W.web.uid}.*`, { callback: (_e, m) => { onSentinel.push(m); } });
+    await webRaw.nc.flush();
+    let received = 0;
+    const refusedBefore = coderRaw.refused.length;
+    const js = coderRaw.nc.subscribe(`${P}.ep.prin.agent.${A}.coder.${W.coder.uid}.${rt}.*.*.*.*.*.*`, { callback: (_e, m) => {
+      received++;
+      const t = m.subject.split(".");
+      const caller = { owner: t[11], actor: t[12], uid: t[13] };
+      coderRaw.nc.publish("$JS.API.INFO", enc(""), { reply: epPrincipalNoRespondersSubject(space, caller, t[14]) });
+      const id = (JSON.parse(dec(m.data)) as { id: string }).id;
+      const body = enc(JSON.stringify({ v: 1, id, ok: true, data: { runtime: { id: rt, startedAt: 1 }, seq: 8, open: [], closed: [] } }));
+      setTimeout(() => coderRaw.nc.publish(epPrincipalReplySubject(space, { endpoint: AGENT_ENDPOINT, principal: { ...coderAt, runtimeId: rt }, caller, nonce: t[14] }), body), 300);
+    } });
+    await coderRaw.nc.flush();
+    const r = await settle(call(webEp, { ...coderAt, runtimeId: rt }, "prompts", "owner", {}, 3000));
+    js.unsubscribe();
+    watch.unsubscribe();
+    const apiFrames = onSentinel.filter((m) => !m.headers && dec(m.data).includes("io.nats.jetstream.api.v1.account_info_response"));
+    check("cell 34: with the agent's own credential a JetStream API request put its plain JSON answer on the caller's sentinel",
+      received === 1 && apiFrames.length === 1 && coderRaw.refused.length === refusedBefore, { received, onSentinel: onSentinel.map((m) => dec(m.data).slice(0, 80)), refused: coderRaw.refused.slice(refusedBefore) });
+    check("cell 34: the caller drops it and keeps waiting: it takes the real reply, never internal",
+      r.ok && r.value.ok && (r.value.data as { seq: number }).seq === 8, r.ok ? r.value : codeOf(r.error));
   }
 
   // ── cell 30: stopping the endpoint ends its principal serve ──
