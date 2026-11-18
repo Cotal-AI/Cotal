@@ -364,9 +364,9 @@ export function remoteManagerAuthorityRequest(
   state: RemoteManagerIdentityState,
   actor: string,
   operation: RemoteManagerAuthorityRequest["operation"],
-  coordinates: Pick<RemoteManagerAuthorityRequest, "registrationProof" | "contractArtifacts" | "session" | "retirement" | "transferReader"> = {},
+  coordinates: Pick<RemoteManagerAuthorityRequest, "registrationProof" | "contractArtifacts" | "session" | "retirement" | "transferReader" | "registrationLeaseId"> = {},
 ): RemoteManagerAuthorityRequest {
-  const { registrationProof, contractArtifacts, session, retirement, transferReader } = coordinates;
+  const { registrationProof, contractArtifacts, session, retirement, transferReader, registrationLeaseId } = coordinates;
   const requestId = `${operation}${mintLifecycleUid()}`;
   return {
     v: 1,
@@ -382,6 +382,7 @@ export function remoteManagerAuthorityRequest(
     ...(session ? { session } : {}),
     ...(retirement ? { retirement } : {}),
     ...(transferReader ? { transferReader } : {}),
+    ...(registrationLeaseId ? { registrationLeaseId } : {}),
     identities: publicIdentities(state),
   };
 }

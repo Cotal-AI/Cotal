@@ -33,6 +33,7 @@ import { epgateKey, parseEndpointGate, type EndpointGateRow, type EndpointRepair
 import { completeFrozenRegistrationFromSpec } from "./endpoint-service.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { KV } from "@nats-io/kv";
+import { claimEndpointRegistrationRecovery } from "./endpoint-registration-lease.js";
 
 /** Which guard refused. The command prints this verbatim, and the smoke asserts on it, so a refusal
  *  can never be confused with a different refusal — the failure mode where an operator reads
@@ -46,6 +47,8 @@ export type GateReconcileCondition =
   | "wrong-op-kind"
   /** The freeze-holder still holds a live connection. The freeze is protecting a live op. */
   | "holder-alive"
+  /** Host lease still excludes recovery, including while the executor reconnects. */
+  | "registration-leased"
   /** The sweep under-reported (no responder, truncation, unproven single-server mode). May be live. */
   | "holder-unknown"
   /** The oracle could not be consulted at all, or answered unusably (unreachable, unprovisioned,
@@ -151,7 +154,7 @@ export async function reconcileEndpointGate(opts: {
   if (row.op.kind !== "registration")
     throw new GateReconcileRefused("wrong-op-kind", `the gate at ${key} is frozen under a "${row.op.kind}" op, not a registration — this completes a crashed REGISTRATION's §13.1 obligation only; refusing to reinterpret another op's intent`);
   const opId = row.op.opId;
-  const barrier = endpointRegistrationBarrier(kv, space, { endpoint, instanceId, opId });
+  const barrier = endpointRegistrationBarrier(kv, space, { endpoint, instanceId, opId, recoveryFreezeToken: freezeToken });
   if (row.serviceAuthority) await barrier.enumerate();
 
 
@@ -191,6 +194,11 @@ export async function reconcileEndpointGate(opts: {
         `the registration executor for "${row.principal}" is ${executor.state.toUpperCase()} (${executor.detail}); refusing to reconcile a registration whose executor is not proven gone`);
     }
   }
+
+  if (await claimEndpointRegistrationRecovery(kv, {
+    endpoint, instanceId, principal: row.principal, generation: row.generation, freezeToken,
+  }) === "active")
+    throw new GateReconcileRefused("registration-leased", `registration at ${key} holds an active host lease; recovery cannot claim this operation during executor replacement`);
 
   // ---- 3. Only now: the shipped composition, in the §13.1 order, over the DEAD op's own id.
   // The repair evicts the family in bounded sets below, so the barrier is built without an evictor

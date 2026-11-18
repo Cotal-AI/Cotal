@@ -149,6 +149,7 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
       // issuance family is reachable through this server-side connection.
       `$KV.${epAuthBucket(space)}.epgate.manager.>`,
       `$KV.${epAuthBucket(space)}.epcred.manager.>`,
+      `$KV.${epAuthBucket(space)}.epreg.manager.*`,
       // Standing renewal re-derives the serve surface from the registered spec's content-addressed
       // cluster artifacts: read-only Direct Get on the space's contract store, nothing else.
       `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`,

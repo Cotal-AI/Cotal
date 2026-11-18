@@ -2344,8 +2344,34 @@ sweeps before any repair mutation, run the normal registration repair with verif
 refuse live, unknown, incomplete, unestablishable, or non-registration states. The host MUST derive
 the executor principal from the target gate's owner and instance, never the requesting owner's
 identity. A complete sweep proves connection absence at observation time, not operating-system
-process death or exclusion of a later executor reconnect. There is no force path. A participant
+process death. Recovery MUST also contend with the target's host-owned registration lease before
+any credential-family or gate mutation. There is no force path. A participant
 credential still gains no direct authority over the target gate, records, family, or delivery-admin rail.
+
+A remote registration attempt MUST acquire a host-owned renewable lease before receiving its
+prepare executor. The reference key is `epreg.<endpoint>.<instanceId>` in the auth store. Its closed
+row is `{ v: 1, leaseId, requestId, principal, executorNkey, lifecycleUid, generation, registrationRevision, expiresAt,
+state: active | recovering | released, freezeToken? }`. `expiresAt` is host Unix milliseconds,
+strictly later than every executor JWT expiry issued for that attempt. The host selects `leaseId`,
+binds the authenticated owner, executor nkey, lifecycle and gate generation, and alone renews it.
+An exact initial `requestId` retry joins the attempt. A prepare renewal carries
+`registrationLeaseId`; prepare material returns `registrationLease: { leaseId, expiresAt }`.
+The id identifies the attempt and grants no authority without fresh host authorization.
+
+The participant MUST renew while registration or executor replacement is in progress and MUST stop
+if the host refuses renewal. An active unexpired lease excludes recovery even when every liveness
+sweep finds both principals absent. Recovery MUST CAS an expired lease to `recovering`, binding its
+observed frozen-gate revision in `freezeToken`, before any repair effect. Renewal and recovery
+contend on that same key. An expired or claimed attempt MUST NOT renew or receive new executor
+authority. A host restart resumes the durable claim, never treats it as lease absence. Connected
+holders, incomplete sweeps and unverified eviction still refuse. Completion advances the gate
+generation and activation releases only its matching lease. Lease rows have no TTL and MUST NOT be
+deleted. Legacy registrations without a lease retain the complete-sweep recovery rule. Participants
+that require this guarantee MUST refuse prepare material without a lease rather than silently use
+the legacy guarantee.
+After a definite registration abort reopens the unchanged registration revision, the host MAY rebind
+the same live lease to the advanced generation before the participant retries. A completed
+registration keeps its original lease generation until activation releases it.
 
 The bounded executor returned by `prepare` is renewable through `renew` for the same public nkey and
 current open registration. A remote manager MUST obtain a fresh executor before maintenance or clean

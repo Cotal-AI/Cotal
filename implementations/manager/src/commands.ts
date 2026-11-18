@@ -26,7 +26,9 @@ import {
   type FlagSpec,
   type ParsedArgs,
   type RemoteManagerMaintenanceRequest,
+  type RemoteManagerAuthorityMaterial,
   rejectionText,
+  lifecycleBlockedFrom,
 } from "@cotal-ai/core";
 import {
   assertManagerName, authDir, canonicalLocalProcessPath, canonicalRoot, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
@@ -383,7 +385,18 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
         throw new Error(`registered space "${space}" has no pinned public exchange URL for retained managed agents`);
       console.error(`manager startup: requesting remote authority for ${state.instanceId}`);
-      let material = await provider.managerServiceAuthority({ ...providerCall, request });
+      let material: RemoteManagerAuthorityMaterial;
+      try {
+        material = await provider.managerServiceAuthority({ ...providerCall, request });
+      } catch (error) {
+        const blocked = lifecycleBlockedFrom(error)
+          ?? lifecycleBlockedFrom((error as { body?: unknown })?.body);
+        if (blocked?.blockedOp !== "registration" || blocked.gateState !== "frozen") throw error;
+        const repair = remoteManagerMaintenanceRequest(state, "cli", "reconcile-registration", state.instanceId);
+        const response = await provider.maintainRemoteManager({ ...providerCall, request: repair });
+        remoteManagerMaintenanceResult(response, repair, response.owner);
+        material = await provider.managerServiceAuthority({ ...providerCall, request });
+      }
       const actors = remoteManagerActors(state.instanceId);
       if (material.owner.length === 0 || material.instanceId !== state.instanceId || material.lifecycleUid !== state.lifecycleUid ||
           JSON.stringify(material.actors) !== JSON.stringify(actors))
@@ -393,6 +406,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         const response = await provider.maintainRemoteManager!({ ...providerCall, request: maintenanceRequest });
         return remoteManagerMaintenanceResult(response, maintenanceRequest, material.owner);
       };
+      if (!material.registrationLease) throw new Error("host prepare returned no registration lease; upgrade the host before registering");
       const registered = await registerRemoteManagerAuthority({
         space,
         server,
@@ -400,14 +414,17 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         instanceId: state.instanceId,
         serveActor: actors.serve,
         prepareCreds: materialCredential(material, "executor", state.identities.executor),
+        registrationLease: material.registrationLease,
         refreshPrepareCreds: async () => {
           const refreshed = await provider.managerServiceAuthority!({
-            ...providerCall, request: remoteManagerAuthorityRequest(state, "cli", "prepare"),
+            ...providerCall, request: remoteManagerAuthorityRequest(state, "cli", "prepare", { registrationLeaseId: material.registrationLease!.leaseId }),
           });
           if (refreshed.owner !== material.owner || refreshed.instanceId !== state.instanceId ||
               refreshed.lifecycleUid !== state.lifecycleUid || JSON.stringify(refreshed.actors) !== JSON.stringify(actors))
             throw new Error("the host returned manager-service material for different lifecycle coordinates");
           const creds = materialCredential(refreshed, "executor", state.identities.executor);
+          if (!refreshed.registrationLease || refreshed.registrationLease.leaseId !== material.registrationLease!.leaseId)
+            throw new Error("host prepare refresh changed or omitted the registration lease");
           material = refreshed;
           return creds;
         },

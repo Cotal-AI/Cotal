@@ -109,6 +109,7 @@ import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGr
 import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey, credentialIdOf } from "./lifecycle-state.js";
+import { epRegistrationLeaseKey } from "./endpoint-registration-lease.js";
 import { environmentManagerPermissions, isEnvironmentManagerProfile, type EnvironmentManagerGrantPin } from "./environment-manager-grants.js";
 import { credsClaims, isAccountNkey, isUserNkey, type Identity } from "./identity.js";
 import {
@@ -2950,6 +2951,7 @@ function endpointServeExecutorPermissions(
         // the key on the subject, so each grant names exactly this instance's keys.
         `$KV.${AUTH}.${gateKey}`,
         `$KV.${AUTH}.${repairKey}`,
+        `$KV.${AUTH}.${epRegistrationLeaseKey(pin.endpoint, pin.instanceId)}`,
         `$KV.${AUTH}.${credPrefix}.>`,
         ...recordKeys.map((k) => `$KV.${REC}.${k}`),
         // §13.7 contract-artifact publication: the registration publishes the
