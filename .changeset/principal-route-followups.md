@@ -13,3 +13,5 @@ A call no longer ends `internal` when something other than the broker's no-respo
 A principal-route reply the broker refuses to publish is now reported on the endpoint's `error` event. The status loop used to drop every permission error on a principal-route subject, and this one has no call or serve that reports it.
 
 A principal-route call whose reply read the broker refused now throws `permission-denied` even when the flush it waits on never settles. It used to throw `deadline-exceeded` in that case.
+
+A principal-route request with `replyExpected: false` is now refused before its handler runs. Every command on that route is request/reply, and such a request used to run the handler and send nothing.

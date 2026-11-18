@@ -362,7 +362,8 @@ export function parseEndpointRequest(raw: unknown): EndpointRequest {
  *  equal the subject sender principal (`sender-mismatch`). Currency of `target.actor`/
  *  `target.lifecycleUid` against the live mapping is the handler's fresh-read (`expired`),
  *  deliberately not checkable here. On the principal route (SPEC 13.21) the body carries no
- *  target (`target-mismatch`) and no bind (`bad-request`), and a deadline is required. */
+ *  target (`target-mismatch`) and no bind (`bad-request`), it is never a cast (`bad-request`), and a
+ *  deadline is required. */
 export function checkRequestSubjectAgreement(env: EndpointRequest, subject: ParsedEpRequest | ParsedEpPrincipalRequest): void {
   if (env.op.endpoint !== subject.endpoint)
     fail("op-mismatch", `op.endpoint "${env.op.endpoint}" does not agree with the subject endpoint "${subject.endpoint}"`);
@@ -370,12 +371,15 @@ export function checkRequestSubjectAgreement(env: EndpointRequest, subject: Pars
     fail("op-mismatch", `op.command "${env.op.command}" does not agree with the subject command "${subject.command}"`);
 
   // The principal route (SPEC 13.21): the subject head is the target and its runtime id pins the
-  // process, so a body that names either is refused, never ignored. A call has a deadline.
+  // process, so a body that names either is refused, never ignored. Every request is a call, and a
+  // call has a deadline.
   if (subject.plane === "principal-request") {
     if (env.target !== undefined)
       fail("target-mismatch", "a body target on the principal route is target-mismatch: the subject head is the target (SPEC 13.21)");
     if (env.bind !== undefined)
       fail("bad-request", "a bind on the principal route is refused: the runtime id in the subject pins the process (SPEC 13.21)");
+    if (!env.replyExpected)
+      fail("bad-request", "a cast on the principal route is refused: every command on it is request/reply (SPEC 13.21)");
     if (env.deadlineMs === undefined)
       fail("bad-request", "deadlineMs is required on the principal route (SPEC 13.21)");
     assertSender(env, subject.caller);

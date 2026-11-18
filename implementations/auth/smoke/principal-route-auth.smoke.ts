@@ -17,7 +17,7 @@
  *
  * The route's 26 security cells, numbered the same in `pnpm smoke:principal-route` (cell 24 needs a
  * registry-authorized serve grant and runs in `pnpm smoke:ep-serve`), a serve and call round trip,
- * cell 27, a malformed nonce; cell 28, a stored frame a Direct Get delivers on the caller's sentinel;
+ * cell 27, a malformed nonce; cell 37, a cast; cell 28, a stored frame a Direct Get delivers on the caller's sentinel;
  * cell 29, a reply under another head that arrives first; cell 30, stopping the endpoint while a
  * handler runs and while `ready` waits; cells 31 and 32, `seq` across serves and endpoint objects of
  * one runtime, and a second server for one lifecycle in a process; cell 33, stop waits for a handler
@@ -495,6 +495,13 @@ try {
     await until(() => coder.calls.length > beforeBadNonce, 1500);
     check("cell 27: the broker passes the owner's request with the nonce x, and the agent's handler runs zero times",
       !refusedNow(webRaw, "publish", badNonce) && coder.calls.length === beforeBadNonce, { ran: coder.calls.length - beforeBadNonce });
+
+    // cell 37: every command on this route is request/reply, so a cast is refused before the
+    // handler runs, and like every cast it gets no reply.
+    const beforeCast = coder.calls.length;
+    const cast = await rawCall(webRaw, "prompt", { replyExpected: false }, { waitMs: 1500 });
+    check("cell 37: a request with replyExpected false is refused: the agent's handler runs zero times, and no reply comes",
+      cast === "none" && coder.calls.length === beforeCast, { ran: coder.calls.length - beforeCast, cast });
   }
 
   // ── cell 10: the agent publishes a reply under another principal's head ──
