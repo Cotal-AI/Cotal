@@ -71,11 +71,14 @@ const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot
 // produce (retired principal, resume-pending) and to read the minted serve identity.
 const M = mgr as unknown as {
   managerLifecycleUid: string;
-  managerInstanceId: string; // P2 item 3: the PERSISTED logical registration id (distinct from the per-process managerLifecycleUid)
+  managerInstanceId: string;
+  // P2 item 3: the PERSISTED logical registration id (distinct from the per-process managerLifecycleUid)
   serviceServe?: { identity: { id: string; seed: string }; creds: string; grant: { epoch: number; instanceId: string; registrationRevision: number } };
-  retiredPrincipals: Set<string>;
   resumeRequired: boolean;
   withEndpointServeExecutor: <T>(fn: (kvs: { recordsKv: KV; authKv: KV }) => Promise<T>) => Promise<T>;
+  retirement: {
+    retiredPrincipals: Set<string>;
+  };
 };
 
 try {
@@ -198,12 +201,12 @@ try {
 
   console.log("3. ONE shared F5(a)/maintenance chokepoint on the ep door (checklist 3/8)");
   const callerPrincipal = principalKey(DEV_OWNER, callerId.id).key;
-  M.retiredPrincipals.add(callerPrincipal);
+  M.retirement.retiredPrincipals.add(callerPrincipal);
   const rRet = await callStatus();
   check("a RETIRED managed principal is refused on ep.one (permission-denied, F5(a))",
     rRet.reply.ok === false && rRet.reply.error?.code === "permission-denied"
     && String(rRet.reply.error?.message ?? "").includes("retired"), rRet.reply);
-  M.retiredPrincipals.delete(callerPrincipal);
+  M.retirement.retiredPrincipals.delete(callerPrincipal);
   M.resumeRequired = true;
   const rRes = await callPs();
   check("a resume-pending manager refuses ep ops (unavailable, the maintenance fence)",

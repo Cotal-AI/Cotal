@@ -127,9 +127,16 @@ try {
     const stopped = await cli(["stop", "--name", name, "--on", iid]);
     assert.equal(stopped.code, 0, JSON.stringify(stopped));
     assert.ok(await until(async () => !(await observer!.ep.readPresence()).some(p => p.card.name === name && p.status !== "offline")), "old presence retired");
-    type State = { agents: Map<string, unknown>; retiring: Map<string, unknown>; reserved: Set<string>; liveRosterNames(): Set<string> };
+    type State = {
+      agents: Map<string, unknown>;
+      reserved: Set<string>;
+      liveRosterNames(): Set<string>;
+      retirement: {
+        retiring: Map<string, unknown>;
+      };
+    };
     const state = manager as unknown as State;
-    assert.ok(await until(() => !state.agents.has(name) && !state.retiring.has(name) && !state.reserved.has(name) && !state.liveRosterNames().has(name)), "alias released");
+    assert.ok(await until(() => !state.agents.has(name) && !state.retirement.retiring.has(name) && !state.reserved.has(name) && !state.liveRosterNames().has(name)), "alias released");
     assert.ok((await manager.startAgent({ name, identity: name, agent: connector.name, cwd: dir, events: false })).ok, "replacement ready");
     const after = await observer.invokeEndpoint("manager", "inspect", { name });
     assert.ok(after.reply.ok);

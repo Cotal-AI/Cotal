@@ -104,8 +104,10 @@ try {
   // The manager's retirement broker phase, with each inventory it reads recorded and an optional step
   // run after that read and before the deprovisioner.
   const m = manager as unknown as {
-    deprovisionBroker(a: { id: string; name: string; lifecycleUid: string }): Promise<DeprovisionResourceAccounting>;
     lifecycleMembershipInventory(a: { id: string; lifecycleUid: string }): Promise<{ complete: boolean; channels: string[]; reason?: string }>;
+    retirement: {
+      deprovisionBroker(a: { id: string; name: string; lifecycleUid: string }): Promise<DeprovisionResourceAccounting>;
+    };
   };
   const readInventory = m.lifecycleMembershipInventory.bind(m);
   const listings = new Map<string, { complete: boolean; channels: string[]; fenced: boolean }>();
@@ -119,7 +121,7 @@ try {
     if (step) await step();
     return r;
   };
-  const retire = (s: Seat) => m.deprovisionBroker({ id: s.id.id, name: s.name, lifecycleUid: s.uid });
+  const retire = (s: Seat) => m.retirement.deprovisionBroker({ id: s.id.id, name: s.name, lifecycleUid: s.uid });
   const listedOnly = (s: Seat, channels: string[]) => {
     const l = listings.get(s.uid);
     return l !== undefined && l.complete && l.fenced && JSON.stringify(l.channels) === JSON.stringify(channels);
