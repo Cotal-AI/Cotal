@@ -21,7 +21,18 @@ export async function checkSpawnPreflight(check: (name: string, condition: boole
   for (const name of ["claude", "pi", "codex", "opencode"])
     writeFileSync(join(bins, name), `#!/bin/sh\nprintf '%s\\n' "$@" >> '${piCalls}'\nexit 0\n`, { mode: 0o700 });
   const badVersion = join(home, "bad-version");
-  writeFileSync(join(bins, "uv"), `#!/bin/sh\ncase "$*" in *hermes-agent*) if [ -f '${badVersion}' ]; then echo 9.0.0; else echo 0.20.1; fi; exit 0;; esac\nexec sleep 300\n`, { mode: 0o700 });
+  writeFileSync(join(bins, "uv"), `#!${process.execPath}
+const fs = require("node:fs");
+if (process.argv.includes("python")) {
+  console.log(fs.existsSync(${JSON.stringify(badVersion)}) ? "9.0.0" : "0.20.1");
+  process.exit(0);
+}
+const token = JSON.parse(fs.readFileSync(process.env.COTAL_LAUNCH_MATERIAL, "utf8")).controlToken;
+const socket = require("node:net").connect(process.env.COTAL_BRIDGE_SOCKET, () => {
+  socket.write(JSON.stringify({ t: "subscribe", token }) + "\\n");
+});
+setInterval(() => {}, 60_000);
+`, { mode: 0o700 });
   const prefix = join(xdg, "cotal", "extensions");
   mkdirSync(join(prefix, "node_modules", "@cotal-ai"), { recursive: true });
   const extensions = ["claude", "pi", "codex", "opencode", "hermes"].map((name) => {
