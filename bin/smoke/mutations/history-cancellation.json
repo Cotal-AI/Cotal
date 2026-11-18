@@ -30,16 +30,16 @@
   "mutations": [
     {
       "name": "channelHistory drops the caller signal before either JetStream pull stage",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "      [chatSubject(this.space, \"*\", \"*\", channel)],\n      opts?.limit ?? 100,\n      undefined,\n      opts?.signal,\n    )).map((r) => r.msg);",
-      "replace": "      [chatSubject(this.space, \"*\", \"*\", channel)],\n      opts?.limit ?? 100,\n    )).map((r) => r.msg);",
+      "file": "packages/core/src/endpoint-history.ts",
+      "find": "      [subject],\n      opts?.limit ?? 100,\n      undefined,\n      opts?.signal,\n    )).map((r) => r.msg);",
+      "replace": "      [subject],\n      opts?.limit ?? 100,\n    )).map((r) => r.msg);",
       "expectRed": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
       "cell": "✗ FAIL: PUBLIC REPRO: abort settles channelHistory as AbortError instead of leaving it pending",
       "completionMarker": "HISTORY CANCELLATION:"
     },
     {
       "name": "an aborted history window asks the broker for its entire pending backlog in one pull",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-history.ts",
       "command": "pnpm smoke:web-activity-read-cost",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "completionMarker": "activity-read-cost smoke:",
@@ -50,7 +50,7 @@
     },
     {
       "name": "the rolling window stops after the first limit messages instead of reaching the window ceiling",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-history.ts",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:history-recent",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "find": "          if (delivered >= pending) { complete = true; break; }",
@@ -70,7 +70,7 @@
     },
     {
       "name": "the multi-filter read stops batching, so one create carries every channel again and a large space gets the timeout that returned no chat at all",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-history.ts",
       "command": "pnpm smoke:web-activity-read-cost",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "completionMarker": "activity-read-cost smoke:",
@@ -82,7 +82,7 @@
     },
     {
       "name": "the batched pages are merged by the payload's ts instead of by stream sequence, so which messages the page holds depends on sender clocks again",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-history.ts",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:history-recent",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "find": "    const rows = pages.flat().sort((a, b) => a.seq - b.seq).slice(-limit);",

@@ -1,0 +1,17 @@
+{
+  "name": "@cotal-ai/docs-checks",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Repository documentation checks, not for publication.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node check-doc-comments.smoke.mjs"
+  },
+  "devDependencies": {
+    "@cotal-ai/docs-content": "workspace:*",
+    "@types/node": "^22.20.0",
+    "marked": "^18.0.6",
+    "typescript": "^5.9.3"
+  }
+}
