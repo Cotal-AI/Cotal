@@ -86,7 +86,7 @@ import {
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError, retainConnectorSeat } from "@cotal-ai/workspace";
 import { logicalExecutionEntry, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -137,7 +137,7 @@ import { ManagerSessionPlane } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
-import { serveIssuanceGateKv, commitSiblingIssuance, epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, bindGoal, createGoal, transitionGoal, commitGoalResult, goalAlreadyTerminal, settleGoalUncertain, readGoalResult, readGoalStatus, readGoalSpec, recordGoalIndex, readGoalIndex, clearGoalIndex, listGoalIndex, MAX_SCHEDULE_MS, type GoalIndexEntry, GOAL_TERMINAL_STATES, goalRefOf, goalProgressTopic, turnNoticeSubject, epeSubject, submissionFingerprint, EpEnvelopeError, lifecycleBlocked, seatCapRefused, lifecycleBlockedFrom, renderLifecycleBlocked, controlReplyFromThrown, type EpCommandDef, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
+import { serveIssuanceGateKv, commitSiblingIssuance, epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, bindGoal, createGoal, transitionGoal, commitGoalResult, goalAlreadyTerminal, settleGoalUncertain, readGoalResult, readGoalStatus, readGoalSpec, recordGoalIndex, readGoalIndex, clearGoalIndex, listGoalIndex, MAX_SCHEDULE_MS, type GoalIndexEntry, GOAL_TERMINAL_STATES, goalRefOf, goalProgressTopic, turnNoticeSubject, epeSubject, submissionFingerprint, EpEnvelopeError, lifecycleBlocked, lifecycleBlockedFrom, renderLifecycleBlocked, controlReplyFromThrown, type EpCommandDef, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, managerCommandDefs, type ManagerConnectorStatus, type ManagerStaticReconciliationStatus, type ManagerStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import { measureManagerVitals } from "./vitals.js";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -1152,6 +1152,9 @@ export class Manager {
   private userMode = false;
   private readonly namesCapacity = new NamesCapacity({
     userMode: () => this.userMode,
+    seatCap: () => this.seatCap,
+    managerInstanceId: () => this.managerInstanceId,
+    agents: () => this.agents.values(),
     authEnabled: () => this.auth !== undefined,
     maintenanceActive: () => this.maintenanceState === "active",
     roster: () => this.ep.getRoster(),
@@ -7608,58 +7611,13 @@ export class Manager {
   private occupancyText(o: Occupancy): string { return this.namesCapacity.occupancyText(o); }
   private capacityRefusal(o: Occupancy): string { return this.namesCapacity.capacityRefusal(o); }
 
-  /**
-   * The owner a launch belongs to, read ONCE so the per-owner ceiling, the agent's addressing
-   * triple and the user-mode provisioner cannot charge three different owners for one seat. A
-   * static or open mesh has one owner by construction; a user-auth mesh takes the spec's owner,
-   * else the owner of the principal that asked, which is what {@link provisionUserAgent} resolves
-   * from the same two values (it refuses outright where this falls back, so the two never disagree
-   * on an admitted launch).
-   */
-  private launchOwner(opts: Pick<StartAgentOpts, "owner">, spawner?: string): string {
-    if (!this.userMode) return DEV_OWNER;
-    const asked = spawner === undefined ? undefined : parsePrincipalKey(spawner)?.owner;
-    return opts.owner ?? (asked?.startsWith("u_") ? asked : DEV_OWNER);
-  }
-
-  /** The owner of a seat this manager supervises, by the same rule {@link launchOwner} admitted it
-   *  under: a user-mode seat records its derived owner, and every other seat is the mesh's one owner. */
-  private seatOwner(a: Pick<ManagedAgent, "userOwner">): string {
-    return a.userOwner ?? DEV_OWNER;
-  }
-
-  /**
-   * Live seats this manager holds for one owner: the seats it supervises, plus the launches it has
-   * reserved for that owner and not yet placed. It deliberately does NOT count cooling stamps — a
-   * cooling slot is a seat that already freed, and the recycle floor it holds is a global
-   * fork-bomb bound (P4c), not one tenant's occupancy. Mirrors {@link occupancy}'s reserved rule,
-   * so a reservation stops being counted twice the moment its seat reaches `agents`.
-   */
-  private ownerSeats(owner: string): number {
-    let seats = 0;
-    for (const a of this.agents.values()) if (this.seatOwner(a) === owner) seats++;
-    seats += this.namesCapacity.ownerReservations(owner);
-    return seats;
-  }
-
-  /**
-   * The per-owner ceiling, consulted at accept: `undefined` admits the launch, and a refusal
-   * carries the owner's count and the cap so a caller can render a remedy and a script can decide
-   * without re-reading prose. Distinct from {@link capacityRefusal}, which bounds the HOST: that
-   * one frees when anyone stops a seat or a cooling slot expires, this one frees only when THIS
-   * owner stops one of its own, or the operator raises the cap, so they cannot share a sentence.
-   */
-  private seatCapRefusal(owner: string): EpEnvelopeError | undefined {
-    const cap = this.seatCap;
-    if (cap === SEAT_CAP_UNLIMITED) return undefined;
-    const seats = this.ownerSeats(owner);
-    if (seats < cap) return undefined;
-    return seatCapRefused(
-      `owner ${owner} holds ${seats} of the ${cap} seat${cap === 1 ? "" : "s"} manager ${this.managerInstanceId} admits per owner; ` +
-        `stop one of that owner's seats, or ask the operator who runs this manager for a higher seat cap`,
-      { owner, seats, cap },
-    );
-  }
+  /** The owner a launch belongs to: {@link NamesCapacity.launchOwner}. */
+  private launchOwner(opts: Pick<StartAgentOpts, "owner">, spawner?: string): string { return this.namesCapacity.launchOwner(opts, spawner); }
+  /** Live seats this manager holds for one owner: {@link NamesCapacity.ownerSeats}. */
+  // @ts-expect-error TS6133: the seat-cap smoke reads this private count through a structural view.
+  private ownerSeats(owner: string): number { return this.namesCapacity.ownerSeats(owner); }
+  /** The per-owner ceiling at accept: {@link NamesCapacity.seatCapRefusal}. */
+  private seatCapRefusal(owner: string): EpEnvelopeError | undefined { return this.namesCapacity.seatCapRefusal(owner); }
 
   // @ts-expect-error TS6133: retained fixtures call this private adapter through structural views.
   private async opStop(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {
