@@ -178,8 +178,8 @@ throws while the `agent` endpoint is not served.
 this endpoint's caller. `principal` is the addressed process: owner, actor, lifecycle UID and the
 `runtime.id` its presence publishes. `authority` is `owner` or `grant`, the word this credential's
 row covers. The `agent` contracts and `describe` are built in; another endpoint needs `contract`.
-The agent's own refusal comes back as a reply with `ok: false`. A stored message on the reply read
-is not the reply, and the call keeps waiting. It throws `unavailable` when
+The agent's own refusal comes back as a reply with `ok: false`. A message from another head and a
+stored message on the reply read are not the reply, and the call keeps waiting. It throws `unavailable` when
 no process serves that address, `permission-denied` when this credential holds no row, and
 `deadline-exceeded` when no reply came. The subjects, rows and refusals are in
 [SPEC §13.21](../SPEC.md#1321-principal-route), and the commands in

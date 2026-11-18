@@ -504,7 +504,8 @@ export async function epCall(
  *  publish with the no-responders sentinel as the transport reply, and settle on the first message
  *  that counts. A stored message never counts (see {@link carriesStoredReplyProvenance}): a
  *  JetStream read, such as a Direct Get, delivers one on any subject its requester names.
- *  The broker's no-responders status counts only on the sentinel, which no responder holds a
+ *  With `accepts`, a message on a reply subject it refuses does not count either, and the wait goes
+ *  on. The broker's no-responders status counts only on the sentinel, which no responder holds a
  *  publish grant for: there it is `unavailable`, `not-executed`; a 503 on any other subject is a
  *  responder frame and takes the ordinary reply path. A refused publish is `permission-denied`
  *  (the watch is registered before the publish it watches), the deadline is `deadline-exceeded`,
@@ -517,6 +518,9 @@ async function exchange(
     subject: string; body: Uint8Array; requestId: string; deadlineMs: number; signal?: AbortSignal;
     replyFilter: string; sentinel: string; what: string; unanswered: EpUnansweredDetail;
     refusal: () => EpEnvelopeError;
+    /** The reply subjects that count. A message on the reply filter whose subject this refuses is
+     *  not this call's reply, and the wait goes on. By default every subject counts. */
+    accepts?: (subject: string) => boolean;
     /** How a broker refusal of the reply subscription reads. By default it is `unavailable`. With
      *  `permission` it is a permission refusal, and it waits one flush first: the request went out
      *  in the same tick and the broker answers in order, so a refusal of the publish too, which says
@@ -558,6 +562,7 @@ async function exchange(
             if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${x.what} (SPEC 13.5)`, [x.unanswered], "not-executed")); return; }
             reject(new EpEnvelopeError("internal", `a non-503 message reached the reserved no-responders sentinel for ${x.what}; nothing but the broker control frame is addressable there`)); return;
           }
+          if (x.accepts && !x.accepts(msg.subject)) return;
           resolve({ subject: msg.subject, data: msg.data });
         },
       });
@@ -603,9 +608,10 @@ export function buildPrincipalRequest(
  * Call one command of a principal's own endpoint on the principal route (SPEC 13.21) and await its
  * reply within `deadlineMs`. The caller subscribes its reply read for this nonce with the head
  * wildcarded, so the one subscription receives the reply and the sentinel, then publishes with the
- * sentinel as the transport reply. A frame with stored-message provenance is dropped. A reply counts
- * only when its subject is the one the addressed process derives, its id echoes the request and its
- * output validates against the pinned contract.
+ * sentinel as the transport reply. A message on any other head is not this reply, and the wait goes
+ * on; a frame with stored-message provenance is dropped. A reply counts only when its subject is the
+ * one the addressed process derives, its id echoes the request and its output validates against the
+ * pinned contract.
  *
  * Application-level failure is the returned reply's `ok: false`. This boundary throws only for its
  * own refusals: invalid args `bad-request`; no responder on the sentinel `unavailable`,
@@ -630,14 +636,13 @@ export async function epPrincipalCall(
     sentinel: epPrincipalNoRespondersSubject(space, op.caller, req.n),
     what: `${op.endpoint}.${op.command}`,
     unanswered: { kind: EP_UNANSWERED, endpoint: op.endpoint, command: op.command, rail: PRINCIPAL_RAIL },
+    // The head is wildcarded in the subscription, so a message from any other head is not this reply.
+    accepts: (subject) => subject === expected,
     // A credential minted before the rows lacks the reply read and the request row both.
     readRefused: "permission",
     refusal: () => new EpEnvelopeError("permission-denied",
       `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}", the "${to.authority}" form for ${to.principal.owner}.${to.principal.actor}. The agent may be serving; ${BROKER_REFUSAL_CAUSE}`, undefined, "not-executed"),
   });
-  // The head is wildcarded in the subscription, so a message from any other head is not this reply.
-  if (msg.subject !== expected)
-    throw new EpEnvelopeError("internal", `a message on the caller's principal-route reply read came from "${msg.subject}", not from the addressed process "${expected}" (SPEC 13.21)`);
   let raw: unknown;
   try { raw = JSON.parse(new TextDecoder().decode(msg.data)); }
   catch (e) { throw new EpEnvelopeError("internal", `the reply body is not JSON (${e instanceof Error ? e.message : String(e)}); an unparseable reply is a responder bug (SPEC 13.3)`); }

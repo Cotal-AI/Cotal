@@ -696,6 +696,28 @@ try {
       !r.ok && codeOf(r.error) === "deadline-exceeded/unknown", r.ok ? r.value : codeOf(r.error));
   }
 
+  // ── cell 29: a message from another head reaches the caller's reply read first ──
+  // The agent's reply row spans the runtime id, so its raw connection, serving another runtime id,
+  // first replies under the head of the runtime the caller did not address, then the real reply.
+  {
+    const rt = `${coderAt.runtimeId.slice(0, 30)}d`;
+    let received = 0;
+    const liar = coderRaw.nc.subscribe(`${P}.ep.prin.agent.${A}.coder.${W.coder.uid}.${rt}.*.*.*.*.*.*`, { callback: (_e, m) => {
+      received++;
+      const t = m.subject.split(".");
+      const caller = { owner: t[11], actor: t[12], uid: t[13] };
+      const id = (JSON.parse(dec(m.data)) as { id: string }).id;
+      const body = (seq: number) => enc(JSON.stringify({ v: 1, id, ok: true, data: { runtime: { id: rt, startedAt: 1 }, seq, open: [], closed: [] } }));
+      coderRaw.nc.publish(epPrincipalReplySubject(space, { endpoint: AGENT_ENDPOINT, principal: coderAt, caller, nonce: t[14] }), body(6));
+      setTimeout(() => coderRaw.nc.publish(epPrincipalReplySubject(space, { endpoint: AGENT_ENDPOINT, principal: { ...coderAt, runtimeId: rt }, caller, nonce: t[14] }), body(7)), 200);
+    } });
+    await coderRaw.nc.flush();
+    const r = await settle(call(webEp, { ...coderAt, runtimeId: rt }, "prompts", "owner", {}, 3000));
+    liar.unsubscribe();
+    check("cell 29: a reply under another head is not this call's reply: the caller keeps waiting and takes the one the addressed process derives",
+      received === 1 && r.ok && r.value.ok && (r.value.data as { seq: number }).seq === 7, r.ok ? r.value : codeOf(r.error));
+  }
+
   // ── mixed versions that need no 0.165 release ──
   console.log("\nmixed versions");
   {

@@ -5598,7 +5598,7 @@ A process that serves the principal route (§13.21) holds items 1 to 4 in this f
 
 A caller on the principal route trusts the broker's no-responders status only on its sentinel, drops
 a stored message on its reply read, and accepts a reply only on the subject the addressed process
-derives (§13.21).
+derives, waiting past a message under any other head (§13.21).
 
 ### 13.15 Issued authority
 
@@ -6545,9 +6545,10 @@ does when it must (§13.22).
 it publishes, so the one subscription receives the reply and the sentinel, and publishes with the
 sentinel as the transport reply. It drops a stored message that reaches this subscription, one with
 a `Nats-Stream`, `Nats-Sequence` or `Nats-Time-Stamp` header, before it reads it as the sentinel or
-a reply. A broker no-responders status counts only on the sentinel: it is `unavailable`,
-`not-executed`. A reply counts only when its subject is the one the addressed process derives, its
-id echoes the request and its output validates against the pinned contract. A refused
+a reply, and a message under any other head is not its reply, so it keeps waiting. A broker
+no-responders status counts only on the sentinel: it is `unavailable`, `not-executed`. A reply
+counts only when its subject is the one the addressed process derives, its id echoes the request
+and its output validates against the pinned contract. A refused
 publish is `permission-denied`, `not-executed`. A refused reply read is `permission-denied`, and its
 outcome is `not-executed` only when the publish was refused too, else `unknown`. A deadline is
 `deadline-exceeded`, `unknown`. The caller does not call `describe` first: it embeds the cluster
