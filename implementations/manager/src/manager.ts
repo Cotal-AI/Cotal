@@ -38,8 +38,6 @@ import {
   isConcreteChannel,
   isChannelFamily,
   deprovisionTargetPrincipal,
-  firstFreeName,
-  spawnNameError,
   idFromCreds,
   identityFromCreds,
   inspectCredHealth,
@@ -105,6 +103,7 @@ import {
 } from "./runtime/index.js";
 import { Retirement, type TeardownTarget } from "./retirement.js";
 import { ServePlane } from "./serve-plane.js";
+import { NamesCapacity, type Occupancy } from "./names-capacity.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
 import { DELIVERY_ADMIN_BOOT_WAIT_MS, isUnansweredDeliveryAdmin, makeManagerEndpointHolderEvictor, untilDeliveryAdminAnswers, withScopedEndpoint } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
@@ -133,7 +132,7 @@ import { recordsBucket, epAuthBucket, ensureAuthorityStores, standaloneConnectOp
 // The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
 // per-session credentials on their own short-lived connections).
-import { ManagerSessionPlane, type AttachEndReason } from "./session/index.js";
+import { ManagerSessionPlane } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
@@ -161,13 +160,6 @@ import {
 
 // Capture the loaded package version before an installation can replace its files.
 const MANAGER_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
-
-/** Minimum slot lifetime for rate-flooring (P4c). A slot freed (by despawn OR natural exit/reap)
- *  before living this long leaves a cooling stamp that still counts toward the ceiling until it
- *  expires — so churn (spawn↔despawn or spawn↔fast-exit) can't outrun the concurrency bound. */
-const MIN_LIFETIME = 10_000;
-/** What holds the spawn ceiling's slots, as {@link Manager.occupancy} counts it (#906). */
-type Occupancy = { managed: number; reserved: number; cooling: number; launching: number; used: number; nextCoolingMs?: number };
 /** Cadence of the turn-deadline sweep while turns are pending: the poll that turns an elapsed
  *  hold's fire into its expired settle and commits the deadline terminal. Deadlines are
  *  minutes-scale; a few seconds of lateness on the commit is invisible to the run. */
@@ -659,24 +651,6 @@ const FREE_SLOT_CAUSE_TEXT: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, st
   "resume-custody-unrecorded": "this manager stopped it: its custody reference could not be recorded on resume",
   "supervise-record-failed": "this manager stopped it: its supervise policy could not be recorded for a manager restart",
   "inline-snapshot-changed": "this manager retired it instead of restarting it: its inline persona snapshot changed after launch",
-};
-
-/** The SPEC 13.6 end reason a live attach session gets when this cause frees its seat. The causes
- *  that free the slot in the same step that saw the seat's own process exit report `process-exit`.
- *  A failed recovery frees it later, after its own stop, so it reports `target-despawn` with every
- *  manager stop. */
-const FREE_SLOT_ATTACH_END: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, AttachEndReason> = {
-  "process-exit": "process-exit",
-  "pi-crash-loop": "process-exit",
-  "supervise-crash-loop": "process-exit",
-  "inline-snapshot-changed": "process-exit",
-  "pi-recovery-failed": "target-despawn",
-  "supervise-recovery-failed": "target-despawn",
-  "session-bind-failed": "target-despawn",
-  "resume-session-rebind-failed": "target-despawn",
-  "carried-fork-refused": "target-despawn",
-  "resume-custody-unrecorded": "target-despawn",
-  "supervise-record-failed": "target-despawn",
 };
 
 /** The stop family's sentences — the same job {@link FREE_SLOT_CAUSE_TEXT} does for the string
@@ -1520,28 +1494,9 @@ export class Manager {
   private readonly preserveStopTimeoutMs: number;
   private readonly endpointServeExecutorExpiresInSeconds?: number;
   private readonly agents = new Map<string, ManagedAgent>();
-  /** Names whose spawn is in flight (reserved synchronously before the provision await) — counted
-   *  toward the ceiling (once per name, see {@link Manager.occupancy}) so two concurrent same-name
-   *  spawns can't both pass the gate (P4a). Each name carries the OWNER its launch was admitted
-   *  for, so the per-owner ceiling ({@link Manager.ownerSeats}) counts a launch from the moment it
-   *  is reserved; a cap read only off `agents` would let a burst of concurrent spawns overshoot it,
-   *  because none of them has a seat yet when the next one checks. */
-  private readonly reserved = new Map<string, string>();
-  /** Reserved names whose launch already put its seat in `agents`. The name stays reserved until
-   *  the launch settles, so no other spawn can take it, but the ceiling counts that seat through
-   *  `agents` and, if it frees young, its cooling stamp, never through the reservation (#906). */
-  private readonly reservedLive = new Set<string>();
-  /** Every numbered name {@link uniqueName} has issued. A suffix carries nothing but arrival order,
-   *  so reissuing a freed one would give a later principal the name an earlier one posted under, and
-   *  a reader of that name could not tell the two apart (#382). Never pruned in-process: one string
-   *  per numbered spawn. */
-  private readonly issuedNumberedNames = new Set<string>();
   /** Lifecycle UIDs already handed to `Runtime.spawnDelegated`: a lifecycle is handed off at most
    *  once, so a lost create acknowledgement can never become a second create. */
   private readonly delegatedLaunched = new Set<string>();
-  /** Expiry stamps (`startedAt + MIN_LIFETIME`) for slots that freed while still young — a
-   *  count-only, lazily-pruned recycle floor (P4c). Pruned + summed into the ceiling gate. */
-  private cooling: number[] = [];
   /** This manager process's own incarnation uid (SPEC 13.1; minted once per supervisor process,
    *  never reused across restarts) — the endpoint's presence key AND the `managerInstance` audit
    *  coordinate every static activation records. */
@@ -1711,6 +1666,28 @@ export class Manager {
   /** True on a USER-AUTH space (the on-disk marker; cross-checked against the registry at start).
    *  Gates the whole spawn path: user mode grants ledger actors + bearer plumbing, never static mints. */
   private userMode = false;
+  private readonly namesCapacity = new NamesCapacity({
+    userMode: () => this.userMode,
+    authEnabled: () => this.auth !== undefined,
+    maintenanceActive: () => this.maintenanceState === "active",
+    roster: () => this.ep.getRoster(),
+    agentFor: (name) => this.agents.get(name),
+    hasAgent: (name) => this.agents.has(name),
+    removeAgent: (name) => { this.agents.delete(name); },
+    managedCount: () => this.agents.size,
+    predecessor: (name) => this.retirement.predecessor(name),
+    hasRetirementHold: (name) => this.retirement.hasHold(name),
+    holdRetirement: (name, hold) => this.retirement.hold(name, hold),
+    endSessionsForTarget: (...args) => { this.sessionPlane?.endForTarget(...args); },
+    logSeatReaped: (...args) => this.logSeatReaped(...args),
+    recordContinuityAtStop: (...args) => this.recordContinuityAtStop(...args),
+    releasedSeatPending: (...args) => this.releasedSeatPending(...args),
+    dropSeatRecord: (...args) => this.dropSeatRecord(...args),
+    failSeatTurns: (...args) => this.failSeatTurns(...args),
+    teardownTarget: (...args) => this.teardownTarget(...args),
+    dropInlineSnapshot: (...args) => this.dropInlineSnapshot(...args),
+    trackDeprovision: (...args) => this.trackDeprovision(...args),
+  });
   private readonly servePlane = new ServePlane({
     auth: () => this.auth,
     remoteAuthority: () => this.remoteAuthority,
@@ -5469,69 +5446,7 @@ export class Manager {
   private isOwnPresence(a: ManagedAgent, p: Presence | undefined): p is Presence {
     return p !== undefined && p.card.id === this.managedPrincipal(a) && p.lifecycleUid === a.lifecycleUid;
   }
-
-  /** Drop a live agent's slot. When `floor` is set and the agent died young (lived less than
-   *  MIN_LIFETIME), push a cooling stamp so the freed slot still counts toward the ceiling until it
-   *  expires — flooring the RECYCLE, not the call, so both free paths (despawn + exit/reap) are
-   *  covered (P4c). Floor self + own-child despawn and natural exit; NEVER admin despawn (operator
-   *  emergency-kill stays unthrottled) and NEVER the reserved-rollback path (no cold-start paid). */
-  private freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, acceptedBeforeFence = false): void {
-    if (this.agents.get(a.name) !== a) return; // already freed (exit raced despawn, etc.)
-    // The terminalizing latch also covers exit/reap paths that never rode stopHandle.
-    this.logSeatReaped(a, cause);
-    a.terminalizing = true;
-    this.agents.delete(a.name);
-    this.recordContinuityAtStop(a, "stop");
-    if (a.restart?.sessionStatePath) rmSync(a.restart.sessionStatePath, { force: true });
-    // A released seat's record is the next manager's only pointer to it. It stays until the
-    // retirement is confirmed. Dropping it here let a refused retirement leave the lifecycle active
-    // with nothing left for that manager to adopt.
-    if (!this.releasedSeatPending(a)) this.dropSeatRecord(a);
-    if (a.seatHome) rmSync(a.seatHome, { recursive: true, force: true });
-    // End any live §13.6 attach session bound to THIS incarnation with the reason its cause names.
-    // Fires once per agent on every free path (despawn / self-stop / reap / exit) via the `agents`
-    // guard above; a no-op when no plane or no live session for the target.
-    this.sessionPlane?.endForTarget(a.name, a.lifecycleUid, typeof cause === "string" ? FREE_SLOT_ATTACH_END[cause] : "target-despawn");
-    // The turn relay's reap hook: every pending turn addressed to THIS incarnation is stamped
-    // with the death, and its deadline terminal carries it as `agentDownAt`. The addressee is gone
-    // and no successor may answer for it; the terminal is still the deadline's, not a new reason.
-    this.failSeatTurns(a.name, a.lifecycleUid);
-    if (floor && Date.now() - a.startedAt < MIN_LIFETIME) this.cooling.push(a.startedAt + MIN_LIFETIME);
-    // The departed agent's own custody reference rides the teardown: the exit that freed this slot
-    // is usually the seat ending, but a stop that could not prove the process gone leaves one the
-    // terminal must still address before it frees the alias.
-    const target = this.teardownTarget(a);
-    // On a USER mesh the name is RESERVED PENDING RETIREMENT — despawn started this
-    // lifecycle's FULL teardown (footprint + standing-authority revoke + the auth-side retirement),
-    // and the alias frees only when all of it completes (not the retirement alone). The detached
-    // deprovision below drives it; a failed revoke or an unreachable rail keeps the name held,
-    // re-driven by a retry. Gate on userMode BY
-    // CONSTRUCTION (NEW-1): a static-auth mint has no user-mode lifecycle head to retire, so the
-    // reservation + rail request simply don't apply there (the incidental nkey-parse used to mask
-    // this, but the intent is "user mode only", not "any principal-shaped id").
-    if (this.userMode) {
-      const p = parsePrincipalKey(a.id);
-      if (p) this.retirement.hold(a.name, { opId: managedRetirementOpId(a.lifecycleUid), owner: p.owner, actor: p.actor, target, startedAt: Date.now() });
-    } else if (this.auth) {
-      // A STATIC lifecycle now also holds its name pending its own terminal (the
-      // static retirement the detached deprovision below drives) — the alias frees only when the
-      // gate+head terminal completes, exactly the user-mode discipline. The wire principal is the
-      // incarnation-unique nkey; owner is the dev owner.
-      this.retirement.hold(a.name, { opId: managedRetirementOpId(a.lifecycleUid), owner: DEV_OWNER, actor: a.id, target, startedAt: Date.now() });
-    }
-    // Auth mode: tear down the departed agent's minted broker footprint + creds file (#159 B2). The
-    // process is already gone, so this must never block the slot free or throw into the caller — it runs
-    // detached, and a failure is logged loudly (never swallowed), not retried. The `agents` guard above
-    // makes this fire exactly once per agent across every free path (despawn / self-stop / reap / exit).
-    if (!a.suppressCleanup && (this.maintenanceState === "active" || acceptedBeforeFence)) {
-      // An inline seat's snapshot goes with the seat on every mesh. An open mesh runs no teardown
-      // below, and a preservation cut suppresses this, so a resumed seat still finds its snapshot.
-      // Settled means the file is gone or the seat never had one. A removal that failed is left to
-      // the teardown, which retries it and reports what it could not remove.
-      if (a.launch.source.kind !== "inline" || this.dropInlineSnapshot(a.name, a.lifecycleUid)) target.snapshotSettled = true;
-      this.trackDeprovision(target);
-    }
-  }
+  private freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, acceptedBeforeFence = false): void { this.namesCapacity.freeSlot(a, floor, cause, acceptedBeforeFence); }
 
   /** Remove one lifecycle's inline snapshot by the path its uid derives, never by a recorded one, so a
    *  resume inventory cannot point the removal at another file. Returns whether the file is gone. A
@@ -5712,61 +5627,9 @@ export class Manager {
     this.freeSlot(a, true, a.stopCause ?? "process-exit");
     this.reapChildrenOf(this.managedPrincipal(a));
   }
-
-  /** Agent names become `.cotal/agents/<name>.md` paths and mesh identities, so they must be bare
-   *  tokens, never a path — blocks traversal / arbitrary writes from a model-supplied name. In user
-   *  mode the name is ALSO the actor, which is a narrower alphabet still; {@link spawnNameError}
-   *  holds both halves so this door and the auto-numbering that feeds it cannot disagree. */
-  private nameError(name: string): string | undefined {
-    return spawnNameError(name, { userMode: this.userMode });
-  }
-
-  /** The roster's LIVE occupant names (status !== offline) — occupants this manager may NOT manage
-   *  (a foreground `cotal spawn`, a connector session, ANOTHER manager's agent). Allocating over any
-   *  of them mints a sibling the broker/auth then refuses to admit, surfacing as the 30s launch-
-   *  uncertain black hole. */
-  private liveRosterNames(): Set<string> {
-    const live = new Set<string>();
-    for (const p of this.ep.getRoster()) {
-      if (p.status === "offline") continue;
-      const predecessor = this.retirement.predecessor(p.card.name);
-      if (predecessor !== undefined && predecessor.principal === p.card.id && predecessor.lifecycleUid === p.lifecycleUid) continue;
-      live.add(p.card.name);
-    }
-    return live;
-  }
-
-  /** THE single name-liveness predicate both the hard-pinned collision refuse and
-   *  uniqueName's numbering consult, so they can never drift: a name is taken if this manager
-   *  reserves/manages/retires it OR a roster-live occupant already holds it. Pass a pre-built
-   *  {@link liveRosterNames} set when checking many names in one allocation. */
-  private nameInUse(name: string, live: Set<string> = this.liveRosterNames()): boolean {
-    return this.agents.has(name) || this.reserved.has(name) || this.retirement.hasHold(name) || live.has(name);
-  }
-
-  /** First free name in the series `base`, `base_2`, `base_3`, … — checked against live slots,
-   *  in-flight (reserved) slots, names held pending retirement, AND the live mesh roster. The
-   *  roster check covers occupants this manager does not manage (a foreground `cotal spawn`, a
-   *  connector session, another manager's agent): allocating their name would mint a sibling the
-   *  broker/auth then refuses to admit, surfacing as a 30s launch-uncertain black hole instead of
-   *  the auto-number the join path gives. Presence is ADVISORY (SPEC §6) — this is an availability
-   *  choice at allocation, never an authority check (the broker still enforces): a stale
-   *  still-live-looking row only costs a numbered suffix, and a missed freshly-joined occupant is
-   *  still refused downstream exactly as before. Offline rows do NOT occupy — a properly retired
-   *  name stays reusable. A row this manager itself confirmed retired (its alias, principal, and
-   *  lifecycleUid all matching a {@link confirmedRetiredPredecessors} entry) does not occupy
-   *  either, even while its advisory presence record ages out. A numbered name is never reissued
-   *  ({@link issuedNumberedNames}), even after its holder retired. The requested base is exempt
-   *  from that history: it is the persona's own name, which stays reusable even when it once came
-   *  out of another persona's numbering. */
-  private uniqueName(base: string, unavailable: ReadonlySet<string> = new Set()): string {
-    const live = this.liveRosterNames();
-    // The cap belongs to user mode alone: only there is the numbered name the actor. Static and open
-    // mode key the actor on the minted nkey, so a numbered name there has no length to fit.
-    const name = firstFreeName(base, (n) => unavailable.has(n) || this.nameInUse(n, live) || (n !== base && this.issuedNumberedNames.has(n)),
-      this.userMode ? { actorBound: true } : undefined);
-    return name;
-  }
+  private nameError(name: string): string | undefined { return this.namesCapacity.nameError(name); }
+  private nameInUse(name: string, live?: Set<string>): boolean { return this.namesCapacity.nameInUse(name, live); }
+  private uniqueName(base: string, unavailable: ReadonlySet<string> = new Set()): string { return this.namesCapacity.uniqueName(base, unavailable); }
 
   /** Spawn a teammate by persona ref (`name` loads `.cotal/agents/<name>.md`; the peer presents
    *  under that file's own `name:`), as if a peer asked via the control plane. Used to pre-spawn the
@@ -6986,7 +6849,7 @@ export class Manager {
         }
         // Another spawn may have reserved the candidate while the disk/broker proof awaited.
         // Recheck in the same synchronous window as the cap and reservation below.
-        if (this.nameInUse(name) || (!hardPinned && name !== identityName && this.issuedNumberedNames.has(name))) {
+        if (this.nameInUse(name) || (!hardPinned && name !== identityName && this.namesCapacity.numberedIssued(name))) {
           if (!hardPinned) continue;
           return { ok: false, code: "already-exists", error: `the hard-pinned name "${name}" became occupied while checking event startup; pick another name` };
         }
@@ -7025,8 +6888,8 @@ export class Manager {
     // Taken right before the try so its finally is the only release; a refusal belongs above the
     // allocation, where there is no name to give back.
     hooks?.onEffect?.();
-    if (!hardPinned && name !== identityName) this.issuedNumberedNames.add(name);
-    this.reserved.set(name, owner);
+    if (!hardPinned && name !== identityName) this.namesCapacity.rememberNumbered(name);
+    this.namesCapacity.reserve(name, owner);
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
@@ -7420,7 +7283,7 @@ export class Manager {
         });
       }
       this.agents.set(name, managed);
-      this.reservedLive.add(name);
+      this.namesCapacity.placed(name);
       if (managed.once) this.watchOnceExit(managed);
       // The live slot now owns teardown — freeSlot deprovisions this identity on exit — so the
       // orphan-rollback in `finally` no longer applies to it.
@@ -7580,8 +7443,7 @@ export class Manager {
       } catch { /* not a readable envelope */ }
       return { ok: false, error };
     } finally {
-      this.reserved.delete(name);
-      this.reservedLive.delete(name);
+      this.namesCapacity.release(name);
       if (seatHome) rmSync(seatHome, { recursive: true, force: true });
       // A failed removal is logged, never thrown, so the grant's teardown below is still scheduled.
       const snapshotGone = snapshotUid === undefined || this.dropInlineSnapshot(name, snapshotUid);
@@ -7673,11 +7535,11 @@ export class Manager {
             return { ok: false, agents: [], error: `retained principal "${principal}" is already live and this runtime cannot authoritatively adopt it` };
           orphans.push({ principal, reference: orphan });
         }
-        if (this.agents.has(entry.name) || this.reserved.has(entry.name))
+        if (this.agents.has(entry.name) || this.namesCapacity.isReserved(entry.name))
           return { ok: false, agents: [], error: `retained agent "${entry.name}" is already managed or reserved` };
       }
       for (const entry of entries) {
-        this.reserved.set(entry.name, resumeOwner(entry));
+        this.namesCapacity.reserve(entry.name, resumeOwner(entry));
         batchReservations.push(entry.name);
       }
       const preflight: Array<{ name: string; reply: ControlReply }> = [];
@@ -7713,8 +7575,7 @@ export class Manager {
       return { ok: true, agents };
     } finally {
       for (const name of batchReservations) {
-        this.reserved.delete(name);
-        this.reservedLive.delete(name);
+        this.namesCapacity.release(name);
       }
       // Preflight builds every launch before any child starts, so a refused batch, a failed launch,
       // or the agents skipped after it leave built specs no runtime ever received.
@@ -7959,7 +7820,7 @@ export class Manager {
         return { ok: false, error: `retained agent ${entry.name} requires runtime "${entry.launch.runtime}", which this manager cannot resolve` };
       const nameErr = this.nameError(entry.name);
       if (nameErr) return { ok: false, error: nameErr };
-      if (this.agents.has(entry.name) || (!batchReserved && this.reserved.has(entry.name)))
+      if (this.agents.has(entry.name) || (!batchReserved && this.namesCapacity.isReserved(entry.name)))
         return { ok: false, error: `retained agent "${entry.name}" is already managed or reserved; same-principal resume never auto-numbers` };
       const occupancy = batchReserved ? undefined : this.occupancy();
       if (occupancy && occupancy.used >= MAX_AGENTS)
@@ -8100,7 +7961,7 @@ export class Manager {
     batchReserved: boolean,
     supervised?: SupervisedRestart,
   ): Promise<ControlReply> {
-    if (!batchReserved) this.reserved.set(entry.name, resumeOwner(entry));
+    if (!batchReserved) this.namesCapacity.reserve(entry.name, resumeOwner(entry));
     try {
       // Recover the STATIC identity's nkey seed from the adopted credential (the
       // creds file embeds it) so the manager stays this incarnation's RENEWAL OWNER across a
@@ -8178,7 +8039,7 @@ export class Manager {
         suppressCleanup: true,
       };
       this.agents.set(entry.name, managed);
-      this.reservedLive.add(entry.name);
+      this.namesCapacity.placed(entry.name);
       if (this.resumeAttemptId) this.resumedAgentNames.add(entry.name);
       try {
         await this.recordSlotRuntime(managed);
@@ -8210,8 +8071,7 @@ export class Manager {
       return { ok: false, error: rejectionText(e) };
     } finally {
       if (!batchReserved) {
-        this.reserved.delete(entry.name);
-        this.reservedLive.delete(entry.name);
+        this.namesCapacity.release(entry.name);
       }
     }
   }
@@ -8510,57 +8370,9 @@ export class Manager {
     if (!watched)
       console.error(`! ${a.name}: runtime "${handle.kind}" cannot prove a child exit (AgentHandle.waitForExit is not implemented) - it stays managed after it exits, until it is stopped`);
   }
-
-  /** Prune expired cooling stamps (drop those at/before now) and return the live count — the
-   *  recycle floor's contribution to the ceiling (P4c). Lazy: pruned only when the gate consults it. */
-  private coolingCount(): number {
-    const now = Date.now();
-    this.cooling = this.cooling.filter((stamp) => stamp > now);
-    return this.cooling.length;
-  }
-
-  /** What holds the ceiling's slots, one count per seat (#906). A launching seat sits in `reserved`
-   *  from accept until its launch settles, in `agents` once its process exists, and in `cooling`
-   *  if it then frees young, so a reservation stops counting once it reaches `agents`. `managed` is
-   *  what this manager's `ps` lists, `reserved` is the accepted launches that have no process yet,
-   *  and `launching` is every unsettled launch that still holds a slot through `reserved` or
-   *  `agents`. A launch whose seat already freed holds no slot but its cooling stamp, so its
-   *  failure can free nothing. */
-  private occupancy(): Occupancy {
-    const cooling = this.coolingCount();
-    let reserved = 0;
-    let launching = 0;
-    for (const name of this.reserved.keys()) {
-      const placed = this.reservedLive.has(name);
-      if (!placed) reserved++;
-      if (!placed || this.agents.has(name)) launching++;
-    }
-    const managed = this.agents.size;
-    return {
-      managed,
-      reserved,
-      cooling,
-      launching,
-      used: managed + reserved + cooling,
-      nextCoolingMs: cooling ? Math.min(...this.cooling) - Date.now() : undefined,
-    };
-  }
-
-  private occupancyText(o: Occupancy): string {
-    return `${o.used} of ${MAX_AGENTS} slots: ${o.managed} managed, ${o.reserved} reserved, ${o.cooling} cooling`;
-  }
-
-  /** The capacity refusal states the split it enforces and whether waiting can free a slot: a
-   *  cooling slot frees at a known time, an unsettled launch frees one only if it fails, and a
-   *  managed seat frees one only when it is stopped. */
-  private capacityRefusal(o: Occupancy): string {
-    const remedy = o.nextCoolingMs !== undefined
-      ? `waiting frees a cooling slot in ${Math.ceil(o.nextCoolingMs / 1000)}s, or despawn one`
-      : o.launching
-        ? `waiting frees a slot only if an unsettled launch fails (${o.launching} pending); otherwise despawn one`
-        : "waiting frees no slot; despawn one";
-    return `at capacity (${this.occupancyText(o)}); ${remedy}`;
-  }
+  private occupancy(): Occupancy { return this.namesCapacity.occupancy(); }
+  private occupancyText(o: Occupancy): string { return this.namesCapacity.occupancyText(o); }
+  private capacityRefusal(o: Occupancy): string { return this.namesCapacity.capacityRefusal(o); }
 
   /**
    * The owner a launch belongs to, read ONCE so the per-owner ceiling, the agent's addressing
@@ -8592,8 +8404,7 @@ export class Manager {
   private ownerSeats(owner: string): number {
     let seats = 0;
     for (const a of this.agents.values()) if (this.seatOwner(a) === owner) seats++;
-    for (const [name, reservedFor] of this.reserved)
-      if (reservedFor === owner && !this.reservedLive.has(name)) seats++;
+    seats += this.namesCapacity.ownerReservations(owner);
     return seats;
   }
 
@@ -8881,7 +8692,7 @@ export class Manager {
         resumeRequired: this.resumeRequired,
         stopping: this.leaseStopping,
         lifecycleInFlight: this.lifecycleInFlight,
-        reservedLaunches: this.reserved.size,
+        reservedLaunches: this.namesCapacity.reservedCount,
         retirementsPending: this.retirement.pendingCount,
         deprovisioningInFlight: this.retirement.inFlightCount,
         staticReconciliationInFlight: this.staticLifecycle.sweepsInFlight,
