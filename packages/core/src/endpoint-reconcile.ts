@@ -33,8 +33,7 @@ import { epgateKey, parseEndpointGate, type EndpointGateRow, type EndpointRepair
 import { completeFrozenRegistrationFromSpec } from "./endpoint-service.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { KV } from "@nats-io/kv";
-import { claimEndpointRegistrationRecovery } from "./endpoint-registration-lease.js";
-import { EpEnvelopeError } from "./endpoint-error.js";
+import { claimEndpointRegistrationRecovery, EndpointRegistrationLeaseRefused } from "./endpoint-registration-lease.js";
 
 /** Which guard refused. The command prints this verbatim, and the smoke asserts on it, so a refusal
  *  can never be confused with a different refusal — the failure mode where an operator reads
@@ -50,7 +49,7 @@ export type GateReconcileCondition =
   | "holder-alive"
   /** Host lease still excludes recovery, including while the executor reconnects. */
   | "registration-leased"
-  /** Stored host lease is malformed or deleted, so registration authority cannot be established. */
+  /** Host lease validation, binding or confirmed CAS contention refused before repair effects. */
   | "registration-lease-unestablishable"
   /** The sweep under-reported (no responder, truncation, unproven single-server mode). May be live. */
   | "holder-unknown"
@@ -204,7 +203,7 @@ export async function reconcileEndpointGate(opts: {
       endpoint, instanceId, principal: row.principal, generation: row.generation, freezeToken,
     });
   } catch (error) {
-    if (error instanceof EpEnvelopeError && (error.code === "internal" || error.code === "failed-precondition"))
+    if (error instanceof EndpointRegistrationLeaseRefused)
       throw new GateReconcileRefused("registration-lease-unestablishable", `the host registration lease cannot be established: ${error.message}; refusing before credential revocation, eviction or gate reopen`);
     throw error;
   }

@@ -119,7 +119,7 @@ repair, because the reopened gate is already past the slot's generation.
 |---|---|---|
 | `holder-alive` | The freeze-holder still has a live connection: a manager *is* running | Stop that process first. Reconciling would evict a live manager's credentials |
 | `registration-leased` | A remote registration still holds its host lease, including during credential replacement | Let registration finish. A dead attempt becomes recoverable only after its lease expires and complete sweeps prove absence |
-| `registration-lease-unestablishable` | The stored host registration lease is malformed or deleted | Inspect the lease with the host operator. Do not delete it or infer that registration is dead |
+| `registration-lease-unestablishable` | The host lease is malformed, deleted, bound to another registration or freeze, or could not be claimed after confirmed CAS conflicts | Inspect the lease with the host operator. Re-observe after contention. Do not delete it or infer that registration is dead |
 | `holder-unknown` | The connection sweep could not prove the holder absent | Not safe to proceed: an unprovable holder is treated as a live one. Re-run once the broker answers completely |
 | `liveness-unestablishable` | The delivery daemon gave no verdict: it was unreachable, timed out, or refused | Act on the delivery lease line in the refusal (below). Silence is never read as death |
 | `not-frozen` / `no-gate` | The gate is open, or there is no gate at that coordinate | Nothing to repair: check `--endpoint` / `--instance` |

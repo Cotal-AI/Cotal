@@ -40,9 +40,11 @@ import {
   provisionEndpointGateOpen, serveIssuanceGateKv, endpointRegistrationBarrier,
   epgateKey, eprepairKey, parseEndpointGate, mintLifecycleUid, mkSecretDir, writeSecretFile,
   renewEndpointRegistrationLease, epRegistrationLeaseKey, loadEndpointRepairCursor,
+  reconcileEndpointGate, GateReconcileRefused, EpEnvelopeError, recordsBucket,
 } from "@cotal-ai/core";
 import { putSpaceAuth, recordMesh, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { executePrincipalLiveness } from "../../delivery/src/evict-exec.js";
+import { makeManagerHolderLivenessProbe } from "../src/holder-liveness.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
@@ -326,7 +328,7 @@ try {
   }
 
   // Host lease refusals must remain pre-effect refusals through the operator's public command.
-  for (const state of ["active", "malformed", "deleted", "invalid-token"] as const) {
+  for (const state of ["active", "malformed", "deleted", "invalid-token", "generation-ahead", "other-principal", "other-freeze"] as const) {
     const { instanceId, kv } = await buildResidue({ holderLive: false, leased: true });
     const key = epRegistrationLeaseKey(ENDPOINT, instanceId);
     if (state === "malformed") await kv.put(key, new TextEncoder().encode("{"));
@@ -335,6 +337,16 @@ try {
       const entry = (await kv.get(key))!;
       const lease = JSON.parse(new TextDecoder().decode(entry.value));
       await kv.put(key, new TextEncoder().encode(JSON.stringify({ ...lease, leaseId: "invalid" })));
+    }
+    if (state === "generation-ahead" || state === "other-principal" || state === "other-freeze") {
+      const entry = (await kv.get(key))!;
+      const lease = JSON.parse(new TextDecoder().decode(entry.value));
+      const frozen = (await kv.get(epgateKey(ENDPOINT, instanceId)))!;
+      await kv.put(key, new TextEncoder().encode(JSON.stringify({ ...lease, expiresAt: Date.now() - 1,
+        ...(state === "generation-ahead" ? { generation: lease.generation + 1 }
+          : state === "other-principal" ? { principal: principalKey(DEV_OWNER, "other").key }
+            : { state: "recovering", freezeToken: frozen.revision + 1 }),
+      })));
     }
     const beforeGate = (await kv.get(epgateKey(ENDPOINT, instanceId)))!;
     const beforeLease = (await kv.get(key))!;
@@ -353,6 +365,52 @@ try {
       && rows.length === 1 && rows[0]?.state === "active"
       && await loadEndpointRepairCursor(kv, ENDPOINT, instanceId) === null,
       { gateBefore: beforeGate.revision, gateAfter: afterGate.revision, rows });
+  }
+
+  // Compete on the real broker CAS, then lose the response to a real successful claim.
+  // These storage interpositions do not replace the shipped reconciliation or liveness paths.
+  for (const ambiguous of [false, true]) {
+    const { instanceId, kv } = await buildResidue({ holderLive: false, leased: true, leaseTtlMs: 500 });
+    await wait(600);
+    const key = epRegistrationLeaseKey(ENDPOINT, instanceId);
+    const before = (await kv.get(epgateKey(ENDPOINT, instanceId)))!;
+    let attempts = 0;
+    const lostReply = new EpEnvelopeError("conflict", "claim committed but its response was lost");
+    const intercepted = new Proxy(kv, { get(target, property) {
+      if (property === "update") return async (name: string, value: Uint8Array, revision: number) => {
+        if (name === key) {
+          attempts++;
+          if (ambiguous) {
+            await target.update(name, value, revision);
+            throw lostReply;
+          }
+          // A competing host write moves the revision without letting this repair claim it.
+          await target.put(name, (await target.get(name))!.value);
+        }
+        return target.update(name, value, revision);
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    let failure: unknown;
+    try {
+      await reconcileEndpointGate({ kv: intercepted, recordsKv: await new Kvm(execConns.at(-1)!).open(recordsBucket(space)),
+        space, endpoint: ENDPOINT, instanceId,
+        probeHolder: makeManagerHolderLivenessProbe({ space, servers: SERVERS, tlsRequired: false, auth, log: () => {} }),
+        evictHolders: async () => { throw new Error("lease refusal must precede eviction"); }, log: () => {},
+      });
+    } catch (error) { failure = error; }
+    check(`native claim (${ambiguous ? "lost write reply" : "four competing CAS writes"}): ${ambiguous ? "preserves uncertain failure" : "reports definite pre-effect lease refusal"}`,
+      ambiguous ? failure === lostReply && attempts === 1
+        : failure instanceof GateReconcileRefused && failure.condition === "registration-lease-unestablishable" && attempts === 4,
+      String(failure));
+    const lease = JSON.parse(new TextDecoder().decode((await kv.get(key))!.value));
+    const rows = await endpointRegistrationBarrier(kv, space, { endpoint: ENDPOINT, instanceId, opId: mintLifecycleUid() }).enumerate();
+    check(`native claim (${ambiguous ? "lost write reply" : "four competing CAS writes"}): no family, gate or cursor repair effects`,
+      (await kv.get(epgateKey(ENDPOINT, instanceId)))!.revision === before.revision
+      && rows.length === 1 && rows[0]?.state === "active"
+      && await loadEndpointRepairCursor(kv, ENDPOINT, instanceId) === null
+      && lease.state === (ambiguous ? "recovering" : "active"));
   }
 
   for (const partial of [false, true]) {

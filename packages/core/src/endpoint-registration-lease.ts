@@ -6,6 +6,9 @@ import { epgateKey, parseEndpointGate } from "./lifecycle-state.js";
 import { isUserNkey } from "./identity.js";
 import { mintLifecycleUid, parsePrincipalKey } from "./subjects.js";
 
+/** A definite lease refusal, distinct from an unconfirmed store write. */
+export class EndpointRegistrationLeaseRefused extends EpEnvelopeError {}
+
 /** Host-owned exclusion for one registration attempt, independent of its executor connection. */
 export interface EndpointRegistrationLease {
   v: 1;
@@ -33,10 +36,10 @@ export async function readEndpointRegistrationLease(kv: KV, endpoint: string, in
   const key = epRegistrationLeaseKey(endpoint, instanceId);
   const entry = await kv.get(key);
   if (!entry) return null;
-  if (entry.operation !== "PUT") throw new EpEnvelopeError("failed-precondition", `registration lease ${key} was deleted`);
+  if (entry.operation !== "PUT") throw new EndpointRegistrationLeaseRefused("failed-precondition", `registration lease ${key} was deleted`);
   let value: unknown;
   try { value = JSON.parse(new TextDecoder().decode(entry.value)); }
-  catch { throw new EpEnvelopeError("internal", `registration lease ${key} is malformed`); }
+  catch { throw new EndpointRegistrationLeaseRefused("internal", `registration lease ${key} is malformed`); }
   const row = value as EndpointRegistrationLease;
   const keys = ["v", "leaseId", "requestId", "principal", "executorNkey", "lifecycleUid", "generation", "registrationRevision", "expiresAt", "state", "freezeToken"];
   if (!row || typeof row !== "object" || Array.isArray(row) || Object.keys(row).some(k => !keys.includes(k)) || row.v !== 1
@@ -46,11 +49,11 @@ export async function readEndpointRegistrationLease(kv: KV, endpoint: string, in
     || !Number.isSafeInteger(row.registrationRevision) || row.registrationRevision < 0
     || !["active", "recovering", "released"].includes(row.state)
     || (row.state === "recovering" ? !Number.isSafeInteger(row.freezeToken) || row.freezeToken! <= 0 : row.freezeToken !== undefined))
-    throw new EpEnvelopeError("internal", `registration lease ${key} does not validate`);
+    throw new EndpointRegistrationLeaseRefused("internal", `registration lease ${key} does not validate`);
   try {
     assertLifecycleToken(row.leaseId, "registration leaseId");
     assertLifecycleToken(row.lifecycleUid, "registration lease lifecycleUid");
-  } catch { throw new EpEnvelopeError("internal", `registration lease ${key} does not validate`); }
+  } catch { throw new EndpointRegistrationLeaseRefused("internal", `registration lease ${key} does not validate`); }
   return { lease: row, revision: entry.revision };
 }
 
@@ -130,9 +133,9 @@ export async function claimEndpointRegistrationRecovery(kv: KV, args: {
     if (lease.state === "active" && lease.expiresAt > Date.now()) return "active";
     if (lease.generation < args.generation) return "unleased";
     if (lease.generation !== args.generation || lease.principal !== args.principal)
-      throw new EpEnvelopeError("conflict", "registration recovery lease does not bind the frozen gate");
+      throw new EndpointRegistrationLeaseRefused("conflict", "registration recovery lease does not bind the frozen gate");
     if (lease.state === "recovering") {
-      if (lease.freezeToken !== args.freezeToken) throw new EpEnvelopeError("conflict", "registration recovery lease binds another freeze");
+      if (lease.freezeToken !== args.freezeToken) throw new EndpointRegistrationLeaseRefused("conflict", "registration recovery lease binds another freeze");
       return "claimed";
     }
     try {
@@ -141,7 +144,7 @@ export async function claimEndpointRegistrationRecovery(kv: KV, args: {
       return "claimed";
     } catch (error) { if (!isCasLoss(error)) throw error; }
   }
-  throw new EpEnvelopeError("conflict", "registration recovery lost its lease CAS");
+  throw new EndpointRegistrationLeaseRefused("conflict", "registration recovery lost its lease CAS");
 }
 
 /** Activation releases only the same attempt after its registration advanced the gate. */
