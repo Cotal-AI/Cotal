@@ -160,6 +160,43 @@ try {
       assert.equal(readFileSync(config, "utf8"), contents, `${mode}: update preserves the rendered broker configuration`);
     }
   }
+  // A clean legacy down also retains configuration when --space differs from the folder name.
+  // Run the public startup and stop commands so this covers actual stopped-project records.
+  const stoppedProject = join(root, "stopped-project");
+  const stoppedSpace = `explicit-${randomUUID()}`;
+  mkdirSync(join(stoppedProject, ".cotal"), { recursive: true, mode: 0o700 });
+  const stoppedCli = (...args: string[]) => spawnSync(process.execPath, [bin, ...args], {
+    cwd: stoppedProject, encoding: "utf8", timeout: 120_000,
+    env: { ...ambient, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" },
+  });
+  let started = false;
+  try {
+    const up = stoppedCli("up", "--detach", "--server", target.server, "--space", stoppedSpace);
+    started = up.status === 0;
+    assert.equal(up.status, 0, `explicit-space project starts\n${up.stdout}\n${up.stderr}`);
+    const sent = stoppedCli("send", "-c", "general", "hello");
+    assert.equal(sent.status, 0, `explicit-space project stores a message\n${sent.stdout}\n${sent.stderr}`);
+    const down = stoppedCli("down", "--yes");
+    assert.equal(down.status, 0, `explicit-space project stops cleanly\n${down.stdout}\n${down.stderr}`);
+    started = false;
+    const config = join(authDir(stoppedProject), "server.conf");
+    const contents = readFileSync(config, "utf8");
+    const cwd = process.cwd();
+    try {
+      process.chdir(stoppedProject);
+      assert.equal(await readManagerContinuity({}, { readOnly: true, retainGraph: true }), "none", "staged pre-install skips the stopped explicit-space project");
+    } finally { process.chdir(cwd); }
+    for (const args of [["update"], ["update", "--self"]]) {
+      const result = stoppedCli(...args);
+      assert.equal(result.status, 0, `stopped explicit-space ${args.join(" ")} completes\n${result.stdout}\n${result.stderr}`);
+      assert.ok(result.stdout.includes(stoppedProject), "update names the stopped project");
+      assert.match(result.stdout, /continuity not checked/, "update does not claim continuity from retained records");
+      assert.doesNotMatch(result.stderr, /running manager continuity check|start it again/, "no circular start remedy for a stopped project");
+      assert.equal(readFileSync(config, "utf8"), contents, "update preserves the stopped project's broker configuration");
+    }
+  } finally {
+    if (started) stoppedCli("down", "--yes");
+  }
   console.log(`COTAL_SMOKE_SENTINEL cells=${counted.cells()} passed=${counted.cells()} failed=0`);
 } finally {
   if (listener.listening) await new Promise<void>((resolve) => listener.close(() => resolve()));
