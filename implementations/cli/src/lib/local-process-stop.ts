@@ -52,6 +52,8 @@ export interface StopLocalProcessOptions {
    * confirmed stop. It undoes what `beforeSignal` published: done after the reservation is released,
    * the undo could remove what the next stop to take the reservation published. */
   afterFailedSignal?: () => void;
+  /** Runs under the same reservation after a signalled process's exit is confirmed. */
+  afterConfirmedStop?: () => void;
   /** The pid the caller decided to stop. A record naming another pid, an absent record or an empty
    *  husk cannot confirm that target stopped. Leave those records and artifacts untouched and return false. */
   pid?: number;
@@ -236,6 +238,7 @@ export async function stopLocalProcess(
     if (probeLiveness(pid) !== "dead")
       throw new Error(`${component.label} (pid ${pid}) did not exit, or its death could not be confirmed; its pidfile was preserved`);
     stopped = true;
+    options.afterConfirmedStop?.();
     console.log(c.green(`✓ stopped ${component.label} (pid ${pid})`));
     return true;
   } finally {

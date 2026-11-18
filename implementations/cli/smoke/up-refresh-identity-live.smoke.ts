@@ -223,7 +223,7 @@ function sleep(ms: number): Promise<void> {
 /** #2218/#1014 gap 3 — a repair `up` on a same-root record whose broker died reopens the store
  *  the record names, refuses a disagreeing explicit `--store-dir`, and a pre-field record (no
  *  `storeDir`) warns instead of refusing. Each cell kills the live broker with SIGKILL (a crash,
- *  not a `down`) so the record is the M3 "stays recorded" kind, then drives a repair `up` through
+ *  not a `down`) so the crash diagnostic reports the existing record, then drives a repair `up` through
  *  the shipped binary. */
 async function storeRecordRepair(): Promise<void> {
   const fixture = await makeFixture("store-repair");
@@ -497,9 +497,9 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
     check("the record survives the crash", findMesh(space) !== undefined, findMesh(space));
     check("a killed broker makes the foreground `up` exit 5, a failed run's code, not Node's unsettled-await 13", exitCode === 5, { exitCode, stdout, stderr });
     check("...stderr names 'exited unexpectedly'", /exited unexpectedly/.test(stderr), stderr);
-    check("...and 'stays recorded'", /stays recorded/.test(stderr), stderr);
+    check("...and 'is still recorded'", /is still recorded/.test(stderr), stderr);
     check("...and the repair command naming this space", stderr.includes(`cotal up --server ${fixture.server} --space ${space}`), stderr);
-    check("...in the recorded mesh's whole line, with no claim that the exit came before the record", stderr.includes(`✗ nats-server exited unexpectedly (signal SIGKILL); the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); log: see the terminal output above; repair: \`cotal up --server ${fixture.server} --space ${space}\``) && !stderr.includes("before the mesh"), stderr);
+    check("...in the recorded mesh's whole line, with no claim that the exit came before the record", stderr.includes(`✗ nats-server exited unexpectedly (signal SIGKILL); the mesh "${space}" is still recorded; log: see the terminal output above; repair: \`cotal up --server ${fixture.server} --space ${space}\``) && !stderr.includes("before the mesh"), stderr);
     const meshes = cotal(fixture, ["meshes"]);
     check("`cotal meshes` tags the crashed mesh offline", new RegExp(`${space}[^\n]*offline`).test(`${meshes.stdout}`), meshes.stdout);
 

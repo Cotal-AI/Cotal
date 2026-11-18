@@ -198,15 +198,16 @@ journal section below describes.
 A foreground `up` holds the root's maintenance lock only while it starts the stack. A bare
 `cotal down` from another terminal can then stop the stack. On a controller stack, foreground `up`
 sees the completed stop or preserve, prints `Foreground stack released` and exits 0. On the
-retained launcher, foreground `up` prints `Foreground stack released` and exits 0 when the ready
-broker exits cleanly. The notice does not report whether `down` has updated the mesh registry.
+retained launcher, foreground `up` prints `Foreground stack released` and exits 0 when another
+`cotal down` requested the broker stop, including when it had to force the broker to exit. A broker
+that exits cleanly after startup also releases the terminal. The notice does not report whether
+`down` has updated the mesh registry.
 On a controller stack, Ctrl-C or `SIGTERM` in that terminal runs the same guarded stop as bare
 `cotal down` and exits 130 or 143. A signal while the stack is still starting lets the start settle,
-then runs that stop. When the start
-fails, the stop still runs before the start failure is printed. A hangup, such as a closed terminal,
-runs no stop. The command prints that the stack is still running and names `cotal down`, then exits
-129, and the stack keeps running until `cotal down` stops it. A hangup while the stack is still
-starting lets the start settle, prints the same line and exits 129, and leaves what the start left.
+then runs that stop. If startup fails, the stop still runs before that failure is printed. A hangup,
+such as a closed terminal, runs no stop. The command prints that the stack is still running and names
+`cotal down`, then exits 129. The stack keeps running until `cotal down` stops it. A hangup during
+startup lets the start settle, prints the same line and exits 129, and leaves what the start left.
 While a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`,
 and a second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and
 starts nothing. The holding process removes that record as it exits, a hangup included. A holder
@@ -271,10 +272,10 @@ its version on the `Broker executable` line, and `--json` carries them as `resul
 `OPERATION_FAILED`, exit 5, naming that file, its exit code or signal, and its log `.cotal/nats.log`.
 The next step is to read that log, then fix the file or take it off PATH, and run `cotal up` again. A
 broker still running when the wait ends leaves the outcome unconfirmed, `OPERATION_UNKNOWN`, exit 3.
-A foreground `up` on the retained launcher stops its members when its broker exits. A nonzero or
-signalled broker exit ends `up` with exit 5. Its diagnostic names the exit code or signal and says the
-mesh stays recorded only when the registry holds that broker's record. A broker that exits before
-`up` recorded the mesh leaves it unrecorded. The line says so, and its next step is to read the
+A foreground `up` on the retained launcher stops its members when its broker exits. An unexpected
+exit before startup finishes or an unexpected nonzero or signalled exit ends `up` with exit 5. Its
+diagnostic names the exit code or signal and reports whether it found that mesh's registration.
+A broker that exits before `up` records the mesh leaves it unrecorded. The next step is to read the
 output above, then fix the file or take it off PATH, and run `cotal up` again.
 
 

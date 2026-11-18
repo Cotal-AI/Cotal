@@ -11,15 +11,17 @@
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM. An external `down` releases
- * the foreground terminal without a crash diagnostic or a claim about the mesh registration.
+ * the foreground terminal even if it must kill a wedged broker. A broker that exits cleanly
+ * before the retained launcher finishes startup still fails the launch.
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { channelBucket } from "@cotal-ai/core";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, spaceKey, stopReservationPath, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
@@ -57,7 +59,7 @@ function token(path: string): ProcessIdentityRecord | undefined {
   return pin.kind === "match" ? pin.record : undefined;
 }
 
-async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean }): Promise<boolean> {
+async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; exitDuringStartup?: boolean; forceDown?: boolean }): Promise<boolean> {
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
   for (const p of [root, home, mesh, join(mesh, ".cotal"), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
@@ -67,6 +69,12 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
   const space = `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, "--space", space, ...(options.auth ? [] : ["--open", "--no-manager"])];
+  if (options.exitDuringStartup) {
+    // Give the live observation time to catch provisioning even on a busy host.
+    const seed = join(root, "channels.json");
+    writeFileSync(seed, JSON.stringify({ channels: Object.fromEntries(Array.from({ length: 2_000 }, (_, i) => [`seed-${i}`, { description: "Startup seed" }])) }));
+    args.push("--channels", seed);
+  }
   const child: ChildProcess = spawn(process.execPath, args, { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "", timeline = "";
   child.stdout?.on("data", (b: Buffer) => { const text = b.toString(); out += text; timeline += text; });
@@ -74,6 +82,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
   const state = observeOwnedChild(child);
   const owned = new Map<string, ProcessIdentityRecord>();
   const brokerPath = join(mesh, ".cotal/nats.pid");
+  const registryPath = join(home, "machine", "meshes", `space.${spaceKey(space)}.json`);
   const managerPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: mesh, space });
   const deliveryPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root: mesh, space });
   const capabilityPath = canonicalLocalProcessPath(MANAGER_SPARE_CAPABILITY, { root: mesh, space });
@@ -86,13 +95,35 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
     }
   };
   try {
+    if (options.exitDuringStartup) {
+      const store = join(mesh, ".cotal/nats/jetstream");
+      let broker: ProcessIdentityRecord | undefined;
+      await until(() => {
+        ownRecords();
+        if (state.exited || state.error) throw new Error(`CLI exited before stream setup: ${err}`);
+        broker = token(brokerPath);
+        return broker !== undefined && existsSync(store) && readdirSync(store).some((account) =>
+          existsSync(join(store, account, "streams", `KV_${channelBucket(space)}`, "meta.inf")));
+      }, 30_000, () => err.slice(-3000), 5);
+      assert.ok(broker && live(broker), "channel stream was created by the live owned broker"); passed++;
+      assert.equal(existsSync(registryPath), false, "stream setup is still before mesh registration"); passed++;
+      process.kill(broker.pid, "SIGTERM");
+      await waitForOwnedChild(() => state.closed, 30_000, `${root}: startup failure streams drained`);
+      assert.equal(state.code, 5, `broker exit during provisioning is a startup failure: ${err}`); passed++;
+      assert.match(err, /nats-server exited unexpectedly \(code 0\) before the mesh/); passed++;
+      assert.doesNotMatch(err, /Foreground stack released/); passed++;
+      assert.equal(existsSync(registryPath), false, "interrupted startup left no mesh registered"); passed++;
+      assert.equal(await portOpen(port), false, "the interrupted startup's listener closed"); passed++;
+      console.log(`PASS foreground-up-signals ${name}: broker exited 0 during startup, up exited 5 without a release notice`);
+      return true;
+    }
     await until(async () => {
       ownRecords();
       if (state.error) throw state.error;
       if (state.exited) throw new Error(`CLI exited before readiness: ${err}`);
       // Normal signal cells wait for postStart's durable registration, not merely a bound socket.
       // The auth cell deliberately interrupts earlier at the natural manager birth record.
-      return options.auth ? token(managerPath) !== undefined : token(brokerPath) !== undefined && existsSync(join(home, "machine", "meshes", `space.${spaceKey(space)}.json`)) && await portOpen(port);
+      return options.auth ? token(managerPath) !== undefined : token(brokerPath) !== undefined && existsSync(registryPath) && await portOpen(port);
     }, 90_000, () => err.slice(-3000), options.refusal || options.managerCrash ? 2 : 20);
     if (options.managerCrash) {
       const manager = token(managerPath); assert.ok(manager && live(manager));
@@ -168,7 +199,6 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
     }
     if (options.refusal) {
       // Shipped bare down refuses --space/--server. Verify the one private registry record first.
-      const registryPath = join(home, "machine", "meshes", `space.${spaceKey(space)}.json`);
       const registration = JSON.parse(readFileSync(registryPath, "utf8")) as { root?: string; space?: string; server?: string };
       const currentIdentity = statSync(mesh, { bigint: true });
       const currentMarker = statSync(join(mesh, ".cotal"), { bigint: true });
@@ -187,7 +217,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       await waitForOwnedChild(() => state.closed, 3_000, `${root}: external down streams drained`);
       assert.equal(state.code, 0, "external down releases the foreground terminal with exit 0"); passed++;
       assert.match(err, /Foreground stack released: nats-server exited cleanly\./); passed++;
-      assert.doesNotMatch(err, /exited unexpectedly|stays recorded|repair:/); passed++;
+      assert.doesNotMatch(err, /exited unexpectedly|recorded|repair:/); passed++;
       assert.equal(await portOpen(port), false, "own-root down closed listener"); passed++;
       assert.equal([...owned.values()].some(live), false, "own-root down removed exact owned births"); passed++;
       console.log(`${refusalBoundary ? "PASS" : "INCONCLUSIVE"} foreground-up-signals ${name}: native startup-capability refusal=${refusalBoundary}, resumed serving, external down released foreground with exit ${state.code}`);
@@ -195,6 +225,26 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
     }
     ownRecords();
     const broker = token(brokerPath); assert.ok(broker && live(broker));
+    if (options.forceDown) {
+      suspended = broker;
+      process.kill(broker.pid, "SIGSTOP");
+      const downArgs = ["down", "--yes"];
+      assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
+      const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs, 60_000);
+      writeFileSync(join(root, "down.json"), JSON.stringify(down), { mode: 0o600 });
+      assert.equal(down.code, 0, down.err); passed++;
+      assert.ok(down.out.includes(`stopped nats-server (pid ${broker.pid})`), down.out); passed++;
+      await waitForOwnedChild(() => state.closed, 5_000, `${root}: external down streams drained`);
+      assert.equal(state.code, 0, `forced external stop releases the terminal: ${err}`); passed++;
+      assert.match(err, /Foreground stack released: another command requested the nats-server stop\./); passed++;
+      assert.doesNotMatch(err, /Trapped "terminated" signal|exited unexpectedly|recorded|repair:/); passed++;
+      assert.equal(existsSync(stopReservationPath(brokerPath)), false, "down released the stop reservation"); passed++;
+      assert.equal(existsSync(registryPath), false, "external down removed the named registration"); passed++;
+      assert.equal(await portOpen(port), false, "external down closed the listener"); passed++;
+      assert.equal(live(broker), false, "the suspended broker's exact birth is gone"); passed++;
+      console.log(`PASS foreground-up-signals ${name}: external down stopped the suspended broker, and up exited 0`);
+      return true;
+    }
     if (options.crash) process.kill(broker.pid, "SIGKILL");
     else {
       assert.ok(child.pid);
@@ -213,7 +263,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
     assert.equal(await portOpen(port), false, "the owned broker listener closed"); passed++;
     if (options.crash) {
       assert.equal(state.code, 5, "unexpected broker loss remains a failed run"); passed++;
-      assert.match(err, /exited unexpectedly/); passed++;
+      assert.ok(err.includes(`nats-server exited unexpectedly (signal SIGKILL); the mesh "${space}" is still recorded;`), err); passed++;
       assert.doesNotMatch(err, /Foreground stack released/); passed++;
     } else {
       const signalExit = options.signal === "SIGTERM" ? 143 : 130;
@@ -238,7 +288,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
     // The CLI remains the launch owner until it exits. Ask it to stop first, then signal only
     // recorded exact starts born in this private root. Never choose cleanup targets from argv.
     try {
-      // A stopped manager must be resumed before any owner/down cleanup. Never signal a reused PID.
+      // Resume a suspended process before cleanup, and never signal a reused PID.
       if (suspended && live(suspended)) process.kill(suspended.pid, "SIGCONT");
       await finishOwnedChild(child, state, ownRecords, () => owned.values(), root);
     } finally {
@@ -488,6 +538,9 @@ async function controllerHoldCell(): Promise<void> {
 }
 
 console.log(`foreground-up-signals retained evidence: ${base}`);
+await cell("exit-during-startup", { exitDuringStartup: true });
+await cell("forced-external-down", { forceDown: true });
+await cell("crash", { crash: true });
 await checkInheritedPipeCleanup();
 passed += 10;
 await cell("group", {});
@@ -503,7 +556,6 @@ for (let attempt = 1; attempt <= 3 && !refusalObserved; attempt++) {
   refusalObserved = await cell(`auth-refused-${attempt}`, { auth: true, refusal: true });
 }
 assert.ok(refusalObserved, "native unavailable-capability refusal must be observed within three owned attempts, never manufactured");
-await cell("crash", { crash: true });
 await controllerStartupCell();
 await controllerStartupCell(true);
 await controllerHangupCell();

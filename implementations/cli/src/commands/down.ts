@@ -108,6 +108,7 @@ import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { captureSeatCheckpoint } from "../lib/seat-capture.js";
 import { processRecorded, stopInFlight, stopLocalProcess, UnattributableRecord, unattributableRecordSteps } from "../lib/local-process-stop.js";
+import { stopRetainedStackProcess } from "../lib/broker-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
 import { ensureDelivery, removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, deliveryLeaseAfterStop, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
@@ -664,7 +665,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
         // daemon's credential, so the lease is read while the broker still runs.
         if (guarded.mode !== "open") deliveryLease = await deliveryLeaseAfterStop(context.root, context.space, guarded.server);
       }
-      else await stopLocalProcess(component, context);
+      else await stopRetainedStackProcess(component, context);
       if (recorded) stopped.push(component.label);
     } catch (e) {
       allStopped = false;
@@ -1119,7 +1120,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
     if (await isReachable(mesh.server)) await assertControlPlaneQuiesced(mesh.space, mesh.server);
     // rank() keeps auth (40) ahead of the broker (stopLast, 100) within this phase.
     for (const component of ranked.filter(afterQuiescence))
-      await stopLocalProcess(component, context);
+      await stopRetainedStackProcess(component, context);
     // Fail-closed: a component we cannot PROVE stopped (unattributable/unknown pidfile) leaves the
     // cut partial - it must not be silently counted as gone, or `unknown` becomes a "successful cut".
     const stillRunning = all.filter((component) => mayBeRunning(component, context));

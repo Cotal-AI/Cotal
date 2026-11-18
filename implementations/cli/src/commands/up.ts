@@ -2,6 +2,7 @@ import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js"
 import { drainAndClose } from "@cotal-ai/core";
 import { type ChildProcess } from "node:child_process";
 import { spawnBroker } from "../lib/broker-spawn.js";
+import { brokerStopRequested } from "../lib/broker-stop.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { createConnection, createServer, isIP } from "node:net";
@@ -184,12 +185,14 @@ import {
   type ManagerCommitEvidence,
   type ManagerFinalizeEvidence,
   type ProcessOwner,
+  type ProcessIdentityRecord,
   type ListenerProof,
   type StoreIdentity,
   readBrokerPolicy,
   writeBrokerPolicy,
   brokerAccountResolver,
   removePidPair,
+  defaultStartToken,
   writePidPair,
   processesNaming,
   isLoopbackHost,
@@ -2390,10 +2393,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // on POSIX so only this owner receives the interrupt and can finish manager-first teardown
   // before signalling the broker. Keep the child referenced and its output in this terminal.
   // The configuration names a store inside the root relative to it, so the broker runs from the root.
-  const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
+  const root = cotalRoot();
+  const brokerPidPath = join(root, ".cotal", NATS_PIDFILE);
+  const child = spawnBroker(bin, natsArgs, { cwd: root, stdio: "inherit", detached: process.platform !== "win32" });
   let activationFinished = !resumeAttempt;
-  let listenerReady = false;
-  await recordSpawnedListener(child, listenerStartedAt, boundListener);
+  let startupFinished = false;
+  const broker = await recordSpawnedListener(child, listenerStartedAt, boundListener);
   releaseStartupLock();
   child.on("error", (err) => {
     console.error(c.red(`Failed to start nats-server: ${err.message}`));
@@ -2450,7 +2455,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // its folder keeps both, as `cotal down` does, so the name stays the folder's.
   child.on("exit", async (code, signal) => {
     if (failedListeners.has(child)) return;
-    removePidPair(cotalPath(NATS_PIDFILE), String(child.pid));
+    const requested = broker !== undefined && brokerStopRequested(root, brokerPidPath, broker);
+    const clean = code === 0 && startupFinished;
+    removePidPair(brokerPidPath, String(child.pid));
     // One teardown at a time: a stop started while another is in flight is refused the reservation
     // that one holds, so wait for a Ctrl-C teardown already running instead of racing it.
     await teardown;
@@ -2468,15 +2475,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // this broker by design (it is the operator's, and only they remove it), so unrecording it on
       // our exit would delete a registration this process never owned.
       const mine = findMesh(space);
-      if (mine && mine.origin !== "manual" && mine.server === server && mine.root === cotalRoot() && !keepsRegistration(mine)) {
+      if (mine && mine.origin !== "manual" && mine.server === server && mine.root === root && !keepsRegistration(mine)) {
         removeMesh(space);
         if (getCurrent() === space) clearCurrent();
       }
       if (activationFinished) process.exit(stopSignal === "SIGTERM" ? 143 : 130);
-    } else if (code === 0 && listenerReady) {
-      // The broker stopped cleanly. Its exit cannot say who stopped it or whether `down` has
-      // finished updating the registry.
-      stderrLine("", "Foreground stack released: nats-server exited cleanly.", c.dim);
+    } else if (requested || clean) {
+      // The request and the exit prove nothing about whether `down` finished registry cleanup.
+      stderrLine("", code === 0 ? "Foreground stack released: nats-server exited cleanly." : "Foreground stack released: another command requested the nats-server stop.", c.dim);
       if (activationFinished) process.exit(0);
     } else {
       // The record is kept ON PURPOSE: it still names the store this broker opened, so a repair
@@ -2486,28 +2492,24 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // are already on this terminal, above), so there is no `.cotal/nats.log` to name here.
       const detail = signal ? `signal ${signal}` : `code ${code}`;
       const repair = `log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``;
-      // Retention is read from the registry, not assumed: a broker that exits before it first
-      // answers was never recorded, and running the same `up` again only repeats that exit, so its
-      // step is the one a detached start gives. A registry that cannot be read is not claimed
-      // either way, and the read cannot throw past this handler, which still has to exit.
+      // Describe the registry as observed, since a later `down` can still remove the entry. A
+      // broker that was never recorded gets the same early-exit advice as a detached start.
       let outcome: string;
       try {
         const mine = findMesh(space);
-        outcome = mine && mine.server === server && mine.root === cotalRoot()
-          ? `; the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); ${repair}`
+        outcome = mine && mine.server === server && mine.root === root
+          ? `; the mesh "${space}" is still recorded; ${repair}`
           : ` before the mesh "${space}" was recorded; next: ${listenerExitRemedy(natsServer, "the terminal output above")}`;
       } catch {
-        outcome = `; whether the mesh "${space}" stays recorded could not be read; ${repair}`;
+        outcome = `; could not read the registration for "${space}"; ${repair}`;
       }
       stderrLine("✗ ", `nats-server exited unexpectedly (${detail})${outcome}`, c.red);
-      // Preserve the early-exit status mapping. Nonzero or signalled broker exits are failed runs
-      // (5), so `Restart=on-failure` restarts them and the CLI does not return the broker's own code.
-      if (activationFinished) process.exit(code === 0 ? 0 : exitCode("failed", "OPERATION_FAILED"));
+      // A broker exit before startup finishes is a failure even if the broker itself exited 0.
+      if (activationFinished) process.exit(exitCode("failed", "OPERATION_FAILED"));
     }
   });
 
   await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: "the terminal output above", boundListener });
-  listenerReady = true;
   {
     // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once
     // it cannot reach the broker, and a starved host makes a running broker look unreachable, so it can
@@ -2580,6 +2582,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       startupLock,
     );
     activationFinished = true;
+    startupFinished = true;
   }
   await new Promise<void>(() => {});
   } finally {
@@ -4026,24 +4029,29 @@ function reportDegradedControlPlane(why: string): void {
  * and a journal naming the exact process for recovery to adopt or retire. A publish or bind that
  * throws stops the listener. Both launch modes call it right after the spawn.
  */
-async function recordSpawnedListener(child: ChildProcess, startedAt: string, bound?: DetachOpts["boundListener"]): Promise<void> {
-  if (!child.pid) throw new Error("nats-server spawned with no pid");
+async function recordSpawnedListener(child: ChildProcess, startedAt: string, bound?: DetachOpts["boundListener"]): Promise<ProcessIdentityRecord | undefined> {
+  const pid = child.pid;
+  if (!pid) throw new Error("nats-server spawned with no pid");
+  let token: string | undefined;
   try {
-    writePidPair(cotalPath(NATS_PIDFILE), child.pid); // #969/#1238: publish the pair by rename, never torn
+    token = defaultStartToken(pid);
+    writePidPair(cotalPath(NATS_PIDFILE), pid, { tokenAt: () => token }); // #969/#1238: publish the pair by rename, never torn
   } catch (error) {
     // The entry at `nats.pid` may be the one that refused the publish (a directory there fails the
     // rename), so it is left as found: unrecording would read it and throw over this error.
     await stopFailedListener(child, false);
     throw error;
   }
-  if (!bound) return;
-  if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
-  try {
-    bound.onSpawn(child.pid, startedAt);
-  } catch (error) {
-    await stopFailedListener(child);
-    throw error;
+  if (bound) {
+    if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
+    try {
+      bound.onSpawn(pid, startedAt);
+    } catch (error) {
+      await stopFailedListener(child);
+      throw error;
+    }
   }
+  return token === undefined ? undefined : { pid, token };
 }
 
 /**
