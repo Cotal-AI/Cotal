@@ -236,6 +236,12 @@ try {
     lacking.status === 0 && lacking.envelope?.completeness === "complete" && lacking.envelope.warnings.some((w) => w.code === "CHANNEL_NOT_FOUND") && lacking.envelope.result?.replay.length === 0, shown(lacking));
   const fromBob = await run(["history", "--from", "bob", "--json"]);
   check("--from keeps one sender's messages", JSON.stringify(texts(fromBob)) === JSON.stringify(["looks good", "paging ops"]), texts(fromBob));
+  for (const flag of ["--from", "--grep"]) {
+    for (const value of ["", "   "]) {
+      const empty = await run(["history", "general", flag, value, "--json"]);
+      check(`history ${flag} ${JSON.stringify(value)} refuses USAGE_INVALID, exit 1`, empty.status === 1 && empty.envelope?.error?.code === "USAGE_INVALID", shown(empty));
+    }
+  }
   const grep = await run(["history", "--grep", "DEPLOY", "--json"]);
   check("--grep matches text case-insensitively within the window", JSON.stringify(texts(grep)) === JSON.stringify(["deploy started", "deploy finished"]) && grep.envelope?.result?.window.read === 4, { texts: texts(grep), window: grep.envelope?.result?.window });
 
@@ -614,6 +620,10 @@ try {
       made.status === 0 && partial.status === 4 && partial.envelope?.outcome === "partial" && partial.envelope.error?.code === "OPERATION_PARTIAL"
         && /^The purge reported 0 messages removed, but channel metadata removal was not confirmed\./.test(partial.envelope.error.message) && cleaned.status === 0 && removedOf(cleaned) === true,
       { made: shown(made), partial: shown(partial), cleaned: shown(cleaned) });
+    // The command a missing --yes names keeps the --space and --server it was given (#7564).
+    const asked = await run(["channel", "remove", "general", "--purge", "--space", space, "--server", servers, "--json"]);
+    check("channel remove without --yes names a confirming command that keeps --space and --server",
+      asked.envelope?.error?.remedy === `confirm with \`cotal channel remove general --space ${space} --server ${servers} --purge --yes\``, shown(asked));
   }
 
   // Channel policy labels describe each field's source, including explicit values equal to defaults.

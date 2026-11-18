@@ -49,6 +49,7 @@ export interface WindowsDirSecurity {
  *  dictionary carries it readably. Apple documents those contents as not wholly representative of
  *  the on-disk plist and not stable between releases, so an absent field proves nothing. */
 export interface DarwinLaunchdJob {
+  readonly pid?: number;
   readonly label?: string;
   readonly program?: string;
   readonly programArguments?: readonly string[];

@@ -45,6 +45,18 @@ async function waiter(holdMs: number | undefined): Promise<{ code: number | null
 }
 
 try {
+  const { claimUpdateClosureAccess, recordUpdateActivation, deferredUpdateActivation } = await import("../src/update-closure.js");
+  const installation = "/owned/install/dist/cotal.js";
+  const release = claimUpdateClosureAccess();
+  try {
+    recordUpdateActivation(installation, "0.2.0", "Manager work is unknown; restart deferred");
+    assert.equal(deferredUpdateActivation(installation, "0.2.0"), "Manager work is unknown; restart deferred");
+    assert.equal(deferredUpdateActivation(installation, "0.3.0"), undefined);
+    assert.equal(deferredUpdateActivation("/other/install/dist/cotal.js", "0.2.0"), undefined);
+  } finally { release(); }
+  assert.equal(deferredUpdateActivation(installation, "0.2.0"), "Manager work is unknown; restart deferred");
+  recordUpdateActivation(installation, "0.2.0");
+  assert.equal(deferredUpdateActivation(installation, "0.2.0"), undefined);
   const free = await waiter(undefined);
   assert.equal(free.code, 0, free.stderr);
   assert.equal(free.stderr.includes("waiting for"), false, "no holder, no notice");

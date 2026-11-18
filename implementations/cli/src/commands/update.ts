@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
@@ -135,7 +135,9 @@ export interface UpdateRuntime {
   isCurrent?(): boolean;
   reconcile(): Promise<void>;
   /** Preserve native custody of an authenticated automatic update child before reconciliation. */
-  adoptUpdateChild?(): Promise<void>;
+  adoptUpdateChild?(): Promise<boolean | void>;
+  /** The native updater can survive its daemon's restart and verify automatic activation. */
+  automaticGenerationWait?: boolean;
   /** Bring what connectors installed in their harnesses to this release; one line per connector. */
   refreshConnectors(): Promise<readonly string[]>;
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
@@ -454,7 +456,8 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       rt.err(c.red(`✗ global update child is cotal-ai ${current}, expected ${child.target}; refusing to mutate extensions`));
       return 1;
     }
-    try { await rt.adoptUpdateChild?.(); }
+    let independent = false;
+    try { independent = await rt.adoptUpdateChild?.() === true; }
     catch (error) {
       rt.err(c.red(`✗ automatic update custody: ${refusal(error)}; package replacement already occurred; reconciliation was not started and the parent may retry or restore`));
       return 1;
@@ -466,11 +469,9 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     if (journaled) {
       const result = await reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
       if (result !== 0) return result;
-      // The daemon's own update runs inside the daemon's service control group. The restart that
-      // activates this generation stops every process in that group, so this child cannot outlive
-      // it. The journal stays unverified, which holds the daemon on its old generation until the
-      // parent has finished and cleared it.
-      if (rt.env.COTAL_AUTO_UPDATE === "1") return 0;
+      // Only a child whose native custody survived the service boundary can verify activation.
+      // Other automatic helpers retain their existing post-exit activation path.
+      if (rt.env.COTAL_AUTO_UPDATE === "1" && !independent) return 0;
     }
     try {
       const recovery = readUpdateRecovery();
@@ -871,6 +872,16 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       peek = resolveMeshTarget(process.cwd(), { server, space, offline });
     } catch (e) {
       if (!isWorkspaceTargetError(e)) throw e;
+      // Sudo can inspect another account's project without owning its controller records.
+      // The install-wide census already preserves its Manager. Do not borrow that account's
+      // authority or reinterpret its implicit project as this home's selected mesh.
+      if (e.code === "not-started" && typeof e.details.root === "string" && typeof e.details.stackSpace === "string" &&
+          e.details.recordedRoot === undefined && process.getuid &&
+          !["space", "server", "creds", "on"].some(key => typeof flags[key] === "string") &&
+          (() => { const directory = lstatSync(join(e.details.root!, ".cotal")); return directory.isDirectory() && directory.uid !== process.getuid!(); })()) {
+        console.log(`  ${e.details.stackSpace}: controller records in ${e.details.root} belong to another account; leaving its records and processes untouched, continuity not checked`);
+        return "none";
+      }
       // Prepared-only spaces have no registry entry for the gone-root check above.
       // As with a registered gone root, leave its records and processes untouched.
       if (e.code === "not-started" && e.details.rootMissing === true) {
@@ -1040,7 +1051,7 @@ function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
   if (!names.length) return;
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
   try {
-    const result = rt.npm(["install", "--prefix", staging, "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
+    const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
     if (result.status !== 0) throw new Error(`installed extension dependency closure is unavailable: ${failure(result)}`);
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
@@ -1105,11 +1116,14 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
 }
 
 class ReleaseNotAvailable extends Error {}
+class ReleaseDateExcluded extends Error {}
 
 function releaseReadError(result: CommandResult, detail: string): Error {
   if (result.status !== null && !result.error) {
     try {
-      const error = (JSON.parse(result.stdout) as { error?: { code?: unknown } }).error;
+      const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown; detail?: unknown } }).error;
+      if (error?.code === "ETARGET" && [error.summary, error.detail].some(text => typeof text === "string" && /with a date before\b/i.test(text)))
+        return new ReleaseDateExcluded(`${detail}: npm's min-release-age or before setting excludes this release. Adjust that date filter and run \`cotal update --self\` again`);
       if (error?.code === "E404" || error?.code === "ETARGET") return new ReleaseNotAvailable(detail);
     } catch { /* An unstructured failure is not evidence of registry propagation. */ }
   }
@@ -1186,6 +1200,11 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     }
     rt.out(`✓ release archives checked (${((Date.now() - releaseChecksStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
+    if (e instanceof ReleaseDateExcluded) {
+      recordUpdateDeferral(targetVersion, "npm date filter excludes the release");
+      rt.err(c.red(`✗ ${message(e)}. No global install was attempted.`));
+      return 1;
+    }
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
     rt.err(c.red(`✗ cotal-ai@${targetVersion} release is not ready: ${message(e)}. The release is still reaching the registry or registry access failed; no global install was attempted. Check registry access and run \`cotal update --self\` again in a few minutes.`));
     return 1;
@@ -1371,7 +1390,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.err(c.red(`✗ cotal-ai@${targetVersion} installed globally, but its reconcile failed: ${failure(child)}`));
     return await repairReplacement(`reconcile failed: ${failure(child)}`, child.status ?? 1, readUpdateRecovery()?.phase === "verified-ready");
   }
-  if (rt.env.COTAL_AUTO_UPDATE !== "1") {
+  if (rt.env.COTAL_AUTO_UPDATE !== "1" || rt.automaticGenerationWait) {
     try {
       const recovery = readUpdateRecovery();
       if (recovery && recovery.phase !== "verified-ready") writeUpdateRecovery({ ...recovery, installed: targetVersion, phase: "verified-ready" });
@@ -1401,7 +1420,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     if (result.stdout) rt.stdout(result.stdout);
     if (result.status !== 0) return false;
     execution?.verify(version);
-    if (rt.env.COTAL_AUTO_UPDATE !== "1") {
+    if (rt.env.COTAL_AUTO_UPDATE !== "1" || rt.automaticGenerationWait) {
       const recovery = readUpdateRecovery();
       if (recovery && recovery.phase !== "verified-ready") writeUpdateRecovery({ ...recovery, installed: version, phase: "verified-ready" });
       await rt.waitForInstalledGeneration?.(version);
@@ -1605,11 +1624,13 @@ async function runGlobalProcess(
   windowsVerbatimArguments = false,
 ): Promise<CommandResult> {
   const mutation = beginGlobalUpdateChild(root, operation);
+  let cache: string | undefined;
   let published = false;
   let preservePending = false;
   try {
+    cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
     const child = withInstallUmask(() => spawn(file, args, {
-      env,
+      env: { ...env, npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
       // A separate process group keeps terminal interrupts out of npm's live replacement.
       // Keep the ChildProcess referenced and await close; this is not a background update.
       detached: true,
@@ -1647,6 +1668,7 @@ async function runGlobalProcess(
     return { status: null, stdout: "", stderr: "", error: message(e) };
   } finally {
     if (!published && !preservePending) mutation.clear();
+    if (cache) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 

@@ -8,6 +8,7 @@ import { readEndpointInventory } from "../lib/endpoint-inventory.js";
 import { endpointCapabilityGate, isEndpointCapabilityMode, validateEndpointCapabilityArguments } from "../lib/endpoint-capability-gates.js";
 import { describeCmd, invokeCmd, invokeFlags, validateEndpointArguments } from "./describe.js";
 import { canPrompt } from "./meshes-wizard.js";
+import { targetWords } from "../lib/confirmation-required.js";
 import { commitEndpointReference, importEndpointReference, listEndpointReferences, readEndpointReference, referenceName, validateEndpointReference, type EndpointReference, type ReferenceSnapshot } from "../lib/endpoint-references.js";
 
 export const endpointFlags = [...invokeFlags,
@@ -101,7 +102,7 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
     const row = readEndpointReference(space, suppliedName!);
     if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved reference has this full name in the selected space");
     if (!args.values.yes) {
-      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("forgetting a saved reference outside interactive input requires --yes", { target: { space, name: row.name }, remedy: `confirm with \`cotal endpoint remove ${row.name} --yes\`` });
+      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("forgetting a saved reference outside interactive input requires --yes", { target: { space, name: row.name }, remedy: `confirm with \`cotal endpoint remove ${row.name}${targetWords(args.values)} --yes\`` });
       const answer = await prompts.confirm({ message: `Forget ${oneLine(row.name)} in ${oneLine(space)}? No endpoint, process or credential will be removed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) { writeResult(presentation, { command: "endpoint", target: { space, name: row.name }, result: { kind: "reference-removal", removed: false }, noOp: true }, () => ({ sections: [{ title: "Reference kept", blocks: [{ kind: "lines", lines: ["No local record or remote resource was changed."] }] }] })); return; }
     }

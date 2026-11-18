@@ -47,7 +47,8 @@ import { CommandFailure, spaceSegment } from "@cotal-ai/workspace";
 import { mkSecretDir } from "@cotal-ai/core";
 import type { DaemonPaths } from "../daemon/endpoint.js";
 import { assertScheduledEntry, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
-import { launchAgentLabel, launchAgentService, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
+import { launchAgentLabel, launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
+import { assertServiceRepairPair, sourceDigest, type ServiceRepairIntent } from "../daemon/service-repair.js";
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
 
 import { recoverPausedTask } from "../daemon/restart-recovery.js";
@@ -100,6 +101,27 @@ const root = realpathSync.native(mkdtempSync(join(tmpdir(), "dni-")));
 const savedHome = process.env.HOME;
 try {
   const uid = process.getuid?.();
+  {
+    const executable = join(root, "program & test");
+    const source = `<key>ProgramArguments</key><array><string>${xmlText(executable)}</string></array>`;
+    const unitPath = join(root, "repair.plist");
+    writeFileSync(unitPath, source);
+    const receipt: UnitReceipt = { v: 1, mechanism: "launchd-agent", unit: "ai.cotal.daemon", unitPath, unitSha256: sourceDigest(source), installedAt: "2026-11-17T00:00:00Z" };
+    check("repair distinguishes a genuinely missing program", missingLaunchAgentProgram(receipt));
+    writeFileSync(executable, "fixture");
+    check("repair leaves an existing program alone", !missingLaunchAgentProgram(receipt));
+    rmSync(executable); mkdirSync(executable);
+    check("repair refuses a non-file program", code(() => missingLaunchAgentProgram(receipt)) === "CONFLICT");
+    rmSync(executable, { recursive: true });
+    const nextSource = source.replace("program &amp; test", "new-program");
+    const intent: ServiceRepairIntent = { v: 1, receipt, previousSource: source, nextSource, enabled: false, argv: [executable, "/cotal.js", "daemon", "serve"], version: "1.2.3", hostedSpaces: [], phase: "prepared" };
+    const nextReceipt = { ...receipt, unitSha256: sourceDigest(nextSource) };
+    for (const selectedReceipt of [receipt, nextReceipt]) for (const selectedSource of [source, nextSource]) {
+      check("repair resumes either recorded source/receipt crash state", code(() => assertServiceRepairPair(intent, selectedReceipt, selectedSource)) === "none");
+    }
+    check("repair refuses a changed source", code(() => assertServiceRepairPair(intent, receipt, source + "changed")) !== "none");
+    check("repair refuses a changed receipt", code(() => assertServiceRepairPair(intent, { ...receipt, installedAt: "changed" }, source)) !== "none");
+  }
   const node = "/opt/cotal/1.2.3/bin/node";
   const bootstrap = fileURLToPath(new URL("../daemon-cwd.js", import.meta.url));
   const argv = [node, "--max-semi-space-size=1", "/opt/cotal/1.2.3/lib/cotal.js", "daemon", "serve", "--daemon-home", "/Users/a b/&<home>"];
@@ -719,7 +741,7 @@ try {
       const configFile = join(dir, "context.json"); writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
       for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
       const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
-      Object.assign(env, { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: `${join(dir, "native")}:/usr/local/bin:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
+      Object.assign(env, { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: `${join(dir, "native")}:/usr/local/bin:/usr/bin:/bin:${(process.env.PATH ?? "").split(":").filter(path => path.startsWith("/")).join(":")}`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
       const invoke = (verb: string, home: string | undefined, flags: string[] = []) => {
         const child = spawnSync(process.execPath, [cli, "daemon", verb, ...(home ? ["--daemon-home", home] : []), ...flags], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
         if (child.error || child.signal) throw new Error(`N6 ${verb} did not exit normally`);
@@ -728,7 +750,7 @@ try {
       const call = (verb: string, home: string | undefined, flags: string[] = [], plain = false) => {
         const child = invoke(verb, home, [...flags, plain ? "--plain" : "--json"]);
         const doc = (plain ? {} : JSON.parse(child.stdout)) as { outcome?: string; result?: { state: string; unitPath: string; unit?: string; alreadyInstalled?: boolean }; error?: { code: string; remedy?: string } };
-        return { status: child.status, doc, out: child.stdout };
+        return { status: child.status, doc, out: child.stdout, err: child.stderr };
       };
       const effects = (): number => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { operation: string }).filter((c) => !["directory-read", "linger-read"].includes(c.operation)).length : 0;
       const home = kind === "default" || kind === "unrecorded-default" ? undefined : a;
@@ -762,7 +784,7 @@ try {
         continue;
       }
       const installed = call("install", home, [], true);
-      if (installed.status !== 0) throw new Error(`N6 ${kind} install fixture refused ${JSON.stringify(installed.doc)}`);
+      if (installed.status !== 0) throw new Error(`N6 ${kind} install fixture refused: exit=${installed.status} stdout=${installed.out} stderr=${installed.err}`);
       const receipt = JSON.parse(readFileSync(receiptFile, "utf8")) as UnitReceipt;
       if (kind === "lost-source-stop") {
         rmSync(receiptFile);
