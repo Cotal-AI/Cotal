@@ -1,5 +1,13 @@
 name: Deleted macOS app daemon measurement
 on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Measurement mode (all retains the existing signed-app matrix)
+        type: choice
+        options: [preserving-self-update, all]
+        default: preserving-self-update
+        required: true
   push:
     branches:
       - measure/mac-app-deleted-daemon
@@ -159,7 +167,7 @@ jobs:
       max-parallel: 1
       fail-fast: false
       matrix:
-        mode: [status, install, disabled, unreadable-source, self-update, unreadable-manager, occupied-manager, crash-prepared, crash-published, crash-prepared-mismatch, crash-prepared-concurrent, crash-prepared-changed-source]
+        mode: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.mode == 'preserving-self-update' && '["preserving-self-update"]' || '["status","install","disabled","unreadable-source","self-update","unreadable-manager","occupied-manager","crash-prepared","crash-published","crash-prepared-mismatch","crash-prepared-concurrent","crash-prepared-changed-source"]') }}
     steps:
       - uses: actions/checkout@v6
         with:

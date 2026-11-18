@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, realpathSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 
 assert.equal(process.platform, 'darwin');
 assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
-assert(['refs/heads/measure/mac-app-deleted-daemon', 'refs/heads/fix/macos-deleted-app-service', 'refs/heads/fix/macos-missing-program-postcut'].includes(process.env.GITHUB_REF));
+assert(['refs/heads/measure/mac-app-deleted-daemon', 'refs/heads/fix/macos-deleted-app-service', 'refs/heads/fix/macos-missing-program-postcut', 'refs/heads/measure/macos-preserving-self-update'].includes(process.env.GITHUB_REF));
 const root = join(process.env.RUNNER_TEMP, 'mac-app-deleted-daemon');
 const output = join(root, 'evidence');
 mkdirSync(output, { recursive: true, mode: 0o700 });
@@ -62,15 +62,16 @@ function ok(row) { assert.equal(row.timedOut, false, row.label); assert.equal(ro
 function body(row) { return JSON.parse(ok(row).stdout).result; }
 const npm = (label, args, options) => call(label, process.env.NPM_BIN, args, options);
 async function installArchive(label, version, prefix, callEnv = env) {
-  const metadata = JSON.parse(ok(await npm(`${label} archive metadata`, ['view', `cotal-ai@${version}`, 'dist', '--json'])).stdout);
+  const official = preserving ? ['--registry=https://registry.npmjs.org/'] : [];
+  const metadata = JSON.parse(ok(await npm(`${label} archive metadata`, ['view', `cotal-ai@${version}`, 'dist', '--json', ...official])).stdout);
   assert.match(metadata.integrity, /^sha512-[A-Za-z0-9+/=]+$/);
-  const packed = JSON.parse(ok(await npm(`${label} verified download`, ['pack', `cotal-ai@${version}`, '--pack-destination', root, '--json'])).stdout);
+  const packed = JSON.parse(ok(await npm(`${label} verified download`, ['pack', `cotal-ai@${version}`, '--pack-destination', root, '--json', ...official])).stdout);
   assert.equal(packed.length, 1);
   assert.match(packed[0].filename, /^cotal-ai-[0-9.]+\.tgz$/);
   const archive = join(root, packed[0].filename);
   assert.equal(`sha512-${createHash('sha512').update(readFileSync(archive)).digest('base64')}`, metadata.integrity);
   report[`${label}Archive`] = { version, ...metadata, archiveSha256: createHash('sha256').update(readFileSync(archive)).digest('hex') };
-  ok(await npm(`${label} official CLI install`, ['install', '--global', '--prefix', prefix, archive], { callEnv, timeout: 600000 }));
+  ok(await npm(`${label} official CLI install`, ['install', '--global', '--prefix', prefix, archive, ...official], { callEnv, timeout: 600000 }));
 }
 const bundledNode = join(app, 'Contents/MacOS/cotal-node');
 const bundledEntry = join(app, 'Contents/Resources/runtime/dist/cotal.js');
@@ -83,10 +84,12 @@ const old = (label, args) => call(label, process.execPath, [oldEntry, ...args]);
 const fresh = (label, args) => call(label, process.execPath, [freshEntry, ...args]);
 let candidateEntry = process.env.DESKTOP_REPAIR_CLI;
 const repairCommand = process.env.DESKTOP_REPAIR_COMMAND ?? 'status';
-assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager', 'occupied-manager', 'crash-prepared', 'crash-published', 'crash-prepared-mismatch', 'crash-prepared-concurrent', 'crash-prepared-changed-source'].includes(repairCommand), 'unsupported repair entry command');
-if (!candidateEntry && repairCommand !== 'self-update' && !repairCommand.startsWith('crash-')) assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
+const preserving = repairCommand === 'preserving-self-update';
+const selfUpdate = repairCommand === 'self-update' || preserving;
+assert(['preserving-self-update', 'status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager', 'occupied-manager', 'crash-prepared', 'crash-published', 'crash-prepared-mismatch', 'crash-prepared-concurrent', 'crash-prepared-changed-source'].includes(repairCommand), 'unsupported repair entry command');
+if (!candidateEntry && !selfUpdate && !repairCommand.startsWith('crash-')) assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
 if (repairCommand.startsWith('crash-')) assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE, 'crash proof requires a real guarded installed source closure');
-if (repairCommand === 'self-update') assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE && process.env.DESKTOP_REPAIR_TARGET_CLOSURE, 'self-update proof requires two real guarded installed package closures');
+if (selfUpdate) assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE && process.env.DESKTOP_REPAIR_TARGET_CLOSURE, 'self-update proof requires two real guarded installed package closures');
 report.repairCommand = repairCommand;
 let candidateEnv = env;
 const candidate = (label, args) => call(label, process.execPath, [candidateEntry, ...args], { callEnv: candidateEnv });
@@ -116,7 +119,8 @@ async function deleteOwnedApp() {
   const current = statSync(app);
   assert.equal(current.dev, copiedApp.dev);
   assert.equal(current.ino, copiedApp.ino);
-  ok(await call('verify copied bundle before removal', '/usr/bin/codesign', ['--verify', '--deep', '--strict', app]));
+  if (preserving) verifyAppShape();
+  else ok(await call('verify copied bundle before removal', '/usr/bin/codesign', ['--verify', '--deep', '--strict', app]));
   const retired = `/Applications/.cotal-measure-retired-${process.env.GITHUB_RUN_ID}.app`;
   assert(!existsSync(retired));
   renameSync(app, retired);
@@ -124,6 +128,17 @@ async function deleteOwnedApp() {
   assert.equal(held.dev, copiedApp.dev);
   assert.equal(held.ino, copiedApp.ino);
   rmSync(retired, { recursive: true });
+}
+let appShapeFiles;
+function verifyAppShape() {
+  assert(appShapeFiles, 'app-shaped provenance must be recorded');
+  for (const file of appShapeFiles) {
+    assert(realpathSync(file.path).startsWith(`${app}/`), 'app-shaped files must remain inside their owned tree');
+    const current = statSync(file.path);
+    assert.equal(current.dev, file.dev);
+    assert.equal(current.ino, file.ino);
+    assert.equal(createHash('sha256').update(readFileSync(file.path)).digest('hex'), file.sha256);
+  }
 }
 let heldProcesses = [];
 let mounted = false;
@@ -158,6 +173,28 @@ try {
   assert(!existsSync(plist), 'refuse to replace a LaunchAgent');
   const absent = await call('preflight service absent', '/bin/launchctl', ['print', target]);
   assert.equal(absent.exit, 113, 'service absence must be confirmed, not an unreadable GUI domain');
+  if (preserving) {
+    // v0.163.2 has no signed app asset. This is an attributed npm runtime, not a signed app.
+    const prefix = join(root, 'app-runtime-download');
+    await installArchive('app-shaped historical runtime', '0.163.2', prefix);
+    mkdirSync(join(app, 'Contents/Resources'), { recursive: true, mode: 0o700 });
+    mkdirSync(join(app, 'Contents/MacOS'), { mode: 0o700 });
+    copiedApp = { dev: statSync(app).dev, ino: statSync(app).ino };
+    renameSync(join(prefix, 'lib/node_modules/cotal-ai'), join(app, 'Contents/Resources/runtime'));
+    copyFileSync(process.execPath, bundledNode);
+    chmodSync(bundledNode, 0o700);
+    const census = directory => readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+      const path = join(directory, entry.name);
+      assert(realpathSync(path).startsWith(`${app}/`), `app-shaped runtime must not escape its owned tree: ${path}`);
+      return entry.isDirectory() ? census(path) : [path];
+    });
+    appShapeFiles = census(app).map(path => {
+      const { dev, ino } = statSync(path);
+      return { path, dev, ino, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') };
+    });
+    report.appShape = { provenance: 'Official integrity-verified npm cotal-ai@0.163.2 runtime and copied runner Node executable. No signed app claim.', nodeSource: process.execPath, files: appShapeFiles };
+    verifyAppShape();
+  } else {
   // Public release metadata was independently read before this measurement was dispatched.
   const asset = { id: 751469545, name: 'Cotal_0.164.16_aarch64.dmg', digest: 'sha256:ca71e976fb5dd067cbb6cf275099a58798cc5c21b1b0958536cb4bcdd8f1cc8b', browser_download_url: 'https://github.com/Cotal-AI/Cotal/releases/download/v0.164.16/Cotal_0.164.16_aarch64.dmg' };
   report.release = { tag: 'v0.164.16', assetId: asset.id, name: asset.name, digest: asset.digest, url: asset.browser_download_url };
@@ -169,12 +206,14 @@ try {
   ok(await call('install released app', '/usr/bin/ditto', [join(mount, 'Cotal.app'), app])); copiedApp = { dev: statSync(app).dev, ino: statSync(app).ino };
   ok(await call('detach released image', '/usr/bin/hdiutil', ['detach', mount])); mounted = false;
   ok(await call('verify released signature', '/usr/bin/codesign', ['--verify', '--deep', '--strict', app]));
+  }
   assert(existsSync(bundledNode) && existsSync(bundledEntry));
   report.bundledVersion = ok(await bundled('released bundled version', ['--version'])).stdout;
-  assert.match(report.bundledVersion, /0\.164\.16/);
+  assert.match(report.bundledVersion, preserving ? /0\.163\.2/ : /0\.164\.16/);
   const cutoff = { ...env, npm_config_before: '2026-11-16T19:38:00.000Z' };
-  await installArchive('historical', '0.164.16', oldPrefix, cutoff);
-  if (repairCommand === 'self-update') {
+  await installArchive('historical', preserving ? '0.163.2' : '0.164.16', oldPrefix, preserving ? env : cutoff);
+  if (preserving) await installArchive('published floor', '0.167.0', freshPrefix);
+  if (selfUpdate) {
     const { candidatePairRegistry } = await import(pathToFileURL(resolve('scripts/candidate-pair-registry.mjs')).href);
     candidateRegistry = await candidatePairRegistry(resolve(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE), resolve(process.env.DESKTOP_REPAIR_TARGET_CLOSURE));
     assert.equal(candidateRegistry.identity.source, process.env.GITHUB_SHA, 'both guarded closures must bind to this exact product source');
@@ -255,6 +294,35 @@ try {
   const before = body(await bundled('baseline daemon status', ['daemon', 'status', '--json']));
   const manager = before.managers.find(row => row.instanceId === setup.manager.instanceId);
   assert.equal(manager.state, 'answering');
+  let preservingProbe;
+  const assertPreserving = async label => {
+    const row = ok(await call(label, process.execPath, [preservingProbe]));
+    const observed = JSON.parse(row.stdout);
+    assert.equal(observed.daemon.version, '0.163.2');
+    assert.equal(observed.daemon.pid, before.pid);
+    const evidence = observed.daemon.update?.restartEvidence;
+    assert.equal(evidence?.prepared, true);
+    assert.equal(evidence.managers.length, 1);
+    assert(evidence.managers.every(row => row.space === report.participant.space && row.seats === 0 && row.fenced === true));
+    assert.equal(observed.manager.ok, false);
+    assert.match(observed.manager.error ?? '', /manager is in preserving mode/);
+    for (const held of heldProcesses) assert.equal(processBirth(held.pid), held.birth);
+    return observed;
+  };
+  if (preserving) {
+    const runtime = join(oldPrefix, 'lib/node_modules/cotal-ai');
+    const moduleUrl = path => JSON.stringify(pathToFileURL(join(runtime, path)).href);
+    const prepare = join(root, 'old-prepare-restart.mjs');
+    writeFileSync(prepare, `import{managerViaDaemon}from${moduleUrl('dist/daemon/client.js')};import{daemonPaths}from${moduleUrl('dist/daemon/endpoint.js')};import{processBirth}from${moduleUrl('dist/daemon/lifetime.js')};console.log(JSON.stringify({pid:process.pid,birth:processBirth(process.pid),result:await managerViaDaemon({paths:daemonPaths()},{op:'managers-prepare-restart'})}));`);
+    const prepared = JSON.parse(ok(await call('old authenticated short-lived restart preparer', process.execPath, [prepare])).stdout);
+    assert(Number.isSafeInteger(prepared.pid) && prepared.pid > 1);
+    assert.equal(processBirth(prepared.pid), undefined, 'preparer must exit before repair, not own a live update');
+    assert(prepared.birth, 'old preparer must report its own native birth');
+    report.preparer = { pid: prepared.pid, birth: prepared.birth, exited: true, exit: 0, result: prepared.result };
+    preservingProbe = join(root, 'old-public-preserving-probe.mjs');
+    writeFileSync(preservingProbe, `import{queryDaemon}from${moduleUrl('dist/daemon/client.js')};import{daemonPaths}from${moduleUrl('dist/daemon/endpoint.js')};import{resolveControlTarget}from${moduleUrl('node_modules/@cotal-ai/workspace/dist/index.js')};import{askManager}from${moduleUrl('node_modules/@cotal-ai/workspace/dist/control/index.js')};import{withIdpSessionDir}from${moduleUrl('node_modules/@cotal-ai/auth/dist/index.js')};const d=await queryDaemon({paths:daemonPaths()});if(!d.ok)throw Error(JSON.stringify(d));const m=await withIdpSessionDir(${JSON.stringify(cotalHome)},async()=>{const t=await resolveControlTarget({space:${JSON.stringify(report.participant.space)}},'control-caller-privileged',${JSON.stringify(manager.instanceId)},{onRefusal:'throw',readOnly:true});const r=await askManager({versionSkew:t=>t,roster:async()=>[]},t.space,t.server,'managerStatus',undefined,t.auth,'owner',5000,{instanceId:${JSON.stringify(manager.instanceId)}});return r});console.log(JSON.stringify({daemon:d.result,manager:m}));`);
+    report.preservingBeforeDelete = await assertPreserving('old public preserving state before deletion');
+  }
   const baseline = await snapshot('before-delete', before.pid, manager.pid);
   for (const row of [baseline.daemon, baseline.manager]) ok(row.process);
   assert.equal(createHash('sha256').update(readFileSync(plist)).digest('hex'), report.service.sha256);
@@ -268,6 +336,28 @@ try {
       entrySha256: createHash('sha256').update(readFileSync(candidateEntry)).digest('hex') };
     const sessionPath = join(cotalHome, 'idp-sessions.json');
     const stateBefore = readFileSync(sessionPath, 'utf8');
+    if (preserving) {
+      report.preservingAfterDelete = await assertPreserving('old public preserving state after original paths removed');
+      assert(!existsSync(bundledNode) && !existsSync(bundledEntry));
+      const { spaceSegment } = await import(pathToFileURL(resolve('packages/workspace/dist/index.js')).href);
+      const hostingPath = join(cotalHome, 'daemon', spaceSegment(report.participant.space), 'manager-host.json');
+      const protectedFiles = [plist, receiptPath, sessionPath, hostingPath, oldEntry, freshEntry];
+      const protectedBytes = protectedFiles.map(file => readFileSync(file));
+      const nativeBefore = ok(await call('published floor native before', '/bin/launchctl', ['print', target])).stdout;
+      candidateRegistry.activateTarget();
+      const refused = await call('published 0.167.0 plain update --self floor refusal', process.execPath, [freshEntry, 'update', '--self'], { callEnv: { ...candidateEnv, npm_config_prefix: freshPrefix } });
+      assert(!refused.timedOut && !refused.signal, 'a timeout is not a floor refusal');
+      assert.notEqual(refused.exit, 0);
+      assert.match(refused.stdout + refused.stderr, /staged pre.?install check refused/i);
+      assert.match(refused.stdout + refused.stderr, /manager is in preserving mode; hold age .+; seats 0; update owner /);
+      assert.match(refused.stdout + refused.stderr, /No hold was released by this check/);
+      assert.match(refused.stdout + refused.stderr, /no packages changed/i);
+      for (const [index, file] of protectedFiles.entries()) assert.deepEqual(readFileSync(file), protectedBytes[index], `published floor changed ${file}`);
+      const nativeAfter = ok(await call('published floor native after', '/bin/launchctl', ['print', target])).stdout;
+      assert.equal(/^\s*pid = (\d+)\s*$/m.exec(nativeAfter)?.[1], /^\s*pid = (\d+)\s*$/m.exec(nativeBefore)?.[1]);
+      report.publishedFloorRefusal = { version: '0.167.0', exit: refused.exit, unchanged: true, floor: 'installed staged preinstall preserving refusal', target: candidateRegistry.identity.targetVersion };
+      report.preservingImmediatelyBeforeCandidate = await assertPreserving('old public preserving immediately before candidate update');
+    }
     if (repairCommand.startsWith('crash-')) {
       await ownedService();
       const { interruptRepairAtPhase } = await import('./mac-repair-interruption.mjs');
@@ -452,7 +542,7 @@ try {
         save();
       }
     }
-    if (repairCommand === 'self-update') {
+    if (selfUpdate) {
       candidateRegistry.activateTarget();
       const update = ok(await candidate('installed candidate update --self repairs missing program first', ['update', '--self']));
       const updateReceipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
@@ -647,10 +737,10 @@ try {
       assert.equal(sourceDigest(readFileSync(report.interruptedRepair.hostingPath, 'utf8')), report.interruptedRepair.hostingSha256);
       assert(!existsSync(join(cotalHome, 'daemon/service-repair.json')), 'same-candidate public retry must clear the actual interrupted intent');
     }
-    if (repairCommand === 'self-update') assert.equal(repaired.pid, report.selfUpdateRepairAcceptance.pid, 'status must observe the native lifetime already started by self-update');
+    if (selfUpdate) assert.equal(repaired.pid, report.selfUpdateRepairAcceptance.pid, 'status must observe the native lifetime already started by self-update');
     if (repairCommand === 'install') assert.equal(repaired.pid, report.installRepairAcceptance.pid, 'status observes the already repaired native lifetime');
     assert.notEqual(repaired.pid, before.pid, 'repair starts a fresh daemon lifetime');
-    assert.equal(repaired.version, repairCommand === 'self-update' ? candidateRegistry.identity.targetVersion : report.candidate.version.split(/\r?\n/)[0].replace('cotal-ai ', ''));
+    assert.equal(repaired.version, selfUpdate ? candidateRegistry.identity.targetVersion : report.candidate.version.split(/\r?\n/)[0].replace('cotal-ai ', ''));
     assert(repaired.managers.some(row => row.space === report.participant.space && row.state === 'answering'));
     assert.equal(readFileSync(sessionPath, 'utf8'), stateBefore, 'repair preserves daemon sign-in bytes');
     const currentReceipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
