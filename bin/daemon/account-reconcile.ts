@@ -6,6 +6,7 @@ import type { ServiceConnections } from "./service.js";
 import type { HostedManager } from "./protocol.js";
 import { findMesh, readMeshRegistry } from "@cotal-ai/workspace";
 import { connectCheck } from "./connect.js";
+import { knownMachineAccounts } from "@cotal-ai/auth";
 import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
 
 interface ManagedSpace { owner: string; id: string; revision: number; removedAt?: number }
@@ -82,7 +83,16 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
     for (const row of snapshot.spaces) {
       signal?.throwIfAborted();
       const prior = saved.spaces[row.slug];
-      if (prior && prior.owner !== account.ownerKey) { refusals.set(row.slug, "another account owns the local space connection"); continue; }
+      if (prior && prior.owner !== account.ownerKey) {
+        const holder = knownMachineAccounts(home).find(item => item.ownerKey === prior.owner);
+        // A sign-in address is not an identity root. Only the retained issuer and subject match.
+        if (holder && holder.issuer === account.issuer && holder.sub === account.sub) {
+          prior.owner = account.ownerKey; persist(); refusals.delete(row.slug); retryAt.delete(row.slug);
+        } else {
+          refusals.set(row.slug, `The local space connection is held by ${holder?.idpUrl ?? "an unknown account"}.`);
+          continue;
+        }
+      }
       if (prior?.removedAt !== undefined && (!fresh || bindingRevisions[row.id]! <= prior.removedAt)) continue;
       if (prior && prior.removedAt === undefined && !findMesh(row.slug)) {
         prior.removedAt = prior.revision; persist();
