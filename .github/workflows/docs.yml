@@ -6,7 +6,9 @@ name: Docs
 #  - pull request touching docs sources   -> build check only; the built site is attached to
 #                                             the run as the `docs-site` artifact
 #  - release published                    -> immutable snapshot on a branch alias
-#                                             (<tag>.cotal-docs.pages.dev)
+#                                             (the tag with every character outside
+#                                             letters, digits and `-` turned into `-`, so
+#                                             v1.2.3 is v1-2-3.cotal-docs.pages.dev)
 # Needs repo secrets CLOUDFLARE_API_TOKEN (Pages:Edit + Account Settings:Read)
 # and CLOUDFLARE_ACCOUNT_ID. Only the `docs` job reads them, and it never runs for a pull
 # request: a pull request's own build scripts run in `pull-request-build`, which holds no secret.
@@ -66,8 +68,8 @@ on:
   release:
     types: [published]
 
-# A new push to a PR supersedes the preview build already running for it; main and release builds
-# queue behind each other, because a deploy result is the record for that commit.
+# A new push to a PR supersedes the build already running for it. Runs for main queue in order,
+# and so do runs for one release tag, because a deploy result is the record for that commit.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -152,7 +154,7 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           if [ "$EVENT" = "release" ]; then
-            branch=$(echo "$TAG" | tr -c 'a-zA-Z0-9-' '-' | sed 's/-*$//')
+            branch=$(echo "$TAG" | tr -c 'a-zA-Z0-9-' '-' | sed 's/^-*//; s/-*$//')
             # The production branch is deployed only by a push to main. A tag that sanitizes to
             # it, or to nothing, is refused.
             if [ -z "$branch" ] || [ "$(printf %s "$branch" | tr '[:upper:]' '[:lower:]')" = "main" ]; then
