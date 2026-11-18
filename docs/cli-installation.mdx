@@ -406,7 +406,12 @@ used. A missing or redirected global bin link, a conflicting `npm_config_prefix`
 root that disagrees with that prefix refuses before installation. Local/npx copies and source
 checkouts still install a separate global copy; Windows keeps npm's configured global root.
 
-If that installation is not writable by your account, the update refuses before changing it.
+From 0.167.1, self-update restores owner write permission on user-owned package, `dist`,
+`node_modules` and `lib` directories before checking release archives. It leaves file modes and
+other accounts' directories unchanged. If write access still fails, it names the user-owned
+directory to repair without recommending sudo. An unwritable `node_modules` directory is checked
+before downloading archives or reserving the update lock.
+If an installation owned by another account is not writable, the update refuses before replacing it.
 For a root-owned npm installation, have an administrator run the printed
 `sudo npm install -g --prefix '<install-prefix>' cotal-ai@latest` command.
 Then run `cotal update` as your normal account, without sudo, to reconcile your connectors and
