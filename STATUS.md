@@ -1,6 +1,6 @@
 # macOS repair acceptance status
 
-Updated 2026-11-18 at 02:42Z.
+Updated 2026-11-18 at 03:12Z.
 
 ## Prepared first native run
 
@@ -24,6 +24,6 @@ Concurrent-operation assertions cover the actual suspended repair child, protect
 
 ## Serialized publication authority
 
-Core `176546fd` authorizes one PR 7392 push **only after** PR 6411 automatic Desktop run `44222918870` is terminal. That run is still active/queued as of this update. Its render coordinate passed 312 static and 40 motion cases, but that does not satisfy the whole-run terminal condition.
+Core `176546fd` authorized one PR 7392 push after PR 6411 run `44222918870` ends. Core `37c57459` subsequently tightened this gate: the Intel cancellation was a lost runner, core will rerun failed jobs once, and PR 7392 must wait for that rerun to end as well. Initial attempt 1 is now terminal cancelled, with render, Linux, Windows, Mac15 ARM and Mac26 ARM successful, and only Intel cancelled before capture. Core was notified at 03:08Z. At 03:11Z the API still showed attempt 1, with no retry started.
 
-No repair push, workflow dispatch or native mode execution has occurred. Once the desktop run is terminal, validate the final source and push once. Report the repair run ID and results with a core mention. No duplicate dispatch or rerun is authorized. Taskbar naming in the separate desktop proof remains unproven and unwaived.
+No repair push, workflow dispatch, rerun or native mode execution has occurred. Only after the core-owned retry is terminal may the validated repair head be pushed once. Core `86074c80` instructs the lane to report both automatic run IDs immediately: the dedicated builder workflow and the ordinary Desktop apps workflow. Core, not this lane, will cancel the ordinary Desktop workflow to preserve capacity. No duplicate dispatch or agent cancellation is authorized. Taskbar naming remains unproven and unwaived.
