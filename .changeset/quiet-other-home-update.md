@@ -5,6 +5,6 @@
 "@cotal-ai/auth": patch
 ---
 
-Software updates continue when this home has no credentials for another running local Manager's space.
+Software updates leave Managers owned by another home running without requiring that home's continuity or credentials.
 
-The update names the Manager's space, instance and root and leaves it running its loaded version until it is restarted from its own home. Other continuity refusals remain unchanged.
+The update names the proven Manager coordinates and leaves its loaded version running until it is restarted from its own home. For a Manager registered in the calling home, only missing credentials become nonblocking. Other failures remain refusals. Connector sets stay until the authenticated update collector can prove they are unused.
