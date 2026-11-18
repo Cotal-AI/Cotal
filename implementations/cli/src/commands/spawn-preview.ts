@@ -2,7 +2,7 @@ import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { agentFilePath, parseAgentFileSource, token, type AgentDef, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { preflightRuntime } from "../ext-loader.js";
 import { callerHarness, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
@@ -97,8 +97,10 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     } else if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       const missing = missingPersona(site, ref, from, path);
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { ...target, path }, ...(missing.remedy ? { remedy: missing.remedy } : {}) });
+    } else if (error instanceof PersonaSourceError) {
+      throw new CommandFailure("refused", "SCHEMA_INVALID", error.message, { target: { ...target, path }, ...(error.remedy ? { remedy: error.remedy } : {}) });
     } else {
-      throw new CommandFailure("refused", "SCHEMA_INVALID", "the local launch persona could not be read and validated; no contents were echoed and nothing was allocated", { target: { ...target, path }, remedy: "use a native persona file; a Mesh manifest belongs to `cotal team deploy <file>`" });
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path}`, { target: { ...target, path } });
     }
   }
   let cwd: string;

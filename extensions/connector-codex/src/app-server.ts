@@ -42,6 +42,18 @@ import WebSocket from "ws";
 import type { PresenceCondition } from "@cotal-ai/core";
 import { codexCondition } from "./agui-map.js";
 
+/** Non-secret launch attribution variables a seat's shell needs for `cotal stop --self` and
+ *  seat-attributed CLI control commands (#7594). */
+export const SEAT_ATTRIBUTION_ENV: ReadonlySet<string> = new Set([
+  "COTAL_SPACE",
+  "COTAL_MANAGER_INSTANCE",
+  "COTAL_NAME",
+  "COTAL_ID",
+  "COTAL_LIFECYCLE_UID",
+  "COTAL_ACCEPTED_TOKEN",
+  "COTAL_HOME",
+]);
+
 /** A thread item as the notifications carry it — only the fields the host reads. */
 export interface ThreadItem {
   type?: string;
@@ -318,12 +330,12 @@ export class AppServerDriver extends EventEmitter {
       tokenFile,
     ];
     for (const [k, v] of this.opts.configOverrides) args.push("-c", `${k}=${v}`);
-    // The child inherits the host's (already allow-listed) env, minus COTAL_* — the codex
-    // process and anything it spawns have no business reading the mesh identity — plus the
-    // per-agent CODEX_HOME that keeps the operator's config/hooks/MCP servers out (see host.ts).
+    // The child inherits the host's (already allow-listed) env, keeping only the non-secret seat
+    // attribution variables CLI control commands read (`cotal stop --self`), plus the per-agent
+    // CODEX_HOME that keeps the operator's config/hooks/MCP servers out (see host.ts).
     const env: Record<string, string> = { CODEX_HOME: this.opts.codexHome };
     for (const [k, v] of Object.entries(process.env))
-      if (v !== undefined && !k.startsWith("COTAL_") && k !== "CODEX_HOME") env[k] = v;
+      if (v !== undefined && (!k.startsWith("COTAL_") || SEAT_ATTRIBUTION_ENV.has(k)) && k !== "CODEX_HOME") env[k] = v;
     for (const [k, v] of Object.entries(this.opts.extraEnv ?? {})) env[k] = v;
     const child = spawn(this.opts.bin ?? "codex", args, {
       cwd: this.opts.cwd,
