@@ -74,20 +74,20 @@ test('the fixed output upload has no wildcard and refuses missing output', () =>
   const acquisition = workflow.jobs['validator-lock-acquisition'];
   assert.ok(acquisition);
   assert.deepEqual(acquisition.permissions, { contents: 'read' });
-  const uploads = acquisition.steps.filter(step => step.uses === 'actions/upload-artifact@v4');
+  const uploads = acquisition.steps.filter(step => step.uses === 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
   assert.equal(uploads.length, 1);
   const prefix = '${{ runner.temp }}/validator-lock-${{ github.run_id }}-${{ github.run_attempt }}';
   assert.deepEqual(uploads[0].with.path.trim().split('\n'),
     ['core-package.json', 'pnpm-lock.yaml', 'source.diff', 'receipt.json'].map(file => `${prefix}/${file}`));
   assert.equal(uploads[0].with['if-no-files-found'], 'error');
-  const checkout = acquisition.steps.filter(step => step.uses === 'actions/checkout@v6');
+  const checkout = acquisition.steps.filter(step => step.uses === 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803');
   assert.equal(checkout.length, 1);
   assert.equal(checkout[0].with['persist-credentials'], false);
-  const pnpm = acquisition.steps.filter(step => step.uses === 'pnpm/action-setup@v6.0.8');
+  const pnpm = acquisition.steps.filter(step => step.uses === 'pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093');
   assert.equal(pnpm.length, 1);
   assert.equal(pnpm[0].with.run_install, false);
   assert.equal(pnpm[0].with.version, '11.28.2');
-  const node = acquisition.steps.filter(step => step.uses === 'actions/setup-node@v6');
+  const node = acquisition.steps.filter(step => step.uses === 'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38');
   assert.equal(node.length, 1);
   assert.equal(node[0].with['node-version'], 22);
   const runs = acquisition.steps.filter(step => Object.hasOwn(step, 'run'));
