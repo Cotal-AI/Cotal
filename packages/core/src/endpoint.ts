@@ -128,7 +128,8 @@ import {
   durableEligible,
 } from "./members.js";
 import { openAclRegistry, readAcl, readAclForAlias, aclRetired, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
-import { openDeliveryRegistry, type DeliveryLeaseInfo, type ManagerLeaseInfo } from "./lease.js";
+import type { DeliveryLeaseInfo, ManagerLeaseInfo } from "./lease.js";
+import { EndpointDeliveryLease } from "./endpoint-delivery-lease.js";
 import {
   openChannelRegistry,
   effectiveReplay,
@@ -178,7 +179,6 @@ import {
   parseDinboxPrincipal,
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
-  leaseKey,
   managerBucket,
   MANAGER_LEASE_KEY,
   MANAGER_RENEWAL_LEASE_KEY,
@@ -702,23 +702,10 @@ export class CotalEndpoint extends EventEmitter {
    *  {@link stop} or a rebuild moved the epoch retires its watch and starts that delete itself, so
    *  the same two paths wait for these first. */
   private readonly kvWatchBinds = new Set<Promise<unknown>>();
-  /** The daemon's lease-loss watch (#1596): the INTENT that survives a connection rebuild, plus the
-   *  live iterator. See {@link watchDeliveryLease}. */
-  private leaseWatchIntent?: { shardIndex: number; onEvent: (info: DeliveryLeaseInfo | undefined) => void };
-  private leaseWatchIter?: Awaited<ReturnType<KV["watch"]>>;
-  /** Consumer deletes of retired lease watches still in flight. The stop handle cannot await its
-   *  delete, so {@link stop} and a live-epoch rebuild await these before they close the connection
-   *  that carries them (#3966). */
-  private readonly leaseWatchDeletes = new Set<Promise<void>>();
-  /** Lease-watch binds still awaiting the broker. One that lands after {@link stop} or a rebuild
-   *  moved the epoch retires its watch and starts that delete itself, so the same two paths wait for
-   *  these first. Each is bounded by the JetStream request timeout. */
-  private readonly leaseWatchBinds = new Set<Promise<void>>();
   /** Plane-3 durable-membership registry KV — lazily opened by the privileged delivery daemon (or a
    *  short-lived provisioner). */
   private membersKv?: KV;
   private aclKv?: KV;
-  private deliveryKv?: KV;
   private managerLeaseKv?: KV;
   /** Our revision of the per-space daemon-credential renewal lease (#1634), or undefined when we do
    *  not hold it. Cleared with the bound KV handle: a revision from a dead connection is not a lease
@@ -864,6 +851,16 @@ export class CotalEndpoint extends EventEmitter {
   private firstConnect = true;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private sweepTimer?: ReturnType<typeof setInterval>;
+  private readonly deliveryLease = new EndpointDeliveryLease({
+    card: () => this.card,
+    space: () => this.space,
+    connection: () => this.nc,
+    epoch: () => this.presenceEpoch,
+    notLiveMsg: () => this.notLiveMsg(),
+    deleteWatchConsumer: (iter) => this.deleteOwnConsumer(kvWatchConsumer(iter)),
+    recoverable: (error) => this.emitRecoverable(error),
+    emit: (event, error) => this.emit(event, error),
+  });
   private readonly presence = new EndpointPresence({
     card: () => this.card,
     space: () => this.space,
@@ -1907,7 +1904,7 @@ export class CotalEndpoint extends EventEmitter {
     // clearConnectionScoped; a bind that completes after a stop or another rebuild finds the epoch
     // moved and retires itself. The replay re-delivers the row's current state, so a change that
     // landed in the null window still reaches the trigger.
-    if (this.leaseWatchIntent) await this.bindDeliveryLeaseWatch();
+    if (this.deliveryLease.hasWatchIntent) await this.bindDeliveryLeaseWatch();
 
     // FAIL BEFORE PRESENCE (SPEC 13.1): an AUTHED endpoint that will register on the roster or
     // bind lifecycle-keyed consumers must hold its launcher-supplied lifecycle uid BEFORE anything
@@ -2109,7 +2106,7 @@ export class CotalEndpoint extends EventEmitter {
     this.membersKv = undefined;
     this.aclKv = undefined;
     this.membershipFeedKv = undefined;
-    this.deliveryKv = undefined;
+    this.deliveryLease.resetConnection();
     this.managerLeaseKv = undefined;
     this.daemonRenewalLeaseRevision = undefined;
     // Handles that armDeliveryControl created on a previous connection: null them so a rebind
@@ -2250,7 +2247,7 @@ export class CotalEndpoint extends EventEmitter {
       this.membersKv = undefined;
       this.aclKv = undefined;
       this.membershipFeedKv = undefined;
-      this.deliveryKv = undefined;
+      this.deliveryLease.resetConnection();
       // The manager's liveness-lease handle too: left bound to the old connection, every renew and
       // re-read after a reconnect times out, and the manager reports its lease unknown for good.
       this.managerLeaseKv = undefined;
@@ -5313,27 +5310,6 @@ export class CotalEndpoint extends EventEmitter {
     return { allowSubscribe: allow, issuedAllowSubscribe: issued, lifecycleUid: row.lifecycleUid };
   }
 
-  /** Lazily open the delivery lease/readiness KV (pre-created at `cotal up`; bind, never create). */
-  private async deliveryRegistry(): Promise<KV> {
-    if (!this.nc) throw new Error(this.notLiveMsg());
-    this.deliveryKv ??= await openDeliveryRegistry(this.nc, this.space);
-    return this.deliveryKv;
-  }
-
-  /** This endpoint instance's LEASE INCARNATION: which run of this principal a lease row was written
-   *  by. Minted per construction and never re-derived, because the credential cannot supply it, the
-   *  daemon's cred is a file on disk that every restart re-reads, so `card.id` is stable across
-   *  processes by design. See {@link DeliveryLeaseInfo.incarnation}. */
-  private readonly leaseIncarnation = randomUUID();
-
-  /** When this endpoint last WON each shard's lease create. Every later write of that row carries it
-   *  unchanged, while `since` is re-stamped. See {@link DeliveryLeaseInfo.acquiredAt}. */
-  private readonly leaseAcquiredAt = new Map<number, number>();
-
-  private encodeLease(shardIndex: number, ready: boolean, acquiredAt = this.leaseAcquiredAt.get(shardIndex)): Uint8Array {
-    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, incarnation: this.leaseIncarnation, acquiredAt, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
-  }
-
   /** Is this shard's lease row one THIS ENDPOINT INSTANCE wrote? The question a daemon whose renew
    *  just failed has to answer before it decides whether it still owns the shard.
    *
@@ -5344,7 +5320,7 @@ export class CotalEndpoint extends EventEmitter {
    *  incarnation predates the field and cannot be proven ours, which is the safe reading: it leads
    *  to the takeover path rather than to serving on someone else's claim. */
   ownsDeliveryLease(info: DeliveryLeaseInfo): boolean {
-    return info.holder === this.card.id && info.incarnation !== undefined && info.incarnation === this.leaseIncarnation;
+    return this.deliveryLease.ownsDeliveryLease(info);
   }
 
   /** Acquire the single-flight delivery lease for a shard via an ATOMIC CAS create, marked NOT-ready.
@@ -5353,18 +5329,14 @@ export class CotalEndpoint extends EventEmitter {
    *  freeing a re-acquire. Acquired BEFORE binding (single-flight gate); {@link markDeliveryLeaseReady}
    *  flips it ready AFTER the loops + `ctl.delivery` are bound. Returns the lease revision. */
   async acquireDeliveryLease(shardIndex: number): Promise<number> {
-    // Recorded only once the create wins: a refused create leaves the held row, and so its time, as it was.
-    const acquiredAt = Date.now();
-    const revision = await (await this.deliveryRegistry()).create(leaseKey(shardIndex), this.encodeLease(shardIndex, false, acquiredAt));
-    this.leaseAcquiredAt.set(shardIndex, acquiredAt);
-    return revision;
+    return this.deliveryLease.acquireDeliveryLease(shardIndex);
   }
 
   /** Flip the held lease to READY (CAS `kv.update`) AFTER `startPlane3` has bound the loops + the
    *  `ctl.delivery` responder — so "lease ready" proves the responder is up, not just that the slot was
    *  claimed. Returns the new revision. */
   async markDeliveryLeaseReady(shardIndex: number, revision: number): Promise<number> {
-    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(shardIndex, true), revision);
+    return this.deliveryLease.markDeliveryLeaseReady(shardIndex, revision);
   }
 
   /** Flip the held lease back to NOT-ready, the counterpart to {@link markDeliveryLeaseReady}, for a
@@ -5377,14 +5349,14 @@ export class CotalEndpoint extends EventEmitter {
    *  the row (rather than deleting it) is deliberate: the shard is still claimed, so no third daemon
    *  should be invited in; what is being withdrawn is only the claim to be answering. */
   async markDeliveryLeaseNotReady(shardIndex: number, revision: number): Promise<number> {
-    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(shardIndex, false), revision);
+    return this.deliveryLease.markDeliveryLeaseNotReady(shardIndex, revision);
   }
 
   /** Renew the held lease (CAS `kv.update` against `revision`, keeping `ready:true`) to refresh it before
    *  the bucket TTL expires it. Returns the new revision. Throws if the revision moved (lost the lease —
    *  the daemon should exit). */
   async renewDeliveryLease(shardIndex: number, revision: number): Promise<number> {
-    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(shardIndex, true), revision);
+    return this.deliveryLease.renewDeliveryLease(shardIndex, revision);
   }
 
   /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (a
@@ -5411,15 +5383,14 @@ export class CotalEndpoint extends EventEmitter {
    *  a red in `smoke:delivery-lease`, where a caller that genuinely held the lease released nothing
    *  and the next acquire was refused. A caller must now say which it means. */
   async releaseDeliveryLease(shardIndex: number, revision: number | undefined): Promise<void> {
-    if (revision === undefined) return;
-    await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision });
+    return this.deliveryLease.releaseDeliveryLease(shardIndex, revision);
   }
 
   /** Read a shard's delivery lease (the daemon-availability signal), or `undefined` if none is live.
    *  READ-ONLY surface — drives Component 6's `cotal_channels` delivery-health field (an agent reads it
    *  under its own cred, which holds lease-bucket read but no write). */
   async readDeliveryLease(shardIndex: number): Promise<DeliveryLeaseInfo | undefined> {
-    return (await this.readDeliveryLeaseEntry(shardIndex))?.info;
+    return this.deliveryLease.readDeliveryLease(shardIndex);
   }
 
   /** Watch THIS shard's lease key and nothing else, for the daemon's loss trigger (#1596).
@@ -5440,41 +5411,18 @@ export class CotalEndpoint extends EventEmitter {
    *  bucket's current last-per-subject state, so a change that landed during the null window is
    *  delivered on the fresh watch. Resolves a stop handle. */
   async watchDeliveryLease(shardIndex: number, onEvent: (info: DeliveryLeaseInfo | undefined) => void): Promise<() => void> {
-    this.leaseWatchIntent = { shardIndex, onEvent };
-    await this.bindDeliveryLeaseWatch();
-    return () => {
-      if (this.leaseWatchIntent?.onEvent !== onEvent) return; // a later watch owns the slot
-      this.leaseWatchIntent = undefined;
-      this.stopDeliveryLeaseWatch();
-    };
+    return this.deliveryLease.watchDeliveryLease(shardIndex, onEvent);
   }
 
   private stopDeliveryLeaseWatch(): void {
-    if (this.leaseWatchIter) this.retireDeliveryLeaseWatch(this.leaseWatchIter);
-    this.leaseWatchIter = undefined;
-  }
-
-  /** Stop a lease watch and delete its ordered consumer, which the stop alone leaves on the broker
-   *  until its five-minute inactive threshold (#3966). A connection that closed on its own cannot
-   *  carry the delete, so that consumer is left to the threshold. A failed delete is a warning: the
-   *  broker still reaps the consumer, and the daemon's synchronous stop handle has no caller to
-   *  reject. */
-  private retireDeliveryLeaseWatch(iter: Awaited<ReturnType<KV["watch"]>>): void {
-    try { iter.stop(); } catch { /* already closed with its connection */ }
-    if (!this.nc || this.nc.isClosed()) return;
-    const deleting = this.deleteOwnConsumer(kvWatchConsumer(iter)).catch((e: Error) => this.emitRecoverable(
-      new Error(`a retired delivery lease watch consumer was not deleted (${e.message}); the broker reaps it at its inactive threshold`),
-    ));
-    this.leaseWatchDeletes.add(deleting);
-    void deleting.then(() => this.leaseWatchDeletes.delete(deleting));
+    return this.deliveryLease.stopDeliveryLeaseWatch();
   }
 
   /** Wait for the lease-watch binds still in flight, then for every retired watch's consumer delete.
    *  {@link stop} and a live-epoch rebuild run this before they close the connection those deletes
    *  need (#3966). */
   private async settleDeliveryLeaseWatches(): Promise<void> {
-    await Promise.allSettled(this.leaseWatchBinds);
-    await Promise.all(this.leaseWatchDeletes);
+    return this.deliveryLease.settleDeliveryLeaseWatches();
   }
 
   /** Stop a presence or channel-registry watch and delete its ordered consumer, which the stop
@@ -5528,29 +5476,7 @@ export class CotalEndpoint extends EventEmitter {
    *  its intent, or after a stop or connection teardown moved the epoch, retires its watch instead of
    *  installing it: the epoch it was bound for is gone, and a rebuilt one binds its own. */
   private bindDeliveryLeaseWatch(): Promise<void> {
-    const binding = this.bindDeliveryLeaseWatchOnce();
-    const settled = () => { this.leaseWatchBinds.delete(binding); };
-    this.leaseWatchBinds.add(binding);
-    void binding.then(settled, settled);
-    return binding;
-  }
-
-  private async bindDeliveryLeaseWatchOnce(): Promise<void> {
-    const intent = this.leaseWatchIntent!;
-    const epoch = this.presenceEpoch;
-    const iter = await (await this.deliveryRegistry()).watch({ key: leaseKey(intent.shardIndex) });
-    if (this.leaseWatchIntent !== intent || epoch !== this.presenceEpoch) {
-      this.retireDeliveryLeaseWatch(iter);
-      return;
-    }
-    this.leaseWatchIter = iter;
-    void (async () => {
-      for await (const e of iter) {
-        if (this.leaseWatchIter !== iter) break;
-        if (e.operation === "DEL" || e.operation === "PURGE") { intent.onEvent(undefined); continue; }
-        try { intent.onEvent(e.json<DeliveryLeaseInfo>()); } catch { intent.onEvent(undefined); }
-      }
-    })().catch((e) => this.emit("error", e as Error));
+    return this.deliveryLease.bindDeliveryLeaseWatch();
   }
 
   /** The principal recorded as holding a shard's delivery lease, read by THIS process from the row,
@@ -5567,8 +5493,7 @@ export class CotalEndpoint extends EventEmitter {
    *  that throws (a denied or unreadable bucket, a broker that will not answer) must not collapse
    *  into "nothing is there". Callers must treat it as a failure to determine (#1694). */
   async deliveryLeaseHolder(shardIndex: number): Promise<string | undefined> {
-    try { return (await this.readDeliveryLeaseEntry(shardIndex))?.info.holder; }
-    catch { return undefined; }
+    return this.deliveryLease.deliveryLeaseHolder(shardIndex);
   }
 
   /** The lease row AND the KV revision it is at. The revision is the CAS token every renew and the
@@ -5586,10 +5511,7 @@ export class CotalEndpoint extends EventEmitter {
    *  (an owner testing "is this provably MINE") still gets its safe answer: an unparseable row is
    *  not provably anyone's, and catching here reads as `false` exactly as before. */
   async readDeliveryLeaseEntry(shardIndex: number): Promise<{ info: DeliveryLeaseInfo; revision: number } | undefined> {
-    const e = await (await this.deliveryRegistry()).get(leaseKey(shardIndex));
-    if (!e || e.operation === "DEL" || e.operation === "PURGE") return undefined;
-    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; }
-    catch (err) { throw new Error(`delivery lease row "${leaseKey(shardIndex)}" exists but does not parse as a lease record (${(err as Error).message}) - it is unreadable, not absent`); }
+    return this.deliveryLease.readDeliveryLeaseEntry(shardIndex);
   }
 
   /** Ensure + bind the manager singleton-lease bucket. Mirrors the presence-bucket pattern (connectAndBind):
