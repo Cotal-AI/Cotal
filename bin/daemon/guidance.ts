@@ -1,5 +1,8 @@
 import { homeCotalDir, shellPath } from "@cotal-ai/workspace";
 
+export const NON_USER_AUTH_MESSAGE = "this space does not use user sign-in; the machine service hosts Managers only for user-auth participant spaces";
+export const NON_USER_AUTH_REMEDY = "run `cotal up` from the folder that hosts the local space; its stack runs the Manager";
+
 /** A copyable command for this daemon. Tuples keep option values distinct from boolean flags;
  *  leading-hyphen values need `=` even when shell-quoted. Windows copy targets PowerShell. */
 export function daemonCommandCopy(op: string, home?: string, args: readonly (string | readonly [string, string])[] = []): string {

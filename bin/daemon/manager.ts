@@ -22,6 +22,7 @@ import { readHostedAgents } from "./agents.js";
 import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile } from "./manager-cleanup.js";
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
+import { NON_USER_AUTH_REMEDY } from "./guidance.js";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
@@ -395,7 +396,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     if (closed || generationPending || l.stopping) return l.view;
     const entry = findMesh(space);
     if (!entry) return refuse(l, "this space is no longer registered on this machine", `run \`cotal daemon setup --space ${space} --idp <url>\` to discover it again`);
-    if (entry.mode !== "user" || entry.userAuth?.remote !== true) return refuse(l, "hosted Managers require a registered user-auth participant space", "use `cotal manager start` from the folder that hosts the space");
+    if (entry.mode !== "user" || entry.userAuth?.remote !== true) return refuse(l, "hosted Managers require a registered user-auth participant space", entry.mode !== "user" ? NON_USER_AUTH_REMEDY : "use `cotal manager start` from the folder that hosts the space");
     if (!loadIdpSession(home, entry.userAuth.idp.url)) return refuse(l, "the daemon has no sign-in for this space's provider", `run \`cotal daemon login --idp ${entry.userAuth.idp.url}\`, then \`cotal daemon setup --space ${space}\``);
     try { await reconcile(); }
     catch (error) {
@@ -861,7 +862,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         rmSync(managerCleanupFile(home, space), { force: true });
         held.view = { ...held.view, registrationCleanup: undefined };
       }
-      held.view = { ...held.view, state: "stopped", pid: undefined, reason: undefined, lastRefusal: undefined, next: options?.account ? "enable this space for this computer in the dashboard to host its Manager again" : `run \`cotal daemon setup --space ${space}\` to host its Manager again` };
+      const entry = findMesh(space);
+      held.view = { ...held.view, state: "stopped", pid: undefined, reason: undefined, lastRefusal: undefined, next: entry && entry.mode !== "user" ? NON_USER_AUTH_REMEDY : options?.account ? "enable this space for this computer in the dashboard to host its Manager again" : `run \`cotal daemon setup --space ${space}\` to host its Manager again` };
       rmSync(refusalFile(space), { force: true });
     },
     async resume() {
