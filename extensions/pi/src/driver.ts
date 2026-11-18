@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { boundedValue, oneLine } from "@cotal-ai/core";
 import type { InboxItem, MeshAgent } from "@cotal-ai/connector-core";
-import { formatInjection } from "@cotal-ai/connector-core";
+import { fmtChannel, fmtFrom, formatInjection } from "@cotal-ai/connector-core";
 import { InboxTurn } from "./inbox-turn.js";
 
 const CUSTOM_TYPE = "cotal-inbox";
@@ -141,10 +141,10 @@ export class PiDriver {
 
   onMentionWake(item: InboxItem): void {
     if (this._state === "shuttingDown") return;
-    const name = item.fromName.trim() ? item.fromName : item.fromId;
-    const who = item.fromRole ? `${name}/${item.fromRole}` : name;
+    // The sender and channel go through the shared frame helpers: a peer writes its own name and
+    // role, and a line break in either must not start a second line in the connector's voice.
     this.nudges.push(
-      `Cotal: you were @mentioned on #${item.channel} by ${who} while focused. ` +
+      `Cotal: you were @mentioned on #${fmtChannel(item.channel)} by ${fmtFrom(item)} while focused. ` +
         "The body is held; read it with cotal_inbox and reply with cotal_send if warranted.",
     );
     if (this.nudges.length > BATCH_LIMIT) this.nudges.splice(0, this.nudges.length - BATCH_LIMIT);
