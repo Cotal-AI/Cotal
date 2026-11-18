@@ -41,8 +41,8 @@ writeFileSync(join(fixture, "package.json"), JSON.stringify({ name: "cotal-stack
 writeFileSync(seat, `import{CotalEndpoint}from${JSON.stringify(core)};const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});await ep.start();setInterval(()=>{},1000);for(const s of['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`);
 writeFileSync(join(fixture, "index.js"), `import{registry}from${JSON.stringify(core)};registry.register({kind:'connector',name:'stack-remedy-seat',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))),COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
 let started = false;
-async function cli(args: string[], updating = false): Promise<{ code: number | null; output: string }> {
-  const options = { cwd: project, env: { ...env, ...(updating ? { npm_config_registry: registry } : {}) }, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+async function cli(args: string[], updating = false, path = env.PATH): Promise<{ code: number | null; output: string }> {
+  const options = { cwd: project, env: { ...env, PATH: path, ...(updating ? { npm_config_registry: registry } : {}) }, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
   assertSmokeSandboxDown(sandbox, args, options);
   const child = spawn(process.execPath, [...(packed ? [] : ["--import", import.meta.resolve("tsx")]), entry, ...args], options);
   let output = "";
@@ -50,7 +50,7 @@ async function cli(args: string[], updating = false): Promise<{ code: number | n
   const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
   return { code, output };
 }
-async function ok(args: string[]): Promise<string> { const r = await cli(args); assert.equal(r.code, 0, r.output); return r.output; }
+async function ok(args: string[], updating = false, path = env.PATH): Promise<string> { const r = await cli(args, updating, path); assert.equal(r.code, 0, r.output); return r.output; }
 const journal = join(project, ".cotal/stack-controller.json");
 function digest(path: string): string { return createHash("sha256").update(readFileSync(path)).digest("hex"); }
 function records(): Record<string, string> {
@@ -132,21 +132,19 @@ try {
   assert.match(after, /remedy-worker/, "all remedy reads leave the real seat running");
   if (packed) {
     const commands = printed.split("\n").filter(line => line.startsWith("    cd ")).map(line => line.trim());
-    assert.equal(commands.length, 3);
+    const steps: string[][] = [
+      ["down", ...downFlags],
+      ["update", "--self"],
+      ["up", "--detach", "--space", "remedy-proof", "--server", parsed.server, "--runtime", "pty",
+        "--max-sessions", "7", "--open", "--store-dir", parsed.broker.storeDir],
+    ];
+    const atRoot = `cd ${shellWord(realpathSync.native(project))} && cotal `;
+    assert.deepEqual(commands, steps.map(args => atRoot + args.map(shellWord).join(" ")));
     const version = await ok(["version", "--json"]);
     latest = JSON.parse(version).result.version;
-    const commandEnv = { ...env, npm_config_registry: registry, PATH: `${join(dirname(packed), "../../../../bin")}:${process.env.PATH ?? ""}` };
-    const options = { cwd: project, env: commandEnv, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
-    // Verify the shell command stays in the same sandbox the argv guard checks.
-    assert.equal(commands[0], `cd ${shellWord(realpathSync.native(project))} && cotal down ${downFlags.join(" ")}`);
-    for (const [index, command] of commands.entries()) {
-      if (index === 0) assertSmokeSandboxDown(sandbox, ["down", ...downFlags], options);
-      const child = spawn("bash", ["-c", command], options);
-      let output = "";
-      child.stdout.on("data", bytes => output += bytes); child.stderr.on("data", bytes => output += bytes);
-      const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
-      assert.equal(code, 0, output);
-    }
+    const path = `${join(dirname(packed), "../../../../bin")}:${env.PATH ?? ""}`;
+    // A shell startup file can change the environment after the sandbox guard checks it.
+    for (const args of steps) await ok(args, true, path);
     const final = JSON.parse(await ok(["ps", "--space", "remedy-proof", "--json"]));
     assert.equal(final.result.items.length, 0, "the exact printed sequence restarts no seats");
     assert.match(await ok(["status", "--space", "remedy-proof"]), /Manager:.*answering/);
