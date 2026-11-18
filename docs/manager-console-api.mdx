@@ -6,7 +6,7 @@ audience: "HTTP client authors"
 ---
 Source: [OpenAPI description](../implementations/manager/openapi.json).
 
-Operator HTTP interface of the reference manager console. This is separate from the Dashboard HTTP API. The default bind is 127.0.0.1 on an allocated port; an operator can configure the bind host and port. Every data operation requires the per-manager console token, even on loopback. Supply a bearer header or query parameter t. If both are present, t takes precedence. The launch page keeps its token in the URL fragment.
+Operator HTTP interface of the reference manager console. This is separate from the Dashboard HTTP API. The default bind is 127.0.0.1 on an allocated port; an operator can configure the bind host and port. Every data operation requires the per-manager console token, even on loopback. Supply a bearer header or query parameter t. If both are present, t takes precedence. The launch link carries its token in the URL fragment. The page removes it from the address and keeps it in tab-local history state for reloads.
 
 Read routes also accept other bodyless methods; only the documented GET behavior is promised. Query strings are removed for route dispatch. Session establishment mints credentials for a broker WebSocket connection; the console does not expose a WebSocket terminal endpoint. Static HTML, scripts, styles and favicon resources are outside this API reference.
 

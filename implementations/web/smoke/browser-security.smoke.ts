@@ -39,7 +39,7 @@ const sink = createServer((req, res) => { if (req.url === "/destination") resolv
 let sequence = 0;
 let wire = "";
 const pending = new Map<number, { resolve(value: any): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
-const responses: { session?: string; url: string; status: number; type: string }[] = [];
+const responses: { session?: string; status: number; type: string }[] = [];
 const failures: { session?: string; blocked?: string }[] = [];
 let dashboardOutput = "";
 const managerOutput: string[] = [];
@@ -92,6 +92,7 @@ async function security(name: string, session: string, token: string, base: stri
     await until(() => evaluate(session, ready), `${name}: reload retains authorized access`);
     check(`${name}: a clean-address reload retains authorized access`, await evaluate(session, ready));
     check(`${name}: unrelated query fields survive cleanup`, await evaluate(session, "new URL(location.href).searchParams.get('view') === 'console'"));
+    check(`${name}: the terminal loads and renders the unavailable-session response`, await evaluate(session, "document.querySelector('.pane .name')?.textContent === 'terminal-control' && document.querySelector('.xterm') !== null"));
   }
   check(`${name}: no application asset is blocked by CSP`, (await evaluate(session, "window.__security.violations")).length === 0 && !failures.some((f) => f.session === session && f.blocked === "csp"));
   check(`${name}: page has no uncaught script error`, (await evaluate(session, "window.__security.errors")).length === 0);
@@ -120,7 +121,7 @@ try {
   await seed.multicast("browser-live-control", { channel: "general" });
   await new Promise<void>((resolve) => sink.listen(0, "127.0.0.1", resolve));
   const token = randomBytes(32).toString("hex");
-  manager = new AttachEndpoint(() => [], () => [], 0, undefined, "127.0.0.1", token);
+  manager = new AttachEndpoint(() => [{ name: "terminal-control", id: "local.terminal", space, status: "running" }], () => [], 0, undefined, "127.0.0.1", token);
   await manager.start();
   const managerBase = new URL(manager.consoleUrl()).origin;
   const port = await freePort();
@@ -149,7 +150,7 @@ try {
         clearTimeout(entry.timer); pending.delete(message.id);
         if (message.error) entry.reject(new Error("browser protocol refused a command")); else entry.resolve(message.result);
       } else if (message.method === "Network.responseReceived") {
-        responses.push({ session: message.sessionId, url: message.params.response.url, status: message.params.response.status, type: message.params.type });
+        responses.push({ session: message.sessionId, status: message.params.response.status, type: message.params.type });
       } else if (message.method === "Network.loadingFailed") {
         failures.push({ session: message.sessionId, blocked: message.params.blockedReason });
       }
@@ -157,7 +158,7 @@ try {
   });
   for (const suffix of [`#t=${token}`, `?t=${token}`]) {
     const session = await page(managerBase + "/?view=console" + (suffix.startsWith("?") ? "&" + suffix.slice(1) : suffix));
-    await security(suffix.startsWith("#") ? "manager fragment" : "manager query", session, token, managerBase, "document.getElementById('meta')?.textContent?.startsWith('0 agents') === true");
+    await security(suffix.startsWith("#") ? "manager fragment" : "manager query", session, token, managerBase, "document.getElementById('meta')?.textContent?.startsWith('1 agent') === true && document.querySelector('.xterm-rows')?.textContent?.includes('attach failed (503)') === true");
   }
   const dashboardPage = await page(launchUrl + "#/channel/general");
   await security("dashboard", dashboardPage, dashboardToken, dashboardBase, "document.getElementById('root')?.textContent?.includes('browser-live-control') === true");
