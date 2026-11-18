@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,7 +12,8 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** Runs real npm and the built public entry against a registry with a listed, initially missing archive. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
-  assert(['arrives', 'unavailable', 'integrity', 'reset', 'orphan'].includes(scenario));
+  const offline = scenario.startsWith('offline-');
+  assert(['arrives', 'unavailable', 'integrity', 'reset', 'orphan', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging'].includes(scenario));
   const root = mkdtempSync(join(parent, 'registry-arrival-'));
   const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
   const target = '99.0.0', archives = new Map(), requests = [];
@@ -27,9 +28,13 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   }
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('COTAL_') && !['npm_config_before', 'NPM_CONFIG_BEFORE'].includes(name)));
   Object.assign(env, { HOME: home, COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: join(root, 'config'), TMPDIR: join(root, 'tmp'), XDG_RUNTIME_DIR: join(root, 'runtime'), npm_config_prefix: prefix, npm_config_cache: join(root, 'cache'), npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1' });
-  let origin, armed = false, missing = 0;
+  let origin, armed = false, disconnected = false, missing = 0;
   const server = createServer((request, response) => {
     requests.push({ at: Date.now(), path: request.url });
+    if (disconnected || armed && scenario === 'offline-archive' && request.url?.endsWith(`/${target}.tgz`)) {
+      disconnected = true;
+      return request.socket.destroy();
+    }
     if (request.url?.endsWith('.tgz')) {
       const version = request.url.slice(1, -4);
       if (armed && version === target) {
@@ -51,7 +56,11 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const run = async (file, args, timeoutMs) => {
     const child = spawn(file, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
-    child.stdout.on('data', bytes => output += bytes);
+    child.stdout.on('data', bytes => {
+      output += bytes;
+      const progress = { 'offline-metadata': 'release archives', 'offline-closure': 'Checking installed extension dependencies', 'offline-staging': 'beside the running version' }[scenario];
+      if (armed && progress && output.includes(progress)) disconnected = true;
+    });
     child.stderr.on('data', bytes => output += bytes);
     interrupted = child;
     const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
@@ -64,6 +73,17 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const install = await run('npm', ['install', '-g', `cotal-ai@${previous}`], 60000);
     assert.equal(install.code, 0, install.output);
     const packageRoot = join(prefix, 'lib/node_modules/cotal-ai');
+    if (scenario === 'offline-staging') {
+      cpSync(join(repo, 'bin/dist'), join(packageRoot, 'dist'), { recursive: true });
+      cpSync(join(repo, 'bin/package.json'), join(packageRoot, 'package.json'));
+      symlinkSync(join(repo, 'bin/node_modules'), join(packageRoot, 'node_modules'), 'dir');
+      entry = join(packageRoot, 'dist/cotal.js');
+    }
+    if (scenario === 'offline-closure') {
+      const extensions = join(root, 'config/cotal/extensions');
+      mkdirSync(extensions, { recursive: true, mode: 0o700 });
+      writeFileSync(join(extensions, 'extensions.json'), JSON.stringify({ extensions: [{ pkg: '@cotal-ai/network-fixture', version: previous, spec: `@cotal-ai/network-fixture@${previous}`, commands: [] }] }));
+    }
     const before = readFileSync(join(packageRoot, 'dist/cotal.js'));
     writeFileSync(join(packageRoot, 'preserve'), 'unchanged');
     armed = true;
@@ -97,7 +117,13 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     if (abandoned) await abandoned;
     const elapsedMs = Date.now() - started;
     const selected = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
-    if (scenario === 'integrity') {
+    if (offline) {
+      console.log(JSON.stringify({ scenario, ...update, elapsedMs }));
+      assert(disconnected, 'registry connectivity was cut after the selected update progress');
+      assert.equal(update.code, 0, update.output);
+      assert.match(update.output, /The registry cannot be reached; nothing was changed\./);
+      assert.doesNotMatch(update.output, /npm error|release is not ready|still reaching|staged pre-install check refused/);
+    } else if (scenario === 'integrity') {
       assert.equal(update.code, 1, update.output);
       assert.doesNotMatch(update.output, /Waiting for cotal-ai|Keeping cotal-ai/);
     } else {
@@ -127,6 +153,13 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     }
     const recovery = join(root, 'cotal/update-recovery.json');
     assert.equal(existsSync(recovery) ? JSON.parse(readFileSync(recovery, 'utf8')) : null, null);
+    if (offline && scenario !== 'offline-staging' && scenario !== 'offline-closure') {
+      disconnected = armed = false;
+      const retry = await run(process.execPath, [entry, 'update', '--self'], 60000);
+      assert.equal(retry.code, 0, retry.output);
+      assert.match(retry.output, /installed globally and reconciled/);
+      assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, target);
+    }
     return { scenario, code: update.code, elapsedMs, selected, missing, requests, output: update.output };
   } finally {
     if (orphan) { try { process.kill(orphan, 'SIGCONT'); } catch {} }
@@ -137,7 +170,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'integrity', 'reset'];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'integrity', 'reset', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging'];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }

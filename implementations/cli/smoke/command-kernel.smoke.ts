@@ -1366,6 +1366,36 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(!fixture.events.some(event => event.includes("Keeping cotal-ai@0.13.1")));
 }
 
+// Connectivity loss before replacement is an unchanged result, never release propagation.
+for (const code of ["ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN", "ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "ESOCKETTIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "EACCES", "E401", "EINTEGRITY", "ENOENT"]) {
+  for (const phase of ["metadata", "archive", "closure", "staging", "preflight"]) {
+    const offline = !["EACCES", "E401", "EINTEGRITY", "ENOENT"].includes(code) && phase !== "preflight";
+    const failed = { status: 1, stdout: JSON.stringify({ error: { code } }), stderr: `npm error code ${code}\nnpm error private registry details` };
+    const fixture = updateRuntime({
+      npm: args => args[0] === "install" && phase === "closure" ? failed : { status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" },
+      releaseNpm: args => {
+        if (phase === "metadata" || phase === "archive" && args[0] === "cache") return failed;
+        const spec = args[0] === "view" ? args[1] : args[2], at = spec.lastIndexOf("@");
+        return { status: 0, stdout: JSON.stringify({ name: spec.slice(0, at), version: spec.slice(at + 1), dist: { tarball: "https://registry.example/package.tgz", integrity: "sha512-fixture" } }) };
+      },
+    });
+    if (phase === "closure") fixture.rt.extensions = () => [{ pkg: "@cotal-ai/web", version: "0.13.1", spec: "@cotal-ai/web@0.13.1", commands: [] }];
+    if (phase === "staging" || phase === "preflight") fixture.rt.prepareExecution = async () => {
+      if (phase === "staging") throw new Error(`target staging failed: ${failed.stderr}`);
+      return { entry: "/target/cotal.js", journal: "/target/journal", async preflight() { throw new Error(failed.stderr); }, publish() {}, restore() {}, verify() {}, discard() { fixture.events.push("discard"); } };
+    };
+    assert.equal(await executeUpdate(true, fixture.rt), offline ? 0 : 1, `${phase}: ${code}`);
+    assert.ok(!fixture.events.some(event => /^(global:|reconcile|refresh-connectors)/.test(event)), "no installed replacement or reconcile begins");
+    const output = fixture.events.filter(event => /^(out:|err:)/.test(event)).join("\n");
+    if (offline) {
+      assert.match(output, /The registry cannot be reached; nothing was changed\./);
+      assert.doesNotMatch(output, /npm error|release is not ready|still reaching|staged pre-install check refused/);
+    } else assert.doesNotMatch(output, /The registry cannot be reached/);
+    if (phase === "staging" || phase === "preflight") assert.ok(fixture.events.some(event => event.startsWith("release-global:")), "failed preparation releases global reservation");
+    if (phase === "preflight") assert.ok(fixture.events.includes("discard"), "a prepared target failing its checks is still discarded and refused");
+  }
+}
+
 // A staged rollback already retains the complete previous graph and needs no registry copy.
 {
   const fixture = updateRuntime({
