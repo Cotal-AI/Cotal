@@ -2255,7 +2255,10 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             const again = await cli("setup", "--idp", idpUrl);
             check("J3 explicit provider reuses approval and computer identity", again.code === 0 && deviceCodeRequests === before + 1 && again.doc.result?.machineId === fresh.doc.result?.machineId && again.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "already-signed-in"), again);
             const human = await plainCommand("setup", "--idp", idpUrl);
-            check("J4 human output names account computer and dashboard", human.code === 0 && human.out.includes("Connected to your account") && human.out.includes("operator@example.test") && !human.out.includes("machine-owner") && human.out.includes("in the dashboard"), human);
+            check("J4 human output names account computer and provider dashboard", human.code === 0 && human.out.includes("Connected to your account") && human.out.includes("operator@example.test") && !human.out.includes("machine-owner") && human.out.includes("in your provider's dashboard") && !human.out.includes("Account computers") && !human.out.includes("Machines page"), human);
+            check("J4a zero-space JSON explains launch state and carries setup Next", fresh.doc.result.spaces.length === 0 && fresh.doc.result.message === "No space uses this computer yet, so no agents can be launched on it until you connect a space." && fresh.doc.result.next?.command === `cotal daemon setup --space '<space>' --idp '${idpUrl}'` && fresh.doc.result.next?.description.includes("Replace <space>") && fresh.doc.result.dashboard === "You can also choose spaces for this computer in your provider's dashboard.", fresh);
+            check("J4b human Next matches JSON state command and dashboard", human.out.includes(fresh.doc.result.message) && human.out.includes(`\nNext\n  ${fresh.doc.result.next.command}`) && human.out.includes(fresh.doc.result.next.description) && human.out.includes(fresh.doc.result.dashboard), human);
+            check("J4c signed-in rerun retains zero-space guidance", again.doc.result?.message === fresh.doc.result.message && JSON.stringify(again.doc.result?.next) === JSON.stringify(fresh.doc.result.next) && again.doc.result?.dashboard === fresh.doc.result.dashboard, again);
             for (const flags of [["--no-manager"], ["--wait", "0"]]) {
               const invalid = await cli("setup", "--idp", idpUrl, ...flags);
               check("J5 space-only flag refuses without space", invalid.code !== 0 && invalid.doc.error?.message.includes("require --space"), invalid);
@@ -2293,7 +2296,9 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             }
             check("J9 enabled account space connects", ready.account?.spaces?.some((row: any) => row.space === ON && row.observed === "connected"), ready);
             const used = await plainCommand("setup");
-            check("J10 rerun names enabled spaces", used.code === 0 && used.out.includes(`Spaces using this computer: ${ON}`) && !used.out.includes("Turn on the spaces"), used);
+            check("J10 rerun names enabled spaces without zero-space guidance", used.code === 0 && used.out.includes(`Spaces using this computer: ${ON}`) && !used.out.includes("No space uses") && !used.out.includes("\nNext\n"), used);
+            const usedJson = await cli("setup");
+            check("J10a enabled-space JSON omits zero-space guidance", usedJson.code === 0 && usedJson.doc.result?.spaces.includes(ON) && usedJson.doc.result.message === undefined && usedJson.doc.result.next === undefined && usedJson.doc.result.dashboard === undefined, usedJson);
             const otherProvider = `${idpUrl}/other`;
             saveIdpSession(home, otherProvider, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
             const multiple = await cli("setup");
