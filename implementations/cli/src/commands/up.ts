@@ -83,6 +83,8 @@ import { JetStreamApiCodes, jetstreamManager, StorageType } from "@nats-io/jetst
 import { Kvm } from "@nats-io/kv";
 import {
   assertManagerName,
+  processStopped,
+  verifyIdentityPin,
   readManagerName,
   readManagerSeatCap,
   recordManagerName,
@@ -439,6 +441,8 @@ function assertIssuedBackupDirArgument(raw: string): void {
  *  re-entry supplies its recorded mode explicitly rather than inheriting the new public default. */
 export function validateUpArguments(args: ParsedArgs): void {
   presentationOf(args.values);
+  if (typeof args.values.file === "string" && !args.values.file.trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "--file is empty, so it names no manifest; nothing was started or written", { remedy: "name a manifest with --file <cotal.yaml>, or omit --file to start the folder's stack" });
   // A `.cotal` that is a link, or leads nowhere, is refused before anything reads through it.
   const linked = args.values.root === undefined ? linkedCotalRefusal("up") : undefined;
   if (linked) throw linked;
@@ -1758,6 +1762,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Derive the URL from `--host` when no explicit `--server` pins it, and refuse a contradicting
     // pair rather than starting a broker nothing can reach.
     if (values.host) server = reconcileHostAndServer(values.host, values.server, "--host", "--server", implicitServer);
+    // A suspended pinned broker still holds this root's store, even when another port was asked
+    // for. Refuse before the repair probe can mistake its silence for a stopped broker.
+    const brokerPin = verifyIdentityPin(cotalPath(NATS_PIDFILE));
+    if (brokerPin.kind === "match" && processStopped(brokerPin.record.pid))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker, pid ${brokerPin.record.pid}, is stopped, so it never answers; nothing was started or written`, { target: { root: cotalRoot(), pid: brokerPin.record.pid }, remedy: `resume it with kill -CONT ${brokerPin.record.pid} and run ${codeSpan(`${displayCmd()} up`)} again` });
     // A same-root repair reopens the store the mesh record names, ONCE, before the ordinary-up
     // assertion below reads --store-dir (#2218): an ordinary `up` on a space whose broker died must
     // not silently fall back to the root's default store while the record still names a custom one.
@@ -2222,7 +2231,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (stoppedStart) console.log(c.dim(stoppedStart));
 
   if (!resumeAttempt) refuseRegisteredAddress(server, values.space ?? folderSpace(), `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
-  await assertBrokerAddressFree(server, "cotal up");
+  await assertBrokerAddressFree(server, `${displayCmd()} up`, host);
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
     if (values["store-dir"] === undefined) values["store-dir"] = reopenLastStore(cotalPath("nats"));
@@ -3717,7 +3726,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     stderrLine("✗ ", `${brokerAddressForDisplay(server) ?? "selected address"} already has a broker - a fresh boot will not adopt it. Stop the owned stack or select another address; team deploy supports only all-new channel cards, not agent apply.`, c.red);
     process.exit(1);
   }
-  await assertBrokerAddressFree(server, `cotal up -f ${file}`);
+  await assertBrokerAddressFree(server, `${displayCmd()} up -f ${file}`, host);
   // Connectors + their required binaries must exist before any mutation (no fallback).
   const conn = await preflightConnectors(prepared);
   if (conn) {
@@ -4406,10 +4415,11 @@ export async function startMeshDetached(
 /** Refuse a broker address another program holds without answering NATS, such as a web server, as
  *  the controller stack refuses it. nats-server would exit on its bind with only a log line, and the
  *  readiness probe would wait on that program instead. `command` is the start the remedy reruns. */
-async function assertBrokerAddressFree(server: string, command: string): Promise<void> {
-  const bindError = await listenerBindError(server);
+async function assertBrokerAddressFree(server: string, command: string, bindHost?: string): Promise<void> {
+  const bindError = await listenerBindError(server, bindHost);
   if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return;
-  const { host, port } = brokerListenAddress(server), address = new URL(server);
+  const { host: dialHost, port } = brokerListenAddress(server), address = new URL(server);
+  const host = bindHost ?? dialHost;
   const { says, frees } = addressHolder("the broker address", host, port);
   throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
     target: { root: cotalRoot(), server, bindError: bindError.code },

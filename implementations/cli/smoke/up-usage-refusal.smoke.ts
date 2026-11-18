@@ -90,6 +90,8 @@ const run = (args: string[], cwd = folder) => {
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 900) });
 
 const cases: { args: string[]; message: RegExp }[] = [
+  { args: ["--file", ""], message: /--file is empty, so it names no manifest/ },
+  { args: ["-f", "  "], message: /--file is empty, so it names no manifest/ },
   { args: ["-d", "--foreground"], message: /choose --foreground or --detach, not both/ },
   { args: ["--max-sessions", "0"], message: /--max-sessions must be a positive integer/ },
   { args: ["--max-sessions", "abc"], message: /--max-sessions must be a positive integer/ },
@@ -175,6 +177,18 @@ for (const value of ["", "  "]) {
 }
 
 check("nothing was written in the folder", readdirSync(folder).length === 0, readdirSync(folder));
+
+for (const flag of ["--file", "-f", "--run"]) {
+  for (const value of ["", "  "]) {
+    for (const mode of [["--dry-run"], ["--yes"]]) {
+      const project = mkdtempSync(join(tmpdir(), "cotal-down-empty-"));
+      roots.push(project);
+      sandbox(project);
+      const result = run(["down", flag, value, ...mode, "--json"], project);
+      check(`down ${flag} ${JSON.stringify(value)} ${mode[0]} refuses usage before reading a target`, result.status === 1 && result.envelope?.error?.code === "USAGE_INVALID" && result.envelope.error.message?.includes("is empty") === true && readdirSync(join(project, ".cotal")).length === 0, shown(result));
+    }
+  }
+}
 
 const prepared = mkdtempSync(join(tmpdir(), "cotal-up-usage-prepared-"));
 process.on("exit", () => rmSync(prepared, { recursive: true, force: true }));

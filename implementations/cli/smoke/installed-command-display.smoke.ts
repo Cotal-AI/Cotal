@@ -109,6 +109,44 @@ try {
   const controlReceipt = { code: control.status, output: control.stdout + control.stderr };
   writeFileSync(join(sandbox, "setup-launcher-control.json"), JSON.stringify(controlReceipt, null, 2));
   suite.check("fresh launcher control completes the same setup seed", control.status === 0 && existsSync(join(controlConfig, "cotal/seed/stamp.json")), controlReceipt);
+  const refresh = run(["up", "--plain"]);
+  suite.check("controller up next steps keep the installed off-PATH prefix", refresh.code === 0 && !/^\s+cotal (?:spawn|down)\b/m.test(refresh.stdout) && refresh.stdout.includes("Launch your default agent"), refresh);
+  const unconfirmed = run(["down"]);
+  suite.check("controller down confirmation remedy keeps the installed prefix", unconfirmed.code === 1 && !unconfirmed.output.includes("`cotal down"), unconfirmed);
+
+  const npxEntry = join(sandbox, "_npx", "fixture", "cotal.js");
+  mkdirSync(join(sandbox, "_npx", "fixture"), { recursive: true });
+  symlinkSync(join(env.XDG_DATA_HOME, "cotal/lib/node_modules/cotal-ai/dist/cotal.js"), npxEntry);
+  for (const npx of [false, true]) {
+    const project = join(sandbox, npx ? "npx-project" : "installed-project");
+    mkdirSync(project, { mode: 0o700 });
+    const own = recordSmokeSandbox({ root: project, cotalHome: env.COTAL_HOME, xdgConfigHome: xdg });
+    const command = (args: string[]) => {
+      const options = { cwd: project, env, encoding: "utf8" as const, timeout: 120_000 };
+      assertSmokeSandboxDown(own, args, options);
+      return spawnSync(npx ? process.execPath : launcher, npx ? [npxEntry, ...args] : args, options);
+    };
+    try {
+      const started = command(["up", "--server", `nats://127.0.0.1:${await freePort()}`]);
+      const output = started.stdout + started.stderr;
+      const prefix = npx ? "npx cotal-ai" : output.match(/stop with: `(.+) down`/)?.[1];
+      suite.check("legacy up summary and Next use one runnable invocation prefix", started.status === 0 && Boolean(prefix) && output.includes(`stop with: \`${prefix} down\``) && output.includes(`${prefix} spawn --space`) && !/^\s+cotal (?:spawn|down)\b/m.test(output), output);
+      const refused = command(["down"]);
+      suite.check("legacy down confirmation remedy preserves the invocation", refused.status === 1 && (refused.stdout + refused.stderr).includes(`\`${prefix} down --yes\``), refused.stderr);
+      // npx's command prefix is checked above without contacting a package registry. The installed
+      // prefix is followed unchanged, including its shell quoting and pinned runtime environment.
+      if (!npx && prefix) {
+        const stopped = spawnSync("/bin/sh", ["-c", `${prefix} down --yes`], { cwd: project, env, encoding: "utf8", timeout: 120_000 });
+        suite.check("the printed off-PATH stop command runs unchanged and suggests the same up", stopped.status === 0 && stopped.stdout.includes(`${prefix} up`), stopped.stdout + stopped.stderr);
+      } else {
+        const stopped = command(["down", "--yes"]);
+        suite.check("npx down Next preserves npx cotal-ai", stopped.status === 0 && stopped.stdout.includes("npx cotal-ai up"), stopped.stdout + stopped.stderr);
+      }
+    } finally {
+      const stopped = command(["down", "--yes"]);
+      suite.check("the invocation-display legacy stack stops cleanly", stopped.status === 0, stopped.stdout + stopped.stderr);
+    }
+  }
 } finally {
   if (attempted) {
     const down = run(["down", "--yes", "--json"]);
