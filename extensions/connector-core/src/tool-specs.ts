@@ -911,9 +911,10 @@ export async function orientationCard(
 /** The `cotal_send` success line: where the post went and the next move. It names the channel and
  *  any mention and makes no claim about who woke or how many received it, since nothing reports that
  *  to the sender. A name that was new before the post says so, with close matches first because a
- *  typo is the likely cause, and tells the sender to point others at it. Whether a later joiner is
- *  shown the post is the channel's effective replay. */
-export function sendResult(channel: string, mentions: readonly string[], receipt: { known: boolean; hints: readonly string[] }, replay: boolean): string {
+ *  typo is the likely cause, and tells the sender to point others at it. A name the channel list
+ *  could not be read for is not called new: the line says the check failed and why. Whether a later
+ *  joiner is shown the post is the channel's effective replay. */
+export function sendResult(channel: string, mentions: readonly string[], receipt: { known: boolean; hints: readonly string[]; unchecked?: string }, replay: boolean): string {
   const at = `#${channel}`;
   const named = mentions.map((n) => `@${n}`).join(", ");
   if (receipt.known)
@@ -921,6 +922,8 @@ export function sendResult(channel: string, mentions: readonly string[], receipt
       ? `Posted to ${at} and mentioned ${named}. Agents on it see it too.`
       : `Posted to ${at}. Agents on it see it; mention one to make it act.`;
   const hint = receipt.hints.length ? ` Did you mean ${receipt.hints.map((h) => `#${h}`).join(", ")}?` : "";
+  if (receipt.unchecked !== undefined)
+    return `Posted to ${at}${mentions.length ? ` and mentioned ${named}` : ""}. Whether ${at} already existed could not be checked: ${receipt.unchecked.replace(/\.$/, "")}.${hint}`;
   const later = replay
     ? "Others see it once they join; tell them where it is."
     : "This channel doesn't replay history, so agents who join later won't see this post. Tell them where it is, and post again once they have joined.";

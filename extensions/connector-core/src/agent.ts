@@ -2478,17 +2478,23 @@ export class MeshAgent extends EventEmitter {
    * already existed (joined, registry, or prior traffic) and close matches when it
    * did not. Does not refuse create. Graded before multicast so the new message cannot
    * make the name look pre-existing.
+   *
+   * #7401: only a channel list that was read supports calling the name new, as with mentions
+   * (#1229). When the read fails, `unchecked` carries its error and the name is neither known
+   * nor new; joined and registered names still count as known and still feed the hints.
    */
-  async describeSendChannel(channel: string): Promise<{ known: boolean; hints: string[] }> {
+  async describeSendChannel(channel: string): Promise<{ known: boolean; hints: string[]; unchecked?: string }> {
     if (this.ep.getChannelConfig(channel)) return { known: true, hints: [] };
     const known = new Set<string>(this.ep.joinedChannels().filter(isConcreteChannel));
+    let unchecked: string | undefined;
     try {
       for (const row of await this.ep.listChannels()) known.add(row.channel);
-    } catch {
-      /* no stream: joined + registry cache still distinguish a typo of a channel we are on */
+    } catch (e) {
+      unchecked = (e as Error).message;
     }
     if (known.has(channel)) return { known: true, hints: [] };
-    return { known: false, hints: closeChannelNames(channel, [...known]) };
+    const hints = closeChannelNames(channel, [...known]);
+    return unchecked === undefined ? { known: false, hints } : { known: false, hints, unchecked };
   }
 
   /** Throw if any name isn't a peer we've observed. Validates against the FULL roster
