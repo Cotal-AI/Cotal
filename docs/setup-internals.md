@@ -371,6 +371,8 @@ scan (`cotalOnPath()`). `displayCmd()` runs the same scan for every user-facing 
 resolves files and never runs them. The `cotal --version` exec probe stays in
 `verifiedCotalExecutables()`. The refusal of an older cotal
 ([below](#a-cotal-older-than-the-store-refuses)) uses that probe to name a newer executable.
+When checking a child that inherits PATH, pass its working directory to `cotalOnPath(cwd)` so
+relative PATH entries resolve as they would in that child.
 
 The interactive prompt defaults to yes. The non-interactive path (`--yes` or no TTY) takes the
 default. A failed install does not fail setup. Setup warns and prints the manual command. The offer

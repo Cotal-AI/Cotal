@@ -95,6 +95,10 @@ process.env.PATH = [npxBin, realBin].join(delimiter); // ephemeral shim + a dura
 check("a durable `cotal` alongside the npx shim ⇒ cotalOnPath() true", cotalOnPath() === true);
 check("a durable PATH executable keeps concise command suggestions", displayCmd() === "cotal");
 
+process.env.PATH = "realbin";
+check("a relative PATH can find cotal from the supplied child cwd", cotalOnPath(prefix));
+check("the same relative PATH does not find cotal from a different child cwd", !cotalOnPath(realBin));
+
 const recoveryHome = mkdtempSync(join(tmpdir(), "cotal-install-recovery-home-"));
 const ephemeralRecovery = verifiedCotalExecutables({ ...cleanEnv, HOME: recoveryHome, PATH: npxBin });
 const durableRecovery = verifiedCotalExecutables({ ...cleanEnv, HOME: recoveryHome, PATH: realBin });

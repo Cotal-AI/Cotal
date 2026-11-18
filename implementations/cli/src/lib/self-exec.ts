@@ -103,9 +103,10 @@ export function isPnpmDlx(): boolean {
  *  `<cache>/_npx/<hash>/node_modules/.bin` to PATH, and since `cotal-ai` declares a `cotal` bin,
  *  that dir holds a throwaway `cotal`. Counting it would make a bare `npx cotal-ai setup` conclude
  *  `cotal` is already installed — skipping the global-install offer and printing `cotal …` hints
- *  the user can't run once npx exits. That shim is exactly what we're offering to make permanent. */
-export function cotalOnPath(): boolean {
-  return durableCotalsOnPath(process.env).length > 0;
+ *  the user can't run once npx exits. That shim is exactly what we're offering to make permanent.
+ *  Pass the child's working directory when checking its inherited PATH from another directory. */
+export function cotalOnPath(cwd = process.cwd()): boolean {
+  return durableCotalsOnPath(process.env, cwd).length > 0;
 }
 
 export interface CotalExecutable {
@@ -163,11 +164,11 @@ export function verifiedCotalExecutables(env: NodeJS.ProcessEnv = process.env): 
 /** Every durable `cotal` executable on `env`'s PATH, in PATH order. Each entry is probed as an
  *  absolute path because `join(".", "cotal")` is the bare name `cotal`, which {@link resolveOnPath}
  *  would scan the whole PATH for, npx's transient bins included. */
-function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
+function durableCotalsOnPath(env: NodeJS.ProcessEnv, cwd = process.cwd()): string[] {
   return (env.PATH ?? "")
     .split(delimiter)
     .filter((dir) => dir && !isEphemeralNpxBin(dir))
-    .flatMap((dir) => resolveOnPath(resolve(dir, "cotal"), env) ?? []);
+    .flatMap((dir) => resolveOnPath(resolve(cwd, dir, "cotal"), env) ?? []);
 }
 
 /** A PATH entry npx (`npm exec`) or `pnpm dlx` injected for the current run only — its `_npx` or

@@ -748,8 +748,8 @@ try {
     const signedOutStatus = await cotal(["status", "--space", signedOutSpace], 30_000);
     console.log(`   #1832 signed-out bare status (exit=${signedOutStatus.status}):\n` +
       signedOutStatus.out.split("\n").filter((l) => /login|live snapshot/.test(l.replace(/\x1b\[[0-9;]*m/g, ""))).map((l) => `   | ${l}`).join("\n"));
-    // The fixture invokes bin/cotal.ts from the checkout, even when cotal is on PATH.
-    const loginCommand = `${cotalOnPath() ? "cotal" : "pnpm cotal"} login --idp ${base}`;
+    // The fixture invokes bin/cotal.ts from the checkout with root as the child's cwd.
+    const loginCommand = `${cotalOnPath(root) ? "cotal" : "pnpm cotal"} login --idp ${base}`;
     check("manual remote space, signed out: status says not signed in with the pinned login command",
       signedOutStatus.status === 0 &&
         /^ +Account: +● not signed in$/m.test(signedOutStatus.out) &&
