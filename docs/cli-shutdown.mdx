@@ -668,7 +668,9 @@ cotal clean restore-fallback --attempt <id> --force [--discard-history]
 One configurable cleanup verb; every target requires `--force`, except a `--dry-run` of `store` or `all`.
 It takes one target and no extra positional arguments. A channel name after `history` refuses
 `USAGE_INVALID` (exit 1); it does not narrow the purge. The dry run quotes an explicit `--store-dir`
-value in its printed force command so it stays one shell argument.
+value in its printed force command so it stays one shell argument. A run without `--force` refuses
+`USAGE_INVALID` (exit 1) and prints the command to run, keeping `--store-dir` for `store` and `all`
+and `--space`, `--server`, `--creds` and `--dms` for `history`, so that command acts on the same target.
 Only `history` takes `--space`, `--server` or `--creds`. Every other target acts on the root of the
 folder it runs in, so it refuses them `USAGE_INVALID` (exit 1) before local cleanup inspects or removes
 root state.

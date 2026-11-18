@@ -166,7 +166,7 @@ try {
   //    output-only assertion could never have, because the discarded stream-head algorithm returned
   //    identical values for every fixture in this file.
   const epNc = (ep as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc;
-  const priv = ep as unknown as {
+  const priv = (ep as unknown as { history: unknown }).history as {
     lastMatchingSeq(js: unknown, stream: string, subjects: string[]): Promise<number>;
     drainWindow(js: unknown, stream: string, subjects: string[], start: number, ceiling: number, limit: number): Promise<unknown[]>;
   };
@@ -229,7 +229,7 @@ try {
   //
   //    Shadow the private helper on the instance to raise, then call the PUBLIC `channelHistory`.
   for (const method of ["lastMatchingSeq", "drainWindow"] as const) {
-    const shadowed = ep as unknown as Record<string, unknown>;
+    const shadowed = (ep as unknown as { history: Record<string, unknown> }).history;
     const real = shadowed[method];
     shadowed[method] = async () => { throw new Error(`forced ${method} truncation`); };
     let doorThrew: unknown;
