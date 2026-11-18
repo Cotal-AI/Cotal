@@ -71,8 +71,8 @@
     },
     {
       "name": "N6 restart an inline seat without checking its snapshot",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "    const changed = this.inlineSnapshotChange(a);\n",
+      "file": "implementations/manager/src/session-recovery.ts",
+      "find": "    const changed = this.deps.inlineSnapshotChange(a);\n",
       "replace": "    const changed = undefined as string | undefined;\n",
       "expectRed": "a changed snapshot retires a supervised inline seat instead of restarting it",
       "cell": "a changed snapshot retires a supervised inline seat instead of restarting it"
