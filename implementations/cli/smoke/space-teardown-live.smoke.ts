@@ -557,6 +557,16 @@ try {
     check("another folder prepares and starts a stack under the same name", again.status === 0 && reused.status === 0, { create: shown(again), up: shown(reused) });
     const last = cli(elsewhere, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
+    anchors.delete(elsewhere);
+    rmSync(elsewhere, { recursive: true, force: true });
+    for (const args of [["send", "-c", "general", "hi"], ["history", "general"]]) {
+      const refused = cli(other, ...args, "--space", space, "--json");
+      check(`${args[0]} keeps move-back or forget advice when the gone folder has no running stack members`,
+        refused.status === 2 && refused.env?.error?.code === "TARGET_UNAVAILABLE"
+          && refused.env.error.message.includes(`${elsewhere}, which no longer exists`)
+          && Boolean(refused.env.error.remedy?.includes(`cotal space forget ${space}`))
+          && !refused.env.error.remedy?.includes("cotal down"), shown(refused));
+    }
   }
 
   // 11. An open space another machine deleted under its running stack.
