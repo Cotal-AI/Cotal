@@ -31,28 +31,30 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, posix } from "node:path";
+import { homedir } from "node:os";
 import { recordedSourceIdentity, recordedSourceMarked } from "./install-identity.js";
 import { nativeRun } from "./install-native-run.js";
 import { checkWindowsRecordedUnit } from "./ownership-win32.js";
 import { Worker } from "node:worker_threads";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
-import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
+import { acquireLock, acquireLockAsync, inspectLock, mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, executionIdentity, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
-import { ClosedPeerRefusal, isStoppingLifetime, openVerified, readLine } from "./client.js";
+import { ClosedPeerRefusal, isStoppingLifetime, openVerified, queryDaemon, readLine } from "./client.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
-import { lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
+import { darwinLaunchdJob, lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
-import { launchAgentService, xmlText } from "./install-darwin.js";
+import { launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "./install-darwin.js";
 import { scheduledTaskName, scheduledTaskService } from "./install-win32.js";
 import { daemonCommandCopy } from "./guidance.js";
 import { recoverPausedTask } from "./restart-recovery.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
 import { removeAllServiceRecords } from "./service-records.js";
+import { assertServiceRepairPair, readServiceRepair, repairReplies, serviceRepairFile, sourceDigest } from "./service-repair.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
 export type ServiceMechanism = "systemd-user" | "launchd-agent" | "scheduled-task";
@@ -267,10 +269,17 @@ function directive(bytes: string, name: string): string {
 }
 
 function refuseInstalled(paths: DaemonPaths, daemonHome: string | undefined): void {
+  assertNoServiceRepair(paths);
   const existing = readReceipt(paths);
   if (existing) throw new CommandFailure("refused", "CONFLICT", `this daemon already has an installed unit (${existing.unit})`, {
     remedy: `remove it with ${codeSpan(daemonCommandCopy("uninstall", daemonHome))} before installing again`,
   });
+}
+
+function assertNoServiceRepair(paths: Pick<DaemonPaths, "state">): void {
+  if (process.platform !== "darwin") return;
+  const held = inspectLock(join(paths.state, "service-repair.lock"));
+  if ((held.state === "active" && held.owner.pid !== process.pid) || readServiceRepair(paths.state)) throw new CommandFailure("refused", "CONFLICT", "the daemon service has an unfinished repair; run `cotal daemon status` to finish it");
 }
 
 function nativeInstallPlan(service: NativeService, paths: DaemonPaths, daemonHome: string | undefined): NativePlan {
@@ -325,6 +334,14 @@ interface InstallResult extends InstallPlan {
  * leaves a unit `uninstall` can find and remove, never an enabled unit nothing records.
  */
 export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined, omittedRelativePathEntries?: readonly string[]): InstallResult {
+  if (process.platform !== "darwin") return applyInstallUnlocked(paths, daemonHome, omittedRelativePathEntries);
+  mkSecretDir(paths.state);
+  const lock = acquireLock(join(paths.state, "service-repair.lock"));
+  try { return applyInstallUnlocked(paths, daemonHome, omittedRelativePathEntries); }
+  finally { lock.release(); }
+}
+
+function applyInstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined, omittedRelativePathEntries?: readonly string[]): InstallResult {
   const omitted = omittedRelativePathEntries?.length ? { omittedRelativePathEntries } : {};
   const service = nativeService();
   if (service) {
@@ -396,7 +413,8 @@ function recoveredLinuxUnit(daemonHome: string | undefined): UnitReceipt | undef
 }
 
 /** The recorded unit, refused unless this OS runs its mechanism and its source and job are unchanged. */
-function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined, run: NativeRun = nativeRun, recover = false): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined; recovered?: boolean } {
+function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined, run: NativeRun = nativeRun, recover = false, repairing = false): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined; recovered?: boolean } {
+  if (!repairing) assertNoServiceRepair(paths);
   const service = nativeService(run);
   const saved = readReceipt(paths);
   const receipt = saved ?? (recover ? recoveredLinuxUnit(daemonHome) : undefined);
@@ -450,6 +468,8 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
   const next = refreshedDaemonPath(plan.mechanism, source)!;
   const sha256 = createHash("sha256").update(next).digest("hex");
   return () => {
+    const lock = process.platform === "darwin" ? acquireLock(join(paths.state, "service-repair.lock")) : undefined;
+    try {
     const current = recordedUnit(paths, daemonHome).receipt;
     if (current.unitSha256 !== receipt.unitSha256) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon service changed during setup; run setup again");
     writeSecretFileAtomic(receipt.unitPath, next);
@@ -457,21 +477,27 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
     catch (error) { writeSecretFileAtomic(receipt.unitPath, source); throw error; }
     assertSystemdSource(receipt.unitPath, sha256);
     if (plan.mechanism === "systemd-user") submitSystemdUnitRegistration("reload", receipt.unit);
+    } finally { lock?.release(); }
   };
 }
 
 /** Start only the recorded, unchanged service. This does not restart an already-running daemon. */
 export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void): Promise<UninstallPlan> {
+  const lock = process.platform === "darwin" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
+  try {
   assertDesktopSetupComplete();
   if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report, true);
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) service.start(receipt);
   else submitSystemdUnitControl("start", plan.unit);
   return plan;
+  } finally { lock?.release(); }
 }
 
 /** Start only an enabled, same-installation POSIX unit or LaunchAgent during update, never overriding an operator disable. */
 export async function startEnabledInstalled(paths: DaemonPaths, daemonHome: string | undefined): Promise<{ started: boolean; unit: string; state: string }> {
+  const lock = process.platform === "darwin" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
+  try {
   assertDesktopSetupComplete();
   const recorded = recordedUnit(paths, daemonHome);
   const identity = recordedDaemonIdentity(recorded);
@@ -489,6 +515,7 @@ export async function startEnabledInstalled(paths: DaemonPaths, daemonHome: stri
   if (state !== "enabled") return { started: false, unit: plan.unit, state };
   submitSystemdUnitControl("start", plan.unit);
   return { started: true, unit: plan.unit, state: "enabled" };
+  } finally { lock?.release(); }
 }
 
 /** Validate a present service receipt from persistent state without runtime discovery. Return false only when absent. */
@@ -534,6 +561,135 @@ export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemo
   return expectedArgv ? recordedSourceIdentity(recorded.receipt, recorded.plan.mechanism, () => [...expectedArgv]) : recordedDaemonIdentity(recorded);
 }
 
+/** Replace only a verified macOS unit whose program is gone. Keep sign-in and hosting records. */
+export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHome?: string): Promise<boolean> {
+  if (process.platform !== "darwin" || !readReceipt(paths)) return false;
+  const lock = await acquireLockAsync(join(paths.state, "service-repair.lock"));
+  let fenced = false;
+  let owner: ReturnType<typeof readLifetimeRecord>;
+  let socket: Awaited<ReturnType<typeof openVerified>> | undefined;
+  let replies: ReturnType<typeof repairReplies> | undefined;
+  const request = async (op: "status" | "managers-prepare-restart" | "managers-abort-restart") => {
+    if (!socket || !owner?.start || processBirth(owner.pid) !== owner.start) throw new Error("the pinned daemon lifetime is no longer available");
+    const id = randomUUID().replaceAll("-", "");
+    const answer = replies!.read(id, op === "managers-prepare-restart" ? 130_000 : 70_000);
+    socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op }));
+    const reply = JSON.parse(await answer) as DaemonResponse;
+    if (reply.id !== id || reply.v !== DAEMON_PROTOCOL_VERSION || !reply.ok || "event" in reply || !("version" in reply.result)) throw new Error("the pinned daemon refused service repair preparation");
+    return reply.result;
+  };
+  try {
+    let intent = readServiceRepair(paths.state);
+    if (intent) {
+      const actual = readReceipt(paths)!;
+      if (actual.daemonHome !== daemonHome || intent.receipt.daemonHome !== daemonHome) throw new Error("the repair intent names another daemon home");
+      const source = readFileSync(actual.unitPath, "utf8");
+      assertServiceRepairPair(intent, actual, source);
+      const matching = { ...intent.receipt, unitSha256: sourceDigest(source) };
+      // Verify the physical source and any loaded job before recovering the interrupted pair.
+      nativeService()!.check(matching);
+      writeSecretFileAtomic(unitReceiptFile(paths), `${JSON.stringify(matching)}\n`);
+    }
+    const recorded = recordedUnit(paths, daemonHome, nativeRun, false, true);
+    const { receipt, service } = recorded;
+    if (!intent && !missingLaunchAgentProgram(receipt)) return false;
+    if (receipt.daemonHome !== daemonHome || !recordedSourceMarked(receipt, "launchd-agent")) throw new CommandFailure("refused", "CONFLICT", "the missing-program LaunchAgent does not prove this daemon's native source; nothing was changed");
+    const previousSource = intent?.previousSource ?? readFileSync(receipt.unitPath, "utf8");
+    const argv = daemonServeArgv(daemonHome);
+    const entry = argv[argv.indexOf("daemon") - 1]!;
+    const installedVersion = JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8")).version;
+    const version = intent?.version ?? installedVersion;
+    if (installedVersion !== version) throw new Error("the recorded repair destination version changed; no service was stopped");
+    if (intent && JSON.stringify(intent.argv) !== JSON.stringify(argv)) throw new Error("the repair must finish from its recorded Cotal installation");
+    let hostedSpaces = intent?.hostedSpaces ?? [];
+    // A running process loaded from the deleted bundle is not a replacement installation.
+    for (const file of [argv[0]!, entry, join(dirname(entry), "daemon-cwd.js")]) {
+      if (!statSync(file).isFile()) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "this Cotal installation cannot repair the missing daemon program; reinstall Cotal first");
+    }
+    const next = intent ? { text: intent.nextSource, sha256: sourceDigest(intent.nextSource) }
+      : renderLaunchAgent({ label: receipt.unit, argv, searchPath: pinnedPath(), workingDirectory: homedir(), logPath: join(paths.state, "daemon.log") });
+    const enabled = intent?.enabled ?? service!.isEnabled!(receipt);
+    owner = readLifetimeRecord(paths.lock);
+    try {
+      socket = await openVerified({ paths });
+      socket.on("error", () => {});
+      replies = repairReplies(socket);
+      const answer = await request("status");
+      if (!owner?.start || answer.pid !== owner.pid || processBirth(owner.pid) !== owner.start) throw new Error("the daemon lifetime changed before service repair");
+      const job = darwinLaunchdJob(receipt.unit);
+      if (job.state !== "loaded" || job.job.pid !== answer.pid) throw new Error("the answering daemon is not the recorded native job");
+      if (intent && readFileSync(receipt.unitPath, "utf8") === intent.nextSource && recordedSourceIdentity(receipt, "launchd-agent", intent.argv).same && answer.version === version) {
+        if (hostedSpaces.some(space => !answer.managers?.some(manager => manager.space === space && manager.state === "answering"))) throw new Error("the repaired daemon's recorded Managers have not answered yet");
+        rmSync(serviceRepairFile(paths.state));
+        return true;
+      }
+      hostedSpaces = [...new Set([...hostedSpaces, ...(answer.managers ?? []).filter(manager => manager.pid !== undefined).map(manager => manager.space)])];
+      fenced = true;
+      await request("managers-prepare-restart");
+    } catch (error) {
+      if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error;
+      if (owner?.start && processBirth(owner.pid) === owner.start) throw new Error("the missing-program daemon is live but cannot be verified; its service was not changed");
+      owner = undefined;
+    }
+    const current = recordedUnit(paths, daemonHome, nativeRun, false, true).receipt;
+    if (JSON.stringify(current) !== JSON.stringify(receipt) || (!intent && !missingLaunchAgentProgram(current))) throw new Error("the daemon installation changed before repair");
+    if (owner?.start && processBirth(owner.pid) !== owner.start) throw new Error("the daemon lifetime changed before repair");
+    intent ??= { v: 1, receipt, previousSource, nextSource: next.text, enabled, argv, version, hostedSpaces, phase: "prepared" };
+    intent = { ...intent, hostedSpaces };
+    writeSecretFileAtomic(serviceRepairFile(paths.state), `${JSON.stringify(intent)}\n`);
+    service!.remove(current, true);
+    const deadline = Date.now() + 130_000;
+    while (owner?.start && processBirth(owner.pid) === owner.start) {
+      if (Date.now() >= deadline) throw new Error("the old daemon did not exit during service repair; source and receipt were retained");
+      await delay(100);
+    }
+    for (;;) {
+      const native = nativeRun("/bin/launchctl", ["print", `gui/${process.getuid!()}/${receipt.unit}`]);
+      if (native.status === 113) break;
+      if (native.status !== 0) throw new Error("launchd could not confirm the old service absent; source and receipt were retained");
+      if (Date.now() >= deadline) throw new Error("the old LaunchAgent did not unload during repair");
+      await delay(100);
+    }
+    const exclusion = excludeLifetime(paths.lock);
+    try {
+      const unchanged = recordedUnit(paths, daemonHome, nativeRun, false, true).receipt;
+      if (JSON.stringify(unchanged) !== JSON.stringify(receipt)) throw new Error("the daemon receipt changed during repair");
+      writeSecretFileAtomic(receipt.unitPath, next.text);
+      try { writeSecretFileAtomic(unitReceiptFile(paths), `${JSON.stringify({ ...receipt, unitSha256: next.sha256 })}\n`); }
+      catch (error) { writeSecretFileAtomic(receipt.unitPath, previousSource); throw error; }
+      writeSecretFileAtomic(serviceRepairFile(paths.state), `${JSON.stringify({ ...intent, phase: "published" })}\n`);
+    } finally { exclusion.release(); }
+    const repaired = recordedUnit(paths, daemonHome, nativeRun, false, true).receipt;
+    if (!enabled) {
+      rmSync(serviceRepairFile(paths.state));
+      return true;
+    }
+    service!.start(repaired);
+    const readyUntil = Date.now() + 60_000;
+    for (;;) {
+      try {
+        const answer = await queryDaemon({ paths });
+        if (!answer.ok || answer.result.version !== version) throw new Error("repaired daemon has not confirmed this installed version");
+        const fresh = readLifetimeRecord(paths.lock);
+        if (!fresh?.start || fresh.pid !== answer.result.pid || processBirth(fresh.pid) !== fresh.start || (fresh.pid === owner?.pid && fresh.start === owner.start)) throw new Error("the repaired daemon has no fresh verified lifetime");
+        const current = recordedUnit(paths, daemonHome, nativeRun, false, true);
+        if (!recordedSourceIdentity(current.receipt, "launchd-agent", argv).same) throw new Error("the repaired native source no longer names the selected installation");
+        const job = darwinLaunchdJob(current.receipt.unit);
+        if (job.state !== "loaded" || job.job.pid !== answer.result.pid) throw new Error("the repaired endpoint is not the recorded native job");
+        if (hostedSpaces.some(space => !answer.result.managers?.some(manager => manager.space === space && manager.state === "answering" && manager.pid !== undefined))) throw new Error("repaired hosted Managers have not answered");
+        rmSync(serviceRepairFile(paths.state));
+        return true;
+      } catch (error) {
+        if (Date.now() >= readyUntil) throw error;
+        await delay(250);
+      }
+    }
+  } finally {
+    try { if (fenced && owner?.start && processBirth(owner.pid) === owner.start) await request("managers-abort-restart"); }
+    finally { replies?.close(); socket?.destroy(); lock.release(); }
+  }
+}
+
 function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUnit>): { same: boolean; installed: string; installedEntry: string; current: string } {
   return recordedSourceIdentity(receipt, plan.mechanism, () => daemonServeArgv(receipt.daemonHome));
 }
@@ -547,7 +703,9 @@ export interface DaemonOwnershipObservation {
 export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: string): DaemonOwnershipObservation {
   if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return { state: "not-owned", reason: "marker-absent" };
   try {
-    const recorded = recordedUnit(paths, daemonHome);
+    const intent = process.platform === "darwin" ? readServiceRepair(paths.state) : undefined;
+    const recorded = recordedUnit(paths, daemonHome, nativeRun, false, intent !== undefined);
+    if (intent) assertServiceRepairPair(intent, recorded.receipt, readFileSync(recorded.receipt.unitPath, "utf8"));
     if (!recordedDaemonIdentity(recorded).same) return { state: "not-owned", reason: "identity-differs" };
     const { receipt, plan } = recorded;
     const marked = recordedSourceMarked(receipt, plan.mechanism);
@@ -807,6 +965,8 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
 
 /** Restart only the source and native job recorded for this daemon. */
 export async function restartInstalled(paths: DaemonPaths, daemonHome?: string, reload = false, expectedVersion?: string, report?: (detail: string) => void, automatic?: WindowsAutomaticRestart): Promise<UninstallPlan> {
+  const lock = process.platform === "darwin" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
+  try {
   if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report, false, automatic);
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) service.restart(receipt, reload);
@@ -816,6 +976,7 @@ export async function restartInstalled(paths: DaemonPaths, daemonHome?: string, 
     if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the native daemon start did not confirm completion (${result.detail}); it was not retried`, { target: { unit: plan.unit }, remedy: "correct the native service error, then run \`cotal daemon start\`" });
   }
   return plan;
+  } finally { lock?.release(); }
 }
 
 interface UninstallResult extends UninstallPlan {
@@ -826,6 +987,12 @@ interface UninstallResult extends UninstallPlan {
 /** Stop it, disable autostart, erase its service records under lifetime exclusion, remove the unit
  *  and receipt, and reload the user manager (on macOS and Windows, the adapter's deregistration). */
 export async function applyUninstall(paths: DaemonPaths, daemonHome: string | undefined): Promise<UninstallResult> {
+  const lock = process.platform === "darwin" ? await acquireLockAsync(join(paths.state, "service-repair.lock")) : undefined;
+  try { return await applyUninstallUnlocked(paths, daemonHome); }
+  finally { lock?.release(); }
+}
+
+async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined): Promise<UninstallResult> {
   const { receipt, plan, service, recovered } = recordedUnit(paths, daemonHome, nativeRun, true);
   if (recovered) {
     submitSystemdUnitControl("stop", plan.unit);
