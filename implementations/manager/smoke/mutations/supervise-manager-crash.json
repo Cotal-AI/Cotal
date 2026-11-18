@@ -37,7 +37,7 @@
     },
     {
       "name": "a crash restart ignores the spent budget",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-custody.ts",
       "find": "    if (crashes.length > policy.restarts)\n      return `its supervise restart budget is spent",
       "replace": "    if (false)\n      return `its supervise restart budget is spent",
       "expectRed": "a crash past the budget retires the seat instead of restarting it",
