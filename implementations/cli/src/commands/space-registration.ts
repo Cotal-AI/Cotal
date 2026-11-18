@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, readFileSync, readlinkSync, rmdirSync, statSync } from "node:fs";
+import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { listSpaces, token } from "@cotal-ai/core";
@@ -23,6 +24,8 @@ import {
   keepsRegistration,
   loadMeshes,
   localWriteFailure,
+  meshFile,
+  readMeshRegistry,
   personaDir,
   pinnedFetch,
   PinnedFetchRefused,
@@ -54,7 +57,7 @@ import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { mkdirPrivate } from "../lib/private-directory.js";
-import { adoptionRefusal, adoptStackJournal, journalRecordedElsewhere, releaseStackDefinitions } from "../lib/stack-journal.js";
+import { adoptionRefusal, adoptStackJournal, journalRecordedElsewhere, releaseStackDefinitions, runningStackRoles, stackRootGone } from "../lib/stack-journal.js";
 import {
   candidateTarget,
   checkDialPolicy,
@@ -125,11 +128,13 @@ interface SpaceCreated {
 interface SpaceForgotten {
   readonly kind: "space-forgotten";
   readonly space: string;
-  /** The broker it was registered at, or null for a prepared space, which has none. */
+  /** The broker it was registered at, or null for a prepared space, which has none, or for a
+   *  registration whose record could not be read. */
   readonly server: string | null;
-  /** Its root, or null for a prepared space whose record could not be read, which names none. */
+  /** Its root, or null for a record that could not be read, which names none. */
   readonly root: string | null;
-  /** How it came to be here: a registration's origin, or `prepared` for a space `space create` made. */
+  /** How it came to be here: a registration's origin, `prepared` for a space `space create` made,
+   *  or null for a registration whose record could not be read. */
   readonly origin: MeshEntry["origin"] | "prepared" | null;
   /** The stopped controller stack definitions this machine saved for the space at its root, removed
    *  so that another folder can start a stack under the same name. */
@@ -601,7 +606,15 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   const target = { space: name };
   // Read before any effect: a preferences file that cannot be read refuses the forget as it is.
   const preferencesRevision = readPreferences().revision;
-  const m = findMesh(name);
+  const registry = readMeshRegistry();
+  if (registry.unusable.some((e) => e.file === meshFile(name))) {
+    // Its own registry record cannot be read, so it names no root to release definitions at or to
+    // check for a running stack: remove the file, as for a prepared record that cannot be read.
+    removeMesh(name);
+    return forgotten(presentation, { space: name, server: null, root: null, origin: null, releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision);
+  }
+  if (registry.unusable[0]) throw registry.unusable[0];
+  const m = registry.entries.find((entry) => entry.space === name);
   if (!m) {
     let p: ReturnType<typeof findPreparedSpace>;
     try {
@@ -633,11 +646,44 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     if (running) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${m.root} (${running})`, target, stack
       ? `stop it with \`cotal down\` in ${m.root}, which keeps it as a prepared space there, then run \`cotal space forget ${name}\` again`
       : keepsRegistration(m) ? `stop it with \`cotal down\` in ${m.root}, which keeps its record, then run \`cotal space forget ${name}\` again` : `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
+    // A deleted folder takes the pidfiles and stack journal that check reads, so a stack left running
+    // there shows only in this machine's instance records or at its recorded address (#7325).
+    if (!existsSync(m.root)) await refuseGoneFolderStack(m);
   }
   const release = releaseStackDefinitions(m.root, name), keptServices = savedServicesLeft(name, release.kept);
   removeMesh(name);
   const warnings = unsettled.map((member) => ({ code: "STACK_MEMBER_UNSETTLED", target, message: `the stack member ${member} is gone but was never stopped cleanly: its record has no stop receipt` }));
   forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null, releasedDefinitions: release.released, keptServices }, preferencesRevision, [...warnings, ...keptWarnings(name, release.kept)]);
+}
+
+/** Refuses to forget a space whose folder is gone while the stack it started there may still run: a
+ *  controller stack member its instance records show running, or anything listening at the recorded
+ *  broker address that no other registration names. Forgetting it then would leave that broker
+ *  holding its port with nothing on this machine naming it. */
+async function refuseGoneFolderStack(m: MeshEntry): Promise<void> {
+  const target = { space: m.space, root: m.root, server: m.server };
+  const gone = `"${m.space}" started in ${m.root}, which no longer exists`;
+  const members = stackRootGone(m.space, m.root) ? runningStackRoles(m.space) : [];
+  if (members.length) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but its stack's ${members.join(", ")} still ${members.length === 1 ? "runs" : "run"}; nothing was forgotten`, target, `stop it with \`cotal down --space ${m.space} --yes\`, which also drops this record`);
+  if (loadMeshes().some((other) => other.space !== m.space && other.server === m.server)) return;
+  const address = await listenerAt(m.server);
+  if (address) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but something still listens at ${m.server}, its recorded broker address, so the broker it started may still run; nothing was forgotten`, target, `stop the process listening on ${address}, then run \`cotal space forget ${m.space}\` again`);
+}
+
+/** The `host:port` of a broker address when something accepts a TCP connection there within half a
+ *  second, else undefined. */
+function listenerAt(server: string): Promise<string | undefined> {
+  let url: URL;
+  try { url = new URL(server); } catch { return Promise.resolve(undefined); }
+  const host = url.hostname.replace(/^\[(.*)\]$/, "$1"), port = Number(url.port) || 4222;
+  return new Promise((done) => {
+    const socket = createConnection({ host, port });
+    const finish = (listening: boolean) => { socket.destroy(); done(listening ? `${url.hostname}:${port}` : undefined); };
+    socket.setTimeout(500);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+  });
 }
 
 /** The saved services a forget leaves under `name`. When the stack definitions could not be read,
@@ -682,7 +728,9 @@ function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | 
 function forgottenView(r: SpaceForgotten): Report {
   const lines: Cell[] = [
     { text: `forgot ${r.space}`, tone: "ok", mark: "✓" },
-    { text: `  ${r.server === null ? "prepared, not running" : r.server}; ${r.root === null ? "its record could not be read, so it named no folder" : existsSync(r.root) ? `the files under ${r.root} are kept` : `its folder ${r.root} no longer exists`}`, tone: "hint" },
+    r.origin === null && r.root === null
+      ? { text: "  its registration could not be read, so it named no broker or folder", tone: "hint" }
+      : { text: `  ${r.server === null ? "prepared, not running" : r.server}; ${r.root === null ? "its record could not be read, so it named no folder" : existsSync(r.root) ? `the files under ${r.root} are kept` : `its folder ${r.root} no longer exists`}`, tone: "hint" },
   ];
   const removed = Object.entries(r.removedPreferences).filter(([, value]) => value !== undefined);
   if (removed.length) lines.push({ text: `  removed its per-space preferences: ${removed.map(([key, value]) => `${key}=${value}`).join(", ")} - \`cotal config set <key> <value> --space ${r.space}\` sets one again`, tone: "hint" });

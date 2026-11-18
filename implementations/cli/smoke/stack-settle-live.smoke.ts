@@ -1634,7 +1634,10 @@ try {
       { preview: shown(preview), stop: shown(stop), set: shown(setPreview) });
   }
 
-  // 11. A first up whose broker cannot create the space's streams.
+  // 11. A first up under a low open-file limit. Which step runs out first depends on how many files
+  // the CLI's Node runtime holds open: on Node 22 the broker starts and cannot create the space's
+  // streams, so it is stopped again; on Node 24 the CLI cannot run the nats-server version check, so
+  // nothing starts. Either way the failure is a known one, and down has nothing to refuse.
   {
     const space = "fewfiles";
     const root = prepare(space);
@@ -1643,7 +1646,7 @@ try {
     let failed: Envelope | undefined;
     try { failed = JSON.parse(limited.stdout) as Envelope; } catch { failed = undefined; }
     track(space);
-    check(`${space}: under ulimit -n 32 the up stops the broker it started, fails OPERATION_FAILED, exit 5, and names the open-file limit`,
+    check(`${space}: under ulimit -n 32 the up fails OPERATION_FAILED, exit 5, names the open-file limit, and leaves no broker running`,
       limited.status === 5 && failed?.error?.code === "OPERATION_FAILED" && /ran out of open files/.test(failed.error.message) && (failed.error.remedy ?? "").includes("ulimit -n") && gone(space, "stack-broker"),
       { status: limited.status, envelope: failed, stderr: limited.stderr.slice(-1500) });
     const recovered = cli(root, "up", "--json");

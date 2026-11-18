@@ -484,14 +484,22 @@ try {
   type DeprovArg = { id: string; name: string };
   type DeprovBroker = (a: DeprovArg) => Promise<import("@cotal-ai/core").DeprovisionResourceAccounting>;
   type Handle = import("@cotal-ai/core").AgentHandle;
-  const mAny = manager as unknown as { deprovisionBroker: DeprovBroker; absentByLeaseRow: () => Promise<"absent">; ep: { ref: () => { id: string }; getRoster: () => Array<{ card: { name: string }; status?: string }> }; opStop: (a: Record<string, unknown>, c: string, admin: boolean) => Promise<ControlReply>; agents: Map<string, { handle: Handle }> };
-  const origBroker: DeprovBroker = mAny.deprovisionBroker.bind(manager);
+  const mAny = manager as unknown as {
+    absentByLeaseRow: () => Promise<"absent">;
+    ep: { ref: () => { id: string }; getRoster: () => Array<{ card: { name: string }; status?: string }> };
+    opStop: (a: Record<string, unknown>, c: string, admin: boolean) => Promise<ControlReply>;
+    agents: Map<string, { handle: Handle }>;
+    retirement: {
+      deprovisionBroker: DeprovBroker;
+    };
+  };
+  const origBroker: DeprovBroker = mAny.retirement.deprovisionBroker.bind(mAny.retirement);
   let releaseGate!: () => void;
   const gate = new Promise<void>((r) => { releaseGate = r; });
   let gatedRun: Promise<never> | undefined;
   let predArg: DeprovArg | undefined;
   const brokerCalls: Array<{ name: string; gated: boolean; done: Promise<unknown> }> = [];
-  mAny.deprovisionBroker = (a: DeprovArg): ReturnType<DeprovBroker> => {
+  mAny.retirement.deprovisionBroker = (a: DeprovArg): ReturnType<DeprovBroker> => {
     if (a.name === AGENT && !gatedRun) {
       predArg = a;
       gatedRun = (async () => { await gate; throw new Error("injected first-teardown broker failure"); })();
@@ -671,7 +679,7 @@ try {
   replayAtMs = Date.now();
   // A conforming retired-lifecycle no-op may also throw; a DeprovisionError carries that call's accounting.
   const replayRes = await origBroker(predArg!).catch((e: unknown) => e instanceof DeprovisionError ? e.accounting : undefined);
-  mAny.deprovisionBroker = origBroker;
+  mAny.retirement.deprovisionBroker = origBroker;
 
   check("REPLAY ACCOUNTING: replayed predecessor teardown reports zero deletions",
     replayRes !== undefined && replayRes.deleted === 0 && replayRes.absent >= 3,
@@ -753,7 +761,11 @@ try {
     errLines.some((l) => l.includes(`membership inventory incomplete`) && l.includes("RETAINED") && l.includes(sibUid ?? "?")), errLines.filter((l) => /inventory/.test(l)));
 
   // The sibling alias stays HELD in retiring while inventory is incomplete:
-  const heldSibling = (manager as unknown as { retiring: Map<string, unknown> }).retiring;
+  const heldSibling = (manager as unknown as {
+    retirement: {
+      retiring: Map<string, unknown>;
+    };
+  }).retirement.retiring;
   check("INCOMPLETE: the sibling alias stays held in retiring while delivery daemon is absent", !!sib && heldSibling.has(sib));
 
   // A spawn attempting to reuse the alias while inventory was incomplete is refused with reserved pending retirement:
@@ -764,8 +776,12 @@ try {
   check("INCOMPLETE: predecessor memberKey row is still RETAINED while alias remains held", !!sib && await sibRow("unnamed"));
 
   // Wait for the in-flight failed deprovision to settle before restoring delivery:
-  const mDeprov = manager as unknown as { deprovisioningFlight: Map<string, Promise<void>> };
-  for (let i = 0; i < 100 && sib && sibUid && mDeprov.deprovisioningFlight.has(JSON.stringify([sib, sibUid])); i++) await wait(50);
+  const mDeprov = manager as unknown as {
+    retirement: {
+      deprovisioningFlight: Map<string, Promise<void>>;
+    };
+  };
+  for (let i = 0; i < 100 && sib && sibUid && mDeprov.retirement.deprovisioningFlight.has(JSON.stringify([sib, sibUid])); i++) await wait(50);
 
   // Positive control: restart the actual delivery daemon and retry to complete exact cleanup:
   delivery = await spawnDeliveryDaemon();
@@ -929,21 +945,25 @@ try {
       attempts: number; maxAttempts: number; disposition: string; remedy?: string; lastError?: string;
     };
     const mStatic = manager as unknown as {
+      staticLifecycle: {
       staticReconcileKey: (row: { owner: string; alias: string; actor: string; lifecycleUid: string }) => string;
       staticReconcileItems: Map<string, StaticReconcileItem>;
       driveStaticReconcileRetry: (key: string, item: StaticReconcileItem) => Promise<void>;
       reconcileStaticLifecycles: (postAdoption?: boolean) => Promise<void>;
-      retiredPrincipals: Set<string>;
+      };
+      retirement: {
+        retiredPrincipals: Set<string>;
+      };
     };
 
     const liveSlotFresh = await readStaticSlot(staticTransport, DEV_OWNER, liveAlias);
-    const liveKey = mStatic.staticReconcileKey(liveSlotFresh!.row);
+    const liveKey = mStatic.staticLifecycle.staticReconcileKey(liveSlotFresh!.row);
     const liveItem: StaticReconcileItem = {
       owner: DEV_OWNER, alias: liveAlias, actor: liveActor, lifecycleUid: liveUid,
       phase: "active", attempts: 0, maxAttempts: 5, disposition: "retrying",
     };
-    mStatic.staticReconcileItems.set(liveKey, liveItem);
-    await mStatic.driveStaticReconcileRetry(liveKey, liveItem);
+    mStatic.staticLifecycle.staticReconcileItems.set(liveKey, liveItem);
+    await mStatic.staticLifecycle.driveStaticReconcileRetry(liveKey, liveItem);
 
     check("RECONCILE 8344: static reconciliation refuses to terminalize an adopted live managed agent",
       liveItem.disposition === "refused" && /adopted live managed agent/.test(liveItem.lastError ?? ""), liveItem);
@@ -953,11 +973,11 @@ try {
       await inspect(async (_j, nc) => (await readMember(await openMembersRegistry(nc, SPACE), "general", livePrincipal.key, liveUid)) !== undefined));
 
     // 4. Drive startup/static reconciliation sweep: reconciles unadopted orphan to terminal
-    await mStatic.reconcileStaticLifecycles(true);
+    await mStatic.staticLifecycle.reconcileStaticLifecycles(true);
 
     const orphanSlotAfter = await readStaticSlot(staticTransport, DEV_OWNER, orphanAlias);
     check("RECONCILE: unadopted orphan static slot is retired", orphanSlotAfter?.row.phase === "retired", orphanSlotAfter);
-    check("RECONCILE: orphan principal is recorded in retiredPrincipals", mStatic.retiredPrincipals.has(orphanPrincipal.key));
+    check("RECONCILE: orphan principal is recorded in retiredPrincipals", mStatic.retirement.retiredPrincipals.has(orphanPrincipal.key));
 
     const orphanMembersAfter = await orphanRowsFor();
     check("RECONCILE MEMBERS: static sweep purged all orphan rows via daemon inventory with no launch metadata (3 of 3, no residue)",
@@ -1013,7 +1033,7 @@ try {
         }
         return nativePurge.call(this, key, options);
       };
-      try { await mStatic.reconcileStaticLifecycles(true); }
+      try { await mStatic.staticLifecycle.reconcileStaticLifecycles(true); }
       finally { proto.purge = nativePurge; }
     });
     const racedResources = (manager as unknown as { staticReconcileLastSweepResources?: { deprovision?: import("@cotal-ai/core").DeprovisionResourceAccounting } }).staticReconcileLastSweepResources?.deprovision;

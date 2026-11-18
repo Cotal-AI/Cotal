@@ -53,6 +53,7 @@ import { processGone, readStackJournal, stackScopeRefusals } from "../lib/stack-
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import {
   ConnectRefusal,
+  isConnectRefusal,
   isWorkspaceTargetError,
   localMeshesForRoot,
   preparedNeverStarted,
@@ -237,8 +238,8 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   if (args.values.auto || args.values.notify) {
     const key = args.values.auto ? "auto" : "notify";
     const value = args.positionals[0];
-    if (value !== undefined) setUpdateSetting(key, value === "on");
-    const settings = readUpdateSettings();
+    const current = readUpdateSettings(backup => rt.err(`Damaged update settings saved to ${backup}; using defaults (automatic updates and notices on).`));
+    const settings = value === undefined ? current : setUpdateSetting(key, value === "on");
     rt.out(`${key === "auto" ? "Automatic updates" : "Update notices"}: ${settings[key] ? "on" : "off"}${rt.env.COTAL_NO_UPDATE_CHECK === "1" ? " (disabled by COTAL_NO_UPDATE_CHECK=1)" : ""}`);
     if (key === "auto" && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) rt.out("This runtime belongs to the desktop app. Automatic npm updates have no effect here; update the desktop app with its signed platform installer.");
     else if (key === "auto" && settings.auto && ["linux", "darwin", "win32"].includes(process.platform) && rt.env.COTAL_NO_UPDATE_CHECK !== "1") {
@@ -756,11 +757,16 @@ export async function reportRunningManagers(
   flags: Record<string, unknown>,
   readOne: (flags: Record<string, unknown>) => Promise<"none" | "legacy"> = readManagerContinuity,
   census: (flags: Record<string, unknown>) => readonly UpdateManager[] = localUpdateManagers,
+  options: { retainGraph?: boolean } = {},
 ): Promise<"none" | "legacy"> {
   // Raw credentials are an explicit off-registry target, not an install-wide discovery request.
   if (typeof flags.creds === "string") return readOne(flags);
   const on = typeof flags.on === "string" ? await managerPin(flags, "cotal update") : undefined;
-  const local = census({ ...flags, on });
+  const observed = census({ ...flags, on });
+  // A Manager of another home is named and left alone. It never changes which of this home's
+  // Managers are selected, nor whether the selected mesh is read.
+  for (const manager of observed) if (manager.ownership === "foreign") await readUpdateManagerContinuity(manager, flags, readOne, options);
+  const local = observed.filter(manager => manager.ownership !== "foreign");
   const selected = local.filter(manager =>
     (typeof flags.space !== "string" || manager.space === flags.space) &&
     (typeof flags.server !== "string" || brokerAddressKey(manager.server) === brokerAddressKey(flags.server)) &&
@@ -768,9 +774,7 @@ export async function reportRunningManagers(
   if (selected.length) {
     let verdict: "none" | "legacy" = "none";
     for (const manager of selected) {
-      if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before its continuity read`);
-      console.log(c.dim(`  ${manager.space}: reading local Manager ${manager.instanceId} (pid ${manager.pid})`));
-      if (await readOne({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") verdict = "legacy";
+      if (await readUpdateManagerContinuity(manager, flags, readOne, options) === "legacy") verdict = "legacy";
     }
     return verdict;
   }
@@ -794,7 +798,55 @@ export async function reportRunningManagers(
   }
 }
 
+/** Read one known local Manager without requiring another home's credentials. */
+export async function readUpdateManagerContinuity(
+  manager: UpdateManager,
+  flags: Record<string, unknown>,
+  readOne: (flags: Record<string, unknown>) => Promise<"none" | "legacy"> = readManagerContinuity,
+  options: { retainGraph?: boolean } = {},
+): Promise<"none" | "legacy"> {
+  if (typeof flags.creds === "string") return readOne(flags);
+  const pin = () => {
+    if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed during its continuity read`);
+  };
+  pin();
+  if (manager.ownership === "foreign") {
+    console.log(`Manager pid ${manager.pid}, instance unavailable in space ${JSON.stringify(manager.space)} at ${JSON.stringify(manager.root)} keeps running the version it loaded until it is restarted from its own home; its root is not registered in this home.`);
+    pin();
+    return "none";
+  }
+  try {
+    const verdict = await readOne({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId });
+    pin();
+    return verdict;
+  } catch (error) {
+    pin();
+    const cause = isConnectRefusal(error) ? error.cause as { code?: unknown } | undefined : undefined;
+    if (!options.retainGraph || !manager.process || typeof flags.creds === "string" || !isConnectRefusal(error) || error.code !== "AUTH_REQUIRED" ||
+        (error.native?.code !== "CREDENTIALS_MISSING" && cause?.code !== "signed-out")) throw error;
+    console.log(`Manager ${manager.instanceId} in space ${JSON.stringify(manager.space)} at ${JSON.stringify(manager.root)} keeps running the version it loaded until it is restarted from its own home; this home has no credentials for its space.`);
+    return "none";
+  }
+}
+
 export async function readManagerContinuity(flags: Record<string, unknown>, options: { readOnly?: boolean; retainGraph?: boolean; installedEntry?: string } = {}): Promise<"none" | "legacy"> {
+  const { readMeshRegistry } = await import("@cotal-ai/workspace");
+  const registry = readMeshRegistry();
+  if (registry.unusable.length) throw registry.unusable[0];
+  const local = registry.entries.filter(entry => entry.mode !== "user" &&
+    (typeof flags.space !== "string" || flags.space === entry.space) &&
+    (typeof flags.server !== "string" || brokerAddressKey(flags.server) === brokerAddressKey(entry.server)));
+  const { goneStackRoot } = await import("../lib/stack-journal.js");
+  const gone = typeof flags.creds === "string" ? [] : local.filter(entry => !existsSync(entry.root) || goneStackRoot(entry.space) !== undefined);
+  for (const entry of gone) console.log(`  ${entry.space}: folder is gone; leaving its processes untouched, continuity not checked`);
+  if (gone.length && gone.length === local.length) return "none";
+  if (gone.length) {
+    let verdict: "none" | "legacy" = "none";
+    for (const entry of local.filter(entry => !gone.includes(entry))) {
+      if (await readManagerContinuity({ ...flags, space: entry.space, server: entry.server }, options) === "legacy") verdict = "legacy";
+    }
+    return verdict;
+  }
   // `--on` names the manager whose custody this install carries. An owner with several live
   // managers on a user-auth mesh (one per machine, say) gets the exchange's selection refusal
   // without it, naming `--on` as the remedy; the flag has to exist here for that remedy to be real,
@@ -819,6 +871,19 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       peek = resolveMeshTarget(process.cwd(), { server, space, offline });
     } catch (e) {
       if (!isWorkspaceTargetError(e)) throw e;
+      // Prepared-only spaces have no registry entry for the gone-root check above.
+      // As with a registered gone root, leave its records and processes untouched.
+      if (e.code === "not-started" && e.details.rootMissing === true) {
+        console.log(`  ${e.details.space}: folder is gone; leaving its processes untouched, continuity not checked`);
+        return "none";
+      }
+      // A refused legacy start can leave a rendered broker config without ever starting a member.
+      // That file cannot prove custody or its absence. Leave the project alone without claiming
+      // continuity, rather than requiring a successful start before a software update.
+      if (e.code === "not-started" && e.details.lastRun === true) {
+        console.log(c.dim(`  ${e.details.stackSpace ?? e.details.root}: retained broker configuration in ${e.details.root}; leaving its records and processes untouched, continuity not checked`));
+        return "none";
+      }
       // A space prepared here that never started (`cotal setup --configure-only`, `space create`)
       // has no broker, no stack journal and no manager: a supervisor serves a started stack, and
       // this one never launched a member, so there is nothing this update could interrupt. Run from

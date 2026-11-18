@@ -70,7 +70,9 @@ takes a seat ahead of the channel posts that arrived before it, so it does not w
 for a later turn. DMs keep their place in arrival order. A post that mentions the seat counts as a
 channel post here, so it can wait for a later batch, and it still wakes the seat. That wake names
 the sender by id when the sender's name is missing or only whitespace. A name that contains
-anything else is kept, including a leading space.
+anything else is kept, including a leading space. The wake is one line: control characters, line
+separators and brackets in the sender's name, role or channel are shown as spaces, as in the
+other connectors' frames.
 
 A run turn rides the batch that carries it and counts as shown once the provider takes that batch's
 request: at a successful `after_provider_response`, or, on a transport without that hook, when Pi

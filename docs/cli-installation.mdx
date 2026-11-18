@@ -154,6 +154,12 @@ An answering daemon without an active automatic schedule is reported separately,
 paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
 the command installs and starts nothing.
 `cotal update --notify off` silences notices independently, and `--notify on` enables them.
+If `update-settings.json` contains damaged JSON or invalid settings, these preference commands
+save its contents in a private `update-settings.json.corrupt.<id>` copy in the same folder,
+report that path, and restore the defaults: automatic updates and notices on. A supplied
+`on` or `off` value is then saved. Bare `--auto` and `--notify` also recover the file.
+Filesystem read or write failures still stop the command. Background checks and desktop
+preference requests leave damaged settings unchanged until you run a CLI preference command.
 `COTAL_NO_UPDATE_CHECK=1` disables both checks and automatic installation for that process.
 
 On Windows, an interrupted helper in the same boot pauses automatic installation. Status and
@@ -222,7 +228,14 @@ Update reads the recorded mesh inventory without refreshing account space catalo
 login to a remote mesh does not block the software update. An unreachable registered broker does
 not block either update flow when no local Manager of this installation serves that space. The
 liveness check keeps the registration unchanged. Local manager continuity checks still
-apply before changing the installation.
+apply before changing the installation. When a recorded local space's project folder no longer
+exists, update names the space and the gone folder, leaves its processes untouched, and makes no
+continuity claim for that space. A renamed project does not block the software update or require
+restoring internal identity files. This also applies to a selected prepared space whose project
+folder was deleted before it ever started. Update keeps its saved selection and preparation record.
+Update runs from the surviving project root, or the filesystem root when no project is present.
+Removing an unrelated working folder before or during update does not block it or its npm and
+reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
 After `update --self` replaces the installation, its verified replacement waits up to 120 seconds
 for the recorded same-installation daemon to load the new version and its intended hosted Managers
@@ -330,7 +343,12 @@ there too. A controller stack that completed ordinary `cotal down` is eligible a
 service records prove every process gone. Missing instance records, live or unresolved processes,
 and an unfinished down still refuse. That is the cold path past a `legacy` verdict: `cotal down`,
 then `cotal update`, and the verdict's `Next` line names it with that mesh's space. A space prepared on this machine that never started, whether this folder's,
-selected or named, has no broker and no manager, so it is named and skipped the same way. Any other
+selected or named, has no broker and no manager, so it is named and skipped the same way.
+A refused first start on an older release, or a cleanly stopped project started with an explicit
+space name that differs from its folder name, can leave a rendered broker configuration without a
+registered space. Both update flows name that space and folder, leave its records and processes
+untouched, and skip its continuity read without claiming that no manager is running. A successful
+`cotal up` is not required before updating from that folder. Any other
 selected mesh whose manager cannot be read is still a refusal: a named space that is not
 recorded, a mesh registered with `cotal meshes add`, a `--server` override, a `cotal supervise`
 process still running from any folder whose command line names that space or no space, or a broker

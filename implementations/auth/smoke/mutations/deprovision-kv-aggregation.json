@@ -1,5 +1,7 @@
 {
-  "suite": ["implementations/auth/smoke/freeslot-respawn-barrier.smoke.ts"],
+  "suite": [
+    "implementations/auth/smoke/freeslot-respawn-barrier.smoke.ts"
+  ],
   "guard": "The real Manager sweep preserves ACL and member disappearance evidence from native teardown",
   "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/manager build && pnpm smoke:freeslot-barrier:live",
   "completionMarker": "FREESLOT RESPAWN BARRIER",
@@ -7,7 +9,7 @@
   "mutations": [
     {
       "name": "discard ACL disappearance in Manager sweep aggregation",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
       "find": "          if (attempt.deprovision) addDeprovisionAccounting(sweepDeprovision, attempt.deprovision);",
       "replace": "          if (attempt.deprovision) addDeprovisionAccounting(sweepDeprovision, { ...attempt.deprovision, acls: { ...attempt.deprovision.acls, disappeared: 0 } });",
       "expectRed": "RECONCILE RACE: Manager aggregates KV disappearances without claiming prior absence or own deletion",
@@ -16,7 +18,7 @@
     },
     {
       "name": "discard member disappearance in Manager sweep aggregation",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
       "find": "          if (attempt.deprovision) addDeprovisionAccounting(sweepDeprovision, attempt.deprovision);",
       "replace": "          if (attempt.deprovision) addDeprovisionAccounting(sweepDeprovision, { ...attempt.deprovision, members: { ...attempt.deprovision.members, disappeared: 0 } });",
       "expectRed": "RECONCILE RACE: Manager aggregates KV disappearances without claiming prior absence or own deletion",

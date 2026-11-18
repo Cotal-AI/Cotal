@@ -1,6 +1,6 @@
 ---
 title: Connector runtime reference
-description: Shared connection recovery, presence display, send receipts, delivery acknowledgement, reply correlation, and resume records.
+description: Shared connection recovery, presence display, send receipts, delivery acknowledgement, reply correlation, resume records, and the prompt desk.
 kind: Reference
 audience: integrators
 ---
@@ -200,7 +200,13 @@ The shared formatter indents body continuations and neutralizes attribution fiel
 A redelivered item includes the broker's delivery count and warns that an earlier delivery may already have run.
 The count comes from the broker, not a sender field.
 
+The shared connector marks a newly received durable channel copy historical when its envelope's sender timestamp is more than five minutes old. It keeps that copy pull-only, including mentions, without changing DM or role-request delivery. Live subscription copies and recent durable copies keep their normal wake behavior across short reconnects. An item already buffered in this process keeps its classification across redelivery. A process restart has no earlier classification to retain. Sender clock skew beyond five minutes can affect the comparison.
+
 ## Acknowledgement [#acknowledgement-and-redelivery]
+
+`MeshAgent` forwards inbox reads, drains, delivery holds and focus recall to its internal inbox
+component. The component owns pending deliveries and their timers. Connector integrations keep
+using the same `MeshAgent` methods and exported inbox types.
 
 The connector acknowledges a durable message at its integration's handoff boundary.
 For Claude hooks, a clean stdout-write receipt commits the batch. That receipt proves OS acceptance, not that the model read or applied it.
@@ -223,6 +229,32 @@ Hermes and Jcode create their forks after launch. Their records include the sour
 session title and a SHA-256 hash of the transcript they read. The manager reads
 these values once the fork exists. Each seat also prints the source session, title,
 and hash when it creates the fork.
+
+## Prompt desk [#prompt-desk]
+
+`openPromptDesk(ep, { warn })` serves the agent's own `agent` endpoint, so an authorized session can read and answer the prompts its harness raises.
+It resolves once the broker accepted the subscription.
+It rejects on an open mesh, under a static credential, without a lifecycle UID, when the broker refuses the subscription, and when the connection's `max_payload` is under 524288 bytes.
+The harness's own dialogs then answer every prompt, and presence shows no `prompts` field.
+The same checks run on every replaced connection, and a failure there closes the desk and warns.
+
+The desk knows no harness. An adapter calls `open({ content, openMs, settleMs }, hooks)` for each native dialog it offers.
+`openMs` bounds how long the prompt is offered, from 1 s to 7 days.
+`settleMs` bounds how long a prompt with an accepted answer waits for evidence, from 1 s to 24 h.
+`open` throws `PromptRefused` with the reason `full`, `too-large`, `invalid` or `closed`, and the adapter then leaves that dialog to the harness.
+`open` takes effect at once, also from inside a hook: unlike a report, it is not applied after the step that runs the hook.
+
+The adapter supplies three hooks:
+
+- `check(verdict)` applies the adapter's own rules before an answer is accepted, and returns a message to refuse it. It is synchronous: a promise it returns is a bug, and the answer is refused `internal`.
+- `deliver(verdict)` hands the one accepted answer to the harness. It resolves `delivered` on a receipt from the harness side, `confirmed` when the harness said the answer applied, and `gone` when nothing was handed over. It stays pending while nothing is known, and a rejection proves nothing.
+- `end({ attempted })` comes once per prompt, after its last change. With `attempted: false` the adapter gives the dialog back to the harness if it still waits. With `attempted: true` the adapter writes nothing more to the harness. The desk then lets go of the hooks.
+
+The adapter reports what the harness was then seen to do with `settle` on the prompt's hold: `confirmed`, `local`, `observed` with a sighting tied to the prompt, to its subject or to nothing, or `withdrawn`.
+The desk never upgrades a report, and it ignores a report for a closed prompt with a warning.
+A value `deliver` resolves that is not a delivery result is a failed call, and no rejection of a hook escapes as an unhandled one. A `warn` that throws stops nothing.
+Stopping the endpoint ends the serve and not the prompts, so call `close()` first. It closes every prompt and answers every waiting caller, and it does not wait for a `deliver` that has not ended.
+The answer checks, the bounds and the states are in [SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
 
 ## Connector contracts
 

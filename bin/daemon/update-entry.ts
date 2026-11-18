@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { registry, type Command } from "@cotal-ai/core";
-import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, updateManagerPin, repairInstallModes } from "@cotal-ai/cli/update";
+import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, resolveControlTarget } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
@@ -75,6 +75,7 @@ async function collectConnectorSets(): Promise<void> {
       const holders: (string | undefined)[] = [];
       const managers = localUpdateManagers({}, entry);
       for (const manager of managers) {
+        if (manager.ownership === "foreign" || !manager.instanceId) return;
         if (!manager.process || assertRecordIdentity(manager.process).kind !== "match") return;
         const target = await resolveControlTarget({ space: manager.space, server: manager.server }, "control-caller-admin", manager.instanceId, { onRefusal: "throw", readOnly: true });
         const reply = await askManager({ versionSkew: text => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
@@ -119,7 +120,7 @@ const composed: Command = { ...command, async run(args) {
   const retainsExecution = () => targetReceipt !== undefined || readUpdateRecovery()?.execution !== undefined;
   const reportsRetainedExecution = () => retainedReconciliation || retainsExecution() || (currentPackages && logicalExecutionEntry() !== undefined && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin"));
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
-  const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()));
+  const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()), { retainGraph: true });
   try {
   if (process.platform === "darwin" && args.values.self === true && !process.env.COTAL_AUTO_UPDATE) await repairMissingInstalledProgram(daemonPaths());
   if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
@@ -150,12 +151,13 @@ const composed: Command = { ...command, async run(args) {
     if (!managers.length) return;
     for (const manager of managers) {
       if (!manager.process || assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before reconciliation admission`);
-      await retainedReads({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId });
+      await readUpdateManagerContinuity(manager, flags, retainedReads, { retainGraph: true });
       if (assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed during reconciliation admission`);
     }
     retainConnectorConfig();
     retainedReconciliation = true;
     for (const manager of managers) {
+      if (manager.ownership === "foreign") continue;
       const command = findMesh(manager.space)?.userAuth?.remote
         ? `\`cd ${shellPath(manager.root)} && cotal manager restart --with-agents --yes --space ${shellPath(manager.space)}\``
         : `\`cd ${shellPath(manager.root)} && cotal down --with-agents --yes --space ${shellPath(manager.space)} && cotal up --space ${shellPath(manager.space)}\``;
@@ -321,12 +323,15 @@ const composed: Command = { ...command, async run(args) {
     if (process.platform === "linux" && typeof flags.creds !== "string") {
       const on = await updateManagerPin(flags, "cotal update");
       for (const manager of localUpdateManagers({ ...flags, ...(on === undefined ? {} : { on }) })) {
+        if (manager.ownership === "foreign") {
+          await readUpdateManagerContinuity(manager, flags);
+          continue;
+        }
         if (active.some(hosted => hosted.instanceId === manager.instanceId)) continue;
         if (typeof flags.space === "string" && flags.space !== manager.space) continue;
         if (typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(manager.server)) continue;
         if (on !== undefined && on !== manager.instanceId) continue;
-        if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before its continuity read`);
-        if (await (reportsRetainedExecution() ? retainedReads : readManagerContinuity)({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") localVerdict = "legacy";
+        if (await readUpdateManagerContinuity(manager, flags, reportsRetainedExecution() ? retainedReads : readManagerContinuity, { retainGraph: reportsRetainedExecution() }) === "legacy") localVerdict = "legacy";
       }
     }
     if (process.platform !== "linux" && typeof flags.space !== "string") {

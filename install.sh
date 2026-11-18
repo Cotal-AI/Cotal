@@ -356,7 +356,11 @@ require_download_tools() {
     die "Need curl or wget to download the Node runtime." \
       "This machine has no Node $NODE_MIN+, so one has to be fetched." \
       "Install curl or wget and run this again."
-  have tar || die "Need tar to unpack the Node runtime." "Install tar and run this again."
+  have tar || die "Need tar to unpack the Node runtime." \
+    "On Rocky Linux, Fedora or RHEL, install it first: sudo dnf install tar" \
+    "On other systems, install tar with your system package manager." \
+    "Then run this installer again as your own user, without sudo." \
+    "Prerequisites: $DOCS_URL/docs/installation/#use-the-shell-installer"
   have mktemp || die "Need mktemp to stage the download safely." \
     "Install coreutils and run this again."
   have sha256sum || have shasum || have openssl ||
@@ -1202,9 +1206,18 @@ main() {
   link_node_bin
 
   install_cotal
+  write_launcher
+  if ! _version_output=$(COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 "$BIN_DIR/cotal" --version 2>&1); then
+    printf '%s\n' "$_version_output" >&2
+    if [ "$OPT_VERSION" != latest ]; then
+      die "The installed Cotal could not start." \
+        "Run the installer again without --version to install the latest release."
+    fi
+    die "The latest Cotal release could not start." \
+      "Report the error above at https://github.com/Cotal-AI/Cotal/issues."
+  fi
   ok_line "Cotal $INSTALLED_VERSION"
 
-  write_launcher
   if [ -n "$PREVIOUS_VERSION" ] || [ -e "${COTAL_HOME:-$HOME/.cotal}/daemon/service-unit.json" ]; then
     if ! COTAL_INSTALL_RECONCILE=1 "$BIN_DIR/cotal" update; then
       die "Cotal was installed, but reconciliation did not complete." \

@@ -32,8 +32,8 @@
     {
       "name": "drop the alias admission guard",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (this.reconcilingAliases.has(identityName))\n      return { ok: false, error: `the name \"${identityName}\" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };",
-      "replace": "    void this.reconcilingAliases;",
+      "find": "    if (this.staticLifecycle.isReconciling(identityName))\n      return { ok: false, error: `the name \"${identityName}\" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };",
+      "replace": "    void this.staticLifecycle;",
       "expectRed": "spawn for an alias still reconciling is refused by its reconcile gate before lifecycle provisioning",
       "cell": "spawn for an alias still reconciling is refused by its reconcile gate before lifecycle provisioning",
       "afterRestore": "pnpm --filter @cotal-ai/manager... build"
@@ -195,7 +195,7 @@
     },
     {
       "name": "the lease reader folds an unparseable row into absent (the parse throw dropped)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-lease.ts",
       "find": "    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; }\n    catch (err) { throw new Error(`delivery lease row \"${leaseKey(shardIndex)}\" exists but does not parse as a lease record (${(err as Error).message}) - it is unreadable, not absent`); }",
       "replace": "    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; } catch { return undefined; }",
       "expectRed": "a lease row that EXISTS but does not parse is UNREADABLE, not absent: the pass refuses and the manager holds no renewal lease",

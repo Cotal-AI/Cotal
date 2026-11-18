@@ -215,7 +215,7 @@ import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/
 import { resolveSpace } from "../lib/status.js";
 import { c, hang, stderrLine } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints } from "../lib/seat-resume.js";
-import { natsServerLabel, resolveNatsServer, type NatsServer } from "../lib/nats-bin.js";
+import { natsServerLabel, resolveNatsServer, unreadVersion, type NatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
 import { detachedNext, renderDetachedSummary } from "../lib/up-report.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
@@ -2363,7 +2363,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // protected the auth path and was silent on the open one, and a cert/key pair passed to an
   // open-mode `up` would have been accepted while the listener came up in cleartext.
   const renderingBinary = setup?.brokerBinary ?? await resolveNatsServer();
-  if (!renderingBinary.version) throw new Error(`Cannot read nats-server version from ${renderingBinary.path}; refusing to render broker configuration`);
+  if (!renderingBinary.version) throw unreadVersion(renderingBinary);
   const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore, maxPayload: brokerMaxPayload });
   const natsArgs = [
     "-c", confPath,
@@ -4321,7 +4321,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   // Same rule as the foreground path: every route to a listener names its transport (see
   // `writeOpenBrokerConf`). Detach must not be the mode where the fence quietly does not apply.
   const renderingBinary = setup?.brokerBinary ?? await resolveNatsServer();
-  if (!renderingBinary.version) throw new Error(`Cannot read nats-server version from ${renderingBinary.path}; refusing to render broker configuration`);
+  if (!renderingBinary.version) throw unreadVersion(renderingBinary);
   const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore: opts.maxFileStore, maxPayload, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum });
   // Trust preparation awaits; the pinned store is checked again before its config is handed back.
   if (opts.existingStore) recheckExistingStore(opts.existingStore, { space, storeDir });
@@ -5805,7 +5805,7 @@ async function authSetup(
   // Owner-private like the auth dir: nats-server writes each pushed claim here.
   if (accountResolver.kind === "full") mkSecretDir(accountResolver.directory);
   const brokerBinary = await resolveNatsServer();
-  if (!brokerBinary.version) throw new Error(`Cannot read nats-server version from ${brokerBinary.path}; refusing to render broker configuration`);
+  if (!brokerBinary.version) throw unreadVersion(brokerBinary);
   const render = (ws: number) => writeBrokerConfig(confPath, serverConfig(auth, spaces, { brokerVersion: brokerBinary.version!, transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, authTimeout, maxPayload, accountResolver, logFile: requested.logFile, logfileSizeLimit: requested.logfileSizeLimit, logfileMaxNum: requested.logfileMaxNum, host, wsPort: ws, wsHost: host, extraAccounts }));
   render(wsPort);
   // The chosen port is free now, but nothing holds it until the broker binds it. When another process

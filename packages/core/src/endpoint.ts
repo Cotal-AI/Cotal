@@ -36,7 +36,8 @@ import {
   type ProbeOutcome,
   type ResponderState,
 } from "./liveness.js";
-import { processRuntime } from "./process-runtime.js";
+import { EndpointPresence, type PresenceView } from "./endpoint-presence.js";
+export { PresenceWriteStuckError, type PresenceView } from "./endpoint-presence.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { nativeCredsAuthenticator } from "./creds-authenticator.js";
 import { armRenewal, renewalDeadlineMs, jitteredBackoffMs } from "./renewal.js";
@@ -51,8 +52,15 @@ import { BIND_SPLIT_REISSUES, resolveService, invokeCommand, goalFollowRefusal, 
 import type { GoalResultFact } from "./endpoint-action.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
-import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
-import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
+import type { EpCaller, EpPrincipal, IssuedCaller, PrincipalAuthority } from "./endpoint-subjects.js";
+import { assertIdToken, assertGeneration, assertRuntimeToken, endpointToken } from "./endpoint-subjects.js";
+import { servePrincipalRoute, describeContracts, type EpPrincipalCommandDef, type EpPrincipalServeHandle } from "./endpoint-serve.js";
+import { epPrincipalCall } from "./endpoint-call.js";
+import type { ClusterDocument } from "./endpoint-cluster.js";
+import type { EndpointReply } from "./endpoint-envelope.js";
+import type { CompiledContract } from "./schema-profile.js";
+import { AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
+import { processRuntime } from "./process-runtime.js";
 import { importNativeSubjectPermissions, issuedPermitsSubject, readAcceptedRow, type IssuedSubjectPermission } from "./issued-authority.js";
 import { REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsInput, type RegistryEndpointsOutput } from "./registry-contract.js";
 import { listRegistryEndpoints, registryListingCaller } from "./registry-client.js";
@@ -65,7 +73,7 @@ import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import { nextHeartbeat } from "./presence-heartbeat.js";
-import { anycastStoreDefinition, createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
+import { anycastStoreDefinition, createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, PRESENCE_STORAGE } from "./streams.js";
 import { DELIVERY_LIMIT_HEADER, HISTORY_NO_COUNT, PLANE3_MAX_MSGS_PER_SUBJECT } from "./backup-config.js";
 import {
   jetstream,
@@ -100,6 +108,7 @@ import type {
   MessageMeta,
   Part,
   Presence,
+  PresencePrompts,
   PresenceStatus,
   PresenceCondition,
   AttentionMode,
@@ -127,7 +136,8 @@ import {
   durableEligible,
 } from "./members.js";
 import { openAclRegistry, readAcl, readAclForAlias, aclRetired, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
-import { openDeliveryRegistry, type DeliveryLeaseInfo, type ManagerLeaseInfo } from "./lease.js";
+import type { DeliveryLeaseInfo, ManagerLeaseInfo } from "./lease.js";
+import { EndpointDeliveryLease } from "./endpoint-delivery-lease.js";
 import {
   openChannelRegistry,
   effectiveReplay,
@@ -177,7 +187,6 @@ import {
   parseDinboxPrincipal,
   FANOUT_DURABLE,
   INBOX_READER_DURABLE,
-  leaseKey,
   managerBucket,
   MANAGER_LEASE_KEY,
   MANAGER_RENEWAL_LEASE_KEY,
@@ -196,7 +205,6 @@ import {
   type ParsedSubject,
   presenceBucket,
   channelBucket,
-  isPresenceRow, assertPresenceRow,
   membershipBucket,
   MEMBERSHIP_FEED_KEY,
   principalKey,
@@ -482,14 +490,6 @@ export interface ChannelMember {
   live: boolean;
 }
 
-/** Trust state of this endpoint's local presence roster. `fresh` remains for older consumers:
- * unpopulated is deliberately false so they fail toward unknown rather than treating a partial
- * reconnect snapshot as an authoritative absence verdict. */
-export type PresenceView =
-  | { state: "current"; fresh: true }
-  | { state: "unpopulated"; fresh: false }
-  | { state: "stale"; fresh: false; staleSince: number };
-
 /** See {@link EndpointOptions.dmOnly}. */
 export interface DmOnlyOptions {
   /** Receives each authenticated DM. A resolved promise does not ack: call `delivery.ack()`. A
@@ -516,27 +516,6 @@ export class DmBindRefusedError extends Error {
   constructor(readonly stream: string, readonly durable: string, cause: unknown) {
     super(`dm-bind-refused: binding durable "${durable}" on stream "${stream}" was refused (${cause instanceof Error ? cause.message : String(cause)})`, { cause });
     this.name = "DmBindRefusedError";
-  }
-}
-
-/** A presence bucket that has refused consecutive writes for at least one full presence TTL.
- * The condition is non-transient: ordinary heartbeat retry has already failed for the whole
- * liveness window, so callers should report the roster as last-known until a write succeeds. */
-export class PresenceWriteStuckError extends Error {
-  readonly code = "presence-write-stuck" as const;
-  readonly transient = false as const;
-
-  constructor(
-    readonly bucket: string,
-    readonly since: number,
-    readonly consecutiveFailures: number,
-    readonly ttlMs: number,
-    readonly lastError?: string,
-  ) {
-    super(
-      `presence writes to bucket ${JSON.stringify(bucket)} have failed ${consecutiveFailures} consecutive times for at least one TTL (${ttlMs}ms); the presence view is not live until a write succeeds or the broker store is repaired${lastError ? ` (last refusal: ${lastError})` : ""}`,
-    );
-    this.name = "PresenceWriteStuckError";
   }
 }
 
@@ -650,6 +629,46 @@ type MembershipFeedWatch = {
   rejectStop?: (err: unknown) => void;
 };
 
+/** The highest `prompts` presence `seq` this process used under each runtime id (SPEC §6). A reader
+ *  orders lists by `seq` within one `runtime.id`, and a runtime id lives as long as the process, so
+ *  this does too: across a stopped serve, a stopped endpoint and a new endpoint for the lifecycle. */
+const promptsSeqs = new Map<string, number>();
+
+/** The principal endpoint each `{space, runtime id, endpoint}` is served by in this process. Two
+ *  would subscribe the same subject and both answer one request (SPEC 13.21). */
+const principalServers = new Map<string, PrincipalServeIntent>();
+
+/** What {@link CotalEndpoint.servePrincipal} keeps to re-bind on every replaced connection. */
+interface PrincipalServeIntent {
+  readonly serve: { endpoint: string; cluster: ClusterDocument; handlers: EpPrincipalCommandDef[] };
+  readonly self: EpPrincipal;
+  /** Its key in {@link principalServers}. */
+  readonly serverKey: string;
+  /** The binding on the connection it was made on, and every binding made, so `stop` awaits the
+   *  handlers each one still runs. */
+  binding?: { nc: NatsConnection; handle: EpPrincipalServeHandle };
+  readonly handles: EpPrincipalServeHandle[];
+  /** The connection on which the broker last accepted the subscription. */
+  readyOn?: NatsConnection;
+  /** Ended: stopped, or refused by the broker. */
+  ended: boolean;
+  readySettled: boolean;
+  resolveReady(): void;
+  rejectReady(e: Error): void;
+  resolveFailed(e: Error): void;
+}
+
+/** A served principal endpoint (SPEC 13.21). */
+export interface PrincipalServe {
+  /** Resolves once the broker accepted this process's subscription; rejects with its refusal. */
+  readonly ready: Promise<void>;
+  /** Resolves with the refusal that ended the serve, including one that arrives on a replaced
+   *  connection after `ready` resolved. Never rejects, and never resolves after `stop`. */
+  readonly failed: Promise<Error>;
+  /** Unsubscribe and wait for the handlers in flight. */
+  stop(): Promise<void>;
+}
+
 export class CotalEndpoint extends EventEmitter {
   readonly card: AgentCard;
   readonly space: string;
@@ -721,11 +740,6 @@ export class CotalEndpoint extends EventEmitter {
   private jsm?: JetStreamManager;
   private kv?: KV;
   private channelKv?: KV;
-  /** The presence/channel-registry watches' own handles. Each is an ORDERED push consumer: its idle
-   *  heartbeat monitor lives on a JS timer independent of the connection, so a drain that doesn't
-   *  `.stop()` it first leaves the monitor to fire into a closing connection every 30s, throwing
-   *  `DrainingConnectionError` out of `reset()` on a timer nothing awaits. */
-  private presenceWatchIter?: Awaited<ReturnType<KV["watch"]>>;
   private channelWatchIter?: Awaited<ReturnType<KV["watch"]>>;
   /** Consumer deletes of retired presence and channel-registry watches still in flight. A stop
    *  alone leaves each watch's ordered consumer on the broker for its five-minute inactive
@@ -736,23 +750,10 @@ export class CotalEndpoint extends EventEmitter {
    *  {@link stop} or a rebuild moved the epoch retires its watch and starts that delete itself, so
    *  the same two paths wait for these first. */
   private readonly kvWatchBinds = new Set<Promise<unknown>>();
-  /** The daemon's lease-loss watch (#1596): the INTENT that survives a connection rebuild, plus the
-   *  live iterator. See {@link watchDeliveryLease}. */
-  private leaseWatchIntent?: { shardIndex: number; onEvent: (info: DeliveryLeaseInfo | undefined) => void };
-  private leaseWatchIter?: Awaited<ReturnType<KV["watch"]>>;
-  /** Consumer deletes of retired lease watches still in flight. The stop handle cannot await its
-   *  delete, so {@link stop} and a live-epoch rebuild await these before they close the connection
-   *  that carries them (#3966). */
-  private readonly leaseWatchDeletes = new Set<Promise<void>>();
-  /** Lease-watch binds still awaiting the broker. One that lands after {@link stop} or a rebuild
-   *  moved the epoch retires its watch and starts that delete itself, so the same two paths wait for
-   *  these first. Each is bounded by the JetStream request timeout. */
-  private readonly leaseWatchBinds = new Set<Promise<void>>();
   /** Plane-3 durable-membership registry KV — lazily opened by the privileged delivery daemon (or a
    *  short-lived provisioner). */
   private membersKv?: KV;
   private aclKv?: KV;
-  private deliveryKv?: KV;
   private managerLeaseKv?: KV;
   /** Our revision of the per-space daemon-credential renewal lease (#1634), or undefined when we do
    *  not hold it. Cleared with the bound KV handle: a revision from a dead connection is not a lease
@@ -851,6 +852,12 @@ export class CotalEndpoint extends EventEmitter {
    *  subscription on it, so a responder bound once would leave its plane to the broker's
    *  no-responders answer, which a peer grades `unbound`, while this endpoint is connected and serving. */
   private readonly livenessResponders = new Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription }>();
+  /** The principal endpoints {@link servePrincipal} serves, by endpoint name: INTENT, re-bound on
+   *  every replaced connection. */
+  private readonly principalServes = new Map<string, PrincipalServeIntent>();
+  /** The `prompts` presence field {@link setPromptsPresence} last set. Shown only while the `agent`
+   *  endpoint is served and its subscription was accepted on the current connection. */
+  private promptsPresence?: PresencePrompts;
   private readonly streamMsgs: ConsumerMessages[] = [];
   /** Per-channel native core subscriptions (SPEC v0.3) — the manager-free live read path for boot +
    *  runtime channels (there is no per-instance chat durable). Keyed by channel so leave unsubscribes
@@ -898,71 +905,42 @@ export class CotalEndpoint extends EventEmitter {
   private firstConnect = true;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private sweepTimer?: ReturnType<typeof setInterval>;
-  /** #1356: when the presence bucket started refusing writes; undefined once one succeeds. */
-  private presenceWriteFailingSince?: number;
-  /** #1356: the broker's last refusal message, kept alongside the start time for diagnosis. */
-  private lastPresenceWriteError?: string;
-  /** Consecutive latest-evidence refusals on the current connection epoch. A success resets it. */
-  private presenceWriteFailures = 0;
-  /** One named non-transient warning per failed run. A success re-arms it. */
-  private presenceWriteEscalated = false;
-  /** #1461: monotonic per-put generation on the presence path, so a settle can tell whether it is
-   *  the latest evidence on its epoch. {@link publishPresence} snapshots it at put start and every
-   * settle records its generation here: a settle is the latest evidence only while no put that
-   * started after it has already settled. */
-  private presencePutGeneration = 0;
-  /** #1461: the generation of the newest presence put that has SETTLED (succeeded or rejected),
-   * or `undefined` when none ever has. A put that is merely in flight is not evidence yet. */
-  private presencePutSettled?: number;
-  private readonly roster = new Map<string, Presence>();
-  /** The {@link readPresence} in flight; calls made before it settles share it. */
-  private presenceRead?: Promise<Presence[]>;
-  /** Orders {@link readPresence} merges: a read that settles after a newer one was applied is dropped. */
-  private presenceReadGeneration = 0;
-  private presenceReadApplied = 0;
-  /** Resolves when the current presence watch has consumed its complete initial KV snapshot. */
-  private presenceSnapshot = Promise.resolve();
-  /** False from connection reset until the watch marks the last entry in its initial replay. */
-  private presenceSnapshotPopulated = false;
-  /**
-   * Observer-local age of the last presence-KV delivery (any key, including DEL/PURGE). Distinct
-   * from each peer's `ts`: that is the publisher's heartbeat. Whole-bucket silence past TTL is
-   * the observer going deaf, not  N  simultaneous deaths, and sweep must not treat it as the
-   * latter (#1045).
-   */
-  private lastPresenceWatchAt = 0;
-  /** Last emitted presence-view state. Suppresses duplicate `presence-view` events. */
-  private presenceViewState: PresenceView["state"] = "unpopulated";
-  /** A presence-watch rebind in flight (see {@link rebindStalePresenceWatch}); one at a time. */
-  private presenceRebind?: Promise<void>;
+  private readonly deliveryLease = new EndpointDeliveryLease({
+    card: () => this.card,
+    space: () => this.space,
+    connection: () => this.nc,
+    epoch: () => this.presenceEpoch,
+    notLiveMsg: () => this.notLiveMsg(),
+    deleteWatchConsumer: (iter) => this.deleteOwnConsumer(kvWatchConsumer(iter)),
+    recoverable: (error) => this.emitRecoverable(error),
+    emit: (event, error) => this.emit(event, error),
+  });
+  private readonly presence = new EndpointPresence({
+    card: () => this.card,
+    space: () => this.space,
+    bucket: () => this.kv,
+    connection: () => this.nc,
+    lifecycleUid: () => this.ownLifecycleUid,
+    prompts: () => this.servedPrompts(),
+    ttlMs: () => this.ttlMs,
+    registers: () => this.doRegister,
+    watches: () => this.doWatch,
+    readsOnce: () => this.readOnce,
+    stopped: () => this.stopped,
+    reconnecting: () => this.reconnecting,
+    epoch: () => this.presenceEpoch,
+    notLiveMsg: () => this.notLiveMsg(),
+    bindWatch: (kv) => this.bindKvWatch(kv),
+    retireWatch: (iter) => this.retireKvWatch(iter),
+    emit: (event, value) => this.emit(event, value),
+    recoverable: (error) => this.emitRecoverable(error),
+    isPublishPermissionDenied,
+  });
   /** Bumped by every connection-scoped teardown and by {@link stop}. A presence or lease-watch bind
    *  that was awaiting the broker when the epoch moved belongs to a retired epoch: it releases the
    *  iterator it got and installs nothing (see {@link startPresenceWatch} and
    *  {@link bindDeliveryLeaseWatch}). */
   private presenceEpoch = 0;
-  /** The current watch was bound onto a bucket with NO keys (see {@link markPresenceBucketEmpty}).
-   *  Such a watch cannot deliver until someone writes, so its silence is not staleness. */
-  private presenceWatchEmpty = false;
-  /** Wall-clock of the last rebind attempt, so a bucket that is silent because it is EMPTY (or a
-   *  broker that keeps refusing the consumer create) is retried once per TTL, not per sweep tick. */
-  private presenceRebindAt = 0;
-  private status: PresenceStatus = "idle";
-  private activity?: string;
-  /** When {@link status} or {@link activity} last changed. Heartbeats republish it unchanged. */
-  private statusSince = Date.now();
-  /** When {@link activity} last changed. A status change leaves it alone. */
-  private activitySince?: number;
-  /** Last harness-reported work progress. Carried by the next heartbeat, never published per event. */
-  private activeAt?: number;
-  private condition?: PresenceCondition;
-  /** Advances on every condition change so an older in-flight put cannot be the final KV state. */
-  private conditionRevision = 0;
-  /** Read once at construction. Core publishes this opaque provider reference and never parses it. */
-  private readonly environment?: string;
-  /** Mirror of the connector's authoritative attention state, published in presence (advisory). The
-   *  endpoint never reads these back into delivery — they exist only to broadcast. */
-  private attentionMode?: AttentionMode;
-  private channelModes?: Record<string, ChannelMode>;
   private stopped = false;
   private stopPromise?: Promise<void>;
   private startPromise?: Promise<void>;
@@ -986,6 +964,8 @@ export class CotalEndpoint extends EventEmitter {
    *  now instead of awaiting the full retryMs. */
   private backoffResolve?: () => void;
   private backoffTimer?: ReturnType<typeof setTimeout>;
+  /** Wakes for the membership retry loops' pauses (see {@link membershipPause}); stop() runs them all. */
+  private readonly membershipPauses = new Set<() => void>();
   private readonly retryMs = 3000;
   /** Consecutive failed rebuilds, driving {@link nextRetryDelayMs}. Reset on every success. */
   private retryAttempt = 0;
@@ -1032,9 +1012,6 @@ export class CotalEndpoint extends EventEmitter {
    *  only evidence the split rate exists. Always on, never behind a flag — a counter you have to
    *  enable is not there when the thing you needed it for happened. */
   private splitsRecovered = 0;
-  /** Presence rows rejected because their embedded id did not match the ACL-scoped KV key, or because
-   *  a field the observer computes with was malformed. */
-  private presenceBindingDrops = 0;
 
   /** This endpoint's wire principal (owner + actor tokens, §13.2) — what its minted grant rows
    *  pin. Public so a caller can build owner-mode target blocks for {@link invokeService}. */
@@ -1050,7 +1027,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Mis-keyed or malformed presence rows this reader rejected. The warning event may be missed; the count cannot. */
   get presenceBindingDropCount(): number {
-    return this.presenceBindingDrops;
+    return this.presence.bindingDropCount;
   }
 
   /** The endpoint's own lifecycle UID, REQUIRED for every lifecycle-keyed messaging resource; absent
@@ -1170,8 +1147,8 @@ export class CotalEndpoint extends EventEmitter {
     // principalKey validates both tokens.
     const principal = principalKey(this.owner, this.actor);
     this.card = { ...opts.card, id: principal.key, owner: this.owner, actor: this.actor };
-    this.environment =
-      (opts.environment === undefined ? process.env.COTAL_ENVIRONMENT : opts.environment)?.trim() || undefined;
+    this.presence.configureEnvironment(
+      (opts.environment === undefined ? process.env.COTAL_ENVIRONMENT : opts.environment)?.trim() || undefined);
     this.servers = opts.servers ?? DEFAULT_SERVER;
     this.token = opts.token;
     this.user = opts.user;
@@ -1218,7 +1195,7 @@ export class CotalEndpoint extends EventEmitter {
     }
     // Seed the presence mirror so file-default channel modes are visible from the first publish
     // (not only after the first runtime toggle). Mirror only — delivery reads the connector's state.
-    this.channelModes = opts.channelModes && Object.keys(opts.channelModes).length ? opts.channelModes : undefined;
+    this.presence.seedChannelModes(opts.channelModes);
     this.ackWaitMs = opts.ackWaitMs ?? 60_000;
     this.inactiveThresholdMs = opts.inactiveThresholdMs ?? 600_000;
   }
@@ -1984,7 +1961,7 @@ export class CotalEndpoint extends EventEmitter {
     // clearConnectionScoped; a bind that completes after a stop or another rebuild finds the epoch
     // moved and retires itself. The replay re-delivers the row's current state, so a change that
     // landed in the null window still reaches the trigger.
-    if (this.leaseWatchIntent) await this.bindDeliveryLeaseWatch();
+    if (this.deliveryLease.hasWatchIntent) await this.bindDeliveryLeaseWatch();
 
     // FAIL BEFORE PRESENCE (SPEC 13.1): an AUTHED endpoint that will register on the roster or
     // bind lifecycle-keyed consumers must hold its launcher-supplied lifecycle uid BEFORE anything
@@ -2075,6 +2052,8 @@ export class CotalEndpoint extends EventEmitter {
     // Re-bind the liveness responders on this connection, for armPlane3's reason: the rebuild closed
     // the old connection and the responders with it.
     for (const plane of this.livenessResponders.keys()) this.bindLiveness(plane);
+    // The principal serves subscribe again on the new connection and run their check again.
+    this.rebindPrincipalServes(false);
     for (const tap of this.taps) this.bindTap(tap);
 
     // Bound and live — covers initial start, manual reconnect, AND background self-heal (every
@@ -2125,9 +2104,8 @@ export class CotalEndpoint extends EventEmitter {
     }
     this.streamMsgs.length = 0;
     this.presenceEpoch++;
-    this.presenceRebind = undefined;
-    if (this.presenceWatchIter) this.retireKvWatch(this.presenceWatchIter);
-    this.presenceWatchIter = undefined;
+    this.presence.cancelRebind();
+    this.presence.retireWatch();
     if (this.channelWatchIter) this.retireKvWatch(this.channelWatchIter);
     this.channelWatchIter = undefined;
     this.stopDeliveryLeaseWatch();
@@ -2141,22 +2119,7 @@ export class CotalEndpoint extends EventEmitter {
     this.chatSubs.clear();
     this.chatSubDenied.clear();
     this.ownWatchDeletePrefixes.clear();
-    this.roster.clear();
-    // A read in flight on the old connection must not land in the new connection's roster.
-    this.presenceRead = undefined;
-    this.presenceReadGeneration++;
-    this.presenceReadApplied = this.presenceReadGeneration;
-    // #1356: the presence-refusal record is connection-scoped like everything else torn down here.
-    // It says "the broker on THIS connection refuses writes to this bucket", so it cannot outlive the
-    // connection that observed it. Left behind, a later failure on a different connection inherits it
-    // and is reported as a bucket refusal — measured: a failed bind against an unreachable server
-    // still printed the refusal sentence while `connectionIssue` already said "connection refused".
-    this.clearPresenceWriteFailure();
-    this.lastPresenceWatchAt = 0;
-    this.presenceRebindAt = 0;
-    this.presenceWatchEmpty = false;
-    this.presenceSnapshotPopulated = false;
-    this.emitPresenceViewIfChanged();
+    this.presence.resetConnection();
     this.channelConfigs.clear();
     this.channelDefaults = {};
     // A read in flight on the old connection must not land in the new connection's cache.
@@ -2202,7 +2165,7 @@ export class CotalEndpoint extends EventEmitter {
     this.membersKv = undefined;
     this.aclKv = undefined;
     this.membershipFeedKv = undefined;
-    this.deliveryKv = undefined;
+    this.deliveryLease.resetConnection();
     this.managerLeaseKv = undefined;
     this.daemonRenewalLeaseRevision = undefined;
     // Handles that armDeliveryControl created on a previous connection: null them so a rebind
@@ -2343,7 +2306,7 @@ export class CotalEndpoint extends EventEmitter {
       this.membersKv = undefined;
       this.aclKv = undefined;
       this.membershipFeedKv = undefined;
-      this.deliveryKv = undefined;
+      this.deliveryLease.resetConnection();
       // The manager's liveness-lease handle too: left bound to the old connection, every renew and
       // re-read after a reconnect times out, and the manager reports its lease unknown for good.
       this.managerLeaseKv = undefined;
@@ -2425,6 +2388,16 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
+  /** Run the next rebuild attempt now if the endpoint is waiting out a {@link reestablishLoop}
+   *  backoff, for a caller with work waiting on the link. After a long outage that backoff can run
+   *  for up to a minute past the broker's return, and a send made in it waited for an attempt
+   *  nobody had scheduled (#7408). Idle endpoints keep their spread-out retries. A no-op otherwise:
+   *  a rebuild in flight is already the attempt, and a link nats.js is still reconnecting keeps
+   *  its buffered publishes. */
+  retryNow(): void {
+    if (!this.stopped && this.reestablishing && !this.rebuildPromise) this.kickBackoff();
+  }
+
   /** Cut an in-flight reestablish backoff short so the next attempt runs immediately, and
    *  clear its timer so it can't fire later on a stopped/restarted loop. */
   private kickBackoff(): void {
@@ -2433,6 +2406,21 @@ export class CotalEndpoint extends EventEmitter {
       clearTimeout(this.backoffTimer);
       this.backoffTimer = undefined;
     }
+  }
+
+  /** Capped exponential pause between membership retries. stop() ends it early, so a loop waiting
+   *  on an absent delivery daemon never holds a stopped endpoint's process open for the delay. */
+  private membershipPause(attempt: number): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const wake = (): void => {
+        clearTimeout(timer);
+        this.membershipPauses.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, Math.min(30_000, 1000 * 2 ** attempt));
+      this.membershipPauses.add(wake);
+    });
   }
 
   /** Manual reconnect: tear down the current connection and rebuild, WITHOUT the permanent
@@ -2467,10 +2455,14 @@ export class CotalEndpoint extends EventEmitter {
     }
     this.activeGoalFollowers.clear();
     this.presenceEpoch++;
-    this.presenceRebind = undefined;
+    // Every principal serve ends now, so a `ready` still waiting for the broker rejects and no new
+    // request is taken. Its handlers in flight finish below, before the connection they reply on closes.
+    const principalStops = [...this.principalServes.values()].map((intent) => this.stopPrincipalServe(intent, false));
+    this.presence.cancelRebind();
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
     // sleeping out retryMs; also clears the timer so it can't fire later.
     this.kickBackoff();
+    for (const wake of [...this.membershipPauses]) wake();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     this.cancelBearerRenewal?.();
@@ -2501,15 +2493,14 @@ export class CotalEndpoint extends EventEmitter {
         /* already closed */
       }
     }
-    if (this.presenceWatchIter) this.retireKvWatch(this.presenceWatchIter);
-    this.presenceWatchIter = undefined;
+    this.presence.retireWatch();
     if (this.channelWatchIter) this.retireKvWatch(this.channelWatchIter);
     this.channelWatchIter = undefined;
     this.stopDeliveryLeaseWatch();
+    await Promise.all(principalStops);
     try {
       if (this.doRegister) {
-        this.status = "offline";
-        await this.publishPresence();
+        await this.presence.publishOffline();
       }
     } catch {
       /* best-effort graceful leave */
@@ -3602,9 +3593,7 @@ export class CotalEndpoint extends EventEmitter {
   // ---- presence ------------------------------------------------------------
 
   getRoster(): Presence[] {
-    return [...this.roster.values()].sort((a, b) =>
-      a.card.name.localeCompare(b.card.name),
-    );
+    return this.presence.getRoster();
   }
 
   /**
@@ -3619,42 +3608,7 @@ export class CotalEndpoint extends EventEmitter {
    * nothing. A credential that may not make the read is refused with the grant it lacks.
    */
   async readPresence(): Promise<Presence[]> {
-    if (this.doWatch && !this.readOnce)
-      throw new Error("readPresence is for an endpoint that does not watch presence; this one keeps its roster live (getRoster)");
-    const kv = this.kv;
-    if (!kv) throw new Error(this.nc ? "readPresence needs the presence bucket open (registerPresence or watchPresence)" : this.notLiveMsg());
-    if (this.presenceRead) return this.presenceRead;
-    const generation = ++this.presenceReadGeneration;
-    const roster = (async () => {
-      let entries: KvEntry[];
-      try {
-        entries = await lastKvEntries(kv);
-      } catch (e) {
-        if (!isPublishPermissionDenied(e)) throw e;
-        throw new Error(
-          `presence read refused for ${this.card.id}: this credential may not publish $JS.API.DIRECT.GET.KV_${presenceBucket(this.space)}, the on-demand roster read (SPEC Appendix B). A credential minted by an older issuer can lack this grant even when newly minted; upgrade the manager or auth service that issues credentials, then mint a new credential. Reusing credentials or reconnecting does not add the grant.`,
-          { cause: e },
-        );
-      }
-      const at = Date.now();
-      const read = new Map<string, Presence>();
-      for (const e of entries) {
-        if (e.key === TTL_RECONCILE_CANARY_KEY || e.operation === "DEL" || e.operation === "PURGE") continue;
-        const p = this.decodePresence(e);
-        if (p) read.set(e.key, p.status === "offline" || at - p.ts > this.ttlMs ? this.toOffline(p) : p);
-      }
-      if (generation > this.presenceReadApplied) {
-        this.presenceReadApplied = generation;
-        for (const [id, p] of this.roster) if (!read.has(id)) read.set(id, p.status === "offline" ? p : this.toOffline(p));
-        this.roster.clear();
-        for (const [id, p] of read) this.roster.set(id, p);
-      }
-      return this.getRoster();
-    })();
-    this.presenceRead = roster;
-    const settled = () => { if (this.presenceRead === roster) this.presenceRead = undefined; };
-    roster.then(settled, settled);
-    return roster;
+    return this.presence.readPresence();
   }
 
   /**
@@ -3665,79 +3619,47 @@ export class CotalEndpoint extends EventEmitter {
    * unsafe states so consumers written before `state` was added degrade in the safe direction.
    */
   presenceView(): PresenceView {
-    if (!this.doWatch) return { state: "current", fresh: true };
-    if (!this.presenceSnapshotPopulated) return { state: "unpopulated", fresh: false };
-    if (this.presenceWatchEmpty) return { state: "current", fresh: true };
-    const staleSince = this.lastPresenceWatchAt + this.ttlMs;
-    if (Date.now() < staleSince) return { state: "current", fresh: true };
-    return { state: "stale", fresh: false, staleSince };
+    return this.presence.presenceView();
   }
 
   /** Wait until the current presence watch has consumed its initial KV snapshot. An observer that
    * does not register completes on an empty bucket at once. A registering one completes when its
    * own record arrives, and the timeout bounds that wait. */
   async waitForPresenceSnapshot(timeoutMs = 1_000): Promise<"snapshot" | "timeout"> {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      return await Promise.race([
-        this.presenceSnapshot.then(() => "snapshot" as const),
-        new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), timeoutMs); }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
-
-  private assertPresenceUpdate(update: Partial<Presence>): void {
-    assertPresenceRow({ card: this.card, status: this.status, activity: this.activity,
-      condition: this.condition, attention: this.attentionMode, ts: Date.now(), ...update }, this.card.id);
+    return this.presence.waitForPresenceSnapshot(timeoutMs);
   }
 
   async setActivity(activity: string): Promise<void> {
-    this.assertPresenceUpdate({ activity });
-    if (activity !== this.activity) this.statusSince = this.activitySince = Date.now();
-    this.activity = activity;
-    await this.publishPresence();
+    return this.presence.setActivity(activity);
   }
 
   /** Set the status, and with `activity` the activity line too, in one presence write, so no peer sees
    *  the new activity beside the old status. */
   async setStatus(status: PresenceStatus, activity?: string): Promise<void> {
-    this.assertPresenceUpdate({ status, ...(activity === undefined ? {} : { activity }) });
-    if (activity !== undefined && activity !== this.activity) this.statusSince = this.activitySince = Date.now();
-    if (activity !== undefined) this.activity = activity;
-    if (status !== this.status) this.statusSince = Date.now();
-    this.status = status;
-    await this.publishPresence();
+    return this.presence.setStatus(status, activity);
   }
 
   /** Record harness-reported work progress as `activeAt`. It writes nothing itself: the next heartbeat
    *  carries it, so a stream of events costs no presence writes. */
   noteActivity(at: number = Date.now()): void {
-    if (Number.isFinite(at) && at > (this.activeAt ?? 0)) this.activeAt = at;
+    return this.presence.noteActivity(at);
   }
 
   /** Publish a harness-reported condition, or clear it. Core stores the relay without interpretation. */
   async setCondition(condition: PresenceCondition | null): Promise<void> {
-    this.assertPresenceUpdate({ condition: condition ?? undefined });
-    this.condition = condition ?? undefined;
-    this.conditionRevision++;
-    await this.publishPresence();
+    return this.presence.setCondition(condition);
   }
 
   /** Publish the agent's global attention mode into presence (advisory observability). Mirror only —
    *  delivery decisions stay in the connector's authoritative state. */
   async setAttention(attention: AttentionMode): Promise<void> {
-    this.assertPresenceUpdate({ attention });
-    this.attentionMode = attention;
-    await this.publishPresence();
+    return this.presence.setAttention(attention);
   }
 
   /** Publish the agent's per-channel attention overrides into presence (advisory). An empty map drops
    *  the field. Mirror only — never read back into delivery. */
   async setChannelModes(modes: Record<string, ChannelMode>): Promise<void> {
-    this.channelModes = Object.keys(modes).length ? modes : undefined;
-    await this.publishPresence();
+    return this.presence.setChannelModes(modes);
   }
 
   /** Overlay the host's live model and optional variant onto the card's display-only metadata, then
@@ -4092,7 +4014,7 @@ export class CotalEndpoint extends EventEmitter {
       (r) => r.leaveCursor === undefined && r.activated === true,
     );
     const byId = new Map<string, Presence>();
-    for (const p of this.roster.values()) byId.set(p.card.id, p);
+    for (const p of this.presence.values()) byId.set(p.card.id, p);
     const memberForId = (id: string): ChannelMember => {
       const p = byId.get(id);
       return p
@@ -5173,6 +5095,8 @@ export class CotalEndpoint extends EventEmitter {
         }
         if (s.type === "reconnect") {
           this.armAuthExpiryReconnectFence(nc);
+          // The library re-subscribed on a connection the broker authorized again: re-run the check.
+          this.rebindPrincipalServes(true);
           this.emit("transport", { connected: true, server: s.server } satisfies TransportState);
           for (const follower of this.activeGoalFollowers) {
             follower.reconnected(nc);
@@ -5185,6 +5109,9 @@ export class CotalEndpoint extends EventEmitter {
         }
         if (s.type !== "error") continue;
         if (s.error instanceof PermissionViolationError && this.chatSubRefusals.has(s.error)) continue;
+        // A principal-route refusal belongs to the call that throws it or the serve that ends on it
+        // (SPEC 13.21); nothing else on this private connection publishes or subscribes there.
+        if (s.error instanceof PermissionViolationError && this.isPrincipalRouteSubject(s.error.subject)) continue;
         if (s.error instanceof PermissionViolationError && handedToRequest.has(s.error)) continue;
         // The predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
         // history reads, whose refusal can arrive after that delete timed out.
@@ -5467,27 +5394,6 @@ export class CotalEndpoint extends EventEmitter {
     return { allowSubscribe: allow, issuedAllowSubscribe: issued, lifecycleUid: row.lifecycleUid };
   }
 
-  /** Lazily open the delivery lease/readiness KV (pre-created at `cotal up`; bind, never create). */
-  private async deliveryRegistry(): Promise<KV> {
-    if (!this.nc) throw new Error(this.notLiveMsg());
-    this.deliveryKv ??= await openDeliveryRegistry(this.nc, this.space);
-    return this.deliveryKv;
-  }
-
-  /** This endpoint instance's LEASE INCARNATION: which run of this principal a lease row was written
-   *  by. Minted per construction and never re-derived, because the credential cannot supply it, the
-   *  daemon's cred is a file on disk that every restart re-reads, so `card.id` is stable across
-   *  processes by design. See {@link DeliveryLeaseInfo.incarnation}. */
-  private readonly leaseIncarnation = randomUUID();
-
-  /** When this endpoint last WON each shard's lease create. Every later write of that row carries it
-   *  unchanged, while `since` is re-stamped. See {@link DeliveryLeaseInfo.acquiredAt}. */
-  private readonly leaseAcquiredAt = new Map<number, number>();
-
-  private encodeLease(shardIndex: number, ready: boolean, acquiredAt = this.leaseAcquiredAt.get(shardIndex)): Uint8Array {
-    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, incarnation: this.leaseIncarnation, acquiredAt, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
-  }
-
   /** Is this shard's lease row one THIS ENDPOINT INSTANCE wrote? The question a daemon whose renew
    *  just failed has to answer before it decides whether it still owns the shard.
    *
@@ -5498,7 +5404,7 @@ export class CotalEndpoint extends EventEmitter {
    *  incarnation predates the field and cannot be proven ours, which is the safe reading: it leads
    *  to the takeover path rather than to serving on someone else's claim. */
   ownsDeliveryLease(info: DeliveryLeaseInfo): boolean {
-    return info.holder === this.card.id && info.incarnation !== undefined && info.incarnation === this.leaseIncarnation;
+    return this.deliveryLease.ownsDeliveryLease(info);
   }
 
   /** Acquire the single-flight delivery lease for a shard via an ATOMIC CAS create, marked NOT-ready.
@@ -5507,18 +5413,14 @@ export class CotalEndpoint extends EventEmitter {
    *  freeing a re-acquire. Acquired BEFORE binding (single-flight gate); {@link markDeliveryLeaseReady}
    *  flips it ready AFTER the loops + `ctl.delivery` are bound. Returns the lease revision. */
   async acquireDeliveryLease(shardIndex: number): Promise<number> {
-    // Recorded only once the create wins: a refused create leaves the held row, and so its time, as it was.
-    const acquiredAt = Date.now();
-    const revision = await (await this.deliveryRegistry()).create(leaseKey(shardIndex), this.encodeLease(shardIndex, false, acquiredAt));
-    this.leaseAcquiredAt.set(shardIndex, acquiredAt);
-    return revision;
+    return this.deliveryLease.acquireDeliveryLease(shardIndex);
   }
 
   /** Flip the held lease to READY (CAS `kv.update`) AFTER `startPlane3` has bound the loops + the
    *  `ctl.delivery` responder — so "lease ready" proves the responder is up, not just that the slot was
    *  claimed. Returns the new revision. */
   async markDeliveryLeaseReady(shardIndex: number, revision: number): Promise<number> {
-    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(shardIndex, true), revision);
+    return this.deliveryLease.markDeliveryLeaseReady(shardIndex, revision);
   }
 
   /** Flip the held lease back to NOT-ready, the counterpart to {@link markDeliveryLeaseReady}, for a
@@ -5531,14 +5433,14 @@ export class CotalEndpoint extends EventEmitter {
    *  the row (rather than deleting it) is deliberate: the shard is still claimed, so no third daemon
    *  should be invited in; what is being withdrawn is only the claim to be answering. */
   async markDeliveryLeaseNotReady(shardIndex: number, revision: number): Promise<number> {
-    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(shardIndex, false), revision);
+    return this.deliveryLease.markDeliveryLeaseNotReady(shardIndex, revision);
   }
 
   /** Renew the held lease (CAS `kv.update` against `revision`, keeping `ready:true`) to refresh it before
    *  the bucket TTL expires it. Returns the new revision. Throws if the revision moved (lost the lease —
    *  the daemon should exit). */
   async renewDeliveryLease(shardIndex: number, revision: number): Promise<number> {
-    return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(shardIndex, true), revision);
+    return this.deliveryLease.renewDeliveryLease(shardIndex, revision);
   }
 
   /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (a
@@ -5565,15 +5467,14 @@ export class CotalEndpoint extends EventEmitter {
    *  a red in `smoke:delivery-lease`, where a caller that genuinely held the lease released nothing
    *  and the next acquire was refused. A caller must now say which it means. */
   async releaseDeliveryLease(shardIndex: number, revision: number | undefined): Promise<void> {
-    if (revision === undefined) return;
-    await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision });
+    return this.deliveryLease.releaseDeliveryLease(shardIndex, revision);
   }
 
   /** Read a shard's delivery lease (the daemon-availability signal), or `undefined` if none is live.
    *  READ-ONLY surface — drives Component 6's `cotal_channels` delivery-health field (an agent reads it
    *  under its own cred, which holds lease-bucket read but no write). */
   async readDeliveryLease(shardIndex: number): Promise<DeliveryLeaseInfo | undefined> {
-    return (await this.readDeliveryLeaseEntry(shardIndex))?.info;
+    return this.deliveryLease.readDeliveryLease(shardIndex);
   }
 
   /** Watch THIS shard's lease key and nothing else, for the daemon's loss trigger (#1596).
@@ -5594,41 +5495,18 @@ export class CotalEndpoint extends EventEmitter {
    *  bucket's current last-per-subject state, so a change that landed during the null window is
    *  delivered on the fresh watch. Resolves a stop handle. */
   async watchDeliveryLease(shardIndex: number, onEvent: (info: DeliveryLeaseInfo | undefined) => void): Promise<() => void> {
-    this.leaseWatchIntent = { shardIndex, onEvent };
-    await this.bindDeliveryLeaseWatch();
-    return () => {
-      if (this.leaseWatchIntent?.onEvent !== onEvent) return; // a later watch owns the slot
-      this.leaseWatchIntent = undefined;
-      this.stopDeliveryLeaseWatch();
-    };
+    return this.deliveryLease.watchDeliveryLease(shardIndex, onEvent);
   }
 
   private stopDeliveryLeaseWatch(): void {
-    if (this.leaseWatchIter) this.retireDeliveryLeaseWatch(this.leaseWatchIter);
-    this.leaseWatchIter = undefined;
-  }
-
-  /** Stop a lease watch and delete its ordered consumer, which the stop alone leaves on the broker
-   *  until its five-minute inactive threshold (#3966). A connection that closed on its own cannot
-   *  carry the delete, so that consumer is left to the threshold. A failed delete is a warning: the
-   *  broker still reaps the consumer, and the daemon's synchronous stop handle has no caller to
-   *  reject. */
-  private retireDeliveryLeaseWatch(iter: Awaited<ReturnType<KV["watch"]>>): void {
-    try { iter.stop(); } catch { /* already closed with its connection */ }
-    if (!this.nc || this.nc.isClosed()) return;
-    const deleting = this.deleteOwnConsumer(kvWatchConsumer(iter)).catch((e: Error) => this.emitRecoverable(
-      new Error(`a retired delivery lease watch consumer was not deleted (${e.message}); the broker reaps it at its inactive threshold`),
-    ));
-    this.leaseWatchDeletes.add(deleting);
-    void deleting.then(() => this.leaseWatchDeletes.delete(deleting));
+    return this.deliveryLease.stopDeliveryLeaseWatch();
   }
 
   /** Wait for the lease-watch binds still in flight, then for every retired watch's consumer delete.
    *  {@link stop} and a live-epoch rebuild run this before they close the connection those deletes
    *  need (#3966). */
   private async settleDeliveryLeaseWatches(): Promise<void> {
-    await Promise.allSettled(this.leaseWatchBinds);
-    await Promise.all(this.leaseWatchDeletes);
+    return this.deliveryLease.settleDeliveryLeaseWatches();
   }
 
   /** Stop a presence or channel-registry watch and delete its ordered consumer, which the stop
@@ -5682,29 +5560,7 @@ export class CotalEndpoint extends EventEmitter {
    *  its intent, or after a stop or connection teardown moved the epoch, retires its watch instead of
    *  installing it: the epoch it was bound for is gone, and a rebuilt one binds its own. */
   private bindDeliveryLeaseWatch(): Promise<void> {
-    const binding = this.bindDeliveryLeaseWatchOnce();
-    const settled = () => { this.leaseWatchBinds.delete(binding); };
-    this.leaseWatchBinds.add(binding);
-    void binding.then(settled, settled);
-    return binding;
-  }
-
-  private async bindDeliveryLeaseWatchOnce(): Promise<void> {
-    const intent = this.leaseWatchIntent!;
-    const epoch = this.presenceEpoch;
-    const iter = await (await this.deliveryRegistry()).watch({ key: leaseKey(intent.shardIndex) });
-    if (this.leaseWatchIntent !== intent || epoch !== this.presenceEpoch) {
-      this.retireDeliveryLeaseWatch(iter);
-      return;
-    }
-    this.leaseWatchIter = iter;
-    void (async () => {
-      for await (const e of iter) {
-        if (this.leaseWatchIter !== iter) break;
-        if (e.operation === "DEL" || e.operation === "PURGE") { intent.onEvent(undefined); continue; }
-        try { intent.onEvent(e.json<DeliveryLeaseInfo>()); } catch { intent.onEvent(undefined); }
-      }
-    })().catch((e) => this.emit("error", e as Error));
+    return this.deliveryLease.bindDeliveryLeaseWatch();
   }
 
   /** The principal recorded as holding a shard's delivery lease, read by THIS process from the row,
@@ -5721,8 +5577,7 @@ export class CotalEndpoint extends EventEmitter {
    *  that throws (a denied or unreadable bucket, a broker that will not answer) must not collapse
    *  into "nothing is there". Callers must treat it as a failure to determine (#1694). */
   async deliveryLeaseHolder(shardIndex: number): Promise<string | undefined> {
-    try { return (await this.readDeliveryLeaseEntry(shardIndex))?.info.holder; }
-    catch { return undefined; }
+    return this.deliveryLease.deliveryLeaseHolder(shardIndex);
   }
 
   /** The lease row AND the KV revision it is at. The revision is the CAS token every renew and the
@@ -5740,10 +5595,7 @@ export class CotalEndpoint extends EventEmitter {
    *  (an owner testing "is this provably MINE") still gets its safe answer: an unparseable row is
    *  not provably anyone's, and catching here reads as `false` exactly as before. */
   async readDeliveryLeaseEntry(shardIndex: number): Promise<{ info: DeliveryLeaseInfo; revision: number } | undefined> {
-    const e = await (await this.deliveryRegistry()).get(leaseKey(shardIndex));
-    if (!e || e.operation === "DEL" || e.operation === "PURGE") return undefined;
-    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; }
-    catch (err) { throw new Error(`delivery lease row "${leaseKey(shardIndex)}" exists but does not parse as a lease record (${(err as Error).message}) - it is unreadable, not absent`); }
+    return this.deliveryLease.readDeliveryLeaseEntry(shardIndex);
   }
 
   /** Ensure + bind the manager singleton-lease bucket. Mirrors the presence-bucket pattern (connectAndBind):
@@ -5974,7 +5826,7 @@ export class CotalEndpoint extends EventEmitter {
    *  peer wins; 0 or >1 matches drop (never fan a directed durable copy to an unrelated same-named
    *  bystander — red-team LOW; SPEC §4 unique instance id). */
   private resolveOwnerByName(name: string): string | undefined {
-    const matches = [...this.roster.values()].filter((p) => p.card.name.toLowerCase() === name.toLowerCase());
+    const matches = [...this.presence.values()].filter((p) => p.card.name.toLowerCase() === name.toLowerCase());
     return matches.length === 1 ? matches[0].card.id : undefined;
   }
 
@@ -6938,6 +6790,245 @@ export class CotalEndpoint extends EventEmitter {
     return "refused";
   }
 
+  /**
+   * Serve this process's own endpoint on the principal route (SPEC 13.21): a core-defined command
+   * set about this principal, addressed by its own principal, lifecycle UID and runtime id, with no
+   * registration. Revision 1 defines one endpoint, `agent` (SPEC 13.22).
+   *
+   * Throws on an open mesh and on a static credential, where no row names who may call, without a
+   * lifecycle UID, before the endpoint has started, for an endpoint it already serves, and for a
+   * cluster with a command that declares no `authorities` (see {@link servePrincipalRoute}). It
+   * subscribes this process's own subject with no queue group.
+   *
+   * `ready` is a positive check: it resolves only after the broker accepted the subscription
+   * (subscribe, flush, and no permission violation for that subject), and rejects with the
+   * refusal, which a credential minted before the rows existed gets. The serve is INTENT: every
+   * replaced connection subscribes again and runs the check again, and a refusal there ends the
+   * serve, resolves `failed` and clears the presence field. `stop` unsubscribes and waits for the
+   * handlers in flight.
+   */
+  servePrincipal(serve: { endpoint: string; cluster: ClusterDocument; handlers: EpPrincipalCommandDef[] }): PrincipalServe {
+    if (!this.authed)
+      throw new Error("the principal route is served only on an authenticated mesh: on an open mesh no row says who may call (SPEC 13.21)");
+    if (!this.userMode)
+      throw new Error("the principal route is served only under a user-auth credential: a static credential names no one who may call (SPEC 13.21)");
+    const uid = this.ownLifecycleUid;
+    if (uid === undefined)
+      throw new Error("serving the principal route needs this endpoint's lifecycleUid: the subject names it (SPEC 13.21)");
+    const nc = this.nc;
+    if (!nc) throw new Error(this.notLiveMsg());
+    endpointToken(serve.endpoint);
+    if (this.principalServes.has(serve.endpoint))
+      throw new Error(`this endpoint already serves "${serve.endpoint}" on the principal route`);
+    const self: EpPrincipal = { owner: this.owner, actor: this.actor, uid, runtimeId: assertRuntimeToken(processRuntime(uid).id) };
+    const serverKey = `${this.space}\n${self.runtimeId}\n${serve.endpoint}`;
+    if (principalServers.has(serverKey))
+      throw new Error(`another endpoint in this process already serves "${serve.endpoint}" for lifecycle ${uid}: both would subscribe the same principal-route subject and answer one request twice (SPEC 13.21); stop that one first`);
+    let resolveReady!: () => void, rejectReady!: (e: Error) => void, resolveFailed!: (e: Error) => void;
+    const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    ready.catch(() => { /* the caller observes it; this keeps an unobserved refusal from being unhandled */ });
+    const failed = new Promise<Error>((resolve) => { resolveFailed = resolve; });
+    const intent: PrincipalServeIntent = {
+      serve, self, serverKey, handles: [], ended: false, readySettled: false, resolveReady, rejectReady, resolveFailed,
+    };
+    // Construction refuses an invalid cluster before anything is kept or subscribed.
+    const handle = this.bindPrincipalHandle(intent, nc);
+    this.principalServes.set(serve.endpoint, intent);
+    principalServers.set(serverKey, intent);
+    void this.armPrincipalServe(intent, nc, handle);
+    return { ready, failed, stop: () => this.stopPrincipalServe(intent) };
+  }
+
+  /** Subscribe `intent` on `nc`. */
+  private bindPrincipalHandle(intent: PrincipalServeIntent, nc: NatsConnection): EpPrincipalServeHandle {
+    return servePrincipalRoute(nc, this.space, intent.self, intent.serve);
+  }
+
+  /** A request or reply subject (or filter) of the principal route in this space. */
+  private isPrincipalRouteSubject(subject: string): boolean {
+    const p = `${spacePrefix(this.space)}.ep.`;
+    return subject.startsWith(`${p}prin.`) || subject.startsWith(`${p}prin-reply.`);
+  }
+
+  /** Track one binding: a refusal ends the serve, and an accepted subscription on the current
+   *  connection shows the presence field. */
+  private async armPrincipalServe(intent: PrincipalServeIntent, nc: NatsConnection, handle: EpPrincipalServeHandle): Promise<void> {
+    intent.binding = { nc, handle };
+    intent.handles.push(handle);
+    intent.readyOn = undefined;
+    void handle.refused.then((err) => {
+      if (!intent.ended && intent.binding?.handle === handle) this.endPrincipalServe(intent, err);
+    });
+    try {
+      await handle.ready;
+    } catch {
+      // A refusal ends the serve through `refused`. A flush that failed because the connection
+      // went away is answered by the binding the next connection makes.
+      return;
+    }
+    this.principalServeConfirmed(intent, nc, handle);
+  }
+
+  /** The broker accepted `handle` on `nc`. When that is still the current binding, the serve is
+   *  ready there. */
+  private principalServeConfirmed(intent: PrincipalServeIntent, nc: NatsConnection, handle: EpPrincipalServeHandle): void {
+    if (intent.ended || intent.binding?.handle !== handle || this.nc !== nc) return;
+    intent.readyOn = nc;
+    if (!intent.readySettled) {
+      intent.readySettled = true;
+      intent.resolveReady();
+    }
+    if (intent.serve.endpoint === AGENT_ENDPOINT) this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+  }
+
+  /** Re-bind every principal serve on a replaced connection (a rebuild), or re-run the check on the
+   *  connection the library reconnected and re-subscribed itself. */
+  private rebindPrincipalServes(reconnected: boolean): void {
+    const nc = this.nc;
+    if (!nc) return;
+    for (const intent of this.principalServes.values()) {
+      if (intent.ended) continue;
+      const bound = intent.binding;
+      if (bound && bound.nc === nc) {
+        if (!reconnected) continue;
+        intent.readyOn = undefined;
+        void bound.handle.check().then(() => this.principalServeConfirmed(intent, nc, bound.handle), () => { /* a refusal ends it through `refused` */ });
+        continue;
+      }
+      let handle: EpPrincipalServeHandle;
+      try {
+        handle = this.bindPrincipalHandle(intent, nc);
+      } catch (e) {
+        this.endPrincipalServe(intent, e as Error);
+        continue;
+      }
+      void this.armPrincipalServe(intent, nc, handle);
+    }
+  }
+
+  /** End a serve the broker refused: no more serving, `failed` resolves, the presence field goes. */
+  private endPrincipalServe(intent: PrincipalServeIntent, err: Error): void {
+    if (intent.ended) return;
+    this.forgetPrincipalServe(intent);
+    const wasReady = intent.readySettled;
+    if (!intent.readySettled) {
+      intent.readySettled = true;
+      intent.rejectReady(err);
+    }
+    intent.resolveFailed(err);
+    for (const handle of intent.handles) void handle.stop();
+    if (intent.serve.endpoint === AGENT_ENDPOINT) {
+      this.promptsPresence = undefined;
+      this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+    }
+    // `ready` already carried a refusal that came before it settled; a later one is reported here.
+    if (wasReady) this.emitRecoverable(new Error(`stopped serving "${intent.serve.endpoint}" on the principal route: ${err.message}`, { cause: err }));
+  }
+
+  /** Mark `intent` ended and release what it holds in this endpoint and in this process. */
+  private forgetPrincipalServe(intent: PrincipalServeIntent): void {
+    intent.ended = true;
+    intent.readyOn = undefined;
+    if (this.principalServes.get(intent.serve.endpoint) === intent) this.principalServes.delete(intent.serve.endpoint);
+    if (principalServers.get(intent.serverKey) === intent) principalServers.delete(intent.serverKey);
+  }
+
+  /** Stop serving `intent` and wait for its handlers in flight. The ending is synchronous, so a
+   *  `ready` still waiting for the broker rejects before the caller's next step. `republish` writes
+   *  presence without the `prompts` field; the endpoint's own stop writes it offline instead. */
+  private async stopPrincipalServe(intent: PrincipalServeIntent, republish = true): Promise<void> {
+    if (!intent.ended) {
+      this.forgetPrincipalServe(intent);
+      if (!intent.readySettled) {
+        intent.readySettled = true;
+        intent.rejectReady(new Error(`stopped serving "${intent.serve.endpoint}" before the broker confirmed the subscription`));
+      }
+      if (intent.serve.endpoint === AGENT_ENDPOINT) {
+        this.promptsPresence = undefined;
+        if (republish) this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
+      }
+    }
+    await Promise.all(intent.handles.map((handle) => handle.stop()));
+  }
+
+  /**
+   * Set this process's `prompts` presence field and write presence at once (SPEC §6): how many
+   * prompts it holds `open` or `sent`, and a counter that goes up by one each time a prompt opens or
+   * changes state. The field shows only while the `agent` endpoint is served and the broker accepted
+   * its subscription on the current connection. Until this is called it shows `open: 0` with the
+   * highest `seq` this process used under its runtime id, or 0. Throws when the `agent` endpoint is
+   * not served, and a RangeError for a `seq` below one this runtime already used.
+   */
+  async setPromptsPresence(prompts: PresencePrompts): Promise<void> {
+    for (const k of ["open", "seq"] as const)
+      if (!Number.isSafeInteger(prompts?.[k]) || prompts[k] < 0) throw new TypeError(`prompts.${k} must be a non-negative safe integer`);
+    const intent = this.principalServes.get(AGENT_ENDPOINT);
+    if (!intent)
+      throw new Error(`the prompts presence field belongs to a served "${AGENT_ENDPOINT}" endpoint: call servePrincipal first (SPEC §6)`);
+    const used = promptsSeqs.get(intent.self.runtimeId) ?? 0;
+    if (prompts.seq < used)
+      throw new RangeError(`prompts.seq ${prompts.seq} is below ${used}, which this process already used under runtime ${intent.self.runtimeId}: seq never goes back under one runtime id (SPEC §6)`);
+    promptsSeqs.set(intent.self.runtimeId, prompts.seq);
+    this.promptsPresence = { open: prompts.open, seq: prompts.seq };
+    await this.publishPresence();
+  }
+
+  /**
+   * Take the next `prompts` `seq` for this process's runtime (SPEC §6): 0 the first time, then one
+   * above every `seq` this process used under its runtime id, whichever endpoint object used it. A
+   * prompt desk takes every `seq` it shows from here. Throws without a lifecycle UID.
+   */
+  nextPromptsSeq(): number {
+    const runtimeId = processRuntime(this.requireLifecycleUid("nextPromptsSeq")).id;
+    const used = promptsSeqs.get(runtimeId);
+    const next = used === undefined ? 0 : used + 1;
+    promptsSeqs.set(runtimeId, next);
+    return next;
+  }
+
+  /** The `prompts` field this process's presence carries now, or none. */
+  private servedPrompts(): PresencePrompts | undefined {
+    const intent = this.principalServes.get(AGENT_ENDPOINT);
+    if (!intent || intent.ended || !this.nc || intent.readyOn !== this.nc) return undefined;
+    return this.promptsPresence ?? { open: 0, seq: promptsSeqs.get(intent.self.runtimeId) ?? 0 };
+  }
+
+  /**
+   * Call one command of a principal's own endpoint on the principal route (SPEC 13.21), as this
+   * endpoint's caller triple with the authority word its row covers. `principal` is the addressed
+   * process: owner, actor, lifecycle UID and the `runtime.id` its presence publishes. Presence is
+   * advisory, and a wrong value reaches a subject nobody serves or one this caller's row does not
+   * cover. It cannot widen authority.
+   *
+   * The `agent` endpoint's contracts and `describe`'s are built in; any other endpoint needs
+   * `contract`. Resolves the reply, whose `ok: false` is the agent's own refusal; throws
+   * `unavailable` (`not-executed`) when nothing serves that process, `permission-denied`
+   * (`not-executed`) when this credential holds no row for the request, and `deadline-exceeded`
+   * (`unknown`) when no reply came. See {@link epPrincipalCall}.
+   */
+  async callPrincipal(call: {
+    endpoint: string;
+    principal: EpPrincipal;
+    command: string;
+    authority: PrincipalAuthority;
+    args?: Record<string, unknown>;
+    deadlineMs: number;
+    contract?: { input: CompiledContract; output: CompiledContract };
+    signal?: AbortSignal;
+  }): Promise<EndpointReply> {
+    const nc = this.nc;
+    if (!nc) throw new Error(this.notLiveMsg());
+    const contract = call.contract
+      ?? (call.command === "describe" ? describeContracts() : call.endpoint === AGENT_ENDPOINT ? AGENT_CONTRACTS[call.command] : undefined);
+    if (contract === undefined)
+      throw new EpEnvelopeError("bad-request", `no contract is built in for ${call.endpoint}.${call.command}; pass one`, undefined, "not-executed");
+    const caller: EpCaller = { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("callPrincipal") };
+    return epPrincipalCall(nc, this.space, { principal: call.principal, authority: call.authority }, {
+      endpoint: call.endpoint, command: call.command, contract, caller, name: this.card.name,
+      ...(call.args !== undefined ? { args: call.args } : {}),
+    }, { deadlineMs: call.deadlineMs, ...(call.signal ? { signal: call.signal } : {}) });
+  }
+
   /** Serve one PRIVILEGED delivery-admin request (the D5 rail-split). The cred layer is the caller
    *  boundary — only the supervisor profile can publish here — and `serveControl`'s sender check +
    *  bounded reply still apply on top. `reloadCreds` is the class-2 renewal ADOPTION step: re-read
@@ -7516,7 +7607,7 @@ export class CotalEndpoint extends EventEmitter {
       } catch (e) {
         if (attempt === 0)
           this.emitRecoverable(new Error(`channel "${channel}": Plane-3 durable membership (generation ${generation}) not yet tombstoned after a refused live sub - retrying; §7 boundary may be open until it succeeds (${(e as Error).message})`));
-        await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * 2 ** attempt)));
+        await this.membershipPause(attempt);
       }
     }
   }
@@ -7675,7 +7766,7 @@ export class CotalEndpoint extends EventEmitter {
     if (this.pendingBootJoins.has(channel)) return; // already reconciling
     this.pendingBootJoins.add(channel);
     for (let attempt = 0; ; attempt++) {
-      await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * 2 ** attempt)));
+      await this.membershipPause(attempt);
       if (this.stopped || !this.channels.includes(channel) || this.plane3Channels.has(channel)) {
         this.pendingBootJoins.delete(channel);
         return; // stopped, left, or another path established it
@@ -8231,8 +8322,11 @@ export class CotalEndpoint extends EventEmitter {
   private async backfillChannel(channel: string, upToSeq: number, sinceMs?: number, floorSeq?: number): Promise<number> {
     if (floorSeq !== undefined && floorSeq >= upToSeq) return 0;
     const subject = chatSubject(this.space, "*", "*", channel);
+    // A window that reaches back before 1970 covers the whole retained window (#7323). Its start time
+    // would be a date JetStream does not read, or not a valid date at all, and the read replayed nothing.
+    const since = sinceMs === undefined ? undefined : Date.now() - sinceMs;
     const start =
-      floorSeq !== undefined ? { seq: floorSeq + 1 } : sinceMs === undefined ? { seq: 1 } : { time: new Date(Date.now() - sinceMs) };
+      floorSeq !== undefined ? { seq: floorSeq + 1 } : since === undefined || !(since > 0) ? { seq: 1 } : { time: new Date(since) };
     let msgs: JsMsg[];
     try {
       msgs = await this.collectHistory(subject, start, { untilSeq: upToSeq });
@@ -8349,91 +8443,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private async publishPresence(): Promise<void> {
-    if (!this.doRegister || !this.kv) return; // observers watch but never publish their own record
-    const p: Presence = {
-      card: this.card,
-      // SPEC §6: presence carries the incarnation's lifecycle UID (MUST in auth mode from v0.4);
-      // omitted only where the endpoint has none (a pure operator/daemon connection never registers).
-      ...(this.ownLifecycleUid !== undefined ? { lifecycleUid: this.ownLifecycleUid } : {}),
-      runtime: processRuntime(this.ownLifecycleUid),
-      status: this.status,
-      condition: this.condition,
-      environment: this.environment,
-      activity: this.activity,
-      statusSince: this.statusSince,
-      activitySince: this.activitySince,
-      activeAt: this.activeAt,
-      attention: this.attentionMode,
-      channelModes: this.channelModes,
-      ts: Date.now(),
-    };
-    // Wire contract (SPEC §6): an OFFLINE record must not carry the advisory attention fields or
-    // `statusSince`. Scrub at the publisher — this covers stop(), setStatus("offline"), and any future
-    // offline publish site, so the raw KV record is compliant, not only the observer-side roster
-    // materialization.
-    const record = this.status === "offline" ? this.toOffline(p) : p;
-    assertPresenceRow(record, this.card.id);
-    // #1356: this put can still be in flight when a teardown runs, because a rebind reaches
-    // publishPresence through onPresenceBucketEmpty and no teardown awaits that flight. Take the same
-    // epoch fence {@link startPresenceWatch} takes, so a put that outlives its epoch still throws to
-    // its caller but no longer writes presence-refusal state belonging to a later connection. Without
-    // it, a heartbeat put (default 2s) whose ~5s JetStream timeout elapses after a rebuild plants a
-    // refusal on the connection that just published successfully.
-    const epoch = this.presenceEpoch;
-    const conditionRevision = this.conditionRevision;
-    // #1461: snapshot the put's generation BEFORE the put. A settle (success or rejection) is the
-    // latest evidence on its epoch only while no put that started after it has ALREADY settled —
-    // a newer put merely in flight is not evidence yet. Same-epoch puts overlap routinely
-    // (heartbeat 2s against a ~5s JetStream put timeout), so "succeeded" alone is not "newest".
-    const generation = ++this.presencePutGeneration;
-    try {
-      await this.kv.put(this.card.id, JSON.stringify(record));
-    } catch (e) {
-      // #1356: a broker can put this bucket into a state where it refuses every write and never
-      // recovers, and the write is the ONLY thing that fails — open and watch both still succeed, so
-      // nothing else here notices. Record WHEN the refusals started, at the one site that knows the
-      // failing write was a presence write; a caller cannot infer that from the generic `warning`
-      // stream, which carries any recoverable error.
-      //
-      // #1461: a rejection speaks when it is the newest SETTLED evidence — a newer put that has
-      // merely started does not silence it, but a newer put that already settled (either way)
-      // does.
-      const superseded = (this.presencePutSettled ?? 0) > generation;
-      this.presencePutSettled = Math.max(this.presencePutSettled ?? 0, generation);
-      if (epoch === this.presenceEpoch && !this.stopped && !superseded) {
-        this.presenceWriteFailingSince ??= Date.now();
-        this.lastPresenceWriteError = (e as Error)?.message ?? String(e);
-        this.presenceWriteFailures++;
-        this.escalatePresenceWriteFailureIfStuck();
-      }
-      if (e instanceof TimeoutError)
-        throw new Error(
-          `${e.message}. The presence write outcome is unknown: the broker may have stored the update. Read the roster before retrying.`,
-          { cause: e },
-        );
-      throw e;
-    }
-    // A late SUCCESS cannot erase a refusal from newer evidence. Two fences, each answering half:
-    // the epoch fence (#1356) keeps a put that outlives its connection from writing or erasing a
-    // record that belongs to a later connection; the generation fence (#1461) orders puts WITHIN
-    // one epoch by SETTLE order, not start order: a settle is the latest evidence only while no
-    // put that started after it has already settled, whichever way that newer put settled. So an
-    // earlier put settling AFTER a later put settled no longer speaks — success cannot clear a
-    // newer refusal (#1461's original case), and a newer settle is not blocked by being merely
-    // started (panel round 1). Without the fence, an earlier put succeeding late cleared a later
-    // put's refusal while the bucket still refused writes (heartbeat 2s against a ~5s put timeout,
-    // so the overlap is routine rather than a corner).
-    const superseded = (this.presencePutSettled ?? 0) > generation;
-    this.presencePutSettled = Math.max(this.presencePutSettled ?? 0, generation);
-    if (epoch !== this.presenceEpoch || this.stopped || superseded) return;
-    // Presence writes may overlap. If this put carried an older condition, repair the KV with the
-    // latest local state before returning so a late failure publish cannot resurrect after a new
-    // turn cleared it. The revision is condition-specific; unrelated heartbeat overlap is unchanged.
-    if (conditionRevision !== this.conditionRevision) {
-      await this.publishPresence();
-      return;
-    }
-    this.clearPresenceWriteFailure();
+    return this.presence.publishPresence();
   }
 
   /** #1356: drop the presence-refusal record when the connection that OBSERVED those refusals goes
@@ -8446,31 +8456,7 @@ export class CotalEndpoint extends EventEmitter {
    *  failed bind against an unreachable server still reported the presence-refusal sentence while the
    *  endpoint's own `connectionIssue` already said "connection refused". */
   private clearPresenceWriteFailure(): void {
-    this.presenceWriteFailingSince = undefined;
-    this.lastPresenceWriteError = undefined;
-    this.presenceWriteFailures = 0;
-    this.presenceWriteEscalated = false;
-  }
-
-  /** A heartbeat retry remains recoverable inside one TTL. Once two or more consecutive writes have
-   * failed across the full window, ordinary retry has exhausted the roster's liveness budget: raise
-   * one named, non-transient warning. Later failures keep the duration/count current without flooding
-   * the operator log; the next successful write clears and re-arms the condition. */
-  private escalatePresenceWriteFailureIfStuck(): void {
-    if (
-      this.presenceWriteEscalated ||
-      this.presenceWriteFailingSince === undefined ||
-      this.presenceWriteFailures < 2 ||
-      Date.now() - this.presenceWriteFailingSince < this.ttlMs
-    ) return;
-    this.presenceWriteEscalated = true;
-    this.emitRecoverable(new PresenceWriteStuckError(
-      presenceBucket(this.space),
-      this.presenceWriteFailingSince,
-      this.presenceWriteFailures,
-      this.ttlMs,
-      this.lastPresenceWriteError,
-    ));
+    return this.presence.clearPresenceWriteFailure();
   }
 
   /** #1356: the presence bucket has been refusing writes since this time, or `undefined` when the
@@ -8489,15 +8475,7 @@ export class CotalEndpoint extends EventEmitter {
     consecutiveFailures: number;
     stuck: boolean;
   } | undefined {
-    if (this.presenceWriteFailingSince === undefined) return undefined;
-    return {
-      since: this.presenceWriteFailingSince,
-      forMs: Date.now() - this.presenceWriteFailingSince,
-      error: this.lastPresenceWriteError,
-      bucket: presenceBucket(this.space),
-      consecutiveFailures: this.presenceWriteFailures,
-      stuck: this.presenceWriteEscalated,
-    };
+    return this.presence.presenceWriteFailure();
   }
 
   /** Bind a presence watch on the current connection. Resolves the bound consumer's info when
@@ -8508,106 +8486,13 @@ export class CotalEndpoint extends EventEmitter {
    *  {@link stop} would resurrect a watch on a stopped endpoint, and one that completes after a
    *  rebuild would overwrite the fresh epoch's watch with a dead-connection iterator. */
   private async startPresenceWatch(): Promise<ConsumerInfo | undefined> {
-    if (!this.kv) return undefined;
-    let hydrated!: () => void;
-    this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
-    const bound = await this.bindKvWatch(this.kv);
-    if (!bound) {
-      hydrated();
-      return undefined;
-    }
-    const { iter, info } = bound;
-    this.presenceWatchIter = iter;
-    // A bucket with no keys replays nothing, so no entry carries the end-of-replay marker. For an
-    // observer that does not register, that empty replay is the whole snapshot: nobody is present.
-    // A registering observer is populated by its own record instead (see onPresenceBucketEmpty).
-    const empty = info.num_pending === 0 && !this.doRegister;
-    if (empty) {
-      this.presenceSnapshotPopulated = true;
-      hydrated();
-      this.markPresenceBucketEmpty();
-    }
-    void (async () => {
-      let ready = empty;
-      for await (const e of iter) {
-        // A rebind bound a newer watch: this one's remaining entries belong to a retired epoch.
-        // Stop consuming them (the rebind stops the iterator too; this ends the loop first).
-        if (this.presenceWatchIter !== iter) break;
-        this.handleKvEntry(e);
-        // @nats-io/kv marks the final initial replay entry isUpdate=true. Later updates stay true.
-        if (!ready && e.isUpdate) {
-          ready = true;
-          this.presenceSnapshotPopulated = true;
-          hydrated();
-          this.emitPresenceViewIfChanged();
-        }
-      }
-      hydrated();
-    })().catch((e) => this.emit("error", e as Error));
-    return info;
+    return this.presence.startPresenceWatch();
   }
 
   /** {@link EndpointOptions.readOnce}: fill the roster from one read of the presence bucket. Stale
    *  and offline records resolve as they do in a watch's initial replay. */
   private async readPresenceOnce(): Promise<void> {
-    if (!this.kv) return;
-    for (const e of await lastKvEntries(this.kv)) this.handleKvEntry(e);
-    this.presenceSnapshotPopulated = true;
-    // No record reached the roster (an empty bucket, or only the TTL canary): nobody is present.
-    if (this.lastPresenceWatchAt === 0) this.markPresenceBucketEmpty();
-    else this.emitPresenceViewIfChanged();
-  }
-
-  /**
-   * Replace a presence watch that has gone silent past TTL while the connection is up. The new
-   * ordered consumer starts from the bucket's current last-per-subject state, so a peer that is
-   * heartbeating is re-observed within one replay and a peer that is gone is aged out by the
-   * next sweep exactly as if the watch had never stalled. Rate-limited to one attempt per TTL
-   * per observer, never overlapping, never on a stopped or rebuilding endpoint (those own their
-   * watch through {@link connectAndBind}). A stop or rebuild that lands while the bind is in
-   * flight retires it: {@link startPresenceWatch} retires the late watch and reports
-   * nothing, since the epoch that was silent no longer exists. A failed bind is reported and
-   * the view stays stale.
-   */
-  private rebindStalePresenceWatch(now: number): void {
-    if (this.stopped || this.reconnecting || !this.kv || !this.nc || this.nc.isClosed()) return;
-    if (this.presenceRebind || now - this.presenceRebindAt < this.ttlMs) return;
-    this.presenceRebindAt = now;
-    const old = this.presenceWatchIter;
-    const epoch = this.presenceEpoch;
-    this.presenceRebind = (async () => {
-      try {
-        const silentMs = now - this.lastPresenceWatchAt;
-        // Bind the replacement FIRST. A rebind the broker refuses (stream gone, create denied) or
-        // one a held link never answers must leave the old watch in place: on a plain stall that
-        // watch is the one that recovers by itself, and its replay is still guarded against
-        // expired PUTs. Only a successfully bound watch retires its predecessor.
-        const info = await this.startPresenceWatch();
-        // Retired mid-bind (stop or rebuild moved the epoch): the late watch is already
-        // retired and the old watch was torn down by whoever moved the epoch. Nothing to
-        // retire, nothing to report.
-        if (!info) return;
-        // The predecessor's consumer goes with it: left alone, every rebind of a silent bucket
-        // would add one idle consumer to the presence stream per TTL (#3914).
-        if (old && old !== this.presenceWatchIter) this.retireKvWatch(old);
-        // A bucket with no keys replays nothing, so the new watch cannot refresh
-        // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present. The
-        // bind's consumer info carries the initial pending count for that one fact; nats.js's KV
-        // watch placed the isUpdate marker from the same `info(true)`.
-        if (info.num_pending === 0) await this.onPresenceBucketEmpty();
-        this.emit("warning", new Error(
-          `presence watch silent for ${silentMs}ms with the connection up; rebound it from the bucket's current state`,
-        ));
-      } catch (e) {
-        // A bind the epoch swap itself rejected (connection drained under it) is not a fault of
-        // the epoch that replaced it; only a refusal on a still-current epoch is reported.
-        if (epoch === this.presenceEpoch) this.emit("error", e as Error);
-      } finally {
-        // An epoch swap already disowned this flight (and may own a successor's by now); only
-        // a flight still in its own epoch clears the slot. Within one epoch there is one flight.
-        if (epoch === this.presenceEpoch) this.presenceRebind = undefined;
-      }
-    })();
+    return this.presence.readPresenceOnce();
   }
 
   /** Watch the channel registry: replay existing keys, then stream updates, into the local
@@ -8645,219 +8530,8 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  /** The watch was just bound onto a bucket with no keys.
-   *
-   *  A NON-REGISTERING observer (a `cotal status` probe, a lease checker) has real knowledge:
-   *  nobody is present. Every peer still in its roster is known gone (its key is not there to
-   *  replay), so it is marked offline now rather than aged out against a delivery that cannot
-   *  come; the silence gate is disarmed and the view reads current until the first write lands.
-   *  Without that the empty-bucket view relapsed to stale one window later and rebound again on
-   *  every window, one consumer create and one warning per TTL for as long as the mesh was empty.
-   *
-   *  A REGISTERING observer (the manager) is itself one of the keys that should be there. An
-   *  empty bucket under it means the bucket was wiped since its last heartbeat (the stream
-   *  recreation), and the same wipe took every peer's record: their absence says the bucket is
-   *  new, not that they left. a reviewer reproduced the previous behaviour at default timing:
-   *  the rebind landed ~0.9s after the recreation, the observer marked every peer AND ITSELF
-   *  offline, and held the view current for up to one heartbeat, a false verdict `cotal ps`
-   *  would print as `mesh offline`. So a registering observer re-publishes its own record NOW,
-   *  which the new watch delivers, and lets the ordinary per-peer age-out run from that delivery:
-   *  a peer that is still heartbeating rewrites its key within its own heartbeat interval and is
-   *  re-observed live; one that is gone ages out exactly as after a plain rebind. The roster is
-   *  not touched here and the view is not held; the delivery is what makes it current.
-   *
-   *  What neither branch covers: a consumer that dies again while the bucket is still empty is
-   *  not detectable by silence, so the first write after that is missed until the observer
-   *  restarts. */
-  private async onPresenceBucketEmpty(): Promise<void> {
-    if (this.doRegister) {
-      // Our own key is missing from a bucket we write to: put it back. publishPresence throws on
-      // a refused write; that surfaces through the rebind flight's error path with the epoch
-      // fence intact, and the view stays stale, which is the honest state for an observer that
-      // cannot even record itself.
-      await this.publishPresence();
-      return;
-    }
-    this.markPresenceBucketEmpty();
-  }
-
-  /** See {@link onPresenceBucketEmpty}: the non-registering branch. */
-  private markPresenceBucketEmpty(): void {
-    this.presenceWatchEmpty = true;
-    this.lastPresenceWatchAt = 0;
-    let changed = false;
-    for (const [id, p] of this.roster) {
-      if (p.status === "offline") continue;
-      const offline = this.toOffline(p);
-      this.roster.set(id, offline);
-      this.emit("presence", { type: "offline", presence: offline });
-      changed = true;
-    }
-    if (changed) this.emit("roster", this.getRoster());
-    this.emitPresenceViewIfChanged();
-  }
-
-  private handleKvEntry(e: KvEntry): void {
-    // Provisioning uses this one reserved key to prove the bucket's max_age is enforced (#404).
-    // It is maintenance traffic, never a peer identity, an offline transition, or view freshness.
-    if (e.key === TTL_RECONCILE_CANARY_KEY) return;
-    this.lastPresenceWatchAt = Date.now();
-    this.presenceWatchEmpty = false;
-    if (e.operation === "DEL" || e.operation === "PURGE") {
-      this.markOffline(e.key);
-      return;
-    }
-    const p = this.decodePresence(e);
-    if (p) this.applyPresence(e.key, p);
-  }
-
-  /** The record a presence PUT carries, or undefined when a reader must drop it (SPEC §6). The watch
-   *  and {@link readPresence} decode through this one gate, so they drop the same records. */
-  private decodePresence(e: KvEntry): Presence | undefined {
-    let p: unknown;
-    try {
-      p = e.json<unknown>();
-    } catch {
-      return undefined;
-    }
-    if (!isPresenceRow(p, e.key)) {
-      this.presenceBindingDrops++;
-      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: not a usable presence row (a record with card.id equal to its KV key, a non-blank string card.name, a known status, a finite ts, string display fields and a condition with a string code)`));
-      return undefined;
-    }
-    // isPresenceRow is the one gate: it refuses a row whose card.id disagrees with the KV key, so a
-    // forged or mis-keyed record never surfaces a spoofed roster identity. The write-side scoping
-    // ($KV.<presenceBucket>.<own-id>) is the primary guard.
-    return p;
-  }
-
-  private applyPresence(id: string, raw: Presence): void {
-    const prev = this.roster.get(id);
-    const stale = Date.now() - raw.ts > this.ttlMs;
-    // A watch recovering from a stall replays the bucket. Those PUTs still carry the publisher's
-    // pre-stall timestamps, so they look TTL-expired even though the peers kept heartbeating on
-    // the broker. Materializing them as offline is the empty-to-full flicker #1045 named: the
-    // observer's catch-up, not N deaths. Keep last-known rows, stay view-stale, and wait for a
-    // live timestamp (or an explicit offline/delete) before changing a known peer.
-    if (stale && raw.status !== "offline") {
-      if (prev) return;
-      this.roster.set(id, this.toOffline(raw));
-      this.emit("roster", this.getRoster());
-      return;
-    }
-    if (this.presenceSnapshotPopulated) this.emitPresenceViewIfChanged();
-    // Any offline materialization (a stale snapshot OR a graceful-leave record) drops the advisory
-    // attention fields — an offline peer must not carry a stale `[focus]`/`locally muted` hint.
-    const p: Presence =
-      stale || raw.status === "offline" ? this.toOffline(raw) : raw;
-
-    // First time we hear about an already-offline peer (stale snapshot): record quietly.
-    if (!prev && p.status === "offline") {
-      this.roster.set(id, p);
-      this.emit("roster", this.getRoster());
-      return;
-    }
-
-    // Heartbeat refresh with no real change: bump liveness quietly and don't
-    // emit — otherwise the periodic keep-alive looks like a stream of "updates".
-    // A CHANGED lifecycleUid is never a heartbeat: it is a NEW LIFECYCLE reusing the same principal (a
-    // terminal same-name recreation — in user mode a retired lifecycle and its same-name successor
-    // share `<owner>.<actor>`; a supervised respawn keeps the uid and is unaffected), so it MUST notify
-    // watchers even when its status/activity match the prior lifecycle's lingering record. Omitting this
-    // left a same-principal successor invisible to presence-event consumers (e.g. the manager's
-    // readiness race), which then timed out "uncertain" on a healthy agent (#29).
-    if (
-      prev &&
-      prev.status !== "offline" &&
-      p.status !== "offline" &&
-      prev.lifecycleUid === p.lifecycleUid &&
-      sameRuntime(prev.runtime, p.runtime) &&
-      prev.status === p.status &&
-      prev.activity === p.activity &&
-      sameCondition(prev.condition, p.condition) &&
-      prev.environment === p.environment &&
-      prev.attention === p.attention &&
-      sameChannelModes(prev.channelModes, p.channelModes)
-    ) {
-      this.roster.set(id, p);
-      return;
-    }
-
-    this.roster.set(id, p);
-    const type: "join" | "update" | "offline" =
-      p.status === "offline"
-        ? "offline"
-        : !prev || prev.status === "offline"
-          ? "join"
-          : "update";
-    this.emit("presence", { type, presence: p });
-    this.emit("roster", this.getRoster());
-  }
-
-  /** Materialize an OFFLINE presence record: drop the advisory attention fields. An offline peer must
-   *  not show a stale `[focus]` or "locally muted #x" hint — SPEC: attention removed on offline sweep,
-   *  channel modes reset on restart. `statusSince` goes too: it dated the live status, and an observer
-   *  that derives offline from a stale heartbeat does not know when the peer left. card/activity/ts
-   *  are kept. */
-  private toOffline(p: Presence): Presence {
-    return { ...p, status: "offline", statusSince: undefined, attention: undefined, channelModes: undefined };
-  }
-
-  /** Mark a known peer offline (on KV delete/purge), keeping it in the roster. */
-  private markOffline(id: string): void {
-    const prev = this.roster.get(id);
-    if (!prev || prev.status === "offline") return;
-    const offline = this.toOffline(prev);
-    this.roster.set(id, offline);
-    this.emit("presence", { type: "offline", presence: offline });
-    this.emit("roster", this.getRoster());
-  }
-
-  private emitPresenceViewIfChanged(): void {
-    const view = this.presenceView();
-    if (view.state === this.presenceViewState) return;
-    this.presenceViewState = view.state;
-    this.emit("presence-view", view);
-  }
-
   private sweep(): void {
-    const now = Date.now();
-    // Whole-bucket silence past TTL is THIS observer going deaf. Real rosters do not lose every
-    // peer in one window, and treating that silence as N offline verdicts empties an online-only
-    // sidebar with nothing saying the window went blind (#1045). Gate the per-peer age-out on
-    // watch freshness; surface the view as stale instead.
-    if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {
-      this.emitPresenceViewIfChanged();
-      // Staying stale is the right verdict for a held link (#1045), and the wrong END STATE when
-      // the transport is up and the watch's own consumer is what died. Measured on a live deployment
-      // 2026-09-09: the presence stream was deleted and recreated, its sequence restarted, and
-      // every observer's ORDERED consumer re-created itself at the OLD start sequence (nats.js
-      // 3.4.0 resets from its cursor). The broker kept sending idle heartbeats, so the client
-      // never reset again, the iterator never closed, and the manager's roster stayed frozen at
-      // the pre-recreation snapshot for hours: `cotal ps` read every older seat "mesh offline"
-      // and every newer seat "not in roster" while all of them were heartbeating. The same
-      // end state follows a plain consumer delete (an operator, or the 5-minute inactive
-      // threshold after a long stall). Rebind the watch from the bucket's CURRENT state; a held
-      // link's rebind fails or stays silent and the view simply stays stale, as before.
-      this.rebindStalePresenceWatch(now);
-      return;
-    }
-    let changed = false;
-    for (const [id, p] of this.roster) {
-      // A peer's own `ts` always trails the observer's last delivery, so "older than TTL by the
-      // wall clock" alone ages peers out on the tick just before the whole-bucket gate above
-      // trips (#1311's flap; measured as 3 offline verdicts per silence in the rebind suite).
-      // Require that the watch itself delivered for a full TTL after this peer's last heartbeat:
-      // then other peers were heard and this one was not, which is the only silence that is the
-      // peer's rather than the observer's.
-      if (p.status !== "offline" && now - p.ts > this.ttlMs && this.lastPresenceWatchAt - p.ts > this.ttlMs) {
-        const offline = this.toOffline(p);
-        this.roster.set(id, offline);
-        this.emit("presence", { type: "offline", presence: offline });
-        changed = true;
-      }
-    }
-    if (changed) this.emit("roster", this.getRoster());
+    return this.presence.sweep();
   }
 }
 
@@ -8897,7 +8571,7 @@ function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
  *  an old-shape alias. Every receive path asks this one predicate. What a path does with a refusal
  *  (drop, skip, ack, term or reject) and its own extra checks (a usable id, its own echo) stay with
  *  the path. */
-function isFromSubjectSender(msg: unknown, parsed: ParsedSubject): boolean {
+export function isFromSubjectSender(msg: unknown, parsed: ParsedSubject): boolean {
   return isRecord(msg) && isRecord(msg.from) && msg.from.id === parsed.sender && isPrincipalOwnerToken(parsed.owner);
 }
 
@@ -9159,29 +8833,6 @@ function assertPartsSerializable(parts: readonly Part[]): void {
       throw new Error(`cannot publish a data part carrying a non-JSON value (SPEC §5) - ${problem}`);
     }
   }
-}
-
-/** Shallow-equal two per-channel-mode maps (presence dedup): a change must re-emit, so an attention
- *  toggle isn't swallowed as a quiet heartbeat. Absent and empty compare equal. */
-function sameChannelModes(
-  a?: Record<string, ChannelMode>,
-  b?: Record<string, ChannelMode>,
-): boolean {
-  const ak = a ? Object.keys(a) : [];
-  const bk = b ? Object.keys(b) : [];
-  if (ak.length !== bk.length) return false;
-  return ak.every((k) => a![k] === b?.[k]);
-}
-
-function sameRuntime(a: Presence["runtime"], b: Presence["runtime"]): boolean {
-  return a?.id === b?.id && a?.startedAt === b?.startedAt && a?.source === b?.source;
-}
-
-function sameCondition(a: PresenceCondition | undefined, b: PresenceCondition | undefined): boolean {
-  return a?.code === b?.code
-    && a?.source === b?.source
-    && a?.message === b?.message
-    && a?.since === b?.since;
 }
 
 /** Auth subset of connect() options, shared by the endpoint and isReachable. `bearer` may be a

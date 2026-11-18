@@ -61,7 +61,7 @@ test('controls run only the two unfinished cells with independent disposable cus
   }
   assert(!/--pack|workspace-concurrency|scripts\/build-native/.test(commands(job)));
   const retrieve = job.steps.find(step => step.name === 'Retrieve original candidate without rebuilding');
-  assert.equal(retrieve.uses, 'actions/github-script@v8');
+  assert.equal(retrieve.uses, 'actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd');
   for (const token of ['14084125820', '43521878657', 'e10786970077b6e035606b37a81531a9f35137a8155345e53a275858cd387430', 'getArtifact', 'downloadArtifact', "createHash('sha256')"]) assert(retrieve.with.script.includes(token));
   const verify = job.steps.find(step => step.name === 'Verify original candidate source and manifest');
   assert(verify.run.includes('125e718555b1ec988cf50fcb4b362fb6a775072423466330e670031cb7ec1cb1'));

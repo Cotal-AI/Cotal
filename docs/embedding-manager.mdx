@@ -7,6 +7,13 @@ audience: integrators
 
 ## Interactive manager primary [#interactive-manager-primary]
 
+The auth service implements manager authority, manager instance listing and lifecycle HTTP
+handlers in [`service-manager-routes.ts`](../implementations/auth/src/service-manager-routes.ts).
+The exchange handler, per-face refusal budgets and authenticated selection windows live in
+[`service-exchange-routes.ts`](../implementations/auth/src/service-exchange-routes.ts). Listener
+composition and the authority context stay in `service.ts`, which re-exports `ExchangePolicy`.
+Existing host-facing exports remain available from `@cotal-ai/auth`.
+
 A trusted composition can pass `{ interactiveManagerSelection: "local-primary" }` as the third
 argument of `runAuthService(args, store, options)`. `AuthServiceRuntimeOptions` is exported by
 `@cotal-ai/auth`. The third argument still accepts the native daemon lifecycle hooks. No CLI
@@ -56,6 +63,9 @@ old key to expire instead. A lease that could not be read or written is a plain 
 
 ### Signer custody
 
+The manager registers its control service and manages session credentials through an internal
+serve coordinator. Renewal and shutdown share the same current authority holders.
+
 Unlike delivery, the manager is **not** a pre-minted-scoped-cred daemon (auth-service is also a
 signer: it holds fewer artifacts than the full trust bundle, but its data-account signing seed still
 grants complete data-account mint authority on compromise, so this is not least-privilege). On `start()`
@@ -103,6 +113,10 @@ when it has none, and keeps serving. A value it cannot read reports as `an unrea
 > store-injectable signer path is the hosted-server set: the manager, `remintDaemonCreds`, and delivery.
 
 ### Managed lifecycle retirement
+
+The manager keeps retirement holds, exact-lifecycle teardown requests and confirmed predecessor
+coordinates in an internal retirement coordinator. Its public methods and host callbacks keep the
+same contract.
 
 The typed remote-manager authority contract includes a one-shot terminal phase. A host implements
 `remoteAuthority.prepareAgentRetirement` to revoke the managed grant and finish its resumable

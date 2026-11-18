@@ -1222,7 +1222,11 @@ try {
   // While the delivery daemon is absent, the manager's membership inventory challenge cannot
   // reach a responder. Lack of daemon NEVER proves empty storage: retirement stays held,
   // the name remains reserved pending retirement, and a same-name spawn is refused.
-  const mRetiring = (manager as unknown as { retiring: Map<string, { opId: string; target: { lifecycleUid: string }; lastError?: string }> }).retiring;
+  const mRetiring = (manager as unknown as {
+    retirement: {
+      retiring: Map<string, { opId: string; target: { lifecycleUid: string }; lastError?: string }>;
+    };
+  }).retirement.retiring;
   for (let i = 0; i < 50 && (!mRetiring.has("delta") || !mRetiring.get("delta")?.lastError); i++) await wait(100);
   check("absent delivery daemon holds retirement: delta is held in retiring with incomplete inventory",
     mRetiring.has("delta") && /membership inventory incomplete/i.test(mRetiring.get("delta")?.lastError ?? ""),
@@ -1245,7 +1249,11 @@ try {
   // still be in flight here. A re-drive joins an in-flight teardown of the same lifecycle instead of
   // starting another, so re-driving now would only rejoin the one whose inventory found no responder.
   // Let it settle first; the re-drive below then reads the inventory from the daemon that now serves.
-  const teardowns = (manager as unknown as { deprovisioningFlight: Map<string, Promise<void>> }).deprovisioningFlight;
+  const teardowns = (manager as unknown as {
+    retirement: {
+      deprovisioningFlight: Map<string, Promise<void>>;
+    };
+  }).retirement.deprovisioningFlight;
   await teardowns.get(JSON.stringify(["delta", deltaUid]))?.catch(() => {});
   await manager.startAgent({ name: "delta", agent: "e2e", events: false }).catch(() => {});
 

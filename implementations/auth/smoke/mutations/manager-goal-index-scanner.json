@@ -36,7 +36,7 @@
     },
     {
       "name": "M3 reintroduce wildcard records consumer lifecycle on the remote executor",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "        ...recordKeys.map((key) => `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${key}`),\n        `$JS.API.STREAM.MSG.GET.KV_${REC}`,",
       "replace": "        ...recordKeys.map((key) => `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${key}`),\n        `$JS.API.STREAM.MSG.GET.KV_${REC}`,\n        `$JS.API.CONSUMER.CREATE.KV_${REC}.>`,\n        `$JS.API.CONSUMER.INFO.KV_${REC}.>`,\n        `$JS.API.CONSUMER.DELETE.KV_${REC}.>`,",
       "expectRed": "all three participant records-consumer powers are absent",

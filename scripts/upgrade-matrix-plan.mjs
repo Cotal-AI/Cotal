@@ -153,6 +153,12 @@ export function boundedCells(plan) {
   {
     const targetVersion = syntheticNextVersion(plan.targetVersion);
     const followOnVersion = syntheticFollowOnVersion(plan.targetVersion);
+    for (const platform of ["linux", "darwin"]) add(platform, "npm", "candidate-next-two-homes", null, {
+      sourceVersion: plan.targetVersion, sourceKind: "packed-candidate-A", targetVersion,
+      targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+      syntheticVersionRule: "candidate.patch+1000",
+      requiredAssertions: ["status-healthy", "no-recovery", "no-manual-intervention", "two-home-up", "two-home-launch", "old-manager-preserved", "home-only-remedy", "owned-stack-cleanup"],
+    });
     const chainAssertions = ["exact-source-refusal", "intermediate-whole-machine", "next-hop-success"];
     for (const cell of cells.filter(cell => ['daemon-self', 'agent-stop-consent'].includes(cell.scenario) && cell.sourceVersion === '0.164.10')) {
       cell.chain = true;
@@ -228,6 +234,14 @@ export function boundedCells(plan) {
     requiredAssertions: ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention",
       "candidate-source-identity", "candidate-next-target", "next-hop-success", "native-service-manual", "independent-final-state",
       "dead-updater-release", "live-owner-held", "next-update-alone"],
+  });
+  add("linux", "npm", "candidate-next-other-home-auth", null, {
+    sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A",
+    targetVersion: syntheticNextVersion(plan.targetVersion), targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+    syntheticVersionRule: "candidate.patch+1000", otherHomeAuth: true,
+    requiredAssertions: ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention",
+      "candidate-source-identity", "candidate-next-target", "next-hop-success", "native-service-manual", "independent-final-state",
+      "other-home-auth-required", "other-home-manager-preserved", "other-home-loaded-graph-preserved", "other-home-update-notice", "other-home-cleanup"],
   });
   return cells;
 }

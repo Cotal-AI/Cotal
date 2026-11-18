@@ -2,7 +2,7 @@ import { rmSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import { registry, writeSecretFileCreateOnly, type Command, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, WEB_CREDS_KIND, WEB_PIDFILE, WEB_SERVICE_ADAPTER, claimServicePid, colorEnabled, identityRecord, observeServiceStartup,
+  CommandFailure, WEB_CREDS_KIND, WEB_PIDFILE, WEB_SERVICE_ADAPTER, claimServicePid, colorEnabled, identityRecord, isCommandFailure, observeServiceStartup,
   oneLine, publishServiceStartup, readLocalRecordSource, readPinnedStaticCredential,
   readDashboardPostingCredential, resolveNativeServiceTarget, serviceOperationId, serviceStartupPath, serviceWebSessionPath, validateServiceStartupPath,
   type LocalProcess, type ServicePreset, type WebSession,
@@ -46,9 +46,20 @@ export const webService: LocalProcess = {
   },
   buildServiceLaunch(context) {
     if (!context.cliInvocation?.length) throw new CommandFailure("refused", "UNSUPPORTED", "the dashboard service needs the verified cotal entry; no PATH executable was substituted");
-    const root = String(context.options.root), creds = String(context.options.creds);
-    if (typeof context.options["read-only"] !== "boolean" || (context.options["read-only"] === false) !== (typeof context.options["posting-creds"] === "string") || context.credentialRef && context.credentialRef.path !== creds) throw new CommandFailure("refused", "CONFLICT", "the dashboard requires --read-only, or --no-read-only with a separate --posting-creds file, and one unambiguous observer credential reference");
-    const selected = target(root, context.space, context.options.server as string | undefined), bind = exposure(context.options.host, context.options.port);
+    const root = String(context.options.root), creds = String(context.options.creds), readOnly = context.options["read-only"], posting = typeof context.options["posting-creds"] === "string";
+    if (typeof readOnly !== "boolean" || context.credentialRef && context.credentialRef.path !== creds) throw new CommandFailure("refused", "CONFLICT", "the dashboard requires a read-only setting and one unambiguous observer credential reference");
+    // `service add` refuses a name that exists, so a saved definition changes by removing and adding it.
+    const readd = (flags: string) => `remove it with \`cotal service remove ${context.definition} --space ${context.space} --yes\`, then run \`cotal service add ${context.definition} --preset web --space ${context.space} ${flags}\``;
+    if (readOnly === posting) throw new CommandFailure("refused", "CONFLICT", readOnly
+      ? `the saved ${context.definition} definition has --posting-creds but is read-only, and the dashboard posts only with --no-read-only`
+      : `the saved ${context.definition} definition has --no-read-only but no --posting-creds file, and the dashboard posts only with a separate posting credential`, { remedy: readd("--no-read-only --posting-creds <file>") });
+    const selected = target(root, context.space, context.options.server as string | undefined);
+    let bind: ReturnType<typeof exposure>;
+    try { bind = exposure(context.options.host, context.options.port); }
+    catch (error) {
+      if (!isCommandFailure(error) || error.code !== "USAGE_INVALID") throw error;
+      throw new CommandFailure("refused", "CONFLICT", `the saved ${context.definition} definition's --host is a wildcard or credential-bearing address, and the dashboard needs one reachable bind/browser host`, { remedy: readd("--host <address>") });
+    }
     const [executable, ...self] = context.cliInvocation;
     return { executable: executable!, cwd: selected.root, args: [...self, ...(colorEnabled() ? [] : ["--no-color"]), "__service-web", "--root", selected.root, "--space", selected.space, "--server", selected.server, "--creds", creds, ...(context.options["read-only"] ? ["--read-only"] : ["--posting-creds", String(context.options["posting-creds"])]), "--host", bind.host, "--port", String(bind.port), "--service-instance", context.instanceId, "--launch-request", context.launchRequestId, "--ready-file", serviceStartupPath(context)] };
   },

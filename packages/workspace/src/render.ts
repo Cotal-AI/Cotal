@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, oneLine } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
@@ -165,6 +166,9 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       // An `up` / pre-origin record is KEPT on a liveness miss. Keep `no mesh running at`
       // so existing attach/mint cells still recognise the classified refusal, and name
       // the recorded root so the operator restarts THAT mesh, not a new one from cwd.
+      // A deleted root cannot be restarted from, so the step is moving it back or forgetting the space (#7318).
+      if (!existsSync(t.root))
+        return parts(`no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root}, which no longer exists`, `if that folder was moved or renamed, move it back and run \`cotal up\` there; otherwise forget the space with \`cotal space forget ${t.space}\``);
       return parts(`no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root} but not running`, "run `cotal up` there to restart");
     // The registry-mismatch pair, like `unreachable`, must not prescribe `cotal up` for a mesh this
     // machine only registered: the repair there is the credentials under `--root`, or re-registering
@@ -178,6 +182,10 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
         ? parts(`"${t.space}" is registered as an open mesh, but the broker at ${server} requires auth`, `copy that mesh's account + creds under ${t.root} and re-register with \`cotal meshes add ${t.space} --server <url> --mode auth --force\``)
         : parts(`open mesh "${t.space}" at ${server} no longer matches its registry entry (broker now requires auth - port reused?)`, `re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`);
     case "creds-rejected":
+      // Another space's broker named by `--server` rejects this space's credentials while this space
+      // still runs at its recorded address, so `cotal up` is not the step: name both addresses.
+      if ((t.source === "flag-server" || t.source === "flag-space-override") && t.recordedServer !== undefined && t.recordedServer !== t.server)
+        return parts(`credentials for "${t.space}" were rejected at ${server}, the broker address --server named; a different mesh may be running there`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
       return parts(`credentials for "${t.space}" were rejected at ${server}; a different mesh may be running there`, "run `cotal meshes` to check, or `cotal up` here to start yours");
     case "open-wants-auth":
       return parts(`broker at ${server} requires auth, but this mesh is open (no trust material)`, "use `--space <name>` for an auth mesh, or run `cotal up` here without `--open`");

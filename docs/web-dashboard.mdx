@@ -41,7 +41,8 @@ A user-auth root or a root containing only a stripped signer is unsupported. Bro
 
 The service preserves the broker's registered TLS requirement.
 Its browser listener is HTTP, so broker TLS does not protect remote browser traffic.
-The `host` and `port` definition options default to `127.0.0.1` and 7799. Wildcard hosts and port 0 are refused.
+The `host` and `port` definition options default to `127.0.0.1` and 7799. Port 0 is refused when the service is saved.
+A wildcard host is refused when the service starts, and the refusal names the `cotal service remove` and `cotal service add` that change the saved definition.
 Background `cotal service start web` opens an authenticated browser session for a loopback listener.
 Repeating it reuses the matching process and issues a fresh single-use link without invalidating existing browser sessions.
 It starts no dependency automatically. Use `--no-open` for manual access or a remote listener.
@@ -60,6 +61,9 @@ cotal auth mint dashboard --space main --no-persona --allow-subscribe general --
 cotal service add web --preset web --space main --no-read-only --posting-creds /absolute/private/dashboard-posting.creds
 cotal service start web --space main
 ```
+
+`service add` refuses either flag without the other and saves nothing. A definition saved from a
+file with only one of them is refused when it starts, naming the remove and add that fix it.
 
 Select #general in Channels, enter text in the composer, and choose Send.
 Posts use the separate credential's identity, labelled `operator`, and preserve mentions.
@@ -81,6 +85,10 @@ Logs contain only its reference path.
 Do not upload the session file or paste its contents into logs.
 Opening its link exchanges the bootstrap token for an HttpOnly session cookie with `SameSite=Lax`.
 A spent token cannot open another session.
+
+The exchange removes the token from the address. Responses send `Referrer-Policy: no-referrer`
+and `X-Content-Type-Options: nosniff`. Content-Security-Policy allows scripts only from the
+dashboard's own origin and refuses inline scripts. Inline styles remain enabled for the interface.
 
 </Callout>
 

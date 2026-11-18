@@ -988,8 +988,9 @@ function presenceOptionalString(value: unknown): boolean {
 
 /** The presence row shape every reader relies on (SPEC §6). A record whose `card.id` differs from
  *  its KV key, whose `card.name` is blank or has the wrong type, whose `status` has the wrong type,
- *  whose `ts` is not finite, whose printed display fields are present and not strings, or whose
- *  `condition` is present and is not an object with a string `code`, is not a row. `card.id` must be
+ *  whose `ts` is not finite, whose printed display fields are present and not strings, whose
+ *  `condition` is present and is not an object with a string `code`, or whose `prompts` is present
+ *  and is not an object with non-negative integer `open` and `seq`, is not a row. `card.id` must be
  *  a non-empty string and equal the key it was read under: the key is the identity the write grant
  *  proves, and an empty id matches no key. `card.name` must be a non-blank string: a blank name
  *  cannot identify the participant a refusal prints. */
@@ -1011,6 +1012,11 @@ function presenceRowProblem(value: unknown, key: string): string | undefined {
   if (value.condition !== undefined) {
     if (!presenceRecord(value.condition)) return "condition";
     if (typeof value.condition.code !== "string") return "condition.code";
+  }
+  if (value.prompts !== undefined) {
+    if (!presenceRecord(value.prompts)) return "prompts";
+    for (const k of ["open", "seq"] as const)
+      if (!Number.isSafeInteger(value.prompts[k]) || (value.prompts[k] as number) < 0) return `prompts.${k}`;
   }
   return undefined;
 }

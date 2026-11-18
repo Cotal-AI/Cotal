@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { connectorConfigDir, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
-import { selectExecutionProgram } from "../cotal.js";
+import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 import { fileURLToPath } from "node:url";
 
 export function installedGenerationVersion(): string {
@@ -81,7 +81,7 @@ export function watchDaemonGeneration(version: string, changed: (version: string
     try { if (updateActivationBlocked()) return; } catch { return; }
     let next: string;
     try {
-      next = installedGenerationVersion();
+      next = observeExecutionVersion(dirname(file));
     } catch { return; }
     if (next === version) { candidate = undefined; retryAt = 0; delay = 5000; pending(undefined); return; }
     if (candidate !== next) {

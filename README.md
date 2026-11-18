@@ -49,6 +49,9 @@ CLI, application connectors, a process manager, durable workflows and observatio
 
 ## Quick start
 
+On minimal Linux images, check the [installer prerequisites](docs/installation.mdx#use-the-shell-installer)
+first. Rocky Linux 9 needs `sudo dnf install tar` before running the installer.
+
 ```bash
 curl -fsSL https://get.cotal.ai | sh
 ```
@@ -56,7 +59,10 @@ curl -fsSL https://get.cotal.ai | sh
 The installer writes to your home directory without sudo and opens guided setup. You can
 [read the script](https://get.cotal.ai) first or preview it with `| sh -s -- --dry-run`.
 
-On Windows, or with an existing Node 22.10+ installation:
+On Windows, or with an existing Node 22.10+ installation, use npm.
+With distribution Node on macOS or Linux, npm's default global prefix may be root-owned.
+Use the shell installer above or follow the [user-owned npm prefix and PATH steps](docs/installation.mdx#install-with-npm)
+before the npm command. Install Cotal as your own user, without sudo.
 
 ```bash
 npm install -g cotal-ai

@@ -16,6 +16,17 @@ The installer supports x64 and arm64 machines.
 On Linux, use a glibc distribution such as Debian, Ubuntu, Fedora, or Arch.
 Alpine and other musl distributions are not supported.
 
+If the installer needs to download Node.js, it requires `curl` or `wget`, `tar` with gzip support,
+`mktemp`, and a SHA-256 tool (`sha256sum`, `shasum`, or `openssl`).
+Minimal cloud images may omit `tar`. On Rocky Linux 9, install it before running the installer:
+
+```bash
+sudo dnf install tar
+```
+
+This prerequisite step uses your system package manager.
+The Cotal installer does not run sudo or install system packages.
+
 Read the [installer script](https://get.cotal.ai) before you run it.
 To install without opening guided setup:
 
@@ -29,6 +40,11 @@ Rerunning it installs the selected release and runs `cotal update` to reconcile 
 You can rerun it with Cotal's `nodebin` directory on PATH without replacing its runtime links with links to themselves.
 It installs inside your home directory and checks downloaded Node.js files against their published SHA-256 sums.
 It uses a suitable Node.js 22.10 or newer already on your machine, or installs one for Cotal.
+
+Before reporting success, the installer runs the installed launcher with `--version`.
+If it cannot start, installation exits with an error and prints the command's output.
+If you selected an older release, run the installer again without `--version` to select the latest release.
+If the latest release cannot start, report the error at the [issue tracker](https://github.com/Cotal-AI/Cotal/issues).
 
 The launcher goes in `~/.local/bin/cotal`.
 The install root defaults to `${XDG_DATA_HOME:-~/.local/share}/cotal`.
@@ -46,7 +62,23 @@ The Quickstart starts the prepared space separately.
 
 ## Install with npm
 
-If you already have Node.js 22.10 or newer, run:
+If you already have Node.js 22.10 or newer, install as your own user, without sudo.
+The npm global prefix must be writable by your user, and its executable directory must be on PATH.
+On macOS or Linux with distribution Node, the default prefix may be root-owned.
+Use the [shell installer](#use-the-shell-installer) above, or select a user-owned npm prefix before installing:
+
+```bash
+npm config set prefix "$HOME/.local"
+export PATH="$HOME/.local/bin:$PATH"
+npm install -g cotal-ai
+```
+
+The prefix setting applies to all future npm global installs, not just Cotal.
+Add the same `export PATH="$HOME/.local/bin:$PATH"` line to your shell startup file
+(such as `~/.bashrc` or `~/.zshrc`) so new terminals can find `cotal`.
+If an install fails with npm `EACCES`, use one of these routes instead of retrying with sudo.
+
+On Windows, or when your existing npm prefix is already user-writable and its executable directory is on PATH, run:
 
 ```bash
 npm install -g cotal-ai

@@ -425,10 +425,12 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     const view = instanceView(row, started.noOp ? "Already running; nothing was started" : row.nativeEndpoint ? "Owned process running; native adapter readiness recorded" : row.reportedListener ? "Owned broker process reported its listener" : row.readinessObservation === "http-reachable" ? "Owned process running; HTTP reachable" : "Owned service process running");
     // A background child reports how to reach it, such as the dashboard's bootstrap file, in its own log.
     if (values.foreground) return view;
-    // One instance of a definition needs no instance or space on the line that reads it.
+    // One instance of a definition needs no instance or space on the line that reads it. A space named
+    // with --space stays on the stop line, since a bare one from this folder can resolve to another (#7346).
     const only = serviceInstances(space, name).length === 1;
     const logs = commandName === "manager" ? "cotal manager logs" : only && !args.values.space ? `cotal service logs ${row.definition}` : `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`;
-    return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: logs, description: "Read the service's own startup output, including how to reach it when it reports that" }, { command: commandName === "manager" ? "cotal manager stop" : `cotal service stop ${row.definition}`, description: "Stop it" }] }] }] };
+    const stop = commandName === "manager" ? "cotal manager stop" : `cotal service stop ${row.definition}${args.values.space ? ` --space ${oneLine(row.space)}` : ""}`;
+    return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: logs, description: "Read the service's own startup output, including how to reach it when it reports that" }, { command: stop, description: "Stop it" }] }] }] };
   });
   if (values.foreground && started.child && started.exit) {
     let signal: "SIGINT" | "SIGTERM" | undefined;

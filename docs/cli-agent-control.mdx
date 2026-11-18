@@ -413,6 +413,11 @@ remote manager regardless of the bind address. A
 bare `cotal supervise` and an embedded manager stay machine-local. Set it directly with
 `supervise --console-host <host>`.
 
+The browser console removes its launch token from the address bar after its page scripts load.
+Its page sends `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`.
+Content-Security-Policy allows scripts from its own origin, inline styles for the terminal,
+and WebSocket connections for broker sessions. Inline scripts are refused.
+
 That address is **recorded on the mesh** and carried forward, because it is a decision rather than
 something later commands can work out for themselves (a broker dial address is not a manager bind
 address). Every later manager launch for the same mesh reuses it, including a same-root `cotal up` repair

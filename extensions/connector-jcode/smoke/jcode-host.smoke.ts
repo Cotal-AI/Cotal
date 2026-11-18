@@ -636,7 +636,7 @@ try {
   const hintTurns = () => entries().filter((entry) => entry.ev === "request" &&
     (entry.frame as { req?: string; no_reply?: boolean }).req === "send_message" &&
     !(entry.frame as { no_reply?: boolean }).no_reply &&
-    String((entry.frame as { content?: string }).content).includes("You were mentioned by operator on #team. Pull it with cotal_inbox."));
+    String((entry.frame as { content?: string }).content).includes("You were mentioned by operator (unverified name) on #team. Pull it with cotal_inbox."));
   const hintStart = hintTurns().length;
   const focusBody = "FOCUS-MENTION-BODY-MUST-NOT-BE-INJECTED";
   await operator.multicast(focusBody, { channel: "team", mentions: ["jcodepeer"] });
@@ -646,7 +646,7 @@ try {
   check("the focus wake hint never auto-injects the channel body", Boolean(focusTurn) &&
     !String((focusTurn?.frame as { content?: string } | undefined)?.content).includes(focusBody), focusTurn);
   await waitFor("focus wake turn completion", () => entries().find((entry) => entry.ev === "turn_done_emitted" &&
-    String(entry.content).includes("You were mentioned by operator on #team.")));
+    String(entry.content).includes("You were mentioned by operator (unverified name) on #team.")));
   await sleep(100);
   check("a successful focus hint leaves no empty wake loop", hintTurns().length === hintStart + 1, hintTurns());
   const busyMarker = "FOCUS-BUSY-DM-CONTROL";
@@ -1533,6 +1533,14 @@ try {
   blocked.stderr?.on("data", (chunk: Buffer) => (blockedErr += chunk.toString()));
   await Promise.race([once(blocked, "exit"), sleep(10_000)]);
   check("project MCP config is refused rather than overlaid", blocked.exitCode !== 0 && /Jcode host startup failed \(project_mcp_config\)/.test(blockedErr), blockedErr);
+  // No log holds this refusal, so the public line itself names the file found and the remedy, and
+  // never the directory.
+  check(
+    "the project MCP refusal names the file and where to start the agent instead",
+    /\(project_mcp_config\): the working directory has \.mcp\.json; start the agent in another directory\n/.test(blockedErr)
+      && !blockedErr.includes("private Jcode logs") && !blockedErr.includes(root),
+    blockedErr,
+  );
 
   // The readiness turn is a provider call. A refusal there used to be collapsed to `(unknown)`,
   // forcing an external observer/UI to inspect private Jcode logs for the connector-originated

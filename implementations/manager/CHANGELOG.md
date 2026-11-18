@@ -1,5 +1,30 @@
 # @cotal-ai/manager
 
+## 0.167.0
+
+### Patch Changes
+
+- 735dcd2: Keep managed lifecycle retirement state in an internal coordinator without changing the manager API or teardown ordering.
+- 5b5d19e: Keep seat custody and successor recovery in a dedicated internal component without changing managed agent behavior.
+- b7b152b: Keep control-service registration, recovery and session authority in an internal coordinator without changing manager APIs.
+- 6f4c67b: Keep managed session recovery and transcript provenance in a dedicated internal component without changing restart behavior.
+- Updated dependencies [186fc68]
+- Updated dependencies [ded2be1]
+- Updated dependencies [dbf310b]
+- Updated dependencies [211142b]
+- Updated dependencies [ad38504]
+- Updated dependencies [6f3c77d]
+- Updated dependencies [eead187]
+- Updated dependencies [c1cf22c]
+- Updated dependencies [6c2c27f]
+- Updated dependencies [7bf5e73]
+- Updated dependencies [70842a1]
+- Updated dependencies [d97f549]
+- Updated dependencies [3705c35]
+  - @cotal-ai/workspace@0.167.0
+  - @cotal-ai/core@0.167.0
+  - @cotal-ai/seat@0.167.0
+
 ## 0.166.3
 
 ### Patch Changes

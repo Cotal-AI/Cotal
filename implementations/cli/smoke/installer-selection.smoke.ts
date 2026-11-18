@@ -37,12 +37,20 @@ if [ "\${1:-}" = update ]; then
   printf '%s\\n' "$*" >> "$FIXTURE_UPDATE_ARGS"
   [ "$#" = 1 ] || exit 42
 else
+  if [ "\${FIXTURE_CRASH:-}" = 1 ]; then
+    printf 'startup failed: package export unavailable\\n' >&2
+    exit 1
+  fi
   printf 'cotal-ai %s\\n' "$(cat "$FIXTURE_VERSION_FILE")"
 fi
 CLI
   chmod 755 "$INSTALL_DIR/bin/cotal"
 }
-main --no-setup --no-modify-path --version "\${FIXTURE_TARGET:-0.82.2}"
+if [ "\${FIXTURE_TARGET:-}" = latest ]; then
+  main --no-setup --no-modify-path
+else
+  main --no-setup --no-modify-path --version "\${FIXTURE_TARGET:-0.82.2}"
+fi
 `);
 const toolPath = `${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`;
 function fixture(label: string) {
@@ -60,6 +68,38 @@ function fixture(label: string) {
 const output = (result: ReturnType<typeof spawnSync>): string => `${result.stdout ?? ""}${result.stderr ?? ""}`;
 let passed = false;
 try {
+  // Execute the documented npm prefix/PATH commands with real npm and an offline package.
+  // The separate published-package check covers Cotal's dependency closure and startup.
+  const npmHome = join(root, "npm home's");
+  const npmPackage = join(root, "npm-package");
+  mkdirSync(npmHome);
+  mkdirSync(npmPackage);
+  writeFileSync(join(npmPackage, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.0.0", bin: { cotal: "cotal.js" } }));
+  writeFileSync(join(npmPackage, "cotal.js"), '#!/usr/bin/env node\nconsole.log("cotal-ai 0.0.0");\n');
+  chmodSync(join(npmPackage, "cotal.js"), 0o755);
+  const installation = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
+  const npmSection = installation.split("## Install with npm")[1]?.split("## ")[0];
+  const npmSteps = npmSection?.match(/```bash\n([^`]+)```/)?.[1];
+  assert(npmSteps, "npm instructions include a shell command block");
+  assert(npmSteps.includes('npm config set prefix "$HOME/.local"'), "npm instructions select a user-owned prefix before installing");
+  assert(npmSteps.includes('export PATH="$HOME/.local/bin:$PATH"'), "npm instructions put the prefix's bin directory first on PATH");
+  assert(npmSteps.includes("npm install -g cotal-ai"), "npm instructions retain the global install command");
+  const npmEnv = {
+    HOME: npmHome, PATH: toolPath, CI: "1", NO_COLOR: "1",
+    npm_config_userconfig: join(npmHome, ".npmrc"),
+    npm_config_globalconfig: join(npmHome, "global-npmrc"),
+    npm_config_cache: join(npmHome, ".npm"),
+    npm_config_registry: "http://127.0.0.1:9",
+    FIXTURE_PACKAGE: npmPackage,
+  };
+  const npmInstall = spawnSync("/bin/sh", ["-c", `set -eu\n${npmSteps.replace("npm install -g cotal-ai", 'npm install -g "$FIXTURE_PACKAGE" --offline --ignore-scripts --no-audit --no-fund')}\ncotal --version`], { env: npmEnv, encoding: "utf8", timeout: 30_000 });
+  assert.equal(npmInstall.status, 0, output(npmInstall));
+  assert(output(npmInstall).includes("cotal-ai 0.0.0"), "the documented PATH selects npm's installed executable, including with spaces and quotes in HOME");
+  const npmPrefix = spawnSync("npm", ["prefix", "-g"], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+  assert.equal(npmPrefix.status, 0, output(npmPrefix));
+  assert.equal(npmPrefix.stdout.trim(), join(npmHome, ".local"), "the documented npm prefix persists for future global installs");
+  console.log("NPM INSTALL: documented user-owned prefix and PATH commands passed with real npm (offline package)");
+
   const shadow = fixture("shadow");
   const shadowed = spawnSync("/bin/sh", [driver, library], { env: { ...shadow.env, PATH: `${shadow.oldBin}:${shadow.newBin}:${toolPath}` }, encoding: "utf8" });
   assert.equal(shadowed.status, 0, output(shadowed));
@@ -69,6 +109,21 @@ try {
   const quote = (value: string): string => "'" + value.replaceAll("'", "'\\''") + "'";
   for (const command of ["setup", "up --detach", "spawn"])
     assert(output(shadowed).includes(`${quote(join(shadow.newBin, "cotal"))} ${command}`), `installer next step uses its absolute safely quoted executable: ${command}`);
+
+  const broken = fixture("broken");
+  const crashed = spawnSync("/bin/sh", [driver, library], { env: { ...broken.env, FIXTURE_CRASH: "1", PATH: `${broken.newBin}:${toolPath}` }, encoding: "utf8" });
+  assert.equal(crashed.status, 1, output(crashed));
+  assert(output(crashed).includes("startup failed: package export unavailable"), "installer preserves the installed command's startup error");
+  assert(output(crashed).includes("without --version"), "installer gives a recovery command selection");
+  assert(!output(crashed).includes("✓ Cotal") && !output(crashed).includes("get your machine ready"), "failed startup never prints installation success or setup instructions");
+
+  const latestBroken = fixture("latest-broken");
+  const latestCrashed = spawnSync("/bin/sh", [driver, library], { env: { ...latestBroken.env, FIXTURE_TARGET: "latest", FIXTURE_CRASH: "1", PATH: `${latestBroken.newBin}:${toolPath}` }, encoding: "utf8" });
+  assert.equal(latestCrashed.status, 1, output(latestCrashed));
+  assert(output(latestCrashed).includes("startup failed: package export unavailable"), "latest failure preserves the startup error");
+  assert(output(latestCrashed).includes("The latest Cotal release could not start.") && output(latestCrashed).includes("Report the error above at https://github.com/Cotal-AI/Cotal/issues"), "latest failure names the issue tracker");
+  assert(!output(latestCrashed).includes("without --version"), "latest failure does not recommend the same installation again");
+  assert(!output(latestCrashed).includes("✓ Cotal") && !output(latestCrashed).includes("get your machine ready"), "latest failure prints no success or setup instructions");
 
   const selected = fixture("selected");
   const direct = spawnSync("/bin/sh", [driver, library], { env: { ...selected.env, PATH: `${selected.newBin}:${selected.oldBin}:${toolPath}` }, encoding: "utf8" });
@@ -135,7 +190,7 @@ cotal --version
   const nodeVersion = spawnSync(join(nodebin, "node"), ["--version"], { encoding: "utf8" });
   assert.equal(nodeVersion.stdout.trim(), process.version, "the relinked runtime remains executable");
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: 26, failed: 0 });
+  emitSentinel({ passed: 43, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

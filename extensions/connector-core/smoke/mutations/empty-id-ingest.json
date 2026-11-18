@@ -67,7 +67,7 @@
   "mutations": [
     {
       "name": "K4 the receive key degenerates to the wire id, restoring id-shaped addressing",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "      recvKey: m.id !== \"\" ? m.id : `${this.recvKeySecret}.${++this.recvKeySeq}`,",
       "replace": "      recvKey: m.id,",
       "expectRed": "the race: the verdict drains exactly the snapshot's delivery",
@@ -76,7 +76,7 @@
     },
     {
       "name": "K5 selection reverts to the wire id while the keys stay minted",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    const selected = [...this.inbox.filter((p) => wanted.has(p.item.recvKey)), ...regated];",
       "replace": "    const selected = [...this.inbox.filter((p) => wanted.has(p.item.id)), ...regated];",
       "expectRed": "the race: the verdict drains exactly the snapshot's delivery",
@@ -85,7 +85,7 @@
     },
     {
       "name": "K1 the ingest dedup keys on the raw id again, empty included",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    const key = ingestDedupKey(m.id);",
       "replace": "    const key = m.id;",
       "expectRed": "timed out waiting for both empty-id messages to buffer",
@@ -94,7 +94,7 @@
     },
     {
       "name": "K2 only the pending-inbox lookup relapses to the raw id",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    const existing = key === undefined ? undefined : this.inbox.find((p) => p.item.id === key) ?? this.gated.find((p) => p.item.id === key);",
       "replace": "    const existing = this.inbox.find((p) => p.item.id === m.id) ?? this.gated.find((p) => p.item.id === m.id);",
       "expectRed": "timed out waiting for both empty-id messages to buffer",
@@ -103,7 +103,7 @@
     },
     {
       "name": "K3 the fix over-corrects and dedups on nothing at all",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "function ingestDedupKey(id: string): string | undefined {\n  return id === \"\" ? undefined : id;\n}",
       "replace": "function ingestDedupKey(_id: string): string | undefined {\n  return undefined;\n}",
       "expectRed": "the same REAL id twice still collapses to one entry",

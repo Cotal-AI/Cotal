@@ -1,5 +1,27 @@
 # @cotal-ai/runtime
 
+## 0.167.0
+
+### Patch Changes
+
+- 3705c35: A workflow `wait(message(channel, { from }))` now matches only messages whose subject names the principal the run recorded for the `from` handle, and every message wait ignores a message whose `from.id` differs from its subject's sender. The payload's display name is no longer compared. A `from` handle the run did not spawn or bind refuses the wait. Core exports `isFromSubjectSender`, the receive check every endpoint path already applies.
+- Updated dependencies [186fc68]
+- Updated dependencies [ded2be1]
+- Updated dependencies [dbf310b]
+- Updated dependencies [211142b]
+- Updated dependencies [ad38504]
+- Updated dependencies [6f3c77d]
+- Updated dependencies [eead187]
+- Updated dependencies [c1cf22c]
+- Updated dependencies [6c2c27f]
+- Updated dependencies [7bf5e73]
+- Updated dependencies [70842a1]
+- Updated dependencies [d97f549]
+- Updated dependencies [3705c35]
+  - @cotal-ai/workspace@0.167.0
+  - @cotal-ai/core@0.167.0
+  - @cotal-ai/lang@0.167.0
+
 ## 0.166.3
 
 ### Patch Changes

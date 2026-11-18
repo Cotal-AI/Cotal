@@ -388,6 +388,25 @@ setCurrent("keep");
   check("a space this machine is running is LIFECYCLE_BLOCKED, naming cotal down", refused(live, 2, "LIFECYCLE_BLOCKED") && /cotal down/.test(live.env?.error?.remedy ?? "") && findMesh("running") !== undefined, shown(live));
   check("...and on a legacy root, whose down drops the record, the remedy says so", live.env?.error?.remedy === `stop it with \`cotal down\` in ${ownedRoot}, which also drops its record`, live.env?.error);
 
+  // A folder deleted while its broker runs takes the pidfiles and journal the running check reads, so
+  // that broker shows only at its recorded address (#7325). A plain listener stands in for it.
+  const orphanHold = createServer();
+  const orphanServer = `nats://127.0.0.1:${await listenOn(orphanHold, await freePort())}`;
+  const orphanRoot = join(home, "deleted-while-running");
+  recordMesh({ space: "orphan", server: orphanServer, root: orphanRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const orphan = await json(["space", "forget", "orphan"]);
+  check("a space whose folder is gone while its broker address still listens is LIFECYCLE_BLOCKED, and its record stays",
+    refused(orphan, 2, "LIFECYCLE_BLOCKED") && (orphan.env?.error?.message ?? "").includes(`"orphan" started in ${orphanRoot}, which no longer exists, but something still listens at ${orphanServer}`) && findMesh("orphan") !== undefined, shown(orphan));
+  check("...and the remedy names the listener to stop, then forget again",
+    orphan.env?.error?.remedy === `stop the process listening on ${new URL(orphanServer).host}, then run \`cotal space forget orphan\` again`, orphan.env?.error);
+  // A listener at an address another registration names is that space's broker.
+  recordMesh({ space: "sharedgone", server: LIVE, root: join(home, "deleted-shared"), mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const shared = await json(["space", "forget", "sharedgone"]);
+  check("...but one whose address another registration names is forgotten", shared.status === 0 && findMesh("sharedgone") === undefined, shown(shared));
+  await new Promise<void>((done) => orphanHold.close(() => done()));
+  const freed = await json(["space", "forget", "orphan"]);
+  check("...and once nothing listens there it is forgotten", freed.status === 0 && freed.env?.result.kind === "space-forgotten" && findMesh("orphan") === undefined, shown(freed));
+
   // `cotal up` runs a space as a controller stack: service instances with no pidfile. The stack
   // journal and instance records are written here as a stack leaves them, and nothing is launched. A
   // member pinned to this process runs; one pinned to an exited stand-in is gone.
@@ -440,6 +459,17 @@ setCurrent("keep");
       meshesRm.status === 1 && meshesRm.stderr.includes(`- \`cotal down\` there stops it and keeps it as a prepared space there, which \`cotal space forget stackrun\` then removes`) && findMesh("stackrun") !== undefined, meshesRm);
     check("...and it writes nothing: the registration, the selection and the stack journal stay",
       JSON.stringify(registryFiles()) === JSON.stringify(before) && getCurrent() === selected && readFileSync(stackJournalPath(runningRoot), "utf8") === journal, shown(running));
+
+    // A controller stack whose folder was deleted while it ran: its instance records still show the
+    // member running, so forget names the stop for a gone folder (#7325).
+    const deletedRoot = stack("stackdeleted", "open", { broker: member("stackdeleted", "stack-broker", requireProcessIdentity(process.pid), false) }, "started");
+    brokerDefinition("stackdeleted", deletedRoot);
+    rmSync(deletedRoot, { recursive: true, force: true });
+    const deleted = await json(["space", "forget", "stackdeleted"]);
+    check("a controller stack whose folder is gone while a member runs is LIFECYCLE_BLOCKED, naming that member, and its record stays",
+      refused(deleted, 2, "LIFECYCLE_BLOCKED") && (deleted.env?.error?.message ?? "").includes(`"stackdeleted" started in ${deletedRoot}, which no longer exists, but its stack's broker still runs`) && findMesh("stackdeleted") !== undefined, shown(deleted));
+    check("...and the remedy is the gone-folder stop, which drops the record",
+      deleted.env?.error?.remedy === "stop it with `cotal down --space stackdeleted --yes`, which also drops this record", deleted.env?.error);
 
     // The broker crashed: its record requires the exact-exit stop it never got, so its definition stays.
     const goneRoot = stack("stackgone", "open", { broker: member("stackgone", "stack-broker", gonePid, false, { kernelStopRequired: true }) }, "started");
@@ -1595,6 +1625,23 @@ if (process.platform === "linux") {
       w.code === "PREPARED_RECORD_SKIPPED" && w.target.file === stray && w.target.space === null && w.message.endsWith("so it is skipped; remove it"))), shown(strayList));
   rmSync(stray);
   removePreparedSpace("pready");
+
+  // A damaged registration record refuses every command that reads the registry, so its own forget
+  // must clear it (#7335): the refusal names that forget, and the forget removes the file.
+  mkdirSync(meshesDir(), { recursive: true, mode: 0o700 });
+  const registration = join(meshesDir(), `${spaceSegment("pold")}.json`);
+  writeFileSync(registration, '{"space":"pold",');
+  const blocked = await json(["space"], folder);
+  check("space with a damaged registration record refuses SCHEMA_INVALID, exit 1, naming the forget that removes it",
+    refused(blocked, 1, "SCHEMA_INVALID") && blocked.env?.target?.file === registration &&
+      blocked.env.error?.remedy === "restore the record from backup, or remove it with `cotal space forget pold`", shown(blocked));
+  const forgetRegistration = await json(["space", "forget", "pold"], folder);
+  check("space forget pold removes its damaged registration record, with no broker, root or origin",
+    forgetRegistration.status === 0 && forgetRegistration.env?.result?.kind === "space-forgotten" && forgetRegistration.env.result.server === null &&
+      forgetRegistration.env.result.root === null && forgetRegistration.env.result.origin === null && !existsSync(registration), shown(forgetRegistration));
+  const text = await run(["space", "forget", "pold"], {}, folder);
+  check("  and a second forget finds nothing to forget, exit 2", text.status === 2 && /no space named "pold" is registered here/.test(text.stderr), shown(text));
+  check("space lists again once it is gone", (await json(["space"], folder)).status === 0);
 }
 
 finish();

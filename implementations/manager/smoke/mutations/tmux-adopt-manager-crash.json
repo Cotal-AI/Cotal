@@ -13,15 +13,15 @@
   "mutations": [
     {
       "name": "the successor retires a surviving tmux seat instead of adopting it",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "record.supervise ? await this.restartSupervisedSeat(row, record) : await this.adoptSeat(row, record);",
-      "replace": "record.supervise ? await this.restartSupervisedSeat(row, record) : \"adoption disabled\";",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
+      "find": "record.supervise ? await this.deps.restartSupervisedSeat(row, record) : await this.deps.adoptSeat(row, record);",
+      "replace": "record.supervise ? await this.deps.restartSupervisedSeat(row, record) : \"adoption disabled\";",
       "expectRed": "the successor adopts the surviving seat",
       "cell": "the successor adopts the surviving seat"
     },
     {
       "name": "an unsupervised tmux seat writes no record",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-custody.ts",
       "find": "    const adoptable = a.handle.reference !== undefined && typeof runtime.adopt === \"function\";",
       "replace": "    const adoptable = false;",
       "expectRed": "the first manager spawns two tmux seats and records both",

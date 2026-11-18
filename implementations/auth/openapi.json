@@ -1,5 +1,6 @@
 {
   "openapi": "3.1.0",
+  "x-source": "implementations/auth/src/service.ts public route table; implementations/auth/src/service-exchange-routes.ts exchange and face policy; implementations/auth/src/service-manager-routes.ts manager routes",
   "info": {
     "title": "Auth HTTP API",
     "version": "1.0.0",

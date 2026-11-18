@@ -299,7 +299,9 @@ export function planInstall(paths: DaemonPaths, daemonHome: string | undefined):
   const existing = readReceipt(paths);
   if (existing) {
     const recorded = recordedUnit(paths, daemonHome);
-    if (!recordedDaemonIdentity(recorded).same) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon service belongs to another Cotal installation; nothing was changed");
+    if (!recordedDaemonIdentity(recorded).same) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon service belongs to another Cotal installation or pins a different Node runtime; nothing was changed", {
+      remedy: `to replace the recorded service with this installation, run ${codeSpan(daemonCommandCopy("uninstall", daemonHome, ["--yes"]) + " && " + daemonCommandCopy("install", daemonHome))}`,
+    });
     const source = readFileSync(existing.unitPath, "utf8");
     return { mechanism: "systemd-user", unit: existing.unit, unitPath: existing.unitPath, sha256: existing.unitSha256, user, lingerAlready: lingerEnabled(user), restart: directive(source, "Restart"), wantedBy: directive(source, "WantedBy"), ...(daemonHome !== undefined ? { daemonHome } : {}), alreadyInstalled: true };
   }

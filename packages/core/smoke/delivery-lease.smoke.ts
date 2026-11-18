@@ -290,8 +290,8 @@ try {
   const lConsumers = async () => (await lJsm.streams.info(`KV_${deliveryBucket(space)}`)).state.consumer_count;
   const until = async (done: () => boolean) => { for (let i = 0; i < 50 && !done(); i++) await wait(100); };
   const holdFirstWatch = (ep: CotalEndpoint) => {
-    const reg = ep as unknown as { deliveryRegistry: () => Promise<KV> };
-    const real = reg.deliveryRegistry.bind(ep);
+    const reg = (ep as unknown as { deliveryLease: { deliveryRegistry: () => Promise<KV> } }).deliveryLease;
+    const real = reg.deliveryRegistry.bind(reg);
     const wrapped = new WeakSet<KV>();
     const held = { created: false };
     let claimed = false;

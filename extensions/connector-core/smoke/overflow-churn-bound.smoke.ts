@@ -61,14 +61,14 @@ function harness(): H {
       // item; fabricating below that seam means carrying the invariant here too.
       recvKey: id,
     } as unknown as InboxItem;
-    (agent as unknown as { buffer: (i: InboxItem, d: { ack: () => void }, p: boolean) => void }).buffer(
+    ((agent as unknown as { inboxState: unknown }).inboxState as unknown as { buffer: (i: InboxItem, d: { ack: () => void }, p: boolean) => void }).buffer(
       item,
       { ack: () => acked.add(id) },
       false,
     );
   };
   const has = (id: string): boolean =>
-    (agent as unknown as { inbox: { item: InboxItem }[] }).inbox.some((p) => p.item.id === id);
+    ((agent as unknown as { inboxState: unknown }).inboxState as unknown as { inbox: { item: InboxItem }[] }).inbox.some((p) => p.item.id === id);
   return { agent, acked, errors, push, has };
 }
 

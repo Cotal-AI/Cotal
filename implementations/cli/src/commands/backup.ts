@@ -112,7 +112,9 @@ function backupInterruptNotice(root: string, attemptId: string, destination: str
 
 /** This root has no stopped preserved cut to back up. Nothing was claimed or copied. */
 function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
-  if (!record) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy: "stop the stack with `cotal down --preserve-state`, then create the backup" });
+  // Both callers run after the liveness check, so the stack is stopped here, and a plain `cotal down`
+  // records no cut: `down --preserve-state` only works on a running stack (#7330).
+  if (!record) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy: "a plain `cotal down` records no cut: start the stack with `cotal up`, stop it with `cotal down --preserve-state`, then create the backup" });
   // A restore that still runs is named and waited for; only a stale one is rolled back.
   if (record.state === "restore-ready") {
     const assessment = assessRestoreClaim(record, { unrecordedOwnersDead: attemptProcessesGone(root) });

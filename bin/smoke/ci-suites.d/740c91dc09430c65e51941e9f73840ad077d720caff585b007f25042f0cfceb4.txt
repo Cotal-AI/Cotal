@@ -1,0 +1,3 @@
+# A message frame marks the sender's self-written name and role as unverified beside the
+# sender_id the broker checked, on a real broker.
+smoke:frame-sender-name
