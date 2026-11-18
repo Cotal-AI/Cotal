@@ -1,5 +1,23 @@
 # Upgrading a running deployment
 
+## Trusted project folders
+
+A project folder's own `.cotal/config.json` may now declare `connectors.<name>.mcpServers` entries
+or `spawn.env` names only when the folder is trusted. A spawn from any other folder whose file
+declares them refuses, names the folder, and launches nothing.
+
+### What changes for you
+
+- The first command that reads trust after the upgrade writes `trusted-projects.json` in the
+  operator config folder. It lists every root a space on this machine is registered or prepared
+  at, so those projects keep working with no step.
+- A folder you use with no registered or prepared space, such as one you start with `--file` or
+  `--cwd` only, needs `cotal trust <path>` once if its config declares servers or `spawn.env`.
+- A project config in a `.cotal` that another account owns is refused. Move the project to a
+  folder your own account owns.
+- Spawns that read a manager's workspace root follow the same rule. Restart the manager at this
+  version so it applies it.
+
 ## Durable channel leave after 0.166.0
 
 From 0.166.0 a channel leave retires every open durable membership the principal holds on that

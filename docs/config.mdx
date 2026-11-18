@@ -27,6 +27,23 @@ The files merge per connector and server name. A space-local server replaces the
 entry with the same name. Connectors and servers present in only one file remain. A missing file
 means no settings. Invalid JSON, a non-object top level, or an invalid shared server causes an error.
 
+### Trusted project folders [#trusted-project-folders]
+
+A space-local file may declare `connectors.<name>.mcpServers` entries or `spawn.env` names only
+when its project folder is trusted. A spawn from a folder that is not trusted refuses when that
+folder's file declares either one. The refusal names the file, the entries, the folder and the
+command that trusts it. Nothing launches. The file's other fields, such as `modelPolicy`, apply
+whether or not the folder is trusted.
+
+`cotal trust <path>` trusts one folder. It records the folder's canonical path in
+`trusted-projects.json` in the operator config folder. A trusted folder does not trust the folders
+inside it. `cotal setup`, `cotal space create` and `cotal up` trust the folder they prepare or
+start a space in, unless that folder's file already declares servers or `spawn.env`. Run
+`cotal trust` for such a folder after you read its file.
+
+A space-local file is refused whole when it, or the `.cotal` folder that holds it, belongs to
+another account. `cotal trust` refuses such a folder too.
+
 | Field | Meaning | Merge rule |
 |---|---|---|
 | `connectors.<name>.mcpServers` | Named MCP servers available to a connector's spawned agents | Per connector and server name |
@@ -566,6 +583,7 @@ Move the file aside so Cotal can create the folder when it next saves configurat
 |---|---|
 | `config.json` | Operator-level connector config (the base layer above) |
 | `preferences.json` | Your [preferences](#preferences), private to you (`0600`), written by `cotal config` |
+| `trusted-projects.json` | The [trusted project folders](#trusted-project-folders), private to you (`0600`), written by `cotal trust` |
 | `extensions/` | `cotal ext` install prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache. Built-in connectors install here too, seeded on first run |
 | `seed/` | Built-in-connector seeding state: the `ever-seeded` authority (+ durable backup), the init witness, the version stamp, the crash cursor, and `store/<version>/<name>` (the stable payloads `ext add --install-links` reifies each seeded connector from) |
 
