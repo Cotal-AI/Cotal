@@ -56,10 +56,19 @@ and schema generators with a diff of their output, and `check-docs-bundle.mjs`. 
 less than a green run suggests:
 
 - `check:docs-voice` grades prose style in `docs/` and never reads source.
-- `check:comment-history` refuses increased counts of issue references and historical phrases in
-  shipped-source comments, both per file and per rule across the repository. A source move names
-  its receiving files. `pnpm check:comment-history:update` rewrites the allowlist after review.
-  The [check reference](../docs/design/comment-history-check.md) covers scope and limitations.
+- `check:comment-history` scans comments in tracked JS/TS under package, implementation and
+  extension `src/` trees and `bin/`. It excludes declarations, tests, smokes, mutation fixtures,
+  built output, private smoke helpers and `bin/scripts/`. Strings, regexes, template text and JSX
+  text do not count. The rules match `#` plus at least three digits and the case-insensitive phrases
+  `used to`, `previously`, `no longer` and `formerly`, with word boundaries and wrapped-doc support.
+  `scripts/comment-history-allowlist.json` stores counts by file and rule, one file per line.
+  Per-file increases and repository rule-total increases fail. A move keeps the total unchanged
+  but fails on its receiving file. Review the move, run `pnpm check:comment-history:update`, and
+  commit the rewritten counts. A new violation still fails afterward. Decreases pass. Counts
+  cannot detect same-count replacements, and regeneration can accept new violations, so review
+  baseline changes against source changes. Diagnostics point to the first match for that rule,
+  not necessarily the addition. Stage new source files before scanning. The check also runs
+  fixture controls against an unchanged copy of the checker.
 - `check:docs-literals` reads each code span in `docs/` that looks like emitted operator prose
   (four or more lowercase words, not a command) and fails when no string or template literal in
   shipped source holds it. A substituted value is written as a placeholder such as `<id>`, and it

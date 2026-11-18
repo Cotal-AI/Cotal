@@ -38,7 +38,7 @@ function comments(name, text) {
 
 function readAllowlist() {
   const value = JSON.parse(readFileSync(allowlistPath, "utf8"));
-  if (value.version !== 1 || !/^[a-f0-9]{40}$/.test(value.generatedAt) || !value.files || typeof value.files !== "object" || Array.isArray(value.files))
+  if (value.version !== 1 || !value.files || typeof value.files !== "object" || Array.isArray(value.files))
     throw new Error("invalid comment-history allowlist header");
   for (const [name, counts] of Object.entries(value.files)) {
     if (!source.test(name) || excluded.test(name) || !counts || typeof counts !== "object" || Array.isArray(counts) || !Object.keys(counts).length)
@@ -81,9 +81,13 @@ function main() {
     if (Object.keys(counts).length) files[name] = counts;
   }
   if (args.length) {
-    const generatedAt = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-    writeFileSync(allowlistPath, JSON.stringify({ version: 1, generatedAt, files }, null, 2) + "\n");
-    console.log(`check:comment-history: allowlist rewritten for ${Object.keys(files).length} files at ${generatedAt}`);
+    const entries = Object.entries(files).map(([name, counts]) => {
+      const fields = Object.entries(counts).sort(([left], [right]) => left.localeCompare(right))
+        .map(([rule, count]) => `${JSON.stringify(rule)}: ${count}`).join(", ");
+      return `    ${JSON.stringify(name)}: { ${fields} }`;
+    });
+    writeFileSync(allowlistPath, `{\n  "version": 1,\n  "files": {\n${entries.join(",\n")}\n  }\n}\n`);
+    console.log(`check:comment-history: allowlist rewritten for ${Object.keys(files).length} files`);
     return;
   }
   const baseline = readAllowlist();

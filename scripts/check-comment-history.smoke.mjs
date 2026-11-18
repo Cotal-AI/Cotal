@@ -34,7 +34,7 @@ function run(...args) {
   return result;
 }
 function baseline(files = {}) {
-  writeFileSync(allowlist, JSON.stringify({ version: 1, generatedAt: "a".repeat(40), files }));
+  writeFileSync(allowlist, JSON.stringify({ version: 1, files }));
 }
 
 try {
@@ -115,6 +115,15 @@ try {
   const first = readFileSync(allowlist, "utf8");
   run("--update-allowlist");
   check("regeneration is deterministic", readFileSync(allowlist, "utf8") === first);
+  check("regeneration stores no commit metadata or totals", Object.keys(JSON.parse(first)).join(",") === "version,files");
+  check("each file is stored on one line", first.split("\n").filter((line) => line.includes('"packages/')).every((line) => /^    "[^"]+": \{ .+ \},?$/.test(line)));
+  put(input, "// formerly previously");
+  run("--update-allowlist");
+  const sorted = readFileSync(allowlist, "utf8");
+  check("file entries are sorted by path", Object.keys(JSON.parse(sorted).files).join(",") === [input, moved].join(","));
+  check("rule counts share their file's line", sorted.split("\n").some((line) => line.includes(JSON.stringify(input)) && line.includes('"formerly": 1, "previously": 1')));
+  put(input, "");
+  run("--update-allowlist");
   put(moved, "// previously previously previously");
   check("new violation after move is still refused", run().status === 1);
   baseline({ [moved]: { previously: -1 } });
