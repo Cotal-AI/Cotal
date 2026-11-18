@@ -934,7 +934,7 @@
     "smoke:freeslot-barrier:live": "tsx implementations/auth/smoke/freeslot-respawn-barrier.smoke.ts",
     "smoke:int2-revoke:live": "tsx implementations/auth/smoke/int2-revoke-hold.smoke.ts",
     "smoke:ctl-trust:live": "tsx implementations/auth/smoke/ctl-trust.smoke.ts",
-    "smoke:update-self-refusal": "tsx implementations/cli/smoke/update-self-refusal.smoke.ts && tsx bin/smoke/update-self-refusal.smoke.ts",
+    "smoke:update-self-refusal": "tsx implementations/cli/smoke/update-self-refusal.smoke.ts && tsx bin/smoke/update-self-refusal.smoke.ts && node bin/smoke/update-engines.smoke.mjs",
     "smoke:cli-kernel": "tsx implementations/cli/smoke/command-kernel.smoke.ts",
     "smoke:auth-service-prerequisite": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/auth-service-prerequisite.smoke.ts",
     "smoke:service-preset-guidance": "tsx implementations/cli/smoke/service-preset-guidance.smoke.ts",

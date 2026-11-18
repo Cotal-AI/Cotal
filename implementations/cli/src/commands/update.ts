@@ -1034,14 +1034,20 @@ function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok:
   }
 }
 
-/** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies. */
+/** Resolve the target CLI and installed first-party surfaces without scripts or live replacement.
+ * npm validates Node and npm engine ranges, even when the caller configured force or disabled checks. */
 function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
-  const names = [...new Set(rt.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/")).map(entry => entry.pkg))];
-  if (!names.length) return;
+  const names = [...new Set(["cotal-ai", ...rt.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/")).map(entry => entry.pkg)])];
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
   try {
-    const result = rt.npm(["install", "--prefix", staging, "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
-    if (result.status !== 0) throw new Error(`installed extension dependency closure is unavailable: ${failure(result)}`);
+    const result = rt.npm(["install", "--prefix", staging, "--ignore-scripts", "--engine-strict", "--force=false", "--json", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
+    if (result.status !== 0) {
+      let code: unknown;
+      try { code = (JSON.parse(result.stdout) as { error?: { code?: unknown } }).error?.code; }
+      catch { /* Unstructured failures do not establish an engine mismatch. */ }
+      if (code === "EBADENGINE") throw new ReleaseEngineMismatch(failure(result));
+      throw new Error(`release dependency closure is unavailable or incompatible: ${failure(result)}`);
+    }
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
   }
@@ -1105,6 +1111,7 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
 }
 
 class ReleaseNotAvailable extends Error {}
+class ReleaseEngineMismatch extends Error {}
 
 function releaseReadError(result: CommandResult, detail: string): Error {
   if (result.status !== null && !result.error) {
@@ -1177,7 +1184,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   try {
     rt.out(`Checking cotal-ai@${targetVersion} release archives`);
     if (!await waitForReleaseArchives(targetVersion, current, rt)) return 0;
-    rt.out(`Checking installed extension dependencies for ${targetVersion}`);
+    rt.out(`Checking CLI and installed extension dependencies for ${targetVersion}`);
     checkInstalledClosure(targetVersion, rt);
     // In-place rollback downloads the previous release. Staged rollback retains its complete graph.
     if (!rt.prepareExecution) {
@@ -1186,6 +1193,11 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     }
     rt.out(`✓ release archives checked (${((Date.now() - releaseChecksStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
+    if (e instanceof ReleaseEngineMismatch) {
+      recordUpdateDeferral(targetVersion, "Node.js or npm is incompatible with the target release");
+      rt.err(c.red(`✗ cotal-ai@${targetVersion} requires a compatible Node.js and npm: ${message(e)}. Upgrade the runtime to satisfy the reported engines before retrying; no global install was attempted.`));
+      return 1;
+    }
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
     rt.err(c.red(`✗ cotal-ai@${targetVersion} release is not ready: ${message(e)}. The release is still reaching the registry or registry access failed; no global install was attempted. Check registry access and run \`cotal update --self\` again in a few minutes.`));
     return 1;

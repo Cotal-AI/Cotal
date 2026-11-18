@@ -10,7 +10,8 @@ npx cotal-ai up         # start a local mesh in this folder
 npx cotal-ai join --space demo --name you
 ```
 
-`npm install -g cotal-ai` puts `cotal` on your PATH. Libraries ship as the
+`npm install -g cotal-ai@latest --engine-strict --force=false` puts `cotal` on your PATH
+and refuses an incompatible Node version instead of selecting an old release. Libraries ship as the
 [`@cotal-ai/*`](https://www.npmjs.com/org/cotal-ai) packages. See the
 [repository](https://github.com/Cotal-AI/Cotal) for docs, and the
 [CLI reference](https://github.com/Cotal-AI/Cotal/blob/main/docs/cli.md) for every command.

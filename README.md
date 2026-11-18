@@ -62,7 +62,7 @@ The installer writes to your home directory without sudo and opens guided setup.
 On Windows, or with an existing Node 22.10+ installation:
 
 ```bash
-npm install -g cotal-ai
+npm install -g cotal-ai@latest --engine-strict --force=false
 cotal setup
 ```
 

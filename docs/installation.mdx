@@ -65,8 +65,15 @@ The Quickstart starts the prepared space separately.
 If you already have Node.js 22.10 or newer, run:
 
 ```bash
-npm install -g cotal-ai
+npm install -g cotal-ai@latest --engine-strict --force=false
 ```
+
+The explicit `@latest` prevents npm from selecting an old release to match an older Node.
+`--engine-strict` refuses incompatible Node or npm versions before installation.
+`--force=false` keeps a configured npm force setting from disabling that check.
+Without these options, Node 20 can receive Cotal 0.14.1 with a successful install.
+If that happened, upgrade Node first and rerun the command above. Do not use the old CLI's
+`cotal update --self` on Node 20, because that updater can replace it with a release that cannot run.
 
 Use this route on Windows.
 The shell installer does not support Windows shells.

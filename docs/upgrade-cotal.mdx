@@ -16,6 +16,11 @@ If the registry lists a new release before its archives are available, `cotal up
 shows its progress and waits up to ten minutes. If the archives are still unavailable, it keeps
 the installed version and exits successfully. Invalid release metadata, failed integrity checks
 and other installation errors still refuse the update.
+Before replacement, the updater resolves the target CLI and installed first-party extensions
+in a disposable prefix with npm's engine checks enforced and install scripts disabled.
+An incompatible Node or npm version refuses before global installation and leaves the installed release selected.
+This protection starts with the release that contains it. For an old CLI running on Node 20,
+upgrade Node to 22.10 or newer and follow [Install with npm](installation.mdx#install-with-npm).
 
 On an installed POSIX CLI, reconciling the installed release can keep a standalone Manager
 and its seats running. The command reads the inventory it can authenticate before selecting a separate
