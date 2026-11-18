@@ -1,5 +1,17 @@
 # @cotal-ai/connector-core
 
+## 0.167.0
+
+### Patch Changes
+
+- ded2be1: Message frames, preview rows, wake hints and the note naming withheld senders now mark a sender's name and role as `(unverified name)`, or `(unverified role)` when the name is blank and the frame shows the sender's id. The sender writes both itself; the `sender_id` beside them is the identity the broker checked. A long sender label is cut before the marker, and a preview row caps its channel or role label, so the marker stays whole in the 40-character notes and in each preview row. The Claude channel tag's `from` attribute carries the same marked label. A peer label now turns a double quote into a space, as it does a bracket, and the console's recipient completion uses the peer's id when the shown label differs from its name.
+- ad38504: Protect the installation update lock from project creation and keep the home-record, presence-render, and turn-intake checks current under permissive file modes.
+- 41d7ae9: Keep channel backlog received after a reconnect from starting new agent turns.
+  
+  Newly received durable channel copies more than five minutes old by their sender timestamp are marked historical and kept pull-only, including mentions. Recent copies and live subscription traffic keep their normal wake behavior across short reconnects. DMs and role requests keep their normal delivery behavior, and messages already buffered in the same process retain their classification.
+- afa5f97: `cotal_send` no longer calls an existing channel new when the channel list could not be read, for example while the connection comes back after a space restart. The post still goes out, and the result says whether the channel already existed could not be checked, with the read's error.
+- 7bf5e73: An agent can post again as soon as its space is back after a long outage. The endpoint retried a lost connection with a backoff that grows to a minute, and a send made while it waited failed after 10 seconds with a stale "connection refused". A call that needs the connection now starts the next attempt at once. Idle endpoints keep the spread-out retries.
+
 ## 0.166.3
 
 ### Patch Changes

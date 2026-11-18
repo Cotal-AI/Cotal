@@ -1,5 +1,22 @@
 # @cotal-ai/core
 
+## 0.167.0
+
+### Minor Changes
+
+- 211142b: An agent can now serve commands about itself, such as its pending harness prompts, to its owner's sessions over the control surface, with no registration and no Manager.
+  
+  Core adds the principal route (SPEC §13.21): requests on `cotal.<space>.ep.prin.<endpoint>.<owner>.<actor>.<lifecycleUid>.<runtimeId>.<command>.<authority>.<caller>.<nonce>`, replies on `ep.prin-reply`, and a no-responders sentinel no serving credential can publish on. A process serves it with `CotalEndpoint.servePrincipal`, whose `ready` resolves only after the broker accepted the subscription and which binds again after every reconnect, and calls it with `CotalEndpoint.callPrincipal`. Both routes now run one shared request pipeline. A cluster command declares the authority words it admits in `authorities` (`owner` or `grant`); a service route refuses such a command. Revision 1 of the `agent` endpoint (`ai.cotal.agent`) defines `prompts`, `prompt` and `prompt-answer` with closed schemas for a prompt, its form profile and its states (SPEC §13.22), and presence gains `prompts: { open, seq }`. The auth callout now mints serve rows into every agent credential of a ledger row, and `owner` caller rows into those of an interactive row, from the row's kind. An agent needs a connection minted by an auth service on this release before it can serve. SPEC §13.2 also now counts seven authorization-mode tokens, not six.
+
+### Patch Changes
+
+- ded2be1: Message frames, preview rows, wake hints and the note naming withheld senders now mark a sender's name and role as `(unverified name)`, or `(unverified role)` when the name is blank and the frame shows the sender's id. The sender writes both itself; the `sender_id` beside them is the identity the broker checked. A long sender label is cut before the marker, and a preview row caps its channel or role label, so the marker stays whole in the 40-character notes and in each preview row. The Claude channel tag's `from` attribute carries the same marked label. A peer label now turns a double quote into a space, as it does a bracket, and the console's recipient completion uses the peer's id when the shown label differs from its name.
+- eead187: Keep endpoint presence state in a dedicated internal component while preserving the public roster, status and freshness APIs.
+- 6c2c27f: A channel replay window too long to be a start time, such as `--window 999999999999999999999999d`, now backfills the whole retained history. A new session received no retained posts at all, with no warning, although `cotal channel set` had accepted the window.
+- 7bf5e73: An agent can post again as soon as its space is back after a long outage. The endpoint retried a lost connection with a backoff that grows to a minute, and a send made while it waited failed after 10 seconds with a stale "connection refused". A call that needs the connection now starts the next attempt at once. Idle endpoints keep the spread-out retries.
+- d97f549: Keep endpoint delivery lease handling in an internal component without changing its public methods or broker behavior.
+- 3705c35: A workflow `wait(message(channel, { from }))` now matches only messages whose subject names the principal the run recorded for the `from` handle, and every message wait ignores a message whose `from.id` differs from its subject's sender. The payload's display name is no longer compared. A `from` handle the run did not spawn or bind refuses the wait. Core exports `isFromSubjectSender`, the receive check every endpoint path already applies.
+
 ## 0.166.3
 
 ### Patch Changes
