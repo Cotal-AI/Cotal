@@ -40,7 +40,7 @@ import {
   type EpServeGrant, type EpServeHandle, type SecretStore, type ServiceEndpointRenewal, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
-import { codeSpan, FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { codeSpan, FsSecretStore, findMesh, homeCotalDir, isMeshRegistryError, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness, registerDaemon } from "./register.js";
 import { ACCOUNT_MISMATCH_MESSAGE } from "./connect.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
@@ -185,8 +185,13 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     const l = live.get(space);
     const state = l?.state ?? (existsSync(daemonRegisterFile(space, home)) ? "disconnected" : "not-requested");
     if (state === "not-requested" || state === "unsupported") {
-      const entry = findMesh(space);
-      if (entry && entry.mode !== "user") return { space, state: "unsupported", message: LOCAL_SPACE_GUIDANCE, remedy: LOCAL_SPACE_GUIDANCE };
+      try {
+        const entry = findMesh(space);
+        if (entry && entry.mode !== "user") return { space, state: "unsupported", message: LOCAL_SPACE_GUIDANCE, remedy: LOCAL_SPACE_GUIDANCE };
+      } catch (error) {
+        if (!isMeshRegistryError(error)) throw error;
+        return { space, state: "unavailable", message: error.message, remedy: "restore or remove the damaged mesh record, then read service status again" };
+      }
     }
     const remedy = state === "not-requested" ? `run ${codeSpan(daemonCommandCopy("register", home, [["--space", space]]))} first`
       : state === "not-signed-in" ? l?.remedy : undefined;

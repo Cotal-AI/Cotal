@@ -113,15 +113,20 @@ try {
     }
     const bad = join(home, "meshes", "unrelated-damaged.json");
     writeFileSync(bad, JSON.stringify({ space: "unrelated-damaged" }), { mode: 0o600 });
+    for (const args of [["--json"], ["--plain"], ["--space", space, "--json"]]) {
+      const status = await daemonCommand("status", ...args);
+      check(`daemon status ${args.join(" ")} survives unrelated registry damage`, status.code === 0
+        && (args.includes("--json") ? status.doc?.result?.pid === daemon?.pid : status.out.includes("Daemon")), status.doc ?? status.err);
+    }
     const disconnect = await daemonCommand("service-disconnect", "--space", space, "--json");
     check("damaged registry cannot prevent local refusal retirement", disconnect.code === 0 && !existsSync(refusal), disconnect.doc);
     check("disconnect reports unknown recovery guidance rather than guessing", disconnect.code === 0 && JSON.stringify(disconnect.doc).includes("unrelated-damaged.json"), disconnect.doc);
     const status = await daemonCommand("service-status", "--space", space, "--json");
     check("damaged registry service-status returns a refusal document", status.code === 2 && status.doc?.outcome === "refused" && JSON.stringify(status.doc).includes("unrelated-damaged.json"), status.doc);
-    // Keep the damaged bytes as evidence, but take them out of the registry for the live control.
-    renameSync(bad, join(root, "unrelated-damaged.retained.json"));
     const alive = await daemonCommand("status", "--json");
-    check("same daemon answers after damaged registry status", alive.code === 0 && alive.doc?.result?.pid === daemon?.pid, alive.doc);
+    check("same daemon answers with damaged record still present", existsSync(bad) && alive.code === 0 && alive.doc?.result?.pid === daemon?.pid, alive.doc);
+    // Retain the damaged bytes after the observations, then restore registry health for teardown.
+    renameSync(bad, join(root, "unrelated-damaged.retained.json"));
     await localManager("positive control: same local Manager survives recovery refusals", instance);
   } else {
   for (const presentation of ["--json", "--plain"]) {
