@@ -91,15 +91,18 @@ try {
   stalled = createServer(socket => { accepted++; sockets.add(socket); socket.once("close", () => sockets.delete(socket)); });
   await new Promise<void>(resolve => stalled!.listen(0, "127.0.0.1", resolve));
   const port = (stalled.address() as AddressInfo).port;
+  const stalledDeadlineMs = 10_000;
   const started = performance.now();
-  // Include native worker startup in the budget, while proving the stalled listener was reached.
-  const timed = await observeSpaceQuiescence({ ...opts, servers: `nats://127.0.0.1:${port}`, timeoutMs: 1_000 });
+  // A cold worker needs time to reach the listener; the 1ms cell below tests startup expiry.
+  const timed = await observeSpaceQuiescence({ ...opts, servers: `nats://127.0.0.1:${port}`, timeoutMs: stalledDeadlineMs });
   const elapsed = performance.now() - started;
-  check("the overall deadline bounds a genuinely stalled dial", accepted === 1 && timed.state === "unknown" && !timed.complete && elapsed < 2_000, { accepted, elapsed, reasons: timed.reasons });
+  check("the overall deadline bounds a genuinely stalled dial", accepted === 1 && timed.state === "unknown" && !timed.complete &&
+    timed.reasons.some(reason => reason.source === "deadline") && elapsed < stalledDeadlineMs + 1_000, { accepted, elapsed, reasons: timed.reasons });
   await new Promise(resolve => setTimeout(resolve, 100));
   check("the failed dial leaves no live fixture socket", sockets.size === 0, sockets.size);
-  const repeated = await observeSpaceQuiescence({ ...opts, servers: `nats://127.0.0.1:${port}`, timeoutMs: 1_000 });
-  check("a second stalled observation reaches a separate native connection", accepted === 2 && repeated.state === "unknown" && !repeated.complete);
+  const repeated = await observeSpaceQuiescence({ ...opts, servers: `nats://127.0.0.1:${port}`, timeoutMs: stalledDeadlineMs });
+  check("a second stalled observation reaches a separate native connection", accepted === 2 && repeated.state === "unknown" && !repeated.complete &&
+    repeated.reasons.some(reason => reason.source === "deadline"), { accepted, reasons: repeated.reasons });
   await new Promise(resolve => setTimeout(resolve, 100));
   check("repeated deadlines leave no accumulated fixture sockets", sockets.size === 0, sockets.size);
   const startupBound = await observeSpaceQuiescence({ ...opts, timeoutMs: 1 });
