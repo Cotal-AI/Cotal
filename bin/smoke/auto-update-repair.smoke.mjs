@@ -13,7 +13,12 @@ const repo = fileURLToPath(new URL('../../', import.meta.url));
 const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
 const originalEnv = { ...process.env }, originalCwd = process.cwd();
 const terminal = process.argv.includes('--terminal-output');
-for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused', 'preflight', 'notarget-manual', 'notarget-auto', 'closure-auto']) {
+const custody = process.argv.includes('--launch-custody');
+if (custody && !['linux', 'darwin'].includes(process.platform)) {
+ console.log('launch custody: POSIX-only coverage');
+ process.exit(0);
+}
+for (const scenario of terminal ? ['terminal'] : custody ? ['interrupted', 'pending', 'unpublished'] : ['retry', 'rollback', 'paused', 'preflight', 'notarget-manual', 'notarget-auto', 'closure-auto']) {
  const root = mkdtempSync(join(tmpdir(), 'autoupd-repair-'));
  const home = join(root, 'home'), prefix = join(root, 'prefix');
  for (const dir of [home, prefix, join(root, 'config/cotal'), join(root, '.cotal'), join(root, 'payload/package/dist')]) mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -22,7 +27,7 @@ for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused',
  const archives = {};
  for (const version of ['99.0.0', previous]) {
   writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
-  const code = version === previous ? (scenario === 'paused' ? 'process.exit(43)' : 'console.log("previous reconciled")') : notarget || closure || terminal ? 'console.log("release reconciled")' : scenario === 'retry' ? `const fs=require('node:fs');const p=${JSON.stringify(join(root, 'once'))};if(!fs.existsSync(p)){fs.writeFileSync(p,'1');process.exit(42)}console.log('retry reconciled')` : 'process.exit(42)';
+  const code = version === previous ? (scenario === 'paused' ? 'process.exit(43)' : 'console.log("previous reconciled")') : scenario === 'interrupted' ? `const fs=require('node:fs');const p=${JSON.stringify(join(root, 'once'))};if(!fs.existsSync(p)){fs.writeFileSync(p,'1');process.kill(process.pid,'SIGKILL')}console.log('retry reconciled')` : notarget || closure || terminal || custody ? 'console.log("release reconciled")' : scenario === 'retry' ? `const fs=require('node:fs');const p=${JSON.stringify(join(root, 'once'))};if(!fs.existsSync(p)){fs.writeFileSync(p,'1');process.exit(42)}console.log('retry reconciled')` : 'process.exit(42)';
   writeFileSync(join(root, 'payload/package/dist/cotal.js'), '#!/usr/bin/env node\n' + code + '\n', { mode: 0o755 });
   assert.equal(spawnSync('tar', ['-czf', join(root, version + '.tgz'), '-C', join(root, 'payload'), 'package']).status, 0);
   archives[version] = readFileSync(join(root, version + '.tgz'));
@@ -43,6 +48,13 @@ for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused',
  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
  origin = 'http://127.0.0.1:' + server.address().port;
  const env = { ...Object.fromEntries(Object.entries(originalEnv).filter(([key]) => !key.startsWith('COTAL_'))), HOME: home, XDG_CONFIG_HOME: join(root, 'config'), COTAL_HOME: home, npm_config_prefix: prefix, npm_config_cache: join(root, 'cache'), npm_config_registry: origin, npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off' };
+ if (scenario === 'pending' || scenario === 'unpublished') {
+  const preload = join(root, 'crash.cjs');
+  // Fault the actual shipped launch, before spawn or after spawn but before PID publication.
+  // The hook observes only this private root's marker and never edits product code.
+  writeFileSync(preload, `const fs=require('node:fs');const rename=fs.renameSync;fs.renameSync=function(from,to){if(to===${JSON.stringify(join(prefix, 'lib/node_modules/.cotal-update-child'))}&&!fs.existsSync(${JSON.stringify(join(root, 'crashed'))})){const m=JSON.parse(fs.readFileSync(from,'utf8'));if(m.phase===${JSON.stringify(scenario === 'pending' ? 'pending' : 'live')}){if(m.phase==='pending')rename(from,to);fs.writeFileSync(${JSON.stringify(join(root, 'crashed'))},'1');process.kill(process.pid,'SIGKILL');}}return rename(from,to)};require('node:module').syncBuiltinESMExports();`);
+  env.NODE_OPTIONS = `--require=${preload}`;
+ }
  async function run(file, args) {
   const child = spawn(file, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
@@ -56,7 +68,27 @@ for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused',
  const recovery = () => JSON.parse(readFileSync(join(home, 'update-recovery.json'), 'utf8'));
  let updater;
  try {
-  if (terminal) {
+  if (custody) {
+   const first = await command();
+   writeFileSync(join(root, 'first.log'), first.output);
+   if (scenario === 'interrupted') {
+    assert.equal(first.code, 0, first.output);
+    assert.match(first.output, /Retrying reconciliation/);
+    assert.match(first.output, /retry reconciled/);
+   } else {
+    assert.equal(first.code, null, first.output);
+    assert.equal(existsSync(join(root, 'crashed')), true, 'the intended launch window was reached');
+    const marker = join(prefix, 'lib/node_modules/.cotal-update-child');
+    assert.equal(JSON.parse(readFileSync(marker)).phase, 'pending');
+    const retry = await command();
+    writeFileSync(join(root, 'retry.log'), retry.output);
+    assert.equal(retry.code, 0, retry.output);
+    assert.match(retry.output, /Restored cotal-ai@/);
+   }
+   assert.equal(existsSync(join(prefix, 'lib/node_modules/.cotal-update-child')), false);
+   assert.equal(recovery(), null);
+   console.log(`launch custody ${scenario}: passed`);
+  } else if (terminal) {
    const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
    const record = async (label, argv) => {
     const result = await run('script', ['-q', '-e', '-c', argv.map(quote).join(' '), '/dev/null']);
@@ -171,7 +203,8 @@ for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused',
   for (const key of Object.keys(process.env)) if (!(key in originalEnv)) delete process.env[key];
   Object.assign(process.env, originalEnv);
   process.chdir(originalCwd);
-  rmSync(root, { recursive: true, force: true });
+  if (custody) console.log(`launch custody evidence: ${root}`);
+  else rmSync(root, { recursive: true, force: true });
  }
 }
 emitSentinel({ passed: cells(), failed: 0 });

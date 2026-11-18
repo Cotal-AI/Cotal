@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { Writable } from "node:stream";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, writeResult, type OutputWarning,
@@ -1604,19 +1605,26 @@ async function runGlobalProcess(
   inherit = false,
   windowsVerbatimArguments = false,
 ): Promise<CommandResult> {
-  const mutation = beginGlobalUpdateChild(root, operation);
+  const gated = process.platform === "linux" || process.platform === "darwin";
+  const mutation = beginGlobalUpdateChild(root, operation, gated);
   let published = false;
   let preservePending = false;
   try {
-    const child = withInstallUmask(() => spawn(file, args, {
+    // The shell exec preserves the published group leader PID. Until its private pipe is armed,
+    // parent death can only produce an EOF, never an unjournaled npm or reconcile process.
+    const child = withInstallUmask(() => spawn(gated ? "/bin/sh" : file, gated
+      ? ["-c", 'IFS= read -r arm <&3 && [ "$arm" = run ] && exec 3<&- && exec "$@"', "cotal-update-gate", file, ...args]
+      : args, {
       env,
       // A separate process group keeps terminal interrupts out of npm's live replacement.
       // Keep the ChildProcess referenced and await close; this is not a background update.
       detached: true,
       windowsHide: true,
       windowsVerbatimArguments,
-      ...(inherit ? { stdio: "inherit" as const } : {}),
+      stdio: gated ? [inherit ? "inherit" : "pipe", inherit ? "inherit" : "pipe", inherit ? "inherit" : "pipe", "pipe"] : inherit ? "inherit" : "pipe",
     }));
+    const gate = gated ? child.stdio[3] as Writable : undefined;
+    gate?.on("error", () => {}); // A child that exits before arming is classified by close below.
     let error = "";
     let stdout = "";
     let stderr = "";
@@ -1627,9 +1635,11 @@ async function runGlobalProcess(
       try {
         mutation.markLive(child.pid);
         published = true;
+        gate?.end("run\n");
       } catch (e) {
         error = `could not journal ${operation} child ${child.pid}: ${(e as Error).message}`;
         preservePending = true;
+        gate?.end();
       }
     }
     const closed = await new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolveClose) =>

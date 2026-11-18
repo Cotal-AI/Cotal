@@ -421,6 +421,11 @@ finish before returning exit code 130. SIGTERM waits the same way and returns 14
 explains the wait, keeps its update lock and does not send terminal interrupts into the child
 processes that are replacing packages. An install or reconcile failure still reports its own
 nonzero result. Force-killing the process or closing its terminal is not a supported cancellation.
+On Linux and macOS, new global install and reconcile children wait until their process group is
+recorded before they can change files. A plain retry can reclaim a launch interrupted before that
+publication, or restore an interrupted update after every process in its recorded group has exited.
+A surviving group member or unreadable custody evidence still blocks recovery. Markers from older
+versions without this launch custody still require the inspection their refusal describes.
 
 Run through the installer's `cotal` launcher, `update` first removes group and other write from the
 folders and files you own in Cotal's install root, without following links. An installer from before

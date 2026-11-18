@@ -185,10 +185,12 @@ export function extensionUpdatePassOwnedBy(pid: number): boolean {
   return found.state === "active" && found.owner.pid === pid;
 }
 
+type MutationCustody = { readonly kind: "gated" } | { readonly kind: "process-group"; readonly pid: number };
+
 export type ProcessMutationRecord =
-  | { readonly phase: "pending"; readonly owner: number; readonly ownerStart?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string }
-  | { readonly phase: "live"; readonly owner: number; readonly ownerStart?: string; readonly pid: number; readonly start?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string }
-  | { readonly phase: "ambiguous"; readonly owner: number; readonly nonce: string; readonly operation?: string; readonly reason: string };
+  | { readonly phase: "pending"; readonly owner: number; readonly ownerStart?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string; readonly custody?: MutationCustody }
+  | { readonly phase: "live"; readonly owner: number; readonly ownerStart?: string; readonly pid: number; readonly start?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string; readonly custody?: MutationCustody }
+  | { readonly phase: "ambiguous"; readonly owner: number; readonly nonce: string; readonly operation?: string; readonly reason: string; readonly custody?: MutationCustody };
 
 export interface ProcessMutation {
   markLive(pid: number): void;
@@ -209,11 +211,14 @@ export function beginExtensionNpmMutation(intermediary = process.platform === "w
   return beginProcessMutation(extensionNpmMutationPath(), "extension npm mutation", intermediary);
 }
 
-export function beginGlobalUpdateChild(root: string, operation: "install" | "reconcile"): ProcessMutation {
+/** A gated POSIX child must wait for its parent's private pipe before executing any mutation. */
+export function beginGlobalUpdateChild(root: string, operation: "install" | "reconcile", gated = false): ProcessMutation {
+  if (gated && process.platform !== "linux" && process.platform !== "darwin") throw new Error("gated global updates require POSIX process groups");
   return beginProcessMutation(
     globalUpdateChildPath(root),
     `global ${operation}`,
     operation === "install" && process.platform === "win32",
+    gated,
   );
 }
 
@@ -299,19 +304,21 @@ export function inspectGlobalUpdateChild(root: string, localAccounts?: UpdateCus
   return { owner: inspectLock(join(canonical, ".cotal-update.lock")), child: readMarker(join(canonical, ".cotal-update-child")) };
 }
 
-/** Journal an actual mutating child across wrapper death. Pending closes spawn->PID publication;
- * live tracks the child itself; ambiguous is operator-repaired and never auto-cleared. */
-function beginProcessMutation(path: string, operation: string, intermediary: boolean): ProcessMutation {
+/** Journal an actual mutating child across wrapper death. Only a gated launch can prove that a
+ * pending child never mutated, or that an interrupted child's complete process group has exited. */
+function beginProcessMutation(path: string, operation: string, intermediary: boolean, gated = false): ProcessMutation {
   assertNoProcessMutation(path, operation);
   const nonce = randomBytes(12).toString("hex");
   const ownerStart = processStartToken(process.pid);
-  writeMarker(path, { phase: "pending", owner: process.pid, ownerStart, intermediary, nonce, operation });
+  let custody: MutationCustody | undefined = gated ? { kind: "gated" } : undefined;
+  writeMarker(path, { phase: "pending", owner: process.pid, ownerStart, intermediary, nonce, operation, ...(custody ? { custody } : {}) });
   return {
     markLive(pid) {
       if (!positiveInteger(pid)) throw new Error(`invalid ${operation} child pid ${pid}`);
       const current = readMarker(path);
       if (!current || current.nonce !== nonce)
         throw new Error(`${operation} marker changed before the child PID was published`);
+      if (gated) custody = { kind: "process-group", pid };
       writeMarker(path, {
         phase: "live",
         owner: process.pid,
@@ -321,20 +328,29 @@ function beginProcessMutation(path: string, operation: string, intermediary: boo
         intermediary,
         nonce,
         operation,
+        ...(custody ? { custody } : {}),
       });
     },
     markAmbiguous(reason) {
+      if (custody?.kind === "gated") throw new Error(`${operation} has not published its launch custody`);
       const current = readMarker(path);
       if (!current || current.nonce !== nonce)
         throw new Error(`${operation} marker changed before ambiguity was recorded`);
-      writeMarker(path, { phase: "ambiguous", owner: process.pid, nonce, operation, reason });
+      writeMarker(path, { phase: "ambiguous", owner: process.pid, nonce, operation, reason, ...(custody ? { custody } : {}) });
     },
     complete(status, signal, ambiguityReason) {
-      if (processExitIsAmbiguous(status, signal, intermediary)) {
+      let groupAlive = false;
+      if (custody?.kind === "process-group") {
+        groupAlive = mutationGroupAlive(custody.pid);
+        if (!groupAlive) { removeMarker(path, nonce); return; }
+        // Even a successful group leader cannot release custody over a surviving descendant.
+      }
+      if (groupAlive || processExitIsAmbiguous(status, signal, intermediary)) {
         const current = readMarker(path);
         if (!current || current.nonce !== nonce)
           throw new Error(`${operation} marker changed before ambiguity was recorded`);
-        writeMarker(path, { phase: "ambiguous", owner: process.pid, nonce, operation, reason: ambiguityReason });
+        writeMarker(path, { phase: "ambiguous", owner: process.pid, nonce, operation, reason: ambiguityReason, ...(custody ? { custody } : {}) });
+        if (groupAlive) throw new Error(`${operation} process group has not exited; descendant completion is unproved`);
         return;
       }
       removeMarker(path, nonce);
@@ -348,6 +364,14 @@ function beginProcessMutation(path: string, operation: string, intermediary: boo
 function assertNoProcessMutation(path: string, operation: string): void {
   const marker = readMarker(path);
   if (!marker) return;
+  if (marker.custody) {
+    const active = marker.custody.kind === "gated"
+      ? sameProcessAlive(marker.owner, marker.phase === "pending" ? marker.ownerStart : undefined)
+      : mutationGroupAlive(marker.custody.pid);
+    if (active) throw new Error(`${marker.operation ?? operation} is still running under its launch custody - retry once it finishes`);
+    removeMarker(path, marker.nonce);
+    return;
+  }
   if (marker.phase === "ambiguous") {
     throw new Error(`${marker.operation ?? operation} ended ambiguously (${marker.reason}; ${path}) - if no descendant process is running, remove the marker and retry`);
   }
@@ -367,6 +391,15 @@ function assertNoProcessMutation(path: string, operation: string): void {
     );
   }
   removeMarker(path, marker.nonce);
+}
+
+function mutationGroupAlive(pid: number): boolean {
+  if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("cannot inspect POSIX update process-group custody on this platform");
+  try { process.kill(-pid, 0); return true; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
 }
 
 function sameProcessAlive(pid: number, start: string | undefined): boolean {
@@ -398,17 +431,25 @@ function validMarker(value: unknown): value is ProcessMutationRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const marker = value as Record<string, unknown>;
   if (!positiveInteger(marker.owner) || !validNonce(marker.nonce) || !optionalString(marker.operation)) return false;
+  if (marker.custody !== undefined) {
+    if (!["global install", "global reconcile"].includes(String(marker.operation)) || marker.intermediary === true) return false;
+    const custody = marker.custody as Record<string, unknown> | null;
+    if (!custody || typeof custody !== "object" || Array.isArray(custody)) return false;
+    if (marker.phase === "pending") {
+      if (custody.kind !== "gated" || !exactKeys(custody, ["kind"])) return false;
+    } else if (custody.kind !== "process-group" || !positiveInteger(custody.pid) || !exactKeys(custody, ["kind", "pid"]) || marker.phase === "live" && custody.pid !== marker.pid) return false;
+  }
   if (marker.phase === "pending") {
     return optionalString(marker.ownerStart) && typeof marker.intermediary === "boolean" &&
-      exactKeys(marker, ["phase", "owner", "ownerStart", "intermediary", "nonce", "operation"]);
+      exactKeys(marker, ["phase", "owner", "ownerStart", "intermediary", "nonce", "operation", "custody"]);
   }
   if (marker.phase === "live") {
     return positiveInteger(marker.pid) && optionalString(marker.ownerStart) && optionalString(marker.start) &&
       typeof marker.intermediary === "boolean" &&
-      exactKeys(marker, ["phase", "owner", "ownerStart", "pid", "start", "intermediary", "nonce", "operation"]);
+      exactKeys(marker, ["phase", "owner", "ownerStart", "pid", "start", "intermediary", "nonce", "operation", "custody"]);
   }
   if (marker.phase === "ambiguous") {
-    return typeof marker.reason === "string" && marker.reason.length > 0 && exactKeys(marker, ["phase", "owner", "nonce", "operation", "reason"]);
+    return typeof marker.reason === "string" && marker.reason.length > 0 && exactKeys(marker, ["phase", "owner", "nonce", "operation", "reason", "custody"]);
   }
   return false;
 }
