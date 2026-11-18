@@ -317,18 +317,22 @@ test('shipped preflight refuses missing symlink directory and uncertain workspac
 test('the real acquisition entry calls preflight before any pnpm or git child', t => {
   const f = preflightFixture(t);
   const event = join(f.base, 'event.json');
+  // The entry prepares its private resolve workspace before checking external config.
+  const runnerTemp = join(f.base, 'runner-temp');
+  fs.mkdirSync(runnerTemp, { mode: 0o700 });
   fs.writeFileSync(event, JSON.stringify({ inputs: { acquisition: 'validators-0155' } }));
   fs.writeFileSync(join(f.xdg, 'pnpm', 'config.yaml'), '{}\n');
   const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch', ACQUISITION_MODE: 'validators-0155',
     GITHUB_SHA: '1'.repeat(40), GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1',
     GITHUB_JOB: 'validator-lock-acquisition', GITHUB_EVENT_PATH: event, GITHUB_WORKSPACE: f.root,
-    XDG_CONFIG_HOME: f.xdg, HOME: f.home, PATH: '' };
+    RUNNER_TEMP: runnerTemp, XDG_CONFIG_HOME: f.xdg, HOME: f.home, PATH: '' };
   const result = spawnSync(process.execPath, [script], { env, cwd: f.root, encoding: 'utf8', timeout: 10_000 });
   assert.equal(result.error, undefined);
   assert.notEqual(result.status, 0);
   assert.equal(result.stderr.includes('External pnpm configuration is not admitted'), true,
     'Must reach the real preflight before an unavailable git or pnpm can run');
   assert.equal(result.stdout, '', 'No tool observation or output claim before admission');
+  assert.deepEqual(fs.readdirSync(runnerTemp), [], 'Preflight refusal removes the private resolve workspace');
   assert.equal(source.match(/^assertAcquisitionPreflight\(resolve\);$/gm)?.length, 1);
   assert.ok(source.indexOf('assertAcquisitionPreflight(resolve);') < source.indexOf("assert.equal(run('pnpm', ['--version'])"));
 });
