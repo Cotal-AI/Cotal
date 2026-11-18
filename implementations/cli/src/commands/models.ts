@@ -1,5 +1,5 @@
 import { type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type FlagValues, type ModelInfo, type ParsedArgs } from "@cotal-ai/core";
-import { jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section, resolveControlTarget } from "@cotal-ai/workspace";
+import { CommandFailure, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Block, type Report, type Section, resolveControlTarget } from "@cotal-ai/workspace";
 import { extensionNames } from "../ext-loader.js";
 import { cliControl, onFlag, onRerun } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
@@ -36,7 +36,15 @@ export interface ModelsResult {
   readonly items: readonly ConnectorModelCatalog[];
 }
 
+export function validateModelsArguments(args: ParsedArgs): void {
+  const values = args.values as FlagValues<typeof modelsFlags>;
+  presentationOf(values);
+  if (values.harness !== undefined && !values.harness.trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "--harness cannot be empty", { remedy: "name an application with --harness <connector>, or omit it to list all applications" });
+}
+
 export async function models(args: ParsedArgs): Promise<void> {
+  validateModelsArguments(args);
   const v = args.values as FlagValues<typeof modelsFlags>;
   const presentation = presentationOf(v);
   const on = await managerPin(v, onRerun("cotal models", v, v.harness === undefined ? [] : ["--harness", v.harness]));

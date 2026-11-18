@@ -9,6 +9,8 @@ audience: operators
 folder until another `use` or `use --clear`. Explicit `--space`, `--server` and `--creds` keep their
 own target rules. A selection Cotal adopts automatically does not override another project's running space.
 `status` reads infrastructure and local records without starting or repairing components.
+An explicit empty or whitespace-only name on `use`, `space show` or `space forget` refuses with
+`USAGE_INVALID`, exit 1, before connector seeding or registry lookups.
 
 
 ## space [#selecting-a-space]
@@ -775,7 +777,9 @@ creating a control directory or lock. An explicit IdP without a cached login ref
 before refresh or registry application. Both exit 2 and leave the cache untouched; diagnostics
 name the path without printing cache contents or parser excerpts.
 `cotal sync` bypasses freshness and reports added, changed, removed, unchanged, name collisions, and the spaces the catalog marks unavailable. `--idp` limits it to one signed-in account. It never connects
-to a broker. `--json` gives each account under `accounts` with its `idp`, `state`, `catalog`, the
+to a broker or installs connectors. An empty or malformed `--idp` refuses with `USAGE_INVALID`,
+exit 1, before reading accounts. Use HTTPS, or HTTP on a loopback IP literal, without embedded
+credentials, a query or a fragment. `--json` gives each account under `accounts` with its `idp`, `state`, `catalog`, the
 six name lists, `selectionCleared` and `error`. An unavailable space keeps the registration this
 machine holds, which is also listed as unchanged; a command that targets it refuses with
 `DEPENDENCY_UNAVAILABLE` and the catalog's reason while its siblings keep working. An account whose catalog could not be refreshed keeps
