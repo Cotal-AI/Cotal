@@ -82,6 +82,10 @@ Do not upload the session file or paste its contents into logs.
 Opening its link exchanges the bootstrap token for an HttpOnly session cookie with `SameSite=Lax`.
 A spent token cannot open another session.
 
+The exchange removes the token from the address. Responses send `Referrer-Policy: no-referrer`
+and `X-Content-Type-Options: nosniff`. Content-Security-Policy allows scripts only from the
+dashboard's own origin and refuses inline scripts. Inline styles remain enabled for the interface.
+
 </Callout>
 
 The session belongs to its origin. A localhost name and a literal loopback address do not share it.
