@@ -548,7 +548,9 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         );
         return { userJwt: jwt, iat: signedIat(jwt) };
       });
-      await step(c, "ledger", () => opts.recordIssuance({ userNkey: req.user_nkey, token: validated, connId: inboxNonce, iat, exp }));
+      await step(c, "ledger", () => opts.recordIssuance({ userNkey: req.user_nkey, token: validated, connId: inboxNonce, iat, exp,
+        ...(validated.act.view === "session-caller" ? { connection: { serverId: req.server_id.id, cid: req.client_info!.id! } } : {}),
+      }));
       if (endpointRecheck !== undefined) {
         if (typeof endpointRecheck !== "function") throw new Error("callout: invalid endpoint caller final check");
         await step(c, "policy", () => endpointRecheck());

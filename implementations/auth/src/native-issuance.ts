@@ -42,6 +42,7 @@ export interface NativeIssuance {
   connId: string;
   iat: number;
   exp: number;
+  connection?: { serverId: string; cid: number };
   service?: { credentialId: string; connection: ServiceConnectionBinding };
 }
 
