@@ -51,6 +51,12 @@ const shapes: Array<{ name: string; render: () => string }> = [
   },
 ];
 
+for (const brokerVersion of ["2.12.0", "2.14.0", "2.15.1", "3.0.0"]) {
+  for (const text of [openServerConfig({ brokerVersion, transport: { kind: "plaintext" }, storeDir }), serverConfig(auth, [auth], { brokerVersion, transport: { kind: "plaintext" }, storeDir })]) {
+    assert.equal(text.includes("default_max_consumers: -1"), brokerVersion === "2.15.1" || brokerVersion === "3.0.0");
+  }
+}
+
 for (const s of shapes) {
   const conf = s.render();
   assert.match(conf, /^port: 43\d\d$/m, `shape ${s.name}: no port rendered`);
@@ -113,9 +119,8 @@ for (const [what, tlsConf, plainConf] of [
   }
 }
 
-// The JetStream store cap (`maxFileStore`, #1888). Unset must render the bytes every existing
-// broker config already has, so a mesh that never asks for a cap is not restarted into a different
-// config. Set must render `max_file_store` inside the same block on both renderers. An invalid cap
+// The JetStream store cap (`maxFileStore`, #1888). Omitting brokerVersion retains the legacy
+// configuration shape. Set must render `max_file_store` inside the same block on both renderers. An invalid cap
 // is refused by the renderer rather than clamped or defaulted.
 {
   const bare = `jetstream { store_dir: ${JSON.stringify(storeDir)} }`;

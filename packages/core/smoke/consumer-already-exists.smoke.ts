@@ -1,6 +1,6 @@
 /** Run after building core: pnpm smoke:consumer-already-exists (needs nats-server). */
-import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn, execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
@@ -9,6 +9,7 @@ import { Kvm } from "@nats-io/kv";
 import {
   activateRun, createEndpointStreams, isConsumerAlreadyExists, isReachable,
   replayRunJournal, runJournalConsumerConfig, wfjStreamName,
+  openServerConfig, setupSpaceStreams, dmStream, dlvStream, provisionAgentDurables, CotalEndpoint, deprovisionAgent,
 } from "@cotal-ai/core";
 import {
   awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal,
@@ -21,7 +22,13 @@ const runId = "run-check";
 const stream = wfjStreamName(space);
 const port = await pickFreePort();
 const store = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}consumer-exists-`));
-const broker = spawn("nats-server", ["-js", "-sd", store, "-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" });
+const configPath = join(store, "server.conf");
+const brokerVersion = execFileSync("nats-server", ["--version"], { encoding: "utf8" }).match(/\d+\.\d+\.\d+/)?.[0];
+if (!brokerVersion) throw new Error("Cannot read nats-server version");
+const rendered = openServerConfig({ brokerVersion, transport: { kind: "plaintext" }, storeDir: join(store, "js"), port });
+// Start with the pre-upgrade block, then reload the stock render on the same stream.
+writeFileSync(configPath, rendered.replace(", limits { default_max_consumers: -1 }", ""));
+const broker = spawn("nats-server", ["-c", configPath], { stdio: "ignore" });
 const release = teardownOnSignal(broker);
 const servers = `nats://127.0.0.1:${port}`;
 let nc: NatsConnection | undefined;
@@ -30,6 +37,53 @@ try {
   nc = await connect({ servers });
   const jsm = await jetstreamManager(nc);
   const js = jetstream(nc);
+  await setupSpaceStreams({ servers, space });
+  const inboxStream = dmStream(space);
+  const provisioner = new CotalEndpoint({ space, servers, card: { id: "limitprov", name: "limitprov", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
+  provisioner.on("error", () => {});
+  await provisioner.start();
+  const started = Date.now();
+  for (let i = 0; i < 1000; i++) {
+    await provisionAgentDurables(provisioner, { owner: "local", actor: `limit${i}`, lifecycleUid: `limit${i}`.padEnd(26, "0") }, { subscribe: ["general"] });
+  }
+  console.log(`Provisioned 1000 lifecycle pairs in ${Date.now() - started}ms`);
+  const before = await jsm.streams.info(inboxStream);
+  suite.check("existing DM stream keeps canonical unlimited consumers", before.config.max_consumers === -1);
+  if (Number(brokerVersion.split(".")[1]) >= 15) {
+    const refusal = await provisionAgentDurables(provisioner, { owner: "local", actor: "limit1000", lifecycleUid: "limit1000".padEnd(26, "0") }, { subscribe: ["general"] })
+      .then(() => undefined, (error: unknown) => error);
+    suite.check("pre-upgrade stock provisioning refuses lifecycle 1001 with broker limit 10026", refusal instanceof JetStreamApiError && refusal.code === 10026);
+  }
+  writeFileSync(configPath, rendered);
+  broker.kill("SIGHUP");
+  let admitted = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      await provisionAgentDurables(provisioner, { owner: "local", actor: "limit1000", lifecycleUid: "limit1000".padEnd(26, "0") }, { subscribe: ["general"] });
+      admitted = true;
+      break;
+    } catch (error) {
+      if (!(error instanceof JetStreamApiError) || error.code !== 10026) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  suite.check("stock config reload admits lifecycle 1001 on existing streams", admitted);
+  await setupSpaceStreams({ servers, space });
+  const after = await jsm.streams.info(inboxStream);
+  suite.check("setup accepts existing stream without changing its identity or consumer limit",
+    after.created === before.created && after.config.max_consumers === -1 && after.state.consumer_count === 1001);
+  const delivery = await jsm.streams.info(dlvStream(space));
+  suite.check("DLV also admits 1001 canonical lifecycle durables", delivery.state.consumer_count === 1001 && delivery.config.max_consumers === -1);
+  await deprovisionAgent({ servers, space, targetId: "limit1000", lifecycleUid: "limit1000".padEnd(26, "0") });
+  console.log(`After retiring one lifecycle: DM=${(await jsm.streams.info(inboxStream)).state.consumer_count}, DLV=${(await jsm.streams.info(dlvStream(space))).state.consumer_count}`);
+  suite.check("retirement removes exactly one DM and one DLV durable",
+    (await jsm.streams.info(inboxStream)).state.consumer_count === 1000 && (await jsm.streams.info(dlvStream(space))).state.consumer_count === 1000);
+  const retainedDm = await jsm.consumers.list(inboxStream).next();
+  const retainedDlv = await jsm.consumers.list(dlvStream(space)).next();
+  suite.check("unretired lifecycle inboxes have no inactivity expiry",
+    retainedDm.every((entry) => !entry.config.inactive_threshold) && retainedDlv.every((entry) => !entry.config.inactive_threshold));
+  console.log(`Unretired consumers: DM=${(await jsm.streams.info(inboxStream)).state.consumer_count}, DLV=${(await jsm.streams.info(dlvStream(space))).state.consumer_count}, inactive_threshold=0`);
+  await provisioner.stop();
   await createEndpointStreams(jsm, new Kvm(nc), space);
   const activation = await activateRun(js, jsm, {
     space, runId, holder: "driver", fencingToken: 1, epoch: 1, at: 1_700_000_000_000,
