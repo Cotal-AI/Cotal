@@ -806,6 +806,14 @@ test('Mac admission gate records late arm64 unrun before any installation', asyn
   assert.equal(outputWritten, false);
 });
 
+test('summary skips a JSON file that holds no object', async () => {
+  const { summarize } = await import('./automatic-update-platform-baseline.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'null-summary-'));
+  writeFileSync(join(root, 'cell.json'), JSON.stringify({ id: 'cell', tier: 'published', result: 'passed', target: '0.164.5' }));
+  writeFileSync(join(root, 'state.json'), 'null');
+  assert.deepEqual(summarize(root).counts, { passed: 1 });
+});
+
 test('summary preserves unrun runner receipts separately from product verdicts and does not count matched known refusals as unexpected failures', async () => {
   const { summarize } = await import('./automatic-update-platform-baseline.mjs');
   const { knownRefusals } = await import('./upgrade-matrix-refusals.mjs');

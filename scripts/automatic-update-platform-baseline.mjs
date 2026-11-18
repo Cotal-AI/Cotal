@@ -1677,6 +1677,7 @@ export function summarize(directory) {
   const reports = readdirSync(directory, { recursive: true }).filter(name => String(name).endsWith('.json')).flatMap(name => {
     const file = join(directory, name);
     const row = json(file);
+    if (row === null || typeof row !== 'object') return [];
     if (String(name).endsWith('runner-admission.json')) {
       assert(['admitted', 'unrun'].includes(row.result) && typeof row.runner === 'string', 'invalid runner admission receipt');
       admissions.push(row);
