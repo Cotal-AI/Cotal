@@ -9,6 +9,9 @@ This page describes `CotalEndpoint` behavior in the TypeScript reference impleme
 [Message flow](presence-and-delivery.mdx) explains how presence and delivery fit together.
 The wire requirements are in [SPEC §6](../SPEC.md#6-presence-and-discovery) and [§8](../SPEC.md#8-nats--jetstream-binding).
 
+Each endpoint keeps its roster, watch freshness and write diagnosis in one internal presence component.
+Applications use the `CotalEndpoint` methods and events described here.
+
 ## Channel history [#channel-history]
 
 `multiChannelHistory(channels, { limit, signal })` returns the newest matching chat messages,
