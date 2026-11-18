@@ -69,6 +69,9 @@ cotal service start web --space main --no-read-only --posting-creds /absolute/pr
 definition saved from a file with only one of them is refused when it starts, naming the remove and
 add that fix it.
 
+To turn posting off again, remove the definition and add it with `--read-only`. A start with
+`--read-only` is refused while the saved definition has `--posting-creds`, and changes nothing.
+
 Select #general in Channels, enter text in the composer, and choose Send.
 Posts use the separate credential's identity, labelled `operator`, and preserve mentions.
 The broker enforces that file's grants. A broader observer credential cannot authorize a refused post.
