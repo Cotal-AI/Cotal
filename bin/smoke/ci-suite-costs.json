@@ -412,6 +412,7 @@
     "smoke:opencode-events-reset": { "seconds": 37.8, "shard": 1 },
     "smoke:opencode-run-error": { "seconds": 18.6, "shard": 2 },
     "smoke:opencode-tool-closed": { "seconds": 1.5, "shard": 2 },
+    "smoke:opencode2-command:auth": { "seconds": 15.1, "shard": 1 },
     "smoke:operator-env-keep": { "seconds": 1.4, "shard": 0 },
     "smoke:orientation": { "seconds": 1.7, "shard": 0 },
     "smoke:orphan-seat-reap": { "seconds": 31.8, "shard": 1 },

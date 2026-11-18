@@ -14,7 +14,7 @@
  * differ from 1.x's (`{data:...}` wrapping, no `prompt_async`).
  */
 import { randomUUID } from "node:crypto";
-import { loadAgentFile, principalKey, type PresenceStatus } from "@cotal-ai/core";
+import { loadAgentFile, principalKey, type CommandEntry, type CommandTarget, type PresenceStatus } from "@cotal-ai/core";
 import {
   configFromEnv,
   eventPlaneArmed,
@@ -32,6 +32,8 @@ import {
   FileSubjectFrontier,
   ensureEventWalDir,
   resolveEventsStateRoot,
+  CommandRefused,
+  type CommandDispatcher,
   type PrincipalLock,
 } from "@cotal-ai/connector-core";
 import { modelRefusalSentence, SurfacedBatch, settleWithin } from "./plugin.js";
@@ -90,6 +92,45 @@ async function verifyServerModel2(
   }
 }
 
+class OpenCodeHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly tag: string | undefined,
+    readonly field: string | undefined,
+    message: string,
+  ) {
+    super(message);
+    this.name = "OpenCodeHttpError";
+  }
+
+  static async from(res: Response, path: string): Promise<OpenCodeHttpError> {
+    const raw = await res.text().catch(() => "");
+    let parsed: { _tag?: unknown; field?: unknown } = {};
+    try { parsed = JSON.parse(raw) as typeof parsed; } catch {}
+    const text = (v: unknown) => (typeof v === "string" ? v : undefined);
+    const body = Buffer.from(raw).subarray(0, 2048).toString("utf8");
+    return new OpenCodeHttpError(res.status, text(parsed._tag), text(parsed.field), `OpenCode HTTP ${res.status} ${res.statusText} for ${path}${body ? `: ${body}` : ""}`);
+  }
+}
+
+/** How OpenCode lists and runs each command target, measured on 2.2.5. The field `key` of a listed
+ *  entry is the name `run` sends, so a listed name is one a command runs. A built-in skill's `id`
+ *  differs from its `name`, and `/prompt` attaches a skill by `id`. `loaded` is the event OpenCode
+ *  emits once it loaded the list. */
+const COMMAND_ROUTES: Record<CommandTarget, { list: string; loaded: string; key: "name" | "id"; run(name: string, args: string): [path: string, body: Record<string, unknown>] }> = {
+  command: { list: "/api/command", loaded: "command.updated", key: "name", run: (name, args) => ["command", { name, text: args }] },
+  skill: { list: "/api/skill", loaded: "skill.updated", key: "id", run: (name, args) => ["prompt", { text: args, skills: [{ id: name }] }] },
+};
+
+/** How long the first list waits for OpenCode to load the lists. OpenCode loads a location's commands
+ *  and skills on the first request for them, answers that request with what it already holds, and
+ *  emits each list's `loaded` event once the load ended (measured on 2.2.5). */
+const LISTS_LOAD_MS = 3_000;
+
+/** How long a command OpenCode accepted has to start its turn. 2.2.5 accepts some commands, such as
+ *  `goal clear`, without starting one, and then no execution event frees the session. */
+const COMMAND_TURN_START_MS = 5_000;
+
 /** How long the detached event loop's in-flight iteration may be waited on at teardown before it
  *  is abandoned out loud — the same bounded-settle shape `plugin.ts`'s `quiesce` uses, via its
  *  exported `settleWithin`, rather than a second copy of the tradeoff (see that file's note). */
@@ -143,7 +184,63 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     await verifyServerModel2(serverUrl, serverAuth, selectedModel, settleMs);
   })();
 
-  const agent = new MeshAgent(config);
+  async function readLists(): Promise<CommandEntry[]> {
+    const lists = await Promise.all((Object.keys(COMMAND_ROUTES) as CommandTarget[]).map(async (target) => {
+      const { list, key } = COMMAND_ROUTES[target];
+      const data = (await opencodeApi<{ data?: unknown } | undefined>(list))?.data;
+      if (!Array.isArray(data)) throw new Error(`OpenCode answered ${list} with no data list`);
+      return data.map((e: unknown) => {
+        const entry = (typeof e === "object" && e !== null ? e : {}) as Record<string, unknown>;
+        const name = entry[key];
+        if (typeof name !== "string") throw new Error(`OpenCode listed a ${target} with no ${key} at ${list}`);
+        return { name, target, ...(typeof entry.description === "string" ? { description: entry.description } : {}) };
+      });
+    }));
+    return lists.flat();
+  }
+  // The `loaded` events still to come, set from the event loop, and the one bounded wait for them.
+  const listsLoading = new Set(Object.values(COMMAND_ROUTES).map((r) => r.loaded));
+  let markListsLoaded!: () => void;
+  const listsLoaded = new Promise<void>((resolve) => { markListsLoaded = resolve; });
+  let listsWait: Promise<void> | undefined;
+  const commands: CommandDispatcher = {
+    targets: new Set(Object.keys(COMMAND_ROUTES) as CommandTarget[]),
+    async list() {
+      const loaded = listsLoading.size === 0;
+      const first = await readLists();
+      if (loaded) return first;
+      await (listsWait ??= new Promise<void>((resolve) => {
+        const late = setTimeout(resolve, LISTS_LOAD_MS);
+        void listsLoaded.then(() => { clearTimeout(late); resolve(); });
+      }).then(() => listsLoading.clear()));
+      return readLists();
+    },
+    async dispatch(command) {
+      const id = await ensureSession();
+      if (!id) throw new CommandRefused("failed-precondition", "this agent has no OpenCode session yet");
+      const system = firstTurnSystem();
+      const [path, body] = COMMAND_ROUTES[command.target].run(command.name, command.args);
+      try {
+        // No client timeout: OpenCode answers only once the template's shell snippets finish, and a
+        // client that leaves first cancels the command (measured on 2.2.5).
+        await opencodeApi(`/api/session/${encodeURIComponent(id)}/${path}`, {
+          method: "POST",
+          body: JSON.stringify({ ...body, ...(system ? { system } : {}) }),
+          signal: controller.signal,
+        });
+      } catch (e) {
+        // Measured on OpenCode 2.2.5: an unknown command answers a 404 `CommandNotFoundError` and an
+        // unknown skill a 400 `InvalidRequestError` whose field is `skills`; any 4xx refuses before the
+        // turn starts.
+        if (!(e instanceof OpenCodeHttpError) || e.status < 400 || e.status >= 500) throw e;
+        const unknown = (e.status === 404 && e.tag === "CommandNotFoundError") || (e.status === 400 && e.tag === "InvalidRequestError" && e.field === "skills");
+        if (unknown) throw new CommandRefused("not-found", `OpenCode has no ${command.target} named "${command.name}"`);
+        throw new CommandRefused("failed-precondition", e.message);
+      }
+      if (system) primed = true;
+    },
+  };
+  const agent = new MeshAgent(config, undefined, { commands });
   const controller = new AbortController(); // aborted when teardown begins
 
   async function opencodeApi<T>(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<T> {
@@ -152,7 +249,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       signal: init?.signal ?? AbortSignal.timeout(timeoutMs),
       headers: { authorization: serverAuth, "content-type": "application/json", ...(init?.headers ?? {}) },
     });
-    if (!res.ok) throw new Error(`OpenCode HTTP ${res.status} ${res.statusText} for ${path}`);
+    if (!res.ok) throw await OpenCodeHttpError.from(res, path);
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }
@@ -227,7 +324,11 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   // turns): our prompt waiting for its execution to start, or a started execution. Only the end of a
   // started execution settles the batch; an end seen before it started belongs to an earlier one.
   let execution: "submitted" | "running" | undefined;
+  let submission = 0; // numbers our submissions, so the bound set for one command can never free a later one
+  let turnStartBound: NodeJS.Timeout | undefined;
   let primed = false; // persona goes out as `system` on the first connector-submitted turn, once
+  /** The persona and briefing as `system`, on the first turn this adapter submits, whether a message or a command. */
+  const firstTurnSystem = (): string | undefined => (!primed && persona ? `${persona}\n\n${briefing(config, "opencode")}` : undefined);
   let briefed = false; // channel briefing goes out once, same rule as 1.x
   const batch = new SurfacedBatch(agent); // the batch the current turn carries, acked on completion
   let ended: OpenCode2Event["durable"]; // log position of the event that ended the last turn
@@ -238,6 +339,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   // ingest, so this is all that carries it until a turn end delivers it (#3859).
   let pendingMention = false;
   let submitting: Promise<void> | undefined; // the prompt POST in flight; what it carries settles when it answers
+  let lastTurnWasCommand = false;
 
   async function ensureSession(): Promise<string | undefined> {
     return sessionID ?? (await sessionReady);
@@ -266,6 +368,15 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     const boot = bootPending() ? bootPrompt : undefined;
     const override = pendingMention ? MENTION_NUDGE : undefined;
     if (bootPrompt !== undefined && boot === undefined) return;
+    // A command takes an idle turn of its own. Right after a command turn, waiting messages go first,
+    // so a stream of commands cannot hold the inbox back; when they have nothing to send, it runs.
+    const messagesFirst = lastTurnWasCommand && (override !== undefined || agent.pendingWake() > 0);
+    if (boot === undefined && agent.queuedCommands > 0 && !messagesFirst) return driveCommand();
+    const nothingToSend = (): Promise<void> | undefined => {
+      if (boot !== undefined || agent.queuedCommands === 0) return undefined;
+      lastTurnWasCommand = false;
+      return driveCommand();
+    };
     const parts: string[] = [];
     let ids: string[] = [];
     let turnIds: string[] = [];
@@ -283,7 +394,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       const openBefore = batch.open;
       const items = await agent.takeChosen("automatic", (preview) => preview);
       if (execution || submitting || (!openBefore && batch.open) || controller.signal.aborted) return;
-      if (items.length === 0 && !turnPeek) return;
+      if (items.length === 0 && !turnPeek) return nothingToSend();
       if (items.length > 0) {
         ids = items.map((i) => i.recvKey);
         const inj = formatInjection(items);
@@ -292,8 +403,8 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     }
     const brief = briefed ? undefined : agent.channelBriefing();
     if (brief) parts.unshift(brief);
-    if (parts.length === 0 && !turnPeek) return;
-    const system = !primed && persona ? `${persona}\n\n${briefing(config, "opencode")}` : undefined;
+    if (parts.length === 0 && !turnPeek) return nothingToSend();
+    const system = firstTurnSystem();
     if (!batch.surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
     // The turns' permit, after the last gate and right before the send with no await between: a
     // once task another dispatch already took is left out, and a submission left with nothing to
@@ -302,9 +413,11 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       turnIds = turnPeek.goalIds;
       parts.push(turnPeek.text);
     }
-    if (boot === undefined && override === undefined && ids.length === 0 && turnIds.length === 0) { batch.abandon(); return; }
+    if (boot === undefined && override === undefined && ids.length === 0 && turnIds.length === 0) { batch.abandon(); return nothingToSend(); }
     const text = parts.join("\n\n");
     execution = "submitted";
+    submission++;
+    lastTurnWasCommand = false;
     briefed = true;
     const endAtSend = ended;
     const unorderedAtSend = unorderedEnds;
@@ -340,6 +453,37 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       }
     })();
     await submitting;
+  }
+
+  /** The batch opens empty, so neither the inbox nor the prompt hook's prefix rides the command's
+   *  turn. A command the harness did not take leaves the session free, and whatever waits behind it
+   *  drives at once. So does a command OpenCode took whose turn has not started
+   *  {@link COMMAND_TURN_START_MS} after the answer. */
+  async function driveCommand(): Promise<void> {
+    if (!batch.surface([])) return;
+    execution = "submitted";
+    const mine = ++submission;
+    submitting = (async () => {
+      try {
+        if ((await agent.dispatchNextCommand()) === "dispatched") {
+          lastTurnWasCommand = true;
+          clearTimeout(turnStartBound);
+          turnStartBound = setTimeout(() => {
+            if (execution !== "submitted" || submission !== mine) return;
+            execution = undefined;
+            batch.abandon();
+            void drive();
+          }, COMMAND_TURN_START_MS);
+          return;
+        }
+        if (execution === "submitted") execution = undefined;
+        batch.abandon();
+      } finally {
+        submitting = undefined;
+      }
+    })();
+    await submitting;
+    if (!execution) void drive();
   }
 
   /** Whether an execution event is a replay: at or before `mark`, by default the last turn's end, in
@@ -386,7 +530,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     void (async () => {
       await submitting;
       if (ended !== ev.durable) return; // a later turn ended during the wait: only its task leaves out the batch that turn failed
-      if (bootPending() || pendingMention || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
+      if (bootPending() || pendingMention || agent.queuedCommands > 0 || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
     })();
   }
 
@@ -404,6 +548,9 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     void drive();
   });
   agent.on("wake", () => {
+    if (!execution) void drive();
+  });
+  agent.on("command", () => {
     if (!execution) void drive();
   });
 
@@ -497,6 +644,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         // Only a durable event of the session changes its message list, and the list already holds
         // the change when the event arrives (measured), so each one is the wake to read it again.
         if (events?.path !== undefined && ev.durable?.aggregateID === events.path) events.flush(events.path);
+        if (listsLoading.delete(ev.type) && listsLoading.size === 0) markListsLoaded();
         switch (ev.type) {
           case "session.created": {
             // Adopt the first session id we see if none is set yet (mirrors `ours()` in plugin.ts);
@@ -581,6 +729,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
 
   const teardown = async (): Promise<void> => {
     controller.abort();
+    clearTimeout(turnStartBound);
     await settleWithin(eventLoop, EVENT_QUIESCE_MS, "opencode 2.x event loop at teardown");
     // The reads already queued still publish while the endpoint is up; the lock goes back after them.
     await settleWithin(events?.close(), EVENT_QUIESCE_MS, "event holder at teardown");
