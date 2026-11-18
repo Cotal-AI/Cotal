@@ -215,7 +215,8 @@ interface Waiter {
 
 interface Held {
   readonly id: string;
-  readonly hooks: PromptHooks;
+  /** Dropped once `end` has run, so a `deliver` call that never settles holds nothing of the adapter's. */
+  hooks?: PromptHooks;
   readonly settleMs: number;
   readonly expiresAtMs: number;
   /** When the settle time passes: the accepted answer's time plus `settleMs`. */
@@ -598,8 +599,10 @@ class Desk implements PromptDesk {
       return;
     }
     h.ended = true;
+    const hooks = h.hooks!;
+    h.hooks = undefined;
     try {
-      ignoreRejection(h.hooks.end({ attempted }));
+      ignoreRejection(hooks.end({ attempted }));
     } catch (e) {
       this.warn(`prompt ${h.id}: the adapter's end threw: ${describe(e)}`);
     }
@@ -702,7 +705,7 @@ class Desk implements PromptDesk {
     // 9. The adapter's own rules.
     let refusal: unknown;
     try {
-      refusal = h.hooks.check?.(verdict);
+      refusal = h.hooks!.check?.(verdict);
     } catch (e) {
       this.warn(`prompt ${h.id}: the adapter's check threw: ${describe(e)}`);
       throw refused("internal", `the agent could not check this answer: ${describe(e)}`);
@@ -744,7 +747,7 @@ class Desk implements PromptDesk {
   private deliver(h: Held, verdict: PromptVerdict): void {
     let result: Promise<Delivery>;
     try {
-      result = Promise.resolve(h.hooks.deliver(verdict));
+      result = Promise.resolve(h.hooks!.deliver(verdict));
     } catch (e) {
       result = Promise.reject(e);
     }

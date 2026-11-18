@@ -28,6 +28,8 @@
  * Run: pnpm smoke:prompt-desk:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
 import { randomBytes, randomUUID } from "node:crypto";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -788,6 +790,25 @@ try {
     const waited = s?.kind === "closed" && s.outcome.kind === "unconfirmed" ? Date.parse(s.at) - Date.parse(s.outcome.answer.at) : -1;
     check("a settle timer that runs before the settle time by the desk's clock arms itself again: the prompt closes unconfirmed no earlier than settleMs after the answer",
       show(s) === "closed/unconfirmed/none" && waited >= 1000, { state: show(s), waited });
+  }
+
+  console.log("\ndesk 1: a closed prompt lets its hooks go");
+  {
+    setFlagsFromString("--expose_gc");
+    const gc = runInNewContext("gc") as () => void;
+    // The harness side keeps the deliver call it never settles.
+    const harness: Promise<Delivery>[] = [];
+    let ref: WeakRef<PromptHooks> | undefined;
+    const f = openFake(desk1, "hooks after end", {
+      deliver: () => { const p = new Promise<Delivery>(() => {}); harness.push(p); return p; },
+      hooks: (h) => { ref = new WeakRef(h); },
+    });
+    const reply = (await accept(f)).reply;
+    f.hold.settle({ kind: "withdrawn" });
+    await reply;
+    for (let i = 0; i < 3; i++) { await wait(20); gc(); }
+    check("once end has run the desk drops the prompt's hooks: they are collected while the harness still holds the deliver call that never settles and the prompt is in the closed memory",
+      same(f.ends, [true]) && harness.length === 1 && ref !== undefined && ref.deref() === undefined && show(await stateOf(f)) === "closed/unconfirmed/none", { ends: f.ends, collected: ref?.deref() === undefined });
   }
 
   // ── desk 1 closes, desk 2 opens: the closed memory, the caps, the bounds on the wire ──

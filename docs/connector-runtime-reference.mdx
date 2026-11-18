@@ -243,7 +243,7 @@ The adapter supplies three hooks:
 
 - `check(verdict)` applies the adapter's own rules before an answer is accepted, and returns a message to refuse it. It is synchronous: a promise it returns is a bug, and the answer is refused `internal`.
 - `deliver(verdict)` hands the one accepted answer to the harness. It resolves `delivered` on a receipt from the harness side, `confirmed` when the harness said the answer applied, and `gone` when nothing was handed over. It stays pending while nothing is known, and a rejection proves nothing.
-- `end({ attempted })` comes once per prompt, after its last change. With `attempted: false` the adapter gives the dialog back to the harness if it still waits. With `attempted: true` the adapter writes nothing more to the harness.
+- `end({ attempted })` comes once per prompt, after its last change. With `attempted: false` the adapter gives the dialog back to the harness if it still waits. With `attempted: true` the adapter writes nothing more to the harness. The desk then lets go of the hooks.
 
 The adapter reports what the harness was then seen to do with `settle` on the prompt's hold: `confirmed`, `local`, `observed` with a sighting tied to the prompt, to its subject or to nothing, or `withdrawn`.
 The desk never upgrades a report, and it ignores a report for a closed prompt with a warning.
