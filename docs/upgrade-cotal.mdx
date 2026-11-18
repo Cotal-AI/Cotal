@@ -67,17 +67,24 @@ does not start a command.
 
 On a writable POSIX npm or pnpm installation, `cotal update --self` prepares a complete target
 package and its dependencies in retained storage before changing the selected execution.
-It runs installed read-only checks and the target's declared pre-install checks first.
-Linux also reads the install-wide process census. macOS reads the daemon's hosted Managers,
-the selected target and registered spaces without invoking the Linux-only census.
-A refused check leaves the installed package and connector state unchanged.
+The verified target's declared read-only admission decides Manager, discovery, auth and continuity policy.
+The installed transaction checks archive integrity, entry confinement, its install binding and the native
+daemon's authenticated process lifetime. An unreadable identity or a target refusal leaves the installed
+package and connector state unchanged. Offline auth or unknown Manager work defers activation without
+pretending the work count is zero. The software update can finish while loaded processes keep their code.
+The target identifies any agents that need stop consent before an owned daemon restart.
 The initial admission verifies the daemon lifetime from those checks. Rollback after a daemon
 restart obtains fresh zero-seat admission instead of reusing that earlier lifetime.
 Rollback restores captured connector configuration before verifying the previous execution.
 It releases its own admission fences even when the daemon still runs the target generation.
 The updater pins recorded local Managers on Linux, macOS and Windows and continues with a mesh-naming notice if no local instance can be identified and the exchange refuses because several Managers are live.
 From 0.167.0, an update names and leaves untouched a Manager from an unregistered home, or one this home has no credentials to read, keeping its loaded version until it is restarted from its own home; on 0.166.3 or earlier, wait for or stop the other home's Manager from its own home, then run the same update.
-A successful manual update waits for the target daemon generation, not its updater's loaded version.
+A successful manual update waits for an authorized target daemon generation, not its updater's loaded version.
+Deferred activation names what still needs a restart and leaves that daemon and its Managers running.
+Releases before 0.167.1 still use their own checks on the first hop. Downloading a newer target cannot repair those installed checks, including the missing-config
+refusal in 0.159.1 through 0.160.7 and the Manager-selection refusal before 0.163.1.
+For an npm installation, install once with `npm install -g cotal-ai@latest`, then run `cotal update`.
+For a shell installation, rerun its installer as described under [Reconcile the installation](#reconcile-the-installation).
 If no machine daemon is installed, successful reconciliation completes the update without querying a daemon endpoint.
 An unwritable installation refuses before staging and names the owning install command.
 If this first check refuses, `cotal update --self` exits 2 and reports that the installation
