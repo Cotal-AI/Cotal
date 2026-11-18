@@ -75,6 +75,7 @@ async function collectConnectorSets(): Promise<void> {
       const holders: (string | undefined)[] = [];
       const managers = localUpdateManagers({}, entry);
       for (const manager of managers) {
+        if (manager.ownership === "foreign" || !manager.instanceId) return;
         if (!manager.process || assertRecordIdentity(manager.process).kind !== "match") return;
         const target = await resolveControlTarget({ space: manager.space, server: manager.server }, "control-caller-admin", manager.instanceId, { onRefusal: "throw", readOnly: true });
         const reply = await askManager({ versionSkew: text => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
@@ -155,6 +156,7 @@ const composed: Command = { ...command, async run(args) {
     retainConnectorConfig();
     retainedReconciliation = true;
     for (const manager of managers) {
+      if (manager.ownership === "foreign") continue;
       const command = findMesh(manager.space)?.userAuth?.remote
         ? `\`cd ${shellPath(manager.root)} && cotal manager restart --with-agents --yes --space ${shellPath(manager.space)}\``
         : `\`cd ${shellPath(manager.root)} && cotal down --with-agents --yes --space ${shellPath(manager.space)} && cotal up --space ${shellPath(manager.space)}\``;
@@ -320,6 +322,10 @@ const composed: Command = { ...command, async run(args) {
     if (process.platform === "linux" && typeof flags.creds !== "string") {
       const on = await updateManagerPin(flags, "cotal update");
       for (const manager of localUpdateManagers({ ...flags, ...(on === undefined ? {} : { on }) })) {
+        if (manager.ownership === "foreign") {
+          await readUpdateManagerContinuity(manager, flags);
+          continue;
+        }
         if (active.some(hosted => hosted.instanceId === manager.instanceId)) continue;
         if (typeof flags.space === "string" && flags.space !== manager.space) continue;
         if (typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(manager.server)) continue;

@@ -2,6 +2,7 @@
 "cotal-ai": patch
 "@cotal-ai/cli": patch
 "@cotal-ai/workspace": patch
+"@cotal-ai/auth": patch
 ---
 
 Software updates continue when this home has no credentials for another running local Manager's space.

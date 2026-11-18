@@ -90,7 +90,7 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
     }
     if (process.platform === "linux") {
       for (const manager of localUpdateManagers(request.flags, request.installedEntry)) {
-        if (active.some(hosted => hosted.instanceId === manager.instanceId)) continue;
+        if (manager.ownership !== "foreign" && active.some(hosted => hosted.instanceId === manager.instanceId)) continue;
         await readUpdateManagerContinuity(manager, request.flags, readOne, { retainGraph: true });
       }
     } else {

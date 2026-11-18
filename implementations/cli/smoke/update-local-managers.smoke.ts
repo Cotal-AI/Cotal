@@ -42,6 +42,14 @@ try {
   await assert.rejects(readUpdateManagerContinuity({ ...manager, process: undefined }, {}, async () => { throw missing; }, retained), actual => actual === missing, "missing native pin still refuses");
   await assert.rejects(reportRunningManagers({}, async () => { throw missing; }, () => [manager]), actual => actual === missing, "generic report cannot absorb missing credentials");
   assert.equal(await reportRunningManagers({}, async () => { throw missing; }, () => [manager], retained), "none", "retained report uses known local Manager boundary");
+  const foreign = { ownership: "foreign" as const, pid: process.pid, root: "/foreign", space: "foreign", process: ownProcess };
+  assert.equal(await readUpdateManagerContinuity(foreign, {}, async () => { throw new Error("foreign must not resolve auth"); }), "none");
+  await assert.rejects(reportRunningManagers({ space: "foreign", on: "0123456789abcdefghijklmnopqrstuv" }, async () => { throw new Error("foreign must not route an unknown instance"); }, () => [foreign]), /does not name a local Manager/);
+  await assert.rejects(readUpdateManagerContinuity(foreign, { creds: "/explicit.creds" }, async flags => {
+    assert.deepEqual(flags, { creds: "/explicit.creds" });
+    throw missing;
+  }), actual => actual === missing);
+  assert.equal(await reportRunningManagers({}, async () => { throw new Error("foreign-only must not fall back to selected target"); }, () => [foreign]), "none");
   assert.equal(await readUpdateManagerContinuity(manager, {}, async () => "legacy"), "legacy", "answered legacy is unchanged");
   assert.equal(await readUpdateManagerContinuity(manager, {}, async () => "none"), "none");
   const processRecord = identityRecord(process.pid);
@@ -82,7 +90,7 @@ assert.deepEqual(seen, [{ creds: "/explicit.creds" }]);
 const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
-const { spaceKey } = await import("@cotal-ai/workspace");
+const { spaceKey, recordMesh } = await import("@cotal-ai/workspace");
 const { readUpdateManagerIdentity } = await import("../src/lib/update-managers.js");
 const { isCliEntry, supervisorInstallScope } = await import("../src/lib/manager-proc.js");
 const { fileURLToPath } = await import("node:url");
@@ -112,6 +120,9 @@ if (process.platform === "linux") {
   const fixture = mkdtempSync(join(tmpdir(), "cotal-update-census-process-"));
   const entry = join(fixture, "cotal.ts");
   writeFileSync(entry, "setInterval(() => {}, 1000);\n");
+  const foreignHome = process.env.COTAL_HOME;
+  const sandboxHome = mkdtempSync(join(tmpdir(), "cotal-update-foreign-home-"));
+  process.env.COTAL_HOME = sandboxHome;
   const child = spawn(process.execPath, [entry, "supervise", "--space", "unrelated", "--server", "nats://127.0.0.1:4222"], { cwd: fixture, stdio: "ignore" });
   const priorEntry = process.argv[1];
   try {
@@ -119,14 +130,34 @@ if (process.platform === "linux") {
     process.argv[1] = entry;
     const { localUpdateManagers } = await import("../src/lib/update-managers.js");
     const scoped = localUpdateManagers as unknown as (flags: { space: string }) => unknown[];
+    const foreign = localUpdateManagers({ space: "unrelated" }, entry);
+    assert.equal(foreign.length, 1, "native foreign Manager is observed without identity file");
+    assert.equal(foreign[0]!.ownership, "foreign");
+    assert.equal(foreign[0]!.instanceId, undefined, "foreign instance is explicitly unavailable");
+    assert.equal(foreign[0]!.server, undefined, "foreign broker is never inferred");
+    const alias = join(sandboxHome, "root-alias");
+    (await import("node:fs")).symlinkSync(fixture, alias);
+    recordMesh({ space: "alias-owner", root: alias, server: "nats://127.0.0.1:4222", mode: "open", origin: "manual", ts: new Date().toISOString() });
+    assert.throws(() => localUpdateManagers({ space: "unrelated" }, entry), /missing identity/, "all registry roots include symlink aliases even under another space name");
+    (await import("node:fs")).unlinkSync(alias);
+    (await import("node:fs")).mkdirSync(alias);
+    recordMesh({ space: "ancestor-owner", root: join(fixture, ".."), server: "nats://127.0.0.1:4222", mode: "open", origin: "manual", ts: new Date().toISOString() });
+    assert.throws(() => localUpdateManagers({ space: "unrelated" }, entry), /missing identity/, "nested own-root cwd cannot become foreign");
     assert.deepEqual(scoped({ space: "selected" }), [], "unrelated missing identity is excluded before validation");
   } finally {
     process.argv[1] = priorEntry!;
     child.kill();
     await once(child, "exit");
+    if (foreignHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = foreignHome;
+    rmSync(sandboxHome, { recursive: true, force: true });
     rmSync(fixture, { recursive: true, force: true });
   }
   const relativeRoot = mkdtempSync(join(tmpdir(), "cotal-update-relative-"));
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(relativeRoot, "home");
+  recordMesh({ space: "relative-proof", root: relativeRoot, server: "nats://127.0.0.1:9", mode: "open", origin: "manual", ts: new Date().toISOString() });
+  recordMesh({ space: "permission-proof", root: relativeRoot, server: "nats://127.0.0.1:9", mode: "open", origin: "manual", ts: new Date().toISOString() });
   const relativeEntry = join(relativeRoot, "entry.mjs");
   writeFileSync(relativeEntry, "setInterval(() => {}, 1000);\n");
   const otherRoot = join(relativeRoot, "other");
@@ -159,6 +190,10 @@ if (process.platform === "linux") {
       changing.kill();
       await once(changing, "exit");
     }
-  } finally { rmSync(relativeRoot, { recursive: true, force: true }); }
+  } finally {
+    if (priorHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = priorHome;
+    rmSync(relativeRoot, { recursive: true, force: true });
+  }
 }
 emitSentinel({ passed: counted.cells(), failed: 0 });

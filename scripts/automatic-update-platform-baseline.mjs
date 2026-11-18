@@ -378,6 +378,12 @@ export async function matrixCell(options) {
   const { source = 'latest', state = 'fresh', method = 'self', layout = 'npm' } = options;
   const nextHopMode = candidateNextOptions(options);
   const daemonHostedManager = daemonHostedManagerOptions(options);
+  if (options['other-home-auth'] !== undefined) {
+    assert.equal(options['other-home-auth'], 'true');
+    assert(hosted && process.platform === 'linux' && nextHopMode === 'candidate' && state === 'daemon' && layout === 'npm' && method === 'self', 'other-home-auth requires hosted Linux npm candidate-next manual native service');
+    assert.equal(typeof options.prepare, 'function', 'other-home-auth requires its real owned stack composition');
+    for (const key of ['dead-updater', 'stopped-daemon-before-update', 'disabled-daemon-before-update', 'follow-on-action', 'stop-agents']) assert.equal(options[key], undefined, `other-home-auth cannot combine with ${key}`);
+  }
   const policy = options['expect-policy-refusal'];
   if (policy) assert(policyCoordinate(policy, { source, state, method, layout, platform: process.platform, candidate: options.candidate, stopAgents: options['stop-agents'] === 'true' }), 'policy expectation requires a reproduced published coordinate');
   assert((sources.includes(source) || /^\d+\.\d+\.\d+$/.test(source)) && states.includes(state) && methods.includes(method) && ['npm', 'installer'].includes(layout), 'unknown matrix coordinate');

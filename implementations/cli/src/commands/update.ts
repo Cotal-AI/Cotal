@@ -764,13 +764,19 @@ export async function reportRunningManagers(
   const on = typeof flags.on === "string" ? await managerPin(flags, "cotal update") : undefined;
   const local = census({ ...flags, on });
   const selected = local.filter(manager =>
-    (typeof flags.space !== "string" || manager.space === flags.space) &&
+    manager.ownership === "foreign" || ((typeof flags.space !== "string" || manager.space === flags.space) &&
     (typeof flags.server !== "string" || brokerAddressKey(manager.server) === brokerAddressKey(flags.server)) &&
-    (on === undefined || manager.instanceId === on));
+    (on === undefined || manager.instanceId === on)));
   if (selected.length) {
     let verdict: "none" | "legacy" = "none";
     for (const manager of selected) {
       if (await readUpdateManagerContinuity(manager, flags, readOne, options) === "legacy") verdict = "legacy";
+    }
+    if (on !== undefined && !selected.some(manager => manager.ownership !== "foreign" && manager.instanceId === on)) {
+      throw new Error(`--on ${on} does not name a local Manager sharing this installation`);
+    }
+    if (typeof flags.server === "string" && !selected.some(manager => manager.ownership !== "foreign")) {
+      throw new Error("the selected broker cannot be matched to a local Manager without its own home's credentials");
     }
     return verdict;
   }
@@ -801,10 +807,16 @@ export async function readUpdateManagerContinuity(
   readOne: (flags: Record<string, unknown>) => Promise<"none" | "legacy"> = readManagerContinuity,
   options: { retainGraph?: boolean } = {},
 ): Promise<"none" | "legacy"> {
+  if (typeof flags.creds === "string") return readOne(flags);
   const pin = () => {
     if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed during its continuity read`);
   };
   pin();
+  if (manager.ownership === "foreign") {
+    console.log(`Manager pid ${manager.pid}, instance unavailable in space ${JSON.stringify(manager.space)} at ${JSON.stringify(manager.root)} keeps running the version it loaded until it is restarted from its own home; its root is not registered in this home.`);
+    pin();
+    return "none";
+  }
   try {
     const verdict = await readOne({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId });
     pin();
