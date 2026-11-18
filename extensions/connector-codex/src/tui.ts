@@ -11,6 +11,7 @@
  * which redirects its own logging to a file for exactly this reason.
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { SEAT_ATTRIBUTION_ENV } from "./app-server.js";
 
 /** Env var carrying the capability token to the TUI. Passed by NAME (`--remote-auth-token-env`)
  *  rather than on argv, so the token never appears in the process table. */
@@ -45,10 +46,10 @@ export function launchTui(opts: TuiOpts): ChildProcess {
     "check_for_update_on_startup=false",
     opts.threadId,
   ];
-  // Same scrubbing rule as the app-server child: the TUI (and anything it spawns) has no business
-  // reading this agent's mesh identity or credential.
+  // Same scrubbing rule as the app-server child: strip secret/internal COTAL_* vars while keeping
+  // non-secret seat attribution variables (`cotal stop --self`).
   const env: Record<string, string> = { CODEX_HOME: opts.codexHome, [TOKEN_ENV]: opts.token };
   for (const [k, v] of Object.entries(process.env))
-    if (v !== undefined && !k.startsWith("COTAL_") && k !== "CODEX_HOME") env[k] = v;
+    if (v !== undefined && (!k.startsWith("COTAL_") || SEAT_ATTRIBUTION_ENV.has(k)) && k !== "CODEX_HOME") env[k] = v;
   return spawn(opts.bin ?? "codex", args, { cwd: opts.cwd, env, stdio: "inherit" });
 }

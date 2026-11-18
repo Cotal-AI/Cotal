@@ -32,9 +32,25 @@ journal({ ev: "argv", argv, pid: process.pid });
 // env name rather than on argv), then sit here like a running UI until killed. The top-level
 // await also stops the app-server body below from running in this process.
 // FAKE_CODEX_TUI_EXIT=1 quits instead, driving the "operator closed the UI" path.
+const SEAT_ATTRIBUTION = new Set([
+  "COTAL_SPACE",
+  "COTAL_MANAGER_INSTANCE",
+  "COTAL_NAME",
+  "COTAL_ID",
+  "COTAL_LIFECYCLE_UID",
+  "COTAL_ACCEPTED_TOKEN",
+  "COTAL_HOME",
+]);
+
 if (argv[0] === "resume") {
   const tokenEnv = argv[argv.indexOf("--remote-auth-token-env") + 1];
-  journal({ ev: "tui", argv, tokenFromEnv: tokenEnv ? (process.env[tokenEnv] ?? null) : null });
+  journal({
+    ev: "tui",
+    argv,
+    tokenFromEnv: tokenEnv ? (process.env[tokenEnv] ?? null) : null,
+    seatAttribution: Object.fromEntries(Object.entries(process.env).filter(([k]) => SEAT_ATTRIBUTION.has(k))),
+    cotalLeak: Object.keys(process.env).filter((k) => k.startsWith("COTAL_") && k !== tokenEnv && !SEAT_ATTRIBUTION.has(k)),
+  });
   if (process.env.FAKE_CODEX_TUI_EXIT === "1") setTimeout(() => process.exit(0), 300);
   // FAKE_CODEX_TUI_CRASH=1: the UI dies of its own accord. Indistinguishable from a quit at the
   // process level except for the CODE, which is the whole point — read as a quit, an operator is
@@ -69,12 +85,13 @@ const cfgValue = (key) => {
 };
 const MCP_URL = cfgValue("mcp_servers.cotal.url");
 const MCP_TOKEN = process.env.COTAL_MCP_TOKEN;
-// Proves the env boundary in BOTH directions at once: the child gets the one capability it
-// needs and none of the agent's mesh identity.
+// Proves the env boundary in BOTH directions at once: the child gets the MCP token plus non-secret
+// seat attribution (`cotal stop --self`), and none of the host's private/material COTAL_* vars.
 journal({
   ev: "env",
   mcpTokenPresent: Boolean(MCP_TOKEN),
-  cotalLeak: Object.keys(process.env).filter((k) => k.startsWith("COTAL_") && k !== "COTAL_MCP_TOKEN"),
+  seatAttribution: Object.fromEntries(Object.entries(process.env).filter(([k]) => SEAT_ATTRIBUTION.has(k))),
+  cotalLeak: Object.keys(process.env).filter((k) => k.startsWith("COTAL_") && k !== "COTAL_MCP_TOKEN" && !SEAT_ATTRIBUTION.has(k)),
 });
 
 /** The endpoint answers SSE (`data: {…}`) for a POSTed request; plain JSON otherwise. */

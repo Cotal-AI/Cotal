@@ -29,9 +29,12 @@ import {
   findPreparedSpace,
   getCurrent,
   legacyStackElsewhere,
+  legacyStackOtherHome,
+  stackHomeRemedy,
   localMeshesForRoot,
   preparedSpaceAt,
   retainedLegacyBroker,
+  retainedOpenSpace,
   soleSpaceOf,
   writeResult,
   type Report,
@@ -404,8 +407,8 @@ function noOwnedStack(root: string): CommandFailure {
 function legacyRootElsewhere(root: string): { space: string; recordedRoot: string; remedy: string } | undefined {
   try {
     const retained = retainedLegacyBroker(root);
-    if (!retained || retained.open) return undefined;
-    const space = soleSpaceOf(authDir(root));
+    if (!retained) return undefined;
+    const space = retained.open ? retainedOpenSpace(root) : soleSpaceOf(authDir(root));
     if (space === undefined) return undefined;
     const elsewhere = legacyStackElsewhere(root, space);
     return elsewhere && { space, ...elsewhere };
@@ -542,6 +545,8 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   const gone = goneRootDown(args.values);
   if (gone) return goneRootStackDown(gone.space, gone.root, args.values);
   if (controllerStackRecorded(cotalRoot())) return stackDown(cotalRoot(), args.values);
+  const ownerHome = legacyStackOtherHome(cotalRoot());
+  if (ownerHome !== undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this folder's running stack belongs to another Cotal home; nothing was stopped", { target: { root: cotalRoot(), home: ownerHome }, remedy: stackHomeRemedy(ownerHome) });
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
   // A legacy root whose stack is already stopped: a bare down and its preview stop nothing.
   if (bareStop(args.values)) {

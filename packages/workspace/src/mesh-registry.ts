@@ -74,6 +74,9 @@ export interface MeshEntry {
    *  `--store-dir` that disagrees is refused. Absent means the record was written before this field
    *  existed, and a repair then opens the root's default store and says so. */
   storeDir?: string;
+  /** Creation-pinned native members retained when the project folder is moved or deleted. */
+  nativeHost?: string;
+  nativeMembers?: { role: "manager" | "delivery" | "auth" | "broker"; process: { pid: number; token: string } }[];
   /** TLS-REQUIRED CLIENT INTENT: this broker serves TLS, so every first-party connection resolved
    *  through this record must REQUIRE it rather than merely tolerate it. Absent means no such
    *  decision was recorded (and is what any record written before this field means).
@@ -576,6 +579,9 @@ function assertMeshEntryShape(entry: MeshEntry, file: string): void {
     throw new MeshRegistryError(file, `${file} is not a usable mesh record: catalogRoot is valid only as a non-empty absolute path on a catalog entry - restore the record or remove it`);
   if (entry.storeDir !== undefined && (typeof entry.storeDir !== "string" || entry.storeDir.length === 0 || !isAbsolute(entry.storeDir)))
     throw new MeshRegistryError(file, `${file} is not a usable mesh record: storeDir "${entry.storeDir}" is not a non-empty absolute path - restore the record or remove it`);
+  if (entry.nativeMembers !== undefined && (!Array.isArray(entry.nativeMembers) || entry.nativeMembers.length > 4 || entry.nativeMembers.some((member) =>
+    !member || !["manager", "delivery", "auth", "broker"].includes(member.role) || !member.process || !Number.isSafeInteger(member.process.pid) || member.process.pid <= 0 || typeof member.process.token !== "string" || member.process.token.length === 0)))
+    throw new MeshRegistryError(file, `${file} has invalid native stack process identities - restore the record before stopping its stack`);
   try {
     spaceSegment(entry.space);
   } catch (e) {

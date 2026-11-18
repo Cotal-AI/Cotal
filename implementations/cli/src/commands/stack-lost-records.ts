@@ -25,7 +25,7 @@ export function stackRecordsLost(snapshot: StackJournalSnapshot): boolean {
 
 function members(snapshot: StackJournalSnapshot): StackMember[] {
   const journal = snapshot.journal, target = { root: journal.root, space: journal.space };
-  const refuse = (message: string): never => { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", message, { target, remedy: stackHomeRemedy() }); };
+  const refuse = (message: string): never => { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", message, { target, remedy: stackHomeRemedy(journal.recovery?.home) }); };
   if (process.platform !== "linux") refuse("recovery from missing stack instance records requires Linux; no member was stopped");
   if (!journal.recovery || journal.recovery.home !== resolve(homeCotalDir()) || journal.recovery.host !== stackRecoveryHost())
     refuse("the stack's member records are missing here, and its journal does not pin this launching home, machine, boot and account; no member was stopped");
