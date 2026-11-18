@@ -151,7 +151,7 @@ const composed: Command = { ...command, async run(args) {
     }
   }
   const runtime = { ...updateRuntime, automaticGenerationWait: process.platform === "linux",
-    claimGlobalUpdate: (root: string) => claimGlobalNpmUpdateLock(root, process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" ? { repairAmbiguous: () => {
+    claimGlobalUpdate: (root: string) => claimGlobalNpmUpdateLock(root, process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" ? { waitMs: 10 * 60_000, repairAmbiguous: () => {
       if (repairService) {
         const plan = planUninstall(repairService, undefined);
         if (!installedDaemonIdentity(repairService).same || plan.mechanism !== "systemd-user") throw new Error("daemon installation changed before repair");
@@ -189,7 +189,7 @@ const composed: Command = { ...command, async run(args) {
         }
       }
       console.log("Retaining the interrupted update marker after confirming this account has no other application process.");
-    } } : {}),
+    } } : { waitMs: 10 * 60_000 }),
     ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {
       preflightExecution: preflightExecutionUpdate,
       repairInstallModes: (root: string) => repairExecutionInstallModes(executionInstallRoot(), () => repairInstallModes(root)),
