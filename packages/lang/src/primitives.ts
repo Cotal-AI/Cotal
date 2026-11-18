@@ -98,7 +98,7 @@ export interface PrimitiveSpec extends CalleeDoc {
 /**
  * The shortest `waitUntil` cadence, in milliseconds.
  *
- * Every observation is a durable journal append and counts toward the run's effect ceiling, so a
+ * Every recorded observation is a durable journal append and counts toward the run's effect ceiling, so a
  * cadence below this polls someone else's resource and the journal faster than any wait over the
  * outside world needs. Refused statically for a literal and at the call for a computed one (L3047).
  */

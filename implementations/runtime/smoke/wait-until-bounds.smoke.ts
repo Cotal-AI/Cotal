@@ -5,7 +5,7 @@
  * Every observation re-persists the step's entry with all observations so far, so a wait that
  * observes without bound grows the run's journal without bound. The cadence has a 1 s floor,
  * refused (L3047) for a literal before anything runs and for a computed cadence at the call, and
- * every look after the first counts toward the run's effect ceiling (L4009), on a fresh run and on a
+ * every recorded look after the first counts toward the run's effect ceiling (L4009), on a fresh run and on a
  * resume alike.
  *
  * Cells:
