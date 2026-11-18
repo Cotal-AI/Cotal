@@ -582,7 +582,7 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
 | `--dms` | off | Also read DM history, which needs a DM read grant. With `clear`, also clear DM history |
 | `--since <time\|seq>` | none | Only messages after an ISO 8601 date and time, an age such as `30m`, `2h` or `1d`, or a chat stream sequence. A date, or a date and time without an offset, is local time |
-| `--limit <n>` | 50 | How many of the newest retained messages to read, 1 to 1000 |
+| `--limit <n>` | 50 | How many of the newest retained messages to read, a positive safe integer |
 | `--from <name>` | none | Keep messages from this sender name or id |
 | `--grep <text>` | none | Keep messages whose text contains this, ignoring case |
 | `--follow` | off | Keep listening and print each new message |
@@ -612,8 +612,9 @@ words, because it serves only what it can still read. The read stays complete, a
 the broker serves. A broker whose log is not on this machine is not checked. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
 filter that window on this machine. They do not search the whole stream, and with older retained
 messages behind the window the report says that `--from` and `--grep` searched only the messages
-read. At `--limit 1000`, the most it reads, the report says older retained messages are not shown and
-names no larger limit. `result.window` says how many messages were read, whether older retained
+read. When older retained messages are not shown, raise `--limit` to read further back.
+There is no 1000-message read cap. For example, `cotal history general --limit 2000`
+reads the newest 2000 retained messages before applying filters. `result.window` says how many messages were read, whether older retained
 messages exist that the window did not reach, and whether the window goes back to `--since`. The report names the local time and the ISO instant a
 time `--since` resolved to, or the chat stream sequence a bare number was read as. A four-digit
 number from 1900 to 2099 is still a sequence, and the report says to write a date in full. A bare
