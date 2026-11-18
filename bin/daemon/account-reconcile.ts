@@ -4,7 +4,7 @@ import { mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount } from
 import { importAccountComputerSpace, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
 import type { ServiceConnections } from "./service.js";
 import type { HostedManager } from "./protocol.js";
-import { findMesh, readMeshRegistry } from "@cotal-ai/workspace";
+import { findMesh, readMeshRegistry, recordMeshes } from "@cotal-ai/workspace";
 import { connectCheck } from "./connect.js";
 import { knownMachineAccounts } from "@cotal-ai/auth";
 import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
@@ -86,7 +86,14 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       if (prior && prior.owner !== account.ownerKey) {
         const holder = knownMachineAccounts(home).find(item => item.ownerKey === prior.owner);
         // A sign-in address is not an identity root. Only the retained issuer and subject match.
-        if (holder && holder.issuer === account.issuer && holder.sub === account.sub) {
+        if (holder && typeof holder.issuer === "string" && holder.issuer.length > 0
+          && typeof holder.sub === "string" && holder.sub.length > 0
+          && typeof account.issuer === "string" && account.issuer.length > 0
+          && typeof account.sub === "string" && account.sub.length > 0
+          && holder.issuer === account.issuer && holder.sub === account.sub) {
+          const registered = findMesh(row.slug);
+          if (registered?.origin === "catalog" && registered.catalogOwner === prior.owner)
+            recordMeshes([{ ...registered, catalogOwner: account.ownerKey }]);
           prior.owner = account.ownerKey; persist(); refusals.delete(row.slug); retryAt.delete(row.slug);
         } else {
           refusals.set(row.slug, `The local space connection is held by ${holder?.idpUrl ?? "an unknown account"}.`);
