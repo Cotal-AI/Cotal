@@ -12,6 +12,8 @@ import {
   acquireMaintenanceLock,
   authDir,
   canonicalLocalProcessPath,
+  codeSpan,
+  shellPath,
   MANAGER_PIDFILE,
   brokerAuthPath,
   loadSoleSpaceAuth,
@@ -394,12 +396,12 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const running = run("up", "-f", "cotal.yaml");
     assert.equal(running.status, 2, `${mode} up -f while the restored stack runs refuses, exit 2\n${running.stdout}\n${running.stderr}`);
     assert.match(running.stderr, /Code: +CONFLICT/);
-    assert.ok(running.stderr.includes(`stop the restored stack with \`cotal down\`, retire the restore with \`cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history\`, which deletes the previous store and the ${leftOut} only it holds, then run \`cotal up -f cotal.yaml\` again`), `${mode} up -f names the way out\n${running.stderr}`);
+    assert.ok(running.stderr.includes(`stop the restored stack with ${codeSpan(`cd ${shellPath(root)} && cotal down`)}, retire the restore with ${codeSpan(`cd ${shellPath(root)} && cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history`)}, which deletes the previous store and the ${leftOut} only it holds, then run ${codeSpan(`cd ${shellPath(root)} && cotal up -f cotal.yaml`)} again`), `${mode} up -f names the way out\n${running.stderr}`);
     // Any other `up` over the restored broker refuses before it touches the journal, which stays active.
     for (const args of [["up"], ["up", "--server", server]]) {
       const again = run(...args);
       assert.equal(again.status, 2, `${mode} ${args.join(" ")} while the restored stack runs refuses, exit 2\n${again.stdout}\n${again.stderr}`);
-      assert.ok(/Code: +CONFLICT/.test(again.stderr) && again.stderr.includes("stop the restored stack with `cotal down`, then run `cotal up` again"), `${mode} ${args.join(" ")} names the way out\n${again.stderr}`);
+      assert.ok(/Code: +CONFLICT/.test(again.stderr) && again.stderr.includes(`stop the restored stack with ${codeSpan(`cd ${shellPath(root)} && cotal down`)}, then run ${codeSpan(`cd ${shellPath(root)} && cotal up`)} again`), `${mode} ${args.join(" ")} names the way out\n${again.stderr}`);
       assert.equal((JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as { state: string }).state, "active", `${mode} ${args.join(" ")} leaves the restore journal active`);
     }
     // `status` names the same cleanup for the attempt it shows under Maintenance.
@@ -410,7 +412,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const stopped = run("up", "-f", "cotal.yaml");
     assert.equal(stopped.status, 2, `${mode} up -f after the restored stack stopped refuses, exit 2\n${stopped.stdout}\n${stopped.stderr}`);
     assert.match(stopped.stderr, /Code: +LIFECYCLE_BLOCKED/);
-    assert.ok(stopped.stderr.includes(`retire the restore with \`cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history\`, which deletes the previous store and the ${leftOut} only it holds, then run \`cotal up -f cotal.yaml\` again`), `${mode} up -f names the cleanup\n${stopped.stderr}`);
+    assert.ok(stopped.stderr.includes(`retire the restore with ${codeSpan(`cd ${shellPath(root)} && cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history`)}, which deletes the previous store and the ${leftOut} only it holds, then run ${codeSpan(`cd ${shellPath(root)} && cotal up -f cotal.yaml`)} again`), `${mode} up -f names the cleanup\n${stopped.stderr}`);
     rmSync(manifest);
     if (mode === "open") {
       // The committed journal survives the broker's death; a later bare `up` relaunches over the
@@ -1227,7 +1229,7 @@ async function otherAccountScenario(): Promise<void> {
     assert.equal(receipt.result.previousStore, previous, `the receipt names the store that holds the open account\n${restored.stdout}`);
     assert.deepEqual(receipt.warnings.find((warning) => warning.code === "OTHER_ACCOUNTS_NOT_RESTORED")?.target, { space, previousStore: previous, otherAccounts: ["$G"] }, `the receipt says the open account is not restored\n${restored.stdout}`);
     const status = must("status", run("status", "--space", space));
-    assert.ok(status.stdout.includes(`\`cotal backup cleanup-fallback ${attemptId} --yes --discard-history\``) && status.stdout.includes("the only copy of the streams of account $G"), `status names the consent the cleanup needs\n${status.stdout}`);
+    assert.ok(status.stdout.includes(codeSpan(`cd ${shellPath(root)} && cotal backup cleanup-fallback ${attemptId} --yes --discard-history`)) && status.stdout.includes("the only copy of the streams of account $G"), `status names the consent the cleanup needs\n${status.stdout}`);
     const preview = JSON.parse(must("cleanup preview", run("backup", "cleanup-fallback", attemptId, "--dry-run", "--json")).stdout) as { warnings: { code: string; target: { otherAccounts?: string[] } }[] };
     assert.deepEqual(preview.warnings.find((warning) => warning.code === "HISTORY_ONLY_IN_PREVIOUS_STORE")?.target.otherAccounts, ["$G"], "the cleanup preview names the open account");
     const refused = run("backup", "cleanup-fallback", attemptId, "--yes", "--json");
@@ -1286,29 +1288,33 @@ async function linkedStoreScenario(): Promise<void> {
   }
 }
 
-await missingPidfileListenerScenario();
-await linkedStoreScenario();
-await missingCustomSourceScenario();
-await restoredStoreRestartScenario();
-await preservationCommitCrashScenario();
-await preservationStopCrashRecoveryScenario();
-await restoreClaimRaceScenario();
-await backupRestoreCycleScenario();
-await rolledBackRunsScenario();
-await otherAccountScenario();
-await scenario("open");
-await scenario("auth");
-await occupiedRestoreScenario();
-await restoreReentryScenario(true);
-await restoreReentryScenario(false);
-await restoreReentryScenario(true, true);
-await restoreReentryScenario(true, false, "resume-preserved");
-await restoreReentryScenario(true, false, "resume-commit");
-await restoreReentryScenario(true, false, "resume-finalize");
-await ordinaryResumeReentryScenario("resume-commit");
-await ordinaryResumeReentryScenario("resume-finalize");
-await deadBoundListenerReplacementScenario();
-await unboundRestoreReentryScenario(true);
-await unboundRestoreReentryScenario(false);
-await boundForeignListenerScenario();
+if (process.argv.includes("--other-account-only")) {
+  await otherAccountScenario();
+} else {
+  await missingPidfileListenerScenario();
+  await linkedStoreScenario();
+  await missingCustomSourceScenario();
+  await restoredStoreRestartScenario();
+  await preservationCommitCrashScenario();
+  await preservationStopCrashRecoveryScenario();
+  await restoreClaimRaceScenario();
+  await backupRestoreCycleScenario();
+  await rolledBackRunsScenario();
+  await otherAccountScenario();
+  await scenario("open");
+  await scenario("auth");
+  await occupiedRestoreScenario();
+  await restoreReentryScenario(true);
+  await restoreReentryScenario(false);
+  await restoreReentryScenario(true, true);
+  await restoreReentryScenario(true, false, "resume-preserved");
+  await restoreReentryScenario(true, false, "resume-commit");
+  await restoreReentryScenario(true, false, "resume-finalize");
+  await ordinaryResumeReentryScenario("resume-commit");
+  await ordinaryResumeReentryScenario("resume-finalize");
+  await deadBoundListenerReplacementScenario();
+  await unboundRestoreReentryScenario(true);
+  await unboundRestoreReentryScenario(false);
+  await boundForeignListenerScenario();
+}
 console.log("backup/restore live smoke: ok");

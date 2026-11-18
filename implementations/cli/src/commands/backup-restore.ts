@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, isCommandFailure, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { cotalRoot } from "../lib/paths.js";
-import { heldRestoreAttempt, leftOutNotes, restoreComposition, restoreOnlyCopy } from "../lib/restore.js";
+import { heldRestoreAttempt, leftOutNotes, restoreCommand, restoreComposition, restoreOnlyCopy } from "../lib/restore.js";
 import { assertStoreDirArgument } from "../lib/store-dir.js";
 import { startRestore, type RestoreStartupResult } from "./up.js";
 
@@ -89,7 +89,7 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [
       { command: `cotal status --space ${row.space}`, description: "Check the restored stack" },
-      { command: `cotal backup cleanup-fallback ${row.attemptId}`, description: row.previousStore && onlyCopy ? `Retire the restore journal; the previous store holds the only copy of the ${onlyCopy.leftOut} this restore left out, so deleting it needs --discard-history` : "Retire the restore journal and any unchanged retained old store, after review" },
+      { command: restoreCommand(row.root, `cotal backup cleanup-fallback ${row.attemptId}`), description: row.previousStore && onlyCopy ? `Retire the restore journal; the previous store holds the only copy of the ${onlyCopy.leftOut} this restore left out, so deleting it needs --discard-history` : "Retire the restore journal and any unchanged retained old store, after review" },
     ] }] },
   ] }));
 }

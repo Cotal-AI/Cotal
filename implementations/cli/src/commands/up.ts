@@ -299,6 +299,7 @@ import {
   rearmUnboundRestore,
   replacePreparedDeadRestoreListener,
   restoreComposition,
+  restoreCommand,
   restoreNextStep,
   restoreOnlyCopy,
   type PreparedRestore,
@@ -1132,7 +1133,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         const attempt = journal.restore.attemptId;
         const assessment = assessRestoreClaim(journal, { unrecordedOwnersDead: attemptProcessesGone(root) });
         if (assessment !== "stale") throw heldClaim(root, attempt, journal.claim, "cotal up", assessment);
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: restore attempt ${attempt} stopped before it committed and still holds the store; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `roll it back with \`cotal backup recover ${attempt} --yes\`, then run \`cotal up\`; or run the restore again` });
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cotal up is refused: restore attempt ${attempt} stopped before it committed and still holds the store; nothing was changed`, { target: { root, attemptId: attempt }, remedy: `${restoreNextStep(root, journal.state, attempt)}; then run ${codeSpan(restoreCommand(root, "cotal up"))}, or run the restore again` });
       }
       const controllerCut = journal ? cutController(journal.cut) : undefined;
       if (journal && controllerCut && journal.state !== "cut-intent" && journal.state !== "cut-committed" && journal.state !== "resume-retired") {
@@ -2594,18 +2595,20 @@ async function unrecordedStackServer(root: string, space: string, host: string |
 /** A start over the broker a committed restore left running here. `up -f` boots a fresh mesh, so its
  *  way out also retires the restore with `retire`. */
 function restoredBrokerRuns(root: string, attempt: string, pid: number, manifest?: string, retire?: string): CommandFailure {
+  const stop = codeSpan(restoreCommand(root, "cotal down"));
+  const up = codeSpan(restoreCommand(root, manifest !== undefined ? `cotal up -f ${shellWord(manifest)}` : "cotal up"));
   return new CommandFailure("refused", "CONFLICT", `the broker that restore attempt ${attempt} started still runs here (pid ${pid}), and a new start does not run beside it; nothing was started`, {
     target: { root, attempt, pid },
-    remedy: manifest !== undefined ? `stop the restored stack with \`cotal down\`, retire the restore with ${retire}, then run \`cotal up -f ${manifest}\` again` : "stop the restored stack with `cotal down`, then run `cotal up` again",
+    remedy: manifest !== undefined ? `stop the restored stack with ${stop}, retire the restore with ${retire}, then run ${up} again` : `stop the restored stack with ${stop}, then run ${up} again`,
   });
 }
 
 /** The cleanup that retires an active restore. One that left something out keeps its only copy in the
  *  previous store, so its cleanup deletes that store only with `--discard-history`. */
-function retireRestore(attempt: string, leftOut: string | undefined): string {
+function retireRestore(root: string, attempt: string, leftOut: string | undefined): string {
   return leftOut
-    ? `\`cotal backup cleanup-fallback ${attempt} --yes --discard-history\`, which deletes the previous store and the ${leftOut} only it holds`
-    : `\`cotal backup cleanup-fallback ${attempt} --yes\``;
+    ? `${codeSpan(restoreCommand(root, `cotal backup cleanup-fallback ${attempt} --yes --discard-history`))}, which deletes the previous store and the ${leftOut} only it holds`
+    : codeSpan(restoreCommand(root, `cotal backup cleanup-fallback ${attempt} --yes`));
 }
 
 /** `manifest` is the `up -f` file, which boots a fresh mesh and so needs the restore retired first. */
@@ -2613,7 +2616,7 @@ function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifest?: str
   const maintenance = readMaintenanceJournal(root);
   if (!maintenance) return;
   if (maintenance.state === "active") {
-    const attempt = maintenance.restore.attemptId, retire = retireRestore(attempt, restoreLeftOut(maintenance));
+    const attempt = maintenance.restore.attemptId, retire = retireRestore(root, attempt, restoreLeftOut(maintenance));
     if (!isManagerCommittedRestore(maintenance))
       throw new Error(`restore attempt ${attempt} is active without durable manager commit evidence`);
     if (!maintenance.listenerProof)
@@ -2626,7 +2629,7 @@ function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifest?: str
     if (manifest !== undefined)
       throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore attempt ${attempt} is still active here, and \`cotal up -f\` boots a fresh mesh, which does not start over a restore that is not retired; nothing was started`, {
         target: { root, attempt },
-        remedy: `retire the restore with ${retire}, then run \`cotal up -f ${manifest}\` again; bare \`cotal up\` starts the restored stack instead`,
+        remedy: `retire the restore with ${retire}, then run ${codeSpan(restoreCommand(root, `cotal up -f ${shellWord(manifest)}`))} again; ${codeSpan(restoreCommand(root, "cotal up"))} starts the restored stack instead`,
       });
     // Relaunching after restore must serve the exact recorded active target, not whatever store the
     // caller happens to name — the journal's provenance would otherwise describe a different mesh.

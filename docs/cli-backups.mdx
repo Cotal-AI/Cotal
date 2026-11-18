@@ -243,8 +243,9 @@ its remedy gives the next step for that state. The listener endpoint must be a b
 endpoint value, including when it came from a preserved launch. `up --restore`
 remains as the equivalent startup form. After its startup lines it names the restore attempt and
 gives the cleanup step that retires it, with `--discard-history` for a restore that left history or
-workflow runs out. Restore next steps include `cd <project> &&` so they also work from the folder
-that invoked `up --root <project>`. Unlike the other
+workflow runs out. Restore next steps, backup restore receipts and startup refusals for stale or active
+restores include `cd <project> &&` so their recovery and cleanup commands also work from another folder.
+Unlike the other
 backup modes, `backup restore` runs the connector seed first, as `up` does, because it resumes seats.
 
 Three commands refuse an active restore. `down --preserve-state`, in each of its forms, refuses

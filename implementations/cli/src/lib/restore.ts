@@ -823,17 +823,21 @@ export function restoreComposition(space: string, restored: readonly string[], m
 const USER_MODE_NO_RUNS = "A user-mode backup holds no workflow runs, because the records store's lifecycle heads name credential rows in the auth store, which a backup does not carry; the workflow run stores were recreated empty.";
 const OLDER_FORMAT_NO_RUNS = "This backup was made before full backups held workflow runs, so it holds none; the workflow run stores were recreated empty.";
 
+/** A restore command that keeps targeting its project when copied into another folder. */
+export function restoreCommand(root: string, command: string): string {
+  return `cd ${shellPath(root)} && ${command}`;
+}
+
 /** The step that moves a full restore attempt on from `state`, scoped to its project so it also
  *  works after `up --root`. `leftOut` is what the restore left only in its previous store
  *  ({@link restoreLeftOut}). */
 export function restoreNextStep(root: string, state: string, attemptId: string, leftOut?: string): string {
-  const atRoot = `cd ${shellPath(root)} && `;
-  if (state === "restore-ready") return `roll the pre-commit attempt back with ${codeSpan(`${atRoot}cotal backup recover ${attemptId} --yes`)}; preview it first with --dry-run`;
+  if (state === "restore-ready") return `roll the pre-commit attempt back with ${codeSpan(restoreCommand(root, `cotal backup recover ${attemptId} --yes`))}; preview it first with --dry-run`;
   // That restore's cleanup also deletes the store that holds the only copy of what it left out, so
   // it runs only with --discard-history.
-  if (state === "active" && leftOut) return `the restore completed: ${codeSpan(`${atRoot}cotal backup cleanup-fallback ${attemptId} --yes --discard-history`)} retires its journal and deletes the previous store, the only copy of the ${leftOut} it left out; preview it first with --dry-run`;
-  if (state === "active") return `the restore completed: retire its journal with ${codeSpan(`${atRoot}cotal backup cleanup-fallback ${attemptId} --yes`)}; preview it first with --dry-run`;
-  return `recover forward with ${codeSpan(`${atRoot}cotal up`)}, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
+  if (state === "active" && leftOut) return `the restore completed: ${codeSpan(restoreCommand(root, `cotal backup cleanup-fallback ${attemptId} --yes --discard-history`))} retires its journal and deletes the previous store, the only copy of the ${leftOut} it left out; preview it first with --dry-run`;
+  if (state === "active") return `the restore completed: retire its journal with ${codeSpan(restoreCommand(root, `cotal backup cleanup-fallback ${attemptId} --yes`))}; preview it first with --dry-run`;
+  return `recover forward with ${codeSpan(restoreCommand(root, "cotal up"))}, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
 }
 
 /** A ready journal's next step. Resume and backup use the store at its recorded path, so a folder
