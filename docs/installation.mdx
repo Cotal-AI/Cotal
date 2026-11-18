@@ -63,6 +63,11 @@ The Quickstart starts the prepared space separately.
 ## Install with npm
 
 If you already have Node.js 22.10 or newer, install as your own user, without sudo.
+With an older Node, an unqualified `npm install -g cotal-ai` can silently select an old release
+whose Node requirement matches. Use the explicit latest tag and engine check below so npm
+refuses an unsupported Node instead. Upgrade Node first, or use the shell installer above.
+An old installation's `cotal update --self` may replace it with a release that cannot run on
+your Node. Upgrade Node before updating that installation.
 The npm global prefix must be writable by your user, and its executable directory must be on PATH.
 On macOS or Linux with distribution Node, the default prefix may be root-owned.
 Use the [shell installer](#use-the-shell-installer) above, or select a user-owned npm prefix before installing:
@@ -70,7 +75,7 @@ Use the [shell installer](#use-the-shell-installer) above, or select a user-owne
 ```bash
 npm config set prefix "$HOME/.local"
 export PATH="$HOME/.local/bin:$PATH"
-npm install -g cotal-ai
+npm install -g cotal-ai@latest --engine-strict
 ```
 
 The prefix setting applies to all future npm global installs, not just Cotal.
@@ -81,7 +86,7 @@ If an install fails with npm `EACCES`, use one of these routes instead of retryi
 On Windows, or when your existing npm prefix is already user-writable and its executable directory is on PATH, run:
 
 ```bash
-npm install -g cotal-ai
+npm install -g cotal-ai@latest --engine-strict
 ```
 
 Use this route on Windows.

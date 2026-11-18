@@ -370,6 +370,10 @@ manager left under a detached custodian, but it starts no new custodian. An inco
 
 ### CLI upgrade
 
+Before downloading release archives or replacing packages, `--self` checks the release's
+declared Node requirements against the running Node. An incompatible requirement refuses
+the update and names the required range and running version. Upgrade Node before retrying.
+
 With `--self`, the selected running manager is reported before any global install.
 For daemon-hosted Managers whose agents cannot survive replacement, a terminal lists the agents
 and their reported idle times, then asks once whether to stop them and continue. Missing activity
