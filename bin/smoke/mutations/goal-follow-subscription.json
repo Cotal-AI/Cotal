@@ -48,7 +48,7 @@
     },
     {
       "name": "the spawn mint branch drops the `sub` half again, so a spawn-capable credential may submit a goal it cannot hear",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "  if (opts.capabilities?.includes(\"spawn\")) {\n    const rows = epCallerGrantRows(space, spawnCallerCapabilities(pr.owner), epCaller);\n    pubAllow.push(...rows.pub);\n    for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);\n  }",
       "replace": "  if (opts.capabilities?.includes(\"spawn\"))\n    pubAllow.push(...epCallerGrantRows(space, spawnCallerCapabilities(pr.owner), epCaller).pub);",
       "expectRed": "a spawn-scope caller HEARS its own goal's terminal",
@@ -60,7 +60,7 @@
     },
     {
       "name": "the admin mint branch drops the `sub` half, so an admin-capable credential may submit a goal it cannot hear",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "      const rows = epCallerGrantRows(space, operatorInstrumentCapabilities(\"admin\", pr.owner), epCaller);\n      pubAllow.push(...rows.pub);\n      for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);",
       "replace": "      pubAllow.push(...epCallerGrantRows(space, operatorInstrumentCapabilities(\"admin\", pr.owner), epCaller).pub);",
       "expectRed": "an admin-scope caller HEARS its own goal's terminal",
