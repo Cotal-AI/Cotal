@@ -717,6 +717,8 @@ that does not parse, or is missing a field every consumer reads (`server`, `mode
 it acts. The refusal names the file under `target` without repeating its stored values; `meshes`
 also says what is wrong with it. `status` is the exception: it lists the readable records, names the
 file and exits 4. Remove the file or restore the record; nothing repairs or invents a field for you.
+When the file is named for a space, the refusal names `cotal space forget <space>`, which removes
+that file. It reads no broker or folder from it, so it reports none.
 A registry directory that exists but cannot be read, such as one without read permission or a
 regular file in its place, refuses the same way, naming the directory, and `meshes` gives the read
 error. Only an absent directory is an empty registry. The folder of prepared spaces,

@@ -1595,6 +1595,23 @@ if (process.platform === "linux") {
       w.code === "PREPARED_RECORD_SKIPPED" && w.target.file === stray && w.target.space === null && w.message.endsWith("so it is skipped; remove it"))), shown(strayList));
   rmSync(stray);
   removePreparedSpace("pready");
+
+  // A damaged registration record refuses every command that reads the registry, so its own forget
+  // must clear it (#7335): the refusal names that forget, and the forget removes the file.
+  mkdirSync(meshesDir(), { recursive: true, mode: 0o700 });
+  const registration = join(meshesDir(), `${spaceSegment("pold")}.json`);
+  writeFileSync(registration, '{"space":"pold",');
+  const blocked = await json(["space"], folder);
+  check("space with a damaged registration record refuses SCHEMA_INVALID, exit 1, naming the forget that removes it",
+    refused(blocked, 1, "SCHEMA_INVALID") && blocked.env?.target?.file === registration &&
+      blocked.env.error?.remedy === "restore the record from backup, or remove it with `cotal space forget pold`", shown(blocked));
+  const forgetRegistration = await json(["space", "forget", "pold"], folder);
+  check("space forget pold removes its damaged registration record, with no broker, root or origin",
+    forgetRegistration.status === 0 && forgetRegistration.env?.result?.kind === "space-forgotten" && forgetRegistration.env.result.server === null &&
+      forgetRegistration.env.result.root === null && forgetRegistration.env.result.origin === null && !existsSync(registration), shown(forgetRegistration));
+  const text = await run(["space", "forget", "pold"], {}, folder);
+  check("  and a second forget finds nothing to forget, exit 2", text.status === 2 && /no space named "pold" is registered here/.test(text.stderr), shown(text));
+  check("space lists again once it is gone", (await json(["space"], folder)).status === 0);
 }
 
 finish();
