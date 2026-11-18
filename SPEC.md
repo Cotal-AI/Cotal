@@ -1,5 +1,19 @@
 # Cotal Wire Specification
 
+## Local daemon custody recovery
+
+The local daemon protocol additionally accepts `space-recover` with `space`, `candidate`
+and `holder`, alongside its existing `v`, `id` and `op` envelope fields. `candidate` is the
+64-character lowercase hexadecimal local account key and `holder` is the sign-in address
+shown by status. This operation is local machine authority, not a mesh endpoint or a grant
+of remote space membership. The desktop bridge forwards these exact fields only after the
+person confirms the action. Status may include `custodyRecovery: { holder, candidate }` on
+a space row when its holding account is signed out or has failed three consecutive account
+polls. A successful poll clears the failure count. The daemon rechecks the current holder,
+candidate sign-in and fresh available catalog registration before moving local custody.
+An answering holder refuses replacement. Automatic same-owner migration separately requires
+present, non-empty issuer and subject on both identities and equality of both values.
+
 > **Status:** Draft, v0.5 (pre-1.0). This document is the normative wire contract. Libraries
 > (including the reference TypeScript implementation) are thin clients over it; where a
 > client disagrees with this document, this document wins.

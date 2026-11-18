@@ -703,7 +703,17 @@ function renderConnections(): void {
     const restore = accountRow?.observed === "removed on this computer";
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);
     remove.addEventListener("click", () => void action(async () => { if (restore) { await request({ op: "space-intent", space, enabled: true }); await refresh(); } else await removeSpace(space); }));
-    row.append(copy, remove); return row;
+    row.append(copy);
+    if (accountRow?.custodyRecovery) {
+      const recovery = accountRow.custodyRecovery;
+      const use = document.createElement("button"); use.type = "button"; use.className = "text-button"; use.disabled = busy; use.textContent = "Use signed-in account";
+      use.addEventListener("click", () => {
+        if (!window.confirm(`Use the signed-in account for ${name.textContent} instead of ${recovery.holder}?`)) return;
+        void action(async () => { await request({ op: "space-recover", space, candidate: recovery.candidate, holder: recovery.holder }); await refresh(); });
+      });
+      row.append(use);
+    } else row.append(remove);
+    return row;
   }));
 }
 async function removeSpace(space: string): Promise<void> {

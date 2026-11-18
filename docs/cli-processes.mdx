@@ -713,8 +713,18 @@ Authentication refusal asks you to sign in again. Network failures retain existi
 When a space's retained holding account has the same issuer and subject as a signed-in account,
 the daemon moves its local custody to that sign-in address without another confirmation. The
 issuer and subject identify the owner, not the address used to sign in. A different issuer or
-subject does not receive custody. Status names the holding account's sign-in address when the
-retained identity is known.
+subject does not receive custody automatically. Status names the holding account's sign-in address when the
+retained identity is known. Automatic migration requires both issuer and subject to be non-empty
+on both accounts. Missing identity fields never establish ownership.
+
+For a different account, the daemon keeps the existing custody until you explicitly confirm a
+move in the app. If the holding account is signed out or three consecutive account-computer
+polls fail, the space row names its sign-in address and offers **Use signed-in account**.
+Cancel leaves custody unchanged. Confirmation requires a fresh, available catalog registration
+for the space from the signed-in account and rechecks the holder before moving custody.
+A holder that answers again clears its failure count and cannot be replaced through a stale
+action. `cotal daemon status` names the holder and points to the app action when it is available.
+This moves only this computer's connection. It does not grant space membership or remote authority.
 
 On hosts that support account computers, setup with `--space` and local connect write the
 computer's account intent with a fresh revision. A conflicting revision is read again and retried

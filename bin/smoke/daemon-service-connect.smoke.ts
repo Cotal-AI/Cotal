@@ -319,12 +319,20 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     if (accountHang && req.method === "GET") { accountHangs++; return; }
     if (accountHttp !== 200) { res.writeHead(accountHttp); res.end(accountHttp === 304 ? undefined : "{}"); return; }
     const snapshot = catalog as { account: unknown; spaces: { id: string }[] };
-    const spaces = accountDesired ? snapshot.spaces.map(row => process.argv.includes("--account-custody-repro") && req.headers.host !== new URL(idpOrigin).host ? { id: row.id, slug: row.id, name: row.id, kind: "team", role: "owner", unavailable: "fixture authority unavailable" } : row) : [];
+    const spaces = accountDesired ? snapshot.spaces.map(row => {
+      if (!process.argv.includes("--account-custody-repro") || req.headers.host === new URL(idpOrigin).host) return row;
+      if (process.env.CUSTODY_RELEASE_ENTRY) return { id: row.id, slug: row.id, name: row.id, kind: "team", role: "owner", unavailable: "fixture authority unavailable" };
+      const aliasRow = JSON.parse(JSON.stringify(row));
+      const auth = aliasRow.registration.userAuth;
+      auth.idp.url = `http://${req.headers.host}/api/auth`;
+      for (const field of ["url", "agentProvisioningUrl", "managerAuthorityUrl"]) if (auth.endpoints[field]) auth.endpoints[field] = auth.endpoints[field].replace(idpOrigin, `http://${req.headers.host}`);
+      return aliasRow;
+    }) : [];
     res.setHeader("etag", JSON.stringify(accountRevision));
-    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: process.argv.includes("--account-custody-repro") ? { ...(snapshot.account as object), idpUrl: `http://${req.headers.host}/api/auth` } : snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
+    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: process.argv.includes("--account-custody-repro") ? { ...(snapshot.account as object), idpUrl: `http://${req.headers.host}/api/auth`, sub: process.argv.includes("--account-recovery-repro") && req.headers.host !== new URL(idpOrigin).host ? "replacement-owner" : "machine-owner" } : snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
   }
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
-  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(process.argv.includes("--account-custody-repro") ? { ...(catalog as object), account: { ...(catalog as { account: object }).account, idpUrl: `http://${req.headers.host}/api/auth` } } : catalog));
+  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(process.argv.includes("--account-custody-repro") ? { ...(catalog as object), account: { ...(catalog as { account: object }).account, idpUrl: `http://${req.headers.host}/api/auth`, sub: process.argv.includes("--account-recovery-repro") && req.headers.host !== new URL(idpOrigin).host ? "replacement-owner" : "machine-owner" } } : catalog));
   const accountTarget = [...accountTargets].find(([space]) => req.url?.startsWith(`/account-space/${space}/`));
   if (accountOnly && accountTarget) {
     const [space, target] = accountTarget;
@@ -366,7 +374,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     if (res.destroyed) return;
     if (catalog) res.setHeader("link", `<${idpOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`);
     const now = Math.floor(Date.now() / 1000);
-    const token = await new SignJWT({ email: "operator@example.test" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + idpJwtTtl).sign(key.privateKey);
+    const token = await new SignJWT({ email: "operator@example.test" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject(process.argv.includes("--account-recovery-repro") && req.headers.host !== new URL(idpOrigin).host ? "replacement-owner" : "machine-owner").setIssuedAt(now).setExpirationTime(now + idpJwtTtl).sign(key.privateKey);
     jwtsIssued.push(token);
     return void res.end(JSON.stringify({ token }));
   }
@@ -2538,9 +2546,21 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               console.log("UNBLOCK AFTER\n" + (await plainCommand("status")).out);
               return;
             }
+            if (process.argv.includes("--account-recovery-repro")) {
+              const { signedInMachineAccounts } = await import("@cotal-ai/auth");
+              const candidate = signedInMachineAccounts(home).find(item => item.sub === "replacement-owner")!;
+              await waitAccount(s => s.account?.spaces?.some((row: any) => row.space === ON && row.custodyRecovery?.candidate === candidate.ownerKey), "failing holder exposes confirmed recovery through real daemon status");
+              const before = JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8")).spaces[ON].owner;
+              check("different subject never silently takes custody", before !== candidate.ownerKey);
+              const moved = await ask(paths.socket, { op: "space-recover", space: ON, candidate: candidate.ownerKey, holder: idpUrl }, 100_000);
+              check("confirmed real daemon recovery request succeeds", moved.ok === true, moved);
+              check("confirmed real daemon recovery changes custody", JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8")).spaces[ON].owner === candidate.ownerKey);
+              return;
+            }
             const { signedInMachineAccounts } = await import("@cotal-ai/auth");
             const current = signedInMachineAccounts(home).find(account => account.idpUrl.includes("[::ffff:"))!;
             check("same issuer and subject moves custody to signed-in address", custody.spaces[ON]?.owner === current.ownerKey, status.account);
+            await waitAccount(s => s.account?.spaces?.some((row: any) => row.space === ON && row.observed === "connected" && !row.lastRefusal) && s.managers?.some((row: any) => row.space === ON && row.state === "answering"), "migrated alias account admits a launch-ready Manager");
             check("same account computer is listed once", status.account.accounts.length === 1 && status.account.accounts[0].machineId === status.account.machineId, status.account);
             const human = await plainCommand("status");
             check("CLI lists same account computer once", human.code === 0 && human.out.split("Account computer:").length === 2, human);
@@ -2551,6 +2571,31 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               await guarded.apply(foreign, desired, 1, { [ON]: 1 });
               check("different issuer or subject refuses custody", guarded.view().some(row => row.space === ON && row.lastRefusal?.includes(current.idpUrl)) && JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8")).spaces[ON].owner === current.ownerKey);
             }
+            const cacheFile = join(home, "space-catalogs.json");
+            const cacheBytes = readFileSync(cacheFile, "utf8");
+            try {
+              const cache = JSON.parse(cacheBytes);
+              delete cache.accounts[current.ownerKey].sub;
+              writeFileSync(cacheFile, JSON.stringify(cache));
+              const missing = createAccountReconciler(home, { status: () => ({ state: "not-requested" }) } as any, { status: () => ({ state: "stopped" }) } as any);
+              await missing.apply({ ...current, ownerKey: "missing-sub", sub: undefined } as any, desired, 1, { [ON]: 1 });
+              check("two missing subjects do not prove the same owner", missing.view().some(row => row.space === ON && row.lastRefusal?.includes(current.idpUrl)) && JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8")).spaces[ON].owner === current.ownerKey);
+            } finally { writeFileSync(cacheFile, cacheBytes); }
+            const recovery = createAccountReconciler(home, { status: () => ({ state: "not-requested" }) } as any, { status: () => ({ state: "stopped" }) } as any);
+            const replacement = { ...current, ownerKey: "b".repeat(64), sub: "replacement-owner" };
+            recovery.retainAccounts([current.ownerKey, replacement.ownerKey]);
+            recovery.accountHealth(current.ownerKey, true);
+            await recovery.apply(replacement, desired, 1, { [ON]: 1 });
+            await assert.rejects(() => recovery.transfer(ON, replacement, current.idpUrl), /still answering/);
+            check("answering foreign holder cannot be confirmed away", !recovery.view().find(row => row.space === ON)?.custodyRecovery);
+            recovery.accountHealth(current.ownerKey, false); recovery.accountHealth(current.ownerKey, false); recovery.accountHealth(current.ownerKey, false);
+            check("three failed account polls offer explicit recovery", !!recovery.view().find(row => row.space === ON)?.custodyRecovery);
+            recovery.accountHealth(current.ownerKey, true);
+            await assert.rejects(() => recovery.transfer(ON, replacement, current.idpUrl), /still answering/);
+            recovery.retainAccounts([replacement.ownerKey]);
+            await assert.rejects(() => recovery.transfer(ON, replacement, "https://changed.example/api/auth"), /holding account changed/);
+            await recovery.transfer(ON, replacement, current.idpUrl);
+            check("confirmed signed-out holder transfer persists replacement custody", JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8")).spaces[ON].owner === replacement.ownerKey);
             return;
           }
           const onCatalogId = (catalog as { spaces: { id: string; slug: string }[] }).spaces.find(row => row.slug === ON)!.id;
