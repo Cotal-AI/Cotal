@@ -32,12 +32,12 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
 
 - **Wake channel.** Claude Code binds the `server:cotal` channel only to a server its own
   configuration declares, the user config or the project's `.mcp.json`; the `--mcp-config` entry
-  alone does not count. `cotal setup` and `cotal update` register the plugin's server as the
-  user-scope entry `cotal`, the same command and arguments as the plugin's own server, so a plain
-  session runs one process and a managed launch's same-named entry replaces it. A carried seat's
-  private home declares it itself. A managed launch whose user config and project `.mcp.json`
-  declare no `cotal` server is refused with a message naming `cotal setup`, because a seat whose
-  channel did not bind joins the mesh, reports idle and never answers a turn or a direct message.
+  alone does not count. `cotal setup` and a daemon-hosted Manager install the plugin and register
+  its server as the user-scope entry `cotal`. `cotal update` only refreshes an existing installation.
+  The entry uses the plugin's own command and arguments, so a plain session runs one process and
+  a managed launch's same-named entry replaces it. A carried seat's private home declares it itself.
+  A managed launch with no declaration refuses instead of starting a seat that cannot wake. On a
+  daemon-connected computer, use `cotal daemon setup --space <space>` to retry registration.
   `cotal status` reports the entry under `Claude wake channel`.
 
 - `--prompt` is Claude's first turn. The connector passes it as Claude's leading argument after one
