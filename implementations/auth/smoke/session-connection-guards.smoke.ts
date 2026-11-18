@@ -1,3 +1,4 @@
+import "./_session-build-freshness.js";
 import { createHmac } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
 import { Kvm } from "@nats-io/kv";
@@ -95,8 +96,14 @@ try {
   const revisionRow = { ...(revisionReceipt.row ?? { sessionId: revision.row.sessionId, principal: revision.row.holder.principal, lifecycleUid: revision.row.holder.lifecycleUid, connection: revision.issuance.connection, releaseAfter: Date.now() }), sessionRevision: 1_000_000 };
   await kv.put(revision.key, JSON.stringify({ v: 1, row: revisionRow, mac: macFor(a.space, revision.key, revisionRow) }));
   await revision.end();
+  const revisionRetryLogged = new Set<string>();
+  const revisionRetries = new Map<string, { nextAt: number; delayMs: number }>();
+  for (let i = 0; i < 1024; i++) { revisionRetryLogged.add(`old-${i}`); revisionRetries.set(`old-${i}`, { nextAt: 0, delayMs: 1000 }); }
   let revisionTransient = 0;
-  try { await sweep({ transient: () => revisionTransient++ }); } catch { revisionTransient++; }
+  try { await sweep({ transient: () => revisionTransient++, retryLogged: revisionRetryLogged, retries: revisionRetries }); } catch { revisionTransient++; }
+  const revisionWarnings = logs.filter((line) => line.includes("precedes authenticated receipt revision"));
+  await sweep({ retryLogged: revisionRetryLogged, retries: revisionRetries });
+  check("L1 revision lag logs both sequence numbers once and bounds retained key state", revisionWarnings.length === 1 && /revision \d+ precedes authenticated receipt revision 1000000/.test(revisionWarnings[0]!) && logs.filter((line) => line.includes("precedes authenticated receipt revision")).length === 1 && revisionRetryLogged.size <= 1024 && revisionRetries.size <= 1024);
   check("M8 session authority older than authenticated observed revision cannot evict", !revision.nc.isClosed() && (await kv.get(revision.key))?.operation === "PUT" && revisionTransient > 0);
   await kv.purge(revision.key);
   const absent = await session();
@@ -211,6 +218,21 @@ try {
   await wait(100);
   check("M7 restored terminal authority retries retained receipt and evicts", !recoveryFailed && unreadable.nc.isClosed());
   if ((await kv.get(unreadable.key))?.operation === "PUT") await kv.purge(unreadable.key);
+  const permanentlyUnreadable = await session();
+  await recordSessionConnection(kv, permanentlyUnreadable.issuance, authority);
+  await sessions.put(sessionLedgerKey(permanentlyUnreadable.row.sessionId), "not-json");
+  let timingHost: Awaited<ReturnType<typeof startAuthService>> | undefined;
+  try {
+    timingHost = await startAuthService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: a.space, servers: fx.servers, stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity });
+    await wait(10_000);
+    const healthyNeighbor = await session();
+    await recordSessionConnection(kv, healthyNeighbor.issuance, authority);
+    const neighborEndedAt = performance.now();
+    await healthyNeighbor.end();
+    while (!healthyNeighbor.nc.isClosed() && performance.now() - neighborEndedAt < 4500) await wait(25);
+    check("T1 permanently unreadable receipt does not slow a healthy ended neighbor", healthyNeighbor.nc.isClosed() && performance.now() - neighborEndedAt < 4500 && !permanentlyUnreadable.nc.isClosed() && (await kv.get(permanentlyUnreadable.key))?.operation === "PUT");
+  } finally { await timingHost?.close(); }
+  await kv.purge(permanentlyUnreadable.key);
   const streamsPrototype = Object.getPrototypeOf(jsm.streams) as { getMessage: typeof jsm.streams.getMessage };
   const getMessage = streamsPrototype.getMessage;
   let entered = false, release!: () => void;
@@ -235,7 +257,7 @@ try {
     let closed = false;
     const closing = host.close().then(() => { closed = true; });
     const boundary = await Promise.race([abortObserved.then(() => "aborted"), closing.then(() => "closed"), wait(5000).then(() => "timeout")]);
-    await Promise.resolve();
+    if (boundary === "aborted") await wait(3000);
     const awaited = boundary === "aborted" && sessionAborted && !closed;
     release();
     await closing;

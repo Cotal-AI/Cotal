@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-for (const path of ["packages/core", "packages/workspace", "implementations/auth", "implementations/manager", "implementations/runtime", "bin"]) {
+for (const path of ["packages/core", "packages/lang", "packages/workspace", "implementations/auth", "implementations/manager", "implementations/runtime", "bin"]) {
   const configPath = join(root, path, "tsconfig.json");
   const read = ts.readConfigFile(configPath, ts.sys.readFile);
   if (read.error) throw new Error(`session smoke cannot read build configuration: ${path}`);

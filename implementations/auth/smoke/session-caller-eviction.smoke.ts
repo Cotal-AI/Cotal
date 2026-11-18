@@ -210,7 +210,7 @@ async function main() {
       try { const unexpected = await connect(reconnectOptions); await unexpected.close(); }
       catch (e) { recordWriteDenied = /authorization|authentication/i.test(String(e)); }
     } finally { kvPrototype.create = createEvidence; }
-    check("B1 failed session evidence write refuses the real broker connection", recordWriteDenied);
+    check("W3 failed session evidence write refuses the real broker connection", recordWriteDenied);
     const recoveredReconnect = await connect(reconnectOptions);
     check("W2 same-session reconnect recovers after receipt writes resume", !recoveredReconnect.isClosed());
     await recoveredReconnect.close();

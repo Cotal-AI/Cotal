@@ -65,9 +65,26 @@ export async function reconcileSessionConnections(opts: {
   log?: (line: string) => void;
   transient?: () => void;
   retryLogged?: Set<string>;
+  retries?: Map<string, { nextAt: number; delayMs: number }>;
   evict(principal: string, connections: KickTarget[]): Promise<EvictionResult>;
 }): Promise<number | undefined> {
   const bucket = epAuthBucket(opts.space), prefix = `$KV.${bucket}.`;
+  const forget = (key: string) => { opts.retries?.delete(key); opts.retryLogged?.delete(key); };
+  const retry = (key: string, diagnostic?: string) => {
+    opts.transient?.();
+    if (diagnostic && !opts.retryLogged?.has(key)) {
+      opts.log?.(diagnostic);
+      if (opts.retryLogged) {
+        if (opts.retryLogged.size >= 1024) opts.retryLogged.delete(opts.retryLogged.values().next().value!);
+        opts.retryLogged.add(key);
+      }
+    }
+    if (opts.retries) {
+      const delayMs = Math.min((opts.retries.get(key)?.delayMs ?? 1000) * 2, 30_000);
+      if (!opts.retries.has(key) && opts.retries.size >= 1024) opts.retries.delete(opts.retries.keys().next().value!);
+      opts.retries.set(key, { nextAt: Date.now() + delayMs, delayMs });
+    }
+  };
   let seq = opts.seq;
   for (let visited = 0; visited < opts.maxRows; visited++) {
     opts.signal.throwIfAborted();
@@ -75,8 +92,9 @@ export async function reconcileSessionConnections(opts: {
     if (!message) return undefined;
     opts.signal.throwIfAborted();
     seq = message.seq + 1;
-    if (message.header?.get("KV-Operation")) continue;
     const key = message.subject.slice(prefix.length);
+    if (message.header?.get("KV-Operation")) { forget(key); continue; }
+    if ((opts.retries?.get(key)?.nextAt ?? 0) > Date.now()) continue;
     let row: SessionConnection;
     try {
       fromPublic(key.slice(PREFIX.length));
@@ -88,8 +106,9 @@ export async function reconcileSessionConnections(opts: {
     } catch {
       try {
         await opts.kv.purge(key, { previousSeq: message.seq, ttl: markerTtl });
+        forget(key);
         opts.log?.("auth-plane: quarantined invalid session connection evidence");
-      } catch { opts.transient?.(); }
+      } catch { retry(key); }
       continue;
     }
     try {
@@ -100,7 +119,7 @@ export async function reconcileSessionConnections(opts: {
       opts.signal.throwIfAborted();
       // A verified receipt proves a real session revision was observed before access was released.
       if (session && session.seq < row.sessionRevision) {
-        opts.transient?.();
+        retry(key, `auth-plane: session authority revision ${session.seq} precedes authenticated receipt revision ${row.sessionRevision}; evidence retained for retry`);
         continue;
       }
       let ended = !session || !!session.header?.get("KV-Operation");
@@ -113,11 +132,7 @@ export async function reconcileSessionConnections(opts: {
             !["issuing", "active", "closed", "expired", "superseded", "retired"].includes(raw.state) || !Number.isSafeInteger(raw.exp))
             throw new Error("invalid session authority");
         } catch {
-          opts.transient?.();
-          if (!opts.retryLogged?.has(key)) {
-            opts.log?.("auth-plane: session authority is unreadable; authenticated evidence retained for retry");
-            opts.retryLogged?.add(key);
-          }
+          retry(key, "auth-plane: session authority is unreadable; authenticated evidence retained for retry");
           continue;
         }
         opts.retryLogged?.delete(key);
@@ -125,21 +140,22 @@ export async function reconcileSessionConnections(opts: {
         try { state = sessionState(raw, row); }
         catch {
           await opts.kv.purge(key, { previousSeq: message.seq, ttl: markerTtl });
+          forget(key);
           opts.log?.("auth-plane: quarantined mismatched session connection authority");
           continue;
         }
         ended = state.state !== "active" || state.exp <= Date.now();
       }
-      if (!ended) continue;
+      if (!ended) { forget(key); continue; }
       const result = await opts.evict(row.principal, [row.connection]);
       opts.signal.throwIfAborted();
-      if (!result.verifiedGone) { opts.transient?.(); continue; }
+      if (!result.verifiedGone) { retry(key); continue; }
       if (Date.now() <= row.releaseAfter + opts.releaseWindowMs) continue;
       await opts.kv.purge(key, { previousSeq: message.seq, ttl: markerTtl });
-      opts.retryLogged?.delete(key);
+      forget(key);
     } catch (e) {
       if (opts.signal.aborted) throw e;
-      opts.transient?.();
+      retry(key);
     }
   }
   return seq;
