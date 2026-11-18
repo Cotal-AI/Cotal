@@ -19,7 +19,7 @@
  */
 import { randomBytes } from "node:crypto";
 import {
-  AGENT_CLUSTER, AGENT_CONTRACTS, AGENT_ENDPOINT, AGENT_PROMPT_CONTENT_MAX_BYTES, AGENT_PROMPT_DIGEST_DETAIL,
+  AGENT_CONTRACTS, AGENT_PROMPT_CONTENT_MAX_BYTES, AGENT_PROMPT_DIGEST_DETAIL,
   AGENT_PROMPT_LIST_MAX, AGENT_PROMPT_SIZE_DETAIL, AGENT_PROMPT_STATE_DETAIL, EpEnvelopeError,
   agentPromptDigest, canonicalJson, compileContractSchema, contractDigest, processRuntime,
   type AgentPrompt, type ContractValidator, type CotalEndpoint, type EpCaller, type EpPrincipalCommandDef,
@@ -385,7 +385,7 @@ class Desk implements PromptDesk {
       { command: "prompt", contract: AGENT_CONTRACTS.prompt, handler: (ctx) => this.read(ctx) },
       { command: "prompt-answer", contract: AGENT_CONTRACTS["prompt-answer"], handler: (ctx) => this.answer(ctx) },
     ];
-    const serve = this.ep.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers });
+    const serve = this.ep.servePrincipal({ handlers });
     this.seq = this.ep.nextPromptsSeq();
     this.serve = serve;
     this.ep.on("transport", this.onTransport);

@@ -162,11 +162,12 @@ The complete reply, responder-state, grant, reply-target validation, and rebindi
 
 ## Principal route [#principal-route]
 
-`servePrincipal({ endpoint, cluster, handlers })` serves a core-defined command set about this
-process on the principal route. Revision 1 defines one endpoint, `agent`, whose cluster and compiled
-contracts are `AGENT_CLUSTER` and `AGENT_CONTRACTS`. It throws on an open mesh, under a static
-credential, without a lifecycle UID, for a cluster command that declares no `authorities`, and when
-another endpoint in the process already serves that endpoint for the lifecycle.
+`servePrincipal({ handlers })` serves this process's `agent` endpoint on the principal route: the
+core-defined command set about this process, whose cluster and compiled contracts are
+`AGENT_CLUSTER` and `AGENT_CONTRACTS`. It takes no endpoint or cluster, and refuses either. It throws
+on an open mesh, under a static credential, without a lifecycle UID, for handlers that are not the
+cluster's commands with those contracts, and when another endpoint in the process already serves
+`agent` for the lifecycle.
 The returned `ready` resolves only after the broker accepted the subscription. It rejects when the
 credential holds no serve row, which a credential minted before this release does not. The serve
 subscribes again after every reconnect, and a refusal there resolves `failed` and is reported on

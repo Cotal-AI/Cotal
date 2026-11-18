@@ -22,7 +22,8 @@
  * handler runs and while `ready` waits; cells 31 and 32, `seq` across serves and endpoint objects of
  * one runtime, and a second server for one lifecycle in a process; cell 33, stop waits for a handler
  * in flight only until its request's deadline; cell 34, a JetStream API answer on the caller's
- * sentinel; cell 35, a refused reply publish is reported; cell 36, a refused reply read whose flush
+ * sentinel; cell 35, a refused reply publish is reported; cell 39, servePrincipal serves only
+ * `agent`; cell 36, a refused reply read whose flush
  * never settles; a reconnect that rebinds, with cell 38, the handles a replaced connection leaves; a
  * reconnect whose new credential lacks the rows, and the mixed-version cases that need no 0.165
  * release: an agent that serves nothing, a caller or an agent whose credential predates the rows,
@@ -47,6 +48,8 @@ import {
   type AgentPrompt, type DescribeAnswer, type EndpointReply, type EpPrincipal, type EpPrincipalCommandDef, type PrincipalServe,
   type PromptAnswerInput, type PromptContent, type PromptState, type Presence,
 } from "@cotal-ai/core";
+// The general principal serve is internal to core; this is the built file the package root loads.
+import { servePrincipalRoute } from "../../../packages/core/dist/endpoint-serve.js";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER, type AclResolver, type ValidatedUserToken } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -250,7 +253,7 @@ function testAgent(ep: CotalEndpoint, w: Who): TestAgent {
       return { state: p.state };
     } },
   ];
-  agent.serve = ep.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers });
+  agent.serve = ep.servePrincipal({ handlers });
   return agent;
 }
 
@@ -311,7 +314,6 @@ try {
   const bobWebEp = await userEndpoint(W.bobWeb);
   const helperEp = await userEndpoint(W.helper);
   const termEp = await userEndpoint(W.term);
-  const testerEp = await userEndpoint(W.tester);
   const oldWebEp = await userEndpoint(W.oldWeb);
   check("every principal connects through the shipped callout", endpoints.every((ep) => ep !== undefined));
 
@@ -602,8 +604,8 @@ try {
     await openEp.start();
     const handlers = (["prompts", "prompt", "prompt-answer"] as const).map((command) => ({ command, contract: AGENT_CONTRACTS[command], handler: () => undefined }));
     let staticRefusal = "", openRefusal = "";
-    try { staticEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers }); } catch (e) { staticRefusal = (e as Error).message; }
-    try { openEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers }); } catch (e) { openRefusal = (e as Error).message; }
+    try { staticEp.servePrincipal({ handlers }); } catch (e) { staticRefusal = (e as Error).message; }
+    try { openEp.servePrincipal({ handlers }); } catch (e) { openRefusal = (e as Error).message; }
     check("cell 18: servePrincipal throws on a static credential", staticRefusal.includes("static credential"), staticRefusal);
     check("cell 18: servePrincipal throws on an open mesh", openRefusal.includes("open mesh"), openRefusal);
     // Nothing subscribed the would-be subjects: the broker answers no responders for each.
@@ -663,8 +665,12 @@ try {
   {
     const plain = buildClusterDocument("ai.cotal.test", 1, [{ name: "prompts", targeted: false, capability: "agent.prompts.read", input: { type: "object", additionalProperties: false, properties: {} }, output: { type: "null" } }]);
     let refusal = "";
-    try { helperEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: plain, handlers: [] }); } catch (e) { refusal = (e as Error).message; }
-    check("cell 23: servePrincipal throws for a command without authorities, before anything is subscribed", refusal.includes("declares no authorities"), refusal);
+    try { servePrincipalRoute(helperRaw.nc, space, addressOf(W.helper, processRuntime(W.helper.uid).id), { endpoint: AGENT_ENDPOINT, cluster: plain, handlers: [] }); } catch (e) { refusal = (e as Error).message; }
+    check("cell 23: the general principal serve throws for a command without authorities, before anything is subscribed", refusal.includes("declares no authorities"), refusal);
+    // The entry point an agent uses serves `agent` with AGENT_CLUSTER and nothing else.
+    let bound = "";
+    try { helperEp.servePrincipal({ endpoint: "other", cluster: AGENT_CLUSTER, handlers: [] } as unknown as { handlers: EpPrincipalCommandDef[] }); } catch (e) { bound = (e as Error).message; }
+    check("cell 39: servePrincipal refuses an endpoint or cluster: it serves only agent with AGENT_CLUSTER", bound.includes("serves only the \"agent\" endpoint"), bound);
     console.log("    cell 24 (serveEndpoint refuses an authorities cluster) needs a registry-authorized serve grant: pnpm smoke:ep-serve");
   }
 
@@ -673,9 +679,11 @@ try {
     const ownerOnly = buildClusterDocument("ai.cotal.test", 1, [{ name: "prompts", targeted: false, authorities: ["owner"], capability: "agent.prompts.read", input: { type: "object", additionalProperties: false, properties: {} }, output: { type: "object" } }]);
     const contract = { input: compileContract({ root: { type: "object", additionalProperties: false, properties: {} } }), output: compileContract({ root: { type: "object" } }) };
     let ran = 0;
-    const tester = testerEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: ownerOnly, handlers: [{ command: "prompts", contract, handler: () => { ran++; return {}; } }] });
-    await tester.ready;
+    // A cluster other than AGENT_CLUSTER needs the general serve, which the package root does not export.
     const testerAt = addressOf(W.tester, processRuntime(W.tester.uid).id);
+    const testerRaw = await seat(W.tester);
+    const tester = servePrincipalRoute(testerRaw.nc, space, testerAt, { endpoint: AGENT_ENDPOINT, cluster: ownerOnly, handlers: [{ command: "prompts", contract, handler: () => { ran++; return {}; } }] });
+    await tester.ready;
     const asGrant = await builderEp.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: testerAt, command: "prompts", authority: "grant", args: {}, deadlineMs: 4000, contract });
     check("cell 25: the broker lets the grant row through and the command refuses permission-denied, not-executed",
       !asGrant.ok && asGrant.error.code === "permission-denied" && asGrant.error.outcome === "not-executed" && ran === 0, asGrant);
@@ -786,7 +794,7 @@ try {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     let entered = false, finished = false;
-    const serve = stopperEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers(async (ctx) => {
+    const serve = stopperEp.servePrincipal({ handlers: stubHandlers(async (ctx) => {
       entered = true;
       await gate;
       finished = true;
@@ -806,7 +814,7 @@ try {
       entered && !stoppedWhileRunning && finished && stopped, { entered, stoppedWhileRunning, finished, stopped });
     check("cell 30: ...so its reply went out on the open connection, and the caller reads it", r.ok && r.value.ok, r.ok ? r.value : codeOf(r.error));
     const stopper2Ep = await userEndpoint(W.stopper2);
-    const pending = stopper2Ep.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() });
+    const pending = stopper2Ep.servePrincipal({ handlers: stubHandlers() });
     const stop2 = stopper2Ep.stop();
     const readyOutcome = await Promise.race([settle(pending.ready), wait(3000).then(() => "still pending" as const)]);
     await stop2.catch(() => {});
@@ -821,7 +829,7 @@ try {
   {
     muted.add(W.mute.uid);
     const muteEp = await userEndpoint(W.mute);
-    const serve = muteEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() });
+    const serve = muteEp.servePrincipal({ handlers: stubHandlers() });
     await serve.ready;
     const r = await settle(call(webEp, addressOf(W.mute, processRuntime(W.mute.uid).id), "prompts", "owner", {}, 1500));
     await until(() => warnings.some((w) => w.startsWith("alice.mute error:")), 2000);
@@ -853,13 +861,13 @@ try {
   {
     const cyclerSeq = () => webEp.getRoster().find((p) => p.card.id === `${A}.cycler`)?.prompts?.seq;
     const cyclerEp = await userEndpoint(W.cycler, { registerPresence: true });
-    const first = cyclerEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() });
+    const first = cyclerEp.servePrincipal({ handlers: stubHandlers() });
     await first.ready;
     await cyclerEp.setPromptsPresence({ open: 2, seq: 50 });
     await until(() => cyclerSeq() === 50, 8000);
     await first.stop();
     await until(() => cyclerSeq() === undefined, 8000);
-    const again = cyclerEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() });
+    const again = cyclerEp.servePrincipal({ handlers: stubHandlers() });
     await again.ready;
     await until(() => cyclerSeq() !== undefined, 8000);
     check("cell 31: serving agent again on the same endpoint takes a fresh seq, { open: 0, seq: 51 }: never seq 0, and never 50, which named a list with two prompts open",
@@ -869,13 +877,13 @@ try {
     check("cell 31: a seq below one this runtime already used is refused, the one the last serve showed too", below.includes("never goes back"), below);
     const twin = await userEndpoint(W.cycler);
     let twinRefusal = "";
-    try { twin.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() }); } catch (e) { twinRefusal = (e as Error).message; }
+    try { twin.servePrincipal({ handlers: stubHandlers() }); } catch (e) { twinRefusal = (e as Error).message; }
     check("cell 32: a second endpoint for the same lifecycle in this process may not serve agent while the first does: it would answer the same subject",
       twinRefusal.includes("already serves") && twinRefusal.includes(W.cycler.uid), twinRefusal);
     await twin.stop();
     await cyclerEp.stop();
     const nextEp = await userEndpoint(W.cycler, { registerPresence: true });
-    const third = nextEp.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers() });
+    const third = nextEp.servePrincipal({ handlers: stubHandlers() });
     await third.ready;
     await until(() => cyclerSeq() !== undefined, 8000);
     let next = -1;
@@ -896,7 +904,7 @@ try {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     let entered = 0, aborted = 0;
-    const serve = ep3.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers(async (ctx) => {
+    const serve = ep3.servePrincipal({ handlers: stubHandlers(async (ctx) => {
       entered++;
       ctx.signal?.addEventListener("abort", () => { aborted++; });
       await gate; // ignores the signal
@@ -920,7 +928,7 @@ try {
     check("cell 33: the handler's late reply is dropped, and the caller saw its deadline",
       replies.length === seenBefore && seenBefore === 0 && !r.ok && codeOf(r.error) === "deadline-exceeded/unknown", { replies: replies.length, call: r.ok ? r.value : codeOf(r.error) });
     // A handler that ends on the signal lets stop return at once, and its reply still goes out.
-    const again = ep3.servePrincipal({ endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: stubHandlers(async (ctx) => {
+    const again = ep3.servePrincipal({ handlers: stubHandlers(async (ctx) => {
       entered++;
       await new Promise<void>((resolve) => ctx.signal.addEventListener("abort", () => resolve()));
       return { runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] };

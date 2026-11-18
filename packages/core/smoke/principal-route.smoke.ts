@@ -19,9 +19,11 @@ import {
   epPrincipalCallerReplyFilter, epPrincipalGrantRows, epPrincipalNoRespondersSubject, epPrincipalOwnerGrantRows,
   epPrincipalReplySubject, epPrincipalRequestSubject, epPrincipalServeFilter, epPrincipalServeGrantRows, epServeGrantRows,
   isPrincipalAuthority, mintLifecycleUid, parseClusterDocument, parseEndpointRequest, parseEpSubject, permissionsFor,
-  principalRouteCommands, servePrincipalRoute, EpEnvelopeError, ContractInvalidError,
+  principalRouteCommands, EpEnvelopeError, ContractInvalidError,
   type EndpointRequest, type EpCaller, type EpCapability, type EpPrincipal, type ParsedEpPrincipalRequest, type PromptContent,
 } from "../src/index.js";
+import * as coreRoot from "../src/index.js";
+import { servePrincipalRoute } from "../src/endpoint-serve.js";
 import { createSuite } from "@cotal-ai/smoke-kit";
 
 const { check, finish } = createSuite();
@@ -297,6 +299,10 @@ const withRows = await jwtBytes(fixture("interactive"));
 console.log(`  maximum-capability fixture as an interactive mint: ${withRows} JWT bytes, ${withRows - without} of them the principal-route rows (mint bound ${MAX_MINTED_JWT_BYTES})`);
 check("the maximum-capability fixture with the principal-route rows stays under the mint bound", withRows < MAX_MINTED_JWT_BYTES, { withRows, without, bound: MAX_MINTED_JWT_BYTES });
 check("the interactive rows add 2 serve rows, 4 owner rows and 1 reply read", prinRows(fixture("interactive")).length - prinRows(fixture()).length === 7);
+
+// ── the entry point: the package root serves the `agent` endpoint only ──
+check("the package root does not export the general principal serve: CotalEndpoint.servePrincipal serves agent with AGENT_CLUSTER",
+  !("servePrincipalRoute" in coreRoot) && typeof coreRoot.CotalEndpoint.prototype.servePrincipal === "function");
 
 // ── the published schema: the presence `prompts` counts are non-negative integers (SPEC §6) ──
 const schema = JSON.parse(readFileSync(fileURLToPath(new URL("../../../spec/cotal.schema.json", import.meta.url)), "utf8")) as

@@ -59,7 +59,7 @@ import { epPrincipalCall } from "./endpoint-call.js";
 import type { ClusterDocument } from "./endpoint-cluster.js";
 import type { EndpointReply } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
-import { AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
+import { AGENT_CLUSTER, AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
 import { processRuntime } from "./process-runtime.js";
 import { importNativeSubjectPermissions, issuedPermitsSubject, readAcceptedRow, type IssuedSubjectPermission } from "./issued-authority.js";
 import { REGISTRY_ENDPOINT, REGISTRY_ENDPOINTS_COMMAND, type RegistryEndpointsInput, type RegistryEndpointsOutput } from "./registry-contract.js";
@@ -6783,14 +6783,16 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /**
-   * Serve this process's own endpoint on the principal route (SPEC 13.21): a core-defined command
-   * set about this principal, addressed by its own principal, lifecycle UID and runtime id, with no
-   * registration. Revision 1 defines one endpoint, `agent` (SPEC 13.22).
+   * Serve this process's `agent` endpoint on the principal route (SPEC 13.21, 13.22): the
+   * `AGENT_CLUSTER` command set about this principal, addressed by its own principal, lifecycle UID
+   * and runtime id, with no registration. `handlers` serves the cluster's commands with
+   * `AGENT_CONTRACTS`; `describe` is built in.
    *
    * Throws on an open mesh and on a static credential, where no row names who may call, without a
-   * lifecycle UID, before the endpoint has started, for an endpoint it already serves, and for a
-   * cluster with a command that declares no `authorities` (see {@link servePrincipalRoute}). It
-   * subscribes this process's own subject with no queue group.
+   * lifecycle UID, before the endpoint has started, while it already serves `agent`, for an
+   * `endpoint` or `cluster` field, which this entry point does not take, and for a set of handlers
+   * that is not the cluster's commands with its contracts. It subscribes this process's own subject
+   * with no queue group.
    *
    * `ready` is a positive check: it resolves only after the broker accepted the subscription
    * (subscribe, flush, and no permission violation for that subject), and rejects with the
@@ -6799,7 +6801,10 @@ export class CotalEndpoint extends EventEmitter {
    * serve, resolves `failed` and clears the presence field. `stop` unsubscribes, aborts the
    * handlers' `signal`, and waits for each handler in flight until its request's deadline at most.
    */
-  servePrincipal(serve: { endpoint: string; cluster: ClusterDocument; handlers: EpPrincipalCommandDef[] }): PrincipalServe {
+  servePrincipal(spec: { handlers: EpPrincipalCommandDef[] }): PrincipalServe {
+    if ("endpoint" in spec || "cluster" in spec)
+      throw new Error(`servePrincipal serves only the "${AGENT_ENDPOINT}" endpoint with AGENT_CLUSTER and takes handlers alone; an endpoint or cluster is refused, never ignored (SPEC 13.22)`);
+    const serve = { endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: spec.handlers };
     if (!this.authed)
       throw new Error("the principal route is served only on an authenticated mesh: on an open mesh no row says who may call (SPEC 13.21)");
     if (!this.userMode)
