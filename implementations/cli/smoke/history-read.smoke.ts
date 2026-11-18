@@ -236,6 +236,12 @@ try {
     lacking.status === 0 && lacking.envelope?.completeness === "complete" && lacking.envelope.warnings.some((w) => w.code === "CHANNEL_NOT_FOUND") && lacking.envelope.result?.replay.length === 0, shown(lacking));
   const fromBob = await run(["history", "--from", "bob", "--json"]);
   check("--from keeps one sender's messages", JSON.stringify(texts(fromBob)) === JSON.stringify(["looks good", "paging ops"]), texts(fromBob));
+  for (const flag of ["--from", "--grep"]) {
+    for (const value of ["", "   "]) {
+      const empty = await run(["history", "general", flag, value, "--json"]);
+      check(`history ${flag} ${JSON.stringify(value)} refuses USAGE_INVALID, exit 1`, empty.status === 1 && empty.envelope?.error?.code === "USAGE_INVALID", shown(empty));
+    }
+  }
   const grep = await run(["history", "--grep", "DEPLOY", "--json"]);
   check("--grep matches text case-insensitively within the window", JSON.stringify(texts(grep)) === JSON.stringify(["deploy started", "deploy finished"]) && grep.envelope?.result?.window.read === 4, { texts: texts(grep), window: grep.envelope?.result?.window });
 
@@ -255,7 +261,7 @@ try {
   check("the plain report shows each message's local time, not the ISO time JSON carries", localTime !== "" && plain.stdout.includes(localTime) && !/\d{4}-\d\d-\d\dT\d\d:/.test(plain.stdout) && /^\d{4}-\d\d-\d\dT/.test(items[0]!.ts), { localTime, stdout: plain.stdout.slice(0, 600) });
 
   // ── usage ───────────────────────────────────────────────────────────────────────────────────────
-  for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "1001"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
+  for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "9007199254740992"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
     const r = await run(["history", ...args, "--json"]);
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
@@ -267,12 +273,16 @@ try {
   // with `*` or a leading `#` got the subject grammar's reason.
   const [negLimit, negSince, starred] = await Promise.all([["--limit", "-1"], ["--since", "-5"], ["gen*"]].map((args) => run(["history", ...args, "--server", unavailable, "--json"])));
   check("a negative --limit or --since gets the flag's own rule, before connecting",
-    negLimit.status === 1 && negLimit.envelope?.error?.message === '--limit takes a whole number from 1 to 1000, not "-1"'
+    negLimit.status === 1 && negLimit.envelope?.error?.message === '--limit takes a positive whole number this client can represent without rounding, not "-1"'
       && negSince.status === 1 && negSince.envelope?.error?.message === '--since takes a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence, not "-5"', { negLimit: shown(negLimit), negSince: shown(negSince) });
   check("a channel holding * is refused with the wildcard sentence, before connecting",
     starred.status === 1 && starred.envelope?.error?.message === "name one concrete channel, without wildcards", shown(starred));
   const notADay = await run(["history", "--since", "2026-02-30", "--server", unavailable, "--json"]);
   check("a --since date that is not on the calendar is a usage error before connecting", notADay.status === 1 && notADay.envelope?.error?.message === "--since 2026-02-30 is not a calendar date", shown(notADay));
+  for (const [badIso, badDate] of [["2026-02-30T00:00:00Z", "2026-02-30"], ["2026-02-29T12:00:00+01:00", "2026-02-29"], ["2026-02-30 00:00:00", "2026-02-30"]] as const) {
+    const bad = await run(["history", "--since", badIso, "--server", unavailable, "--json"]);
+    check(`an impossible ISO date-time (${badIso}) is refused as USAGE_INVALID before connecting`, bad.status === 1 && bad.envelope?.error?.code === "USAGE_INVALID" && bad.envelope.error.message === `--since ${badDate} is not a calendar date`, shown(bad));
+  }
   const unsafeSequence = await run(["history", "--since", "9007199254740993", "--server", unavailable, "--json"]);
   check("an inexact --since sequence is a usage error before connecting", unsafeSequence.status === 1 && unsafeSequence.envelope?.error?.code === "USAGE_INVALID", shown(unsafeSequence));
 
@@ -515,14 +525,21 @@ try {
     const gapPlain = await run(["history", "general", "--space", openSpace, "--limit", "3", "--plain"]);
     check("the report names the gap as possible loss", new RegExp(`gap: #general holds ${cap} from carol, the per-sender limit, so their older messages there may be gone`).test(gapPlain.stdout), gapPlain.stdout);
     check("...and the time of the oldest post the stream still holds", typeof r?.retention?.oldestAt === "string" && /the oldest post the chat stream still holds is from .+; posts sent before it are gone/.test(gapPlain.stdout), { oldestAt: r?.retention?.oldestAt, stdout: gapPlain.stdout });
-    // At the cap a larger --limit does not exist, and a filter finds only what the window read.
+    const expanded = await run(["history", "general", "--space", openSpace, "--limit", "1001", "--json"]);
+    check("a larger window reads every retained message without duplicates", expanded.status === 0 && texts(expanded).length === 1001 && new Set(expanded.envelope?.result?.items.map((item) => item.id)).size === 1001, shown(expanded));
+    check("the expanded window is ordered and reaches the oldest retained message", texts(expanded)[0] === "carol 3" && expanded.envelope?.result?.window.olderRetained === false && expanded.envelope.result.items.every((item, i, rows) => i === 0 || item.seq! > rows[i - 1]!.seq!), expanded.envelope?.result?.window);
+    const older = await run(["history", "general", "--space", openSpace, "--limit", "2000", "--since", "0", "--grep", "carol 3", "--json"]);
+    check("since and grep can reach past the newest thousand", older.status === 0 && texts(older).includes("carol 3") && older.envelope?.result?.window.reachesSince === true, shown(older));
+    const confined = await talker.channelHistoryPage("general", { limit: 2000 });
+    check("the lifecycle-confined reader also accepts a window beyond a thousand", confined.complete && confined.items.length === 1001, { complete: confined.complete, count: confined.items.length });
+    // Every bounded window tells the reader how to reach older retained messages.
     const [capPlain, fromCarol] = await Promise.all([
       run(["history", "general", "--space", openSpace, "--limit", "1000", "--plain"]),
       run(["history", "general", "--space", openSpace, "--limit", "1000", "--from", "carol", "--plain"]),
     ]);
-    check("at --limit 1000 the report says history reads at most the newest 1000, and names no larger --limit",
-      capPlain.stdout.includes("older retained messages are not shown; history reads at most the newest 1000\n") && !capPlain.stdout.includes("raise --limit"), shown(capPlain));
-    check("below it the report still names the raise", gapPlain.stdout.includes("older retained messages are not shown; raise --limit (up to 1000) to read further back\n"), shown(gapPlain));
+    check("at --limit 1000 the report names a larger window",
+      capPlain.stdout.includes("older retained messages are not shown; raise --limit to read further back\n"), shown(capPlain));
+    check("below it the report still names the raise", gapPlain.stdout.includes("older retained messages are not shown; raise --limit to read further back\n"), shown(gapPlain));
     check("--from with older retained messages says it searched only the messages read",
       fromCarol.status === 0 && fromCarol.stdout.includes("--from carol searched only the 1000 read; older retained messages were not searched\n"), shown(fromCarol));
   }
@@ -614,6 +631,10 @@ try {
       made.status === 0 && partial.status === 4 && partial.envelope?.outcome === "partial" && partial.envelope.error?.code === "OPERATION_PARTIAL"
         && /^The purge reported 0 messages removed, but channel metadata removal was not confirmed\./.test(partial.envelope.error.message) && cleaned.status === 0 && removedOf(cleaned) === true,
       { made: shown(made), partial: shown(partial), cleaned: shown(cleaned) });
+    // The command a missing --yes names keeps the --space and --server it was given (#7564).
+    const asked = await run(["channel", "remove", "general", "--purge", "--space", space, "--server", servers, "--json"]);
+    check("channel remove without --yes names a confirming command that keeps --space and --server",
+      asked.envelope?.error?.remedy === `confirm with \`cotal channel remove general --space ${space} --server ${servers} --purge --yes\``, shown(asked));
   }
 
   // Channel policy labels describe each field's source, including explicit values equal to defaults.

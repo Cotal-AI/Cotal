@@ -44,6 +44,9 @@ An uncertain failure before the child started, a killed watcher after its launch
 
 The parser is [`agent-file.ts`](../packages/core/src/agent-file.ts).
 It requires a YAML mapping between `---` fences and a valid `name`.
+Modeled string fields require YAML strings, and string-array fields require arrays of strings.
+Numbers, booleans, nulls and scalar list shorthand are refused with the file, field and expected
+type. Quote a value such as `"42"` or `"false"` when it is meant as a string.
 
 | Field | Type | Meaning |
 | --- | --- | --- |

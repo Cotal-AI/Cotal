@@ -78,8 +78,7 @@ If the session publishes structured events, implement `eventChannel(principal)`.
 Use that same function to choose the publication channel and the manager's grant.
 Events default to enabled when this method exists.
 
-A connector without an event channel requires an explicit `--no-events` or `events: false`.
-A registration that requires events refuses that opt-out.
+A connector without an event channel leaves events off by default. An explicit `--events` request or a space requiring events refuses the launch.
 See the [connector interface](../packages/core/src/connector.ts) for every optional field.
 
 Implement `waitsForOperator(launchOptions)` when a launch option opens an operator screen before the session can join.

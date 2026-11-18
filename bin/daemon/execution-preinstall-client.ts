@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
+import { validUpdateAdmission, type UpdateAdmission } from "@cotal-ai/workspace";
 import type { ExecutionPreinstallRequest } from "./execution-preinstall.js";
 
 export interface ExecutionPreinstallReceipt {
@@ -9,8 +10,9 @@ export interface ExecutionPreinstallReceipt {
   readonly nonce: string;
   readonly installedEntry: string;
   readonly daemon?: { pid: number; start: string };
-  readonly hostedSpaces: string[];
-  readonly occupied: number;
+  readonly hostedSpaces: readonly string[];
+  readonly occupied: number | null;
+  readonly admission: UpdateAdmission;
 }
 
 /** Execute only the retained package's declared check, with a bounded single identity-bound receipt. */
@@ -46,7 +48,7 @@ export async function targetExecutionPreinstall(root: string, installedEntry: st
   const receipt = JSON.parse(receipts[0]!.slice("COTAL_PREINSTALL_RESULT ".length)) as ExecutionPreinstallReceipt;
   if (receipt.v !== 1 || receipt.nonce !== request.nonce || receipt.installedEntry !== installedEntry ||
       !Array.isArray(receipt.hostedSpaces) || receipt.hostedSpaces.some(space => typeof space !== "string") ||
-      !Number.isSafeInteger(receipt.occupied) || receipt.occupied < 0 ||
+      !validUpdateAdmission(receipt.admission) || receipt.occupied !== receipt.admission.occupied || JSON.stringify(receipt.hostedSpaces) !== JSON.stringify(receipt.admission.hostedSpaces) ||
       receipt.daemon !== undefined && (!Number.isSafeInteger(receipt.daemon.pid) || receipt.daemon.pid <= 0 || typeof receipt.daemon.start !== "string" || !receipt.daemon.start))
     throw new Error("target pre-install checks returned invalid evidence");
   return receipt;

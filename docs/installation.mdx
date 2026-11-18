@@ -139,11 +139,14 @@ Use `--help` for the full list.
 ## Remove Cotal
 
 Stop the spaces and agents that use this installation before removing its files.
-For an npm installation, run:
+For an npm installation, remove the package and any generation store created by `cotal update --self`:
 
 ```bash
+rm -rf "$(npm root -g)/../.cotal-generations"
 npm uninstall -g cotal-ai
 ```
+
+On Windows, run `npm uninstall -g cotal-ai`.
 
 For a shell installation with the default locations, remove `~/.local/bin/cotal` and the `cotal` directory under `${XDG_DATA_HOME:-~/.local/share}`.
 If you selected custom install locations, remove those locations instead.

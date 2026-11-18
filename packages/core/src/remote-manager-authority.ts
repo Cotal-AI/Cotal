@@ -1010,7 +1010,7 @@ export interface RemoteRunRevokeResult {
  * a registered signerless manager. Separate from `renewRunDriver`, which only renews an activated
  * attempt. The manager generates the nkeys and sends public ids only. The host authenticates the
  * registration, then derives every grant coordinate from its own stores: the immutable admission
- * (present, unrevoked, admitted on this instance), the run record's next epoch and fencing token,
+ * (present, unrevoked, admitted on this instance), the next epoch and fencing token above its status and journal activation,
  * the holder under the registered supervisor id, and for an answer the pause the named run's journal
  * records at the named step, still waiting (for an amendment, one whose answer was accepted).
  * Delegation to the registered trusted host; the host signs only the returned grant arguments.
