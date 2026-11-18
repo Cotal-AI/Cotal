@@ -7,6 +7,11 @@ audience: integrators
 
 ## Interactive manager primary [#interactive-manager-primary]
 
+The auth service implements manager authority, manager instance listing and lifecycle HTTP
+handlers in [`service-manager-routes.ts`](../implementations/auth/src/service-manager-routes.ts).
+The listener policy and authority context stay in `service.ts`. Existing host-facing exports
+remain available from `@cotal-ai/auth`.
+
 A trusted composition can pass `{ interactiveManagerSelection: "local-primary" }` as the third
 argument of `runAuthService(args, store, options)`. `AuthServiceRuntimeOptions` is exported by
 `@cotal-ai/auth`. The third argument still accepts the native daemon lifecycle hooks. No CLI
