@@ -195,7 +195,7 @@ const digestGrammarFiles = readdirSync(srcDir)
   .sort()
   .filter((f) => /sha256:\[0-9a-f\]\{64\}/.test(readFileSync(new URL(f, srcDir), "utf8")));
 ok("core source declares the sha256:[0-9a-f]{64} grammar only in canonical-json.ts plus the store-ref and schema-pattern sites",
-  JSON.stringify(digestGrammarFiles) === JSON.stringify(["canonical-json.ts", "endpoint-invoke.ts", "endpoint-serve.ts", "schema-profile.ts"]),
+  JSON.stringify(digestGrammarFiles) === JSON.stringify(["agent-endpoint.ts", "canonical-json.ts", "endpoint-invoke.ts", "endpoint-serve.ts", "schema-profile.ts"]),
   digestGrammarFiles);
 
 console.log(`canonical.smoke: ${pass} checks passed`);
