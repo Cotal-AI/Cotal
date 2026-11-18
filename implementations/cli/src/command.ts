@@ -707,7 +707,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
-  if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd)) {
+  // Broker-only startup and refresh never consume application connectors. Leave the deferred seed
+  // unarmed so every native launch path, including delivery and foreground custody, stays seed-free.
+  const brokerOnlyUp = cmd?.name === "up" && parsed?.values["no-manager"] === true;
+  if (opts.extensions && !controlOnlyManager && !brokerOnlyUp && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd)) {
     // `up` meets the seed's refusals here but seeds only when it first starts a process, so a refusal
     // in its own body leaves the operator-global store as it found it.
     const deferred = cmd?.name === "up";

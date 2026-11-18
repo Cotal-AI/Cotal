@@ -704,8 +704,9 @@ dashboard (`@cotal-ai/web`, providing `service-preset:web`) is the seventh built
 same path.
 
 `cotal ext seed` is the maintenance entry for that seeding (it runs automatically before the first
-command of each boot that is not a read, so you rarely call it; `cotal up` runs it when it first
-starts a process). A read, such as `status`, `ps`,
+command of each boot that needs it, so you rarely call it; `cotal up` runs it when it first
+starts a process unless `--no-manager` requests only native infrastructure). Broker-only starts and
+refreshes install no connectors and do not require npm. A read, such as `status`, `ps`,
 bare `use`, `ext list` or `docs`, installs and refreshes nothing. An installed extension's `reads` declaration is
 cached when it is added. Account catalog refresh with `sync` also skips connector seeding.
 A bare read and a read subcommand skip that seed prelude; a subcommand
