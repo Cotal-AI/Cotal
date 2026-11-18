@@ -121,11 +121,15 @@ if (globalHelperRoot) {
   try {
     await waitFor(() => existsSync(ready), "the competing updater");
     const started = Date.now();
-    const release = updateRuntime.claimGlobalUpdate(root);
+    let waits = 0;
+    const release = updateRuntime.claimGlobalUpdate(root, () => { waits++; });
     release();
     assert.ok(Date.now() - started >= 500, "plain self-update waits for the competing updater to release its reservation");
+    assert.equal(waits, 1, "contention reports its wait once, not once per poll");
     await waitForExit(holder);
     assert.equal(holder.exitCode, 0);
+    updateRuntime.claimGlobalUpdate(root, () => { waits++; })();
+    assert.equal(waits, 1, "an uncontended reservation reports no wait");
   } finally {
     if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
     rmSync(root, { recursive: true, force: true });

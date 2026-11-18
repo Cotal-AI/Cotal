@@ -96,10 +96,18 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const updates = await Promise.all(Array.from({ length: scenario === 'concurrent' ? 2 : 1 }, () => run(process.execPath, [entry, 'update', '--self'], 660000)));
     const update = updates[0];
     if (abandoned) await abandoned;
+    const waitLine = "Waiting up to 10 minutes for another updater to release npm's global root";
+    for (const result of updates) assert.doesNotMatch(result.output, /Reserving npm's global root/);
     if (scenario === 'concurrent') {
       for (const result of updates) assert.equal(result.code, 0, result.output);
       assert.equal(updates.filter(result => /installed globally and reconciled/.test(result.output)).length, 1, 'only one updater replaces the global package');
       assert(updates.some(result => /rechecking the installed CLI/.test(result.output)), JSON.stringify(updates));
+      const installer = updates.find(result => /installed globally and reconciled/.test(result.output));
+      const waiter = updates.find(result => /rechecking the installed CLI/.test(result.output));
+      assert(!installer.output.includes(waitLine), installer.output);
+      assert.equal(waiter.output.split(waitLine).length - 1, 1, waiter.output);
+    } else {
+      assert(!update.output.includes(waitLine), update.output);
     }
     const elapsedMs = Date.now() - started;
     const selected = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;

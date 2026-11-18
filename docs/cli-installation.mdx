@@ -427,9 +427,9 @@ that wait. The command then restores the interrupted transaction and continues t
 self-update. An expired wait, an unpublished child PID or ambiguous descendant state still refuses
 without starting a competing replacement.
 
-
 When two `cotal update --self` commands target the same npm installation, one waits up to ten
-minutes for the other update to finish. It then reads the installed version again. If the other
+minutes for the other update to finish. Only a command that has to wait prints a waiting line, once.
+It then reads the installed version again. If the other
 command installed the requested release or a newer one, it continues through that verified CLI
 instead of replacing the package again. A timeout or unresolved child state still
 refuses without starting a competing replacement.

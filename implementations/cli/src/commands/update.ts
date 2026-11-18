@@ -154,7 +154,7 @@ export interface UpdateRuntime {
   prepareReplacement?(): Promise<() => Promise<void>>;
   /** Validate recorded local service ownership before replacing packages or reconciling connectors. */
   preflightReplacement?(): Promise<void>;
-  claimGlobalUpdate(root: string): () => void;
+  claimGlobalUpdate(root: string, onWait?: () => void): () => void;
   /** Read the selected global package again after acquiring its update reservation. */
   globalVersion?(root: string): string | undefined;
   selfArgv(): string[];
@@ -217,7 +217,7 @@ export const updateRuntime: UpdateRuntime = {
   extensions: () => loadExtensionsManifest().extensions,
   verifyExtension: verifyCurrentExtension,
   claimUpdatePass: () => claimExtensionUpdatePass(),
-  claimGlobalUpdate: (root) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000 }),
+  claimGlobalUpdate: (root, onWait) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000, onWait }),
   globalVersion: (root) => {
     const path = join(root, "cotal-ai", "package.json");
     if (!existsSync(path)) return undefined;
@@ -1248,8 +1248,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
 
   let releaseGlobal: () => void;
   try {
-    rt.out("Reserving npm's global root for update (another updater may hold it for up to 10 minutes)");
-    releaseGlobal = rt.claimGlobalUpdate(root);
+    releaseGlobal = rt.claimGlobalUpdate(root, () => rt.out("Waiting up to 10 minutes for another updater to release npm's global root"));
   } catch (e) {
     rt.err(c.red(`✗ could not reserve npm's global root for update: ${message(e)}`));
     return 1;
