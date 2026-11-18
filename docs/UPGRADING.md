@@ -1,5 +1,33 @@
 # Upgrading a running deployment
 
+## Agent names that start with a hyphen
+
+An agent name that starts with `-` is now refused where the name can reach a runtime's argument
+list. Open and static meshes accepted one before. These refuse it:
+
+- a managed spawn and `cotal spawn --name`;
+- a persona definition: `cotal persona create`, `cotal personas new`, a `cotal persona edit` that
+  renames the file, and `cotal_persona` over the wire;
+- a manifest's `agents:` keys, so `cotal team check` refuses the manifest and `cotal team deploy`
+  creates nothing;
+- the manager's restore of a retained agent;
+- the tmux, herdr, cmux and orca runtimes.
+
+`cotal join --name`, `cotal mint -a` and the conversation name a connector sends are unchanged:
+those names do not reach a runtime's argument list.
+
+A persona file an earlier release created under such a name can still be listed, shown and removed,
+locally and over the wire, but not spawned or redefined. On the command line the name goes after
+`--`, with every flag before it, because a word that starts with `-` reads as an option:
+
+```bash
+cotal persona show -- -name
+cotal persona remove --yes -- -name
+```
+
+To keep the persona, create it again under a name that starts with a letter, digit or `_`, its
+`name:` field included, then remove the old file.
+
 ## Durable channel leave after 0.166.0
 
 From 0.166.0 a channel leave retires every open durable membership the principal holds on that

@@ -12,7 +12,7 @@ import { completedFlagValue, completingFlagValue, positionalsForCompletion } fro
 import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas } from "../lib/personas.js";
 import {
   assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource,
-  requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog, type PersonaEdit,
+  requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, personaCommand, type PersonaCatalog, type PersonaEdit,
 } from "../lib/persona-files.js";
 import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -53,7 +53,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   const catalog = personaCatalog(values);
   recordOperationSpace(catalog.space);
   if (sub === undefined) return list(catalog, presentation);
-  const path = personaPath(catalog.root, name!);
+  const path = personaPath(catalog.root, name!, sub === "show" || sub === "remove" ? "read" : "write");
   if (sub === "show") {
     const source = requirePersonaSource(path);
     const definition = validatePersona(source.bytes, path);
@@ -67,7 +67,12 @@ export async function persona(args: ParsedArgs): Promise<void> {
         ["File", result.path],
       ] }] },
       { title: "Instructions", blocks: [{ kind: "lines", lines: result.definition.persona?.trim() ? result.definition.persona.split(/\r?\n/) : [{ text: "No instructions in this definition.", tone: "hint" }] }] },
-      { title: "Next", blocks: [{ kind: "commands", items: [
+      // A name that begins with `-` can be read and removed but not edited or spawned, so its next
+      // step is the removal, spelled with `--`.
+      { title: "Next", blocks: [{ kind: "commands", items: result.name!.startsWith("-") ? [
+        { command: personaCommand("p remove", result.name!, "--yes"), description: "Remove it; a name that begins with '-' cannot be spawned or edited" },
+        { command: personaCommand("p show", result.name!, "--json"), description: "Read all fields and the complete source" },
+      ] : [
         { command: `cotal p edit ${result.name}`, description: "Edit this local definition" },
         { command: `cotal spawn ${result.name}`, description: "Launch an agent from it" },
         { command: `cotal p show ${result.name} --json`, description: "Read all fields and the complete source" },
@@ -95,7 +100,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
     const seeded = name === "default";
     const question = seeded ? `Remove the seeded default persona '${name}' at ${path}? A bare \`cotal spawn\` launches it.` : `Remove '${name}' at ${path}?`;
     if (!values.yes) {
-      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with \`cotal persona remove ${name} --yes\`` });
+      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with \`${personaCommand("persona remove", name!, "--yes")}\`` });
       let confirmed = false;
       if (presentation === "plain") {
         confirmed = (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";

@@ -47,7 +47,9 @@
     "SPECIFIER BOUNDARY. These cells drive the two exported functions directly, not a live manager.",
     "The manager reaches them by delegation (`nameError` returns `spawnNameError(...)`) and by using",
     "`firstFreeName` for its funnel; that wiring is one call each and is typechecked, but a live",
-    "spawn being refused end to end is NOT proven here and is named as a residual."
+    "spawn being refused end to end is NOT proven here and is named as a residual.",
+    "",
+    "M8 and M9 guard the leading-hyphen refusal. M8 deletes it; M9 moves it below the static/open return, so it would hold only in user mode, where the token rule already refuses every hyphen. Both redden the static/open cell, which is the only cell that can tell them from the shipped code."
   ],
   "mutations": [
     {
@@ -80,8 +82,8 @@
     {
       "name": "M3 the name door restates the alphabet instead of delegating",
       "file": "packages/core/src/agent-file.ts",
-      "find": "  try {\n    assertValidOwnerToken(name);\n  } catch {",
-      "replace": "  try {\n    if (!/^[A-Za-z0-9_]+$/.test(name)) throw new Error(\"bad\");\n  } catch {",
+      "find": "  try {\n    assertBoundedOwner(name, \"actor\");\n  } catch (e) {",
+      "replace": "  try {\n    if (!/^[A-Za-z0-9_]+$/.test(name) || name.length > 64) throw new Error(\"bad\");\n  } catch (e) {",
       "expectRed": "the narrow half CALLS the shipped validator",
       "cell": "the narrow half CALLS the shipped validator (delegation, not a restatement)",
       "note": "CORRECT TODAY — it reproduces the validator's current alphabet exactly, so every BEHAVIOURAL cell stays green. It first ran as a SURVIVOR, with the harness's positive control confirming the file was loaded, which made it a real coverage gap rather than an unreachable mutant. That is the finding: a restatement that is right today is indistinguishable from delegation today, and diverges only after someone changes the token grammar — the one moment nobody is reading this door. It is now killed by structural cells over the parsed source, which a comment or a string naming the validator cannot satisfy."
@@ -121,6 +123,24 @@
       "expectRed": "path-hostile name",
       "cell": "path-hostile name \"…\" is refused in BOTH modes",
       "note": "The token alphabet already excludes `/` and `.`, so user mode stays safe and only the static/open half of each path-hostile cell reddens. That is the half still carrying the traversal guard, and it is unconditional by design."
+    },
+    {
+      "name": "M8 the leading-hyphen refusal is removed",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (name.startsWith(\"-\"))\n    return `unsafe name ${JSON.stringify(name)}: a name may not start with \"-\", because runtimes pass it to other commands as an argument`;\n",
+      "replace": "",
+      "expectRed": "a name starting with \"-\" (\"--session\") is refused in static/open mode, naming the leading \"-\"",
+      "cell": "a name starting with \"-\" (${JSON.stringify(dashed)}) is refused in static/open mode, naming the leading \"-\"",
+      "note": "The static/open half is the one that reddens: in user mode the token rule refuses a hyphen anywhere, so only the static/open cell can see this refusal go."
+    },
+    {
+      "name": "M9 the leading-hyphen refusal moves below the static/open return",
+      "file": "packages/core/src/agent-file.ts",
+      "find": "  if (name.startsWith(\"-\"))\n    return `unsafe name ${JSON.stringify(name)}: a name may not start with \"-\", because runtimes pass it to other commands as an argument`;\n  if (!opts.userMode) return undefined;\n",
+      "replace": "  if (!opts.userMode) return undefined;\n  if (name.startsWith(\"-\"))\n    return `unsafe name ${JSON.stringify(name)}: a name may not start with \"-\", because runtimes pass it to other commands as an argument`;\n",
+      "expectRed": "a name starting with \"-\" (\"--session\") is refused in static/open mode, naming the leading \"-\"",
+      "cell": "a name starting with \"-\" (${JSON.stringify(dashed)}) is refused in static/open mode, naming the leading \"-\"",
+      "note": "The plausible misplacement: the check still exists and user mode still refuses, but a static or open mesh, the one that accepted such a name before, accepts it again."
     }
   ]
 }

@@ -61,18 +61,37 @@ export function reservedPersonaName(name: string): string | undefined {
   return name === DEFAULT_AGENT_NAME ? `'${name}' is reserved: the seeded default persona launches its agents under that name` : undefined;
 }
 
-/** Why `name` cannot name a persona, or undefined when it can. */
+/** Why `name` cannot name a new persona, or undefined when it can. A name may not begin with `-`:
+ *  a terminal runtime passes it to another program as an argument, where it reads as an option. */
 export function personaNameProblem(name: string): string | undefined {
+  const problem = storedPersonaNameProblem(name);
+  if (problem) return problem;
+  if (name.startsWith("-")) return "a persona name may not begin with '-', because runtimes pass it to other commands as an argument";
+  return undefined;
+}
+
+/** Why `name` cannot name a stored persona file, or undefined when it can. Reading, showing and
+ *  removing use this rule, so a file an earlier release created under a name that begins with `-`
+ *  can still be read and removed. */
+function storedPersonaNameProblem(name: string): string | undefined {
   if (!/^[A-Za-z0-9_-]+$/.test(name)) return `persona names use letters, digits, '_' or '-', up to ${MAX_NAME_LENGTH} characters`;
   if (name.length > MAX_NAME_LENGTH) return `persona names are at most ${MAX_NAME_LENGTH} characters; this one has ${name.length}`;
   try { assertValidName(name); } catch (error) { return (error as Error).message; }
   return undefined;
 }
 
-export function personaPath(root: string, name: string): string {
-  const problem = personaNameProblem(name);
+/** The catalog file for `name`. A create or an edit passes `write`, which refuses a name that may
+ *  not be defined; a read or a removal also reaches a file an earlier release wrote. */
+export function personaPath(root: string, name: string, use: "read" | "write" = "write"): string {
+  const problem = use === "write" ? personaNameProblem(name) : storedPersonaNameProblem(name);
   if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
   return agentFilePath(root, name);
+}
+
+/** A `cotal` command line that names a persona. A name that begins with `-` goes after `--`, with
+ *  every flag before it, because the parser reads a word that begins with `-` as an option. */
+export function personaCommand(words: string, name: string, flags = ""): string {
+  return name.startsWith("-") ? `cotal ${words}${flags ? ` ${flags}` : ""} -- ${name}` : `cotal ${words} ${name}${flags ? ` ${flags}` : ""}`;
 }
 
 /** Only absence is absent. Unreadable and non-regular sources refuse rather than becoming empty. */
@@ -325,7 +344,11 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
     if (edited.equals(source.bytes)) return { action: "unchanged" };
     const oversized = tooLarge(edited, `your edit is kept in ${draft}; shorten it to 1 MiB or less, run \`cotal persona edit ${name}\` again and paste it in, then remove ${dirname(draft)}`);
     if (oversized) { keep = true; throw oversized; }
-    try { validatePersona(edited, draft); }
+    try {
+      const def = validatePersona(edited, draft);
+      const renamed = def.name !== name ? personaNameProblem(def.name) : undefined;
+      if (renamed) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${draft}: ${renamed}`);
+    }
     catch (error) {
       if (!isCommandFailure(error)) throw error;
       keep = true;

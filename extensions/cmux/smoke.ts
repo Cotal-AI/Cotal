@@ -182,6 +182,15 @@ process.stdout.write("OK");
   }
 }
 
+// A name that begins with `-` would reach cmux's argument list as an option. The runtime checks the
+// name before it asks whether cmux is reachable, so this holds where cmux is not installed.
+for (const dashed of ["--workspace", "-x"]) {
+  let refusal = "";
+  try { new CmuxRuntime().spawn(dashed, { command: "true", args: [], env: {} }, "/tmp"); }
+  catch (error) { refusal = (error as Error).message; }
+  ok(`spawn refuses an agent name that begins with - (${dashed})`, refusal.includes("not starting with -"));
+}
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 console.log("CMUX SMOKE COMPLETE");
 if (failed > 0) process.exit(1);

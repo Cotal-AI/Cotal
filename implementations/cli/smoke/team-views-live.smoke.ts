@@ -32,6 +32,8 @@
  *     as they were, and a removal after one of its cards was edited names that card.
  *  K. after `team remove --yes` of an 11-card deployment, `team show` lists each card's delete
  *     submission before its outcome, and the cards in manifest order, in text and JSON.
+ *  L. a manifest whose agent name begins with `-`: `team check` refuses it naming the key, and
+ *     `team deploy` refuses it before any effect, so its declared channel is not created.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -83,6 +85,9 @@ for (const dir of [s, c]) manifest("other.yaml", OTHER, { x: "    deliveryClass:
 manifest("boot.yaml", SPACE_B, { bootch: "    deliveryClass: live\n" }, { dir: b, server: SERVER_B });
 manifest("open.yaml", SPACE, { lobby: "    deliveryClass: live\n" }, { open: true });
 manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, { head: "defaults:\n  replay: false\n  replayWindow: 2h\n  deliveryClass: live\n" });
+// An agent whose name begins with `-`, beside a live channel the deploy would create first.
+writeFileSync(join(s, "dash.md"), "---\nname: dash\nsubscribe: []\n---\nA persona.\n");
+manifest("dash.yaml", SPACE, { dashch: "    deliveryClass: live\n" }, { head: "agent: e2e-stub\nagents:\n  \"-dash\": ./dash.md\n" });
 
 let up = false, bUp = false;
 try {
@@ -255,6 +260,19 @@ try {
   const rows = orderShow.stdout.split("\n").filter((line) => /^\s+#order\d+\s/.test(line)).map((line) => line.trim().replace(/\s+/g, " "));
   check("  and its text ends each card on its deletion, not on the submitted step",
     orderShow.status === 0 && rows.at(-1)?.startsWith("#order10 deleted at created revision") === true && rows.indexOf("#order0 delete submitted; outcome not implied none") < rows.findIndex((row) => row.startsWith("#order0 deleted at created revision")), rows);
+
+  console.log("\nL. an agent name that begins with a hyphen");
+  const dashCheck = cotal(s, "team", "check", "dash.yaml", "--json");
+  const dashCheckError = envelope(dashCheck.stdout)?.error;
+  check("team check refuses a manifest whose agent name begins with -, naming the key",
+    dashCheck.status === 1 && dashCheckError?.code === "SCHEMA_INVALID" && dashCheckError.message!.includes('invalid agent name "-dash": a name may not begin with "-"'), dashCheck.out.slice(-800));
+  const dashDeploy = cotal(s, "team", "deploy", "dash.yaml", "--json");
+  const dashDeployError = envelope(dashDeploy.stdout)?.error;
+  const dashChannel = cotal(s, "channel", "show", "dashch", "--json");
+  const savedCards = Object.keys((envelope(dashChannel.stdout)?.result?.registry as { channels?: Record<string, unknown> } | undefined)?.channels ?? {});
+  check("team deploy of that manifest refuses before any effect and creates none of its channels",
+    dashDeploy.status === 1 && dashDeployError?.code === "SCHEMA_INVALID" && dashDeployError.message!.includes('invalid agent name "-dash"') &&
+      savedCards.includes("live1") && !savedCards.includes("dashch"), { deploy: dashDeploy.out.slice(-800), savedCards });
 } finally {
   if (bUp) {
     const down = cotal(b, "down", "--yes");

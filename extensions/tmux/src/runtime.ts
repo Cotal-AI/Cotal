@@ -33,9 +33,9 @@ export class TmuxRuntime implements Runtime {
   constructor(private readonly session: string) {}
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
-    if (!/^[A-Za-z0-9_.-]+$/.test(name))
+    if (!/^[A-Za-z0-9_.][A-Za-z0-9_.-]*$/.test(name))
       throw new SpawnRefused(
-        `tmux runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`,
+        `tmux runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -, not starting with -)`,
       );
     if (!tmux.available())
       throw new SpawnRefused("tmux runtime: tmux is not available — is tmux installed and on PATH?");

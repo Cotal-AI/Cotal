@@ -878,6 +878,20 @@ try {
     check("remove-persona deletes an owned 69-character legacy entry that cannot be spawned",
       rRemoveInvalid.reply.ok === true && !existsSync(invalidPath), rRemoveInvalid.reply);
 
+    // Showing is a read: a file an earlier release created under a name that begins with `-` can
+    // still be shown and removed by its owner, while a spawn of it is refused.
+    const dashPath = join(workspaceRoot, ".cotal", "agents", "-legacydash.md");
+    writeFileSync(dashPath, `---\nname: -legacydash\nowner: ${A.principal}\nsubscribe: []\n---\nkept from an earlier release\n`);
+    const rShowDash = await A.call("show-persona", { name: "-legacydash" });
+    check("show-persona reads an owned stored file whose name begins with \"-\"",
+      rShowDash.reply.ok === true && (rShowDash.reply.data as { persona?: string }).persona?.includes("kept from an earlier release") === true, rShowDash.reply);
+    const rSpawnDash = await A.call("spawn", { name: "-legacydash", agent: "e2e-stub", events: false });
+    check("…while a spawn of it is refused, naming the leading \"-\"",
+      rSpawnDash.reply.ok === false && String(rSpawnDash.reply.error?.message ?? "").includes('may not start with "-"'), rSpawnDash.reply);
+    const rRemoveDash = await A.call("remove-persona", { name: "-legacydash" });
+    check("…and remove-persona deletes it",
+      rRemoveDash.reply.ok === true && !existsSync(dashPath), rRemoveDash.reply);
+
     const rModels = await A.call("models", {});
     const catalogs = (rModels.reply.data as { catalogs: Array<{ agent: string; supported: boolean }> })?.catalogs;
     check("models answers the NORMALIZED catalog list (stub connector: supported=false)",
@@ -976,6 +990,9 @@ try {
     const rTravId = await A.call("spawn", { name: "w1", agent: "e2e-stub", identity: "../evil", events: false });
     check("a traversal identity override refuses at the FINAL allocation-site grammar",
       rTravId.reply.ok === false && String(rTravId.reply.error?.message ?? "").includes("unsafe name"), rTravId.reply);
+    const rDashId = await A.call("spawn", { name: "w1", agent: "e2e-stub", identity: "--session", events: false });
+    check("an identity starting with \"-\" refuses on a static mesh before any runtime receives it",
+      rDashId.reply.ok === false && String(rDashId.reply.error?.message ?? "").includes('may not start with "-"'), rDashId.reply);
     const rTravDef = await A.call("define-persona", { name: "../evil", persona: "x" });
     check("a traversal define-persona name refuses before any file write",
       rTravDef.reply.ok === false && String(rTravDef.reply.error?.message ?? "").includes("unsafe name"), rTravDef.reply);

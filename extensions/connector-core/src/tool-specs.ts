@@ -2185,8 +2185,8 @@ export function cotalToolSpecs(
       schema: {
         name: z
           .string()
-          .regex(/^[A-Za-z0-9_-]+$/, "letters, digits, _ or - only")
-          .describe("Unique name for the persona (also the spawn name): letters, digits, _ or -."),
+          .regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*$/, "letters, digits, _ or -, not beginning with -")
+          .describe("Unique name for the persona (also the spawn name): letters, digits, _ or -, not beginning with -."),
         instance: managerInstanceArg,
         prompt: z.string().max(10_000).describe("The persona: an appended system prompt describing who this agent is. A complete agent file (leading --- frontmatter with subscribe / allowSubscribe / allowPublish) is merged, not wrapped."),
         model: z.string().max(120).optional().describe("Optional model override (e.g. opus, sonnet). Wins over a model: in the prompt's frontmatter."),

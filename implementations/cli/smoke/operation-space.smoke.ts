@@ -135,6 +135,32 @@ check("persona create --file whose role send -r refuses is SCHEMA_INVALID naming
 const roleOk = cotal("persona", "create", "goodrole", "--prompt", "x", "--role", "reviewer", "--subscribe", "", "--json");
 check("control: a valid role token is created", roleOk.status === 0 && existsSync(agentFilePath(root, "goodrole")), shown(roleOk));
 
+// A persona name that begins with `-` would reach a runtime's argument list as an option. A new one
+// is refused by both create commands; one an earlier release wrote can still be shown and removed,
+// after `--`, and every command printed for it puts the name after `--`.
+for (const argv of [["persona", "create", "--prompt", "x", "--subscribe", "", "--json", "--", "-newp"], ["personas", "new", "--prompt", "x", "--subscribe", "", "--", "-newq"]]) {
+  const created = cotal(...argv);
+  const name = argv.at(-1)!;
+  check(`${argv.slice(0, 2).join(" ")} refuses a name that begins with -, and writes nothing`,
+    created.status === 1 && `${created.stdout}${created.stderr}`.includes("may not begin with '-'") && !existsSync(agentFilePath(root, name)), shown(created));
+}
+writeFileSync(agentFilePath(root, "-legacy"), "---\nname: -legacy\nsubscribe: []\n---\nWritten by an earlier release.\n");
+const resultOf = (r: { envelope?: unknown }) => (r.envelope as { result?: { name?: string; action?: string } } | undefined)?.result;
+const legacyShow = cotal("persona", "show", "--json", "--", "-legacy");
+check("persona show -- -legacy reads a stored file whose name begins with -",
+  legacyShow.status === 0 && resultOf(legacyShow)?.name === "-legacy", shown(legacyShow));
+const legacyShowText = cotal("persona", "show", "--plain", "--", "-legacy");
+check("its Next offers the removal after --, and neither edit nor spawn",
+  legacyShowText.status === 0 && legacyShowText.stdout.includes("cotal p remove --yes -- -legacy") && !legacyShowText.stdout.includes("cotal spawn -legacy") && !legacyShowText.stdout.includes("cotal p edit -legacy"), shown(legacyShowText));
+const legacyUnconfirmed = cotal("persona", "remove", "--json", "--", "-legacy");
+check("persona remove without --yes names the command with -- before the name",
+  legacyUnconfirmed.status === 1 && legacyUnconfirmed.envelope?.error?.remedy === "confirm with `cotal persona remove --yes -- -legacy`" && existsSync(agentFilePath(root, "-legacy")), shown(legacyUnconfirmed));
+const legacyRemoved = cotal("persona", "remove", "--yes", "--json", "--", "-legacy");
+check("the command it names removes the file",
+  legacyRemoved.status === 0 && resultOf(legacyRemoved)?.action === "removed" && !existsSync(agentFilePath(root, "-legacy")), shown(legacyRemoved));
+const innerDash = cotal("persona", "create", "a-b", "--prompt", "x", "--subscribe", "", "--json");
+check("control: a name with - after its first character is created", innerDash.status === 0 && existsSync(agentFilePath(root, "a-b")), shown(innerDash));
+
 // A malformed --on names the command to rerun, with --on written once.
 for (const [argv, rerun] of [
   [["persona", "--on", "bad"], "cotal persona --on <instance>"],
