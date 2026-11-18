@@ -51,11 +51,15 @@ No workflow runs `pnpm check`, and some of its `:live` steps are on no CI shard.
 ## Docs checks
 
 `pnpm check:docsbundle` is the CI docs gate. It runs `check-unmerged.mjs`, `check:docs-voice`,
-`check:doc-comments`, `check:docs-literals`, `check:docs-site`, the tool-docs and schema generators
-with a diff of their output, and `check-docs-bundle.mjs`. Three of them prove less than a green run
-suggests:
+`check:doc-comments`, `check:comment-history`, `check:docs-literals`, `check:docs-site`, the tool-docs
+and schema generators with a diff of their output, and `check-docs-bundle.mjs`. These checks prove
+less than a green run suggests:
 
 - `check:docs-voice` grades prose style in `docs/` and never reads source.
+- `check:comment-history` refuses increased counts of issue references and historical phrases in
+  shipped-source comments, both per file and per rule across the repository. A source move names
+  its receiving files. `pnpm check:comment-history:update` rewrites the allowlist after review.
+  The [check reference](../docs/design/comment-history-check.md) covers scope and limitations.
 - `check:docs-literals` reads each code span in `docs/` that looks like emitted operator prose
   (four or more lowercase words, not a command) and fails when no string or template literal in
   shipped source holds it. A substituted value is written as a placeholder such as `<id>`, and it
