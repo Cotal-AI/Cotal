@@ -260,9 +260,21 @@ function fmtUptime(ms: number): string {
   return `${d}d ${Math.floor(h - d * 24)}h`;
 }
 
-/** Resolve a targeted verb's manager and retain the presence-selected seat for its fresh caller. */
-async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Promise<ManagerPin> {
-  const on = await managerPin(v, verb);
+/** The command an `--on` remedy tells the caller to rerun: the verb with the agent, the other
+ *  positionals and the `--space` or `--server` they gave, so following it changes only `--on` (#7322). */
+function onRemedyVerb(verb: string, v: { name?: unknown; space?: unknown; server?: unknown }, rest: readonly string[] = []): string {
+  return [
+    verb, shellWord(String(v.name)), ...rest,
+    ...(typeof v.space === "string" ? ["--space", shellWord(v.space)] : []),
+    ...(typeof v.server === "string" ? ["--server", shellWord(v.server)] : []),
+  ].join(" ");
+}
+
+/** Resolve a targeted verb's manager and retain the presence-selected seat for its fresh caller.
+ *  `rest` is the positionals after the agent name that a remedy has to repeat. */
+async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string, rest: readonly string[] = []): Promise<ManagerPin> {
+  const named = onRemedyVerb(verb, v, rest);
+  const on = await managerPin(v, named);
   if (on !== undefined) return { instanceId: on };
   const loc = await locateSeat(cliControl, v, String(v.name));
   if (loc.kind === "pin") return { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat };
@@ -276,7 +288,7 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
   // proves the name absent; one that did not cannot say where it is. A name held on several managers,
   // or found on none that answered, is a choice among those managers only, which a terminal is asked.
   if (loc.space !== undefined) recordOperationSpace(loc.space);
-  const agent = String(v.name), message = seatMissRefusal(agent, verb, loc);
+  const agent = String(v.name), message = seatMissRefusal(agent, named, loc);
   if (loc.kind === "absent")
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: "run `cotal ps` to see the agents each manager runs" });
   const shown = oneLine(agent);
@@ -635,7 +647,7 @@ function startManagerNext(root: string | undefined, space: string, named: boolea
 
 /** Read one named seat from its presence-selected owner. User-auth keeps its authorized census. */
 async function readNamedSeat(values: FlagValues<typeof psFlags>, name: string): Promise<SeatCensus> {
-  const on = await managerPin(values, "cotal status");
+  const on = await managerPin(values, onRemedyVerb("cotal status", { ...values, name }));
   if (name === "manager" || (await connectOrThrow(values, "observer", { readOnly: true })).mode === "user")
     return readSeats(values, "ps", on);
   const pin = on === undefined ? await pinForTarget({ ...values, name } as never, "cotal status") : { instanceId: on };
@@ -982,14 +994,14 @@ export function inputArguments(args: ParsedArgs): { name: string; text: string }
   const text = positionalText ?? values.text;
   if (!name?.trim() || /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "input needs one concrete agent name without terminal control characters");
   if (!text) throw new CommandFailure("refused", "USAGE_INVALID", "input needs nonempty text; use --text for a value beginning with a dash");
-  if (values.on !== undefined) onInstance(values.on, "cotal input");
+  if (values.on !== undefined) onInstance(values.on, onRemedyVerb("cotal input", { ...values, name }, ["<text>"]));
   return { name, text };
 }
 
 export async function input(args: ParsedArgs): Promise<void> {
   const parsed = inputArguments(args);
   const v = { ...args.values, ...parsed } as FlagValues<typeof inputFlags> & { name: string; text: string };
-  const pin = await pinForTarget(v as never, "cotal input");
+  const pin = await pinForTarget(v as never, "cotal input", ["<text>"]);
   const on = pin.instanceId;
   // A typed pin the registry does not list is refused at once, as stop refuses it.
   if (v.on !== undefined && on !== undefined) {
