@@ -31,6 +31,7 @@ import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, standaloneConnectOpts,
   replayRunJournal, openRecordsBucket, readRunRecord, admissionBucket, revocationKey, recordsBucket, listRunMigrations,
   revokeRunAdmission, recordAtomicKey, recordStatusKey, RECORD_KINDS, mintLifecycleUid, EpEnvelopeError,
+  activateRun, lastActivation,
 } from "@cotal-ai/core";
 import { authDir, exitCode, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { CATALOG, type JournalEntry } from "@cotal-ai/lang";
@@ -283,6 +284,24 @@ let P = "";
   reset();
   await wf(["resume", P], { file: PURE });
   c("resume replays a completed run to completed", captured().includes(`run ${P}: completed`), captured());
+}
+
+// An attempt can activate and stop before its first status note. The command must advance past
+// that durable fence, not reuse the status token under a different holder.
+{
+  const before = (await record(P))!.status!.value;
+  const takeoverId = `t${(takeovers += 1)}`;
+  const creds = await mintCreds(auth, newIdentity(), "run-driver", { runDriver: { endpoint: EP, runId: P, takeoverId, instanceId: mintLifecycleUid(), epoch: before.epoch + 1 } });
+  const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    await activateRun(jetstream(nc), await jetstreamManager(nc), { space: SPACE, runId: P, holder: "stopped-before-note", epoch: before.epoch + 1, fencingToken: before.fencingToken + 1, takeoverId, at: Date.now(), expect: "existing" });
+  } finally { await nc.close(); }
+  c("interrupted activation leaves the status token behind", (await record(P))?.status?.value.fencingToken === before.fencingToken);
+  reset();
+  await wf(["resume", P]);
+  const after = (await record(P))!.status!.value;
+  c("local resume advances beyond the unnoted activation and completes", captured().includes(`run ${P}: completed`) && after.fencingToken === before.fencingToken + 2 && after.epoch === before.epoch + 2, { output: captured(), after });
+  c("the resumed holder matches the authoritative journal fence", lastActivation((await journal(P)).records)?.holder === after.holder);
 }
 
 // The refusal block that once sat here (a `worktree` spawn held on the not-yet-durable seam) went
@@ -832,13 +851,11 @@ let P = "";
   const filed2 = await asOperator(rid2, async ({ nc }) => listRunMigrations(await new Kvm(nc).open(recordsBucket(SPACE)), EP, rid2)).catch(() => undefined);
   c("...and the refused check filed nothing either", filed2 !== undefined && filed2.length === 0, filed2);
 
-  // A commit-side override is refused BY NAME, before any read of the run; the sentinel from the
-  // head of this block converts the gate's exit into the value graded here, and `withStderr`
-  // captures the sentence the way block 10 captures a ps diagnostic.
+  // A commit-side override is refused by the early structured grammar before any read.
   reset();
   const override = await withStderr(() => wf(["migrate", rid2], { file: DROP, "discard-approvals": true })).then(() => undefined, (e: Error) => e);
   c("a commit-side override is refused by name",
-    override instanceof Exited && ERRS.some((l) => l.includes("--discard-approvals") && l.includes("only checks")),
+    isCommandFailure(override) && override.code === "USAGE_INVALID" && override.message.includes("--discard-approvals") && override.message.includes("only checks"),
     override instanceof Error ? override.message.slice(0, 160) : ERRS);
 
   // A run ID nothing records is refused as `run show` refuses it: by code, with the list as Next.
@@ -998,7 +1015,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 120;
+const DECLARED = 123;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
