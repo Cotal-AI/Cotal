@@ -651,9 +651,10 @@ several signed-in providers, pass an explicit provider; the several-provider ref
 the choices. An explicit provider keeps the installation and sign-in flow. The result lists
 spaces already turned on for this computer, or explains that no agents can be launched yet
 and prints the space setup command under Next. An enabled-space result omits that guidance.
-Hosted Managers pick up newly installed applications after the guarded service restart.
-Active seats block that restart until they stop. When a desired space has no available
-application, `daemon status` shows this recovery under Next.
+Hosted Managers recheck directories already on their PATH without a restart. Claude Code becomes
+available after its [wake channel is set up](connect-claude.mdx#install-the-plugin).
+A PATH change still needs the guarded service restart, which active seats block until they stop.
+When a desired space has no available application, `daemon status` shows this recovery under Next.
 
 To connect directly to a space, use `cotal daemon setup --space <s> [--idp <url>]`.
 `--no-manager` and `--wait` require `--space`; `--wait` also requires `--no-manager`.

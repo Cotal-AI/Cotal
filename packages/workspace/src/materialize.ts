@@ -213,10 +213,11 @@ export function manifestExtensionNames(kind: string): string[] {
  * ALWAYS consults the machine manifest. `hint(ref)` phrases the not-found error (the CLI names the
  * exact `cotal ext add <pkg>` for an official name; a bare caller gets the generic form).
  * `expectedGeneration` checks first-party manifest pins under the extension lock, even on a cache hit.
+ * `expectedPackage` restricts callers that must load an action from a specific package.
  */
 export async function materializeFromManifest<T extends Extension = Extension>(
   ref: ExtensionRef,
-  opts: { hint?: (ref: ExtensionRef) => string; expectedGeneration?: string } = {},
+  opts: { hint?: (ref: ExtensionRef) => string; expectedGeneration?: string; expectedPackage?: string } = {},
 ): Promise<T> {
   await enqueueLoad(() =>
     withExtensionLock(async () => {
@@ -228,6 +229,8 @@ export async function materializeFromManifest<T extends Extension = Extension>(
           opts.hint?.(ref) ?? `no installed extension provides ${ref.kind} "${ref.name}" - install it with \`cotal ext add <npm-package>\``,
         );
       }
+      if (opts.expectedPackage !== undefined && ext.pkg !== opts.expectedPackage)
+        throw new Error(`${ref.kind} "${ref.name}" is provided by ${ext.pkg}, not ${opts.expectedPackage}`);
       if (opts.expectedGeneration !== undefined && ext.pkg.startsWith("@cotal-ai/") && ext.version !== opts.expectedGeneration) {
         const seeded = Object.values(SEEDED_EXTENSIONS).some((item) => item.pkg === ext.pkg);
         throw new Error(

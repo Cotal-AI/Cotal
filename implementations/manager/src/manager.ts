@@ -3,6 +3,7 @@ import { TurnRelay, goalKey, caughtEnvelope, TURN_ANSWER_RETENTION_MS, onceTurnN
 import { createHash, randomBytes } from "node:crypto";
 import { checkEventStartup, EventStateConflictError, isPermissionDenied, chatStream, drainAndClose, requestSafeReconnect } from "@cotal-ai/core";
 import { hostname, homedir } from "node:os";
+import { Worker } from "node:worker_threads";
 import { listDirectory } from "./list-dir.js";
 import { credsAuthenticator, RequestError } from "@nats-io/transport-node";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
@@ -87,7 +88,7 @@ import {
 import { loadLaunchPersonaFile, PersonaSourceError, retainConnectorSeat } from "@cotal-ai/workspace";
 import { logicalExecutionEntry, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlEndpoint, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlEndpoint, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -1418,6 +1419,7 @@ export class Manager {
    * launch, model lookup or status asks, without stopping unrelated Manager work. */
   private connectorStatuses: ManagerConnectorStatus[] = [];
   private connectorRequirements = new Map<string, readonly string[]>();
+  private machineClaudeWake?: { row: ManagerConnectorStatus; attempted: boolean };
   /** The boot inventory's warnings, printed once start completes, so a refused start prints none. */
   private bootNotes: string[] = [];
   /** The complete boot task. stop() joins it after fencing static reconciliation, so a registration
@@ -5333,32 +5335,51 @@ export class Manager {
     }
     this.connectorRequirements = new Map(declared.map(({ name, requires }) => [name, requires]));
     for (const { name, requires, eventPlane, pkg } of declared) {
-      const { binaries, reason: missing } = resolveHarness(name, requires);
-      let reason = missing;
-      if (!reason && this.machineSetupCommand && name === "claude" && pkg === OFFICIAL_CONNECTORS.claude) {
-        try {
-          const connector = await this.resolveConnector(name);
-          if (!connector.setup) throw new Error("Claude connector has no setup provider");
-          const provider = await materializeFromManifest<ConnectorSetupProvider>(connector.setup, { expectedGeneration: this.expectedConnectorGeneration });
-          if (!provider.connector) throw new Error("Claude connector has no install action");
-          const cotal = bearerEntryArgv();
-          cotal[cotal.length - 1] = logicalExecutionEntry() ?? cotal.at(-1)!;
-          await provider.connector.run({ cotal, machineHost: true });
-        } catch (error) {
-          const detail = oneLine(rejectionText(error).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 800));
-          reason = `Claude wake channel setup failed: ${detail}. Correct the cause and run \`${this.machineSetupCommand}\` on this computer.`;
-        }
+      const { binaries, reason } = resolveHarness(name, requires);
+      const row: ManagerConnectorStatus = { agent: name, state: reason ? "unavailable" : "available", binaries, eventPlane, ...(reason ? { reason } : {}) };
+      if (this.machineSetupCommand && name === "claude" && pkg === OFFICIAL_CONNECTORS.claude) {
+        this.machineClaudeWake = { row, attempted: false };
+        if (!reason) await this.prepareMachineClaudeWake(this.machineClaudeWake);
       }
-      if (reason) {
-        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, reason });
-        this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
-      } else {
-        rows.push({ agent: name, state: "available", binaries, eventPlane });
-      }
+      if (row.reason) this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${row.reason}`);
+      rows.push(row);
     }
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
     if (!this.classSpawnEnabled())
       this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
+  }
+
+  /** Keep an attempt (including a failure) until explicit daemon setup retries it. */
+  private async prepareMachineClaudeWake(wake: NonNullable<Manager["machineClaudeWake"]>): Promise<void> {
+    const { row } = wake;
+    wake.attempted = true;
+    row.state = "unavailable";
+    row.reason = "Claude wake channel setup is in progress. Wait for it to finish and try again.";
+    try {
+      const cotal = bearerEntryArgv();
+      cotal[cotal.length - 1] = logicalExecutionEntry() ?? cotal.at(-1)!;
+      await new Promise<void>((resolve, reject) => {
+        const worker = new Worker(new URL("./machine-claude-wake.js", import.meta.url), {
+          workerData: { cotal, expectedGeneration: this.expectedConnectorGeneration },
+        });
+        let registered = false;
+        let failure: Error | undefined;
+        worker.once("message", (message) => { registered = message === "registered"; });
+        worker.once("error", (error) => { failure = error; });
+        worker.once("exit", (code) => {
+          if (code === 0 && registered) resolve();
+          else reject(failure ?? new Error(`Claude wake channel setup worker exited without confirmation (code ${code})`));
+        });
+      });
+      const wasEnabled = this.classSpawnEnabled();
+      row.state = "available";
+      delete row.reason;
+      if (!wasEnabled && this.classSpawnEnabled()) this.servePlane.enableClassSpawn();
+    } catch (error) {
+      const detail = oneLine(rejectionText(error).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 800));
+      row.state = "unavailable";
+      row.reason = `Claude wake channel setup failed: ${detail}. Correct the cause and run \`${this.machineSetupCommand}\` on this computer.`;
+    }
   }
 
   /** Retry missing applications on the Manager's PATH without changing resolved available rows. */
@@ -5366,12 +5387,19 @@ export class Manager {
     const wasEnabled = this.classSpawnEnabled();
     for (const row of this.connectorStatuses) {
       if (row.state !== "unavailable" || (name !== undefined && row.agent !== name)) continue;
+      const wake = this.machineClaudeWake?.row === row ? this.machineClaudeWake : undefined;
+      if (wake?.attempted) continue;
       const requires = this.connectorRequirements.get(row.agent);
       if (!requires) continue;
       const { binaries, reason } = resolveHarness(row.agent, requires);
       row.binaries = binaries;
       if (reason) row.reason = reason;
-      else {
+      else if (wake) {
+        // Native setup can outlast a status request. Keep serving the unavailable row while one
+        // attempt runs, and make shutdown and preservation drain that attempt before proceeding.
+        const release = this.beginLifecycle(true);
+        if (release) void this.prepareMachineClaudeWake(wake).finally(release);
+      } else {
         row.state = "available";
         delete row.reason;
       }

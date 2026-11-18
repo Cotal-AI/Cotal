@@ -467,7 +467,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     }))];
     opts.report(`connectors: ${available.length} available`, { step: "applications", outcome: available.length ? "available" : "unavailable", detail: `${available.length} available`, applications: applications.length ? applications : Object.values(names) });
     if (!available.length) {
-      const claudeSetup = manager.connectors?.find(connector => connector.agent === "claude" && connector.reason?.startsWith("Claude wake channel setup failed:"));
+      const claudeSetup = manager.connectors?.find(connector => connector.agent === "claude" && connector.reason?.startsWith("Claude wake channel setup "));
       if (claudeSetup?.reason) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", claudeSetup.reason, { native: { code: "NO_AVAILABLE_CONNECTOR" } });
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no available connector in the hosted Manager's environment", { remedy: `install ${applications.length ? applications.join(" or ") : "Claude Code, Codex, Hermes, Jcode, OpenCode or pi"} and make sure the application runs in this terminal, then run the same setup command again`, native: { code: "NO_AVAILABLE_CONNECTOR" } });
     }
