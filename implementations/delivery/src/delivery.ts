@@ -1052,7 +1052,7 @@ async function runStartedDelivery(
     },
     // Live-eviction executor (D5 slice 6): per-call $SYS observer/evictor connections; refuses
     // loudly on a pre-evictor space. Rare repair/flip step — never a standing $SYS conn here.
-    evictPrincipal: (principal) => executeEviction(server, scanTarget, principal, kickAuthority),
+    evictPrincipal: (principal, connections) => executeEviction(server, scanTarget, principal, kickAuthority, connections),
     // The same executor over a set: one shared sweep for a large credential family's holders.
     evictPrincipals: (principals) => executeEvictions(server, scanTarget, principals, "evictPrincipals", kickAuthority),
     // Plane-claim liveness oracle (#29 HIGH 3): read-only $SYS CONNZ per call; the auth plane's

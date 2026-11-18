@@ -44,6 +44,8 @@
   "implementations/auth/smoke/remote-run-revoke.smoke.ts": 1,
   "implementations/auth/smoke/retire-member-rows.smoke.ts": 1,
   "implementations/auth/smoke/run-cancel-live.smoke.ts": 1,
+  "implementations/auth/smoke/session-caller-eviction.smoke.ts": 10,
+  "implementations/auth/smoke/session-connection-guards.smoke.ts": 1,
   "implementations/auth/smoke/user-spawn.smoke.ts": 6,
   "implementations/auth/src/endpoint-deregister.ts": 2,
   "implementations/auth/src/handle-verification.ts": 1,

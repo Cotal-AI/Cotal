@@ -794,7 +794,7 @@ export class CotalEndpoint extends EventEmitter {
     onDeliveryCredsAdopted?: () => void;
     /** Composition-root hook: the live-eviction executor — scan→KICK→verify a denied
      *  principal's connections via the daemon's $SYS observer/evictor creds (opened per call). */
-    evictPrincipal?: (principal: string) => Promise<unknown>;
+    evictPrincipal?: (principal: string, connections?: import("./evict.js").KickTarget[]) => Promise<unknown>;
     /** Composition-root hook: {@link evictPrincipal} for a SET of denied principals in one shared
      *  scan→KICK→verify sweep, one result per principal in request order. */
     evictPrincipals?: (principals: string[]) => Promise<unknown>;
@@ -6021,7 +6021,7 @@ export class CotalEndpoint extends EventEmitter {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; evictPrincipals?: (principals: string[]) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean } = {},
+    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string, connections?: import("./evict.js").KickTarget[]) => Promise<unknown>; evictPrincipals?: (principals: string[]) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean } = {},
   ): Promise<void> {
     if (!this.js) throw new Error(this.notLiveMsg());
     this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, evictPrincipals: opts.evictPrincipals, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness, reloadStoreIdentity: opts.reloadStoreIdentity, onDeliveryCredsAdopted: opts.onDeliveryCredsAdopted, startupComplete: opts.startupComplete };
@@ -7023,7 +7023,9 @@ export class CotalEndpoint extends EventEmitter {
         ? { ok: false, error: failures.join("; "), data: { delivery, membership } }
         : { ok: true, data: { delivery, membership } };
     }
-    if (req.op === "evictPrincipal") {
+    if (req.op === "evictPrincipal" || req.op === "evictSessionConnections") {
+      if (req.op === "evictSessionConnections" && (!req.args || !Object.hasOwn(req.args, "connections")))
+        return { ok: false, error: "evictSessionConnections: exact connections are required" };
       // The LIVE-EVICTION executor: force-drop a denied principal's connections.
       // Composition-root hook because the $SYS observer/evictor creds live outside this endpoint's
       // trust boundary; absent hook = a daemon build without the executor, refused loudly.
@@ -7031,8 +7033,29 @@ export class CotalEndpoint extends EventEmitter {
         return { ok: false, error: "evictPrincipal: no eviction executor wired on this daemon" };
       const principal = typeof req.args?.principal === "string" ? req.args.principal.trim() : "";
       if (!principal) return { ok: false, error: "evictPrincipal: a principal (owner.actor dot-form) is required" };
+      let connections: import("./evict.js").KickTarget[] | undefined;
+      if (req.args && Object.hasOwn(req.args, "connections")) {
+        const raw = req.args.connections;
+        if (!Array.isArray(raw) || raw.length === 0 || raw.length > 256 || raw.some((t: unknown) => {
+          const v = t as { serverId?: unknown; cid?: unknown } | null;
+          return !v || typeof v !== "object" || Object.keys(v).some((k) => k !== "serverId" && k !== "cid") ||
+            typeof v.serverId !== "string" || !/^N[A-Z2-7]{55}$/.test(v.serverId) || !Number.isSafeInteger(v.cid) || (v.cid as number) <= 0;
+        })) return { ok: false, error: "evictPrincipal: connections must be exact serverId and positive cid pairs" };
+        connections = raw as import("./evict.js").KickTarget[];
+      }
+      if (connections !== undefined && this.plane3.evictPrincipal.length < 2)
+        return { ok: false, error: "evictSessionConnections: executor must receive the exact connection filter" };
       try {
-        return { ok: true, data: await this.plane3.evictPrincipal(principal) };
+        const requestedConnections = connections?.map((target) => ({ ...target }));
+        const result = await this.plane3.evictPrincipal(principal, connections?.map((target) => ({ ...target }))) as Record<string, unknown>;
+        if (requestedConnections !== undefined) {
+          const selected = result?.connections;
+          if (!Array.isArray(selected) || selected.length !== requestedConnections.length || selected.some((value, i) => {
+            const target = value as { serverId?: unknown; cid?: unknown } | null;
+            return !target || target.serverId !== requestedConnections[i]!.serverId || target.cid !== requestedConnections[i]!.cid;
+          })) return { ok: false, error: "evictSessionConnections: executor did not acknowledge the exact connection filter" };
+        }
+        return { ok: true, data: result };
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }

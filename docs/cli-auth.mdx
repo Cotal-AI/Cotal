@@ -328,7 +328,10 @@ The exchange or Manager operation that consumes the proof is never replayed by t
 A provider that cannot be reached, or that stops answering, refuses with
 `DEPENDENCY_UNAVAILABLE` (exit 2) and caches no session. `logout` revokes the IdP session, clears
 its cache, and removes only that
-account's discovered registry entries. See
+account's discovered registry entries. Logout does not enumerate open terminal sessions or
+send their detach frames. Those session grants stay in the attach process, not the login cache.
+Detach the terminal to end its session. Signing out at the provider on another machine also
+does not close an admitted terminal connection. See
 [identity & auth](identity-and-auth.mdx).
 
 

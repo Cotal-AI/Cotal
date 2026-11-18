@@ -102,6 +102,7 @@ import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster,
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, servedSpawnRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
 import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { openChatSessionAuthority, type ChatAdmissionRequest, type ChatRetireRequest, type ChatRetireResult, type ChatSessionAdmitted } from "./chat-session-authority.js";
+import { reconcileSessionConnections } from "./session-connections.js";
 import { CorruptNativeIssuanceEvidence, pruneNativeIssuance } from "./native-issuance.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -501,6 +502,8 @@ export interface OpenAuthAuthorityPlaneOptions extends AuthServiceRuntimeOptions
   /** Bounded trusted-host-only TTL of the held issuer session's credential, 5..300 seconds (default
    *  the `issuer` profile's five minutes). */
   issuerSessionTtlSeconds?: number;
+  /** Maximum callout response window, used to retain newly ended connection evidence. */
+  sessionCalloutTimeoutMs?: number;
   /** Delay between completed native-issuance cleanup walks (default 60 s). Startup reads at most
    *  one historical row, then continues in bounded background batches. */
   nativeIssuancePruneMs?: number;
@@ -821,6 +824,37 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // retained service receipts cannot delay HTTP readiness or make close drain the whole history.
   // Corrupt evidence refuses this open if seen here, or fences the plane when a continuation
   // reaches it. Transient store failures keep the cursor and retry with capped jittered backoff.
+  const sessionJsm = await jetstreamManager(remoteIssuer.nc);
+  const sessionEvict = makeDeliveryAdminEvictor({ onConnection, space, server, dataAccount, log });
+  const sessionAbort = new AbortController();
+  let sessionSeq = 1, sessionTimer: ReturnType<typeof setTimeout> | undefined;
+  let sessionFlight: Promise<void> = Promise.resolve();
+  const sessionRetryLogged = new Set<string>();
+  const sessionRetries = new Map<string, { nextAt: number; delayMs: number }>();
+  let sessionPassDelayMs = 1000, sessionPassFailureLogged = false;
+  const stopSessionSweep = async (): Promise<void> => { clearTimeout(sessionTimer); sessionAbort.abort(new Error("auth session sweep stopped")); await sessionFlight; };
+  const scheduleSessionSweep = (): void => {
+    if (closing || fatalReason !== undefined || sessionAbort.signal.aborted) return;
+    sessionTimer = setTimeout(() => {
+      sessionFlight = reconcileSessionConnections({
+        jsm: sessionJsm, kv: registryStores(registry).authKv, space, secret: dataAccount.signingSeed, seq: sessionSeq, maxRows: 64,
+        releaseWindowMs: (opts.sessionCalloutTimeoutMs ?? 2000) + 1000, signal: sessionAbort.signal, evict: sessionEvict,
+        log, retryLogged: sessionRetryLogged, retries: sessionRetries,
+      }).then((next) => {
+        sessionSeq = next ?? 1;
+        sessionPassDelayMs = 1000;
+        sessionPassFailureLogged = false;
+      }, (e: unknown) => {
+        sessionPassDelayMs = Math.min(sessionPassDelayMs * 2, 30_000);
+        if (!closing && !sessionPassFailureLogged) {
+          log(`auth-plane: session connection eviction failed: ${e instanceof Error ? e.message : String(e)}`);
+          sessionPassFailureLogged = true;
+        }
+      }).then(scheduleSessionSweep);
+    }, sessionPassDelayMs);
+  };
+  unwind.push(stopSessionSweep);
+  scheduleSessionSweep();
   const pruneMs = opts.nativeIssuancePruneMs ?? 60_000;
   if (!Number.isSafeInteger(pruneMs) || pruneMs < 100 || pruneMs > 3_600_000)
     throw new Error(`nativeIssuancePruneMs must be an integer between 100 and 3600000 (got ${pruneMs})`);
@@ -2229,6 +2263,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       await drainCallerPayload();
       await stopPrune();
       await stopChatSweep();
+      await stopSessionSweep();
       // Every service host call that entered returns, discovery and effects included, then every
       // effect connection that did not close is closed again, before discovery closes and before
       // the claim is released. A failure here rejects with the claim still held; close retries it.
@@ -2983,6 +3018,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
     ...(o.issuerSessionTtlSeconds !== undefined ? { issuerSessionTtlSeconds: o.issuerSessionTtlSeconds } : {}),
     ...(o.serviceEndpoints !== undefined ? { serviceEndpoints: o.serviceEndpoints } : {}),
+    sessionCalloutTimeoutMs: o.calloutLimits?.authTimeoutMs ?? 2000,
     ...(o.registry !== undefined ? { registry: o.registry, registryStore: secrets } : {}),
     ...(o.registryCredentialTtlSeconds !== undefined ? { registryCredentialTtlSeconds: o.registryCredentialTtlSeconds } : {}),
   }, onConnection);
