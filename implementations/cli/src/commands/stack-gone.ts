@@ -21,7 +21,7 @@ import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/s
 import { observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts } from "../lib/service-process.js";
 import { refuseRecordedSupervisor } from "../lib/service-supervision.js";
-import { STACK_DEFINITION, stackRecoveryHost, goneStackRoot, processGone, stackDefinitionsAt, type StackRole } from "../lib/stack-journal.js";
+import { STACK_DEFINITION, stackRecoveryHost, goneStackRoot, processGone, runningStackRoles, stackDefinitionsAt, type StackRole } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 /** How long a member has to exit after SIGTERM. The manager first stops its agents by its default policy. */
@@ -55,6 +55,9 @@ export function goneStackRefusal(failure: CommandFailure): CommandFailure {
   if (!["DEPENDENCY_UNAVAILABLE", "TARGET_UNAVAILABLE"].includes(failure.code) || typeof space !== "string" || typeof root !== "string") return failure;
   const gone = goneStackRoot(space);
   if (gone === undefined || canonicalRoot(gone) !== canonicalRoot(root)) return failure;
+  const native = findMesh(space);
+  const nativeRunning = native?.nativeHost === stackRecoveryHost() && native.nativeMembers?.some((member) => assertRecordIdentity(member.process).kind === "match");
+  if (!nativeRunning && runningStackRoles(space).length === 0) return failure;
   return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `space "${space}" started in ${root}, and that folder is gone with the seed it held, so no credential for its stack can be made here`, {
     target: failure.target, remedy: `stop the stack it left running and free its name with \`cotal down --space ${space} --yes\``,
   });
