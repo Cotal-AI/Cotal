@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mintCreds, newIdentity, probeConnect, isReachable } from "@cotal-ai/core";
 import { brokerAddressKey, loadMeshes } from "./mesh-registry.js";
 import type { MeshTarget } from "./mesh-target.js";
-import { stoppedLoopbackListener, parsePid, probeLiveness, readPidfile, assertRecordIdentity } from "./pid.js";
+import { stoppedLoopbackListener, parsePid, parseRecord, probeLiveness, readPidfile, assertRecordIdentity } from "./pid.js";
 import { localProcessPath, NATS_PIDFILE } from "./local-process.js";
 import { stackJournalPath } from "./auth-paths.js";
 import { readLocalRecordSource, decodeLocalJson } from "./protected-records.js";
@@ -128,14 +128,16 @@ export async function preflightTarget(
   // A local address accepting TCP is occupied, even when it never sends a NATS greeting.
   // Do not prescribe a restart that cannot bind that address, or delete its registration.
   const plain = /^nats:\/\//i.test(target.server) && !target.tlsRequired;
+  let ownBroker = false;
   if (plain && target.origin === "up") {
     let brokerGone = false;
     if (existsSync(stackJournalPath(target.root))) {
       try {
         const bytes = readLocalRecordSource(stackJournalPath(target.root), 64 * 1024);
-        const journal = bytes === undefined ? undefined : decodeLocalJson(bytes) as { space?: string; root?: string; members?: { role?: string; state?: string; process?: { pid: number; token: string } }[] };
+        const journal = bytes === undefined ? undefined : decodeLocalJson(bytes) as { space?: string; root?: string; server?: string; members?: { role?: string; state?: string; process?: { pid: number; token: string } }[] };
         const broker = journal?.space === target.space && journal.root === target.root && Array.isArray(journal.members) ? journal.members.find(member => member.role === "broker") : undefined;
         brokerGone = broker !== undefined && (broker.state === "stopped" || broker.state === "already-stopped" || broker.process !== undefined && assertRecordIdentity(broker.process).kind === "gone");
+        ownBroker = !brokerGone && broker?.process !== undefined && assertRecordIdentity(broker.process).kind === "match" && journal?.server !== undefined && brokerAddressKey(journal.server) === brokerAddressKey(target.server);
       } catch (error) {
         if (!isCommandFailure(error) || !["PERMISSION_DENIED", "SCHEMA_INVALID", "CONFLICT"].includes(error.code)) throw error;
         // Unusable local evidence does not prove the broker is gone. Keep the live probe below;
@@ -145,9 +147,14 @@ export async function preflightTarget(
       const rawPid = readPidfile(localProcessPath(NATS_PIDFILE, { root: target.root, space: target.space }));
       const pid = rawPid === undefined ? undefined : parsePid(rawPid);
       brokerGone = rawPid === undefined || pid !== undefined && probeLiveness(pid) === "dead";
+      const record = rawPid === undefined ? undefined : parseRecord(rawPid);
+      const registered = loadMeshes().find(mesh => mesh.space === target.space && mesh.root === target.root);
+      ownBroker = record?.kind === "record" && assertRecordIdentity(record.record).kind === "match" && registered !== undefined && brokerAddressKey(registered.server) === brokerAddressKey(target.server);
     }
     const host = new URL(target.server).hostname;
-    if (brokerGone && (host === "127.0.0.1" || host === "localhost" || host === "[::1]")) {
+    const loopback = host === "127.0.0.1" || host === "localhost" || host === "[::1]";
+    ownBroker = ownBroker && loopback;
+    if (brokerGone && loopback) {
       let connected = false;
       const info = await readNatsInfoGreeting(target.server, 1_000, () => { connected = true; });
       if (connected && info === null && stoppedLoopbackListener(target.server) === undefined)
@@ -167,7 +174,7 @@ export async function preflightTarget(
   // two brokers apart, since the plaintext one answers perfectly well.
   const auth = { ...(creds ? { creds } : {}), ...(target.tlsRequired ? { tls: true as const } : {}) };
   let probe = await probeConnect(target.server, auth);
-  if (probe.ok) return await checkBrokerFeatures(target, plain);
+  if (probe.ok) return await checkBrokerFeatures(target, plain, ownBroker);
   // A stopped broker never answers, so its pid is named now instead of after the confirm budget.
   const stopped = probe.reason === "timeout" ? stoppedLoopbackListener(target.server) : undefined;
   if (stopped !== undefined) return { ok: false, kind: "broker-stopped", prune: false, pid: stopped };
@@ -180,7 +187,7 @@ export async function preflightTarget(
   // more than a second. A first failure only makes it a candidate; re-probe with a budget that
   // fits a real network.
   probe = await probeConnect(target.server, { ...auth, timeoutMs: PREFLIGHT_CONFIRM_TIMEOUT_MS });
-  if (probe.ok) return await checkBrokerFeatures(target, plain);
+  if (probe.ok) return await checkBrokerFeatures(target, plain, ownBroker);
 
   // TLS-REQUIRED + "unreachable" is often NOT a dead broker. Other transport failures,
   // including certificate verification, can still be `unreachable`. Against a
@@ -217,13 +224,15 @@ export async function preflightTarget(
 }
 
 /** A successful connect to an open substitute does not prove the recorded broker's features. */
-async function checkBrokerFeatures(target: MeshTarget, plain: boolean): Promise<{ ok: true } | { ok: false; kind: PreflightFailure; prune: false }> {
+async function checkBrokerFeatures(target: MeshTarget, plain: boolean, ownBroker: boolean): Promise<{ ok: true } | { ok: false; kind: PreflightFailure; prune: false }> {
   if (!plain) return { ok: true };
   const info = await readNatsInfoGreeting(target.server) ?? await readNatsInfoGreeting(target.server, PRUNE_CONFIRM_TIMEOUT_MS);
   if (info === null) return { ok: false, kind: "slow-link", prune: false };
   if (target.mode === "auth" && info.auth_required !== true)
     return { ok: false, kind: "auth-unsupported", prune: false };
-  if (info.jetstream !== true)
+  // Our running broker can disable JetStream after a store write failure. Let the request's
+  // existing store diagnosis name that local cause and its repair, not a foreign-broker remedy.
+  if (info.jetstream !== true && !ownBroker)
     return { ok: false, kind: "jetstream-unsupported", prune: false };
   return { ok: true };
 }

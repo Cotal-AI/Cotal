@@ -1,6 +1,7 @@
 /** Silent listeners stay distinct from refused ports across the shipped CLI's space reports. */
 import assert from "node:assert/strict";
 import { emitSentinel, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { preflightTarget } from "@cotal-ai/workspace";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
@@ -165,6 +166,8 @@ await scenario("refused", port, () => 0);
     check("plain NATS ps refuses with a remedy rather than unknown outcome", ps.code === 2 && /TARGET_UNAVAILABLE/.test(ps.output) && /Next/.test(ps.output) && /authentication/.test(ps.output));
     const components = await run(["status", "--components"]);
     check("plain NATS substitute does not replace the absent local broker component", /broker\s+absent/.test(components.output) && /does not enforce Cotal authentication/.test(components.output));
+    const open = await preflightTarget({ root: project, space: "foreign-open", server: `nats://127.0.0.1:${port}`, mode: "open", tlsRequired: false, source: "flag-server", personaRoot: join(project, ".cotal", "agents") });
+    check("foreign open NATS without JetStream still refuses without pruning", !open.ok && open.kind === "jetstream-unsupported" && !open.prune);
   } finally {
     await killAndAwaitExit(nats);
     release();
