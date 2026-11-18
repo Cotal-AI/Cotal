@@ -71,14 +71,24 @@ export function attributionSafe(s: string): string {
   return peerLabel({ name: s });
 }
 
+/** The most code points {@link fmtFrom} returns when its caller names no bound, marker included. */
+const FROM_MAX_CODE_POINTS = 160;
+
 /** A message's sender, by the label every other surface prints for that peer, marked as the
  *  sender's own claim. A sender writes its name and role into its payload and its presence row
  *  alike, so neither is bound to one principal; the `sender_id` a delivery frame prints is. A blank
- *  name is not a name: the frame uses the sender's id, and a role still follows it. */
-export function fmtFrom(i: InboxItem): string {
+ *  name is not a name: the frame uses the sender's id, and a role still follows it, marked as an
+ *  unverified role so the id is never called a name.
+ *
+ *  The result is at most `maxCodePoints` code points. A longer label is cut, ending in `…`, and the
+ *  marker always follows it whole, so a caller that bounds the line it prints keeps the marker. */
+export function fmtFrom(i: InboxItem, maxCodePoints = FROM_MAX_CODE_POINTS): string {
   const named = i.fromName.trim() !== "";
   const label = peerLabel({ name: named ? i.fromName : i.fromId, ...(i.fromRole ? { role: i.fromRole } : {}) });
-  return named || i.fromRole ? `${label} (unverified name)` : label;
+  const marker = named ? " (unverified name)" : i.fromRole ? " (unverified role)" : "";
+  const room = maxCodePoints - marker.length;
+  const points = Array.from(label);
+  return `${points.length <= room ? label : `${points.slice(0, room - 1).join("")}…`}${marker}`;
 }
 
 /**

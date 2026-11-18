@@ -253,7 +253,7 @@ const columnZeroLines = (block: string): string[] =>
   const spaced = dm("hello", { fromName: " ada", fromId: "local.ada" });
   check("a sender name with surrounding spaces stays", fmtFrom(spaced) === " ada (unverified name)", fmtFrom(spaced));
   const role = dm("hello", { fromName: "\n", fromId: "local.blank", fromRole: "worker" });
-  check("a blank sender name keeps its role after the id", fmtFrom(role) === "local.blank/worker (unverified name)", fmtFrom(role));
+  check("a blank sender name keeps its role after the id, marked as an unverified role and never as a name", fmtFrom(role) === "local.blank/worker (unverified role)", fmtFrom(role));
 }
 
 // 6. A WAKE HINT IS AN INJECTED FRAME TOO (#623, acceptance clause 2).
@@ -380,7 +380,7 @@ const columnZeroLines = (block: string): string[] =>
 // Attribution fields and roster labels share the same neutralization policy, including all
 // C0/C1 controls rather than only the subset that splits lines.
 {
-  const points = [...Array.from({ length: 32 }, (_, i) => i), ...Array.from({ length: 33 }, (_, i) => 0x7f + i), 0x2028, 0x2029, 0x5b, 0x5d];
+  const points = [...Array.from({ length: 32 }, (_, i) => i), ...Array.from({ length: 33 }, (_, i) => 0x7f + i), 0x2028, 0x2029, 0x5b, 0x5d, 0x22];
   let covered = 0;
   for (const point of points) {
     const input = `left${String.fromCodePoint(point)}right`;
@@ -390,7 +390,7 @@ const columnZeroLines = (block: string): string[] =>
       && fmtChannel(input) === expected && fmtKind(input) === expected);
     covered++;
   }
-  check("every control and framing delimiter case ran", covered === 69);
+  check("every control and framing delimiter case ran", covered === 70);
   check("adjacent unsafe characters collapse once on both paths",
     attributionSafe("left\x1b\x07[]\nright") === "left right"
     && peerLabel({ name: "left\x1b\x07[]\nright" }) === "left right");
