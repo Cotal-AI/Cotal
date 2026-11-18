@@ -120,7 +120,8 @@ try {
   const noCanary = result.status === 1 && !result.stderr.includes(canary);
   check("host launch failure reports the safe SDK startup code", safeCode, { status: result.status, stderr: result.stderr });
   check("host launch failure never prints captured Jcode child stderr canary", noCanary, { status: result.status, stderr: result.stderr });
-  const diagnostic = /details: ([^\r\n]+)/.exec(result.stderr)?.[1];
+  const logReference = /workspace log: ([^\r\n]+)/.exec(result.stderr)?.[1];
+  const diagnostic = logReference && join(hostHome, logReference);
   check("host launch failure names a readable private diagnostic log", !!diagnostic && existsSync(diagnostic), result.stderr);
   check("private startup log retains the child error", !!diagnostic && readFileSync(diagnostic, "utf8").includes(canary));
 

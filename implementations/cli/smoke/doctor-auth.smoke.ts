@@ -177,6 +177,21 @@ try {
   // --fix: the daemon files are re-signed offline for their own nkeys; the agent finding stays.
   // The evictor is staged first, as the rotation the finding names would leave it.
   writeFileSync(join(material, "connection-evictor.creds"), sysEvictor, { mode: 0o600 });
+  for (const file of ["membership-observer.creds", "connection-evictor.creds"]) {
+    const path = join(material, file);
+    const before = readFileSync(path);
+    try {
+      for (const malformed of [Buffer.from("-----BEGIN NATS USER JWT-----\neyJ0eXAiOi"), Buffer.from([0xff, 0xfe])]) {
+        writeFileSync(path, malformed);
+        const { envelope, code } = await runDoctor({ json: true });
+        assert.equal(item(envelope!, file)?.state, "unreadable", `${file}: truncated JWT and invalid UTF-8 are per-file findings`);
+        assert.match(item(envelope!, file)?.repair ?? "", /up --rotate-sys/, `${file}: retains system rotation guidance`);
+        assert.ok(envelope!.result.items.length >= 5, "an unreadable system credential does not hide other rows");
+        assert.equal(code, 5, "local findings still fail the diagnosis");
+        assert.deepEqual(readFileSync(path), malformed, "read-only diagnosis leaves the file unchanged");
+      }
+    } finally { writeFileSync(path, before); }
+  }
   {
     const { envelope, code } = await runDoctor({ json: true, fix: true });
     const report = envelope!;
