@@ -51,24 +51,11 @@ No workflow runs `pnpm check`, and some of its `:live` steps are on no CI shard.
 ## Docs checks
 
 `pnpm check:docsbundle` is the CI docs gate. It runs `check-unmerged.mjs`, `check:docs-voice`,
-`check:doc-comments`, `check:comment-history`, `check:docs-literals`, `check:docs-site`, the tool-docs
-and schema generators with a diff of their output, and `check-docs-bundle.mjs`. These checks prove
-less than a green run suggests:
+`check:doc-comments`, `check:docs-literals`, `check:docs-site`, the tool-docs and schema generators
+with a diff of their output, and `check-docs-bundle.mjs`. Three of them prove less than a green run
+suggests:
 
 - `check:docs-voice` grades prose style in `docs/` and never reads source.
-- `check:comment-history` scans comments in tracked JS/TS under package, implementation and
-  extension `src/` trees and `bin/`. It excludes declarations, tests, smokes, mutation fixtures,
-  built output, private smoke helpers and `bin/scripts/`. Strings, regexes, template text and JSX
-  text do not count. The rules match `#` plus at least three digits and the case-insensitive phrases
-  `used to`, `previously`, `no longer` and `formerly`, with word boundaries and wrapped-doc support.
-  `scripts/comment-history-allowlist.json` stores counts by file and rule, one file per line.
-  Per-file increases and repository rule-total increases fail. A move keeps the total unchanged
-  but fails on its receiving file. Review the move, run `pnpm check:comment-history:update`, and
-  commit the rewritten counts. A new violation still fails afterward. Decreases pass. Counts
-  cannot detect same-count replacements, and regeneration can accept new violations, so review
-  baseline changes against source changes. Diagnostics point to the first match for that rule,
-  not necessarily the addition. Stage new source files before scanning. The check also runs
-  fixture controls against an unchanged copy of the checker.
 - `check:docs-literals` reads each code span in `docs/` that looks like emitted operator prose
   (four or more lowercase words, not a command) and fails when no string or template literal in
   shipped source holds it. A substituted value is written as a placeholder such as `<id>`, and it
@@ -80,6 +67,24 @@ less than a green run suggests:
   only by review.
 - `check-docs-bundle.mjs` proves the generator turns the pages into a bundle that is not hollow.
   It does not prove that the pages agree with the code.
+
+## Local comment history check
+
+`pnpm check:comment-history` is a local script, run by hand. No CI job, gate or `pnpm check`
+runs it. It scans comments in tracked JS/TS under package, implementation and extension `src/`
+trees and `bin/`, excluding declarations, tests, smokes, mutation fixtures, built output, private
+smoke helpers and `bin/scripts/`. Strings, regexes, template text and JSX text do not count. It
+matches `#` plus at least three digits and the case-insensitive phrases `used to`, `previously`,
+`no longer` and `formerly`, with word boundaries and wrapped-doc support, then runs fixture
+controls against an unchanged copy of the checker.
+
+`scripts/comment-history-allowlist.json` stores counts by file and rule, one file per line.
+Per-file and repository rule-total increases fail. Decreases pass. A source move can fail on its
+receiving file even when the total stays unchanged. Review the source changes, run
+`pnpm check:comment-history:update` by hand, then run `pnpm check:comment-history` and commit the
+reviewed counts. Regeneration can accept new violations, and counts cannot detect same-count
+replacements. Diagnostics name the first match for a rule, not necessarily the addition. Stage
+new source files before scanning.
 
 ## Upgrade-section gate
 

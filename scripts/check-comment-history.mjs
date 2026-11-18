@@ -82,7 +82,7 @@ function main() {
   }
   if (args.length) {
     const entries = Object.entries(files).map(([name, counts]) => {
-      const fields = Object.entries(counts).sort(([left], [right]) => left.localeCompare(right))
+      const fields = Object.entries(counts).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
         .map(([rule, count]) => `${JSON.stringify(rule)}: ${count}`).join(", ");
       return `    ${JSON.stringify(name)}: { ${fields} }`;
     });
