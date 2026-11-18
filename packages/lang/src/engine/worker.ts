@@ -41,6 +41,17 @@ const STOP_HEADER = 4;
 /** Room for the reason. A reason is a sentence, and one that does not fit is truncated, not dropped. */
 const STOP_CAPACITY = 512;
 
+/**
+ * The heap limits every run's thread is created with.
+ *
+ * Without them a thread inherits the host process's own heap limit, so one program could grow until
+ * the whole process ran out of memory. With them a thread that reaches its limit is ended by node
+ * alone, its run fails naming the limit, and the host and its other runs carry on. A program is
+ * orchestration over effects, and each effect's result is already bounded by the journal's result
+ * bound, so the old generation limit leaves a large margin over what a run holds.
+ */
+const WORKER_RESOURCE_LIMITS = Object.freeze({ maxOldGenerationSizeMb: 512, maxYoungGenerationSizeMb: 32 });
+
 export interface WorkerHandlerSpec {
   /**
    * The module to import INSIDE the thread. An absolute `file:` URL or a bare package specifier.
@@ -243,8 +254,8 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
   let worker: Worker;
   try {
     worker = bridge !== undefined
-      ? new Worker(options.entry, { workerData: { request, stop, bridge, hostPackageVersion }, transferList: [bridge.port] })
-      : new Worker(options.entry, { workerData: { request, stop, hostPackageVersion } });
+      ? new Worker(options.entry, { workerData: { request, stop, bridge, hostPackageVersion }, transferList: [bridge.port], resourceLimits: WORKER_RESOURCE_LIMITS })
+      : new Worker(options.entry, { workerData: { request, stop, hostPackageVersion }, resourceLimits: WORKER_RESOURCE_LIMITS });
   } catch (e) {
     // A thread that never started never reaches `done`, where the seam closes, so close it here:
     // the handler's quiescence hook would otherwise wait forever on a thread that does not exist.
@@ -285,7 +296,15 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
       answered = true;
       resolve(m.result);
     });
-    worker.on("error", (e: Error) => reject(e));
+    worker.on("error", (e: Error & { code?: unknown }) => {
+      // Node ends a thread that reaches its heap limit and reports it here; the run's failure names
+      // the limit so an operator reading the run record knows which bound it met.
+      if (e.code === "ERR_WORKER_OUT_OF_MEMORY") {
+        reject(new Error(`run ${request.runId} was stopped at the workflow engine's memory limit of ${WORKER_RESOURCE_LIMITS.maxOldGenerationSizeMb} MB; the program holds more data than a run may`));
+        return;
+      }
+      reject(e);
+    });
     worker.on("exit", (code) => {
       // A worker that exits without answering has taken the run's outcome with it, and saying so is
       // the only honest thing left: the journal may hold a pending step and only the store knows.

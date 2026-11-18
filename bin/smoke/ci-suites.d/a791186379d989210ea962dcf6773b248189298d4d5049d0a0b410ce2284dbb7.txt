@@ -1,0 +1,3 @@
+# A workflow run that allocates without bound is stopped at the engine thread's heap limit and
+# recorded failed, and the host process carries on.
+smoke:runtime-worker-memory

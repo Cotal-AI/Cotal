@@ -270,6 +270,10 @@ disagree about the boundary. The host process and its other runs carry on. An in
 under a live manager is the usual way to get here: the next run's thread loads the new code beside
 the old host.
 
+**A run's thread has a 512 MB heap limit.** A program that holds more data than that is stopped
+when it reaches the limit, and its run is recorded failed with a message naming the limit. The
+host process and its other runs carry on.
+
 ### Foreign error text
 
 Worker execution, read-only inspection and the host effect bridge use the same name and
