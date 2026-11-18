@@ -82,6 +82,7 @@ import { detail, type SpaceDetail } from "./space.js";
 import { MissingFlags } from "../lib/missing-flags.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 import { serviceDefinitionStore } from "../lib/service-definitions.js";
+import { goneLegacyMembers, goneLegacyRoot } from "./stack-gone.js";
 
 /** The flags only `space add` takes. */
 export const ADD_FLAGS = ["file", "from", "server", "root", "mode", "tls", "allow-unencrypted-overlay", "force", "yes"] as const;
@@ -648,7 +649,7 @@ export async function spaceForget(rest: readonly string[], presentation: Present
       : keepsRegistration(m) ? `stop it with \`cotal down\` in ${m.root}, which keeps its record, then run \`cotal space forget ${name}\` again` : `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
     // A deleted folder takes the pidfiles and stack journal that check reads, so a stack left running
     // there shows only in this machine's instance records or at its recorded address (#7325).
-    if (!existsSync(m.root)) await refuseGoneFolderStack(m);
+    if (!existsSync(m.root) || goneLegacyRoot(m.space) !== undefined) await refuseGoneFolderStack(m);
   }
   const release = releaseStackDefinitions(m.root, name), keptServices = savedServicesLeft(name, release.kept);
   removeMesh(name);
@@ -665,6 +666,10 @@ async function refuseGoneFolderStack(m: MeshEntry): Promise<void> {
   const gone = `"${m.space}" started in ${m.root}, which no longer exists`;
   const members = stackRootGone(m.space, m.root) ? runningStackRoles(m.space) : [];
   if (members.length) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but its stack's ${members.join(", ")} still ${members.length === 1 ? "runs" : "run"}; nothing was forgotten`, target, `stop it with \`cotal down --space ${m.space} --yes\`, which also drops this record`);
+  if (goneLegacyRoot(m.space) !== undefined) {
+    const retained = goneLegacyMembers(m.space, m.root);
+    if (retained.length) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but its retained stack processes still run (${retained.map((member) => `${member.role}: pid ${member.pid}`).join(", ")}); nothing was forgotten`, target, `stop it with \`cotal down --space ${m.space} --yes\`, which also drops this record`);
+  }
   if (loadMeshes().some((other) => other.space !== m.space && other.server === m.server)) return;
   const address = await listenerAt(m.server);
   if (address) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but something still listens at ${m.server}, its recorded broker address, so the broker it started may still run; nothing was forgotten`, target, `stop the process listening on ${address}, then run \`cotal space forget ${m.space}\` again`);

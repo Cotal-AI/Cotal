@@ -490,6 +490,31 @@ try {
   }
 
   // 10. A stack whose folder is deleted stops from another folder, and its name starts again.
+  if (process.platform === "linux") {
+    const space = "tear-retained";
+    const root = folder(space);
+    anchor(root);
+    const started = cli(root, "up", "--space", space, "--server", `nats://127.0.0.1:${await freePort()}`);
+    check("default up starts a retained stack", started.status === 0, shown(started));
+    const files = readdirSync(join(root, ".cotal")).filter((name) => name.endsWith(".pid"));
+    const pids = files.map((name) => ({ name, pid: Number(readFileSync(join(root, ".cotal", name), "utf8")) }));
+    check("the default stack recorded all three components", pids.length === 3, pids);
+    anchors.delete(root);
+    rmSync(root, { recursive: true, force: true });
+    const other = folder(`${space}-other`);
+    anchor(other);
+    const refused = cli(other, "space", "forget", space, "--json");
+    check("forget names all retained processes and the whole-stack stop", refused.status === 2 && Boolean(refused.env?.error?.message.includes("manager: pid")) && Boolean(refused.env?.error?.message.includes("delivery: pid")) && Boolean(refused.env?.error?.remedy?.includes(`cotal down --space ${space} --yes`)), shown(refused));
+    const preview = cli(other, "down", "--space", space, "--dry-run", "--json");
+    check("the deleted default stack preview lists three members", preview.status === 0 && (preview.env?.result?.members as unknown[])?.length === 3, shown(preview));
+    // Following the historical listener-only remedy must not make forget lose the daemons.
+    process.kill(pids.find((row) => row.name === "nats.pid")!.pid, "SIGTERM");
+    const stillRefused = cli(other, "space", "forget", space, "--json");
+    check("forget still refuses after only its broker stops", stillRefused.status === 2 && findMesh(space) !== undefined && Boolean(stillRefused.env?.error?.message.includes("manager: pid")), shown(stillRefused));
+    const stopped = cli(other, "down", "--space", space, "--yes", "--json");
+    check("down stops the surviving retained components from another folder", stopped.status === 0 && stopped.env?.result?.kind === "gone-root-stack-stop" && findMesh(space) === undefined, shown(stopped));
+    check("the deleted default stack leaves no component process", pids.every(({ pid }) => { try { process.kill(pid, 0); return false; } catch { return true; } }), pids);
+  }
   {
     const space = "tear7";
     const root = folder(space);
