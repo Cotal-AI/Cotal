@@ -9,6 +9,7 @@ import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isMainEntry } from './main-entry.mjs';
 import { observeMacHandoff, handoffEvidence } from './mac-transition-observer.mjs';
 import { foreignStackEnded } from './foreign-stack-cleanup.mjs';
 import { createPreResultKill } from './mac-pre-result-kill.mjs';
@@ -1706,7 +1707,7 @@ export function summarize(directory) {
   return summary;
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMainEntry(import.meta.url)) {
   if (process.argv[2] === '--list') {
     console.log(JSON.stringify(coordinates(process.argv[3] ?? process.platform), null, 2));
   } else if (process.argv[2] === '--summary') {

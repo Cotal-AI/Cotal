@@ -13,7 +13,7 @@
  *
  * Two kinds of cell, because the scripts split into two kinds.
  *
- *   PARITY, for the six that have an invocation which refuses before doing any work: run the
+ *   PARITY, for scripts with an invocation which refuses before doing any work: run the
  *   script by its real path and through a symlink. Both runs must reach that script's own refusal,
  *   its exit code and a stderr line that only its `main()` prints, and the two must agree on exit
  *   code, stdout and stderr. Agreement alone is not the grade: two runs that both skip `main()`
@@ -52,6 +52,12 @@ const ROOT = dirname(SCRIPTS);
  * function called `main`; the CLI body inside their guard plays that part.
  */
 const PROBES = [
+  {
+    script: "automatic-update-registry-arrival.mjs",
+    argv: [],
+    status: 1,
+    stderr: "AssertionError [ERR_ASSERTION]: usage: automatic-update-registry-arrival.mjs <old-pack> <target-pack> <private-root>",
+  },
   {
     script: "check-attribution.mjs",
     argv: [],
