@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -1249,6 +1249,18 @@ let openInventory: ManagerResumeAgent;
     const manifestRefusal = manifestRefused.agents[0]?.reply.error ?? manifestRefused.error ?? "";
     check("a manifest seat's resume refuses launch options its untrusted persona file declares",
       !manifestRefused.ok && capturedLaunch === undefined && /launchOptions\.mcp-config/.test(manifestRefusal) && manifestRefusal.includes(`cotal trust ${otherRoot}`), { manifestRefusal, launched: capturedLaunch !== undefined });
+    // A persona seat's file judged as read: a link in the trusted project's `.cotal/agents` naming the
+    // untrusted folder's persona refuses on resume.
+    const linkedPersona = join(agentsDir, "linked-worker.md");
+    symlinkSync(manifestPersona, linkedPersona);
+    const linkedEntry: ManagerResumeAgent = { ...entry, launch: { ...entry.launch, source: { kind: "persona", ref: "linked-worker", configPath: linkedPersona, configSha256: digest(linkedPersona) } }, dependencies: [linkedPersona] };
+    const linkedManager = managerWith((name) => fakeHandle(name));
+    (linkedManager as unknown as { auth: unknown }).auth = auth;
+    resetCapturedLaunch();
+    const linkedRefused = await linkedManager.resumePreserved(inventoryOf(linkedEntry));
+    const linkedRefusal = linkedRefused.agents[0]?.reply.error ?? linkedRefused.error ?? "";
+    check("a persona seat whose file links to an untrusted project's persona refuses on resume",
+      !linkedRefused.ok && capturedLaunch === undefined && linkedRefusal.includes(`cotal trust ${otherRoot}`), { linkedRefusal, launched: capturedLaunch !== undefined });
     trustProject(otherRoot);
     const manifestTrusted = managerWith((name) => fakeHandle(name));
     (manifestTrusted as unknown as { auth: unknown }).auth = auth;

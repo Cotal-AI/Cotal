@@ -126,10 +126,13 @@ export function trustSeedPath(): string {
   return join(homeCotalDir(), "trusted-projects-seed.json");
 }
 
-const seedInvalid = (problem: string): CommandFailure =>
-  new CommandFailure("refused", "SCHEMA_INVALID", `the trusted projects seed record ${trustSeedPath()} is invalid: ${problem}, so no folder was seeded`, {
-    remedy: "run `cotal trust <path>` for each folder you trust",
-  });
+const seedInvalid = (problem: string, remedy: string): CommandFailure =>
+  new CommandFailure("refused", "SCHEMA_INVALID", `the trusted projects seed record ${trustSeedPath()} is invalid: ${problem}`, { remedy });
+
+/** What to do with a seed record that cannot be used. `cotal trust` does not change it. Removing it
+ *  runs the seed again on the next command, from the spaces registered at that time. */
+const seedRemoveRemedy = (): string =>
+  `remove ${trustSeedPath()} to stop this warning. The next command then trusts every folder a space is registered or prepared at, so first run \`cotal meshes rm <space>\` for any space whose folder you do not trust. \`cotal trust <path>\` trusts one folder without it`;
 
 /** The seed record, or undefined when the seed was never attempted. A record that is linked, owned
  *  or writable by another account, or invalid refuses: it is never read as "not attempted". */
@@ -138,19 +141,19 @@ function readSeedRecord(): SeedRecord | undefined {
   const stat = lstatSync(path, { throwIfNoEntry: false });
   if (!stat) return undefined;
   if (localRecordAccess() === "posix") {
-    if (stat.isSymbolicLink()) throw seedInvalid("it is a symbolic link");
-    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) throw seedInvalid("it belongs to another user");
-    if ((stat.mode & 0o022) !== 0) throw seedInvalid("other accounts can write it");
+    if (stat.isSymbolicLink()) throw seedInvalid("it is a symbolic link", seedRemoveRemedy());
+    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) throw seedInvalid("it belongs to another user", seedRemoveRemedy());
+    if ((stat.mode & 0o022) !== 0) throw seedInvalid("other accounts can write it", `run \`chmod 600 ${path}\``);
   }
-  if (!stat.isFile()) throw seedInvalid("it is not a regular file");
+  if (!stat.isFile()) throw seedInvalid("it is not a regular file", seedRemoveRemedy());
   let doc: unknown;
   try { doc = JSON.parse(readFileSync(path, "utf8")); }
-  catch { throw seedInvalid("it is not JSON"); }
+  catch { throw seedInvalid("it is not JSON", seedRemoveRemedy()); }
   const { schemaVersion, attemptedAt, roots, completedAt, ...rest } = (doc ?? {}) as Record<string, unknown>;
   if (typeof doc !== "object" || doc === null || Array.isArray(doc) || Object.keys(rest).length || schemaVersion !== SCHEMA_VERSION || typeof attemptedAt !== "string"
     || (completedAt !== undefined && typeof completedAt !== "string")
     || !Array.isArray(roots) || roots.some((root) => typeof root !== "string" || !isAbsolute(root)))
-    throw seedInvalid("its fields do not match the record format");
+    throw seedInvalid("its fields do not match the record format", seedRemoveRemedy());
   return { schemaVersion: SCHEMA_VERSION, attemptedAt, roots: roots as string[], ...(completedAt !== undefined ? { completedAt } : {}) };
 }
 
@@ -198,9 +201,10 @@ export function untrustedProjectRefusal(file: string, declared: readonly string[
   return `${file} declares ${declared.join(", ")}, which a project may declare only when its folder is trusted. ${root} is not trusted, so nothing was launched. If you trust this folder, run \`cotal trust ${root}\``;
 }
 
-/** The project folder a persona file belongs to, when it sits in one: the folder holding the
- *  `.cotal/agents` directory the file is in, directly or in a folder below it. Matched by whole path
- *  segments, so `foo.cotal/agents` is not a project's. Undefined for a file elsewhere. */
+/** The project folder a persona path belongs to, when it sits in one: the folder holding the
+ *  `.cotal/agents` directory the path is in, directly or in a folder below it. Matched by whole path
+ *  segments, so `foo.cotal/agents` is not a project's. Undefined for a path elsewhere. The path is
+ *  judged as given; {@link untrustedPersonaRoot} also judges the file a read of it reaches. */
 export function personaProjectRoot(file: string): string | undefined {
   const parts = resolve(file).split(sep);
   // The last `.cotal` followed by `agents`, with the file somewhere below that `agents` folder.
@@ -210,28 +214,44 @@ export function personaProjectRoot(file: string): string | undefined {
   return undefined;
 }
 
+/** The untrusted project a persona file belongs to, judged twice: by the path as written and by the
+ *  file a read of that path reaches, with every symbolic link resolved as the loaders follow them.
+ *  A link outside any `.cotal/agents` to a persona inside an untrusted project's, and a link in a
+ *  trusted project's `.cotal/agents` to a persona under an untrusted project, both belong to the
+ *  untrusted project. Undefined when neither spelling lies under an untrusted project's
+ *  `.cotal/agents`. `file` is the path as written; `read` is the resolved file, when there is one. */
+function untrustedPersonaRoot(file: string): { root: string; read?: string } | undefined {
+  const read = canonicalRoot(file);
+  for (const root of new Set([personaProjectRoot(file), personaProjectRoot(read)])) {
+    if (root !== undefined && !isTrustedProject(root)) return { root, ...(read !== resolve(file) ? { read } : {}) };
+  }
+  return undefined;
+}
+
 /** Why a persona file may not contribute its `launchOptions` to a launch, or undefined when it may:
  *  a file in a project folder that is not trusted may name none, since the connector renders each
- *  key into the host's own flags or config. A file outside any project, and a file whose project is
- *  trusted, may. */
+ *  key into the host's own flags or config. Both the path as written and the file it reads are
+ *  judged. A file outside any project, and a file whose project is trusted, may. */
 export function personaLaunchOptionsRefusal(file: string, launchOptions: Record<string, unknown> | undefined): string | undefined {
   const keys = Object.keys(launchOptions ?? {});
   if (!keys.length) return undefined;
-  const root = personaProjectRoot(file);
-  if (root === undefined || isTrustedProject(root)) return undefined;
-  return untrustedProjectRefusal(file, keys.map((key) => `launchOptions.${key}`), root);
+  const untrusted = untrustedPersonaRoot(file);
+  if (untrusted === undefined) return undefined;
+  return untrustedProjectRefusal(untrusted.read ? `${file} (a link to ${untrusted.read})` : file, keys.map((key) => `launchOptions.${key}`), untrusted.root);
 }
 
 /** The same rule for a manifest launch, whose spec carries the persona's launch options already
  *  merged with the manifest's own. The persona file it names is read again here, on the host that
  *  launches: a key that file declares, in a project folder that is not trusted, refuses. The
- *  manifest's own `launchOptions` are not gated. A file that is not on this host, as with a spec a
+ *  manifest's own `launchOptions` are not gated. As on every launch path, the path as written and
+ *  the file it reads are both judged. A file that is not on this host, as with a spec a
  *  remote machine deployed, was checked where that machine read it. A file this host has but
  *  cannot read refuses, since what it declares is unknown. */
 export function manifestPersonaLaunchOptionsRefusal(personaPath: string | undefined, launchOptions: Record<string, unknown> | undefined): string | undefined {
   if (personaPath === undefined || !Object.keys(launchOptions ?? {}).length) return undefined;
-  const root = personaProjectRoot(personaPath);
-  if (root === undefined || isTrustedProject(root)) return undefined;
+  const untrusted = untrustedPersonaRoot(personaPath);
+  if (untrusted === undefined) return undefined;
+  const root = untrusted.root;
   let declared: Record<string, unknown> | undefined;
   try { declared = loadAgentFile(personaPath).launchOptions; }
   catch (e) {

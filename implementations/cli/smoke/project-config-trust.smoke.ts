@@ -183,7 +183,7 @@ try {
     mkdirSync(process.env.XDG_CONFIG_HOME, { mode: 0o777 });
     chmodSync(process.env.XDG_CONFIG_HOME, 0o777);
     const failed = await cli(box, ["meshes", "--json"]);
-    check("a seed that cannot write the trust file says no folder is trusted", !existsSync(trustedProjectsPath()) && failed.out.includes("no project folder is trusted"), failed.out.slice(-300));
+    check("a seed that cannot write the trust file says it added no folder", !existsSync(trustedProjectsPath()) && failed.out.includes("the upgrade seed added no project folder"), failed.out.slice(-300));
     const between = mkdtempSync(join(box, "retry-between-"));
     recordMesh({ space: "retrybetween", server, root: between, mode: "open", origin: "manual", ts: new Date().toISOString() } as never);
     chmodSync(process.env.XDG_CONFIG_HOME, 0o700);
@@ -192,6 +192,24 @@ try {
     check("and not a space registered after that attempt", !trustedRoots().includes(between), trustedRoots());
     process.env.COTAL_HOME = realHome;
     process.env.XDG_CONFIG_HOME = realXdg;
+  }
+
+  // A damaged seed record warns and blocks nothing: `cotal trust` still records a folder, a folder
+  // already in the trust file stays trusted, and the warning says how to clear it.
+  {
+    const p = project(declares);
+    await cli(p.root, ["trust", p.root]);
+    const seed = join(process.env.COTAL_HOME!, "trusted-projects-seed.json");
+    const kept = readFileSync(seed, "utf8");
+    writeFileSync(seed, "{not json");
+    const other = mkdtempSync(join(box, "damaged-seed-"));
+    const t = await cli(box, ["trust", other]);
+    fresh();
+    const r = await spawnIn(p);
+    writeFileSync(seed, kept);
+    check("a damaged seed record does not block cotal trust or a trusted folder",
+      t.exited === undefined && trustedRoots().includes(other) && t.out.includes("the upgrade seed added no project folder") && t.out.includes(`remove ${seed}`)
+        && r.exited === undefined && reportText().includes(`RAN ${p.marker}`), { trust: t.out.slice(-400), spawn: r.out.slice(-200) });
   }
 
   // CONTROL: a trusted folder's declared server runs, and its spawn.env name reaches the host.
@@ -305,6 +323,69 @@ try {
     check("a persona under foo.cotal/agents is not taken for a project's", r.exited === undefined && reportText().includes("RAN lookalike"), r.out.slice(-300));
   }
 
+  // A persona file is judged by the path as written and by the file a read of it reaches. A link
+  // outside any `.cotal/agents` to an untrusted project's persona, and a link in a trusted project's
+  // `.cotal/agents` to that persona, both belong to the untrusted project. A link to a persona in the
+  // same trusted project, and a plain file outside any `.cotal/agents`, keep their launch options.
+  {
+    const untrusted = project(undefined);
+    const planted = join(untrusted.root, "planted-mcp.json");
+    writeFileSync(planted, JSON.stringify({ mcpServers: { vialink: { command: "/bin/sh", args: ["-c", `echo RAN link-untrusted >> ${JSON.stringify(report)}`] } } }));
+    const target = join(untrusted.root, ".cotal", "agents", "probe.md");
+    writeFileSync(target, `---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nlaunchOptions:\n  mcp-config: ${planted}\n---\nbody\n`);
+    const trusted = project(undefined);
+    await cli(trusted.root, ["trust", trusted.root]);
+    const ownPlanted = join(trusted.root, "own-mcp.json");
+    writeFileSync(ownPlanted, JSON.stringify({ mcpServers: { own: { command: "/bin/sh", args: ["-c", `echo RAN link-same >> ${JSON.stringify(report)}`] } } }));
+    writeFileSync(join(trusted.root, ".cotal", "agents", "own.md"), `---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nlaunchOptions:\n  mcp-config: ${ownPlanted}\n---\nbody\n`);
+    const outside = mkdtempSync(join(box, "links-"));
+    const linkOut = join(outside, "link.md");
+    symlinkSync(target, linkOut);
+    const linkIn = join(trusted.root, ".cotal", "agents", "link.md");
+    symlinkSync(target, linkIn);
+    const linkSame = join(trusted.root, ".cotal", "agents", "same.md");
+    symlinkSync(join(trusted.root, ".cotal", "agents", "own.md"), linkSame);
+    const spawnFile = (file: string) => cli(trusted.root, ["spawn", "--foreground", "--file", file, "--space", trusted.space, "--agent", "claude"]);
+    const checkManifest = async (file: string): Promise<{ exited?: number; reason: string }> => {
+      const path = join(outside, `m-${file.split("/").pop()}.yaml`);
+      writeFileSync(path, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${trusted.space}\nagent: claude\nbroker: { auth: false }\nagents:\n  probe: ${file}\nchannels:\n  general: { description: Open. }\n`);
+      const r = await cli(trusted.root, ["team", "check", path, "--json"]);
+      let reason = "";
+      try { loadManifest(path); } catch (e) { reason = (e as Error).message; }
+      return { exited: r.exited, reason };
+    };
+    fresh();
+    const out = await spawnFile(linkOut);
+    const outManifest = await checkManifest(linkOut);
+    check("a link outside .cotal/agents to an untrusted project's persona is refused",
+      out.exited === 1 && !reportText().includes("RAN link-untrusted") && out.out.includes(`a link to ${target}`) && out.out.includes(`cotal trust ${untrusted.root}`)
+        && outManifest.exited === 1 && outManifest.reason.includes(`cotal trust ${untrusted.root}`), { out: out.out.slice(-300), manifest: outManifest });
+    fresh();
+    const inside = await spawnFile(linkIn);
+    const inManifest = await checkManifest(linkIn);
+    check("a link in a trusted project's .cotal/agents to an untrusted project's persona is refused",
+      inside.exited === 1 && !reportText().includes("RAN link-untrusted") && inside.out.includes(`cotal trust ${untrusted.root}`)
+        && inManifest.exited === 1 && inManifest.reason.includes(`cotal trust ${untrusted.root}`), { out: inside.out.slice(-300), manifest: inManifest });
+    fresh();
+    const same = await spawnFile(linkSame);
+    const sameManifest = await checkManifest(linkSame);
+    check("a link to a persona in the same trusted project keeps its launch options", same.exited === undefined && reportText().includes("RAN link-same") && sameManifest.exited === undefined, { out: same.out.slice(-300), manifest: sameManifest });
+    const plain = join(outside, "plain.md");
+    writeFileSync(plain, `---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nlaunchOptions:\n  mcp-config: ${planted}\n---\nbody\n`);
+    fresh();
+    const plainRun = await spawnFile(plain);
+    check("a plain persona file outside any .cotal/agents keeps its launch options", plainRun.exited === undefined && reportText().includes("RAN link-untrusted"), plainRun.out.slice(-300));
+    // The path as written counts too: a link in an untrusted project's `.cotal/agents` that names a
+    // file outside it, here in that project's own root, still belongs to that project.
+    const escaped = join(untrusted.root, "escaped.md");
+    writeFileSync(escaped, `---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nlaunchOptions:\n  mcp-config: ${planted}\n---\nbody\n`);
+    const linkOutward = join(untrusted.root, ".cotal", "agents", "outward.md");
+    symlinkSync(escaped, linkOutward);
+    fresh();
+    const outward = await spawnFile(linkOutward);
+    check("a link in an untrusted project's .cotal/agents to a file outside it is refused", outward.exited === 1 && !reportText().includes("RAN link-untrusted") && outward.out.includes(`cotal trust ${untrusted.root}`), outward.out.slice(-300));
+  }
+
   // Trust is stored canonically, so another spelling of a trusted folder is trusted: a path through a
   // linked parent, and one with a trailing separator.
   {
@@ -405,7 +486,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.getuid?.() === 0 ? 39 : 41;
+const EXPECTED = process.getuid?.() === 0 ? 45 : 47;
 if (passed + failed !== EXPECTED) { failed++; console.log(`  ✗ FAIL: ${passed + failed - 1} cells reported, ${EXPECTED} expected`); }
 emitSentinel({ passed, failed });
 process.exit(failed === 0 ? 0 : 1);

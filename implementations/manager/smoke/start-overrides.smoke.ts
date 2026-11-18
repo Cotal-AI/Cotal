@@ -16,7 +16,7 @@
  *      manager's own environment default.
  * Run: pnpm smoke:start-overrides
  */
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager } from "../src/manager.js";
@@ -358,6 +358,39 @@ const j = (v: unknown) => JSON.stringify(v);
   resetOpts();
   const trusted = await launch("runinline03", agentOf("nested3", personaPath, { "mcp-config": "/tmp/planted.json" }));
   check("CONTROL: the same inline spec launches once the folder is trusted", trusted.ok && lastOpts?.launchOptions?.["mcp-config"] === "/tmp/planted.json", j(trusted));
+
+  // The manager judges a manifest persona path as written and as read: a link outside any
+  // `.cotal/agents`, or in the trusted project's own `.cotal/agents`, naming a persona under an
+  // untrusted project refuses on both manager routes; a link within the trusted project launches.
+  const other = mkdtempSync(join(tmpdir(), "cotal-start-ov-linked-"));
+  mkdirSync(join(other, ".cotal", "agents"), { recursive: true });
+  const otherPersona = join(other, ".cotal", "agents", "opts.md");
+  writeFileSync(otherPersona, "---\nname: opts\nlaunchOptions:\n  mcp-config: /tmp/linked.json\n---\n");
+  const outsideDir = mkdtempSync(join(tmpdir(), "cotal-start-ov-outside-"));
+  const linkOut = join(outsideDir, "link.md");
+  symlinkSync(otherPersona, linkOut);
+  const linkIn = join(manifestRoot, ".cotal", "agents", "link.md");
+  symlinkSync(otherPersona, linkIn);
+  const linkSame = join(manifestRoot, ".cotal", "agents", "same.md");
+  symlinkSync(personaPath, linkSame);
+  const linked = { "mcp-config": "/tmp/linked.json" };
+  resetOpts();
+  const outInline = await launch("runlink01", agentOf("linkout", linkOut, linked));
+  resetOpts();
+  const outResolved = await mgr3.startAgent({ name: "linkout2", agent: "smoke-ov", events: false, config: linkOut, resolved: agentOf("linkout2", linkOut, linked) });
+  check("a manifest persona linked from outside .cotal/agents to an untrusted project refuses inline and from disk",
+    !outInline.ok && !outResolved.ok && lastOpts === undefined && String(outInline.error).includes(`cotal trust ${other}`) && String(outResolved.error).includes(`cotal trust ${other}`)
+      && !existsSync(join(manifestRoot, ".cotal", "run", "runlink01.json")), { inline: j(outInline), resolved: j(outResolved) });
+  resetOpts();
+  const inInline = await launch("runlink02", agentOf("linkin", linkIn, linked));
+  resetOpts();
+  const inResolved = await mgr3.startAgent({ name: "linkin2", agent: "smoke-ov", events: false, config: linkIn, resolved: agentOf("linkin2", linkIn, linked) });
+  check("a manifest persona linked from a trusted project's .cotal/agents to an untrusted project refuses inline and from disk",
+    !inInline.ok && !inResolved.ok && lastOpts === undefined && String(inInline.error).includes(`cotal trust ${other}`) && String(inResolved.error).includes(`cotal trust ${other}`)
+      && !existsSync(join(manifestRoot, ".cotal", "run", "runlink02.json")), { inline: j(inInline), resolved: j(inResolved) });
+  resetOpts();
+  const sameLink = await launch("runlink03", agentOf("linksame", linkSame, { "mcp-config": "/tmp/planted.json" }));
+  check("CONTROL: a manifest persona linked within the trusted project launches", sameLink.ok && lastOpts?.launchOptions?.["mcp-config"] === "/tmp/planted.json", j(sameLink));
 }
 
 console.log(failures ? `\nSTART-OVERRIDES SMOKE FAILED ❌ (${failures} failed)` : "\nstart-overrides smoke: all checks passed");

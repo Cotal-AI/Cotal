@@ -15,6 +15,8 @@ terminal and for one a manager runs.
   record beside the space registry notes it, so a space registered later is never added, even if
   `trusted-projects.json` is removed or another shell uses a different config folder. Removing
   `trusted-projects.json` leaves no folder trusted until you run `cotal trust <path>` again.
+  Removing the record, `trusted-projects-seed.json` in the Cotal home, makes the next command
+  trust every folder a space is registered or prepared at by then.
 - `cotal setup`, `cotal space create` and `cotal up` trust a folder only when they made its
   `.cotal` in that run. A folder that already had one, such as a cloned repository, needs
   `cotal trust <path>` once if it declares servers, `spawn.env` or persona launch options.
@@ -22,7 +24,8 @@ terminal and for one a manager runs.
   `--cwd` only, needs `cotal trust <path>` once for the same reason. A persona file a manifest
   names (`cotal up -f`, `cotal team deploy`) follows the same rule for its `launchOptions`. The
   manifest's own `launchOptions` on an agent are not checked: a manifest you run is trusted as you
-  run it.
+  run it. A persona file is judged by the path you give and by the file it reaches through
+  symbolic links, so a link to a persona under a folder that is not trusted is refused.
 - A project config in a `.cotal` that another account owns is refused. Move the project to a
   folder your own account owns.
 - Restart a running manager at this version so its spawns apply the rule.

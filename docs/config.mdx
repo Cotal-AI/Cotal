@@ -34,7 +34,9 @@ A project folder's own `.cotal` may declare these only when the folder is truste
 - `connectors.<name>.mcpServers` entries and `spawn.env` names in `.cotal/config.json`;
 - `launchOptions` in a persona file under `.cotal/agents/`, or a folder below it, since the
   connector renders each key into the application's own flags or config. This includes a persona
-  file a manifest names for `cotal up -f` or `cotal team deploy`.
+  file a manifest names for `cotal up -f` or `cotal team deploy`. A persona file is judged both by
+  the path you give and by the file a read of it reaches through symbolic links: a link to a
+  persona under a folder that is not trusted is refused, wherever the link is.
 
 A spawn that reads either from a folder that is not trusted refuses. The refusal names the file,
 the entries, the folder and the command that trusts it. Nothing launches. This applies to a spawn
@@ -55,7 +57,9 @@ in that run. A folder that already had a `.cotal`, such as a cloned repository, 
 The first command at the version that added this rule trusted every folder a space was registered
 or prepared at before it. That ran once per Cotal home, and `trusted-projects-seed.json` in the
 Cotal home records it. Removing `trusted-projects.json` does not run it again: no folder is trusted
-until `cotal trust` records it.
+until `cotal trust` records it. `cotal trust` does not change the seed record. Removing
+`trusted-projects-seed.json` makes the next command run the seed again, trusting every folder a
+space is registered or prepared at by then.
 
 A space-local file is refused whole when it, or the `.cotal` folder that holds it, belongs to
 another account. `cotal trust` refuses such a folder too. A trusted projects file that another

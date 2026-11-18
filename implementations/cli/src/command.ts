@@ -767,15 +767,17 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       }
     }
     // The one-time upgrade seed of the trusted project folders runs here, before any command body can
-    // register a space, so only spaces registered or prepared before this version are seeded. It writes
-    // nothing once the file exists. When it cannot be written, such as in a config folder another
-    // account could write, the command still runs and no folder is trusted until it can be.
+    // register a space, so only spaces registered or prepared before the first command at this version
+    // are seeded. Its record in the Cotal home says whether it ran, and once it completed nothing is
+    // read or written again. When it cannot finish, such as in a config folder another account could
+    // write or with a damaged record, the command still runs: the seed adds no folder, and a folder
+    // already in the trusted projects file stays trusted.
     if (!["version", "docs"].includes(cmd.name)) {
       try {
         seedTrustedProjects();
       } catch (e) {
         if (!isCommandFailure(e)) throw e;
-        stderrLine("! ", `no project folder is trusted: ${e.message}${e.remedy ? `; ${e.remedy}` : ""}`, c.yellow);
+        stderrLine("! ", `the upgrade seed added no project folder: ${e.message}${e.remedy ? `; ${e.remedy}` : ""}`, c.yellow);
       }
     }
   }
