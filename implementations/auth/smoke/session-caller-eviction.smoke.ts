@@ -158,6 +158,17 @@ async function main() {
     const before = readFileSync(sink).length; transport.send(Buffer.from("session-byte"));
     check("redeemed terminal sends real bytes to participant child", await until(() => readFileSync(sink).subarray(before).equals(Buffer.from("session-byte"))));
     check("redeemed terminal returns real child output", await until(() => Buffer.concat(received).includes(Buffer.from("session-byte"))));
+    const attackWriter = await connect({ servers: fx.servers, ...standaloneConnectOpts({ creds: await mintCreds(a.auth, newIdentity(), "provisioner"), tls: false }), reconnect: false });
+    const attackKv = await new Kvm(attackWriter).open(core.epAuthBucket(a.space));
+    const attackKey = `sessionconn.${newIdentity().id}`;
+    const forged = { sessionId: core.mintSessionId(), principal: `${owner}.freelance`, lifecycleUid: freelanceUid,
+      connection: { serverId: freelance.ep.nc.info!.server_id!, cid: freelance.ep.nc.info!.client_id! }, releaseAfter: Date.now() - 10000 };
+    await attackKv.create(attackKey, JSON.stringify(forged));
+    await wait(2500);
+    console.log(`REPRO forged-row victim-connected=${!freelance.ep.nc.isClosed()}`);
+    await attackKv.purge(attackKey);
+    const poisonKey = `sessionconn.${newIdentity().id}`;
+    await attackKv.create(poisonKey, "not-json");
     const siblingReply = await call("attach", undefined, target); assert.ok(siblingReply.ok);
     const siblingGrant = (siblingReply.data as any).grant;
     const siblingExchange = await exchange({ idpToken: token, actor: "cli", view: "session-caller", sessionGrant: siblingGrant }, false);
