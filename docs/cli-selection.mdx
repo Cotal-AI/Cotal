@@ -1100,7 +1100,8 @@ component's own control surface**, rather than treating a PID, a lease, or a suc
 sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
 `refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed
 state wins). The optional dashboard prints `not-installed` when its extension is not installed,
-or `not-started` when it is installed but has no process record. Both exit `0`.
+or `not-started` when it is installed but has no process record or unsettled owned instance. Both exit `0`.
+The component pass uses the same selected space as the report above it.
 That exit replaces the report's own, so a partial report followed by a clean pass exits 0:
 
 - **manager**: local PID record, its liveness-lease holder and PID, then the manager's own typed
@@ -1109,14 +1110,19 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   visible even when the manager is otherwise `serving`. A row that reached no manager does not
   carry it. If the service does not answer and the local PID is dead, the manager reads `absent`
   even before its lease expires. A lease without a local PID record still reads `not-serving`.
+  A stack intentionally started with `--no-manager` reports `not-started` and exits `0` when
+  no manager answers and no manager lease remains. Legacy starts record that choice against
+  the broker's creation identity, so it does not survive as proof for a different broker process.
 - **delivery**: local PID record, its ready lease (`ready` is the daemon's own bound-control
   signal), and the latest `renewal.<spaceKey>.json` adoption verdict, the record of the space the
   command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
   broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
   names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
 - **web**: `not-installed` when the dashboard extension is not installed and no PID record exists.
-  An installed dashboard with no PID record is `not-started`, which does not fail the check.
+  An installed dashboard with no PID record or unsettled owned instance is `not-started`, which does not fail the check.
   A dead PID with a stale record is still `absent` and exits `1`.
+  An owned dashboard instance that exited without a confirmed stop is also `absent`, even if
+  its shutdown removed the PID file. Confirm its stop with `cotal service stop web --yes`.
   Otherwise, the local PID record, then the `/api/meta` response at the address the dashboard
   recorded once it was listening, which must name the same PID. The holder of `web.pid` picks the record, as
   on the `Web process` row: a service-run dashboard's own session record, found through its web
@@ -1129,9 +1135,14 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   session record or service instance record that exists but cannot be read is also `refused`, and
   the row names the read error.
 - **broker**: the registered mesh URL dialed from this host with its recorded TLS requirement.
+  For a locally owned stack, a missing or dead broker process is `absent`, not `not-serving`.
+  A cleanly stopped controller target reports `absent` and exits `1` without dialing another space.
 
 An unreadable component PID file is `refused`, and its row names the file path and read error.
 A missing or empty PID file still means no local process record.
+PID records with creation pins are checked against the live process identity. A reused PID
+is stale, not running, and cannot keep a dead delivery daemon's ready lease bound. Unknown or
+unreadable identity pins refuse the component check rather than claiming liveness.
 
 If a user-auth exchange returns a bearer whose principal cannot be decoded, the component probe
 reports the shared auth-service build and restart guidance instead of a bare JSON or missing-claim error.
