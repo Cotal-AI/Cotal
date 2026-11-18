@@ -29,7 +29,7 @@ export interface NativeIssuanceRecord {
   credentialId: string;
   view: string;
   connId: string;
-  /** The minted inner JWT's own `iat` and `exp` (seconds); a session-caller's is its grant's. */
+  /** The minted inner JWT's own `iat` and `exp` (seconds), bounded by its exchanged bearer. */
   iat: number;
   exp: number;
   service?: { witness: ServiceRegistrationWitness; credentialId: string; connection: ServiceConnectionBinding };
@@ -164,8 +164,7 @@ export async function readNativeIssuance(kv: KV, userNkey: string): Promise<Nati
 export class CorruptNativeIssuanceEvidence extends Error {}
 
 /**
- * Remove the rows whose minted JWT expired more than the clock tolerance ago (a session-caller's
- * row carries its grant's expiry, so it lives as long as that grant). The walk is the leader-served
+ * Remove the rows whose minted JWT expired more than the clock tolerance ago. The walk is the leader-served
  * `STREAM.MSG.GET` `next_by_subj` read over `natkey.` (no consumer: none may be created on the auth
  * bucket), and each removal is a KV purge pinned to the exact sequence read. A row that does not
  * parse throws {@link CorruptNativeIssuanceEvidence}: corrupt evidence is the caller's fault to

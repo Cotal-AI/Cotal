@@ -273,7 +273,7 @@ async function establishAttachSession(
     } catch (e) {
       return { ok: false, kind: "fatal", message: e instanceof Error ? e.message : String(e) };
     }
-    link = { mode: "session-bearer", tls, ...auth };
+    link = { mode: "session-bearer", tls, ...auth, renew: () => userSessionAuth(t, grant) };
   } else link =
     material.kind === "bare"
       // An open mesh has no credential system: the same bare connection the control round trip
@@ -343,7 +343,7 @@ export type RedeemLink =
   | { mode: "session-caller"; tls: boolean; creds: string }
   // #2312: a user mesh. The identity plane minted the bearer for ONE session; the callout turns it
   // into the session-caller rows. Never a seed.
-  | { mode: "session-bearer"; tls: boolean; bearer: string; sentinelCreds: string };
+  | { mode: "session-bearer"; tls: boolean; bearer: string; sentinelCreds: string; renew: () => Promise<{ bearer: string; sentinelCreds: string }> };
 
 /** The ONE place a {@link RedeemLink} becomes NATS connect options. Both connections on the redeem
  *  path (the session link and the abandoned-session hand-back) go through here, so neither can
@@ -438,10 +438,11 @@ type Abandoned = { grant: SessionGrant; link: RedeemLink; inbox: string; server:
  * abandoned session's own material, never an invented seed.
  */
 async function releaseAbandonedSession(s: Abandoned): Promise<void> {
+  const link = s.link.mode === "session-bearer" ? { ...s.link, ...await s.link.renew() } : s.link;
   const nc = await dialerFor(s.server)({
     servers: s.server,
     inboxPrefix: `_INBOX_${s.inbox}`,
-    ...redeemConnectOpts(s.link),
+    ...redeemConnectOpts(link),
     maxReconnectAttempts: 0,
     timeout: LINK_DEADLINE_MS,
     // The same short ping the reconnecting session uses. This connection exists BECAUSE a link died,

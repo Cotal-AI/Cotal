@@ -143,8 +143,8 @@ async function main() {
     console.log(JSON.stringify({ natSession: { rows: newKeys.length, view: scRow?.view, rowExp: scRow?.exp, bearerExp: (decodeJwt(sc.body.token) as any).exp, claimExp: scAct?.session?.exp, grantExp: grant.exp } }));
     check("NS1 the session-caller connect leaves exactly one new row with view session-caller under the bearer's own lifecycle and credential",
       newKeys.length === 1 && scRow?.view === "session-caller" && scRow.owner === owner && scRow.actor === "cli" && scRow.lifecycleUid === scAct.lifecycleUid && scRow.credentialId === scAct.credentialId);
-    check("NS2 the row's exp is the redeemed session grant's expiry (the minted JWT's), equal to the bearer's verified session claim",
-      scRow !== undefined && grantExpSec !== undefined && scRow.exp === grantExpSec && scRow.exp === scAct.session.exp);
+    check("NS2 the row's exp is bounded by the proof-capped bearer and session grant",
+      scRow !== undefined && grantExpSec !== undefined && scRow.exp === (decodeJwt(sc.body.token) as any).exp && scRow.exp <= grantExpSec && scRow.exp <= scAct.session.exp);
     await reader.close();
     let sessionReady = false, ended: string | undefined; const received: Buffer[] = [];
     transport = meshSessionTransport(sessionNc, grant); transport.onReady(() => { sessionReady = true; }); transport.onData((b) => { received.push(b); }); transport.onEnd((_e, reason) => { ended = reason; });

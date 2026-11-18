@@ -524,9 +524,8 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       const readerId = calloutReaderId(req.server_id.id, req.client_info?.id as number);
       const { [SESSION_EXP]: sessionExp, [ENDPOINT_CALLER_EXP]: endpointExp, [ENDPOINT_CALLER_RECHECK]: endpointRecheck, ...perms } =
         await step(c, "policy", () => opts.permissionsFor(validated, inboxNonce, readerId));
-      // #2312: a session-caller connection carries EXACTLY the static arm's expiry, the grant's,
-      // and only when the permission builder vouched for it from the live session row.
-      const exp = validated.act.view === "session-caller" ? sessionExp : endpointExp === undefined ? validated.exp : Math.min(validated.exp, endpointExp as number);
+      // A session grant bounds the rails, while the exchanged bearer bounds the proof lifetime.
+      const exp = validated.act.view === "session-caller" ? Math.min(validated.exp, sessionExp as number) : endpointExp === undefined ? validated.exp : Math.min(validated.exp, endpointExp as number);
       if (typeof exp === "number" && exp <= Math.floor(Date.now() / 1000)) throw new Error("callout: endpoint caller authority expired before signing");
       if (typeof exp !== "number" || !Number.isSafeInteger(exp)) throw new Error("callout: no bound expiry for this connection");
       // Stamp the principal into the minted JWT so the live identity is recoverable server-side: the
@@ -544,7 +543,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           fromPublic(req.user_nkey),
           fromPublic(opts.dataAccount.pub),
           { ...perms, tags: principalTags(validated.owner, validated.act.actor) },
-          { signer: userSigner, exp }, // NATS access dies with the bearer (a session-caller: with its grant)
+          { signer: userSigner, exp }, // Every connection ends by its exchanged bearer or narrower authority.
         );
         return { userJwt: jwt, iat: signedIat(jwt) };
       });

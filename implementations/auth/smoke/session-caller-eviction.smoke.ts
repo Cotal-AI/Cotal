@@ -149,8 +149,9 @@ async function main() {
     console.log(JSON.stringify({ natSession: { rows: newKeys.length, view: scRow?.view, rowExp: scRow?.exp, bearerExp: (decodeJwt(sc.body.token) as any).exp, claimExp: scAct?.session?.exp, grantExp: grant.exp } }));
     check("NS1 the session-caller connect leaves exactly one new row with view session-caller under the bearer's own lifecycle and credential",
       newKeys.length === 1 && scRow?.view === "session-caller" && scRow.owner === owner && scRow.actor === "cli" && scRow.lifecycleUid === scAct.lifecycleUid && scRow.credentialId === scAct.credentialId);
-    check("NS2 the row's exp is the redeemed session grant's expiry (the minted JWT's), equal to the bearer's verified session claim",
-      scRow !== undefined && grantExpSec !== undefined && scRow.exp === grantExpSec && scRow.exp === scAct.session.exp);
+    if (scRow !== undefined && grantExpSec !== undefined) assert.ok(scRow.exp <= grantExpSec);
+    check("NS2 the row's exp is bounded by the proof-capped bearer and session grant",
+      scRow !== undefined && scRow.exp === decodeJwt(sc.body.token).exp && scRow.exp <= scAct.session.exp);
     await reader.close();
     let sessionReady = false, ended: string | undefined; const received: Buffer[] = [];
     transport = meshSessionTransport(sessionNc, grant); transport.onReady(() => { sessionReady = true; }); transport.onData((b) => { received.push(b); }); transport.onEnd((_e, reason) => { ended = reason; });
@@ -219,8 +220,16 @@ async function main() {
     transport.send(Buffer.from("proof-control"));
     check("E2 control terminal round trip before expiry", await until(() => Buffer.concat(proofBytes).includes(Buffer.from("proof-control"))));
     await wait(Math.max(0, proofExp * 1000 - Date.now() + 500));
-    check("E2 proof expiry still follows the session grant on this build", !await closedWithin(sessionNc));
-    if (!sessionNc.isClosed()) { await sessionNc.flush(); console.log("OBSERVED E2 socket still answers broker PING after identity proof expiry"); }
+    check("E2 proof expiry evicts the live caller socket", await closedWithin(sessionNc));
+    const renewed = await exchange({ idpToken: await jwt("owner"), actor: "cli", view: "session-caller", sessionGrant: proofGrant }, false);
+    check("E2 fresh identity proof renews the same active session", renewed.status === 200);
+    await sessionNc.close();
+    sessionNc = await connect({ servers: fx.servers, ...standaloneConnectOpts({ bearer: renewed.body.token, sentinelCreds: a.sentinelCreds, tls: false }), reconnect: false });
+    let renewedReady = false; const renewedBytes: Buffer[] = [];
+    transport = meshSessionTransport(sessionNc, proofGrant); transport.onReady(() => { renewedReady = true; }); transport.onData((b) => { renewedBytes.push(b); });
+    check("E2 renewed proof reconnects the terminal", await until(() => renewedReady));
+    transport.send(Buffer.from("renewed-control"));
+    check("E2 renewed terminal completes a real byte round trip", await until(() => Buffer.concat(renewedBytes).includes(Buffer.from("renewed-control"))));
     transport.close(); await sessionNc.close(); sessionNc = undefined;
 
     const revokeGrant = await attachAgain();

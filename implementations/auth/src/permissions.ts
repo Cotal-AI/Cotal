@@ -15,8 +15,8 @@ export type SessionVerifier = (
   claim: { endpoint: string; sessionId: string; epoch: number },
 ) => Promise<UserTokenSession>;
 
-/** Out-of-band key on a session-caller permission set: the grant expiry (unix seconds) the callout
- *  binds the minted JWT to, instead of the bearer's. Stripped before the JWT is encoded. */
+/** Out-of-band key on a session-caller permission set: the grant expiry (unix seconds), an
+ *  additional ceiling beside the exchanged bearer. Stripped before the JWT is encoded. */
 export const SESSION_EXP = "__cotalSessionExp";
 /** Internal expiry bound for ordinary endpoint callers, stripped before JWT encoding. */
 export const ENDPOINT_CALLER_EXP = "__cotalEndpointCallerExp";
