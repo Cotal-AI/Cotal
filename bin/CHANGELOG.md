@@ -1,5 +1,44 @@
 # cotal-ai
 
+## 0.168.0
+
+### Patch Changes
+
+- 52e6c81: Install host-compatible optional dependencies despite npm's omit=optional setting so repeated updates do not reinstall every built-in connector.
+- 34667b0: Print only the Node.js version requirement and upgrade instructions when Cotal starts on an older Node runtime.
+- 077325c: Updates leave Claude configuration untouched when no Cotal integration is installed.
+  The refresh checks installation records before taking mutation locks, so a read-only unused Claude directory no longer blocks reconciliation or its rollback.
+- 5409ab0: Keep the background service idle after an automatic update. Its replacement poll reads execution metadata without rehashing the retained package every second. Command startup, replacement verification and hosted Manager admission still validate the complete inventory.
+- cfd5730: Keep daemon services on the invoked Node path so distribution Node upgrades do not strand them on a removed versioned executable. Retain only a same-directory alias of the running runtime, avoiding version managers' transient shell directories. Provide explicit service inspection and replacement guidance for older units without hiding an absent daemon endpoint behind a service lookup failure.
+- f769fff: Explain how to install with npm as a normal user when distribution Node has a root-owned global prefix.
+- Updated dependencies [296ea4d]
+- Updated dependencies [d164a59]
+- Updated dependencies [4ad482d]
+- Updated dependencies [5c54061]
+- Updated dependencies [818992b]
+- Updated dependencies [52e6c81]
+- Updated dependencies [6546892]
+- Updated dependencies [f60af89]
+- Updated dependencies [bd5b41b]
+- Updated dependencies [97a8f1a]
+- Updated dependencies [d443ef1]
+- Updated dependencies [cfd5730]
+- Updated dependencies [b0e70a5]
+- Updated dependencies [f769fff]
+- Updated dependencies [5723f51]
+- Updated dependencies [b31e1e8]
+- Updated dependencies [9d5a50b]
+  - @cotal-ai/connector-core@0.168.0
+  - @cotal-ai/auth@0.168.0
+  - @cotal-ai/core@0.168.0
+  - @cotal-ai/manager@0.168.0
+  - @cotal-ai/cli@0.168.0
+  - @cotal-ai/seat@0.168.0
+  - @cotal-ai/delivery@0.168.0
+  - @cotal-ai/registry@0.168.0
+  - @cotal-ai/runtime@0.168.0
+  - @cotal-ai/workspace@0.168.0
+
 ## 0.167.0
 
 ### Patch Changes

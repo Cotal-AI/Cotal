@@ -376,7 +376,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `lifecycleUid` | string | MUST in auth mode from v0.4 | the current managed-lifecycle UID (§13.1); distinguishes a live instance from a same-name successor. Advisory for display; authority checks use the trusted lifecycle mapping, not presence |
 | `runtime` | `PresenceRuntime` | MAY | the OS process holding this record's mesh connection, as that process observed itself: `{ id, startedAt, source }`. `id` is an opaque CSPRNG token minted once per (OS process, `lifecycleUid`) scope and MUST NOT be reused or span two lifecycle UIDs. A new process or lifecycle scope MUST get a new id. `startedAt` is the epoch ms that OS process started, read in-process (`performance.timeOrigin`), shared by all endpoints in the process. A lifecycle registered later carries the process's age, not its lifecycle age. It MUST NOT date a launch request, registration, heartbeat, activity, separate parent or model harness process. `source` is the closed set `endpoint-process`; an observer treats any other value as unsupported. Status, activity, heartbeats and in-process reconnects within the scope leave it unchanged. An offline record keeps it, so `now - startedAt` dates a running process only while the record is live. It carries no pid, host, path, command line or environment. Missing means not reported, never zero |
 | `channelModes` | `Record<string, ChannelMode>` | MAY | per-channel attention overrides (`ChannelMode` = `quiet` \| `muted`), keyed by concrete channel name. Advisory, **not** access control (the broker still authorises and delivers); a receive-side preference, reset on restart |
-| `prompts` | `PresencePrompts` | MAY | `{ open, seq }`, the prompts this process serves on its `agent` endpoint (§13.22). `open` counts the prompts that are `open` or `sent`. `seq` is an integer that goes up by one each time a prompt opens or changes state; it restarts with the process, so it means something only together with `runtime.id`, and under one `runtime.id` it never goes back, also when the process stops serving the endpoint and serves it again. Present exactly while the process serves that endpoint and the broker accepted its subscription on the current connection (§13.21), with `open` 0 and the highest `seq` the process used until the server sets it. It carries no prompt content and no authority. An offline record omits it. A reader learns from it that it should read the prompts (§13.22, reader rules) |
+| `prompts` | `PresencePrompts` | MAY | `{ open, seq }`, the prompts this process serves on its `agent` endpoint (§13.22). `open` counts the prompts that are `open` or `sent`. `seq` is an integer that goes up by one each time a prompt opens or changes state; it restarts with the process, so it means something only together with `runtime.id`, and under one `runtime.id` it never goes back, also when the process stops serving the endpoint and serves it again. Present exactly while the process serves that endpoint and the broker accepted its subscription on the current connection (§13.21). Each serve takes a fresh `seq` when it starts, one above every `seq` the process used under its `runtime.id`, and shows `open` 0 with it until the server sets the field, so one `(runtime.id, seq)` never names two states. It carries no prompt content and no authority. An offline record omits it. A reader learns from it that it should read the prompts (§13.22, reader rules) |
 | `ts` | number | MUST | epoch ms of last heartbeat |
 
 `AgentCard`:
@@ -3053,7 +3053,8 @@ genuinely `unknown`.
   fact that nothing received the request, so it is `not-executed`, not merely unanswered. A caller
   MUST trust it ONLY on that reserved sentinel, which carries no responder publish grant: the same
   status on an ordinary reply subject is a responder's own claim and proves nothing about
-  delivery.
+  delivery. Any other message on the sentinel means nothing, because a JetStream API request can
+  name the sentinel as its reply subject, so the caller drops it and keeps waiting.
 - **No reply observed** — a deadline that expires with no answer at all, a transport failure after
   publication, any path where the caller cannot tell whether the request was handled. This is
   `unknown`, and it is the only local case that is.
@@ -3283,7 +3284,10 @@ facts.
 
 - **call**, bounded request/reply (`replyExpected: true`, `deadlineMs` mandatory). On the
   `one` rail it is queue-group anycast; on `inst` it addresses one stable instance. No
-  responder → `unavailable`.
+  responder → `unavailable`. The caller drops a stored message that reaches its reply read, one
+  with a `Nats-Stream`, `Nats-Sequence` or `Nats-Time-Stamp` header, before it reads it as the
+  sentinel or a reply: a JetStream read, such as a Direct Get, delivers one on any subject its
+  requester names, and a responder publishes its reply with none of those headers.
 - **cast**, the same subjects and grants (`replyExpected: false`): fire-and-forget,
   at-most-once, the responder MUST NOT reply and the caller never reads the rail (the nonce
   is present but unused). A cast to a journaled command is `class-mismatch`; journaled work
@@ -6512,8 +6516,11 @@ granted directly; it does not prove a human is typing.
 **Envelope.** The body is the §13.3 `EndpointRequest` and `EndpointReply`. The agreement check has
 one branch for this route: `op.endpoint` and `op.command` equal the subject's (`op-mismatch`);
 `from.id` equals `<cOwner>.<cActor>` (`sender-mismatch`); `target` is absent (`target-mismatch`,
-the head is the target); `bind` is absent (`bad-request`, the runtime id pins the process); and
-`deadlineMs` is present (`bad-request`). Digests are required on every command but `describe`
+the head is the target); `bind` is absent (`bad-request`, the runtime id pins the process);
+`replyExpected` is `true` (`bad-request`); and `deadlineMs` is present and at most 30000
+(`bad-request`). Every command
+on this route is request/reply and the route has no cast: a request with `replyExpected: false` is
+refused before its handler runs, and like every cast it gets no reply. Digests are required on every command but `describe`
 (`contract-mismatch`). Everything else is §13.3 unchanged: the version check, the id echo, args and
 output validation, the error catalog, the effect outcome, and discarding stored-message provenance
 headers.
@@ -6529,7 +6536,10 @@ the broker reported no permission violation for that subject. A credential minte
 existed fails this check, and the process does not serve. The check runs again on every replaced
 connection, including one the client library re-subscribed on a reconnect, and a refusal there ends
 the serve. Stopping unsubscribes and waits for the handlers in flight, and stopping the client does
-the same before it closes the connection those handlers reply on. A process serves an endpoint once
+the same before it closes the connection those handlers reply on. It waits for a handler only until
+the request's `deadlineMs` has passed since the request arrived, because the caller has stopped
+waiting by then, and drops a reply that comes later. The 30000 cap on `deadlineMs` bounds that wait
+at 30 s. A process serves an endpoint once
 for its lifecycle: a second serve, from another client in the same process too, is refused, because
 both would subscribe the same subject.
 
@@ -6553,7 +6563,9 @@ no-responders status counts only on the sentinel: it is `unavailable`, `not-exec
 counts only when its subject is the one the addressed process derives, its id echoes the request
 and its output validates against the pinned contract. A refused
 publish is `permission-denied`, `not-executed`. A refused reply read is `permission-denied`, and its
-outcome is `not-executed` only when the publish was refused too, else `unknown`. A deadline is
+outcome is `not-executed` only when the publish was refused too, else `unknown`; it is still
+`permission-denied` when the deadline passes before the caller learns whether the publish was
+refused. A deadline is
 `deadline-exceeded`, `unknown`. The caller does not call `describe` first: it embeds the cluster
 artifacts and pins their digests, and calls `describe` only to learn which revision an agent serves
 after a `contract-mismatch`.
@@ -6564,7 +6576,9 @@ serving credential can publish on the sentinel and a served request cannot be ma
 unexecuted. A JetStream read is not a publish under a row: a client that may Direct Get a stream, as
 every agent may read the presence bucket, can name the sentinel as the reply subject, and the server
 delivers the stored message there. That message carries the stored-message headers, and the caller
-drops it. Any other message on the sentinel that is not the no-responders status is `internal`.
+drops it. A client that may make a JetStream API request can also name the sentinel as its reply
+subject, and the broker answers there with plain JSON. Nothing but the no-responders status means
+anything on the sentinel, so the caller drops every other message there and keeps waiting.
 The broker answers no-responders only when the requester owns the reply subscription and no
 interest exists anywhere; behind a leaf node or gateway a missing responder is a deadline, so
 `unavailable` is a fast path and the deadline is the guarantee. Permissions are fixed per
@@ -7904,6 +7918,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-18 | **Principal-route follow-ups (§6, §13.3, §13.5, §13.21), corrections.** A serve of the `agent` endpoint takes a fresh `prompts.seq` when it starts, so one `(runtime.id, seq)` never names two states, and `spec/cotal.schema.json` gives `prompts.open` and `prompts.seq` as non-negative integers, as §6 already said. A caller drops any message on the no-responders sentinel other than the broker's no-responders status and keeps waiting, on every route, where it used to end the call `internal`: a JetStream API request can name the sentinel as its reply subject. §13.5 now states that a service call drops a stored message on its reply read, as the principal route does; clients already did. The principal route has no cast: a request with `replyExpected: false` is refused before its handler runs. Stopping a principal serve waits for a handler in flight only until its request's `deadlineMs` has passed since the request arrived, and drops a reply that comes later. A principal-route `deadlineMs` is at most 30000: the serve refuses a larger one as `bad-request` before its handler runs, and a caller refuses it before publishing, so stop waits at most 30 s. A refused reply read is still `permission-denied` when the deadline passes first. |
 | 2026-11-18 | **Principal-route and prompt-desk corrections (§6, §13.14, §13.21, §13.22), additive.** A caller drops a stored message that reaches its reply read, one a JetStream read such as a Direct Get delivers on any subject its requester names, the sentinel included, and keeps waiting past a message under another head. Stopping a client ends its principal serves and waits for their handlers before the connection closes, and a process serves an endpoint once for its lifecycle. Under one `runtime.id` the presence `prompts.seq` never goes back, also across a stopped serve. The desk's admission refusals the schemas cannot express are now stated, and a reader drops a prompt with two options that share an id. No subject or schema changes. |
 | 2026-11-17 | **The agent's prompt desk (§13.22), additive.** An agent serves the `agent` endpoint from one prompt desk per process, the only writer of its prompts' states, which applies every event in one step in the order it arrives. §13.22 now states the two bounds every prompt has (offered for 1 s to 7 days, and settled 1 s to 24 h after an accepted answer), the desk's limits (32 prompts open or sent, the last 32 closed, 262144 bytes of content, 4096 bytes per summary in every state the prompt can reach, and a 524288-byte `max_payload` floor checked on every connection), the eleven `prompt-answer` checks in their order, when two answers are the same, the reply's 10 s bound and what state it carries, what else moves a prompt from each state, and that a caller waits at least 15 s for an answer's reply. No subject or schema changes. |
 | 2026-11-17 | **The principal route and the `agent` endpoint (§6, §13.2, §13.7, §13.9, §13.14, §13.21, §13.22, Appendix B), additive.** A principal serves a core-defined command set about itself on `cotal.<space>.ep.prin.<endpoint>.<pOwner>.<pActor>.<pUid>.<runtimeId>.<command>.<authority>.<cOwner>.<cActor>.<cUid>.<nonce>`, with replies on `ep.prin-reply` and a no-responders sentinel with `_nr` in its five head positions. It needs no registration: the principal's own credential serves it. The authority word is `owner` (the caller's own owner's principals) or `grant` (one granted lifecycle). A cluster command declares the words it admits in `authorities`; such a command is never served on a service route. The auth callout mints serve rows into every agent credential of a ledger row and `owner` rows into those of an interactive row, from the row's kind; grant issuance is not defined yet. Serving is ready only after the broker accepted the subscription, and it binds again on every replaced connection. Revision 1 of the `agent` endpoint (`ai.cotal.agent`) has `prompts`, `prompt` and `prompt-answer` for an agent's harness prompts, with the prompt, form profile, states and reader rules of §13.22, and presence gains `prompts: { open, seq }`. Also corrected: §13.2 counted six authorization-mode tokens where there are seven. |

@@ -290,6 +290,8 @@ interface RouteSteps<P extends ParsedEpRequest | ParsedEpPrincipalRequest, C, D 
   }): C;
   /** The reply subject, derived from this process and the parsed request. */
   replySubject(parsed: P): string;
+  /** Whether a reply may still go out. A route whose stop has stopped waiting drops a late one. */
+  mayReply?(): boolean;
 }
 
 const enc = new TextEncoder();
@@ -391,6 +393,7 @@ async function runRequest<P extends ParsedEpRequest | ParsedEpPrincipalRequest, 
     const fallback: EndpointReply = { v: 1, id: reply.id, ok: false, error: { code: "internal", message: `the reply does not serialize: ${(err as Error).message}`, ...(outcome !== undefined ? { outcome } : {}) } };
     bytes = enc.encode(JSON.stringify(fallback));
   }
+  if (steps.mayReply?.() === false) return;
   const replySubject = steps.replySubject(parsed);
   try {
     nc.publish(replySubject, bytes);
@@ -728,6 +731,9 @@ export interface EpPrincipalServeContext {
   receivedAtMonotonicMs: number;
   /** Measure the complete success reply against this connection and a handler's byte ceiling. */
   replyFits: (data: unknown, ceiling: number) => boolean;
+  /** Aborts when the serve stops. A handler that is still running then can end early: stop waits
+   *  for it only until its request's deadline, and drops a reply that comes later. */
+  signal: AbortSignal;
 }
 
 /** One principal-route command: its handler plus the compiled contracts, which MUST equal the
@@ -756,7 +762,9 @@ export interface EpPrincipalServeHandle {
   readonly refused: Promise<Error>;
   /** Flush and confirm the subscription still stands: the check `ready` ran, run again. */
   check(): Promise<void>;
-  /** Unsubscribe, then await the handlers in flight. */
+  /** Unsubscribe, abort every handler's `signal`, then await each handler in flight until its
+   *  request's deadline at most, which the route caps at 30 s. A reply that comes after that is
+   *  dropped. */
   stop(): Promise<void>;
 }
 
@@ -775,6 +783,11 @@ export interface EpPrincipalServeHandle {
  * pipeline: a head that is not this process is dropped with no reply, the subject's authority word
  * MUST be one the command declares (`permission-denied`), and the reply goes to the subject derived
  * from this process and the parsed caller, never to a transport reply field.
+ *
+ * Stopping aborts every handler's `signal` and waits for each handler in flight until its request's
+ * `deadlineMs` has passed since the request arrived, and no longer: the caller has stopped waiting
+ * by then. The route refuses a `deadlineMs` over 30 s, so stop waits at most 30 s. A reply that comes
+ * later is dropped.
  */
 export function servePrincipalRoute(
   nc: NatsConnection,
@@ -859,12 +872,17 @@ export function servePrincipalRoute(
     beforeEffect: async () => undefined,
     context: ({ parsed, env, receivedAtMonotonicMs, replyFits }) => ({
       endpoint: serve.endpoint, principal: self, caller: parsed.caller, authority: parsed.authority,
-      request: env, receivedAtMonotonicMs, replyFits,
+      request: env, receivedAtMonotonicMs, replyFits, signal: stopping.signal,
     }),
     replySubject: (parsed) => derivePrincipalReplySubject(space, parsed, self),
+    mayReply: () => !lateRepliesDropped,
   };
 
-  const pending = new Set<Promise<void>>();
+  const stopping = new AbortController();
+  let lateRepliesDropped = false;
+  /** Each request in flight, with when its caller stops waiting (`performance.now()` time), once
+   *  the request has reached its handler. */
+  const pending = new Map<Promise<void>, { endsAt?: number }>();
   let refusal: Error | undefined;
   let markRefused!: (e: Error) => void;
   const refused = new Promise<Error>((resolve) => { markRefused = resolve; });
@@ -878,8 +896,17 @@ export function servePrincipalRoute(
         return;
       }
       if (carriesStoredProvenance(msg)) return;
-      const run = runRequest(nc, steps, (parsed) => byCommand.get(parsed.command), msg).catch(() => { /* runRequest() reports via the reply; never unhandled */ });
-      pending.add(run);
+      const entry: { endsAt?: number } = {};
+      const timed: typeof steps = {
+        ...steps,
+        context: (a) => {
+          // The agreement check made `deadlineMs` present on this route, and at most 30 s.
+          entry.endsAt = a.receivedAtMonotonicMs + a.env.deadlineMs!;
+          return steps.context(a);
+        },
+      };
+      const run = runRequest(nc, timed, (parsed) => byCommand.get(parsed.command), msg).catch(() => { /* runRequest() reports via the reply; never unhandled */ });
+      pending.set(run, entry);
       void run.finally(() => pending.delete(run));
     },
   });
@@ -897,11 +924,27 @@ export function servePrincipalRoute(
     refused,
     check,
     async stop() {
+      stopping.abort(new Error(`stopped serving "${serve.endpoint}" on the principal route`));
       const gone = nc.closed().then(() => undefined);
       await Promise.race([sub.drain().catch(() => undefined), gone]);
-      await Promise.allSettled([...pending]);
+      // A request that has not reached its handler finishes without waiting on anything outside
+      // this process: the route has no seam before the effect.
+      await Promise.allSettled([...pending].map(([run, { endsAt }]) =>
+        endsAt === undefined ? run : withinMs(run, endsAt - performance.now())));
+      lateRepliesDropped = true;
     },
   };
+}
+
+/** Settle when `p` does or after `ms`, whichever comes first. */
+async function withinMs(p: Promise<unknown>, ms: number): Promise<void> {
+  if (ms <= 0) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([p, new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); })]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function deepFreeze<T>(v: T): T {

@@ -215,7 +215,7 @@ export const updateRuntime: UpdateRuntime = {
   extensions: () => loadExtensionsManifest().extensions,
   verifyExtension: verifyCurrentExtension,
   claimUpdatePass: () => claimExtensionUpdatePass(),
-  claimGlobalUpdate: (root) => claimGlobalNpmUpdateLock(root),
+  claimGlobalUpdate: (root) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000 }),
   selfArgv,
   checkout: () => seedWriterKind() === "checkout",
   installPrefix: () => {
@@ -265,7 +265,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
       });
     }
   }
-  if (await recoverInterruptedUpdate(rt)) return;
+  if (await recoverInterruptedUpdate(rt) && args.values.self !== true) return;
   // A folder above the config folder is not one this command repairs. Refuse it before the mode
   // repair and before seeding, so a refusal writes nothing and does not replace the binary.
   try {
