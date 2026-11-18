@@ -236,7 +236,10 @@ On Linux, `service install <name> --instance <full-id> --dry-run` asks the
 systemd user manager for its config directory, then renders a
 bounded direct-process unit and private environment candidates and reports
 their paths and digests without printing their bytes or the inherited `PATH`.
-A user manager that does not answer `systemctl --user show-environment` refuses
+Linux native installation requires `/run/systemd/system` and an executable `systemctl` on PATH.
+Without either, it refuses `UNSUPPORTED` and names running the process under your own supervisor,
+such as an OpenRC user service, runit or s6. On a supported host, a user manager that does not answer
+`systemctl --user show-environment` refuses
 `DEPENDENCY_UNAVAILABLE`, naming that command, with a Next to run from a
 logged-in session.
 With no existing instance, the inspection checks the declared process,

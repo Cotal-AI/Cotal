@@ -912,7 +912,7 @@ export { START_TIMEOUT_MS } from "@cotal-ai/workspace/control";
 // mechanism for writing, registering and reading this CLI's units rather than two.
 export { daemonArgv } from "./lib/self-exec.js";
 export { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource } from "./lib/service-systemd-files.js";
-export { submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "./lib/service-systemd.js";
+export { submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserServiceRequirement, systemdUserUnitDirectory } from "./lib/service-systemd.js";
 export { launchAgent } from "./lib/manifest/live.js";
 
 // The machine daemon refreshes the same catalog while retaining its own sign-in session.

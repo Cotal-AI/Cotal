@@ -75,6 +75,20 @@ assert.match(busDown.text, /DEPENDENCY_UNAVAILABLE/);
 assert.match(busDown.text, /logged-in session/);
 console.log("PASS supported systemd and unavailable user-bus controls");
 
+assert.equal(run(["space", "create", "sample", "--root", root]).code, 0);
+const definition = join(root, "service.json");
+writeFileSync(definition, JSON.stringify({ schemaVersion: 1, space: "sample", launch: {
+  type: "process", executable: process.execPath, args: ["-e", "setTimeout(() => {}, 60000)"], cwd: root,
+}, readiness: { type: "process", timeoutMs: 5000 } }));
+assert.equal(run(["service", "add", "probe", "--file", definition, "--space", "sample"]).code, 0);
+const serviceControl = run(["service", "install", "probe", "--space", "sample", "--dry-run", "--json"]);
+assert.equal(serviceControl.code, 4);
+assert.equal(JSON.parse(serviceControl.text).result.wouldAllocateStoppedInstance, true);
+const serviceBusDown = run(["service", "install", "probe", "--space", "sample", "--dry-run"], { SMOKE_BUS_DOWN: "1" });
+assert.equal(serviceBusDown.code, 2);
+assert.match(serviceBusDown.text, /DEPENDENCY_UNAVAILABLE/);
+assert.match(serviceBusDown.text, /logged-in session/);
+
 for (const overrides of [{ PATH: missing }, { SMOKE_SYSTEMD: "absent" }]) {
   for (const runtimePresent of [true, false]) {
     const settings = { ...overrides, ...(runtimePresent ? {} : { XDG_RUNTIME_DIR: undefined, SMOKE_RUNTIME: "absent" }) };
@@ -99,6 +113,18 @@ for (const overrides of [{ PATH: missing }, { SMOKE_SYSTEMD: "absent" }]) {
       assert.match(auto.text, /cotal daemon serve/);
       assert.match(auto.text, /cotal update --self/);
       assert.doesNotMatch(auto.text, /cotal daemon install/);
+      assert.match(auto.text, /\nThe Linux background service requires systemd/);
+      assert.match(auto.text, /\. Run `cotal daemon serve`/);
+    }
+    for (const apply of [false, true]) {
+      for (const json of [false, true]) {
+        const service = run(["service", "install", "probe", "--space", "sample", ...(apply ? [] : ["--dry-run"]), ...(json ? ["--json"] : [])], settings);
+        assert.equal(service.code, 2);
+        assert.match(service.text, /requires systemd/);
+        assert.match(service.text, /own supervisor/);
+        assert.doesNotMatch(service.text, /logged-in session|cotal daemon serve/);
+        if (json) assert.equal(JSON.parse(service.text).error.code, "UNSUPPORTED");
+      }
     }
     const off = run(["update", "--auto", "off"], { ...settings, COTAL_NO_UPDATE_CHECK: undefined });
     assert.equal(off.code, 0);
@@ -108,6 +134,8 @@ for (const overrides of [{ PATH: missing }, { SMOKE_SYSTEMD: "absent" }]) {
     assert.equal(existsSync(join(env.COTAL_HOME!, "daemon/service-unit.json")), false);
   }
 }
+const inventory = run(["service", "--space", "sample", "--json"]);
+assert.deepEqual(JSON.parse(inventory.text).result.instances, []);
 const noRuntime = run(["daemon", "status", "--json"], { XDG_RUNTIME_DIR: undefined, SMOKE_RUNTIME: "absent" });
 assert.equal(noRuntime.code, 2);
 const refusal = JSON.parse(noRuntime.text);

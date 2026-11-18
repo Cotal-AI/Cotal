@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
-import { assertRecordIdentity, CommandFailure, protectedLocalDirectory } from "@cotal-ai/workspace";
+import { assertRecordIdentity, CommandFailure, protectedLocalDirectory, resolveOnPath } from "@cotal-ai/workspace";
 import type { ServiceInstance } from "./service-instances.js";
 import type { serviceSupervisorProjection } from "./service-supervision.js";
 
@@ -49,10 +49,20 @@ function systemdDirectoryValue(value: string): string {
   catch { throw invalid(); }
 }
 
+/** Native Linux user services need systemd independently of a session's user bus. */
+export function systemdUserServiceRequirement(): CommandFailure | undefined {
+  if (process.platform !== "linux" || (existsSync("/run/systemd/system") && resolveOnPath("systemctl"))) return undefined;
+  return new CommandFailure("refused", "UNSUPPORTED", "The Linux background service requires systemd, with /run/systemd/system present and systemctl on PATH; this environment does not provide it", {
+    remedy: "Run the process under your own supervisor, such as an OpenRC user service, runit or s6. Cotal did not install a native user service",
+  });
+}
+
 /** The user manager's own config directory, never this CLI shell's XDG override. A missing
  *  bus or malformed environment is a refusal, not permission to guess a home path. */
 export function systemdUserUnitDirectory(): string {
   if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "this native unit directory read requires a Linux systemd user manager");
+  const requirement = systemdUserServiceRequirement();
+  if (requirement) throw requirement;
   const result = spawnSync("systemctl", ["--user", "show-environment"], { encoding: "utf8", timeout: 2000, maxBuffer: 64 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   if (result.error || result.signal || result.status !== 0 || typeof result.stdout !== "string") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the systemd user manager did not answer `systemctl --user show-environment`; no unit directory was guessed", { remedy: "run from a logged-in session whose XDG_RUNTIME_DIR is the user manager's runtime directory (systemd-logind sets it), where `systemctl --user show-environment` answers" });
   const paths = new Map<string, string>();
