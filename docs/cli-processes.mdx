@@ -604,9 +604,11 @@ Relative paths, control characters and malformed quoting are refused.
 
 On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation and reports `Already installed`. It leaves the unit, receipt and running daemon unchanged. A modified source or another installation still refuses.
 
-Linux daemon launches keep the absolute `node` path found on PATH when it resolves to the running
-Node executable. A distribution can retarget that symlink during a supported Node upgrade without
-breaking the service. An unrelated PATH Node does not replace an explicitly selected runtime.
+Linux daemon launches resolve directory aliases before keeping a matching PATH `node` file or
+symlink. Links inside `XDG_RUNTIME_DIR` are not kept. Version managers' per-shell directory links
+therefore do not become persistent launch paths. A distribution can retarget its final `node`
+symlink during a supported Node upgrade without breaking the service. An unrelated PATH Node
+does not replace an explicitly selected runtime.
 Older units can still name a removed versioned Node file. `daemon status` points to the recorded
 service's native status and start command when its endpoint is absent. `daemon install` leaves
 a mismatched unit unchanged and names uninstall followed by install. Uninstall removes hosted

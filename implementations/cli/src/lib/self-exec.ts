@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import { cmdSpawnSpec, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -74,13 +74,20 @@ export const DAEMON_NODE_FLAGS: readonly string[] = ["--max-semi-space-size=1"];
 
 /** {@link selfArgv} for a long-lived daemon: the same verified entry, under {@link DAEMON_NODE_FLAGS}.
  *  The flags come before any inherited loader flag, so a node flag the operator passed explicitly
- *  still wins. On Linux, retain the absolute PATH Node route when it resolves to this runtime,
- *  so a distribution's stable node symlink can move to its next supported version. An unrelated
- *  PATH Node never replaces the explicitly selected runtime. */
+ *  still wins. On Linux, resolve directory aliases before retaining a matching PATH Node leaf,
+ *  and exclude the session runtime directory. This keeps distribution node symlinks upgradeable
+ *  without pinning a version manager's disposable shell route. */
 export function daemonArgv(): string[] {
   const [node, ...self] = selfArgv();
   const pathNode = process.platform === "linux" ? resolveOnPath("node") : undefined;
-  const executable = pathNode && realpathSync(pathNode) === realpathSync(node!) ? pathNode : node!;
+  let executable = node!;
+  if (pathNode) {
+    // Preserve only the final node link, never a per-shell alias in its parent directories.
+    const candidate = join(realpathSync(dirname(pathNode)), basename(pathNode));
+    const runtime = process.env.XDG_RUNTIME_DIR;
+    const fromRuntime = runtime && candidate.startsWith(`${realpathSync(runtime)}${sep}`);
+    if (!fromRuntime && realpathSync(candidate) === realpathSync(node!)) executable = candidate;
+  }
   const logical = logicalExecutionEntry();
   return [executable, ...DAEMON_NODE_FLAGS, ...self.slice(0, -1), logical ?? self.at(-1)!];
 }

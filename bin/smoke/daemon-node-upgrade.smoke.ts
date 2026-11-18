@@ -2,7 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createSuite, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
 const suite = createSuite();
@@ -70,6 +70,68 @@ if (args.includes("start")) {
     return { dir, env, home, node, oldNode, newNode, nodebin, run, unit };
   }
 
+  // Run the recorded command in the foreground under its private environment, not systemd.
+  async function serveRecorded(target: ReturnType<typeof fixture>, label: string): Promise<void> {
+    const source = readFileSync(target.unit(), "utf8");
+    const line = /^ExecStart=(.*)$/m.exec(source)![1]!;
+    const argv = [...line.matchAll(/"((?:\\.|[^"\\])*)"/g)].map(match => match[1]!.replace(/\\([\\"])/g, "$1").replaceAll("%%", "%").replaceAll("$$", "$"));
+    if (!existsSync(argv[0]!)) {
+      suite.check(`${label}: recorded executable is still launchable`, false, argv[0]);
+      return;
+    }
+    const child = spawn(argv[0]!, argv.slice(1), { cwd: target.dir, env: target.env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stderr.on("data", chunk => { stderr += String(chunk); });
+    try {
+      const ready = await new Promise<boolean>(resolveReady => {
+        const timer = setTimeout(() => resolveReady(false), 20_000);
+        const finish = (value: boolean) => { clearTimeout(timer); resolveReady(value); };
+        child.stdout.on("data", chunk => { stdout += String(chunk); if (stdout.includes("daemon ready at ")) finish(true); });
+        child.once("error", () => finish(false));
+        child.once("exit", () => finish(false));
+      });
+      suite.check(`${label}: recorded command reaches real daemon readiness`, ready, { stdout, stderr });
+      const status = target.run(process.execPath, "status", "--json");
+      const body = JSON.parse(status.stdout) as { result?: { state?: string; pid?: number } };
+      suite.check(`${label}: shipped status identifies the real serving child`, status.status === 0 && body.result?.state === "ready" && body.result.pid === child.pid, status.text);
+    } finally {
+      if (child.pid && child.exitCode === null && child.signalCode === null) await killAndAwaitExit(child, "SIGTERM");
+      writeFileSync(join(target.dir, "serve.log"), `${stdout}\n${stderr}`);
+      suite.check(`${label}: owned foreground daemon has exited`, child.exitCode !== null || child.signalCode !== null);
+    }
+  }
+
+  // A version manager can put a shell-owned directory alias before the installed runtime on PATH.
+  // Removing that alias must not invalidate a persistent unit while its actual Node still exists.
+  for (const shape of ["multishell", "runtime-file-link"] as const) {
+    const session = fixture(shape);
+    const shellRoot = join(session.env.XDG_RUNTIME_DIR!, "fnm_multishells");
+    mkdirSync(shellRoot, { mode: 0o700 });
+    const route = join(shellRoot, "1234_5678");
+    let shellNode: string;
+    if (shape === "multishell") {
+      symlinkSync(dirname(session.nodebin), route);
+      shellNode = join(route, "nodebin", "node");
+    } else {
+      mkdirSync(route, { mode: 0o700 });
+      shellNode = join(route, "node");
+      symlinkSync(session.oldNode, shellNode);
+    }
+    session.env.PATH = `${native}:${dirname(shellNode)}:/usr/bin:/bin`;
+    const control = session.run(shellNode, "install", "--plain");
+    suite.check(`${shape}: installation through a session route succeeds`, control.status === 0, control.text);
+    const unit = readFileSync(session.unit(), "utf8");
+    suite.check(`${shape}: recorded executable excludes the shell-owned directory`, !unit.includes(`ExecStart="${shellRoot}/`), unit);
+    renameSync(route, `${route}.retired`);
+    session.env.PATH = `${native}:${session.nodebin}:/usr/bin:/bin`;
+    const retry = session.run(session.oldNode, "install", "--plain");
+    suite.check(`${shape}: shell cleanup preserves installation identity`, retry.status === 0 && retry.text.includes("Already installed"), retry.text);
+    const start = session.run(session.oldNode, "start", "--plain");
+    suite.check(`${shape}: shell cleanup preserves the recorded executable`, start.status === 0, start.text);
+    suite.check(`${shape}: shell cleanup needs no unit rewrite`, readFileSync(session.unit(), "utf8") === unit);
+    await serveRecorded(session, shape);
+  }
+
   const stable = fixture("stable");
   const installed = stable.run(stable.node, "install", "--plain");
   suite.check("positive control: install through Node symlink succeeds", installed.status === 0, installed.text);
@@ -87,33 +149,7 @@ if (args.includes("start")) {
   suite.check("stream switch: native start still finds the executable", stable.run(stable.node, "start", "--plain").status === 0);
   suite.check("stream switch does not rewrite the unit", readFileSync(stable.unit(), "utf8") === source);
 
-  // Run the actual recorded command in the foreground under the private environment, not systemd.
-  const line = /^ExecStart=(.*)$/m.exec(source)![1]!;
-  const argv = [...line.matchAll(/"((?:\\.|[^"\\])*)"/g)].map(match => match[1]!.replace(/\\([\\"])/g, "$1").replaceAll("%%", "%").replaceAll("$$", "$"));
-  if (existsSync(argv[0]!)) {
-    const child = spawn(argv[0]!, argv.slice(1), { cwd: stable.dir, env: stable.env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "", stderr = "";
-    child.stderr.on("data", chunk => { stderr += String(chunk); });
-    try {
-      const ready = await new Promise<boolean>(resolveReady => {
-        const timer = setTimeout(() => resolveReady(false), 20_000);
-        const finish = (value: boolean) => { clearTimeout(timer); resolveReady(value); };
-        child.stdout.on("data", chunk => { stdout += String(chunk); if (stdout.includes("daemon ready at ")) finish(true); });
-        child.once("error", () => finish(false));
-        child.once("exit", () => finish(false));
-      });
-      suite.check("stream switch: recorded command reaches real daemon readiness", ready, { stdout, stderr });
-      const status = stable.run(stable.node, "status", "--json");
-      const body = JSON.parse(status.stdout) as { result?: { state?: string; pid?: number } };
-      suite.check("stream switch: shipped status identifies the real serving child", status.status === 0 && body.result?.state === "ready" && body.result.pid === child.pid, status.text);
-    } finally {
-      if (child.pid && child.exitCode === null && child.signalCode === null) await killAndAwaitExit(child, "SIGTERM");
-      writeFileSync(join(stable.dir, "serve.log"), `${stdout}\n${stderr}`);
-      suite.check("owned foreground daemon has exited", child.exitCode !== null || child.signalCode !== null);
-    }
-  } else {
-    suite.check("stream switch: recorded executable is still launchable", false, argv[0]);
-  }
+  await serveRecorded(stable, "stream switch");
 
   // An explicit versioned Node that is not the PATH Node must remain explicit. This also creates
   // a real old-style installed unit for the recovery guidance checks, without editing its bytes.
