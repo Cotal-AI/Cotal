@@ -55,9 +55,9 @@ process.on("exit", () => {
   rmSync(home, { recursive: true, force: true });
 });
 
-const run = (args: string[], extraEnv: Record<string, string> = {}) => {
+const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
   const r = spawnSync(process.execPath, [BIN, ...args], {
-    cwd: home,
+    cwd,
     env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: process.env.COTAL_HOME!, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
     encoding: "utf8",
     timeout: 120_000,
@@ -272,6 +272,51 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   for (const flag of ["--root", "--file"]) {
     const files = run(["__complete", "space", "add", "x", flag, ""]);
     check(`space add ${flag} completes from the shell's file names`, files.stdout.trimEnd() === ":default", shown(files));
+  }
+}
+
+// The create hint must name a usable folder even when the selection already matches this root.
+{
+  const selected = getCurrent();
+  const project = mkdtempSync(join(home, "hint-root-"));
+  const other = mkdtempSync(join(home, "hint-other-"));
+  const child = mkdtempSync(join(project, "child-"));
+  const localHint = /cotal space create <name>\s+Prepare another local space in this folder/;
+  const otherHint = /cotal space create <name> --root <dir>\s+Prepare another local space in another folder/;
+  const prepared = run(["space", "create", "hint-live"], {}, project);
+  check("rig: create prepares the hint's project root", prepared.status === 0, shown(prepared));
+  try {
+    const list = run(["space", "--plain"], {}, project);
+    check("a prepared root offers another folder, not creation in this folder", list.status === 0 && otherHint.test(list.stdout) && !localHint.test(list.stdout), shown(list));
+    const started = run(["up", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], {}, project);
+    check("rig: the prepared space starts a real local broker", started.status === 0, shown(started));
+    const used = run(["use", "hint-live"]);
+    check("rig: this root's space is also selected", used.status === 0, shown(used));
+    for (const args of [["space", "--plain"], ["space"]]) {
+      const live = run(args, {}, project);
+      check(`a running selected root offers --root with ${args.join(" ")}`, live.status === 0 && otherHint.test(live.stdout) && !localHint.test(live.stdout), shown(live));
+    }
+    const refused = run(["space", "create", "hint-second", "--json"], {}, project);
+    check("creation in the occupied root still refuses CONFLICT", refused.status === 2 && JSON.parse(refused.stdout || "{}").error?.code === "CONFLICT", shown(refused));
+    const explicit = run(["space", "create", "hint-second", "--root", other], {}, project);
+    check("following the suggested --root command prepares another space", explicit.status === 0, shown(explicit));
+    const stopped = run(["down", "--yes"], {}, project);
+    check("rig: the local stack stops", stopped.status === 0, shown(stopped));
+    const after = run(["space", "--plain"], {}, project);
+    check("a stopped root still offers another folder", after.status === 0 && otherHint.test(after.stdout) && !localHint.test(after.stdout), shown(after));
+    const forgot = run(["space", "forget", "hint-live"], {}, project);
+    check("rig: the stopped space is forgotten but keeps its trust", forgot.status === 0, shown(forgot));
+    const retained = run(["space", "--plain"], {}, project);
+    check("retained trust still prevents suggesting creation in the occupied root", retained.status === 0 && otherHint.test(retained.stdout) && !localHint.test(retained.stdout), shown(retained));
+    const free = run(["space", "--plain"], {}, child);
+    check("a free child folder still offers creation in this folder", free.status === 0 && localHint.test(free.stdout) && !otherHint.test(free.stdout), shown(free));
+    const created = run(["space", "create", "hint-third"], {}, child);
+    check("following the free-folder hint prepares a local space", created.status === 0, shown(created));
+  } finally {
+    run(["down", "--yes"], {}, project);
+    for (const name of ["hint-live", "hint-second", "hint-third"]) run(["space", "forget", name]);
+    if (selected === undefined) clearCurrent();
+    else setCurrent(selected);
   }
 }
 

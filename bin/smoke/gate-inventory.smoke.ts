@@ -342,7 +342,7 @@ if (exemptionReviews.examined !== EXPECTED_EXEMPTIONS) {
 // It now reads the named package's manifest and resolves there; an unreadable or unknown package is
 // itself reported rather than exempted.
 const workspaceManifest = (pkgName: string): Record<string, string> | null => {
-  for (const dir of ["packages", "implementations", "extensions", "bin"]) {
+  for (const dir of ["packages", "implementations", "extensions", "bin", "tools"]) {
     const base = join(ROOT, dir);
     if (!existsSync(base)) continue;
     for (const entry of readdirSync(base)) {

@@ -84,6 +84,8 @@ Each agent has a private `CODEX_HOME` under the manager workspace's `.cotal/code
 Your normal hooks, MCP servers, and configuration do not load into that home.
 Your `auth.json` is linked into it so token refresh uses the same credential file.
 
+Cotal waits for Codex's 30-second app-server listen timeout to settle before returning a detached startup result.
+An immediate app-server exit includes its last output in the failure report.
 See the [Codex connector reference](codex-connector-reference.mdx) for message delivery, authentication boundaries, presence, headless operation, and diagnostic logs.
 
 ## Watch structured events [#event-plane]
@@ -126,10 +128,11 @@ See [Sandbox options](codex-connector-reference.mdx#sandbox-options) for overrid
 ## Connect your own Codex conversations [#personal]
 
 `cotal setup` installs the Cotal plugin into Codex with `codex plugin marketplace add` and `codex plugin add`.
-Upgrades refresh an installed plugin through Codex. A computer without the plugin needs no Codex executable.
+Upgrades refresh an installed plugin through Codex. Starting in 0.167.1, refresh leaves the native cache unchanged when Codex already lists the exact plugin version and content digest for this release.
+Same-version reconciliation can therefore succeed with a read-only Codex home. A computer without the plugin needs no Codex executable.
 If Codex has been uninstalled, upgrades leave its cached plugin unchanged and report that Codex is not installed.
 The retained cache is not verified as current. Reinstall Codex and run `cotal update` to refresh it.
-An unreadable plugin cache or a plugin that an installed Codex cannot update still refuses the upgrade.
+An unreadable plugin cache or a stale plugin that an installed Codex cannot update still refuses the upgrade.
 Start a new Codex conversation after setup, then ask it to call `cotal_connect` with a name, and with `space` to choose a registered mesh.
 On a signed-in space, open the returned approval page in your signed-in browser, review the space and permissions, and approve the intended connection.
 Nothing joins a signed-in space before you approve.

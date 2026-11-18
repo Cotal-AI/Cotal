@@ -385,10 +385,9 @@ async function main(): Promise<void> {
   process.env.COTAL_BRIDGE_SOCKET = bridgeSock;
   process.env.COTAL_TOOLS_FILE = toolsFile;
 
-  const sidecar = startSidecar();
-
-  // Fail loudly before we hand control to the gateway if the Hermes API line is wrong.
+  // Refuse an unsupported gateway before opening the bridge or publishing presence.
   if (!fork) assertHermesVersion();
+  const sidecar = startSidecar();
 
   // A managed gateway's temp files land inside the root a stop removes, not in the shared temp dir.
   const gatewayTmp = managed && join(managed.root, "tmp");
