@@ -619,5 +619,35 @@ if (process.platform !== "win32") {
   check("the file is left as it was", readFileSync(join(notes, ".cotal"), "utf8") === "notes\n");
 }
 
+// The command a missing --yes prints keeps the --space, --server and --creds it was given. Without
+// them, following it removed the selected space's persona, reference or history (#7564).
+{
+  const spaces = mkdtempSync(join(home, "two-spaces-"));
+  for (const space of ["alpha", "beta"]) {
+    mkdirSync(join(spaces, space));
+    run(["space", "create", space, "--root", join(spaces, space)], {}, spaces);
+    run(["persona", "create", "reviewer", "--prompt", `${space} reviewer`, "--subscribe", "general", "--space", space], {}, spaces);
+    writeFileSync(join(spaces, `${space}.json`), JSON.stringify({ schemaVersion: 1, space, endpoint: "com.example.orders" }));
+    run(["endpoint", "add", "orders", "--file", join(spaces, `${space}.json`), "--space", space], {}, spaces);
+  }
+  run(["use", "alpha"], {}, spaces);
+  const persona = (space: string) => existsSync(join(spaces, space, ".cotal", "agents", "reviewer.md"));
+  const reference = (space: string) => run(["endpoint", "show", "orders", "--space", space], {}, spaces).status === 0;
+  check("control: both spaces hold the persona and the reference", persona("alpha") && persona("beta") && reference("alpha") && reference("beta"));
+  for (const [args, remedy] of [
+    [["history", "clear", "--space", "beta", "--dms"], "`cotal history clear --space beta --dms --yes`"],
+    [["persona", "remove", "reviewer", "--space", "beta"], "`cotal persona remove reviewer --space beta --yes`"],
+    [["endpoint", "remove", "orders", "--space", "beta"], "`cotal endpoint remove orders --space beta --yes`"],
+  ] as const) {
+    const r = run([...args, "--no-input"], {}, spaces);
+    check(`${args.join(" ")} without --yes prints a command that keeps --space`, r.status === 1 && r.stderr.includes(remedy), shown(r));
+    if (args[0] === "history") continue;
+    const printed = /`cotal ([^`]*--yes)`/.exec(r.stderr)?.[1].split(" ") ?? [];
+    const followed = run(printed, {}, spaces);
+    const kept = args[0] === "persona" ? persona : reference;
+    check(`following the printed ${args[0]} remove removes beta's and keeps alpha's`, followed.status === 0 && !kept("beta") && kept("alpha"), { printed, followed: shown(followed) });
+  }
+}
+
 finish();
 process.exit(process.exitCode ?? 0);

@@ -2,7 +2,9 @@ import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
+  authDir,
   brokerCheck,
+  canonicalRoot,
   findMesh,
   findPreparedSpace,
   folderSpace,
@@ -11,6 +13,7 @@ import {
   getCurrent,
   isMeshRegistryError,
   jsonFlag,
+  listSpaceAccounts,
   loadMeshes,
   loadPreparedSpaces,
   noteFolderSpace,
@@ -298,6 +301,8 @@ function spacesView(result: SpacesResult): Report {
   // A prepared space is listed below, so the empty line names what is missing without denying it.
   if (result.items.length === 0)
     return { sections: [{ title: "Spaces", blocks: [{ kind: "lines", lines: result.prepared.length ? [ran ? "No space is running or registered." : "No space has been started or registered yet."] : ["No spaces registered.", { text: "Sign in to Cotal Cloud with `cotal login`, or prepare a local space.", tone: "hint" }] }] }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [...(result.prepared.length ? [] : [{ command: "cotal login", description: "Sign in to Cotal Cloud" }]), { command: "cotal setup", description: "Choose a local or self-hosted space" }, { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }] }] }] };
+  const root = canonicalRoot(process.cwd());
+  const occupied = [...result.items, ...result.prepared].some((s) => canonicalRoot(s.root) === root) || listSpaceAccounts(authDir(root)).length > 0;
   return {
     sections: [{
       title: "Spaces",
@@ -323,7 +328,9 @@ function spacesView(result: SpacesResult): Report {
     }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [
       { command: "cotal use <name>", description: "Select the space commands use" },
       { command: "cotal space show <name>", description: "Inspect its connection and project" },
-      { command: "cotal space create <name>", description: "Prepare another local space in this folder" },
+      occupied
+        ? { command: "cotal space create <name> --root <dir>", description: "Prepare another local space in another folder" }
+        : { command: "cotal space create <name>", description: "Prepare another local space in this folder" },
       { command: "cotal space add <name> --server <url>", description: "Register an existing broker" },
     ] }] }],
   };
