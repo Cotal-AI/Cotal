@@ -283,8 +283,9 @@ even with a group-writable umask. `up` creates `.cotal`, the broker store and th
 keeps its mode. A `.cotal`, or a root without one, that this account cannot write refuses with
 `PERMISSION_DENIED` (exit 2), naming it and `chmod u+w`, before anything is started or written. A
 broker store this account cannot write refuses the same way, naming the store's `jetstream` folder,
-or the store itself before a broker has made one or when this account cannot open it, and
-`chmod -R u+w`. If that unwritable folder also lacks read or search access, the step names
+or the store itself when its root is unwritable, before a broker has made `jetstream`, or when this account cannot open it, and
+`chmod -R u+w`. This check also runs for `up -f` and for a bare `up` reopening a recorded custom store.
+If that unwritable folder also lacks read or search access, the step names
 `chmod -R u+rwX` instead, since `u+w` alone leaves it closed. A writable store root without read
 access refuses before startup too, naming that root and `chmod -R u+rwX`; a writable `jetstream`
 folder without read access does not trigger this additional root check. The step quotes the path when a shell
@@ -639,6 +640,10 @@ during that launch and names its log with
 create the space's streams, `up` stops that broker again, so the next `up` starts a fresh one. It
 fails `OPERATION_FAILED`, exit 5, and names the cause when the broker's log shows it ran out of
 open files, with raising `ulimit -n` as its next step. Otherwise its next step names that log. When
+`up` cannot read the version of the nats-server it would start, it renders no broker configuration
+and starts nothing, so a later `down` has nothing to stop. When the CLI had no open file left to run
+`nats-server --version`, `up` fails `OPERATION_FAILED`, exit 5, with raising `ulimit -n` as its next
+step. Otherwise it refuses `DEPENDENCY_UNAVAILABLE` and names why. When
 another member, such as the manager, exits before readiness and the broker's log shows it ran out of
 open files, `up` names that log and that cause. A running broker keeps the open-file limit it started
 with, so its next step is `cotal down --yes`, then a higher `ulimit -n`, then `cotal up`. When such a

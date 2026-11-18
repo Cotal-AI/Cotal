@@ -215,7 +215,7 @@ import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/
 import { resolveSpace } from "../lib/status.js";
 import { c, hang, stderrLine } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints } from "../lib/seat-resume.js";
-import { natsServerLabel, resolveNatsServer, type NatsServer } from "../lib/nats-bin.js";
+import { natsServerLabel, resolveNatsServer, unreadVersion, type NatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
 import { detachedNext, renderDetachedSummary } from "../lib/up-report.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
@@ -550,8 +550,8 @@ export function validateUpArguments(args: ParsedArgs): void {
       ? "prepare a project folder with `cotal space create <space> --root <dir>`, then run `cotal up` there"
       : `run \`cotal up\` from the project folder ${shellWord(control.project)}` });
     assertUpRootWritable(root);
-    // A restore and a manifest name their own store.
-    if (args.values.restore === undefined && args.values.file === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : undefined);
+    // A restore creates its own store. A manifest uses the explicit or default store, not a legacy one.
+    if (args.values.restore === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : args.values.file === undefined ? undefined : join(root, ".cotal", "nats"));
   }
 }
 
@@ -570,12 +570,21 @@ function assertUpRootWritable(root: string): void {
 }
 
 /** The broker exits when it cannot write its store, naming the cause only in its own log. The store
- *  a start here opens, as `--store-dir` names it, as the stack journal recorded it, or `.cotal/nats`,
+ *  a start here opens, as `--store-dir` names it, as the stack or legacy records name it, or `.cotal/nats`,
  *  is refused here, by name, when this account cannot write it. */
 function assertUpStoreWritable(root: string, storeDir: string | undefined): void {
   let recorded: string | undefined;
   try { recorded = readStackJournal(root)?.journal.broker?.storeDir; } catch { recorded = undefined; }
-  const problem = storeWriteProblem(storeDir !== undefined ? resolve(storeDir) : recorded ?? join(root, ".cotal", "nats"));
+  const defaultStore = join(root, ".cotal", "nats");
+  if (storeDir === undefined && recorded === undefined) {
+    const local = localMeshesForRoot(root);
+    recorded = local.length === 1 ? local[0]!.storeDir : undefined;
+    if (recorded === undefined && !existsSync(join(defaultStore, "jetstream"))) {
+      const served = lastServedStores(root, defaultStore);
+      if (served.length === 1) recorded = served[0];
+    }
+  }
+  const problem = storeWriteProblem(storeDir !== undefined ? resolve(storeDir) : recorded ?? defaultStore);
   if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `${problem.message}; nothing was started or written`, { target: { root, path: problem.path }, remedy: problem.remedy });
 }
 
@@ -2363,7 +2372,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // protected the auth path and was silent on the open one, and a cert/key pair passed to an
   // open-mode `up` would have been accepted while the listener came up in cleartext.
   const renderingBinary = setup?.brokerBinary ?? await resolveNatsServer();
-  if (!renderingBinary.version) throw new Error(`Cannot read nats-server version from ${renderingBinary.path}; refusing to render broker configuration`);
+  if (!renderingBinary.version) throw unreadVersion(renderingBinary);
   const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore, maxPayload: brokerMaxPayload });
   const natsArgs = [
     "-c", confPath,
@@ -4321,7 +4330,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   // Same rule as the foreground path: every route to a listener names its transport (see
   // `writeOpenBrokerConf`). Detach must not be the mode where the fence quietly does not apply.
   const renderingBinary = setup?.brokerBinary ?? await resolveNatsServer();
-  if (!renderingBinary.version) throw new Error(`Cannot read nats-server version from ${renderingBinary.path}; refusing to render broker configuration`);
+  if (!renderingBinary.version) throw unreadVersion(renderingBinary);
   const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore: opts.maxFileStore, maxPayload, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum });
   // Trust preparation awaits; the pinned store is checked again before its config is handed back.
   if (opts.existingStore) recheckExistingStore(opts.existingStore, { space, storeDir });
@@ -5805,7 +5814,7 @@ async function authSetup(
   // Owner-private like the auth dir: nats-server writes each pushed claim here.
   if (accountResolver.kind === "full") mkSecretDir(accountResolver.directory);
   const brokerBinary = await resolveNatsServer();
-  if (!brokerBinary.version) throw new Error(`Cannot read nats-server version from ${brokerBinary.path}; refusing to render broker configuration`);
+  if (!brokerBinary.version) throw unreadVersion(brokerBinary);
   const render = (ws: number) => writeBrokerConfig(confPath, serverConfig(auth, spaces, { brokerVersion: brokerBinary.version!, transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, authTimeout, maxPayload, accountResolver, logFile: requested.logFile, logfileSizeLimit: requested.logfileSizeLimit, logfileMaxNum: requested.logfileMaxNum, host, wsPort: ws, wsHost: host, extraAccounts }));
   render(wsPort);
   // The chosen port is free now, but nothing holds it until the broker binds it. When another process

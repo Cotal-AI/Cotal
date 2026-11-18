@@ -1,6 +1,6 @@
-import { writeSync } from "node:fs";
+import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, parse, resolve } from "node:path";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -231,6 +231,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (cmd && readsOnly(cmd, sub)) return true;
   if (name === "login") return true; // device approval does not launch or install a connector
   if (name === "logout") return true; // signing out does not install a connector, and a seed refusal must not keep the cached login
+  if (name === "sync") return true; // refreshing account catalogs does not install connectors
   if (name === "use" && sub === undefined) return true; // bare `use` shows the selection: a read
   // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
   // mutation of the operator-global seed store, manifest and npm prefix — it ran BEFORE the command
@@ -245,7 +246,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (name === "team" && (sub === "deploy" || sub === "remove")) return true; // existing native manager/channel operations never install local connectors
   // `backup restore` is excluded: it starts the restored stack and resumes its seats through `up
   // --restore`, so it reconciles connectors under the same rules as that startup. Other modes stay offline.
-  if (name === "reset" || name === "down" || name === "doctor" || name === "feedback" || (name === "backup" && sub !== "restore") || name === "mint" || (name === "manager" && sub !== "start" && sub !== "restart") || name === "channel" || name === "stop" || name === "input" || name === "auth" || name === "endpoint" || name === "service" || name === "daemon") return true; // native maintenance and channel policy never install connector packages
+  if (name === "reset" || name === "down" || name === "doctor" || name === "feedback" || (name === "backup" && sub !== "restore") || name === "mint" || (name === "manager" && sub !== "start" && sub !== "restart") || name === "channel" || name === "stop" || name === "attach" || name === "input" || name === "auth" || name === "endpoint" || name === "service" || name === "daemon") return true; // native maintenance and channel policy never install connector packages
   if (name === "run" && (sub === "turns" || sub === "yield")) return true; // self-only relay does not repair the operator installation
   if (name === "update") return true; // update owns one explicit reconcile; never auto-refresh then force-refresh
   // The seed is skipped for an INTERNAL CHILD re-exec — the `up`/`spawn` that spawns the delivery
@@ -503,6 +504,16 @@ const FOLDERLESS = new Set(["help", "version", "completion", "docs", "telemetry"
  *  Node caches the first read that succeeds. One read refuses that case before the command's own
  *  checks, such as `up`'s, or any effect, unless the command never reads the folder. */
 function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs): void {
+  if (cmd.name === "update") {
+    // Global maintenance must not inherit an unrelated disposable working folder. Keep the
+    // project's root when one exists and resolve a relative credential before changing folders.
+    const removed = workingFolderRemoved();
+    const root = removed ? undefined : findCotalRoot();
+    if (typeof parsed.values.creds === "string" && !isAbsolute(parsed.values.creds) && !removed)
+      parsed.values.creds = resolve(parsed.values.creds);
+    process.chdir(root && existsSync(join(root, ".cotal")) ? root : parse(homedir()).root);
+    return;
+  }
   if (cmd.name.startsWith("__") || FOLDERLESS.has(cmd.name) || !workingFolderRemoved()) return;
   failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
 }

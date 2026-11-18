@@ -32,24 +32,24 @@
     {
       "name": "drop the alias admission guard",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (this.reconcilingAliases.has(identityName))\n      return { ok: false, error: `the name \"${identityName}\" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };",
-      "replace": "    void this.reconcilingAliases;",
+      "find": "    if (this.staticLifecycle.isReconciling(identityName))\n      return { ok: false, error: `the name \"${identityName}\" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };",
+      "replace": "    void this.staticLifecycle;",
       "expectRed": "spawn for an alias still reconciling is refused by its reconcile gate before lifecycle provisioning",
       "cell": "spawn for an alias still reconciling is refused by its reconcile gate before lifecycle provisioning",
       "afterRestore": "pnpm --filter @cotal-ai/manager... build"
     },
     {
       "name": "the seat's turn pull answers during the boot window",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }[]; notices: true; stop?: true } {\n",
-      "replace": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }[]; notices: true; stop?: true } {\n    if (!this.goalReconcileDone) return { turns: [], notices: true };\n",
+      "file": "implementations/manager/src/turn-relay.ts",
+      "find": "  turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }[]; notices: true; stop?: true } {\n",
+      "replace": "  turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt?: number; once?: true }[]; notices: true; stop?: true } {\n    if (!this.goalReconcileDone) return { turns: [], notices: true };\n",
       "expectRed": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
       "cell": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
       "note": "Measured 2026-09-03: KILLED. MANAGER RECONCILE STARTUP SMOKE FAILED  (5 passed, 1 failed) Named cell red: a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none"
     },
     {
       "name": "the seat's yield answers not-found during the boot window",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "      throw new EpEnvelopeError(\"unavailable\", \"the manager is still reconciling accepted goals at boot; this yield's turn may not be indexed yet, retry (SPEC 13.6)\");",
       "replace": "      void 0;",
       "expectRed": "and a yield in the same window is refused rather than answered not-found",
@@ -58,16 +58,16 @@
     },
     {
       "name": "the boot sweep stamps every adopted turn's seat dead",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "    const key = goalKey(p.ref);\n    this.pendingTurns.set(key, p);\n",
-      "replace": "    const key = goalKey(p.ref);\n    this.pendingTurns.set(key, p);\n    if (this.agents.get(p.seat.name)?.lifecycleUid !== p.seat.uid) this.failSeatTurns(p.seat.name, p.seat.uid);\n",
+      "replace": "    const key = goalKey(p.ref);\n    this.pendingTurns.set(key, p);\n    if (this.deps.turnExecutorEpoch(p.seat.name, p.seat.owner, p.seat.actor, p.seat.uid) === null) this.failSeatTurns(p.seat.name, p.seat.uid);\n",
       "expectRed": "and NOT marked as addressing a dead seat",
       "cell": "and NOT marked as addressing a dead seat: an empty agents map at boot is not evidence of death",
       "note": "The agents map is EMPTY during reconcile: seats re-register later, so 'not in the map' meant 'not yet re-registered' and every adopted turn's deadline terminal carried `agentDownAt`, raising L4002 where the reference says L4003."
     },
     {
       "name": "an adopted turn is stamped with the boot instant",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "      acceptedAt: spec.value.acceptedAt,",
       "replace": "      acceptedAt: Date.now(),",
       "expectRed": "stamped with the acceptance time its goal RECORDS, never the instant the manager booted",
@@ -76,7 +76,7 @@
     },
     {
       "name": "an elapsed turn is still the head of its seat's queue",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "      .filter((p) => (p.deadlineAt === undefined || now < p.deadlineAt) && p.once?.deliverable !== false)\n      .sort((x, y) => x.acceptedAt - y.acceptedAt)",
       "replace": "      .filter((p) => p.once?.deliverable !== false)\n      .sort((x, y) => x.acceptedAt - y.acceptedAt)",
       "expectRed": "an ELAPSED turn is not served and does not dam the seat's queue",
@@ -85,7 +85,7 @@
     },
     {
       "name": "a retried yield hears not-found for work that committed",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "    const settled = this.turnAcceptances.get(key);\n    if (settled !== undefined) {",
       "replace": "    const settled = this.turnAcceptances.get(key);\n    if (false && settled !== undefined) {",
       "expectRed": "a retried yield is served the answer the lost reply carried, never `not-found`",
@@ -94,7 +94,7 @@
     },
     {
       "name": "a settled answer is served to anyone who asks",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "      if (a.goalId === goalId && a.owner === c.owner && a.actor === c.actor && a.uid === c.uid) return key;",
       "replace": "      if (a.goalId === goalId) return key;",
       "expectRed": "and only to the addressee it was addressed to",
@@ -103,7 +103,7 @@
     },
     {
       "name": "settled answers are kept for the process lifetime",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "      if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(key);",
       "replace": "      if (e.settled !== undefined && at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) void key;",
       "expectRed": "the sweep drops a settled answer once its retry window has passed",
@@ -112,7 +112,7 @@
     },
     {
       "name": "an unsettled leftover acceptance is kept for the process lifetime",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "      const at = e.settled?.at ?? e.leftoverSince;\n      if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(key);",
       "replace": "      const at = e.settled?.at ?? e.leftoverSince;\n      if (e.settled !== undefined && at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(key);",
       "expectRed": "the sweep drops a stale unsettled acceptance once its retry window has passed",
@@ -121,7 +121,7 @@
     },
     {
       "name": "an unsettled leftover ages off the original deadline, not the latch-drop stamp",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "      const at = e.settled?.at ?? e.leftoverSince;",
       "replace": "      const at = e.settled?.at ?? e.acceptance.deadlineAt;",
       "expectRed": "the sweep drops a stale unsettled acceptance once its retry window has passed",
@@ -130,16 +130,16 @@
     },
     {
       "name": "commitTurnDeadline never stamps leftoverSince",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "    if (!this.pendingTurns.delete(key)) return;\n    this.noticeSeatTurns(p.seat);\n    this.markTurnLatchDropped(key);",
-      "replace": "    if (!this.pendingTurns.delete(key)) return;\n    this.noticeSeatTurns(p.seat);",
+      "file": "implementations/manager/src/turn-relay.ts",
+      "find": "    if (!this.pendingTurns.delete(key)) return;\n    this.deps.noticeSeatTurns(p.seat);\n    this.markTurnLatchDropped(key);",
+      "replace": "    if (!this.pendingTurns.delete(key)) return;\n    this.deps.noticeSeatTurns(p.seat);",
       "expectRed": "commitTurnDeadline stamps leftoverSince when the pending latch drops",
       "cell": "commitTurnDeadline stamps leftoverSince when the pending latch drops, not the original deadline",
       "note": "Without this stamp a failed deadline commit leaves an acceptance with no settled and no leftoverSince, so the sweep never ages it off."
     },
     {
       "name": "the idle check never stops the sweep, so it runs on after the prune leaves nothing",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "    if (this.turnAcceptances.size > 0) return;\n    this.stopTurnSweep();\n  }",
       "replace": "    if (this.turnAcceptances.size > 0) return;\n  }",
       "expectRed": "and stops itself once the prune leaves it nothing to do: no pending turn, no answer to serve",
@@ -148,7 +148,7 @@
     },
     {
       "name": "a turn with no minted hold is adopted as pending anyway",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "    if (p.holdToken !== undefined && (await readCheckpointSpec(gw.ctx.kv, { endpoint: p.ref.endpoint, token: p.holdToken })) === undefined) {\n",
       "replace": "    if (false) {\n",
       "expectRed": "a turn whose hold was never minted is not adopted as pending",
@@ -157,7 +157,7 @@
     },
     {
       "name": "adoption rebuilds the pending relay and not the acceptance its answer is remembered against",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "    this.turnAcceptances.set(key, {\n      acceptance: {\n        name: p.seat.name, owner: p.seat.owner, actor: p.seat.actor, uid: p.seat.uid, goalId: p.goalId,",
       "replace": "    if (false) this.turnAcceptances.set(key, {\n      acceptance: {\n        name: p.seat.name, owner: p.seat.owner, actor: p.seat.actor, uid: p.seat.uid, goalId: p.goalId,",
       "expectRed": "an adopted turn yields, and a retry of that yield is served the answer it earned, never `not-found`",
@@ -166,7 +166,7 @@
     },
     {
       "name": "a late yield after the deadline committed hears not-found instead of the deny",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "      if (settled.ref !== undefined && this.goalWriter) {\n        const ended = await readGoalResult(this.goalWriter.ctx, settled.ref);\n        if (ended !== undefined) {\n          this.rememberSettledTurn(key, ended.state, ended.ts);\n          return { goalId, state: ended.state };\n        }\n      }",
       "replace": "      if (settled.ref !== undefined && this.goalWriter) {\n        void settled.ref;\n      }",
       "expectRed": "a yield after the deny committed, before the index drop, is told the turn ended failed, never `not-found`",
@@ -195,7 +195,7 @@
     },
     {
       "name": "the lease reader folds an unparseable row into absent (the parse throw dropped)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-lease.ts",
       "find": "    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; }\n    catch (err) { throw new Error(`delivery lease row \"${leaseKey(shardIndex)}\" exists but does not parse as a lease record (${(err as Error).message}) - it is unreadable, not absent`); }",
       "replace": "    try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; } catch { return undefined; }",
       "expectRed": "a lease row that EXISTS but does not parse is UNREADABLE, not absent: the pass refuses and the manager holds no renewal lease",

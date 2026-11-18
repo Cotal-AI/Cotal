@@ -321,8 +321,8 @@ async function main(): Promise<void> {
     };
     const authorityRefusal = async (name: string, runId: string) => {
       await wait(15_000);
-      const internals = manager as unknown as { pendingTurns: Map<string, unknown>; runHosting: { status(args: { runId: string }): Promise<{ status?: { state?: string; failure?: { code?: string; message?: string } } }> } };
-      const pendingCount = internals.pendingTurns.size;
+      const internals = manager as unknown as { turnRelay: { pendingTurns: Map<string, unknown> }; runHosting: { status(args: { runId: string }): Promise<{ status?: { state?: string; failure?: { code?: string; message?: string } } }> } };
+      const pendingCount = internals.turnRelay.pendingTurns.size;
       const recorded = await internals.runHosting.status({ runId });
       check(`${name}: current host authority is rechecked before the personal turn goal is accepted`,
         recorded.status?.state === "failed" && recorded.status.failure?.code === "L4000" &&

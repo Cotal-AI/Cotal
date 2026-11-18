@@ -33,7 +33,7 @@ import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths,
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, startInstalled } from "./install.js";
+import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy } from "./guidance.js";
@@ -42,6 +42,7 @@ import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
 import { SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
+import { readReceipt } from "./install-receipt.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
@@ -164,8 +165,16 @@ async function status(args: ParsedArgs): Promise<void> {
   const { paths, home } = resolveTarget(args);
   let reply;
   try {
+    await repairMissingInstalledProgram(paths, home);
     reply = await queryDaemon({ paths, peerUid, peerPid });
   } catch (e) {
+    const installed = process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" ? readReceipt(paths) : undefined;
+    if (e instanceof EndpointRefusal && installed && /^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(installed.unit)) {
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
+        remedy: `inspect the recorded service with ${codeSpan(`systemctl --user status ${installed.unit}`)}; run ${codeSpan(daemonCommandCopy("install", home))} to verify its installation and read its repair guidance, then ${codeSpan(daemonCommandCopy("start", home))}`,
+        native: { code: e.code },
+      });
+    }
     if (process.platform === "win32" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
         remedy: `start the owned task with ${daemonCommandCopy("start", home)}; read ${nativeDaemonLog(paths.state)} for its last launch output, and inspect the task's state and last result in Task Scheduler if no log was created`,
@@ -354,6 +363,13 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
   const { paths, home } = resolveTarget(args, true);
   if (op === "install") {
     const dry = values["dry-run"] === true;
+    if (!dry && await repairMissingInstalledProgram(paths, home)) {
+      const result = { ...planUninstall(paths, home), state: "repaired" };
+      writeResult(presentation, { command: "daemon install", target: { unit: result.unit }, result }, () => ({ sections: [
+        { title: "Repaired", blocks: [{ kind: "lines", lines: ["The recorded service's missing program was replaced with this Cotal installation. An operator-disabled service remains stopped."] }] },
+      ] }));
+      return;
+    }
     const r = dry ? { ...planInstall(paths, home), state: "would-install" as const } : applyInstall(paths, home);
     writeResult(presentation, { command: "daemon install", target: { unit: r.unit }, result: r }, () => ({ sections: [
       { title: r.alreadyInstalled ? "Already installed" : dry ? "Would install" : "Installed", blocks: [

@@ -1,5 +1,99 @@
 # cotal-ai
 
+## 0.168.0
+
+### Patch Changes
+
+- 52e6c81: Install host-compatible optional dependencies despite npm's omit=optional setting so repeated updates do not reinstall every built-in connector.
+- 34667b0: Print only the Node.js version requirement and upgrade instructions when Cotal starts on an older Node runtime.
+- 077325c: Updates leave Claude configuration untouched when no Cotal integration is installed.
+  The refresh checks installation records before taking mutation locks, so a read-only unused Claude directory no longer blocks reconciliation or its rollback.
+- 5409ab0: Keep the background service idle after an automatic update. Its replacement poll reads execution metadata without rehashing the retained package every second. Command startup, replacement verification and hosted Manager admission still validate the complete inventory.
+- cfd5730: Keep daemon services on the invoked Node path so distribution Node upgrades do not strand them on a removed versioned executable. Retain only a same-directory alias of the running runtime, avoiding version managers' transient shell directories. Provide explicit service inspection and replacement guidance for older units without hiding an absent daemon endpoint behind a service lookup failure.
+- f769fff: Explain how to install with npm as a normal user when distribution Node has a root-owned global prefix.
+- Updated dependencies [296ea4d]
+- Updated dependencies [d164a59]
+- Updated dependencies [4ad482d]
+- Updated dependencies [5c54061]
+- Updated dependencies [818992b]
+- Updated dependencies [52e6c81]
+- Updated dependencies [6546892]
+- Updated dependencies [f60af89]
+- Updated dependencies [bd5b41b]
+- Updated dependencies [97a8f1a]
+- Updated dependencies [d443ef1]
+- Updated dependencies [cfd5730]
+- Updated dependencies [b0e70a5]
+- Updated dependencies [f769fff]
+- Updated dependencies [5723f51]
+- Updated dependencies [b31e1e8]
+- Updated dependencies [9d5a50b]
+  - @cotal-ai/connector-core@0.168.0
+  - @cotal-ai/auth@0.168.0
+  - @cotal-ai/core@0.168.0
+  - @cotal-ai/manager@0.168.0
+  - @cotal-ai/cli@0.168.0
+  - @cotal-ai/seat@0.168.0
+  - @cotal-ai/delivery@0.168.0
+  - @cotal-ai/registry@0.168.0
+  - @cotal-ai/runtime@0.168.0
+  - @cotal-ai/workspace@0.168.0
+
+## 0.167.0
+
+### Patch Changes
+
+- ba558e0: Fail the shell installation with the startup error when the installed Cotal cannot run.
+- f287b21: Document the tar prerequisite for minimal Linux images before the install command and show the Rocky Linux package command when tar is missing.
+- 6f3c77d: Software updates leave Managers owned by another home running without requiring that home's continuity or credentials.
+  
+  The update names the proven Manager coordinates and leaves its loaded version running until it is restarted from its own home. For a Manager registered in the calling home, only missing credentials become nonblocking. Other failures remain refusals. Connector sets stay until the authenticated update collector can prove they are unused.
+- c1cf22c: Recover damaged update preferences with a private backup and documented defaults when reading or changing them through the CLI.
+- dfa8b78: Shared CLI installations now distinguish home-local connector reconciliation from updating the CLI itself.
+  Keep ordinary per-home reconciliation and name `cotal update` for stale local inventories. Automatic generation migration leaves a shared canonical connector graph used by an older recorded local Manager unchanged, reports that its connectors stay at their version until restart, and lets the ordinary command continue. Explicit reconciliation stays strict. A validated separate release selection can reconcile without changing that Manager's graph.
+- Updated dependencies [085280b]
+- Updated dependencies [10f1d98]
+- Updated dependencies [20a6ea6]
+- Updated dependencies [437418e]
+- Updated dependencies [186fc68]
+- Updated dependencies [c394c2c]
+- Updated dependencies [dc22997]
+- Updated dependencies [3227911]
+- Updated dependencies [ded2be1]
+- Updated dependencies [dbf310b]
+- Updated dependencies [ba558e0]
+- Updated dependencies [7ba7ff5]
+- Updated dependencies [8d3ef2f]
+- Updated dependencies [211142b]
+- Updated dependencies [ad38504]
+- Updated dependencies [6f3c77d]
+- Updated dependencies [eead187]
+- Updated dependencies [41d7ae9]
+- Updated dependencies [735dcd2]
+- Updated dependencies [5b5d19e]
+- Updated dependencies [b7b152b]
+- Updated dependencies [6f4c67b]
+- Updated dependencies [c1cf22c]
+- Updated dependencies [6c2c27f]
+- Updated dependencies [afa5f97]
+- Updated dependencies [7bf5e73]
+- Updated dependencies [70842a1]
+- Updated dependencies [d8caff5]
+- Updated dependencies [dfa8b78]
+- Updated dependencies [d97f549]
+- Updated dependencies [61416ac]
+- Updated dependencies [3705c35]
+  - @cotal-ai/cli@0.167.0
+  - @cotal-ai/auth@0.167.0
+  - @cotal-ai/workspace@0.167.0
+  - @cotal-ai/connector-core@0.167.0
+  - @cotal-ai/core@0.167.0
+  - @cotal-ai/manager@0.167.0
+  - @cotal-ai/runtime@0.167.0
+  - @cotal-ai/delivery@0.167.0
+  - @cotal-ai/registry@0.167.0
+  - @cotal-ai/seat@0.167.0
+
 ## 0.166.3
 
 ### Patch Changes

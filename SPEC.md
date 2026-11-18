@@ -376,6 +376,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `lifecycleUid` | string | MUST in auth mode from v0.4 | the current managed-lifecycle UID (§13.1); distinguishes a live instance from a same-name successor. Advisory for display; authority checks use the trusted lifecycle mapping, not presence |
 | `runtime` | `PresenceRuntime` | MAY | the OS process holding this record's mesh connection, as that process observed itself: `{ id, startedAt, source }`. `id` is an opaque CSPRNG token minted once per (OS process, `lifecycleUid`) scope and MUST NOT be reused or span two lifecycle UIDs. A new process or lifecycle scope MUST get a new id. `startedAt` is the epoch ms that OS process started, read in-process (`performance.timeOrigin`), shared by all endpoints in the process. A lifecycle registered later carries the process's age, not its lifecycle age. It MUST NOT date a launch request, registration, heartbeat, activity, separate parent or model harness process. `source` is the closed set `endpoint-process`; an observer treats any other value as unsupported. Status, activity, heartbeats and in-process reconnects within the scope leave it unchanged. An offline record keeps it, so `now - startedAt` dates a running process only while the record is live. It carries no pid, host, path, command line or environment. Missing means not reported, never zero |
 | `channelModes` | `Record<string, ChannelMode>` | MAY | per-channel attention overrides (`ChannelMode` = `quiet` \| `muted`), keyed by concrete channel name. Advisory, **not** access control (the broker still authorises and delivers); a receive-side preference, reset on restart |
+| `prompts` | `PresencePrompts` | MAY | `{ open, seq }`, the prompts this process serves on its `agent` endpoint (§13.22). `open` counts the prompts that are `open` or `sent`. `seq` is an integer that goes up by one each time a prompt opens or changes state; it restarts with the process, so it means something only together with `runtime.id`, and under one `runtime.id` it never goes back, also when the process stops serving the endpoint and serves it again. Present exactly while the process serves that endpoint and the broker accepted its subscription on the current connection (§13.21). Each serve takes a fresh `seq` when it starts, one above every `seq` the process used under its `runtime.id`, and shows `open` 0 with it until the server sets the field, so one `(runtime.id, seq)` never names two states. It carries no prompt content and no authority. An offline record omits it. A reader learns from it that it should read the prompts (§13.22, reader rules) |
 | `ts` | number | MUST | epoch ms of last heartbeat |
 
 `AgentCard`:
@@ -403,8 +404,9 @@ An instance MUST write only its own presence key, and the key MUST equal `card.i
 Readers MUST drop a record whose `card.id` differs from its KV key, whose `card.name` is
 blank or does not have the type given above, whose `status` does not have the type given
 above, whose `ts` is not a finite number, whose
-`card.role`, `activity` or `attention` is present and not a string, or whose `condition` is present
-and is not an object with a string `code`, and SHOULD report the rejection on their recoverable
+`card.role`, `activity` or `attention` is present and not a string, whose `condition` is present
+and is not an object with a string `code`, or whose `prompts` is present and is not an object with
+non-negative integer `open` and `seq`, and SHOULD report the rejection on their recoverable
 diagnostic path. A `condition` of `null`, a bare string or an object with no `code` is dropped.
 A reader that kept a record whose `ts` is missing or text such as `"nope"` could not age it past the liveness window, so it would
 show its peer live after the key expired. Readers print the string fields as text, and an object
@@ -2771,6 +2773,11 @@ serves both. A responder derives the reply subject from the authenticated reques
 whichever rail it arrived, generation included. `v1` versions the rail encoding, not the
 protocol.
 
+**The principal route.** A fourth route under `ep`, `prin` with its reply route `prin-reply`, carries
+the command set a principal serves about itself, addressed by its own principal, lifecycle UID and
+runtime id instead of a registered instance (§13.21). A parser that knows only `one`, `all`, `inst`
+and `reply` finds no shape in it and does not handle it.
+
 **Single-owner endpoint names (normative).** An endpoint name binds to exactly ONE owner
 (§13.9: operator-provisioned core names, domain-owner-bound reverse-DNS names), so the name
 token alone determines the serving owner and instance-addressed subjects carry **no owner
@@ -2800,11 +2807,11 @@ as subject tokens (below); pin what is knowable at mint time; body-carry only wh
 Every form stays within the NATS 16-token recommendation.
 
 **Explicit discrimination (never arity counting).** The forms are distinguished by the token
-after `<command>`: it is either one of the six reserved authorization-mode tokens (`self`,
-`owner`, `any`, `child`, `ledger`, `handle`) or the caller's owner token, and the two sets
+after `<command>`: it is either one of the seven reserved authorization-mode tokens (`self`,
+`owner`, `any`, `child`, `ledger`, `handle`, `exact`) or the caller's owner token, and the two sets
 are disjoint by construction, because an owner token is `local` or `u_`+base32 (§2), never a
 bare mode word. The target-block arity then follows the mode (`self`: none;
-`owner`/`any`/`child`/`ledger`: one `<tOwner>` token; `handle`: three,
+`owner`/`any`/`child`/`ledger`: one `<tOwner>` token; `handle` and `exact`: three,
 `<tOwner>.<tActor>.<tUid>`); a closed set at a fixed position, exactly the property that
 makes per-mode arity safe. A parser dispatches on that set; a subject matching no defined shape
 has no sender and MUST NOT be handled.
@@ -3046,7 +3053,8 @@ genuinely `unknown`.
   fact that nothing received the request, so it is `not-executed`, not merely unanswered. A caller
   MUST trust it ONLY on that reserved sentinel, which carries no responder publish grant: the same
   status on an ordinary reply subject is a responder's own claim and proves nothing about
-  delivery.
+  delivery. Any other message on the sentinel means nothing, because a JetStream API request can
+  name the sentinel as its reply subject, so the caller drops it and keeps waiting.
 - **No reply observed** — a deadline that expires with no answer at all, a transport failure after
   publication, any path where the caller cannot tell whether the request was handled. This is
   `unknown`, and it is the only local case that is.
@@ -3276,7 +3284,10 @@ facts.
 
 - **call**, bounded request/reply (`replyExpected: true`, `deadlineMs` mandatory). On the
   `one` rail it is queue-group anycast; on `inst` it addresses one stable instance. No
-  responder → `unavailable`.
+  responder → `unavailable`. The caller drops a stored message that reaches its reply read, one
+  with a `Nats-Stream`, `Nats-Sequence` or `Nats-Time-Stamp` header, before it reads it as the
+  sentinel or a reply: a JetStream read, such as a Direct Get, delivers one on any subject its
+  requester names, and a responder publishes its reply with none of those headers.
 - **cast**, the same subjects and grants (`replyExpected: false`): fire-and-forget,
   at-most-once, the responder MUST NOT reply and the caller never reads the rail (the nonce
   is present but unused). A cast to a journaled command is `class-mismatch`; journaled work
@@ -4028,7 +4039,10 @@ incarnation (advanced epoch) refuses old-epoch grants, and a same-name successor
   contract, never ephemeral replies.
 - `commands`, each declares name, input/output schemas, `class`, `targeted` (and if so which
   authz modes it admits), its **capability requirement** (the named capability minting maps to
-  subjects, §13.9), its `effect` (below), and optional traits.
+  subjects, §13.9), its `effect` (below), and optional traits. A command served on the principal
+  route instead declares `authorities`, the authority words it admits there (§13.21); a command
+  with that field is never served on a service route, and one without it is never served on the
+  principal route.
   Each `journal`-class command **MUST** declare **`admissionCeiling`** =
   `{ maxBytes, maxDepth, maxItems }`, the bounds its canonicalizer refuses beyond (§13.4
   item 3). The ceiling is **declared, never compiled in**, because it decides what a
@@ -4759,7 +4773,9 @@ policy gate (reference: 16 KiB); the transport bound is the CONNECT control line
 (`max_control_line`, §13.12) and the policy gate MUST be the tighter of the two. The mint
 MUST also refuse, before any issuance record is written, a user JWT whose byte size exceeds the
 control line minus the CONNECT envelope (`MAX_MINTED_JWT_BYTES`), so a composition of individually
-valid grants can never produce a credential the broker drops silently. The fixture
+valid grants can never produce a credential the broker drops silently. The fixture agent is
+an interactive ledger row, so it also carries the principal-route rows of §13.21: two serve rows,
+four `owner` request rows and one reply read. The fixture
 set additionally includes a **maximum-command serve credential** (a 12-command endpoint's
 per-command rows, below); the §13.12 operator assertion uses the largest encoded CONNECT
 line in the set.
@@ -4793,7 +4809,9 @@ the endpoint owns a work pool, the pool's consumer + ack grants (§13.5; matrix 
 Nothing else. Every "binds X" in this paragraph has a matrix row below that actually binds
 X. Serve
 credentials are re-minted on takeover (new epoch, §13.1 barrier); a superseded credential's
-replies and commits are rejectable by epoch. Core names require operator provisioning
+replies and commits are rejectable by epoch. The principal route (§13.21) is the one serving
+authority outside a serve credential: an agent credential minted from a ledger row serves that
+principal's own `agent` endpoint, under its own principal and lifecycle UID and nothing else. Core names require operator provisioning
 authority; reverse-DNS names bind to their registered owner. The registry is discovery; the
 serve grant is the authority: a foreign credential cannot subscribe a class rail, answer as
 an instance, or enter a frozen scatter set.
@@ -5067,6 +5085,11 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Serve subscribe | the endpoint's serve credential | per registered command: `"ep.one.<endpoint>.<command>.> <endpoint>"` (queue-qualified ONLY), `ep.all.<endpoint>.<command>.>` plain, `ep.inst.<endpoint>.<instanceId>.<command>.>` exact (never a cross-command `>` | direct) name/instance/command-pinned; epoch deliberately absent (§13.1 barrier is the fence) |
 | Reply publish | the endpoint's serve credential | `ep.reply.<endpoint>.<instanceId>.<epoch>.*.*.*.*` | direct; attribution-pinned; addressing by nonce |
 | Versioned-rail request, reply, serve (§13.15) | as the four rows above | the same rows with `ep.v1` for `ep` and one more pinned token: the caller's `<generation>` literal in its request-publish and reply-subscribe rows (`ep.v1.reply.*.*.*.<cO>.<cA>.<cUid>.<generation>.*`), a spanned token in the serve credential's reply-publish row (`ep.v1.reply.<endpoint>.<instanceId>.<epoch>.*.*.*.*.*`) and its three serve-subscribe shapes per command | direct; broker-confined on the generation exactly as on the caller triple |
+| Principal-route serve subscribe (§13.21) | an agent credential minted from a ledger row of either kind | `ep.prin.agent.<owner>.<actor>.<uid>.*.*.*.*.*.*.*`: its own principal and lifecycle UID, the runtime id spanned, no queue group | direct; principal- and lifecycle-pinned |
+| Principal-route reply publish (§13.21) | the same credential | `ep.prin-reply.agent.<owner>.<actor>.<uid>.*.*.*.*.*` | direct; attributed to the principal and lifecycle, not the process; addressing by nonce |
+| Principal-route `owner` request publish (§13.21) | an agent credential minted from an interactive ledger row | per command the `agent` cluster admits with `owner`, and `describe`: `ep.prin.agent.<cO>.*.*.*.<command>.owner.<cO>.<cA>.<cUid>.*`, the head's owner pinned to the caller's own owner, never wildcarded | direct, untrusted input |
+| Principal-route `grant` request publish (§13.21) | a grantee lifecycle a target's owner names in a grant (issuance is not defined in this revision) | per granted command: `ep.prin.agent.<tO>.<tA>.<tUid>.*.<command>.grant.<cO>.<cA>.<cUid>.*`, the target's principal and lifecycle literal | direct, untrusted input |
+| Principal-route reply subscribe (§13.21) | every holder of a request row above | `ep.prin-reply.*.*.*.*.*.<cO>.<cA>.<cUid>.*` (exact arity) | direct read; own reply read only |
 | Issuance (§13.15) | the `issuer` principal, minted by the party holding the space signer: one auth-service session per account, space and authority plane for its callout's user-auth issuance, renewed before expiry; one-shot per issuance window or lifecycle terminal otherwise | `$KV.cotal_issued_<space>.>` and `$KV.cotal_accepted_<space>.>` publish, `STREAM.INFO`/`STREAM.MSG.GET` on `KV_cotal_issued_<space>`, `STREAM.INFO` on `KV_cotal_accepted_<space>` (the bind-time shape check of both stores), its own ordered consumers on that store, and ONE leader-served `STREAM.MSG.GET` on `KV_cotal_auth_<space>` for source liveness; NO auth-store write, no rail row | mediated; create-only CAS on evidence, revision-CAS on the attempt row |
 | Run admission (§14.8) | the `run-admitter` principal (one-shot, 60 s, minted per run by the hosting endpoint or the local operator) | exactly `$KV.cotal_admission_<space>.admission.v1.<endpoint>.<runId>` and `….revoked.v1.<endpoint>.<runId>` publish plus `STREAM.MSG.GET` on that store; nothing else | mediated; create-only |
 | Resume transfer write (§8) | the `transfer-writer` principal (one-shot, 5 min, per `cotal spawn --resume --detach --on` call after the CLI hashes the transcript: minted by the operator holding the space signer, or on a user-auth space exchanged as the `transfer-writer` view, §10) | publish exactly `$O.cotal_xfer_<space>_<instanceId>.C.<hex>` and `$O.cotal_xfer_<space>_<instanceId>.M.<name>` (one object of one instance's bucket), plus `$JS.API.DIRECT.GET.OBJ_cotal_xfer_<space>_<instanceId>.` followed by each of those two subjects; no consumer, no stream API, no other object | direct; object-pinned |
@@ -5566,6 +5589,20 @@ whose `protocol.v` it does not implement (the marker rides the descriptor and th
 never the cluster document, which carries no `protocol`), and never automatically repeat a `write`
 command (§13.7) — whatever `id` the re-issue carries — except on an outcome that proves
 non-execution (§13.3).
+
+A process that serves the principal route (§13.21) holds items 1 to 4 in this form:
+
+1. Serve only its own principal, lifecycle UID and runtime id: subscribe its own head and drop,
+   with no reply, a request whose head is not this process.
+2. Answer `describe` from the fixed cluster, the same answer for every caller.
+3. Pin digests: serve the core-defined contract and refuse a request whose digests are not the
+   served revision's (`contract-mismatch`), validating args and replies at runtime.
+4. Reply only on the `prin-reply` subject derived from this process and the request's caller and
+   nonce, never on a transport or payload reply target, and never publish on the sentinel.
+
+A caller on the principal route trusts the broker's no-responders status only on its sentinel, drops
+a stored message on its reply read, and accepts a reply only on the subject the addressed process
+derives, waiting past a message under any other head (§13.21).
 
 ### 13.15 Issued authority
 
@@ -6387,6 +6424,429 @@ never builds a listing from `describe`, presence or another endpoint.
 over another connection of the same caller triple, such as a manager-call connection whose view
 holds no registry `describe`; the answer is that connection's view.
 
+### 13.21 Principal route
+
+On the **principal route** a principal serves a core-defined command set about itself. The addressed
+thing is one process of that principal, and the authority to serve is the principal's own
+credential. There is no registration, issuance gate, epoch, registry row or published contract.
+Revision 1 defines one endpoint on it, `agent` (§13.22).
+
+**Subjects.** A fourth route under the kind `ep`, beside `one`, `all` and `inst`:
+
+| Form | Subject | Tokens |
+| --- | --- | --- |
+| Request | `cotal.<space>.ep.prin.<endpoint>.<pOwner>.<pActor>.<pUid>.<runtimeId>.<command>.<authority>.<cOwner>.<cActor>.<cUid>.<nonce>` | 15 |
+| Reply | `cotal.<space>.ep.prin-reply.<endpoint>.<pOwner>.<pActor>.<pUid>.<runtimeId>.<cOwner>.<cActor>.<cUid>.<nonce>` | 13 |
+| No-responders sentinel | `cotal.<space>.ep.prin-reply._nr._nr._nr._nr._nr.<cOwner>.<cActor>.<cUid>.<nonce>` | 13 |
+
+| Token | Grammar | Meaning |
+| --- | --- | --- |
+| `prin`, `prin-reply` | literal | The route. A parser that knows only the other routes finds no shape and drops the subject. |
+| `<endpoint>` | endpoint token (§13.2) | Revision 1 defines `agent` only. |
+| `<pOwner>.<pActor>` | owner and actor tokens (§13.2 bounds) | The serving principal. |
+| `<pUid>` | lifecycle UID grammar (§13.1) | Its lifecycle. |
+| `<runtimeId>` | `[A-Za-z0-9_-]{1,64}` | The serving OS process: the value its presence publishes as `runtime.id` (§6). |
+| `<command>` | command token (§13.2) | As on the other routes. `describe` and `cancel` stay reserved. |
+| `<authority>` | `owner` or `grant` | The authority the caller's row holds, below. No target tokens follow: the head is the target. |
+| `<cOwner>.<cActor>.<cUid>` | caller tokens (§13.2) | The caller, forge-locked by its mint. |
+| `<nonce>` | nonce (§13.2) | As on the other routes. |
+
+The route has no versioned (`ep.v1`) form in this revision. A subject that matches none of these
+shapes has no sender and MUST NOT be handled; in particular the sentinel is no reply, because `_nr`
+is not a lifecycle UID.
+
+The principal and lifecycle are in the head because the serving credential knows them when it is
+minted: pinning them confines a process's subscription to its own principal and lifecycle, so a
+credential of another lifecycle cannot subscribe this one. The runtime id is not known at mint and
+no row pins it. It is in the subject for routing: each process subscribes only its own value, a
+request reaches one process, and a request for a process that is gone has no subscriber. A
+supervised restart keeps the lifecycle UID and gets a new runtime id. A request reaches the process
+that is that principal, that lifecycle and that runtime, or nobody. It does not say that lifecycle
+is still the one the alias maps to: a command on this route is about the addressed process itself.
+
+**Authority words.** The token after `<command>` is this route's own closed set of two words,
+`owner` and `grant`. It is not the §13.2 mode set: `exact` there includes a current-mapping check
+this route does not have. A distinct word gives a distinct subject and a distinct row, so no
+wildcard on `owner` reaches `grant`.
+
+- `owner`: the caller's row pins the head's owner to the caller's own owner and spans the actor,
+  lifecycle and runtime. It covers the caller's own actor as a target, so a command that must not
+  be called by the principal it is about refuses that itself (§13.22).
+- `grant`: the caller's row pins the target's owner, actor and lifecycle literally and spans the
+  runtime. A grant names one grantee lifecycle and one target lifecycle; a later lifecycle of either
+  matches nothing. How a grant is issued and revoked is not defined in this revision.
+
+A cluster command declares the words it admits in `authorities` (§13.7): a non-empty list of
+distinct words of the closed set, on an untargeted command (`targeted: false`) that declares no
+`modes`. Anything else is `contract-invalid` when the document is parsed. A command that declares
+`authorities` is never served on a service route, and a service MUST refuse at construction a
+registered surface that holds one; a command without it is never served on this route. `describe`
+is served by the machinery and admits every word of the closed set. The words are declared per
+command so that a word added to the set later admits nothing a command did not list.
+
+**Rows** (`P = cotal.<space>`; the endpoint and the command are always literal):
+
+```
+owner caller, per command:          pub  P.ep.prin.agent.<cOwner>.*.*.*.<command>.owner.<cOwner>.<cActor>.<cUid>.*
+grant caller, per command and grant: pub  P.ep.prin.agent.<pOwner>.<pActor>.<pUid>.*.<command>.grant.<gOwner>.<gActor>.<gUid>.*
+every caller with a row above:      sub  P.ep.prin-reply.*.*.*.*.*.<cOwner>.<cActor>.<cUid>.*
+serving principal:                  sub  P.ep.prin.agent.<pOwner>.<pActor>.<pUid>.*.*.*.*.*.*.*
+                                    pub  P.ep.prin-reply.agent.<pOwner>.<pActor>.<pUid>.*.*.*.*.*
+```
+
+An `owner` row is never minted with a wildcard or foreign `<pOwner>`. A `grant` row never has a
+wildcard in `<pOwner>`, `<pActor>` or `<pUid>`, and a mint refuses one whose target principal is the
+grantee principal. `*` in the command position is not used: rows are per command, and a mint builds
+a caller row only for a (command, word) pair the cluster declares. Every row passes the token
+validators of §13.2, so `<pUid>` is a lifecycle UID and no row can name the sentinel's `_nr` head.
+
+| Mint | Serve rows | Caller rows |
+| --- | --- | --- |
+| User-auth, ledger row of kind `managed-agent` | yes | none |
+| User-auth, ledger row of kind `interactive` | yes | `owner` rows for `describe`, `prompts`, `prompt` and `prompt-answer`, and the reply read |
+| Static credential | no | no |
+| Open mesh | no rows exist | |
+| Every view, service credential and infrastructure profile | no | no |
+
+The kind comes from the ledger row the auth callout reads (§10), never from a scope token, which a
+parent could hand to the agents it spawns. A principal the callout resolves outside the ledger's row
+spaces, such as a chat session, has no kind and gets no row. `interactive` means an actor its person
+granted directly; it does not prove a human is typing.
+
+**Envelope.** The body is the §13.3 `EndpointRequest` and `EndpointReply`. The agreement check has
+one branch for this route: `op.endpoint` and `op.command` equal the subject's (`op-mismatch`);
+`from.id` equals `<cOwner>.<cActor>` (`sender-mismatch`); `target` is absent (`target-mismatch`,
+the head is the target); `bind` is absent (`bad-request`, the runtime id pins the process);
+`replyExpected` is `true` (`bad-request`); and `deadlineMs` is present and at most 30000
+(`bad-request`). Every command
+on this route is request/reply and the route has no cast: a request with `replyExpected: false` is
+refused before its handler runs, and like every cast it gets no reply. Digests are required on every command but `describe`
+(`contract-mismatch`). Everything else is §13.3 unchanged: the version check, the id echo, args and
+output validation, the error catalog, the effect outcome, and discarding stored-message provenance
+headers.
+
+**Serving.** A process serves only in auth mode with a user-auth credential and a lifecycle UID; it
+refuses to serve on an open mesh or under a static credential, where no row names who may call, and
+refuses a cluster with a command that declares no `authorities`. It subscribes its own head with no
+queue group:
+`P.ep.prin.<endpoint>.<pOwner>.<pActor>.<pUid>.<runtimeId>.*.*.*.*.*.*`.
+
+Serving is ready only on a positive check: the subscription was made, the connection flushed, and
+the broker reported no permission violation for that subject. A credential minted before the rows
+existed fails this check, and the process does not serve. The check runs again on every replaced
+connection, including one the client library re-subscribed on a reconnect, and a refusal there ends
+the serve. Stopping unsubscribes and waits for the handlers in flight, and stopping the client does
+the same before it closes the connection those handlers reply on. It waits for a handler only until
+the request's `deadlineMs` has passed since the request arrived, because the caller has stopped
+waiting by then, and drops a reply that comes later. The 30000 cap on `deadlineMs` bounds that wait
+at 30 s. A process serves an endpoint once
+for its lifecycle: a second serve, from another client in the same process too, is refused, because
+both would subscribe the same subject.
+
+Each request runs the §13.3 pipeline of a service, with these differences: a request whose head is
+not this process is dropped with no reply, because it was not addressed to it; the class MUST be
+`ephemeral`; the contract is the fixed cluster's; the subject's authority word MUST be one the
+command declares, else `permission-denied`, and no mode or target is read; there is no target
+currency, `child`, `ledger` or governed gate, so a command with a governed trait is refused at
+construction; the handler sees the caller triple and the authority word from the subject; and the
+reply goes to the `prin-reply` subject derived from this process and the parsed caller and nonce,
+never to a transport reply field. A reply over the connection's `max_payload` is
+`resource-exhausted`. The route itself does not refuse a caller equal to the server; a command
+does when it must (§13.22).
+
+**Calling.** A caller subscribes `P.ep.prin-reply.*.*.*.*.*.<cOwner>.<cActor>.<cUid>.<nonce>` before
+it publishes, so the one subscription receives the reply and the sentinel, and publishes with the
+sentinel as the transport reply. It drops a stored message that reaches this subscription, one with
+a `Nats-Stream`, `Nats-Sequence` or `Nats-Time-Stamp` header, before it reads it as the sentinel or
+a reply, and a message under any other head is not its reply, so it keeps waiting. A broker
+no-responders status counts only on the sentinel: it is `unavailable`, `not-executed`. A reply
+counts only when its subject is the one the addressed process derives, its id echoes the request
+and its output validates against the pinned contract. A refused
+publish is `permission-denied`, `not-executed`. A refused reply read is `permission-denied`, and its
+outcome is `not-executed` only when the publish was refused too, else `unknown`; it is still
+`permission-denied` when the deadline passes before the caller learns whether the publish was
+refused. A deadline is
+`deadline-exceeded`, `unknown`. The caller does not call `describe` first: it embeds the cluster
+artifacts and pins their digests, and calls `describe` only to learn which revision an agent serves
+after a `contract-mismatch`.
+
+The sentinel is safe because a serving credential may publish only under its own literal
+`<pOwner>.<pActor>.<pUid>` with endpoint `agent`. `_nr` is neither, and no row can name it, so no
+serving credential can publish on the sentinel and a served request cannot be made to look
+unexecuted. A JetStream read is not a publish under a row: a client that may Direct Get a stream, as
+every agent may read the presence bucket, can name the sentinel as the reply subject, and the server
+delivers the stored message there. That message carries the stored-message headers, and the caller
+drops it. A client that may make a JetStream API request can also name the sentinel as its reply
+subject, and the broker answers there with plain JSON. Nothing but the no-responders status means
+anything on the sentinel, so the caller drops every other message there and keeps waiting.
+The broker answers no-responders only when the requester owns the reply subscription and no
+interest exists anywhere; behind a leaf node or gateway a missing responder is a deadline, so
+`unavailable` is a fast path and the deadline is the guarantee. Permissions are fixed per
+connection, so a new row arrives with the next connection.
+
+A caller learns `owner`, `actor`, `lifecycleUid` and `runtime.id` from the agent's presence (§6).
+Presence is advisory: a wrong value reaches a subject nobody serves or one the caller's row does not
+cover. It cannot widen authority.
+
+**Describe.** On this route `describe` carries an authority word like every command. Its answer is
+the §13.7 describe answer, `{ public: true, descriptor: { endpoint, owner: <pOwner>, protocol: { v:
+1 }, clusters: [{ digest, commands, document }] } }`: the fixed cluster inline, the same answer for
+every caller. `public` says which path produced the answer; the caller still needs a row to ask.
+
+Principal endpoints are not listed by the registry (§13.20), and a client that lists, describes or
+invokes registered endpoints does not reach them.
+
+**What the principal route does not have.** These are part of its definition:
+
+| §13 guarantee for a service | Principal route | Why that is acceptable |
+| --- | --- | --- |
+| Registers a service record and publishes contracts (§13.1, §13.7) | Neither. The contract is a core constant. | Every process serves the same contract, and a caller verifies digests against artifacts it embeds. |
+| A serve credential per instance, ledgered and gated (§13.1, §13.9) | The principal's own credential, already a ledger row. | The route acts only on the principal itself. It grants no authority over anything else. |
+| Takeover barrier and process epoch (§13.1) | None. | No name is shared, so nothing is taken over. Another lifecycle cannot subscribe this `<pUid>`. Two processes under one credential are the limit below. |
+| Target currency checked by a trusted validator (§13.2) | None. | The request names a process, and only that process serves it. |
+| A reply attributed to one incarnation by the broker (§13.2) | Attributed to the principal and lifecycle, not to the process. | Stated limit: the boundary is the credential, not the process. A second process holding the same credential can subscribe another runtime's subject and publish its replies. |
+| Queue-group anycast and scatter (§13.5) | One addressed process. | There is one. |
+| Listed in the registry (§13.20) | Not listed. | Found through presence. |
+
+### 13.22 The `agent` endpoint
+
+The endpoint `agent` on the principal route (§13.21) is the command set an agent serves about the
+questions its harness stops to ask: a tool permission, a question, a plan to approve, a form. Its
+contract is a core constant: cluster URN `ai.cotal.agent`, revision 1, every schema closed and
+frozen, nothing published to the contract store. A caller embeds the artifacts and pins their
+digests. Every command is ephemeral, untargeted, and declares `authorities: ["owner", "grant"]`.
+
+| Command | Capability | Args | Output |
+| --- | --- | --- | --- |
+| `describe` | reserved | none | the describe answer (§13.21) |
+| `prompts` | `agent.prompts.read` | `{}` | `{ runtime: { id, startedAt }, seq, open: PromptSummary[], closed: PromptSummary[] }` |
+| `prompt` | `agent.prompts.read` | `{ id }` | `{ prompt: AgentPrompt }` |
+| `prompt-answer` | `agent.prompts.answer` | `{ id, digest, option, note?, values? }` | `{ state: PromptState }` |
+
+`prompts` lists at most 32 prompts in `open`, those that are `open` or `sent`, and at most 32 in
+`closed`, the last prompts of this runtime to close. `runtime` is the `id` and `startedAt` of the
+process's presence `runtime` value (`startedAt` in epoch ms) and `seq` its presence counter (§6).
+`prompt` returns the full prompt while it is `open` or `sent`; a prompt id this runtime does not know
+is `not-found`, and a closed prompt is `failed-precondition` with its state in `details`. `note` is
+at most 2000 characters.
+
+**The prompt.**
+
+```ts
+interface AgentPrompt {            // returned by `prompt`, only while open or sent
+  id: string;            // [a-z2-7]{26}, random, never reused
+  digest: string;        // "sha256:<hex>" of the RFC 8785 canonical JSON of `content`
+  openedAt: string;      // the timestamp form below
+  expiresAt: string;     // remote answering of an unanswered prompt ends here
+  state: PromptState;    // `open` or `sent`
+  content: PromptContent;
+}
+interface PromptSummary {          // returned by `prompts`
+  id: string; digest: string; openedAt: string; expiresAt: string;
+  state: PromptState;              // `open` or `sent` in `open`, `closed` in `closed`
+  kind: string; title: string;
+  contentBytes: number;            // size of the canonical `content`
+  source?: PromptSource;
+}
+interface PromptContent {          // set once when the prompt opens, never changed
+  kind: string;          // "permission" | "question" | "plan" | "form", or a reverse-DNS name, at most 64 characters
+  title: string;         // one line, 1 to 200 characters
+  body?: { format: "text" | "markdown"; text: string };
+  subject?: PromptSubject;
+  options: PromptOption[];         // 1 to 16
+  form?: { schema: object };       // the form profile below
+  source?: PromptSource;
+}
+interface PromptSource { harness: string; scope?: string; toolCallId?: string }  // each 1 to 128 characters
+type PromptSubject =
+  | { type: "tool"; name: string; input: Shown | Omitted; cwd?: string; server?: string }
+  | { type: "url"; url: string }
+  | { type: string; data: unknown };   // a reverse-DNS type
+type Shown   = { kind: "shown"; value: unknown };
+type Omitted = { kind: "omitted"; bytes: number };
+interface PromptOption {
+  id: string;            // [a-z0-9-]{1,32}, unique within the prompt
+  label: string;         // 1 to 80 characters
+  effect: "proceed" | "refuse" | "cancel";
+  description?: string;  // 1 to 500 characters
+  persists?: string;     // 1 to 500: what this option changes beyond this prompt; absent: nothing
+  note?: "optional" | "required";
+  form?: "required";     // this option submits `values` for `content.form`
+}
+```
+
+The digest covers the whole content, and the content never changes: every representation on the
+wire is either the full content, which a reader verifies against the digest, or a summary that
+carries the digest and no content. The canonical `content` is at most 262144 bytes. A tool input too
+large to carry is `omitted` with its size, decided once when the prompt opens. Every timestamp in a
+prompt, an answer or a state is a UTC string of the one form `YYYY-MM-DDTHH:mm:ss.sssZ`, 24 bytes.
+`seq` is an integer from 0 to 2^53 - 1.
+
+`form.schema` is the MCP elicitation `requestedSchema` profile: a flat object of primitive
+properties, `{ type: "object", properties, required? }`, where each property is a string (`title`,
+`description`, `minLength`, `maxLength`, `format` of `email`, `uri`, `date` or `date-time`,
+`default`), a number or integer (`minimum`, `maximum`, `default`), a boolean (`default`), a single
+choice (`enum`, or `oneOf` of `{ const, title, description? }`), or a multiple choice (an array whose
+`items` is a string `enum` or an `anyOf` of `{ const, title, description? }`, with `minItems` and
+`maxItems`). Nested objects and arrays of objects are refused. `description` on a choice entry is
+added to MCP's `{ const, title }`. `format` is an annotation, not enforced. A form MUST NOT ask for a
+secret; a secret goes through a `url` subject, which the answerer opens outside the mesh.
+
+**States.**
+
+```ts
+type Effect    = "proceed" | "refuse" | "cancel";
+type Answerer  = { id: string; uid: string; authority: "owner" | "grant" };   // from subject tokens only
+type AnswerRef = { by: Answerer; option: string; effect: Effect; at: string };
+type Seen =
+  | { tie: "prompt"; effect: Effect }    // the harness tied what it did to this prompt
+  | { tie: "subject"; effect: Effect }   // an action with this prompt's subject was seen; it may belong to another request
+  | { tie: "none" };                     // nothing was seen
+type PromptState =
+  | { kind: "open" }
+  | { kind: "sent"; answer: AnswerRef; delivery: "unconfirmed" | "delivered" }
+  | { kind: "closed"; at: string; outcome:
+        | { kind: "answered"; answer: AnswerRef }
+        | { kind: "unconfirmed"; answer: AnswerRef; seen: Seen }
+        | { kind: "undelivered"; answer: AnswerRef }
+        | { kind: "local"; seen: Seen; late?: AnswerRef }
+        | { kind: "withdrawn"; seen: Seen }
+        | { kind: "expired" } };
+```
+
+| State | Claim |
+| --- | --- |
+| `open` | No remote answer has been accepted. |
+| `sent`, `unconfirmed` | One remote answer was accepted and handed to the agent's harness adapter. No receipt has come. |
+| `sent`, `delivered` | The adapter holds a receipt that the answer reached the harness. Whether it applied is not known. |
+| `closed`, `answered` | The harness confirmed that this remote answer applied. |
+| `closed`, `unconfirmed` | A remote answer was accepted and the harness never confirmed it. `seen` is what was then seen. Who won is not known. |
+| `closed`, `undelivered` | A remote answer was accepted, and the adapter proved it was not handed over. It does not say the harness stopped waiting. |
+| `closed`, `local` | The prompt ended at the harness, with no remote answer accepted or with one the harness reported it did not use (`late`). |
+| `closed`, `withdrawn` | The prompt stopped being served before any answer was accepted, and nothing tied to it was seen. |
+| `closed`, `expired` | `expiresAt` passed with no remote answer accepted. |
+
+A prompt only moves forward: `open`, then `sent` and `unconfirmed`, then `sent` and `delivered`,
+then `closed`, and a closed state is final. An accepted answer is never undone.
+
+**Answers.** The effect of `prompt-answer` is that the agent accepts the answer: the prompt is
+consumed and the answer is handed to the harness. A refusal is `not-executed`, because nothing was
+consumed, and every reply after acceptance is `ok`, `executed`, whatever state it reports. It does
+not mean the harness applied the answer; the returned state says how far it got. The answerer comes
+from the request's subject tokens only. An agent never accepts an answer to its own prompt: a caller
+principal equal to the agent is `permission-denied`, whatever its row.
+
+**The prompt desk.** An agent serves this endpoint from one prompt desk per process, the only writer
+of its prompts' states. The desk applies every event in one step, in the order the event reaches it,
+and no step waits for anything: the first event applied wins, and each later one meets the state the
+first one left. An event that arrives while a step runs, such as a harness report made while an
+answer is being checked, is applied after that step.
+
+Every prompt has two bounds, given by the harness adapter when the prompt opens. It is offered for 1 s
+to 7 days: `expiresAt` is `openedAt` plus that bound, and an `open` prompt closes `expired` there. A
+`sent` prompt waits 1 s to 24 h after its accepted answer for evidence of what the harness did (its
+settle bound), and then closes `unconfirmed` with nothing seen. No prompt is offered for ever, and no
+prompt stays `sent` for ever.
+
+The desk holds at most 32 prompts that are `open` or `sent` and opens no more; the harness's own
+dialog answers the next one. It remembers the last 32 of its prompts to close, and forgets an older
+one. It opens no prompt whose canonical content is over 262144 bytes, and none whose tool input
+is `omitted` while an option proceeds, so an omitted input can be refused remotely and approved only
+at the harness. Nor does it open one with two options that share an id, an option that submits a form
+the content does not have, a form no option submits, or a form schema whose `required` names a
+property it does not declare. The schemas cannot express these. A summary's JSON encoding is at most
+4096 bytes of UTF-8 in every state its prompt can reach: when a prompt opens, the desk encodes its
+summary in every state, with the answerer's owner, actor and lifecycle UID, the option id and `seen`
+at their longest legal values, and does not open the prompt when the largest is over 4096 bytes. The desk serves only on a connection whose `max_payload` is
+at least 524288 bytes, which holds the largest `prompts` reply (64 summaries) and the largest `prompt`
+reply with their envelopes. It checks this again on every replaced connection, and closes when the
+check fails there, as it does when the broker refuses its subscription. A reply that still does not
+fit is `resource-exhausted`, with its size in `details`.
+
+`prompt-answer` runs these checks in order, as one step. Args that are not I-JSON (a lone surrogate
+in `note` or `values`) are `bad-request` before them. Each refusal is `not-executed` and leaves the
+prompt as it was.
+
+| # | Check | Result |
+| --- | --- | --- |
+| 1 | The caller principal is the agent | `permission-denied` |
+| 2 | `id` is not known to this runtime | `not-found` |
+| 3 | The prompt holds an accepted answer that is the same as this one | `ok`, `executed`, with the current state, at once. Nothing is handed over again. |
+| 4 | The prompt is not `open` | `conflict`, with the state in `details` |
+| 5 | `digest` differs from the prompt's | `failed-precondition`, with the prompt's digest in `details` |
+| 6 | `option` is not one of the prompt's | `bad-request` |
+| 7 | The option needs a note and has none or an empty one, takes no note and has one, submits the form and has no `values`, or takes no `values` and has some | `bad-request` |
+| 8 | `values` do not validate against the form schema, or carry a property it does not declare | `bad-request` |
+| 9 | The harness adapter's own rules refuse the answer | `bad-request`, with the adapter's message |
+| 10 | `expiresAt` has passed | `expired` |
+| 11 | Accept | `sent`, `unconfirmed`: the answer is handed to the harness in the same step |
+
+Two answers are the same when they carry the same `id`, `digest`, `option`, `note` and `values` from
+the same caller triple. The desk keeps the identity of an accepted answer for as long as it remembers
+the prompt, so a caller whose reply was lost sends the same answer again and gets `ok` with the
+current state: while the hand-over is pending, after it ended, and after it proved undelivered. Once
+the prompt is forgotten the same answer is `not-found`, `not-executed`, which is safe because prompt
+ids are never reused. Of two answers that race, the first one applied is accepted; the same answer
+from the same caller then meets check 3, and any other meets check 4.
+
+The reply to an accepted answer is sent once, at the first of these: the prompt closes (the closed
+state), the hand-over returns a receipt (`sent`, `delivered`), the hand-over call fails (`sent`,
+`unconfirmed`), or 10 s pass (`sent`, `unconfirmed`). The 10 s bound changes no state. A reply carries
+the state the desk read right after it applied the event that ended the wait, and a reply at check 3
+the state at that check. A reply is true of the moment it was taken, so two replies to one answer can
+arrive in either order (reader rules).
+
+What else moves a prompt, from the state it is in:
+
+| Event | From `open` | From `sent` |
+| --- | --- | --- |
+| The hand-over returns a receipt from the harness side | (no hand-over yet) | `sent`, `delivered` |
+| The hand-over returns that the harness applied the answer, or the harness confirms it later | no change | `closed`, `answered` |
+| The hand-over proves nothing was handed over, because the exchange had already ended | (no hand-over yet) | `closed`, `undelivered` |
+| The hand-over call fails | (no hand-over yet) | no change |
+| The harness reports an answer from its own dialog | `closed`, `local` | `closed`, `local`, with the accepted answer as `late` |
+| The harness is seen to act on this prompt | `closed`, `local` | `closed`, `unconfirmed`, with that sighting |
+| An action with this prompt's subject is seen, or nothing tied to the prompt | `closed`, `withdrawn`, with that sighting | `closed`, `unconfirmed`, with that sighting |
+| The harness stops waiting | `closed`, `withdrawn`, nothing seen | `closed`, `unconfirmed`, nothing seen |
+| `expiresAt` passes | `closed`, `expired` | no change |
+| The settle bound passes | (not running yet) | `closed`, `unconfirmed`, nothing seen |
+| The desk closes: the agent stops serving | `closed`, `withdrawn`, nothing seen | `closed`, `unconfirmed`, nothing seen |
+
+A `sent` prompt moves to `delivered` at most once, and nothing moves a closed prompt: a harness report
+that meets one is ignored. Once an answer is accepted the desk never gives the dialog back to the
+harness, whatever arrives while the receipt is pending.
+
+`details` entries this endpoint uses:
+
+| Kind | Carries | Used by |
+| --- | --- | --- |
+| `ai.cotal.agent.prompt-state` | `{ state }` | `conflict`, and `failed-precondition` on a closed prompt |
+| `ai.cotal.agent.prompt-digest` | `{ digest }` | `failed-precondition` on a digest that differs from the prompt's |
+| `ai.cotal.agent.prompt-size` | `{ bytes, limit }` | `resource-exhausted` |
+
+**Reader rules.**
+
+- A reader MUST drop a value that does not match the closed schemas, and a prompt with two options
+  that share an id.
+- A reader MUST recompute the digest of the content it received and MUST NOT render or answer on a
+  mismatch, and MUST send back the digest of the content it rendered.
+- A renderer MUST neutralise direction-override and invisible characters, MUST NOT cut the end of a
+  command, and MUST show which agent asks. The wire does not sanitise, because the digest covers the
+  exact content.
+- A reader SHOULD NOT offer a `proceed` option before it has rendered the full content.
+- Every state a reader receives, from `prompts`, `prompt`, a `prompt-answer` reply, or the `details`
+  of a `conflict` or `failed-precondition`, is a snapshot. For one runtime and one prompt id a reader
+  ranks them `open`, then `sent` and `unconfirmed`, then `sent` and `delivered`, then `closed`, keeps
+  the state further along, whichever reply carried it, and never goes back from `closed`.
+- A caller waits at least 15 s for a `prompt-answer` reply, longer than the desk's 10 s bound.
+- A reader keeps two values per agent: the `(runtime.id, seq)` it last saw in presence (§6) and the
+  `(runtime.id, seq)` of its last successful `prompts` reply. It is dirty while they differ. While
+  dirty it calls `prompts`: when it first reads presence, on every presence event, and after it
+  reconnects. A failed call leaves it dirty, and it shows the list as stale, never as empty. It takes
+  a list only when its `seq` is not below the highest it already took for that `runtime.id`, and
+  drops a reply from a runtime presence no longer shows for the agent. A process that exits takes
+  its prompts with it; a reader derives that from presence or from `unavailable` on a call.
+
 ---
 
 ## 14. Workflow runs (v0.5)
@@ -7075,6 +7535,9 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - for its own role and for each `role:<r>` token in its capabilities (§13.15): `P.take.<role>.<owner>.<actor>.>` (replies to its own anycast takes, §8.1)
 - `P.ep.reply.*.*.*.<owner>.<actor>.<uid>.*` (exact arity; the agent's own endpoint reply rail: every endpoint's replies to THIS caller triple + nonce, §13.2; replies never ride the per-connection `inbox`)
 - with a listing generation `<g>` (§13.15): `P.ep.v1.reply.*.*.*.<owner>.<actor>.<uid>.<g>.*`, its own versioned reply rail
+- minted by the auth callout from a ledger row of either kind (§13.21): `P.ep.prin.agent.<owner>.<actor>.<uid>.*.*.*.*.*.*.*`,
+  its own principal-route subject for every runtime of its lifecycle; from an `interactive` row
+  also `P.ep.prin-reply.*.*.*.*.*.<owner>.<actor>.<uid>.*`, its own principal-route reply read
 - `P.epe.…`; the exact fully-qualified event subtrees of every minted read capability
   (§13.9 event-read row), incl. the caller's own per-goal subtree
   `P.epe.*.*.*.goal.<owner>.<actor>.<uid>.>`; the live tail of watch, granted per
@@ -7087,6 +7550,13 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `P.inst.*.*.<owner>.<actor>` (DM any recipient, forge-locked to me as sender)
 - `P.svc.*.<owner>.<actor>` (anycast any role, as me)
 - `P.live.<manager|delivery>.<owner>.<actor>` (plane liveness probe, as me, §6.1; the agent holds no `live` serve filter)
+- minted by the auth callout from a ledger row of either kind (§13.21): `P.ep.prin-reply.agent.<owner>.<actor>.<uid>.*.*.*.*.*`,
+  replies under its own principal-route head; from an `interactive` row also
+  `P.ep.prin.agent.<owner>.*.*.*.<command>.owner.<owner>.<actor>.<uid>.*` for each of `describe`,
+  `prompts`, `prompt` and `prompt-answer`. The kind is the ledger row's, never a scope token's. A
+  static mint, a principal outside the ledger's row spaces such as a chat session, every view, and
+  every observer, admin, delivery, supervisor, serve and infrastructure profile hold no
+  principal-route row
 - with a listing generation `<g>` (§13.15): `P.ep.v1.one.registry.endpoints.<owner>.<actor>.<uid>.<g>.*`
   and `$JS.API.DIRECT.GET.KV_cotal_accepted_<space>.$KV.cotal_accepted_<space>.accepted.v1.<token>`,
   the listing's own accepted row and no other
@@ -7448,6 +7918,10 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-18 | **Principal-route follow-ups (§6, §13.3, §13.5, §13.21), corrections.** A serve of the `agent` endpoint takes a fresh `prompts.seq` when it starts, so one `(runtime.id, seq)` never names two states, and `spec/cotal.schema.json` gives `prompts.open` and `prompts.seq` as non-negative integers, as §6 already said. A caller drops any message on the no-responders sentinel other than the broker's no-responders status and keeps waiting, on every route, where it used to end the call `internal`: a JetStream API request can name the sentinel as its reply subject. §13.5 now states that a service call drops a stored message on its reply read, as the principal route does; clients already did. The principal route has no cast: a request with `replyExpected: false` is refused before its handler runs. Stopping a principal serve waits for a handler in flight only until its request's `deadlineMs` has passed since the request arrived, and drops a reply that comes later. A principal-route `deadlineMs` is at most 30000: the serve refuses a larger one as `bad-request` before its handler runs, and a caller refuses it before publishing, so stop waits at most 30 s. A refused reply read is still `permission-denied` when the deadline passes first. |
+| 2026-11-18 | **Principal-route and prompt-desk corrections (§6, §13.14, §13.21, §13.22), additive.** A caller drops a stored message that reaches its reply read, one a JetStream read such as a Direct Get delivers on any subject its requester names, the sentinel included, and keeps waiting past a message under another head. Stopping a client ends its principal serves and waits for their handlers before the connection closes, and a process serves an endpoint once for its lifecycle. Under one `runtime.id` the presence `prompts.seq` never goes back, also across a stopped serve. The desk's admission refusals the schemas cannot express are now stated, and a reader drops a prompt with two options that share an id. No subject or schema changes. |
+| 2026-11-17 | **The agent's prompt desk (§13.22), additive.** An agent serves the `agent` endpoint from one prompt desk per process, the only writer of its prompts' states, which applies every event in one step in the order it arrives. §13.22 now states the two bounds every prompt has (offered for 1 s to 7 days, and settled 1 s to 24 h after an accepted answer), the desk's limits (32 prompts open or sent, the last 32 closed, 262144 bytes of content, 4096 bytes per summary in every state the prompt can reach, and a 524288-byte `max_payload` floor checked on every connection), the eleven `prompt-answer` checks in their order, when two answers are the same, the reply's 10 s bound and what state it carries, what else moves a prompt from each state, and that a caller waits at least 15 s for an answer's reply. No subject or schema changes. |
+| 2026-11-17 | **The principal route and the `agent` endpoint (§6, §13.2, §13.7, §13.9, §13.14, §13.21, §13.22, Appendix B), additive.** A principal serves a core-defined command set about itself on `cotal.<space>.ep.prin.<endpoint>.<pOwner>.<pActor>.<pUid>.<runtimeId>.<command>.<authority>.<cOwner>.<cActor>.<cUid>.<nonce>`, with replies on `ep.prin-reply` and a no-responders sentinel with `_nr` in its five head positions. It needs no registration: the principal's own credential serves it. The authority word is `owner` (the caller's own owner's principals) or `grant` (one granted lifecycle). A cluster command declares the words it admits in `authorities`; such a command is never served on a service route. The auth callout mints serve rows into every agent credential of a ledger row and `owner` rows into those of an interactive row, from the row's kind; grant issuance is not defined yet. Serving is ready only after the broker accepted the subscription, and it binds again on every replaced connection. Revision 1 of the `agent` endpoint (`ai.cotal.agent`) has `prompts`, `prompt` and `prompt-answer` for an agent's harness prompts, with the prompt, form profile, states and reader rules of §13.22, and presence gains `prompts: { open, seq }`. Also corrected: §13.2 counted six authorization-mode tokens where there are seven. |
 | 2026-11-17 | **Harness permission requests are withdrawn (§3, §6, §8, §8.2, §9, §13.7, Appendix B), breaking.** The 2026-11-13 revision below is removed in full: the `perm` answer subject, the `cotal_permissions_<space>` bucket and its per-lifecycle readers, the permission record and its state table, the interactive answer rows, the `request` field on a presence condition and the Manager's `permissionRequests` connector field. A connector no longer holds a harness permission prompt for a remote answer, and the harness's own dialog is the only way to answer one. A space provisioned while that revision was current keeps an unused `cotal_permissions_<space>` bucket, which nothing reads or writes. |
 | 2026-11-13 | **A harness permission prompt reaches the agent's owner (§3, §6, §8, §8.2, §9, §13.7, Appendix B), additive.** In auth mode a connector MAY hold each permission prompt its harness raises while the agent's owner answers it from an interactive session. The harness's own dialog keeps working, and the first answer applies. The holder keeps one closed-schema record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates in its final shape and refuses when reshaped, and serves answers on the new request/reply rail `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>`, addressed to the one process its record names. A holder never replies for a prompt it does not hold, and an answerer waits longer than the holder's 10-second handoff bound. Every agent serves answers to its own prompts and writes only its own records, and no agent mint may create a consumer on the bucket. Only an interactive ledger row may answer its owner's agents, as itself, and read its owner's records, by binding its own lifecycle's `perm_` pull consumer, which the provisioner opens with capped pulls. The auth callout grants that right from the row's kind and never from a scope token, and a static mint refuses it. A native answer settles only prompts of its own harness scope, one run to one prompt. The `approval` presence condition gains an optional opaque `request` id. Every Manager `status.connectors` row requires `permissionRequests: boolean`, true only on a user-auth mesh, and the Manager cluster advances to revision 50. An open mesh holds no prompt. |
 | 2026-11-13 | **An agent with no read channels keeps the info row on its delivery consumer (§8, Appendix B), additive.** The consumer is still not provisioned and the fetch and ack rows are still withheld. A client older than 0.163.0 asks `CONSUMER.INFO` during start and treats only an absent consumer as nothing to bind, so a refused read stopped its start. |

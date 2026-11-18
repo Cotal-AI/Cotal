@@ -213,7 +213,7 @@ try {
     for (let n = 0; n < 3; n++) agent.ep.emit("message", dmMsg(`old-dm-${n}`, `${filled} old-dm-${n}`), noop(), dmMeta);
     const mention = "PLEASE-READ-THIS-MENTION " + "y".repeat(3_000);
     agent.ep.emit("message", {
-      id: "mention-now", ts: 50_000, space: cfg.space, from: { id: "lead", name: "Lead" }, channel: "general", mentions: ["otto"],
+      id: "mention-now", ts: Date.now(), space: cfg.space, from: { id: "lead", name: "Lead" }, channel: "general", mentions: ["otto"],
       parts: [{ kind: "text", text: mention }],
     }, noop(), { historical: false, kind: "channel" });
     const peeked = textOf(await inboxSpec().run(agent, cfg, { peek: true }));
@@ -229,12 +229,13 @@ try {
     const agent = new MeshAgent(cfg);
     agent.on("error", () => {});
     const post = "p".repeat(1_500);
+    const now = Date.now();
     for (let n = 0; n < 60; n++) agent.ep.emit("message", {
-      id: `old-post-${n}`, ts: 10_000 + n, space: cfg.space, from: { id: "lead", name: "Lead" }, channel: "general",
+      id: `old-post-${n}`, ts: now - 60 + n, space: cfg.space, from: { id: "lead", name: "Lead" }, channel: "general",
       parts: [{ kind: "text", text: `${post} old-post-${n}` }],
     }, noop(), { historical: false, kind: "channel" });
     agent.ep.emit("message", {
-      id: "mention-after-posts", ts: 60_000, space: cfg.space, from: { id: "lead", name: "Lead" }, channel: "general", mentions: ["otto"],
+      id: "mention-after-posts", ts: now, space: cfg.space, from: { id: "lead", name: "Lead" }, channel: "general", mentions: ["otto"],
       parts: [{ kind: "text", text: "MISSION-AFTER-POSTS " + "y".repeat(3_000) }],
     }, noop(), { historical: false, kind: "channel" });
     const cleared = textOf(await inboxSpec().run(agent, cfg, {}));

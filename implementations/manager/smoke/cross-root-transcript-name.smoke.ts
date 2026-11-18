@@ -222,7 +222,13 @@ async function main(): Promise<void> {
     denied.on("error", () => {});
     await denied.start();
     const { checkEventStartup } = await import("@cotal-ai/core");
-    const internals = b as unknown as { ep: import("@cotal-ai/core").CotalEndpoint; agents: Map<string, unknown>; reserved: Map<string, unknown> };
+    const internals = b as unknown as {
+      ep: import("@cotal-ai/core").CotalEndpoint;
+      agents: Map<string, unknown>;
+      namesCapacity: {
+        reserved: Map<string, unknown>;
+      };
+    };
     const originalEndpoint = internals.ep;
     mkdirSync(join(scratch, "denied-state"), { mode: 0o700 });
     const originalError = console.error;
@@ -266,7 +272,7 @@ async function main(): Promise<void> {
       console.log("real disconnected endpoint startAgent", JSON.stringify(disconnected));
       assert(!disconnected.ok && disconnected.code === "failed-precondition" && /cannot check event startup/.test(disconnected.error ?? ""), "nonpermission count failure must refuse before launch");
       assert.deepEqual({ launchCalls, receipts: rows().length }, beforeDisconnected, "nonpermission failure leaves no child launch effect");
-      assert(!internals.agents.has("disconnected_probe") && !internals.reserved.has("disconnected_probe"), "nonpermission failure leaves no candidate agent or reservation");
+      assert(!internals.agents.has("disconnected_probe") && !internals.namesCapacity.reserved.has("disconnected_probe"), "nonpermission failure leaves no candidate agent or reservation");
     } finally {
       internals.ep = originalEndpoint;
     }

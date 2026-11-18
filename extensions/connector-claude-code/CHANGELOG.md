@@ -1,5 +1,18 @@
 # @cotal-ai/connector-claude-code
 
+## 0.168.0
+
+### Patch Changes
+
+- 077325c: Updates leave Claude configuration untouched when no Cotal integration is installed.
+  The refresh checks installation records before taking mutation locks, so a read-only unused Claude directory no longer blocks reconciliation or its rollback.
+
+## 0.167.0
+
+### Patch Changes
+
+- c617991: A Claude spawn now always delivers its initial prompt as the first turn, whatever the prompt's text. The connector passes the prompt to `claude` after one leading space, so a prompt that names a `claude` command or starts with `-` is no longer read as that command or as an option. A resume session id that starts with `-` is refused with a message naming the rule.
+
 ## 0.166.3
 
 No changes in this release.

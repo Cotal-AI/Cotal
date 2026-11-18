@@ -175,9 +175,11 @@ try {
 
   type PrivMgr = {
     agents: Map<string, { id: string; lifecycleUid: string; handle: { record?: import("@cotal-ai/seat").SeatRecord; pid?: number; status: () => string } }>;
-    retiring: Map<string, unknown>;
     opStop: (a: Record<string, unknown>, c: string, admin: boolean) => Promise<unknown>;
     ep: { ref: () => { id: string } };
+    retirement: {
+      retiring: Map<string, unknown>;
+    };
   };
   const priv = mgr as unknown as PrivMgr;
   const callerId = priv.ep.ref().id;
@@ -204,7 +206,7 @@ try {
   check("clean1 dlv_local- durable gone after despawn", await until(() => consumerExists(DLV, dlvDurable(DEV_OWNER, id1, uid1)), false));
   check("clean1 read-ACL row gone after despawn", await until(() => aclPresent(id1, uid1), false));
   check("clean1 creds file gone after despawn", await until(async () => existsSync(credsFile("clean1", uid1)), false));
-  check("clean1 alias freed from retiring", await until(async () => !priv.retiring.has("clean1"), true));
+  check("clean1 alias freed from retiring", await until(async () => !priv.retirement.retiring.has("clean1"), true));
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Cell 2: Custodian SIGKILL with surviving child refuses retirement
@@ -245,7 +247,7 @@ try {
   // Give deprovisioning a chance to run:
   await wait(2000);
 
-  const aliasFreed = !priv.retiring.has("survivor1");
+  const aliasFreed = !priv.retirement.retiring.has("survivor1");
   const childGone = identityVerdict(childPid, childStart) === "gone";
   const groupEmpty = groupMembers(childPid).length === 0;
   check("if alias freed, child is verified gone", !aliasFreed || childGone);

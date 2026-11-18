@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1068,
+    "total": 1090,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 846
+    "non-render/control": 868
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -80,7 +80,7 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "status-token",
-      "anchor": "tatus: PresenceStatus = \"idle\";\n  private _attention: ",
+      "anchor": "tatus: PresenceStatus = \"idle\";\n  /** The turn relay's",
       "class": "non-render/control"
     },
     {
@@ -6228,6 +6228,118 @@
     {
       "path": "implementations/cli/src/lib/app-user-identity.ts",
       "kind": "derived-output",
+      "anchor": "nameTakenRefusal(response.status, response.body, record.requestId)",
+      "class": "non-render/control",
+      "rationale": "Checks an HTTP name-conflict answer against this creation request before reporting a terminal refusal; the status is not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "legacyNameTakenRefusal(response.status, response.body)",
+      "class": "non-render/control",
+      "rationale": "Builds name-conflict recovery guidance from a legacy HTTP refusal while retaining the saved request; it makes no work-progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "ord.remote?.material && trust(target) !== record.trust) {\n   ",
+      "class": "non-render/control",
+      "rationale": "Compares the selected registration's trust hash with saved ownership pins to decide whether original-authority discovery is needed; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "discoveryDocumentUrl(address)",
+      "class": "non-render/control",
+      "rationale": "Derives the original registration's discovery URL from the saved exchange URL for a pinned fetch, not display output."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "checkDiscoveryDocument(response)",
+      "class": "non-render/control",
+      "rationale": "Validates an HTTP discovery response before accepting original registration pins; response status is transport evidence, not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "trust(original)",
+      "class": "non-render/control",
+      "rationale": "Hashes the reconstructed original registration and adopts it only when it matches saved trust; this is an authority comparison without rendered text."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "ord.retirementTarget && trust(target) !== record.trust)\n     ",
+      "class": "non-render/control",
+      "rationale": "Guards retirement by comparing explicit retirement pins with the saved trust hash and refuses a mismatch before sending; it does not render presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "was not sent\");\n    if (trust(target) !== record.trust) {\n   ",
+      "class": "non-render/control",
+      "rationale": "Checks whether legacy recovery still has matching registration trust before preserving the record separately; this controls custody, not human progress text."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "try { authority = await discoverConversationAuthority(target); }\n        catch (error",
+      "class": "non-render/control",
+      "rationale": "Discovers the retirement authority and marks it unavailable on failure so credentials stay recoverable; the call renders no peer status."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "creationOutcome(record, authority, replay, \"recovery\")",
+      "class": "non-render/control",
+      "rationale": "Interprets an exact creation replay as refused, pending approval, or issued material before retirement; these are issuance outcomes rather than work progress."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "record.remote.material = material",
+      "class": "non-render/control",
+      "rationale": "Stores recovered issued credentials in the saved identity record before persisting them; this member assignment has no rendering effect."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "checkConversationMaterial(material, authority, record.requestId, record.selection, approvalExpectation(record.remote))",
+      "class": "non-render/control",
+      "rationale": "Revalidates recovered credentials, request binding, selection and approval against the retirement authority; no presence or progress text is produced."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "`${authority.url}/${material.actor}`",
+      "class": "non-render/control",
+      "rationale": "Constructs the expected actor-specific retirement URL for exact lifecycle validation and the DELETE request, not a displayed work-status string."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "trust(current)",
+      "class": "non-render/control",
+      "rationale": "Compares the current registration with saved trust after unavailable retirement to decide whether to retain state separately or rethrow; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "    const infra = await getSpaceAuth(store, target.space);\n      if (!infra) thro",
+      "class": "non-render/control",
+      "rationale": "Loads the exact space's local authority for conversation retirement and refuses if it is absent; it reads auth state rather than rendering peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "mintCreds(infra, newIdentity(), \"deprovisioner\", { deprovisionTarget: {\n        principal: principalKey(local.owner, local.actor).key, lifecycleUid: local.lifecycleUid } })",
+      "class": "non-render/control",
+      "rationale": "Mints narrowly targeted deprovisioner credentials for the saved local principal and lifecycle; credential issuance is control data, not rendered work progress."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
       "anchor": "selectionRefusal(response.status, response.body)",
       "class": "non-render/control",
       "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
@@ -7120,7 +7232,7 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "status-token",
-      "anchor": "ilter(p => p.status !== \"offline\"), args!.name as string)",
+      "anchor": "ilter(p => p.status !== \"offline\" &&\n        (!this.confi",
       "class": "non-render/control"
     },
     {
@@ -7578,6 +7690,48 @@
       "anchor": "nt(`reconcile failed: ${failure(child)}`, child.status ?? 1, r",
       "class": "non-render/control",
       "rationale": "Rollback receives the reconciliation failure reason and child exit code, not peer presence."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "resolvePeerInRoster(live, args!.name as string)",
+      "class": "non-render/control",
+      "rationale": "Names the one live seat a named manager.inspect targets; the roster is a routing input and no peer status is rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "invokeUserManager({ ...this.config, managerInstanceId: ownerInstance }, bearer, command, args, invokeOpts)",
+      "class": "non-render/control",
+      "rationale": "Sends the manager command to the manager that holds the seat; the reply is the manager's own answer, not a presence claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "managers.push(manager)",
+      "class": "non-render/control",
+      "rationale": "Collects the managers that answered status for the detached-launch refusal; a manager's own status reply is not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "`${manager}: ${connector.agent}: ${oneLine(connector.reason ?? \"unavailable at manager startup\")}`",
+      "class": "non-render/control",
+      "rationale": "Reports why an agent application is unavailable on a manager, as that manager recorded it at startup; not peer presence or activity."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "empty.push(manager)",
+      "class": "non-render/control",
+      "rationale": "Collects managers that report no agent application for the detached-launch refusal; not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/nats-bin.ts",
+      "kind": "derived-output",
+      "anchor": "`exit status ${run.status}`",
+      "class": "non-render/control",
+      "rationale": "Names the nats-server version probe's process exit status in a refusal, not agent presence or activity."
     }
   ]
 }

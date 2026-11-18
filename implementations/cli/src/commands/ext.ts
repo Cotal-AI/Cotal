@@ -106,7 +106,9 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
   // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
   // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
   // line (shared with the manager's PtyRuntime launch).
-  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
+  // The prefix verifier requires every host-compatible dependency, including native optional
+  // packages. CLI inclusion wins over an ambient omit=optional, also when npm removes a sibling.
+  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", [...args, "--include=optional"]);
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
   const mutation = beginExtensionNpmMutation();
@@ -233,12 +235,28 @@ export async function installExtensionSet(
   const interrupt = (): void => { interrupted = true; };
   process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
   try {
+    // Keep missing local extensions in the inventory for explicit repair/removal, but do not ask npm
+    // to reinstall them while reconciling other packages. Their original download directory may be gone.
+    const absent = manifestBefore.extensions.filter(entry =>
+      !requests.some(request => request.pkg === entry.pkg) &&
+      lstatSync(join(stage.prefix, "node_modules", entry.pkg), { throwIfNoEntry: false }) === undefined);
     // Make all local dependency specs independent of the stage directory's later promotion.
     for (const name of ["package.json", "package-lock.json"]) {
       const path = join(stage.prefix, name);
       if (!existsSync(path)) continue;
       const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) =>
-        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(extensionsDir(), item.slice(5))}` : item);
+        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(extensionsDir(), item.slice(5))}` : item) as {
+          dependencies?: Record<string, string>;
+          packages?: Record<string, { dependencies?: Record<string, string> }>;
+        };
+      const dependencies = name === "package.json" ? value.dependencies : value.packages?.[""]?.dependencies;
+      for (const entry of absent) {
+        if (!dependencies?.[entry.pkg]?.startsWith("file:")) continue;
+        delete dependencies[entry.pkg];
+        for (const key of Object.keys(value.packages ?? {})) {
+          if (key === `node_modules/${entry.pkg}` || key.startsWith(`node_modules/${entry.pkg}/node_modules/`)) delete value.packages![key];
+        }
+      }
       writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
     }
     for (const request of requests) {

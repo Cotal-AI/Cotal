@@ -50,7 +50,7 @@
     },
     {
       "name": "R5 the private retirement route accepts a browser-origin request",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-manager-routes.ts",
       "find": "async function handleInteractiveLifecycleRetirement(\n  req: IncomingMessage,\n  res: ServerResponse,\n  ctx: HandlerCtx,\n): Promise<void> {\n  const before = { outcome: \"not-executed\" } as const;\n  if (req.method !== \"POST\") return send(res, 405, { error: \"POST only\", ...before });\n  if (req.headers.origin !== undefined) return send(res, 403, { error: \"browser-origin requests are not served here\", ...before });\n  if (!/^application\\/json\\b/.test(req.headers[\"content-type\"] ?? \"\"))\n    return send(res, 415, { error: \"content-type must be application/json\", ...before });\n  if (req.headers.authorization !== `Bearer ${ctx.cap}`)",
       "replace": "async function handleInteractiveLifecycleRetirement(\n  req: IncomingMessage,\n  res: ServerResponse,\n  ctx: HandlerCtx,\n): Promise<void> {\n  const before = { outcome: \"not-executed\" } as const;\n  if (req.method !== \"POST\") return send(res, 405, { error: \"POST only\", ...before });\n  if (!/^application\\/json\\b/.test(req.headers[\"content-type\"] ?? \"\"))\n    return send(res, 415, { error: \"content-type must be application/json\", ...before });\n  if (req.headers.authorization !== `Bearer ${ctx.cap}`)",
       "expectRed": "interactive lifecycle retirement refuses browser-origin requests",
@@ -58,7 +58,7 @@
     },
     {
       "name": "R6 the private retirement route accepts a caller without the operator capability",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-manager-routes.ts",
       "find": "  if (req.headers.authorization !== `Bearer ${ctx.cap}`)\n    return refuseCapability(res, ctx, \"missing/invalid exchange capability - interactive lifecycle retirement is a loopback operator action\", { ...before });",
       "replace": "",
       "expectRed": "interactive lifecycle retirement refuses a missing operator capability",
@@ -66,7 +66,7 @@
     },
     {
       "name": "R7 the private retirement body accepts an unknown operation field",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-manager-routes.ts",
       "find": "  for (const key of Object.keys(body))\n    if (!INTERACTIVE_RETIRE_KEYS.has(key))\n      return send(res, 400, { error: `interactive lifecycle retirement carries the unknown field \"${key}\"`, ...before });",
       "replace": "",
       "expectRed": "interactive lifecycle retirement body is closed",
@@ -74,7 +74,7 @@
     },
     {
       "name": "R8 the private retirement route does not bind the request to the current row UID",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-manager-routes.ts",
       "find": "  if (row.lifecycleUid !== lifecycleUid)\n    return send(res, 409, { error: `interactive actor \"${owner}/${actor}\" is current at lifecycle ${row.lifecycleUid ?? \"<missing>\"}, not ${lifecycleUid}`, ...before });",
       "replace": "",
       "expectRed": "interactive lifecycle retirement refuses a UID other than the current actor row",
@@ -116,7 +116,7 @@
     },
     {
       "name": "R13 a token the door cannot parse is refused without stating that nothing was retired",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-manager-routes.ts",
       "find": "    return send(res, 400, { error: e instanceof Error ? e.message : String(e), ...before });\n",
       "replace": "    return send(res, 400, { error: e instanceof Error ? e.message : String(e) });\n",
       "expectRed": "an owner that is not a derived token is refused before the barrier and states nothing was retired",
@@ -125,7 +125,7 @@
     },
     {
       "name": "R14 the door's guard refusals no longer state that nothing was retired",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-manager-routes.ts",
       "find": "): Promise<void> {\n  const before = { outcome: \"not-executed\" } as const;\n  if (req.method !== \"POST\") return send(res, 405, { error: \"POST only\", ...before });\n",
       "replace": "): Promise<void> {\n  const before = {} as const;\n  if (req.method !== \"POST\") return send(res, 405, { error: \"POST only\", ...before });\n",
       "expectRed": "each guard refusal of interactive lifecycle retirement states nothing was retired",

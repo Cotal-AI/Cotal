@@ -57,14 +57,14 @@ function harness(): Harness {
       ...partial,
     } as InboxItem;
     // Reach the private valve directly: this suite grades eviction, not ingest classification.
-    (agent as unknown as { buffer: (i: InboxItem, d: { ack: () => void }, p: boolean) => void }).buffer(
+    ((agent as unknown as { inboxState: unknown }).inboxState as unknown as { buffer: (i: InboxItem, d: { ack: () => void }, p: boolean) => void }).buffer(
       item,
       { ack: () => acked.add(item.id) },
       opts?.pullOnly ?? (item.kind === "channel" && item.historical),
     );
   };
   const ids = () =>
-    (agent as unknown as { inbox: { item: InboxItem }[] }).inbox.map((p) => p.item.id);
+    ((agent as unknown as { inboxState: unknown }).inboxState as unknown as { inbox: { item: InboxItem }[] }).inbox.map((p) => p.item.id);
   return { agent, acked, push, ids };
 }
 

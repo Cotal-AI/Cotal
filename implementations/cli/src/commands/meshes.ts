@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -7,6 +8,9 @@ import {
   discoveryDocumentUrl,
   getCurrent,
   keepsRegistration,
+  isMeshRegistryError,
+  meshFile,
+  meshesDir,
   loadMeshes,
   pinnedFetch,
   PinnedFetchRefused,
@@ -419,7 +423,17 @@ async function rmMeshes(names: string[], v: Values): Promise<void> {
     console.error(c.red("usage: cotal meshes rm <space> [<space> …]"));
     process.exit(1);
   }
-  const byName = new Map(loadMeshes().map((m) => [m.space, m]));
+  let entries: MeshEntry[];
+  try { entries = loadMeshes(); }
+  catch (error) {
+    if (!isMeshRegistryError(error)) throw error;
+    const own = names.find((name) => error.file === meshFile(name)
+      || !/^space\.[0-9a-f]+$/.test(encodeURIComponent(name)) && error.file === join(meshesDir(), `${encodeURIComponent(name)}.json`));
+    if (!own) throw error;
+    stderrLine("✗ ", `the registration for "${own}" cannot be read - run \`cotal space forget ${own}\` to remove its local records after its stack is stopped; --force does not skip that check`, c.red);
+    process.exit(1);
+  }
+  const byName = new Map(entries.map((m) => [m.space, m]));
   const removed: MeshEntry[] = [];
   let failed = false;
   for (const space of names) {

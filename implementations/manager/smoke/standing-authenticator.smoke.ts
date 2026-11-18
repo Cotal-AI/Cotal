@@ -6,6 +6,7 @@ import { credsAuthenticator, type Authenticator } from "@nats-io/transport-node"
 import { createSpaceAuth, mintCreds, newIdentity, type Identity } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { Manager } from "../src/manager.js";
+import { ServePlane } from "../src/serve-plane.js";
 
 let checks = 0;
 function check(value: unknown, label: string): asserts value {
@@ -33,8 +34,14 @@ for (const method of ["dialServeConnection", "dialGoalWriter", "dialSessionLedge
       dial: async (options: Record<string, unknown>) => { observed.push(options); throw boundary; },
     };
     try {
-      if (method === "dialServeConnection") await methods[method].call(receiver, state);
-      else await methods[method].call(receiver, state, identity);
+      if (method === "dialGoalWriter") await methods[method].call(receiver, state, identity);
+      else {
+        const component = new ServePlane({
+          auth: () => receiver.auth, remoteAuthority: () => receiver.remoteAuthority, dial: receiver.dial,
+        } as unknown as ConstructorParameters<typeof ServePlane>[0]);
+        if (method === "dialServeConnection") await component.dialServeConnection(state as never);
+        else await component.dialSessionLedgerConnection(state as never, identity);
+      }
       check(false, "dial must stop at boundary");
     }
     catch (error) { check(error === boundary, "actual dial method reached transport"); }

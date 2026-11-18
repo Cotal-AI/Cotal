@@ -154,6 +154,12 @@ An answering daemon without an active automatic schedule is reported separately,
 paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
 the command installs and starts nothing.
 `cotal update --notify off` silences notices independently, and `--notify on` enables them.
+If `update-settings.json` contains damaged JSON or invalid settings, these preference commands
+save its contents in a private `update-settings.json.corrupt.<id>` copy in the same folder,
+report that path, and restore the defaults: automatic updates and notices on. A supplied
+`on` or `off` value is then saved. Bare `--auto` and `--notify` also recover the file.
+Filesystem read or write failures still stop the command. Background checks and desktop
+preference requests leave damaged settings unchanged until you run a CLI preference command.
 `COTAL_NO_UPDATE_CHECK=1` disables both checks and automatic installation for that process.
 
 On Windows, an interrupted helper in the same boot pauses automatic installation. Status and
@@ -181,11 +187,19 @@ Version output reports the cached update state without waiting for the registry.
 
 Before replacing the global package, the updater verifies both the target and previous release
 archives and fetches the installed first-party extensions with their dependency closures in a
-disposable prefix. An unavailable dependency stops the update before replacement. A failed replacement
+disposable prefix. The dependency check, package installation and reconciliation use private temporary
+npm caches that are removed afterwards. An unwritable cache configured in `.npmrc` does not block the
+update. Cotal leaves that cache and its permissions unchanged and still applies your registry,
+authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement. A failed replacement
 is followed by another reconcile attempt, then a verified reinstall
 and reconcile of the previous version. A private same-filesystem snapshot restores the previous seed
 stamp, connectors and operator extensions before Managers start. Interrupted restoration resumes on
 the next update or daemon start. The snapshot is removed after successful update or restoration.
+Starting in 0.167.1, reconciliation rebuilds an unfinished retained connector copy when neither
+selection record names it and no live or unproven seat holder needs it. Cleanup removes empty
+unpublished update journals and abandoned installation staging, including owned read-only folders,
+under the installation update lock. Selected connector sets and unfinished recorded transactions
+remain protected.
 If the computer has never run setup, update creates the missing config folders with private permissions before taking the snapshot. Existing unsafe folders or symbolic links still refuse the update. Automatic config and snapshot preflight refusals appear in the daemon status update result as one line with paths redacted.
 If reconciliation still fails after retry, the command preserves the original child's exit status
 through restoration. An interrupt takes precedence over that status.
@@ -194,11 +208,15 @@ and asks for `cotal update --self`; unattended updates remain paused until manua
 A daemon that starts while an update is paused keeps running. `cotal daemon status` names the pause
 and the repair command, and the daemon loads no new version until the repair succeeds.
 
-An update the daemon installs on its own runs inside the daemon's service. It reconciles the new
-version, records the result and exits, and only then does the daemon restart into the new version.
-It does not wait for that restart, so it cannot restore the previous version if the restarted
-daemon fails. Read `cotal daemon status` after an unattended update, or run `cotal update --self`
-yourself to get the verified wait.
+From 0.167.1 on Linux, an automatic updater and its reconcile child move into an authenticated
+sibling systemd scope. After reconciliation, the updater restarts the owned service and waits
+for the target daemon. A failed activation restores and verifies the previous generation before
+recording the failed attempt. macOS and Windows retain their separate activation behavior.
+On Linux, manual `cotal update --self` also repairs a dead owner's ambiguous global child marker
+under the global update lock. It stops only this installation's service after empty hosted admission,
+requires this account's other application processes to exit, and retains the marker before continuing.
+Unreadable evidence or a live writer leaves the marker intact. It starts the enabled owned service
+again after the attempt. It does not enable a disabled service.
 
 A runtime bundled with the desktop app refuses `update --self` before changing its installation.
 Update that app with its signed platform installer so the app, CLI and runtime stay together.
@@ -225,7 +243,11 @@ liveness check keeps the registration unchanged. Local manager continuity checks
 apply before changing the installation. When a recorded local space's project folder no longer
 exists, update names the space and the gone folder, leaves its processes untouched, and makes no
 continuity claim for that space. A renamed project does not block the software update or require
-restoring internal identity files.
+restoring internal identity files. This also applies to a selected prepared space whose project
+folder was deleted before it ever started. Update keeps its saved selection and preparation record.
+Update runs from the surviving project root, or the filesystem root when no project is present.
+Removing an unrelated working folder before or during update does not block it or its npm and
+reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
 After `update --self` replaces the installation, its verified replacement waits up to 120 seconds
 for the recorded same-installation daemon to load the new version and its intended hosted Managers
@@ -333,7 +355,12 @@ there too. A controller stack that completed ordinary `cotal down` is eligible a
 service records prove every process gone. Missing instance records, live or unresolved processes,
 and an unfinished down still refuse. That is the cold path past a `legacy` verdict: `cotal down`,
 then `cotal update`, and the verdict's `Next` line names it with that mesh's space. A space prepared on this machine that never started, whether this folder's,
-selected or named, has no broker and no manager, so it is named and skipped the same way. Any other
+selected or named, has no broker and no manager, so it is named and skipped the same way.
+A refused first start on an older release, or a cleanly stopped project started with an explicit
+space name that differs from its folder name, can leave a rendered broker configuration without a
+registered space. Both update flows name that space and folder, leave its records and processes
+untouched, and skip its continuity read without claiming that no manager is running. A successful
+`cotal up` is not required before updating from that folder. Any other
 selected mesh whose manager cannot be read is still a refusal: a named space that is not
 recorded, a mesh registered with `cotal meshes add`, a `--server` override, a `cotal supervise`
 process still running from any folder whose command line names that space or no space, or a broker
@@ -376,6 +403,10 @@ keeps a single attempt. Missing archives or invalid
 metadata refuse before global installation or connector reconciliation, with a registry propagation
 hint and a request to check registry access and try again in a few minutes. This preflight does not
 guarantee later registry requests or third-party dependency downloads will succeed.
+From 0.167.1, an npm `ETARGET` that names a date bound stops the update immediately with
+exit code 1. The diagnostic names `min-release-age` and `before`: adjust the setting that
+excludes the release, then run `cotal update --self` again. Cotal leaves the npm configuration
+and installed version unchanged instead of waiting for registry propagation.
 Entry version verification allows up to five minutes for a busy or slow machine. A verification
 timeout is reported separately from a wrong version or an entry that exits unsuccessfully.
 Cotal then installs the exact version it validated, resolves and verifies that
@@ -394,12 +425,23 @@ used. A missing or redirected global bin link, a conflicting `npm_config_prefix`
 root that disagrees with that prefix refuses before installation. Local/npx copies and source
 checkouts still install a separate global copy; Windows keeps npm's configured global root.
 
-If that installation is not writable by your account, the update refuses before changing it.
+From 0.167.1, self-update restores owner write permission on user-owned package, `dist`,
+`node_modules` and `lib` directories before checking release archives. It leaves file modes and
+other accounts' directories unchanged. If write access still fails, it names the user-owned
+directory to repair without recommending sudo. An unwritable `node_modules` directory is checked
+before downloading archives or reserving the update lock.
+If an installation owned by another account is not writable, the update refuses before replacing it.
 For a root-owned npm installation, have an administrator run the printed
 `sudo npm install -g --prefix '<install-prefix>' cotal-ai@latest` command.
 Then run `cotal update` as your normal account, without sudo, to reconcile your connectors and
 extensions. Keep any `--space`, `--server`, `--creds` or `--on` selection from the original command.
 Do not run `sudo cotal update`: user configuration and reconciliation belong to your normal account.
+
+From 0.167.1, retrying `cotal update --self` after killing its updater waits up to ten minutes
+for its recorded live install or reconciliation child to finish. The reservation stays held during
+that wait. The command then restores the interrupted transaction and continues the requested
+self-update. An expired wait, an unpublished child PID or ambiguous descendant state still refuses
+without starting a competing replacement.
 
 Once global replacement starts, Ctrl-C waits for installation, verification and reconciliation to
 finish before returning exit code 130. SIGTERM waits the same way and returns 143. The command
@@ -435,6 +477,13 @@ install is reported and makes the command exit nonzero. Independent extension at
 the output includes every failure; an unavailable npm registry does not undo a completed local
 reconcile, but the command still exits nonzero because it could not establish that the install is
 current.
+
+
+From 0.167.1, a recorded local-path extension whose installed folder was deleted does not block
+reconciliation of other extensions, even if its original source directory is gone. Cotal removes its
+`file:` dependency from the staged npm inputs, keeps its extension inventory entry and reports that
+it is not installed. Reinstall it with `cotal ext add <original-spec>` or drop the entry with
+`cotal ext remove <package>`. An installed local copy is kept even when its source directory is gone.
 
 
 ### Update availability [#update-availability]
@@ -653,7 +702,8 @@ same path.
 command of each boot that is not a read, so you rarely call it; `cotal up` runs it when it first
 starts a process). A read, such as `status`, `ps`,
 bare `use`, `ext list` or `docs`, installs and refreshes nothing. An installed extension's `reads` declaration is
-cached when it is added. A bare read and a read subcommand skip that seed prelude; a subcommand
+cached when it is added. Account catalog refresh with `sync` also skips connector seeding.
+A bare read and a read subcommand skip that seed prelude; a subcommand
 without the declaration still seeds. After an upgrade, a read that would load a
 built-in still at another version names the package and its version with `cotal ext seed` instead
 of loading it. Each seeded connector's `✓ added` line goes to stderr, so the command that triggered
@@ -773,8 +823,9 @@ Your [preferences](config.mdx#preferences): `harness`, `persona`, `detach-key`, 
 Bare `config` lists every key with the value a command uses, where it came from (a variable, your
 value for the space, your own value, or the default) and the values it outranks. `get` shows one
 key. A read looks through `--space`, else the space a launch here uses, the space `spawn` resolves
-from this folder. A running space registered for this folder is that space, even when `cotal use`
-selected another. With no space running here it is the selected space, or the only running one.
+from this folder. An explicit `cotal use` selection wins even in a running space's project folder.
+Only an automatically adopted selection yields to a running space registered for this folder.
+With no space running here it is the selected space, or the only running one.
 With none of those it reads your defaults. `--user` reads your defaults alone.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`. Only `harness`

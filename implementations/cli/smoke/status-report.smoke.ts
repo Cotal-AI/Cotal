@@ -251,7 +251,17 @@ if (!brokerDisplayOnly) {
     const [command, description] = firstCommand(legacyNext(["nats", "manager"]));
     check("an exited legacy broker and manager are named together", /(^|\s)cotal up$/.test(command ?? "") && description === "Restart this folder's broker and manager, which exited; up reopens the recorded store; pass --runtime again if the manager ran on one", { command, description });
   }
+  {
+    // A clean down leaves every member stopped with no pidfile; spawn fails until up starts it (#7516).
+    const next = legacyNext(["manager", "delivery", "nats"], { pid: null });
+    const [command, description] = firstCommand(next);
+    check("a cleanly stopped legacy stack puts a bare up first under Next, ahead of ps and the store reset",
+      /(^|\s)cotal up$/.test(command ?? "") && description === "Start this folder's stopped stack again; pass --runtime again if the manager ran on one"
+        && next.includes("cotal ps") && next.indexOf("cotal up") < next.indexOf("cotal ps") && next.indexOf("cotal up") < next.indexOf("clean store --force"), next);
+  }
   for (const [label, next] of [
+    ["a cleanly stopped open stack", legacyNext(["manager", "delivery", "nats"], { pid: null, mode: "open" })],
+    ["a cleanly stopped stack seen from another folder", legacyNext(["manager", "delivery", "nats"], { pid: null, root: join(home, "elsewhere") })],
     ["an open stack", legacyNext(["manager"], { mode: "open" })],
     ["a member with no pidfile", legacyNext(["manager"], { pid: null })],
     ["a registration added by hand", legacyNext(["manager"], { origin: "manual" })],

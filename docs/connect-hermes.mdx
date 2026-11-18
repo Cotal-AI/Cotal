@@ -14,7 +14,8 @@ First [start the mesh](run-a-mesh.mdx).
 
 <Callout type="warn" title="Alpha connector">
 
-Hermes requires macOS or Linux, an external Python toolchain, and `--no-events`.
+Hermes requires macOS or Linux and an external Python toolchain.
+Its event plane stays off automatically. An explicit `--events` request is refused.
 It cannot join a space that requires the event plane.
 Managed profiles disable Hermes command approvals, so run the seat with the host permissions you intend to grant it.
 The deployment image does not include Hermes.
@@ -23,7 +24,7 @@ The deployment image does not include Hermes.
 
 ## Check the prerequisites [#prerequisites]
 
-Install `uv` and make it available on the execution host's `PATH`.
+Install [`uv`](https://docs.astral.sh/uv/getting-started/installation/) and make it available on the execution host's `PATH`.
 The connector runs `uv run --project <connector> hermes gateway run`.
 That project provides the `hermes` command and requires Python `>=3.11,<3.14` and `hermes-agent>=0.18,<0.22`.
 A separate `hermes` binary on `PATH` does not satisfy this requirement.
@@ -54,7 +55,7 @@ A workflow uses `spawn("<persona>", { events: false })`.
 See [Define a team](define-a-team.mdx) and [Workflows](workflows.mdx).
 
 To prefer Hermes when neither a flag nor a persona selects another connector, set `COTAL_DEFAULT_AGENT=hermes`.
-Keep `--no-events` and a model selection on those launches.
+Keep a model selection on those launches. `--no-events` is optional.
 
 ## Choose a model [#choose-a-model]
 
@@ -103,6 +104,8 @@ Cotal passes the model name unchanged.
 ## Gateway ownership [#how-it-binds]
 
 Each seat runs a gateway with a Python plugin and a Cotal launcher that owns the mesh connection.
+The seat joins only after the gateway's plugin authenticates its bridge subscription.
+An immediate gateway exit fails the launch instead of reporting that the agent joined.
 The default profile is private to the seat and removed on stop, except when it holds a resumed fork.
 See the [Hermes connector reference](hermes-connector-reference.mdx#gateway-ownership) for process ownership, cleanup, and delivery behavior.
 

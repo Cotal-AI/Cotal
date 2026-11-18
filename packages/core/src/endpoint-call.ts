@@ -2,9 +2,11 @@
  *  `endpoint-verbs` and the browser entry. Moved unchanged from `endpoint-verbs.ts`. */
 import { base64url } from "./base64url.js";
 import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node";
+import { PermissionViolationError } from "@nats-io/nats-core";
 import { BROKER_REFUSAL_CAUSE, openPublishDenialWatch } from "./endpoint-publish-denial.js";
+import { carriesStoredReplyProvenance } from "./endpoint-provenance.js";
 import { spacePrefix } from "./subjects.js";
-import { epRequestSubject, parseEpSubject, callerRailTokens, epPlaneTokens, assertIdToken, assertLifecycleToken, assertBoundedOwner, type EpCaller, type EpRoute, type EpTarget } from "./endpoint-subjects.js";
+import { epRequestSubject, parseEpSubject, callerRailTokens, epPlaneTokens, assertIdToken, assertLifecycleToken, assertBoundedOwner, epPrincipalRequestSubject, epPrincipalReplySubject, epPrincipalCallerReplyFilter, epPrincipalNoRespondersSubject, isIssuedCaller, EP_PRINCIPAL_MAX_DEADLINE_MS, type EpCaller, type EpPrincipal, type EpRoute, type EpTarget, type PrincipalAuthority } from "./endpoint-subjects.js";
 import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, EP_UNDECLARED_ARG, EP_BIND_REFUSED, bindRefusalMarked, parseEndpointReply, assertArgsValid, assertOutputValid, type EndpointRequest, type EndpointReply, type EpCorrelation, type EpTargetBlock, type EpUnboundResponderDetail, type EpBindRefusedDetail, type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpErrorDetail, type EpBindBlock } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
 
@@ -68,17 +70,12 @@ function bodyTarget(t: EpVerbTarget): EpTargetBlock | undefined {
   };
 }
 
-export function buildRequest(
-  space: string,
-  route: EpRoute,
-  op: EpVerbOp,
-  verb: { replyExpected: boolean; deadlineMs?: number },
-): { subject: string; requestId: string; n: string; body: Uint8Array } {
-  // §13.7: the caller's own contract gates the args BEFORE publish — the same validator and the
-  // same budget the responder runs, so a request this boundary admits pins digests the
-  // responder can honor or reject, never digests detached from the payload. The args are gated as
-  // the responder will parse them: JSON drops a key whose value is undefined, and validating the
-  // object itself refused, against an older responder's closed contract, a key that never reaches it.
+/** The args as the responder will parse them, gated by the caller's own contract BEFORE publish.
+ *  §13.7: the same validator and the same budget the responder runs, so a request this boundary
+ *  admits pins digests the responder can honor or reject, never digests detached from the payload.
+ *  JSON drops a key whose value is undefined, and validating the object itself refused, against an
+ *  older responder's closed contract, a key that never reaches it. */
+function validatedArgs(op: EpVerbOp): Record<string, unknown> | undefined {
   let args: Record<string, unknown> | undefined;
   try {
     args = op.args === undefined ? undefined : JSON.parse(JSON.stringify(op.args)) as Record<string, unknown>;
@@ -97,6 +94,48 @@ export function buildRequest(
     const property = op.contract.input.validate.errors?.[0]?.additionalProperty;
     throw new EpEnvelopeError(e.code, e.message, typeof property === "string" ? [{ kind: EP_UNDECLARED_ARG, property, ...(op.bind !== undefined ? { instanceId: op.bind.instanceId } : {}) }] : undefined, "not-executed");
   }
+  return args;
+}
+
+/** The §13.3 envelope every route sends: the pinned digests, the verb, the validated args and a
+ *  `from.id` DERIVED from the caller triple, so it always equals the broker-authenticated sender. */
+function requestEnvelope(
+  op: EpVerbOp,
+  verb: { replyExpected: boolean; deadlineMs?: number },
+  args: Record<string, unknown> | undefined,
+  pin = true,
+): { requestId: string; body: Uint8Array } {
+  const requestId = op.id !== undefined ? assertIdToken(op.id, "pinned envelope id") : nonce();
+  const env: EndpointRequest = {
+    v: 1,
+    id: requestId,
+    op: {
+      endpoint: op.endpoint,
+      command: op.command,
+      // `describe` pins no contract (§13.7), so a digest carried on it is refused.
+      ...(pin ? { inputDigest: op.contract.input.closureDigest, outputDigest: op.contract.output.closureDigest } : {}),
+    },
+    class: "ephemeral", // journal work rides epj submissions, never a rail verb (§13.4/§13.5)
+    replyExpected: verb.replyExpected,
+    ...(op.goalId !== undefined ? { goalId: op.goalId } : {}),
+    ...(op.target && op.target.mode !== "self" ? { target: bodyTarget(op.target) } : {}),
+    ...(op.bind !== undefined ? { bind: { instanceId: assertLifecycleToken(op.bind.instanceId, "bind instanceId"), epoch: op.bind.epoch } } : {}),
+    ...(args !== undefined ? { args } : {}),
+    from: { id: `${op.caller.owner}.${op.caller.actor}`, name: op.name ?? op.caller.actor },
+    ...(verb.deadlineMs !== undefined ? { deadlineMs: verb.deadlineMs } : {}),
+    ...(op.correlation !== undefined ? { correlation: op.correlation } : {}),
+    ...(op.auth !== undefined ? { auth: op.auth } : {}),
+  };
+  return { requestId, body: new TextEncoder().encode(JSON.stringify(env)) };
+}
+
+export function buildRequest(
+  space: string,
+  route: EpRoute,
+  op: EpVerbOp,
+  verb: { replyExpected: boolean; deadlineMs?: number },
+): { subject: string; requestId: string; n: string; body: Uint8Array } {
+  const args = validatedArgs(op);
   // The responder refuses these too (§13.3), but a caller that would emit an unservable request
   // should not have to learn it from a round trip: `describe` is what produces a bind, and a
   // scatter addresses every incarnation, so neither can carry one.
@@ -114,28 +153,7 @@ export function buildRequest(
     ...(op.target ? { target: subjectTarget(op.target) } : {}),
     caller: op.caller, nonce: n,
   });
-  const requestId = op.id !== undefined ? assertIdToken(op.id, "pinned envelope id") : nonce();
-  const env: EndpointRequest = {
-    v: 1,
-    id: requestId,
-    op: {
-      endpoint: op.endpoint,
-      command: op.command,
-      inputDigest: op.contract.input.closureDigest,
-      outputDigest: op.contract.output.closureDigest,
-    },
-    class: "ephemeral", // journal work rides epj submissions, never a rail verb (§13.4/§13.5)
-    replyExpected: verb.replyExpected,
-    ...(op.goalId !== undefined ? { goalId: op.goalId } : {}),
-    ...(op.target && op.target.mode !== "self" ? { target: bodyTarget(op.target) } : {}),
-    ...(op.bind !== undefined ? { bind: { instanceId: assertLifecycleToken(op.bind.instanceId, "bind instanceId"), epoch: op.bind.epoch } } : {}),
-    ...(args !== undefined ? { args } : {}),
-    from: { id: `${op.caller.owner}.${op.caller.actor}`, name: op.name ?? op.caller.actor },
-    ...(verb.deadlineMs !== undefined ? { deadlineMs: verb.deadlineMs } : {}),
-    ...(op.correlation !== undefined ? { correlation: op.correlation } : {}),
-    ...(op.auth !== undefined ? { auth: op.auth } : {}),
-  };
-  return { subject, requestId, n, body: new TextEncoder().encode(JSON.stringify(env)) };
+  return { subject, n, ...requestEnvelope(op, verb, args) };
 }
 
 // Node clamps a `setTimeout` delay beyond 2^31-1 ms (~24.8 days) to 1ms, so an over-large deadline
@@ -402,121 +420,244 @@ export async function epCall(
     throw new EpEnvelopeError("bad-request", "epCall on the `one` rail requires opts.currentEpoch: the queue winner is not implicitly current, and a superseded-but-connected member's reply must be rejected (SPEC 13.2, the stale-reply rejection rule)");
   const req = buildRequest(space, route, op, { replyExpected: true, deadlineMs });
   const expect = route.mode === "inst" ? { instanceId: route.instanceId, epoch: route.epoch } : undefined;
+  const started = Date.now();
   // A no-responders reply-to that lands on THIS caller's OWN rail (within its §13.9 read grant, no
   // inbox prefix needed): responders answer on the DERIVED rail, so this sentinel only ever carries
   // the broker's no-responders 503, which our rail subscription observes and disposes with everything
-  // else in the finally — no ghost request/subscription/timer survives a successful call.
-  const noRespReplyTo = noRespondersReplyTo(space, op.caller, req.n);
-  const started = Date.now();
+  // else — no ghost request/subscription/timer survives a successful call.
+  const msg = await exchange(nc, {
+    subject: req.subject, body: req.body, requestId: req.requestId, deadlineMs, signal: opts.signal,
+    replyFilter: replySubjectFor(space, op.caller, req.n),
+    sentinel: noRespondersReplyTo(space, op.caller, req.n),
+    what: `${op.endpoint}.${op.command}`,
+    unanswered: unansweredDetail(op),
+    // The broker dropped the publish, so no responder received the command: `not-executed` (§13.3).
+    refusal: () => new EpEnvelopeError("permission-denied",
+      `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}"${route.mode === "inst" ? ` (the instance rail for ${route.instanceId})` : ""}. The responder may be perfectly healthy. The current credential did not authorize this route, command or target, and the broker does not say which; ${BROKER_REFUSAL_CAUSE}`, undefined, "not-executed"),
+  });
+  const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
+  // Taken BEFORE the currency check below, because a responder that fenced on the bind settled
+  // the same question better: it knows it did not run the command, where the check can only
+  // observe that the answer came from elsewhere. Returning the refusal keeps it an ordinary
+  // application-level failure (§13.5) that tells the caller a retry is safe, instead of a throw
+  // that says nothing about whether the command ran. Cross-checked against the SUBJECT first: a
+  // reply attributed to the very incarnation the caller bound cannot coherently claim it is not
+  // that incarnation (§13.3).
+  // Gated on the marker's PRESENCE, not on the outcome. Whether the caller may act on this
+  // refusal is a separate question, settled downstream by `replyRefusedBeforeEffect`; whether the
+  // reply is coherent is settled here, and a reply that omits the outcome is no less obliged to
+  // agree with its own attribution. Gating both on the same predicate let a refusal buy its way
+  // out of the checks by leaving a field off.
+  if (attributed.reply.ok === false && bindRefusalMarked(attributed.reply.error)) {
+    if (op.bind === undefined)
+      throw new EpEnvelopeError("internal", `${op.endpoint}.${op.command} replied with a bind refusal to a request that carried no bind`);
+    const r = attributed.responder;
+    if (r.instanceId === op.bind.instanceId && r.epoch === op.bind.epoch)
+      throw new EpEnvelopeError("internal", `${op.endpoint} instance ${r.instanceId} refused ${op.command} as the wrong incarnation, but the reply subject attributes it to exactly the bound one (${op.bind.instanceId} epoch ${op.bind.epoch}); the body does not get to contradict its own attribution (SPEC 13.3)`);
+    // AND THE REFUSAL MUST BE AN ANSWER TO *THIS* REQUEST, FROM *THIS* RESPONDER. THREE CHECKS ARE
+    // JOINTLY REQUIRED here — the subject check above, plus `boundTo` and `servedBy` below — and
+    // removing any one of them accepts a "did not run" the caller cannot derive. A caller acts on
+    // this marker by re-issuing a command it would otherwise never repeat, so it is checked rather
+    // than believed: a fence computes it from the request's own bind against its own identity, so
+    // both halves are DERIVABLE. A `boundTo` that is not the block this request carried was not
+    // computed from this request; a `servedBy` disagreeing with the reply subject is a body
+    // contradicting its own attribution. Both are `internal`, not a retry.
+    const refusal = (attributed.reply.error?.details ?? []).find((d) => d.kind === EP_BIND_REFUSED) as EpBindRefusedDetail | undefined;
+    if (refusal === undefined)
+      throw new EpEnvelopeError("internal", `${op.endpoint}.${op.command} came back marked ${EP_BIND_REFUSED} with no such detail to derive it from (SPEC 13.3)`);
+    if (refusal.boundTo.instanceId !== op.bind.instanceId || refusal.boundTo.epoch !== op.bind.epoch)
+      throw new EpEnvelopeError("internal", `${op.endpoint} refused ${op.command} against bind ${refusal.boundTo.instanceId} epoch ${refusal.boundTo.epoch}, but this request carried ${op.bind.instanceId} epoch ${op.bind.epoch}; a refusal computed from another request proves nothing about this one (SPEC 13.3)`);
+    if (refusal.servedBy.instanceId !== r.instanceId || refusal.servedBy.epoch !== r.epoch)
+      throw new EpEnvelopeError("internal", `${op.endpoint} refused ${op.command} claiming to be served by ${refusal.servedBy.instanceId} epoch ${refusal.servedBy.epoch}, but the reply subject attributes it to ${r.instanceId} epoch ${r.epoch}; the body does not get to contradict its own attribution (SPEC 13.3)`);
+    return attributed;
+  }
+  if (route.mode === "one") {
+    // §13.2, the stale-reply rejection rule currency for the queue winner, bounded by the REMAINING budget so the whole
+    // call stays within ONE `deadlineMs` (deliberately NOT a second dedicated budget like scatter's
+    // `reconcileDeadlineMs`: a call's reply usually arrives well before T, leaving room to verify,
+    // whereas scatter's gather deterministically eats its whole deadline). The consequence is a
+    // deliberate disposition: a VALID reply that lands with no budget left to verify currency is
+    // `deadline-exceeded`, not the reply — the operation could not complete-and-verify within its
+    // budget. Recorded for the panel's §13.5 reconciliation (dedicated one-rail currency budget?).
+    const remaining = deadlineMs - (Date.now() - started);
+    if (remaining <= 0) throw new EpEnvelopeError("deadline-exceeded", `no budget left to verify the \`one\` responder's currency within ${deadlineMs}ms (SPEC 13.5)`);
+    // The hook is an untrusted caller-supplied boundary (same class as scatter's reconcile): its
+    // own throw is normalized into the documented catalog, and its VALUE is runtime-fenced — a
+    // NaN/garbled epoch compares unequal to any real epoch and would masquerade as staleness
+    // (`expired`), mislabeling a valid reply; fail loud as the read's own failure instead.
+    let cur: number;
+    try {
+      cur = await raceBounded(() => opts.currentEpoch!(attributed.responder.instanceId), remaining, `the \`one\` currency read for ${op.endpoint}.${op.command}`);
+    } catch (e) {
+      if (e instanceof EpEnvelopeError) throw e; // the bound's deadline-exceeded, or the hook's own structured refusal
+      throw new EpEnvelopeError("internal", `the \`one\` currency read threw (${e instanceof Error ? e.message : String(e)}); the documented error catalog holds at this boundary (SPEC 13.3)`);
+    }
+    if (!Number.isSafeInteger(cur) || cur < 0)
+      throw new EpEnvelopeError("failed-precondition", `the \`one\` currency read returned a non-integer/negative epoch ${String(cur)}; a garbled currency read is refused as the read's own failure, never reported as responder staleness (SPEC 13.2)`);
+    if (attributed.responder.epoch !== cur)
+      throw staleEpochRefusal(op, attributed.responder, cur, opts.currencyReference ?? "registry", "one");
+  }
+  return attributed;
+}
+
+/** The exchange every call shares (SPEC 13.5): subscribe the reply filter BEFORE publishing,
+ *  publish with the no-responders sentinel as the transport reply, and settle on the first message
+ *  that counts. A stored message never counts (see {@link carriesStoredReplyProvenance}): a
+ *  JetStream read, such as a Direct Get, delivers one on any subject its requester names.
+ *  With `accepts`, a message on a reply subject it refuses does not count either, and the wait goes
+ *  on. The broker's no-responders status counts only on the sentinel, which no responder holds a
+ *  publish grant for: there it is `unavailable`, `not-executed`, and any other message there is
+ *  dropped; a 503 on any other subject is a responder frame and takes the ordinary reply path. A refused publish is `permission-denied`
+ *  (the watch is registered before the publish it watches), the deadline is `deadline-exceeded`,
+ *  `unknown`, and an abort is `unavailable`, `unknown`. Subscription and publication share one
+ *  promise executor, so a closed or draining connection cannot strand a rejected reply wait.
+ *  Every subscription, timer, permission watch and abort listener is released before it returns. */
+async function exchange(
+  nc: NatsConnection,
+  x: {
+    subject: string; body: Uint8Array; requestId: string; deadlineMs: number; signal?: AbortSignal;
+    replyFilter: string; sentinel: string; what: string; unanswered: EpUnansweredDetail;
+    refusal: () => EpEnvelopeError;
+    /** The reply subjects that count. A message on the reply filter whose subject this refuses is
+     *  not this call's reply, and the wait goes on. By default every subject counts. */
+    accepts?: (subject: string) => boolean;
+    /** How a broker refusal of the reply subscription reads. By default it is `unavailable`. With
+     *  `permission` it is a permission refusal, and it waits one flush first: the request went out
+     *  in the same tick and the broker answers in order, so a refusal of the publish too, which says
+     *  nothing ran, settles the call before it. The deadline bounds that wait, and a read refusal
+     *  still waiting at the deadline is what the call throws. */
+    readRefused?: "permission";
+  },
+): Promise<{ subject: string; data: Uint8Array }> {
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let denialWatch: { denied: Promise<never>; release(): void } | undefined;
   let onAbort: (() => void) | undefined;
   let published = false;
+  /** A refused reply read, waiting for its flush. */
+  let readRefusal: EpEnvelopeError | undefined;
   const cancelled = new Promise<never>((_, reject) => {
-    onAbort = () => reject(new EpEnvelopeError("unavailable", `${op.endpoint}.${op.command} observation cancelled; the request may have executed`, published ? [{ ...unansweredDetail(op), requestId: req.requestId }] : undefined, "unknown"));
-    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    onAbort = () => reject(new EpEnvelopeError("unavailable", `${x.what} observation cancelled; the request may have executed`, published ? [{ ...x.unanswered, requestId: x.requestId }] : undefined, "unknown"));
+    x.signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
-    // Register denial observation before publishing. Keep subscription and publication in the
-    // same promise executor: a closed/draining connection must not strand a rejected reply wait.
-    // The broker dropped the publish, so no responder received the command: `not-executed` (§13.3).
-    denialWatch = openPublishDenialWatch(nc, req.subject, () => new EpEnvelopeError("permission-denied",
-      `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}"${route.mode === "inst" ? ` (the instance rail for ${route.instanceId})` : ""}. The responder may be perfectly healthy. The current credential did not authorize this route, command or target, and the broker does not say which; ${BROKER_REFUSAL_CAUSE}`, undefined, "not-executed"), "call");
+    denialWatch = openPublishDenialWatch(nc, x.subject, x.refusal, "call");
     const outcome = new Promise<{ subject: string; data: Uint8Array }>((resolve, reject) => {
-      sub = nc.subscribe(replySubjectFor(space, op.caller, req.n), {
+      sub = nc.subscribe(x.replyFilter, {
         callback: (err, msg) => {
-          if (err) { reject(new EpEnvelopeError("unavailable", `the caller's reply subscription failed: ${err.message}`)); return; }
+          if (err) {
+            if (x.readRefused === "permission" && err instanceof PermissionViolationError) {
+              const refusal = readRefusal = new EpEnvelopeError("permission-denied", `the broker refused this caller's reply read "${x.replyFilter}" for ${x.what}: the request was published and may have run, and its reply cannot be read here; ${BROKER_REFUSAL_CAUSE}`, [{ ...x.unanswered, requestId: x.requestId }], "unknown");
+              void nc.flush().catch(() => undefined).then(() => new Promise<void>((resolve) => setImmediate(resolve))).then(() => reject(refusal));
+              return;
+            }
+            reject(new EpEnvelopeError("unavailable", `the caller's reply subscription failed: ${err.message}`)); return;
+          }
+          if (carriesStoredReplyProvenance(msg)) return;
           // Broker no-responders is authoritative ONLY on the reserved sentinel reply-to: no responder
-          // holds a publish grant for the `_nr._nr._nr` subject (§13.9), so only the broker's control
-          // frame reaches it. A 503 status header on a NORMAL responder subject is just a responder
-          // frame carrying a status line — a recipient knows the nonce and could forge one to
-          // impersonate transport absence — so it takes the ordinary attributed-reply path below, never
-          // the broker-control path.
-          if (msg.subject === noRespReplyTo) {
+          // holds a publish grant for it (§13.9), so only the broker's control frame reaches it. A 503
+          // status header on a NORMAL responder subject is just a responder frame carrying a status
+          // line — a recipient knows the nonce and could forge one to impersonate transport absence —
+          // so it takes the ordinary reply path, never the broker-control path.
+          if (msg.subject === x.sentinel) {
             // On that sentinel the answer is the broker's attestation that no subscriber received the
             // request, so nothing ran: `not-executed`, never `unknown` (§13.3).
-            if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${op.endpoint}.${op.command} (SPEC 13.5)`, [unansweredDetail(op)], "not-executed")); return; }
-            reject(new EpEnvelopeError("internal", `a non-503 message reached the reserved no-responders sentinel for ${op.endpoint}.${op.command}; nothing but the broker control frame is addressable there`)); return;
+            if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${x.what} (SPEC 13.5)`, [x.unanswered], "not-executed")); return; }
+            // Anything else there means nothing: a peer can name the sentinel as the reply subject of
+            // a JetStream API request, which the broker answers there. The wait goes on.
+            return;
           }
+          if (x.accepts && !x.accepts(msg.subject)) return;
           resolve({ subject: msg.subject, data: msg.data });
         },
       });
-      opts.signal?.throwIfAborted();
-      nc.publish(req.subject, req.body, { reply: noRespReplyTo });
+      x.signal?.throwIfAborted();
+      nc.publish(x.subject, x.body, { reply: x.sentinel });
       published = true;
     });
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [{ ...unansweredDetail(op), requestId: req.requestId }], "unknown")), deadlineMs); });
-    const msg = await Promise.race([outcome, timeout, denialWatch.denied, cancelled]);
-    const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
-    // Taken BEFORE the currency check below, because a responder that fenced on the bind settled
-    // the same question better: it knows it did not run the command, where the check can only
-    // observe that the answer came from elsewhere. Returning the refusal keeps it an ordinary
-    // application-level failure (§13.5) that tells the caller a retry is safe, instead of a throw
-    // that says nothing about whether the command ran. Cross-checked against the SUBJECT first: a
-    // reply attributed to the very incarnation the caller bound cannot coherently claim it is not
-    // that incarnation (§13.3).
-    // Gated on the marker's PRESENCE, not on the outcome. Whether the caller may act on this
-    // refusal is a separate question, settled downstream by `replyRefusedBeforeEffect`; whether the
-    // reply is coherent is settled here, and a reply that omits the outcome is no less obliged to
-    // agree with its own attribution. Gating both on the same predicate let a refusal buy its way
-    // out of the checks by leaving a field off.
-    if (attributed.reply.ok === false && bindRefusalMarked(attributed.reply.error)) {
-      if (op.bind === undefined)
-        throw new EpEnvelopeError("internal", `${op.endpoint}.${op.command} replied with a bind refusal to a request that carried no bind`);
-      const r = attributed.responder;
-      if (r.instanceId === op.bind.instanceId && r.epoch === op.bind.epoch)
-        throw new EpEnvelopeError("internal", `${op.endpoint} instance ${r.instanceId} refused ${op.command} as the wrong incarnation, but the reply subject attributes it to exactly the bound one (${op.bind.instanceId} epoch ${op.bind.epoch}); the body does not get to contradict its own attribution (SPEC 13.3)`);
-      // AND THE REFUSAL MUST BE AN ANSWER TO *THIS* REQUEST, FROM *THIS* RESPONDER. THREE CHECKS ARE
-      // JOINTLY REQUIRED here — the subject check above, plus `boundTo` and `servedBy` below — and
-      // removing any one of them accepts a "did not run" the caller cannot derive. A caller acts on
-      // this marker by re-issuing a command it would otherwise never repeat, so it is checked rather
-      // than believed: a fence computes it from the request's own bind against its own identity, so
-      // both halves are DERIVABLE. A `boundTo` that is not the block this request carried was not
-      // computed from this request; a `servedBy` disagreeing with the reply subject is a body
-      // contradicting its own attribution. Both are `internal`, not a retry.
-      const refusal = (attributed.reply.error?.details ?? []).find((d) => d.kind === EP_BIND_REFUSED) as EpBindRefusedDetail | undefined;
-      if (refusal === undefined)
-        throw new EpEnvelopeError("internal", `${op.endpoint}.${op.command} came back marked ${EP_BIND_REFUSED} with no such detail to derive it from (SPEC 13.3)`);
-      if (refusal.boundTo.instanceId !== op.bind.instanceId || refusal.boundTo.epoch !== op.bind.epoch)
-        throw new EpEnvelopeError("internal", `${op.endpoint} refused ${op.command} against bind ${refusal.boundTo.instanceId} epoch ${refusal.boundTo.epoch}, but this request carried ${op.bind.instanceId} epoch ${op.bind.epoch}; a refusal computed from another request proves nothing about this one (SPEC 13.3)`);
-      if (refusal.servedBy.instanceId !== r.instanceId || refusal.servedBy.epoch !== r.epoch)
-        throw new EpEnvelopeError("internal", `${op.endpoint} refused ${op.command} claiming to be served by ${refusal.servedBy.instanceId} epoch ${refusal.servedBy.epoch}, but the reply subject attributes it to ${r.instanceId} epoch ${r.epoch}; the body does not get to contradict its own attribution (SPEC 13.3)`);
-      return attributed;
-    }
-    if (route.mode === "one") {
-      // §13.2, the stale-reply rejection rule currency for the queue winner, bounded by the REMAINING budget so the whole
-      // call stays within ONE `deadlineMs` (deliberately NOT a second dedicated budget like scatter's
-      // `reconcileDeadlineMs`: a call's reply usually arrives well before T, leaving room to verify,
-      // whereas scatter's gather deterministically eats its whole deadline). The consequence is a
-      // deliberate disposition: a VALID reply that lands with no budget left to verify currency is
-      // `deadline-exceeded`, not the reply — the operation could not complete-and-verify within its
-      // budget. Recorded for the panel's §13.5 reconciliation (dedicated one-rail currency budget?).
-      const remaining = deadlineMs - (Date.now() - started);
-      if (remaining <= 0) throw new EpEnvelopeError("deadline-exceeded", `no budget left to verify the \`one\` responder's currency within ${deadlineMs}ms (SPEC 13.5)`);
-      // The hook is an untrusted caller-supplied boundary (same class as scatter's reconcile): its
-      // own throw is normalized into the documented catalog, and its VALUE is runtime-fenced — a
-      // NaN/garbled epoch compares unequal to any real epoch and would masquerade as staleness
-      // (`expired`), mislabeling a valid reply; fail loud as the read's own failure instead.
-      let cur: number;
-      try {
-        cur = await raceBounded(() => opts.currentEpoch!(attributed.responder.instanceId), remaining, `the \`one\` currency read for ${op.endpoint}.${op.command}`);
-      } catch (e) {
-        if (e instanceof EpEnvelopeError) throw e; // the bound's deadline-exceeded, or the hook's own structured refusal
-        throw new EpEnvelopeError("internal", `the \`one\` currency read threw (${e instanceof Error ? e.message : String(e)}); the documented error catalog holds at this boundary (SPEC 13.3)`);
-      }
-      if (!Number.isSafeInteger(cur) || cur < 0)
-        throw new EpEnvelopeError("failed-precondition", `the \`one\` currency read returned a non-integer/negative epoch ${String(cur)}; a garbled currency read is refused as the read's own failure, never reported as responder staleness (SPEC 13.2)`);
-      if (attributed.responder.epoch !== cur)
-        throw staleEpochRefusal(op, attributed.responder, cur, opts.currencyReference ?? "registry", "one");
-    }
-    return attributed;
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(readRefusal ?? new EpEnvelopeError("deadline-exceeded", `no reply to ${x.what} within the ${x.deadlineMs}ms budget (SPEC 13.5)`, [{ ...x.unanswered, requestId: x.requestId }], "unknown")), x.deadlineMs); });
+    return await Promise.race([outcome, timeout, denialWatch.denied, cancelled]);
   } finally {
     sub?.unsubscribe();
     if (timer !== undefined) clearTimeout(timer);
     denialWatch?.release();
-    if (onAbort) opts.signal?.removeEventListener("abort", onAbort);
+    if (onAbort) x.signal?.removeEventListener("abort", onAbort);
   }
+}
+
+// ---- the principal route (SPEC 13.21) -----------------------------------------------------------
+
+/** The rail an unanswered principal-route call is reported on. */
+const PRINCIPAL_RAIL = "ep.prin";
+
+/** Build a principal-route request: the head names the addressed process, the authority word the
+ *  caller's row, and the envelope carries no target and no bind (SPEC 13.21). */
+export function buildPrincipalRequest(
+  space: string,
+  to: { principal: EpPrincipal; authority: PrincipalAuthority },
+  op: EpVerbOp,
+  verb: { deadlineMs: number },
+): { subject: string; requestId: string; n: string; body: Uint8Array } {
+  if (op.target !== undefined) throw new EpEnvelopeError("bad-request", "a principal-route request carries no target: the subject head is the target (SPEC 13.21)", undefined, "not-executed");
+  if (op.bind !== undefined) throw new EpEnvelopeError("bad-request", "a principal-route request carries no bind: the runtime id in the subject pins the process (SPEC 13.21)", undefined, "not-executed");
+  if (isIssuedCaller(op.caller)) throw new EpEnvelopeError("bad-request", "the principal route has no versioned form; it carries the caller triple only (SPEC 13.21)", undefined, "not-executed");
+  if (verb.deadlineMs > EP_PRINCIPAL_MAX_DEADLINE_MS) throw new EpEnvelopeError("bad-request", `deadlineMs ${verb.deadlineMs} exceeds the principal route's ${EP_PRINCIPAL_MAX_DEADLINE_MS}ms maximum (SPEC 13.21)`, undefined, "not-executed");
+  const args = validatedArgs(op);
+  const n = nonce();
+  const subject = epPrincipalRequestSubject(space, {
+    endpoint: op.endpoint, principal: to.principal, command: op.command, authority: to.authority, caller: op.caller, nonce: n,
+  });
+  return { subject, n, ...requestEnvelope(op, { replyExpected: true, deadlineMs: verb.deadlineMs }, args, op.command !== "describe") };
+}
+
+/**
+ * Call one command of a principal's own endpoint on the principal route (SPEC 13.21) and await its
+ * reply within `deadlineMs`. The caller subscribes its reply read for this nonce with the head
+ * wildcarded, so the one subscription receives the reply and the sentinel, then publishes with the
+ * sentinel as the transport reply. A message on any other head is not this reply, and the wait goes
+ * on; a frame with stored-message provenance is dropped. A reply counts only when its subject is the
+ * one the addressed process derives, its id echoes the request and its output validates against the
+ * pinned contract.
+ *
+ * Application-level failure is the returned reply's `ok: false`. This boundary throws only for its
+ * own refusals: invalid args or a `deadlineMs` over {@link EP_PRINCIPAL_MAX_DEADLINE_MS}
+ * `bad-request`, `not-executed`, before anything is published; no responder on the sentinel `unavailable`,
+ * `not-executed`; a refused publish `permission-denied`, `not-executed` (the caller holds no row);
+ * the deadline `deadline-exceeded`, `unknown`; and a reply that does not parse, echo or validate
+ * `internal`.
+ */
+export async function epPrincipalCall(
+  nc: NatsConnection,
+  space: string,
+  to: { principal: EpPrincipal; authority: PrincipalAuthority },
+  op: EpVerbOp,
+  opts: { deadlineMs: number; signal?: AbortSignal },
+): Promise<EndpointReply> {
+  opts.signal?.throwIfAborted();
+  const deadlineMs = assertDeadline(opts.deadlineMs);
+  const req = buildPrincipalRequest(space, to, op, { deadlineMs });
+  const expected = epPrincipalReplySubject(space, { endpoint: op.endpoint, principal: to.principal, caller: op.caller, nonce: req.n });
+  const msg = await exchange(nc, {
+    subject: req.subject, body: req.body, requestId: req.requestId, deadlineMs, signal: opts.signal,
+    replyFilter: epPrincipalCallerReplyFilter(space, op.caller, req.n),
+    sentinel: epPrincipalNoRespondersSubject(space, op.caller, req.n),
+    what: `${op.endpoint}.${op.command}`,
+    unanswered: { kind: EP_UNANSWERED, endpoint: op.endpoint, command: op.command, rail: PRINCIPAL_RAIL },
+    // The head is wildcarded in the subscription, so a message from any other head is not this reply.
+    accepts: (subject) => subject === expected,
+    // A credential minted before the rows lacks the reply read and the request row both.
+    readRefused: "permission",
+    refusal: () => new EpEnvelopeError("permission-denied",
+      `the call for ${op.endpoint}.${op.command} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${req.subject}", the "${to.authority}" form for ${to.principal.owner}.${to.principal.actor}. The agent may be serving; ${BROKER_REFUSAL_CAUSE}`, undefined, "not-executed"),
+  });
+  let raw: unknown;
+  try { raw = JSON.parse(new TextDecoder().decode(msg.data)); }
+  catch (e) { throw new EpEnvelopeError("internal", `the reply body is not JSON (${e instanceof Error ? e.message : String(e)}); an unparseable reply is a responder bug (SPEC 13.3)`); }
+  const reply = parseEndpointReply(raw);
+  if (reply.id !== req.requestId)
+    throw new EpEnvelopeError("internal", `reply id "${reply.id}" does not echo the request id "${req.requestId}" (SPEC 13.3)`);
+  if (reply.ok) assertOutputValid(op.contract.output.validate, reply.data);
+  return reply;
 }
 
 // ---- cast (§13.5: at-most-once, never replied) --------------------------------------------------

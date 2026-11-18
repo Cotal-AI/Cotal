@@ -76,7 +76,7 @@
       "name": "G5 the refusal keeps the reserved name",
       "file": "implementations/manager/src/manager.ts",
       "find": "    const eventsRefused = this.eventsRefusal(connector, opts.events);\n    if (eventsRefused) return { ok: false, error: eventsRefused };",
-      "replace": "    const eventsRefused = this.eventsRefusal(connector, opts.events);\n    if (eventsRefused && this.reserved.add(identityName)) return { ok: false, error: eventsRefused };",
+      "replace": "    const eventsRefused = this.eventsRefusal(connector, opts.events);\n    if (eventsRefused) {\n      this.namesCapacity.reserve(identityName, this.launchOwner(opts, spawner));\n      return { ok: false, error: eventsRefused };\n    }",
       "expectRed": "the refusal releases the reserved name",
       "cell": "the refusal releases the reserved name",
       "note": "The shape this refusal had when it ran after the reservation and released it by hand, with the hand release forgotten. A leaked reserve is silent: the next spawn of that persona is auto-numbered and nothing says why."

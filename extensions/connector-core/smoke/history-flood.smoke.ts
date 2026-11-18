@@ -62,7 +62,7 @@ const liveDm: MessageMeta = { historical: false, kind: "dm" };
 
 const channelMsg = (id: string, text: string, mention = false): CotalMessage => ({
   id,
-  ts: Number(id.replace(/\D/g, "") || 1),
+  ts: Date.now(),
   space: cfg.space,
   from: { id: "peer", name: "peer" },
   channel: "general",
@@ -134,6 +134,26 @@ try {
     agent.ep.emit("message", dmMsg("dm-h", "backfilled direct order"), noop(), historicalDm);
     const auto = agent.peekInbox("automatic");
     check("a historical DM is delivered automatically", auto.length === 1 && auto[0].id === "dm-h", auto.map((i) => i.id));
+  }
+
+  // Age is bounded and applies only to new durable channel copies, never a live subscription.
+  {
+    const agent = new MeshAgent(cfg);
+    const now = Date.now;
+    const receivedAt = now();
+    Date.now = () => receivedAt;
+    try {
+      for (const age of [299_999, 300_000, 300_001]) {
+        const m = { ...channelMsg(`age-${age}`, "durable age boundary", true), ts: receivedAt - age };
+        agent.ep.emit("message", m, noop(), liveChannel);
+      }
+      const live = { ...channelMsg("aged-live", "live subscription", true), ts: receivedAt - 8 * 24 * 60 * 60_000 };
+      agent.ep.emit("message", live, { ...noop(), durable: false }, liveChannel);
+    } finally { Date.now = now; }
+    const auto = agent.peekInbox("automatic");
+    check("recent and exactly five-minute durable mentions stay automatic", auto.some((i) => i.id === "age-299999") && auto.some((i) => i.id === "age-300000"));
+    check("durable mention older than five minutes is historical and pull-only", agent.peekInbox("pull-only").some((i) => i.id === "age-300001" && i.historical));
+    check("a live-subscription copy is not demoted by sender timestamp", auto.some((i) => i.id === "aged-live" && !i.historical));
   }
 
   console.log(`\nhistory-flood smoke: ${pass} checks passed`);
