@@ -329,6 +329,7 @@ async function runAccountAction(): Promise<void> {
 }
 let upgradeNeeded = false;
 let busy = false;
+let rowOperation: { space: string; label: string } | undefined;
 let loginActive = false;
 let setupActive = false;
 let approval: string | undefined;
@@ -689,7 +690,7 @@ function renderConnections(): void {
   const list = el("connected-spaces");
   text("spaces-heading", `Spaces using this computer (${connections.size})`);
   list.parentElement!.tabIndex = connections.size >= 4 ? 0 : -1;
-  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), busy]));
+  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), busy, rowOperation]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;
   requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
@@ -703,13 +704,40 @@ function renderConnections(): void {
     if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow, state === "launch-ready"); copy.append(detail); }
     else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
-    const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);
-    remove.addEventListener("click", () => void action(async () => { if (restore) { await request({ op: "space-intent", space, enabled: true }); await refresh(); } else await removeSpace(space); }));
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy || !!rowOperation; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);
+    remove.addEventListener("click", () => void rowAction(space, restore));
+    if (rowOperation?.space === space) {
+      row.setAttribute("aria-busy", "true");
+      const waiting = document.createElement("small"); waiting.setAttribute("role", "status"); waiting.textContent = `${rowOperation.label}… Waiting for the background service.`; copy.append(waiting);
+    }
     row.append(copy, remove); return row;
   }));
 }
-async function removeSpace(space: string): Promise<void> {
+async function rowAction(space: string, restore: boolean): Promise<void> {
+  if (busy || rowOperation) return;
+  const operation = { space, label: `${restore ? "Adding" : "Removing"} ${shownSpaceLabel(accountSpaces.get(space)?.label, space)}` };
+  rowOperation = operation; refreshGeneration++; renderConnections();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      (async () => {
+        if (restore) {
+          await request({ op: "space-intent", space, enabled: true });
+          if (rowOperation !== operation) return;
+          await refresh();
+        } else await removeSpace(space, () => rowOperation === operation);
+      })(),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${operation.label} did not finish within 15 seconds. The background service may still complete the request. Check this space’s status before trying again.`)), 15_000); }),
+    ]);
+  } catch (error) { refusal(error); }
+  finally {
+    if (timer) clearTimeout(timer);
+    rowOperation = undefined; refreshGeneration++; renderConnections(); buttons();
+  }
+}
+async function removeSpace(space: string, current: () => boolean = () => true): Promise<void> {
   const result = await request({ op: "service-disconnect", space });
+  if (!current()) return;
   if (result.state === "unavailable" || result.state === "refused") throw new Error(String(result.message ?? "The space could not be removed. Try again."));
   if (computerAccount?.hostSupport === "supported") { await refresh(); return; }
   connections.delete(space); instances.delete(space); applicationRefusals.delete(space);

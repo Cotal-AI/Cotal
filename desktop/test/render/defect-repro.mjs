@@ -2,6 +2,34 @@ import assert from 'node:assert/strict';
 import { scenarios } from './fixtures.mjs';
 // Reuse the production-renderer harness, with native replies held at its existing boundary.
 scenarios.splice(0, scenarios.length,
+  ...['intent', 'refresh'].map(held => ({ name: `row-add-held-${held}`, state: { installed: true, signedIn: true, account: { mode: 'account', hostSupport: 'supported', spaces: [{ space: 'acme-team', desired: true, observed: 'removed on this computer', lastRefusal: 'another account owns the local space connection' }] } }, act: async page => {
+    await page.evaluate(held => {
+      window.__heldOperation = held;
+    }, held);
+    await page.evaluate(() => {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      window.__TAURI_INTERNALS__.invoke = (command, args) => {
+        if (command === 'daemon_request' && args.request.op === 'space-intent') {
+          window.__rowIntentSeen = true;
+          return window.__heldOperation === 'intent' ? new Promise(() => {}) : Promise.resolve({ v: 1, event: 'result', ok: true, result: {} });
+        }
+        if (command === 'daemon_request' && args.request.op === 'status' && window.__rowIntentSeen) return new Promise(() => {});
+        return invoke(command, args);
+      };
+    });
+    await page.getByRole('button', { name: 'Add Acme team', exact: true }).click();
+  }, expect: async page => {
+    console.log('REPRO Settings disabled during held Add:', await page.locator('#open-settings').isDisabled());
+    assert.equal(await page.locator('#open-settings').isDisabled(), false);
+    assert.match(await page.locator('[data-testid="connected-space-row"]').textContent(), /Adding/);
+    assert.equal(await page.locator('#connection-status').isEnabled(), true);
+    await page.click('#open-settings');
+    assert.equal(await page.locator('#settings-panel').isVisible(), true);
+    await page.click('#open-settings');
+    await page.waitForFunction(() => document.querySelector('#refusal-detail').textContent.includes('did not finish within 15 seconds'), null, { timeout: 20000 });
+    assert.equal(await page.locator('#details').evaluate(el => el.open), true);
+    assert.equal(await page.locator('[data-testid="connected-space-row"] button').isEnabled(), true);
+  } })),
   ...['content', 'empty', 'error'].map(mode => ({ name: `service-log-${mode}`, state: { installed: true, signedIn: true, connected: true, logText: mode === 'content' ? 'daemon startup refused: local test reason\n' : '', logTruncated: mode === 'content', logError: mode === 'error' }, act: async page => {
     await page.click('#open-settings'); await page.click('#service-log summary');
   }, expect: async page => {
