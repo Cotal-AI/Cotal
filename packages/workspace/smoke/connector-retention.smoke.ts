@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -18,12 +18,16 @@ const childEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
 let passed = 0;
 try {
-  for (const scenario of ["unselected-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "initial-inherit", "checkout", "desktop", "windows"] as const) {
+  for (const scenario of ["unselected-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "linked-config", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "initial-inherit", "checkout", "desktop", "windows"] as const) {
     const config = join(root, scenario);
     mkdirSync(join(config, "cotal/seed/store/0.162.0"), { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "cotal/extensions/node_modules/old"), { recursive: true, mode: 0o700 });
     writeFileSync(join(config, "cotal/seed/stamp.json"), JSON.stringify({ generation: "0.162.0" }));
     writeFileSync(join(config, "cotal/extensions/node_modules/old/lazy.js"), "old graph\n");
+    if (scenario === "linked-config") {
+      renameSync(config, `${config}-physical`);
+      symlinkSync(`${config}-physical`, config);
+    }
     const script = `
 import assert from 'node:assert/strict';
 import {readFileSync,writeFileSync,symlinkSync,renameSync,mkdirSync,rmSync} from 'node:fs';

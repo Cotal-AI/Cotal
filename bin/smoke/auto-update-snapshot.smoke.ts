@@ -4,15 +4,14 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSy
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
-import { writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery, claimUpdateClosureAccess } from "@cotal-ai/workspace";
+import { writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery, claimUpdateClosureAccess, prepareCotalHomeForWrite, ProtectedRecordStore } from "@cotal-ai/workspace";
 import { snapshotUpdateClosure } from "../../implementations/cli/src/lib/update-snapshot.js";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 
 const counted = countedAssert(assertions);
 const assert: typeof assertions = counted.assert as typeof assertions;
 const cells = counted.cells;
-// The physical path: macOS keeps its temporary folder behind the /var symbolic link, which the
-// config protection check refuses.
+// Keep the fixture physical so linked ancestors below belong to the test.
 const root = realpathSync(mkdtempSync(join(tmpdir(), "update-snapshot-")));
 process.env.XDG_CONFIG_HOME = join(root, "config");
 process.env.COTAL_HOME = join(root, "home");
@@ -35,6 +34,28 @@ try {
     process.env.XDG_CONFIG_HOME = linked;
     assert.throws(() => snapshotUpdateClosure());
     assert.equal(existsSync(join(root, "missing-target")), false);
+    const physical = join(root, "physical-home"), home = join(root, "linked-home");
+    mkdirSync(physical, { mode: 0o700 });
+    symlinkSync(physical, home);
+    process.env.XDG_CONFIG_HOME = join(home, ".config");
+    process.env.COTAL_HOME = join(home, ".cotal");
+    prepareCotalHomeForWrite();
+    prepareCotalHomeForWrite();
+    assert.equal(statSync(join(physical, ".cotal")).mode & 0o777, 0o700);
+    const store = new ProtectedRecordStore("services", "linked-home", value => value);
+    const directory = store.directory(true)!;
+    assert.equal(directory, realpathSync(directory), "service children receive a physical state directory");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const linkedSnapshot = snapshotUpdateClosure();
+      assert.ok(existsSync(linkedSnapshot.path));
+      snapshotUpdateClosure(linkedSnapshot.path).discard();
+      assert.equal(existsSync(linkedSnapshot.path), false);
+    }
+    chmodSync(physical, 0o777);
+    assert.throws(() => snapshotUpdateClosure(), /writable/);
+    assert.throws(() => prepareCotalHomeForWrite(), /writable/);
+    chmodSync(physical, 0o700);
+    process.env.COTAL_HOME = join(root, "home");
     process.env.XDG_CONFIG_HOME = join(root, "config");
   }
   assert.equal(existsSync(config), false);

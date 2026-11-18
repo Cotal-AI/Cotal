@@ -261,7 +261,7 @@ export function retainConnectorConfig(): string {
       }
       renameSync(staging, root);
     } finally { if (existsSync(staging)) rmSync(staging, { recursive: true }); }
-    if (realpathSync(root) !== root) throw new Error("retained connector state resolved through a link");
+    if (realpathSync(root) !== join(realpathSync(id.path), "cotal")) throw new Error("retained connector state resolved through a link");
     mkdirSync(join(id.path, "holders"), { mode: 0o700 });
     writeFileSync(join(id.path, "holders-v1.json"), '{"v":1}\n', { flag: "wx", mode: 0o600 });
     const record: Selection = { v: 1, entry: id.entry, version: id.version, root };

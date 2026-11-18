@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync, unlinkSync, type Stats } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { acquireLock, ensureDirNoSymlink, hardenPrivate, mkSecretDir, realDirNoSymlink, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure } from "./output.js";
 import { homeCotalDir } from "./cotal-home.js";
@@ -59,8 +59,8 @@ export function prepareCotalHomeForWrite(): void {
     let dir = home;
     while (!lstatSync(dir, { throwIfNoEntry: false }) && dirname(dir) !== dir) dir = dirname(dir);
     try {
-      if (dir === home) protectedLocalEntry(home, "the Cotal home");
-      else protectedLocalDirectory(dir, "the Cotal home");
+      if (dir === home) protectedLocalEntry(join(realpathSync(dirname(home)), basename(home)), "the Cotal home");
+      else protectedLocalDirectory(realpathSync(dir), "the Cotal home");
     } catch (e) {
       if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
       throw new CommandFailure(e.outcome, e.code, `${e.message}; nothing was written`, { remedy: e.remedy, target: e.target });
@@ -461,7 +461,7 @@ export class ProtectedRecordStore<T> {
 
   directory(create = false): string | undefined {
     const access = requireLocalRecordAccess();
-    const home = homeCotalDir();
+    let home = homeCotalDir();
     if (create) prepareCotalHomeForWrite();
     try { privateDirectory(home, access); }
     catch (error) {
@@ -469,6 +469,7 @@ export class ProtectedRecordStore<T> {
       if (!create) return undefined;
       mkSecretDir(home); privateDirectory(home, access);
     }
+    home = realpathSync(home);
     const segments = [this.namespace, spaceKey(this.space), ...(this.family ? [this.family] : [])];
     const paths = segments.map((_, index) => join(home, ...segments.slice(0, index + 1)));
     // Windows has no create mode, so each store directory made here gets the private access list.
