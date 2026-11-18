@@ -102,7 +102,7 @@ if (["linux", "darwin"].includes(process.platform)) {
         cpSync(source, target, { recursive: true });
         writeFileSync(join(target, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.2.0", type: "module", bin: { cotal: "./dist/cotal.js" }, cotalPreinstall: { v: 1, entry: "./dist/check.js" } }));
         writeFileSync(join(target, "dist/cotal-program.js"), "console.log('cotal-ai 0.2.0');\n");
-        writeFileSync(join(target, "dist/check.js"), "const r=JSON.parse(process.argv[2]);console.log('COTAL_PREINSTALL_RESULT '+JSON.stringify({v:1,nonce:r.nonce,installedEntry:r.installedEntry,hostedSpaces:[],occupied:null,admission:{disposition:'deferred',occupied:null,hostedSpaces:[],reason:'target permits installation without restart'}}));\n");
+        writeFileSync(join(target, "dist/check.js"), "const r=JSON.parse(process.argv[2]);console.log('COTAL_PREINSTALL_RESULT '+JSON.stringify({v:1,nonce:r.nonce,installedEntry:r.installedEntry,hostedSpaces:[],occupied:0,admission:{disposition:'deferred',occupied:null,hostedSpaces:[],reason:'target permits installation without restart'}}));\n");
         return { status: 0, stdout: "", stderr: "" };
       };
       try {

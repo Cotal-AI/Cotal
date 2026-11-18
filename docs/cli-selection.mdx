@@ -1144,6 +1144,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   fail the check. A managed delivery credential exposed to other local readers makes this row
   `refused`, with its native permission repair. The ordinary report names that credential as an
   unreadable part and exits `4` instead of silently skipping lease-holder verification.
+  An unreadable renewal record or a recorded adoption refusal makes delivery `refused`, even when
+  its responder is bound. Bare status reports the same finding and exits partial rather than healthy.
 - **web**: `not-installed` when the dashboard extension is not installed and no PID record exists.
   An installed dashboard with no PID record or unsettled owned instance is `not-started`, which does not fail the check.
   A dead PID with a stale record is still `absent` and exits `1`.
@@ -1181,6 +1183,8 @@ Selecting a default with `cotal use <name>` applies only after removing `--serve
 scheme case, without treating another transport as the same registered address.
 
 An unreadable component PID file is `refused`, and its row names the file path and read error.
+A malformed PID file is not a stopped process. Bare status names the uncertain record and exits
+partial. An unreadable mesh registry record produces a `target refused` component row and exit 3.
 A missing or empty PID file still means no local process record.
 PID records with creation pins are checked against the live process identity. A reused PID
 is stale, not running, and cannot keep a dead delivery daemon's ready lease bound. Unknown or

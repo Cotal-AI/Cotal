@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { createServer } from 'node:net';
-import { pathToFileURL } from 'node:url';
+import { isMainEntry } from './main-entry.mjs';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
 
@@ -93,6 +93,6 @@ export async function automaticUpdateSeedChild(sourcePack, targetPack, privateRo
   }
   return report;
 }
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMainEntry(import.meta.url)) {
   automaticUpdateSeedChild(...process.argv.slice(2)).catch(error => { console.error(error); process.exitCode = 1; });
 }

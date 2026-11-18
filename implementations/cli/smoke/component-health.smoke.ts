@@ -713,8 +713,8 @@ try {
   });
   const deliveryNotReady = cli("status", "--components", "--space", SPACE, "--server", server);
   const deliveryNotReadyText = `${deliveryNotReady.stdout}${deliveryNotReady.stderr}`;
-  check("delivery ready lease and renewal adoption report independently from its own surfaces",
-    deliveryNotReady.status === 2 && /delivery\s+not-serving/.test(deliveryNotReadyText) && deliveryNotReadyText.includes("starting (lease not ready)") && deliveryNotReadyText.includes("renewal adoption refused: fixture broker refusal"), deliveryNotReadyText);
+  check("a recorded renewal refusal wins the verdict while independent delivery readiness stays visible",
+    deliveryNotReady.status === 3 && /delivery\s+refused/.test(deliveryNotReadyText) && deliveryNotReadyText.includes("starting (lease not ready)") && deliveryNotReadyText.includes("renewal adoption refused: fixture broker refusal"), deliveryNotReadyText);
   await stop(delivery);
   delivery = undefined;
   rmSync(join(root, ".cotal", "delivery.pid"), { force: true });
@@ -815,6 +815,9 @@ try {
   check("down reports stale cleanup, not a stop of an unrelated process",
     reusedPids.every(({ pid }) => legacyDown.stderr.includes(`pid ${pid} was reused by another process`) && !legacyDown.stdout.includes(`(pid ${pid})`)), `${legacyDown.stdout}${legacyDown.stderr}`);
   for (const child of replacements) await stop(child);
+  const repeatedDown = cliIn(webRoot, ["down", "--yes"], 120_000);
+  webStack = repeatedDown.status !== 0;
+  check("down is still successful after the replacement processes exit", !webStack, `${repeatedDown.stdout}${repeatedDown.stderr}`);
   const restartController = cliIn(controllerRoot, ["up"], 120_000);
   controllerStack = restartController.status === 0;
   check("restart the controller with all components", controllerStack, `${restartController.stdout}${restartController.stderr}`);

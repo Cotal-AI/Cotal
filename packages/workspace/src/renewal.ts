@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   credsClaims,
@@ -12,6 +12,8 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { getSpaceAuth } from "./auth-paths.js";
+import { CommandFailure } from "./output.js";
+import { readLocalRecordSource } from "./protected-records.js";
 import { RENEWAL_RECORD_FILE, renewalRecordPath } from "./renewal-path.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, segmentedKey } from "./space-segmentation.js";
@@ -229,10 +231,14 @@ export function writeRenewalRecord(root: string, space: string, record: RenewalR
 
 export function readRenewalRecord(root: string, space: string): RenewalRecord | undefined {
   const p = renewalRecordPath(root, space);
-  if (!existsSync(p)) return undefined;
   try {
-    return JSON.parse(readFileSync(p, "utf8")) as RenewalRecord;
+    const bytes = readLocalRecordSource(p, 1024 * 1024, true);
+    if (!bytes) return undefined;
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as RenewalRecord;
+    if (!value || typeof value !== "object" || typeof value.ts !== "string" || !Number.isFinite(Date.parse(value.ts)) || typeof value.owner !== "string" || !Array.isArray(value.results)) throw new Error();
+    if (value.adoption !== undefined && (!value.adoption || typeof value.adoption !== "object" || typeof value.adoption.ok !== "boolean")) throw new Error();
+    return value;
   } catch {
-    return undefined; // a corrupt record is rendered as "no renewal record", never a crash
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `renewal record ${p} is unreadable; no renewal acceptance was inferred`, { target: { path: p, space }, remedy: `restore ${p} from backup, then start or repair this space's manager to record its next renewal; do not replace it with an inferred acceptance` });
   }
 }

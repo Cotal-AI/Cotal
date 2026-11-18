@@ -487,6 +487,18 @@ export async function status(args: ParsedArgs): Promise<void> {
   const preflight = selected.ok && selected.target.mode !== "user" ? await preflightTarget(selected.target) : undefined;
   const responder = await readResponderAxis(selected, preflight, gaps);
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
+  if (selected.ok) {
+    try {
+      const renewal = readRenewalRecord(selected.target.root, selected.target.space);
+      if (renewal?.adoption?.ok === false) {
+        gaps.add("RENEWAL_ADOPTION_REFUSED", "the recorded renewal adoption was refused; a bound delivery responder does not clear that finding", { root: selected.target.root, space: selected.target.space });
+        hints.push("start or repair this space's manager, the renewal owner, so it re-signs the daemon credentials and the broker accepts them; do not respawn agents for this finding");
+      }
+    } catch (error) {
+      gaps.add("RENEWAL_RECORD_UNREADABLE", (error as Error).message, { root: selected.target.root, space: selected.target.space });
+      if (isCommandFailure(error) && error.remedy) hints.push(error.remedy);
+    }
+  }
   const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight);
   const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
   const recovery = backupRecovery(maintenance);
@@ -947,6 +959,11 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
       processes.push({ name: component.name, state: "unreadable", pid: null, detail: `pidfile unreadable · ${(e as Error).message}` });
       continue;
     }
+    if (state.liveness === "unknown") {
+      const path = localProcessPath(component.pidFile, context);
+      gaps.add("PIDFILE_UNATTRIBUTABLE", `the ${component.name} pidfile ${path} cannot establish process state: ${state.note ?? "pid liveness unknown"}`, { root, space, process: component.name });
+      hints.push(`inspect ${path} and its process before restoring or removing that pidfile; no stopped state was inferred`);
+    }
     if (component.name === "nats") nats = state;
     // #2073: a live manager pid used to print green `running` on the pidfile alone, which is how
     // a manager whose service rail had died read as healthy for hours. One probe of the service
@@ -971,6 +988,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     // rest of the report still stands.
     if (isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED")) {
       unusable = true;
+      stackJournal = "unreadable";
       gaps.add(error.code === "PERMISSION_DENIED" ? "STACK_JOURNAL_UNREADABLE" : "STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
       if (error.remedy) hints.push(error.remedy);
     }
@@ -978,8 +996,10 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     elsewhere = isCommandFailure(error) && error.code === "CONFLICT";
   }
   const brokerIndex = processes.findIndex((row) => row.name === "nats");
-  if (brokerIndex !== -1) processes[brokerIndex] = brokerProcess(processes[brokerIndex]!, controllerStack ? journal : undefined, gaps);
-  const managerIndex = !controllerStack && (nats?.liveness === "alive" || nats?.liveness === "dead")
+  if (brokerIndex !== -1) processes[brokerIndex] = unusable
+    ? { name: "nats", state: "unreadable", pid: null, detail: "stack journal unreadable; no broker stopped state was inferred" }
+    : brokerProcess(processes[brokerIndex]!, controllerStack ? journal : undefined, gaps);
+  const managerIndex = !unusable && !controllerStack && (nats?.liveness === "alive" || nats?.liveness === "dead")
     ? processes.findIndex((row) => row.name === "manager" && row.state === "stopped" && row.pid === null)
     : -1;
   if (managerIndex !== -1 && legacyManagerStopped(root, space))
@@ -999,7 +1019,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // A legacy root keeps no journal, so its space registered for another folder says the same.
   let legacyElsewhere = false;
   if (!controllerStack && !elsewhere && !copiedStack) try { legacyElsewhere = recordsElsewhereError(root) !== undefined; } catch { legacyElsewhere = false; }
-  const storedState = !controllerStack && !elsewhere && !copiedStack && !legacyElsewhere && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
+  const storedState = !unusable && !controllerStack && !elsewhere && !copiedStack && !legacyElsewhere && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
   // While a maintenance journal holds the store, clean store refuses, so it is not offered.
   let maintained = false;
   try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }
@@ -1659,7 +1679,7 @@ function personaCell(p: PersonaCatalog, dim = false): Cell {
 
 function processCell(p: ProcessRow): Cell {
   const detail = p.detail ? ` · ${p.detail}` : "";
-  if (p.state === "unreadable") return cell(p.detail ?? "pidfile unreadable", "failed");
+  if (p.state === "unreadable" || p.state === "unknown") return cell(p.detail ?? "process state unknown", "failed");
   if (p.state === "not-serving") return cell(`not serving (pid ${p.pid})${detail}`, "failed");
   if (p.state === "running") return cell(`running (pid ${p.pid})${detail}`, /NOT BOUND|unreadable/.test(detail) ? "failed" : "ok");
   return cell(p.pid ? `${p.detail ?? "stopped"} (${p.pid})` : (p.detail ?? "down"), "hint");
@@ -2080,6 +2100,8 @@ function selectedOverview(r: StatusResult): Section | undefined {
   const blocks: Section["blocks"][number][] = [{ kind: "fields", rows }];
   if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack) {
     blocks.push({ kind: "lines", lines: [cell("Controller stack · its members are the stack-* rows under Owned services", "hint")] }, ...stackLines(r.folder));
+  } else if (r.folder.root === s.root && r.folder.stackJournal === "unreadable") {
+    blocks.push({ kind: "lines", lines: [cell("Stack journal unreadable · no stack membership or stopped state was inferred; see Owned services and the journal warning", "failed")] });
   } else if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.processes) {
     blocks.push({ kind: "lines", lines: [cell("Legacy local process records", "label")] });
     blocks.push({
@@ -2087,7 +2109,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
       columns: [{ key: "name", label: "Service" }, { key: "state", label: "State" }],
       rows: r.folder.processes.map((item) => ({
         name: item.name === "nats" ? "Broker" : item.name === "manager" ? "Manager" : item.name === "delivery" ? "Delivery" : item.name === "web" ? "Web" : item.name,
-        state: item.state === "running" || item.state === "not-serving" || item.state === "unreadable" ? processCell(item) : stateCell(item.pid === null && item.detail !== "stopped" ? "not started" : item.detail ?? "stopped", "hint"),
+        state: item.state !== "stopped" ? processCell(item) : stateCell(item.pid === null && item.detail !== "stopped" ? "not started" : item.detail ?? "stopped", "hint"),
       })),
     });
   } else blocks.push({ kind: "lines", lines: [cell("Legacy process records not checked here · the selected space has a different or unresolved local process scope", "hint")] });
@@ -2687,18 +2709,6 @@ export function deliveryLeaseAbsent(e: unknown): boolean {
  * latter is intentionally not inferred from credential mtime or process output. */
 async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, credential: ComponentCredential): Promise<ComponentHealth> {
   const record = processRecord(DELIVERY_PIDFILE, context);
-  if (target.mode === "open" && record.kind === "absent") {
-    if (credential.kind === "unavailable") return { name: "delivery", verdict: "refused", facts: [credential.reason] };
-    try {
-      const component = await componentEp(target, credential);
-      try {
-        if (!await component.ep.readDeliveryLease(0)) return { name: "delivery", verdict: "not-started", facts: ["not used on an open mesh"] };
-      } finally { await component.close(); }
-    } catch (error) {
-      if (deliveryLeaseAbsent(error)) return { name: "delivery", verdict: "not-started", facts: ["not used on an open mesh"] };
-      return { name: "delivery", verdict: "refused", facts: [`lease probe refused: ${error instanceof Error ? error.message : String(error)}`] };
-    }
-  }
   const facts = pidFacts(record);
   const stopped = processVerdict(record);
   // The renewal record is PER-SPACE (#1850): read THIS space's record through the workspace seam
@@ -2713,11 +2723,24 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
   }
   if (renewal?.adoption === undefined) facts.push("renewal adoption not reported");
   else facts.push(renewal.adoption.ok ? "renewal adoption accepted" : `renewal adoption refused${renewal.adoption.error ? `: ${renewal.adoption.error}` : ""}`);
+  const renewalRefused = renewal?.adoption?.ok === false;
+  if (target.mode === "open" && record.kind === "absent" && !renewalRefused) {
+    if (credential.kind === "unavailable") return { name: "delivery", verdict: "refused", facts: [credential.reason] };
+    try {
+      const component = await componentEp(target, credential);
+      try {
+        if (!await component.ep.readDeliveryLease(0)) return { name: "delivery", verdict: "not-started", facts: ["not used on an open mesh"] };
+      } finally { await component.close(); }
+    } catch (error) {
+      if (deliveryLeaseAbsent(error)) return { name: "delivery", verdict: "not-started", facts: ["not used on an open mesh"] };
+      return { name: "delivery", verdict: "refused", facts: [`lease probe refused: ${error instanceof Error ? error.message : String(error)}`] };
+    }
+  }
   if (stopped) {
     if (record.kind === "dead") facts.push("stale pidfile");
     if (record.kind === "unattributable") facts.push("unattributable pidfile");
     if (record.kind === "unknown") facts.push("pid liveness unestablishable");
-    return { name: "delivery", verdict: stopped, facts };
+    return { name: "delivery", verdict: renewalRefused ? "refused" : stopped, facts };
   }
 
   let close: (() => Promise<void>) | undefined;
@@ -2743,7 +2766,7 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
     const state = deliveryResponderFromLease(lease, await expectedDeliveryHolder(target));
     if (!lease) {
       facts.push("ready lease absent", `responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
-      return { name: "delivery", verdict: "not-serving", facts };
+      return { name: "delivery", verdict: renewalRefused ? "refused" : "not-serving", facts };
     }
     facts.push(`lease holder ${lease.holder}`);
     if (state === "stale") {
@@ -2751,11 +2774,11 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
       // operator cannot derive from the other facts on the line.
       facts.push("ready, but held by a DIFFERENT daemon than this workspace launched (a dead holder's record expires on its own)");
       facts.push(`responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
-      return { name: "delivery", verdict: "not-serving", facts };
+      return { name: "delivery", verdict: renewalRefused ? "refused" : "not-serving", facts };
     }
     facts.push(state === "bound" ? "ready" : "starting (lease not ready)");
     if (state !== "bound") facts.push(`responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
-    return { name: "delivery", verdict: state === "bound" ? "serving" : "not-serving", facts };
+    return { name: "delivery", verdict: renewalRefused ? "refused" : state === "bound" ? "serving" : "not-serving", facts };
   } catch (e) {
     // A live recorded daemon with no delivery lease bucket cannot be serving this build's delivery
     // control surface.  A denied/timed-out read is different: it is a refusal and must never read
@@ -2764,7 +2787,7 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
     const msg = e instanceof Error ? e.message : String(e);
     facts.push(noLeaseSurface ? "ready lease absent" : `lease probe refused: ${msg}`);
     if (isCommandFailure(e) && e.remedy) facts.push(e.remedy);
-    return { name: "delivery", verdict: noLeaseSurface ? "not-serving" : "refused", facts };
+    return { name: "delivery", verdict: renewalRefused || !noLeaseSurface ? "refused" : "not-serving", facts };
   } finally {
     await close?.();
   }
@@ -2868,6 +2891,11 @@ async function printComponentHealth(selected: Selected, store: StoreWriteObserva
   section("Component Health");
   if (!selected.ok) {
     const e = selected.error;
+    if (isMeshRegistryError(e)) {
+      printComponent({ name: "target", verdict: "refused", facts: ["SCHEMA_INVALID", e.message] });
+      process.exitCode = COMPONENT_EXIT.refused;
+      return;
+    }
     if (isWorkspaceTargetError(e)) {
       const verdict = e.code === "not-started" ? "absent" : "refused";
       printComponent({ name: "target", verdict, facts: [e.code, renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "")] });

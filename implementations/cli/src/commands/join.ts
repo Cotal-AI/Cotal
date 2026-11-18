@@ -167,7 +167,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       throw new CommandFailure(
         "refused",
         "PERMISSION_DENIED",
-        `an ${profile}-profile credential cannot join as a mesh participant: cotal join requires a provisioned agent credential`,
+        `an ${profile}-profile credential cannot join as a mesh participant: \`cotal join\` requires a provisioned agent credential`,
         {
           remedy: `mint an agent credential with \`cotal auth mint <name> --provision --allow-subscribe ${ch} --out <file>\`, then join with the --lifecycle-uid that mint reports; add --allow-publish ${ch} if you also need to post`,
         },
