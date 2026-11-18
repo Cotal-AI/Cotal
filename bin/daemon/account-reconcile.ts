@@ -88,21 +88,9 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       const prior = saved.spaces[row.slug];
       if (prior && prior.owner !== account.ownerKey) {
         const holder = knownMachineAccounts(home).find(item => item.ownerKey === prior.owner);
-        // A sign-in address is not an identity root. Only the retained issuer and subject match.
-        if (holder && typeof holder.issuer === "string" && holder.issuer.length > 0
-          && typeof holder.sub === "string" && holder.sub.length > 0
-          && typeof account.issuer === "string" && account.issuer.length > 0
-          && typeof account.sub === "string" && account.sub.length > 0
-          && holder.issuer === account.issuer && holder.sub === account.sub) {
-          const registered = findMesh(row.slug);
-          if (registered?.origin === "catalog" && registered.catalogOwner === prior.owner)
-            recordMeshes([{ ...registered, catalogOwner: account.ownerKey }]);
-          prior.owner = account.ownerKey; persist(); conflicts.delete(row.slug); refusals.delete(row.slug); retryAt.delete(row.slug);
-        } else {
-          if (holder) conflicts.set(row.slug, { owner: prior.owner, candidate: account.ownerKey, holder: holder.idpUrl });
-          refusals.set(row.slug, `The local space connection is held by ${holder?.idpUrl ?? "an unknown account"}.`);
-          continue;
-        }
+        if (holder) conflicts.set(row.slug, { owner: prior.owner, candidate: account.ownerKey, holder: holder.idpUrl });
+        refusals.set(row.slug, `The local space connection is held by ${holder?.idpUrl ?? "an unknown account"}.`);
+        continue;
       }
       if (prior?.removedAt !== undefined && (!fresh || bindingRevisions[row.id]! <= prior.removedAt)) continue;
       if (prior && prior.removedAt === undefined && !findMesh(row.slug)) {

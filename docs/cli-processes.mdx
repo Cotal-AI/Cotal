@@ -710,14 +710,8 @@ the daemon's machine status service needs the space owner's approval. Until then
 nothing and the daemon asks again every 30 seconds.
 A host without the route reports account computers unsupported and keeps per-space behavior.
 Authentication refusal asks you to sign in again. Network failures retain existing connections.
-When a space's retained holding account has the same issuer and subject as a signed-in account,
-the daemon moves its local custody to that sign-in address without another confirmation. The
-issuer and subject identify the owner, not the address used to sign in. A different issuer or
-subject does not receive custody automatically. Status names the holding account's sign-in address when the
-retained identity is known. Automatic migration requires both issuer and subject to be non-empty
-on both accounts. Missing identity fields never establish ownership.
-
-For a different account, the daemon keeps the existing custody until you explicitly confirm a
+Status names the holding account's sign-in address when it is known.
+The daemon keeps the existing custody until you explicitly confirm a
 move in the app. If the holding account is signed out or three consecutive account-computer
 polls fail, the space row names its sign-in address and offers **Use signed-in account**.
 Cancel leaves custody unchanged. Confirmation requires a fresh, available catalog registration
