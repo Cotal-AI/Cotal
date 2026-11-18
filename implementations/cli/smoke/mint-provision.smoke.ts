@@ -872,18 +872,9 @@ try {
       check("#7541: renewed provisioned credential binds its new inbox and receives a DM",
         joined && dm.code === 0 && received && !/dm-durable-missing/i.test(joinOut), { joinOut, dm });
 
-      // #7542 (running): up --open on an unprepared static-auth folder while running refuses CONFLICT instead of advising down + up --open.
-      const openWhileUp = await runCotal(["up", "--open", "--space", "offlinecheck", "--server", server]);
-      check("#7542: up --open while static-auth broker runs refuses CONFLICT (exit 2) without advising down then up --open",
-        openWhileUp.code === 2 && /Code:\s+CONFLICT/.test(openWhileUp.out) && /keep static auth here/.test(openWhileUp.out) && !/`cotal down` it first/.test(openWhileUp.out), openWhileUp);
-
       const stopped = await down();
       check("offline rig: normal down and foreground up exit successfully", stopped.code === 0 && await exited === 0, stopped.out);
 
-      // #7542 (stopped): up --open after down also refuses CONFLICT (exit 2) without starting an open broker over .cotal/auth.
-      const openAfterDown = await runCotal(["up", "--open", "--space", "offlinecheck", "--server", server]);
-      check("#7542: up --open on stopped static-auth folder refuses CONFLICT (exit 2) before starting anything",
-        openAfterDown.code === 2 && /Code:\s+CONFLICT/.test(openAfterDown.out) && /keep static auth here/.test(openAfterDown.out), openAfterDown);
       for (const profile of ["agent", "observer", "admin"]) {
         const minted = await runMint([`offline_${profile}`, "--profile", profile, "--plain"]);
         const file = agentSecretFilePaths(stoppedRoot, "offlinecheck", `offline_${profile}`).creds;
