@@ -522,6 +522,15 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("persona edit saves the seeded default persona", editedDefault.status === 0 && editedDefault.stdout.includes("Persona saved"), shown(editedDefault));
   const unchanged = cotal(["persona", "edit", "default"], seeded, editor);
   check("persona edit of a draft left as it was says the persona is unchanged and saves nothing", unchanged.status === 0 && unchanged.stdout.includes("default is unchanged, so nothing was saved") && !unchanged.stdout.includes("Persona saved"), shown(unchanged));
+  const unchangedJson = cotal(["persona", "edit", "default", "--json"], seeded, editor);
+  const unchangedEnvelope = (() => { try { return JSON.parse(unchangedJson.stdout) as { outcome?: string; result?: { kind?: string; name?: string } }; } catch { return {}; } })();
+  check("persona edit --json emits a structured persona-unchanged receipt on stdout", unchangedJson.status === 0 && unchangedEnvelope.outcome === "no-op" && unchangedEnvelope.result?.kind === "persona-unchanged" && unchangedEnvelope.result.name === "default" && unchangedJson.stderr === "", shown(unchangedJson));
+  const noisyEditor = `sh -c 'printf "editor-banner\\n"; printf "more\\n" >> "$1"' sh`;
+  const savedJson = cotal(["persona", "edit", "default", "--json"], seeded, { ...noSeed, VISUAL: noisyEditor, EDITOR: noisyEditor });
+  const savedEnvelope = (() => { try { return JSON.parse(savedJson.stdout) as { outcome?: string; result?: { kind?: string; action?: string; name?: string } }; } catch { return {}; } })();
+  check("persona edit --json routes editor stdout to stderr and emits the saved JSON receipt on stdout", savedJson.status === 0 && savedEnvelope.outcome === "ok" && savedEnvelope.result?.kind === "persona-written" && savedEnvelope.result.action === "saved" && savedJson.stderr.includes("editor-banner"), shown(savedJson));
+  const noInputJson = cotal(["persona", "edit", "default", "--json", "--no-input"], seeded, editor);
+  check("persona edit --json --no-input still refuses to open an editor", noInputJson.status === 1 && /--no-input forbids one/.test(noInputJson.stdout), shown(noInputJson));
   // A catalog file saved as UTF-16 is named by its encoding, with the step to save it as UTF-8.
   const utf16 = (home: string) => {
     seeded(home);
