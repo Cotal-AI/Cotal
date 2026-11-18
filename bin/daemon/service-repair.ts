@@ -1,9 +1,26 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, join } from "node:path";
-import { readLocalRecordSource } from "@cotal-ai/workspace";
+import { CommandFailure, readLocalRecordSource } from "@cotal-ai/workspace";
 import type { UnitReceipt } from "./install.js";
 import type { Socket } from "node:net";
-import { MAX_LINE_BYTES } from "./endpoint.js";
+import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
+import type { DaemonStatus } from "./protocol.js";
+
+/** Validate one pinned repair acknowledgement without treating a refusal as proof of no effects. */
+export function repairReplyResult(reply: unknown, id: string, op: string): DaemonStatus {
+  const unacknowledged = () => new CommandFailure("unknown", "OPERATION_UNKNOWN", `the pinned daemon did not acknowledge ${op} during service repair`);
+  if (!reply || typeof reply !== "object" || Array.isArray(reply) || !("v" in reply) || reply.v !== DAEMON_PROTOCOL_VERSION || !("id" in reply) || reply.id !== id || "event" in reply || !("ok" in reply)) throw unacknowledged();
+  if (reply.ok === false) {
+    const error = "error" in reply ? reply.error : undefined;
+    if (!error || typeof error !== "object" || Array.isArray(error) || !("code" in error) || typeof error.code !== "string" || !("message" in error) || typeof error.message !== "string" || ("remedy" in error && typeof error.remedy !== "string")) throw unacknowledged();
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the pinned daemon refused ${op} during service repair: ${error.code}: ${error.message}`, {
+      native: { code: error.code, detail: error.message },
+      ...("remedy" in error ? { remedy: error.remedy as string } : {}),
+    });
+  }
+  if (reply.ok !== true || !("result" in reply) || !reply.result || typeof reply.result !== "object" || Array.isArray(reply.result) || !("version" in reply.result) || typeof reply.result.version !== "string") throw unacknowledged();
+  return reply.result as DaemonStatus;
+}
 
 /** One pinned repair connection. A late timed-out reply never acknowledges a later request. */
 export function repairReplies(socket: Socket): { read(id: string, timeoutMs: number): Promise<string>; close(): void } {

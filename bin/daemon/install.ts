@@ -54,7 +54,7 @@ import { daemonCommandCopy } from "./guidance.js";
 import { recoverPausedTask } from "./restart-recovery.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
 import { removeAllServiceRecords } from "./service-records.js";
-import { assertServiceRepairPair, readServiceRepair, repairReplies, serviceRepairFile, sourceDigest } from "./service-repair.js";
+import { assertServiceRepairPair, readServiceRepair, repairReplies, repairReplyResult, serviceRepairFile, sourceDigest } from "./service-repair.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
 export type ServiceMechanism = "systemd-user" | "launchd-agent" | "scheduled-task";
@@ -571,9 +571,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
     const id = randomUUID().replaceAll("-", "");
     const answer = replies!.read(id, op === "managers-prepare-restart" ? 130_000 : 70_000);
     socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op }));
-    const reply = JSON.parse(await answer) as DaemonResponse;
-    if (reply.id !== id || reply.v !== DAEMON_PROTOCOL_VERSION || !reply.ok || "event" in reply || !("version" in reply.result)) throw new Error("the pinned daemon refused service repair preparation");
-    return reply.result;
+    return repairReplyResult(JSON.parse(await answer), id, op);
   };
   try {
     let intent = readServiceRepair(paths.state);
