@@ -235,6 +235,14 @@ export function boundedCells(plan) {
       "candidate-source-identity", "candidate-next-target", "next-hop-success", "native-service-manual", "independent-final-state",
       "dead-updater-release", "live-owner-held", "next-update-alone"],
   });
+  add("linux", "npm", "candidate-next-other-home-auth", null, {
+    sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A",
+    targetVersion: syntheticNextVersion(plan.targetVersion), targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+    syntheticVersionRule: "candidate.patch+1000", otherHomeAuth: true,
+    requiredAssertions: ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention",
+      "candidate-source-identity", "candidate-next-target", "next-hop-success", "native-service-manual", "independent-final-state",
+      "other-home-auth-required", "other-home-manager-preserved", "other-home-loaded-graph-preserved", "other-home-update-notice", "other-home-cleanup"],
+  });
   return cells;
 }
 /** Convenience wrapper for workflow callers. */

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, oneLine } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
@@ -165,6 +166,9 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       // An `up` / pre-origin record is KEPT on a liveness miss. Keep `no mesh running at`
       // so existing attach/mint cells still recognise the classified refusal, and name
       // the recorded root so the operator restarts THAT mesh, not a new one from cwd.
+      // A deleted root cannot be restarted from, so the step is moving it back or forgetting the space (#7318).
+      if (!existsSync(t.root))
+        return parts(`no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root}, which no longer exists`, `if that folder was moved or renamed, move it back and run \`cotal up\` there; otherwise forget the space with \`cotal space forget ${t.space}\``);
       return parts(`no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root} but not running`, "run `cotal up` there to restart");
     // The registry-mismatch pair, like `unreachable`, must not prescribe `cotal up` for a mesh this
     // machine only registered: the repair there is the credentials under `--root`, or re-registering

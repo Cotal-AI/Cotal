@@ -271,7 +271,6 @@ export function retainConnectorConfig(): string {
     const temporary = join(id.path, `.selection-${randomBytes(8).toString("hex")}`);
     writeFileSync(temporary, JSON.stringify(record), { flag: "wx", mode: 0o600 });
     renameSync(temporary, join(id.path, "selection.json"));
-    pruneConnectorSets(id);
     return root;
   } finally { releaseWriter(); releaseSeed(); releaseClosure(); }
 }
