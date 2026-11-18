@@ -80,7 +80,7 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "status-token",
-      "anchor": "tatus: PresenceStatus = \"idle\";\n  private _attention: ",
+      "anchor": "tatus: PresenceStatus = \"idle\";\n  /** The turn relay's",
       "class": "non-render/control"
     },
     {
