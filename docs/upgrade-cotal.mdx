@@ -57,6 +57,11 @@ version and provenance. A Node wrapper that imports the bootstrap calls its
 `startExecutionProgram()` export to delegate execution once. Importing reader helpers alone
 does not start a command.
 
+The daemon polls the installed manifest, bootstrap and execution descriptor metadata for changes.
+An unchanged selection does not re-read the retained package inventory each second. A changed
+selection is validated before its version is reported, and activation still verifies the installed
+entry in a fresh process. Command startup and hosted connector admission keep their full checks.
+
 On a writable POSIX npm or pnpm installation, `cotal update --self` prepares a complete target
 package and its dependencies in retained storage before changing the selected execution.
 It runs installed read-only checks and the target's declared pre-install checks first.
