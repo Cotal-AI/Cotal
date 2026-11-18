@@ -30,6 +30,7 @@ export { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from
 import { KeyScope, digest, programHashOf, type PathKind, type ScopeKind } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock } from "./journal.js";
 import { Prng, assertWritable, born, crossedWrite, deepFreeze, setOwn, type WritingFrame } from "./values.js";
+import { assertArrayFits, assertRecordFits, assertStringFits } from "./limits.js";
 import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "./library.js";
 import { bindPins, resolvePins, WALKER_LANGUAGE_VERSION, type RunPins } from "./pins.js";
@@ -552,6 +553,7 @@ class Interpreter {
           `index ${i} is past the end of this array (length ${obj.length}), and JavaScript would fill the gap with holes, which this language does not have. Write at an existing index, at the length to append, or use \`push\`.`,
         );
       }
+      if (i === obj.length) assertArrayFits("this index write", i + 1);
     } else if (prop === "__proto__") {
       throw new RuntimeFault("L4014", "`__proto__` names an object's prototype, and there are no prototypes here");
     }
@@ -645,6 +647,7 @@ class Interpreter {
             const v = await this.evaluate(exprs[i] as AnyNode, env, frame);
             refuseCoercion("${...}", v);
             out += String(v);
+            assertStringFits("this template", out.length);
           }
         }
         return out;
@@ -655,6 +658,7 @@ class Interpreter {
           if (el.type === "SpreadElement") out.push(...this.spreadable(await this.evaluate(el.argument as AnyNode, env, frame)));
           else out.push(await this.evaluate(el, env, frame));
         }
+        assertArrayFits("this array literal", out.length);
         return born(out, frame.depth);
       }
       case "ObjectExpression": {
@@ -671,6 +675,7 @@ class Interpreter {
           const name = key.type === "Identifier" ? (key.name as string) : String(key.value);
           setRecordMember(out, name, await this.evaluate(p.value as AnyNode, env, frame));
         }
+        assertRecordFits("this record literal", Object.keys(out).length);
         return born(out, frame.depth);
       }
       case "MemberExpression": {
@@ -821,7 +826,10 @@ class Interpreter {
   /** What `...x` and `for (const v of x)` may iterate: an array or a string, and nothing else (L4015). */
   private spreadable(v: unknown): unknown[] {
     if (Array.isArray(v)) return v;
-    if (typeof v === "string") return [...v];
+    if (typeof v === "string") {
+      assertArrayFits("spreading this string", v.length);
+      return [...v];
+    }
     throw new RuntimeFault(
       "L4015",
       `${v === null ? "null" : typeof v === "object" ? "a record" : typeof v} is not iterable: only arrays and strings can be spread or looped over. For a record, iterate \`keys(record)\` or \`entries(record)\`.`,
@@ -1382,6 +1390,7 @@ function applyBinary(op: string, l: unknown, r: unknown): unknown {
     case ">=":
       return a >= b;
     case "+":
+      if (typeof l === "string" || typeof r === "string") assertStringFits("`+`", String(l).length + String(r).length);
       return a + b;
     case "-":
       return a - b;

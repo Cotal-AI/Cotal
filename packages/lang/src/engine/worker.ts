@@ -35,22 +35,15 @@ import type { RunPins } from "../pins.js";
 import { serviceBridge } from "./bridge.js";
 import type { InspectionSnapshot } from "./inspection.js";
 import { PACKAGE_VERSION as hostPackageVersion } from "./package-version.js";
+import { ENGINE_HEAP_LIMITS } from "../limits.js";
 
 /** Where the reason's byte length lives in the shared stop buffer; the bytes follow it. */
 const STOP_HEADER = 4;
 /** Room for the reason. A reason is a sentence, and one that does not fit is truncated, not dropped. */
 const STOP_CAPACITY = 512;
 
-/**
- * The heap limits every run's thread is created with.
- *
- * Without them a thread inherits the host process's own heap limit, so one program could grow until
- * the whole process ran out of memory. With them a thread that reaches its limit is ended by node
- * alone, its run fails naming the limit, and the host and its other runs carry on. A program is
- * orchestration over effects, and each effect's result is already bounded by the journal's result
- * bound, so the old generation limit leaves a large margin over what a run holds.
- */
-const WORKER_RESOURCE_LIMITS = Object.freeze({ maxOldGenerationSizeMb: 512, maxYoungGenerationSizeMb: 32 });
+/** The heap limits every run's thread is created with; see {@link ENGINE_HEAP_LIMITS}. */
+const WORKER_RESOURCE_LIMITS = ENGINE_HEAP_LIMITS;
 
 export interface WorkerHandlerSpec {
   /**

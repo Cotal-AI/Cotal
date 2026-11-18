@@ -215,6 +215,11 @@ It bypasses `catch` and `finally` because its threshold depends on the host.
 The [configured limits](../spec/cotal-lang.md#12-limits) cover steps per walk, effects per run,
 and journal payloads.
 
+One value a program builds has a size bound. An array holds at most 1,000,000 elements, a string
+at most 4,000,000 UTF-16 units, and a record that `json.parse`, `merge` or a record literal builds
+at most 250,000 fields. A builtin, method, spread, template, `+` or index write that would build a
+larger value raises L4016 naming the operation, before the value is built.
+
 ## Top refusals
 
 | Code | What it refuses | Write instead |

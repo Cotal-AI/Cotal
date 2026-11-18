@@ -24,6 +24,7 @@ import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, ty
 import type { Journal } from "../journal.js";
 import type { RunPins } from "../pins.js";
 import { NotCrossable, Prng, assertNoCode, assertWritable, born as stampBirth, deepFreeze, setOwn } from "../values.js";
+import { assertArrayFits, assertRecordFits, assertStringFits } from "../limits.js";
 import { digest, type ScopeKind } from "../keys.js";
 import { currentFrame, withFrame, type EngineFrame } from "./frame.js";
 import { agentHandles, dispatchPrimitive, freeConstructors, onceBodyNotCallable, option, performScope, runScope, type EffectHost, type Frame as ScopeFrame } from "../perform.js";
@@ -756,6 +757,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
             `index ${i} is past the end of this array (length ${o.length}), and JavaScript would fill the gap with holes, which this language does not have. Write at an existing index, at the length to append, or use \`push\`.`,
           );
         }
+        if (i === o.length) assertArrayFits("this index write", i + 1);
       } else if (prop === "__proto__") {
         throw new RuntimeFault("L4014", "`__proto__` names an object's prototype, and there are no prototypes here");
       }
@@ -822,6 +824,8 @@ function buildCtx(run: EngineRun): CtxWithSteps {
 
     born(v) {
       refuseThenable(v, "this value");
+      if (Array.isArray(v)) assertArrayFits("this array literal", v.length);
+      else if (v !== null && typeof v === "object") assertRecordFits("this record literal", Object.keys(v).length);
       return stampBirth(v, currentFrame().depth);
     },
 
@@ -882,6 +886,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
           const v = values[i];
           refuseCoercion("${...}", v);
           out += String(v);
+          assertStringFits("this template", out.length);
         }
       }
       return out;
@@ -910,6 +915,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
         case ">=":
           return a >= b;
         case "+":
+          if (typeof l === "string" || typeof r === "string") assertStringFits("`+`", String(l).length + String(r).length);
           return a + b;
         case "-":
           return a - b;
@@ -972,7 +978,10 @@ function buildCtx(run: EngineRun): CtxWithSteps {
 
     iter(v) {
       if (Array.isArray(v)) return v;
-      if (typeof v === "string") return [...v];
+      if (typeof v === "string") {
+        assertArrayFits("spreading this string", v.length);
+        return [...v];
+      }
       throw new RuntimeFault(
         "L4015",
         `${v === null ? "null" : typeof v === "object" ? "a record" : typeof v} is not iterable: only arrays and strings can be spread or looped over. For a record, iterate \`keys(record)\` or \`entries(record)\`.`,

@@ -19,8 +19,8 @@
     {
       "name": "free join stops gating its elements",
       "file": "packages/lang/src/library.ts",
-      "find": "    [\"join\", fn(\"join\", (_f, a) => {\n      const xs = listArg(\"join\", a[0]);\n      for (const el of xs) noCoerce(\"join\", el);\n      return xs.join(a[1] as string);\n    }, { any: [0] })],",
-      "replace": "    [\"join\", fn(\"join\", (_f, a) => listArg(\"join\", a[0]).join(a[1] as string), { any: [0] })],",
+      "find": "    [\"join\", fn(\"join\", (_f, a) => {\n      const xs = listArg(\"join\", a[0]);\n      for (const el of xs) noCoerce(\"join\", el);\n      assertStringFits(\"join\", joinedUnits(xs, a[1] === undefined ? \",\" : String(a[1])));\n      return xs.join(a[1] as string);\n    }, { any: [0] })],",
+      "replace": "    [\"join\", fn(\"join\", (_f, a) => {\n      const xs = listArg(\"join\", a[0]);\n      assertStringFits(\"join\", joinedUnits(xs, a[1] === undefined ? \",\" : String(a[1])));\n      return xs.join(a[1] as string);\n    }, { any: [0] })],",
       "expectRed": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
       "completionMarker": "ok every admitted node type is classified against the key guard: coercing (exercised above) or inert, no type unclassified",
       "cell": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
@@ -29,8 +29,8 @@
     {
       "name": "string methods lose the gate",
       "file": "packages/lang/src/library.ts",
-      "find": "    concat: (_f, s, a) => s.concat(...a.map(String)),\n  };\n  return Object.freeze(\n    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, gate(k, impl)) as unknown as Method])),\n  );",
-      "replace": "    concat: (_f, s, a) => s.concat(...a.map(String)),\n  };\n  return Object.freeze(\n    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, impl) as unknown as Method])),\n  );",
+      "find": "      return s.concat(...parts);\n    },\n  };\n  return Object.freeze(\n    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, gate(k, impl)) as unknown as Method])),\n  );",
+      "replace": "      return s.concat(...parts);\n    },\n  };\n  return Object.freeze(\n    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, impl) as unknown as Method])),\n  );",
       "expectRed": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
       "cell": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
       "note": "NO completionMarker on purpose: under the mutant `\"a\".repeat(spy)` reaches the host, which calls the program's own toString closure — the red prints at the conjunct (the surfaced error is not L4018) but the detached closure may still crash the process afterwards, and a real red followed by a crash is still KILLED only when no marker is declared."

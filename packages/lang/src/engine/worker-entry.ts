@@ -23,7 +23,8 @@
  * step budget (L4013) and the shared stop flag are the only two things that end a run.
  */
 
-import { parentPort, workerData, type MessagePort } from "node:worker_threads";
+import { parentPort, resourceLimits, workerData, type MessagePort } from "node:worker_threads";
+import { getHeapStatistics } from "node:v8";
 import "ses";
 import { EffectResultTooLarge, Journal, JournalAppendRejected } from "../journal.js";
 import { EngineUnavailable, messageOf, nameOf } from "../errors.js";
@@ -35,6 +36,7 @@ import { InspectionJournal, inspectionExit } from "./inspection.js";
 import type { EngineCtx } from "./ctx.js";
 import type { WorkerFailure, WorkerRunRequest, WorkerRunResult } from "./worker.js";
 import { PACKAGE_VERSION } from "./package-version.js";
+import { ENGINE_HEAP_LIMITS, ENGINE_HEAP_WINDOW_MB } from "../limits.js";
 
 // Refuse before lockdown installs SES's uncaught-exception handler, so Worker reports the cause.
 if (parentPort === null) throw new Error("cotal-lang engine worker: no parent port; this module is a worker entry, not a library");
@@ -44,6 +46,21 @@ if (hostPackageVersion !== PACKAGE_VERSION) {
   throw new EngineUnavailable(
     `worker package ${PACKAGE_VERSION} does not match host package ${host}; ` +
     `restart the manager using the same Cotal version before starting or resuming workflows`,
+  );
+}
+// A V8 heap flag on the process replaces the limits this thread was created with, and a run held to
+// no limit can take the whole process down, so a thread that was not created with the engine's
+// limits, or whose heap limit is outside the engine's window, refuses before any run exists.
+const heapLimitMb = Math.round(getHeapStatistics().heap_size_limit / 1048576);
+if (
+  resourceLimits.maxOldGenerationSizeMb !== ENGINE_HEAP_LIMITS.maxOldGenerationSizeMb
+  || resourceLimits.maxYoungGenerationSizeMb !== ENGINE_HEAP_LIMITS.maxYoungGenerationSizeMb
+  || heapLimitMb < ENGINE_HEAP_WINDOW_MB.min || heapLimitMb > ENGINE_HEAP_WINDOW_MB.max
+) {
+  throw new EngineUnavailable(
+    `this engine thread's heap limit is ${heapLimitMb} MB, outside the ${ENGINE_HEAP_WINDOW_MB.min} to ${ENGINE_HEAP_WINDOW_MB.max} MB a run is held to; ` +
+    `a V8 heap flag on this process (--max-old-space-size, --max-semi-space-size or similar, on the command line or in NODE_OPTIONS) replaces it. ` +
+    `Start the process without that flag to run workflows`,
   );
 }
 // Once per admitted thread, before the run exists.

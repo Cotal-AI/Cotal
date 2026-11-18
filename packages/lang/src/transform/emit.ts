@@ -994,8 +994,10 @@ class Emitter {
   }
 }
 
-/** Operators whose native meaning is the walker's for two strings as well as two numbers. */
-const STRING_SAFE: ReadonlySet<string> = new Set(["+", "<", "<=", ">", ">="]);
+/** Operators whose native meaning is the walker's for two strings as well as two numbers. `+` over
+ *  two strings is not among them: it builds a new string, so it goes through `binary`, which bounds
+ *  the result's length. */
+const STRING_SAFE: ReadonlySet<string> = new Set(["<", "<=", ">", ">="]);
 
 export function emit(program: AnyNode): Emission {
   const ids = new Set<string>();

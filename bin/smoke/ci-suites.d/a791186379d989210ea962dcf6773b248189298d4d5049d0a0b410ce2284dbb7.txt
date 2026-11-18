@@ -1,3 +1,3 @@
-# A workflow run that allocates without bound is stopped at the engine thread's heap limit and
-# recorded failed, and the host process carries on.
+# A workflow run is held to its engine thread's heap limit and the value size bounds: an oversized
+# value is refused L4016, reaching the heap limit fails the run, and the process never aborts.
 smoke:runtime-worker-memory

@@ -270,9 +270,18 @@ disagree about the boundary. The host process and its other runs carry on. An in
 under a live manager is the usual way to get here: the next run's thread loads the new code beside
 the old host.
 
-**A run's thread has a 512 MB heap limit.** A program that holds more data than that is stopped
-when it reaches the limit, and its run is recorded failed with a message naming the limit. The
-host process and its other runs carry on.
+**A run's thread has a 512 MB heap limit.** Everything the run holds counts toward it: the
+program's values and every journal entry the run has recorded, settled results included. A run
+whose effects return large results can reach the limit after many steps. A run that reaches it is
+stopped and recorded failed with a message naming the limit, and the process carries on. A V8 heap
+flag on the process, such as `--max-old-space-size` on the command line or in `NODE_OPTIONS`,
+replaces the thread's limit, so a thread created under one refuses to run any program and names
+the heap limit it found.
+
+**One value has a size bound.** An array holds at most 1,000,000 elements, a string at most
+4,000,000 UTF-16 units, and a record built by `json.parse`, `merge` or a record literal at most
+250,000 fields. A larger value is refused (**L4016**) before it is built. The bound keeps each
+allocation small enough that reaching the heap limit stops the run rather than the process.
 
 ### Foreign error text
 

@@ -9,8 +9,8 @@
     {
       "name": "json.stringify silently canonicalizes again",
       "file": "packages/lang/src/library.ts",
-      "find": "    stringify: fn(\"json.stringify\", (_f, a) => {\n      try {\n        assertCrossable(a[0], \"json.stringify: the value\");\n      } catch (e) {\n        if (e instanceof NotCrossable) throw new RuntimeFault(\"L4016\", e.message);\n        throw e;\n      }\n      return canonicalize(a[0]);\n    }, { any: [0] }),",
-      "replace": "    stringify: fn(\"json.stringify\", (_f, a) => canonicalize(a[0]), { any: [0] }),",
+      "find": "    stringify: fn(\"json.stringify\", (_f, a) => {\n      try {\n        assertCrossable(a[0], \"json.stringify: the value\");\n      } catch (e) {\n        if (e instanceof NotCrossable) throw new RuntimeFault(\"L4016\", e.message);\n        throw e;\n      }\n      return sized(\"json.stringify\", canonicalize(a[0]));\n    }, { any: [0] }),",
+      "replace": "    stringify: fn(\"json.stringify\", (_f, a) => sized(\"json.stringify\", canonicalize(a[0])), { any: [0] }),",
       "expectRed": "`json.stringify` refuses a value with no canonical form (L4016), naming the path",
       "completionMarker": "ok `json.stringify` is the canonical form (sorted keys, no spaces)",
       "cell": "`json.stringify` refuses a value with no canonical form (L4016), naming the path",
