@@ -40,7 +40,7 @@ const forceFlag = { name: "force", type: "boolean", description: "removed spelli
 const yesFlag = { name: "yes", short: "y", type: "boolean", description: "clear and limit: confirm without prompting" } as const;
 const dryRunFlag = { name: "dry-run", type: "boolean", description: "clear: show the selected target and streams without connecting; purge nothing. A space that is prepared but not started is refused" } as const;
 const sinceFlag = { name: "since", type: "string", value: "<time|seq>", description: "only messages after a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence" } as const;
-const limitFlag = { name: "limit", type: "string", value: "<n>", description: "how many of the newest retained messages to read, 1 to 1000 (default 50)" } as const;
+const limitFlag = { name: "limit", type: "string", value: "<n>", description: "how many of the newest retained messages to read, a positive safe integer (default 50)" } as const;
 const fromFlag = { name: "from", type: "string", value: "<name>", description: "keep messages from this sender name or id (filters the window)" } as const;
 const grepFlag = { name: "grep", type: "string", value: "<text>", description: "keep messages whose text contains this, case-insensitive (filters the window)" } as const;
 const followFlag = { name: "follow", type: "boolean", description: "keep listening and print each new message (NDJSON with --json)" } as const;
@@ -67,7 +67,6 @@ export function historyComplete(argv: string[]): CompletionResult {
 }
 
 const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 1000;
 /** How many message ids a follow remembers to drop duplicates: a re-tap after a reconnect and the
  *  snapshot both overlap the live feed. */
 const SEEN_IDS = 10_000;
@@ -135,7 +134,7 @@ const usage = (message: string): CommandFailure => new CommandFailure("refused",
 function parseLimit(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_LIMIT;
   const n = /^\d+$/.test(raw) ? Number(raw) : NaN;
-  if (!Number.isInteger(n) || n < 1 || n > MAX_LIMIT) throw usage(`--limit takes a whole number from 1 to ${MAX_LIMIT}, not "${raw}"`);
+  if (!Number.isSafeInteger(n) || n < 1) throw usage(`--limit takes a positive whole number this client can represent without rounding, not "${raw}"`);
   return n;
 }
 
@@ -657,8 +656,7 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
   // A bare number is a sequence, so a year such as 2026 reads as one; the note says how it was read.
   if (since?.kind === "seq")
     notes.push({ text: `--since ${since.input} is chat stream sequence ${since.seq}; only messages after it are shown${yearShaped(since.input) ? `. For a date, write it in full, such as ${since.input}-01-01` : ""}`, tone: "hint" });
-  // At the cap no larger window exists, so the note names none.
-  if (r.window.olderRetained === true) notes.push({ text: r.window.limit < MAX_LIMIT ? `older retained messages are not shown; raise --limit (up to ${MAX_LIMIT}) to read further back` : `older retained messages are not shown; history reads at most the newest ${MAX_LIMIT}`, tone: "hint" });
+  if (r.window.olderRetained === true) notes.push({ text: "older retained messages are not shown; raise --limit to read further back", tone: "hint" });
   // The filters run on the messages read, so a sender or text found only further back is not found.
   const filters = [r.window.from !== null ? `--from ${r.window.from}` : null, r.window.grep !== null ? `--grep ${r.window.grep}` : null].filter((flag) => flag !== null);
   if (filters.length && r.window.olderRetained !== false) notes.push({ text: `${filters.join(" and ")} searched only the ${r.window.read} read; older retained messages were not searched`, tone: "hint" });

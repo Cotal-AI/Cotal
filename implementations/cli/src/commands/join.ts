@@ -12,6 +12,8 @@ import {
   partsToText,
   peerLabel,
   isConsumerNotFound,
+  DmDurableMissingError,
+  isPublishPermissionDenied,
   credsClaims,
   idFromCreds,
   DEV_OWNER,
@@ -22,6 +24,7 @@ import {
   chatSubject,
   importNativeSubjectPermissions,
   issuedPermitsPattern,
+  issuedPermitsSubject,
   type Delivery,
   type EndpointKind,
   type PresenceStatus,
@@ -48,15 +51,16 @@ export function joinPeerLabel(card: { name: string; id?: string; role?: string }
 // Unexpected failures still propagate unchanged.
 function joinAuthFailure(e: unknown, space: string, credsLifecycle?: string): CommandFailure | undefined {
   const msg = (e as Error)?.message ?? String(e);
+  const missingInbox = e instanceof DmDurableMissingError || /consumer not found|no responders|not provisioned/i.test(msg);
   if (msg === "server does not support 'tls'")
     return new CommandFailure("refused", "UNSUPPORTED", `TLS is required to join ${space}, but this server does not support TLS`, { remedy: "ask the mesh operator for its TLS-enabled broker address" });
   // A --creds join binds the inbox its lifecycle was provisioned with. A credential minted without
   // --provision has none, and neither `cotal up` nor another --creds can make one from here.
-  if (credsLifecycle !== undefined && /consumer not found|no responders|not provisioned/i.test(msg))
+  if (credsLifecycle !== undefined && missingInbox)
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} has no inbox provisioned for this credential's lifecycle ${credsLifecycle}, so it cannot join with it`, {
       remedy: "ask the space's owner to mint the credential with `cotal auth mint <name> --provision`, then join with the lifecycle UID that mint reports",
     });
-  if (/consumer not found|no responders|not provisioned/i.test(msg))
+  if (missingInbox)
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} isn't provisioned for a console session yet`, { remedy: "run `cotal up` first, or join with --creds/--token" });
   if (/authoriz|permission|not authorized/i.test(msg)) {
     // #1576. THIS USED TO NAME CREDENTIALS AND NOTHING ELSE, and an operator holding valid,
@@ -336,6 +340,14 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     },
   });
   const me = ep.card.id;
+  const publishClaims = auth.creds === undefined ? undefined : credsClaims(auth.creds).nats?.pub;
+  const publishPermission = auth.creds === undefined ? undefined
+    : importNativeSubjectPermissions(publishClaims === undefined ? {} : { pub: publishClaims }).publish;
+  const canBroadcast = publishPermission === undefined || issuedPermitsSubject(publishPermission, chatSubject(space, ep.card.owner!, ep.card.actor!, channel));
+  const broadcastDenied = () => `this session is read-only on #${channel}: it lacks publish permission; nothing was sent. ` +
+    (userConnection
+      ? `ask the space's owner to grant this identity permission to post to #${channel}`
+      : `ask the space's owner to mint a credential with \`cotal auth mint <name> --provision --allow-subscribe ${channel} --allow-publish ${channel} --out <file>\`, then join with the lifecycle UID that mint reports`);
 
   // Interactive only when attached to a real terminal; headless when spawned
   // detached (manager) — then we just hold presence and log mesh events.
@@ -466,7 +478,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   });
   ep.on("warning", (e: Error) => {
     if (leaving) return;
-    if (started && !connected && !userConnection && isConsumerNotFound(e))
+    if (started && !connected && !userConnection && (isConsumerNotFound(e) || e instanceof DmDurableMissingError))
       return lose(new CommandFailure("refused", "TARGET_NOT_FOUND", "this join can no longer reconnect: its inbox is gone from the broker", {
         target: { space },
         remedy: values.creds
@@ -522,7 +534,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   );
   console.log(
     c.dim(
-      "Type to broadcast. Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <x>  /quit\n",
+      `${canBroadcast ? "Type to broadcast." : `Read-only on #${channel}; this credential has no publish permission.`} Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <x>  /quit\n`,
     ),
   );
   setTimeout(() => {
@@ -602,8 +614,16 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
           print(`${c.yellow("(@" + service + ")")} ${c.dim("you →")} ${text}`);
         }
       } else {
-        await ep.multicast(line, { channel });
-        print(`${c.cyan("#" + channel)} ${c.dim("you:")} ${line}`);
+        if (!canBroadcast) print(c.red(`! ${broadcastDenied()}`));
+        else {
+          try {
+            await ep.multicast(line, { channel });
+            print(`${c.cyan("#" + channel)} ${c.dim("you:")} ${line}`);
+          } catch (e) {
+            if (!isPublishPermissionDenied(e)) throw e;
+            print(c.red(`! ${broadcastDenied()}`));
+          }
+        }
       }
     } catch (e) {
       print(c.red(`! ${(e as Error).message}`));

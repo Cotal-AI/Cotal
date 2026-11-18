@@ -261,7 +261,7 @@ try {
   check("the plain report shows each message's local time, not the ISO time JSON carries", localTime !== "" && plain.stdout.includes(localTime) && !/\d{4}-\d\d-\d\dT\d\d:/.test(plain.stdout) && /^\d{4}-\d\d-\d\dT/.test(items[0]!.ts), { localTime, stdout: plain.stdout.slice(0, 600) });
 
   // ── usage ───────────────────────────────────────────────────────────────────────────────────────
-  for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "1001"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
+  for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "9007199254740992"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
     const r = await run(["history", ...args, "--json"]);
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
@@ -273,7 +273,7 @@ try {
   // with `*` or a leading `#` got the subject grammar's reason.
   const [negLimit, negSince, starred] = await Promise.all([["--limit", "-1"], ["--since", "-5"], ["gen*"]].map((args) => run(["history", ...args, "--server", unavailable, "--json"])));
   check("a negative --limit or --since gets the flag's own rule, before connecting",
-    negLimit.status === 1 && negLimit.envelope?.error?.message === '--limit takes a whole number from 1 to 1000, not "-1"'
+    negLimit.status === 1 && negLimit.envelope?.error?.message === '--limit takes a positive whole number this client can represent without rounding, not "-1"'
       && negSince.status === 1 && negSince.envelope?.error?.message === '--since takes a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence, not "-5"', { negLimit: shown(negLimit), negSince: shown(negSince) });
   check("a channel holding * is refused with the wildcard sentence, before connecting",
     starred.status === 1 && starred.envelope?.error?.message === "name one concrete channel, without wildcards", shown(starred));
@@ -524,14 +524,21 @@ try {
     const gapPlain = await run(["history", "general", "--space", openSpace, "--limit", "3", "--plain"]);
     check("the report names the gap as possible loss", new RegExp(`gap: #general holds ${cap} from carol, the per-sender limit, so their older messages there may be gone`).test(gapPlain.stdout), gapPlain.stdout);
     check("...and the time of the oldest post the stream still holds", typeof r?.retention?.oldestAt === "string" && /the oldest post the chat stream still holds is from .+; posts sent before it are gone/.test(gapPlain.stdout), { oldestAt: r?.retention?.oldestAt, stdout: gapPlain.stdout });
-    // At the cap a larger --limit does not exist, and a filter finds only what the window read.
+    const expanded = await run(["history", "general", "--space", openSpace, "--limit", "1001", "--json"]);
+    check("a larger window reads every retained message without duplicates", expanded.status === 0 && texts(expanded).length === 1001 && new Set(expanded.envelope?.result?.items.map((item) => item.id)).size === 1001, shown(expanded));
+    check("the expanded window is ordered and reaches the oldest retained message", texts(expanded)[0] === "carol 3" && expanded.envelope?.result?.window.olderRetained === false && expanded.envelope.result.items.every((item, i, rows) => i === 0 || item.seq! > rows[i - 1]!.seq!), expanded.envelope?.result?.window);
+    const older = await run(["history", "general", "--space", openSpace, "--limit", "2000", "--since", "0", "--grep", "carol 3", "--json"]);
+    check("since and grep can reach past the newest thousand", older.status === 0 && texts(older).includes("carol 3") && older.envelope?.result?.window.reachesSince === true, shown(older));
+    const confined = await talker.channelHistoryPage("general", { limit: 2000 });
+    check("the lifecycle-confined reader also accepts a window beyond a thousand", confined.complete && confined.items.length === 1001, { complete: confined.complete, count: confined.items.length });
+    // Every bounded window tells the reader how to reach older retained messages.
     const [capPlain, fromCarol] = await Promise.all([
       run(["history", "general", "--space", openSpace, "--limit", "1000", "--plain"]),
       run(["history", "general", "--space", openSpace, "--limit", "1000", "--from", "carol", "--plain"]),
     ]);
-    check("at --limit 1000 the report says history reads at most the newest 1000, and names no larger --limit",
-      capPlain.stdout.includes("older retained messages are not shown; history reads at most the newest 1000\n") && !capPlain.stdout.includes("raise --limit"), shown(capPlain));
-    check("below it the report still names the raise", gapPlain.stdout.includes("older retained messages are not shown; raise --limit (up to 1000) to read further back\n"), shown(gapPlain));
+    check("at --limit 1000 the report names a larger window",
+      capPlain.stdout.includes("older retained messages are not shown; raise --limit to read further back\n"), shown(capPlain));
+    check("below it the report still names the raise", gapPlain.stdout.includes("older retained messages are not shown; raise --limit to read further back\n"), shown(gapPlain));
     check("--from with older retained messages says it searched only the messages read",
       fromCarol.status === 0 && fromCarol.stdout.includes("--from carol searched only the 1000 read; older retained messages were not searched\n"), shown(fromCarol));
   }
