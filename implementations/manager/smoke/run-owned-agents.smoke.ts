@@ -616,8 +616,14 @@ try {
   }
   const directForeign = await manager.startAgent({ name: "b_content", config: join(root, ".cotal", "agents", "b_content.md") }, `${owner}.cli`);
   check("U4 persona direct config path refuses foreign content without owner disclosure", !directForeign.ok && directForeign.error === 'no persona "b_content"');
-  const held = manager as unknown as { agents: Map<string, unknown>; reserved: Set<string>; goalAcceptances: Map<string, { name: string }> };
-  check("U4 persona foreign refusal precedes connector enrollment goal acceptance and reservation", connectorResolutions === beforeForeign.connectorResolutions && enrollments === beforeForeign.enrollments && !held.agents.has("b_content") && !held.reserved.has("b_content") && ![...held.goalAcceptances.values()].some((a) => a.name === "b_content"));
+  const held = manager as unknown as {
+    agents: Map<string, unknown>;
+    goalAcceptances: Map<string, { name: string }>;
+    namesCapacity: {
+      reserved: Set<string>;
+    };
+  };
+  check("U4 persona foreign refusal precedes connector enrollment goal acceptance and reservation", connectorResolutions === beforeForeign.connectorResolutions && enrollments === beforeForeign.enrollments && !held.agents.has("b_content") && !held.namesCapacity.reserved.has("b_content") && ![...held.goalAcceptances.values()].some((a) => a.name === "b_content"));
   const sameOwnerDefined = await endpoint.invokeService("manager", "define-persona", { name: "a_content", persona: "A's private content", agent: "u4-seat" });
   check("U4 persona same-principal definition stays launchable to its admitted non-admin run", sameOwnerDefined.reply.ok);
   const sameOwnerRun = await start('await spawn("a_content");');

@@ -96,7 +96,6 @@ type Seat = { id: string; name: string; lifecycleUid: string; issued?: { generat
 type Internals = {
   managerInstanceId: string;
   agents: Map<string, Seat>;
-  freeSlot: (a: unknown, floor: boolean, cause: FreeSlotCause) => void;
   driveStaticRetirement: (a: unknown, surfaceFailure?: boolean) => Promise<void>;
   inventoryReferenceError: (entry: ManagerResumeAgent) => string | undefined;
   resumeEntryOf: (a: Seat) => ManagerResumeAgent;
@@ -107,6 +106,9 @@ type Internals = {
     retiring: Map<string, { lastError?: string }>;
     deprovision: (a: unknown) => Promise<void>;
     deprovisioningFlight: Map<string, Promise<void>>;
+  };
+  namesCapacity: {
+    freeSlot: (a: unknown, floor: boolean, cause: FreeSlotCause) => void;
   };
 };
 
@@ -498,7 +500,7 @@ try {
     const d = okData(await spawnAs(undefined, "kept", { persona: { prompt: "x" } }));
     const seat = seatOf(S.M, "kept")!;
     seat.suppressCleanup = true;
-    S.M.freeSlot(seat, false, "process-exit");
+    S.M.namesCapacity.freeSlot(seat, false, "process-exit");
     check("a preservation cut keeps the snapshot", existsSync(inlineSnapshotPath(workspaceRoot, d!.lifecycleUid)));
   }
   {
