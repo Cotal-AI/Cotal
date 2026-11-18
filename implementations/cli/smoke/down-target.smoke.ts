@@ -7,7 +7,7 @@
  * Hermetic (no broker): COTAL_HOME and the temp root are sandboxed, meshes are recorded straight
  * into the registry, and the dashboard is a real SIGTERM-able child whose pid sits in the mesh
  * root's web.pid. The same public `down()` surface also proves both no-token manager policy branches
- * and the pinned-mismatch refusal on a bare down of a stack `cotal up` recorded at its root. This
+ * and pinned stale-record cleanup on a bare down of a stack `cotal up` recorded at its root. This
  * existing CI-selected suite remains the integration owner.
  * Run: pnpm smoke:down-target
  */
@@ -467,6 +467,19 @@ try {
   );
   check("a dead pinned manager record bypasses the pre-signal policy hook", !hookCalled);
   check("a dead pinned manager record clears both pid and identity files", !existsSync(deadPidPath) && !existsSync(`${deadPidPath}.identity`));
+  const changed = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  spawnedChildren.push(changed);
+  const changedPid = changed.pid!;
+  writeFileSync(deadPidPath, String(changedPid), { mode: 0o600 });
+  writeIdentityPin(deadPidPath, changedPid);
+  await assert.rejects(stopLocalProcess(
+    { kind: "local-process", name: "fixture", label: "fixture", pidFile: "manager.pid" },
+    { root: deadRoot, space: "main" },
+    { beforeSignal: () => { writeFileSync(`${deadPidPath}.identity`, `${changedPid} replacement-pin`, { mode: 0o600 }); } },
+  ), /changed during shutdown/);
+  check("a change to the pin after stop authorization preserves the record and sends no signal",
+    alive(changedPid) && readFileSync(deadPidPath, "utf8") === String(changedPid) && readFileSync(`${deadPidPath}.identity`, "utf8") === `${changedPid} replacement-pin`);
+  changed.kill("SIGKILL");
   rmSync(deadRoot, { recursive: true, force: true });
 
   // A broker with no nats.pid was not started by this stack. When the folder's registered broker

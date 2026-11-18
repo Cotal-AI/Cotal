@@ -39,6 +39,7 @@ const TSX = pjoin(WT, "node_modules", ".bin", "tsx");
 const SPACE = "join-guidance";
 const root = mkdtempSync(pjoin(tmpdir(), `${SMOKE_BROKER_TOKEN}joinguid-root-`));
 const home = mkdtempSync(pjoin(tmpdir(), "cotal-joinguid-home-"));
+const exportsDir = mkdtempSync(pjoin(tmpdir(), "cotal-joinguid-exports-"));
 mkdirSync(pjoin(root, ".cotal"), { recursive: true });
 
 let pass = 0, fail = 0;
@@ -103,7 +104,7 @@ try {
   // authority a durable join needs. The broker itself issues the permission denial: the same class
   // the reported incident produced when the responder was unbound. Nothing here fakes an error.
   const foreign = pjoin(root, "foreign.creds");
-  writeFileSync(foreign, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
+  writeFileSync(foreign, await mintCreds(auth, newIdentity(), "delivery"), { mode: 0o600 });
 
   // `--creds` is lifecycle-paired (SPEC 13.1), so the uid is minted and passed: without it the CLI
   // refuses BEFORE dialing and the cell would grade an argument error rather than a broker denial.
@@ -163,6 +164,26 @@ try {
     bare.status === 2 && /Code: +TARGET_NOT_FOUND/.test(bare.text) && bare.text.includes(`no inbox provisioned for this credential's lifecycle ${unprovisionedUid}`) &&
       bare.text.includes("cotal auth mint <name> --provision") && !/run `cotal up`/.test(bare.text), bare.text);
 
+  // CELL 6 (#7531): observer and admin credentials refuse before lifecycle pairing or dialing, naming
+  // the required agent profile and provisioning command rather than demanding --lifecycle-uid,
+  // blaming the delivery daemon, or failing with dm-durable-missing.
+  for (const profile of ["observer", "admin"] as const) {
+    const profFile = pjoin(exportsDir, `${profile}.creds`);
+    const minted = cli("auth", "mint", `join_${profile}`, "--profile", profile, "--out", profFile);
+    check(`fixture: auth mint --profile ${profile} writes credential`, minted.status === 0, minted.text);
+    const noUid = cli("join", "--space", SPACE, "--server", server, "--creds", profFile, "--name", "probe");
+    const withUid = cli("join", "--space", SPACE, "--server", server, "--creds", profFile, "--lifecycle-uid", uid, "--name", "probe", "--channel", "general");
+    for (const [label, res] of [["without --lifecycle-uid", noUid], ["with --lifecycle-uid", withUid]] as const) {
+      check(`CELL: ${profile} credential ${label} refuses PERMISSION_DENIED (exit 2) naming the agent mint`,
+        res.status === 2 &&
+          /Code: +PERMISSION_DENIED/.test(res.text) &&
+          res.text.includes(`an ${profile}-profile credential cannot join as a mesh participant`) &&
+          res.text.includes("cotal auth mint <name> --provision --allow-subscribe general --out <file>") &&
+          !/lifecycle-paired|DELIVERY DAEMON|dm-durable-missing/i.test(res.text),
+        { status: res.status, out: res.text });
+    }
+  }
+
   console.log(fail === 0
     ? `\nJOIN DENIAL GUIDANCE SMOKE OK ✅  (${pass} passed, ${fail} failed)`
     : `\nJOIN DENIAL GUIDANCE SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
@@ -175,6 +196,7 @@ try {
   if (broker !== undefined) await killAndAwaitExit(broker);
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
+  rmSync(exportsDir, { recursive: true, force: true });
   // Released LAST, once the paths are gone, so the signal backstop stays armed for the whole window
   // in which there is still something to clean up.
   releaseBroker?.();

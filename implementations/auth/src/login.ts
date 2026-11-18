@@ -707,6 +707,11 @@ async function discoverAdvertisement(state: CatalogAccountState, session: IdpSes
   };
 }
 
+/** Retained account identities, including signed-out holders. No session proofs are returned. */
+export function knownMachineAccounts(dir: string): AuthSpaceCatalogAccount[] {
+  return Object.values(readCatalogsFile(dir).accounts).map(accountView);
+}
+
 /** Account identities available to a machine client. Session proofs stay inside this module. */
 export function signedInMachineAccounts(dir: string): AuthSpaceCatalogAccount[] {
   const { sessions, file } = readCatalogPreparationState(dir);

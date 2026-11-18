@@ -335,8 +335,11 @@ try {
       ]),
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
+      COTAL_MANAGER_INSTANCE: "j".repeat(30),
       COTAL_NAME: "jcodepeer",
       COTAL_ID: "jcodepeer",
+      COTAL_LIFECYCLE_UID: "k".repeat(30),
+      COTAL_HOME: join(root, "cotal-home"),
       COTAL_SERVERS: servers,
       COTAL_SUBSCRIBE: "team",
       COTAL_ALLOW_SUBSCRIBE: "team",
@@ -372,7 +375,27 @@ try {
   );
   const argv = entries().find((entry) => entry.ev === "argv") as { argv?: string[]; env?: Record<string, string> };
   check("host uses api-bridge with its private socket", argv.argv?.[0] === "api-bridge" && argv.argv?.[1] === "--api-socket", argv);
-  check("host scrubs Cotal material before launching Jcode", Object.keys(argv.env ?? {}).every((key) => !key.startsWith("COTAL_")), argv.env);
+  const allowedSeatCotal = new Set([
+    "COTAL_SPACE",
+    "COTAL_MANAGER_INSTANCE",
+    "COTAL_NAME",
+    "COTAL_ID",
+    "COTAL_LIFECYCLE_UID",
+    "COTAL_ACCEPTED_TOKEN",
+    "COTAL_HOME",
+  ]);
+  check(
+    "host scrubs Cotal material before launching Jcode while preserving seat attribution (#7594)",
+    Object.keys(argv.env ?? {}).filter((key) => key.startsWith("COTAL_")).every((key) => allowedSeatCotal.has(key)) &&
+      argv.env?.COTAL_SPACE === "jcodehost" &&
+      argv.env?.COTAL_MANAGER_INSTANCE === "j".repeat(30) &&
+      argv.env?.COTAL_NAME === "jcodepeer" &&
+      argv.env?.COTAL_ID === "jcodepeer" &&
+      argv.env?.COTAL_LIFECYCLE_UID === "k".repeat(30) &&
+      argv.env?.COTAL_ACCEPTED_TOKEN === undefined &&
+      argv.env?.COTAL_HOME === join(root, "cotal-home"),
+    argv.env,
+  );
   check("private JCODE_HOME is passed to the harness", Boolean(argv.env?.JCODE_HOME?.includes("/tmp/jc-") && argv.env?.JCODE_HOME?.endsWith("/home")), argv.env);
   check("host disables SDK symlinked credential inheritance", argv.env?.JCODE_HOME !== undefined && !Object.keys(argv.env ?? {}).some((key) => key === "COTAL_JCODE_HOME"), argv.env);
   // A seat that updates its own binary restarts its process tree, which drops the only connection

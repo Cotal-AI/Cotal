@@ -81,6 +81,7 @@ export {
   hasIdpSpaceCatalog,
   prepareIdpSpaceCatalogs,
   signedInMachineAccounts,
+  knownMachineAccounts,
   requestAccountMachine,
   requireIdpSession,
   normalizeIdpUrl,

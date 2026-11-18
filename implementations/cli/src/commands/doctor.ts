@@ -173,12 +173,12 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   let auth: Awaited<ReturnType<typeof getSpaceAuth>>;
   try { auth = values.space ? await getSpaceAuth(workspaceSecretStore(root), values.space) : await getSoleSpaceAuth(workspaceSecretStore(root), authDir(root)); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the local authority inventory could not be validated; no repair was attempted", { target: { root, space: values.space ?? null } }); }
+  const open = recordedOpenSpace(root, values.space ?? auth?.space);
+  if (open !== undefined && (!auth || auth.space === open)) {
+    writeResult(presentationOf(values), { command: "doctor auth", target: { root, space: open }, result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), root, space: open, localFindings: null, credentialScope: "open-space", brokerAuthorization: "not-checked", repair }, noOp: true }, () => ({ sections: [{ title: "No credentials to check", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", open], ["Mode", "open, as registered"]] }, { kind: "lines", lines: [{ text: "This space is open: it authenticates no one and issues no credentials, so there are none to check.", tone: "hint" }] }] }] }));
+    return;
+  }
   if (!auth) {
-    const open = recordedOpenSpace(root, values.space);
-    if (open !== undefined) {
-      writeResult(presentationOf(values), { command: "doctor auth", target: { root, space: open }, result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), root, space: open, localFindings: null, credentialScope: "open-space", brokerAuthorization: "not-checked", repair }, noOp: true }, () => ({ sections: [{ title: "No credentials to check", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", open], ["Mode", "open, as registered"]] }, { kind: "lines", lines: [{ text: "This space is open: it authenticates no one and issues no credentials, so there are none to check.", tone: "hint" }] }] }] }));
-      return;
-    }
     if (values.fix || values.space) throw new CommandFailure("refused", "AUTH_REQUIRED", "no validated signing trust for the named local diagnostic scope is present; no open mode or broader authority was inferred", { target: { root, space: values.space ?? null }, remedy: trustRootStep(root, values.space, values.fix === true) });
     writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh.", remedy: trustRootStep(root, undefined, false) } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
     return;
@@ -250,7 +250,12 @@ async function repairDoctorCredentials(root: string, auth: NonNullable<Awaited<R
   try {
     target = resolveMeshTarget(root, { space: auth.space, readOnly: true });
     recordOperationSpace(target.space);
-    if (target.mode !== "auth" || canonicalRoot(target.root) !== canonicalRoot(root) || target.auth?.account.pub !== auth.account.pub) throw new CommandFailure("refused", "CONFLICT", "the resolved repair target differs from this local static authority; no broader root or auth mode was substituted");
+    if (target.mode !== "auth" || canonicalRoot(target.root) !== canonicalRoot(root) || target.auth?.account.pub !== auth.account.pub) {
+      const remedy = canonicalRoot(target.root) !== canonicalRoot(root)
+        ? `run \`${displayCmd()} doctor auth --space ${auth.space} --fix\` in ${target.root}, where "${auth.space}" is registered`
+        : `inspect the registration and local authority for "${auth.space}" with \`${displayCmd()} status\` before repairing credentials`;
+      throw new CommandFailure("refused", "CONFLICT", "the resolved repair target differs from this local static authority; no broader root or auth mode was substituted", { target: { root, space: auth.space }, remedy });
+    }
     const preflight = await preflightTarget(target);
     if (!preflight.ok) {
       if (preflight.kind.includes("creds") || preflight.kind === "stale-auth") throw new CommandFailure("refused", "AUTH_REQUIRED", "the selected broker's authenticated preflight failed; it was not called an offline repair target");
@@ -343,9 +348,11 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
     try { claims = credsClaims(bytes.toString("utf8")); } catch { rows.push(row); continue; }
     const health = inspectCredHealth(bytes.toString("utf8"));
     const profile = entry.profile === "agent" ? "" : ` --profile ${entry.profile}`;
+    const provision = entry.profile === "agent" && entry.provisioned === true ? " --provision" : "";
+    const quotedPath = shellWord(entry.path);
     // A new key holds only the grants its mint names, so the mint names the ones this file holds.
     const grants = entry.profile === "agent" && claims.name === "agent" ? agentGrants(claims.nats ?? {}, auth.space) : undefined;
-    const fresh = `mint a new key${grants ? " with the grants this file holds" : ""}: \`${cmd} auth mint ${entry.label}${profile}${grants ? grantMintFlags(grants) : ""} --out <new file>\``;
+    const fresh = `mint a new key${grants ? " with the grants this file holds" : ""}: \`${cmd} auth mint ${entry.label}${profile}${provision}${grants ? grantMintFlags(grants) : ""} --out <new file>\``;
     const revokedAt = claims.sub === undefined ? undefined : revocations[claims.sub];
     Object.assign(row, { state: health.state, issuedAt: claims.iat ?? null, expiresAt: claims.exp ?? null });
     if ((claims.nats?.issuer_account ?? claims.iss) !== auth.account.pub)
@@ -353,7 +360,7 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
     else if (revokedAt !== undefined && (claims.iat === undefined || claims.iat <= revokedAt))
       Object.assign(row, { state: "revoked", revokedAt, repair: `its key was revoked at ${at(revokedAt)}, and auth mint --identity refuses that key; ${fresh}` });
     else if (health.state === "expired" || health.state === "near-expiry")
-      row.repair = `\`${cmd} auth mint ${entry.label}${profile} --identity ${entry.path} --out ${entry.path}\` signs the same key again${entry.profile === "agent" ? " with the same grants" : ""}`;
+      row.repair = `\`${cmd} auth mint ${entry.label}${profile}${provision} --identity ${quotedPath} --out ${quotedPath}\` signs the same key again${entry.profile === "agent" ? ` with the same grants${provision ? " and provisions its new lifecycle" : ""}` : ""}`;
     rows.push(row);
   }
   return rows.sort((x, y) => x.label.localeCompare(y.label) || x.path.localeCompare(y.path));
