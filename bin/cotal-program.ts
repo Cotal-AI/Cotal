@@ -42,9 +42,11 @@ if (process.platform === "linux") {
   const report = process.report as NodeJS.ProcessReport & { excludeNetwork: boolean };
   const excludeNetwork = report.excludeNetwork;
   report.excludeNetwork = true;
-  const { header } = report.getReport() as { header: { glibcVersionRuntime?: string } };
+  const { header } = report.getReport() as { header: { glibcVersionRuntime?: string; glibcVersionCompiler?: string } };
   report.excludeNetwork = excludeNetwork;
-  if (!header.glibcVersionRuntime) {
+  // Static glibc builds cannot resolve gnu_get_libc_version through dlsym.
+  const glibcVersion = header.glibcVersionRuntime ?? header.glibcVersionCompiler;
+  if (typeof glibcVersion !== "string" || !/^\d+\.\d+$/.test(glibcVersion)) {
     process.stderr.write("Cotal requires glibc on Linux. Alpine and other musl distributions are not supported. Use a glibc distribution or container such as Debian, Ubuntu, or Fedora.\n");
     await refuseStartup();
   }

@@ -20,8 +20,8 @@ mkdirSync(env.XDG_RUNTIME_DIR, { mode: 0o700 });
 
 for (const [name, header] of [
   ["missing", {}],
-  ["compiler-only", { glibcVersionCompiler: "2.39" }],
   ["empty", { glibcVersionRuntime: "" }],
+  ["musl", { glibcVersionRuntime: "musl", glibcVersionCompiler: "2.39" }],
 ] as const) {
   const preload = join(scratch, `${name}.mjs`);
   writeFileSync(preload, `Object.defineProperty(process, "platform", { value: "linux" });
@@ -53,7 +53,18 @@ process.report.getReport = () => ({ header: ${JSON.stringify(header)} });\n`);
   }
 }
 
-const version = spawnSync(process.execPath, [entry, "--version"], { env, cwd: scratch, encoding: "utf8", timeout: 15_000 });
-assert.equal(version.status, 0, version.stderr);
-assert.match(version.stdout, /^cotal-ai \d+\.\d+\.\d+/);
-console.log("PASS: host platform starts and reports the version");
+for (const [name, header] of [
+  ["static-glibc", { glibcVersionCompiler: "2.39" }],
+  ["dynamic-glibc", { glibcVersionRuntime: "2.43", glibcVersionCompiler: "2.39" }],
+  ["host", null],
+] as const) {
+  const preload = join(scratch, `${name}.mjs`);
+  writeFileSync(preload, header ? `Object.defineProperty(process, "platform", { value: "linux" });
+process.report.getReport = () => ({ header: ${JSON.stringify(header)} });\n` : "");
+  const version = spawnSync(process.execPath, ["--import", preload, entry, "--version"], { env, cwd: scratch, encoding: "utf8", timeout: 15_000 });
+  assert.equal(version.error, undefined);
+  assert.equal(version.signal, null);
+  assert.equal(version.status, 0, version.stderr);
+  assert.match(version.stdout, /^cotal-ai \d+\.\d+\.\d+/);
+  console.log(`PASS: ${name} starts and reports the version`);
+}
