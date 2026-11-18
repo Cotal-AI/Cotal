@@ -9,6 +9,7 @@ import {
   CorruptExtensionPackageError,
   SEEDED_EXTENSIONS,
   bindExtensionPeers,
+  connectorConfigDir,
   connectorMetadataStale,
   extensionPackageDir,
   extensionsDir,
@@ -109,7 +110,7 @@ export class SeedChildFailure extends Error {
 
 /** Auto reconcile for the boot gate: silent no-op when the stamp is current and healthy. */
 export async function reconcileSeededConnectors(): Promise<void> {
-  await reconcile("auto");
+  await reconcile("auto", true);
 }
 
 /** Whether the seed journal, authority and installed built-in payloads need no package repair. */
@@ -150,7 +151,7 @@ export async function runSeed(flags: SeedFlags): Promise<void> {
 
 const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], verified: [], removedKept: [] };
 
-async function reconcile(mode: Mode): Promise<ReconcileResult> {
+async function reconcile(mode: Mode, automatic = false): Promise<ReconcileResult> {
   if (waitForUpdateClosure()) {
     if (process.env.COTAL_UPDATE_REEXEC === "1") throw new Error("another Cotal update finished while this command waited; run the command again");
     console.error("Cotal update finished; restarting command with the installed CLI");
@@ -166,10 +167,10 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
     if (result.signal) { process.kill(process.pid, result.signal); await new Promise(() => {}); }
     process.exit(result.code ?? 1);
   }
-  return reconcileUnderClosure(mode);
+  return reconcileUnderClosure(mode, automatic);
 }
 
-async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
+async function reconcileUnderClosure(mode: Mode, automatic: boolean): Promise<ReconcileResult> {
   inheritConnectorConfig();
   const generation = seedGeneration();
   // Cheap lock-free pre-check: the steady state (stamp current, authority intact) is the common case
@@ -189,17 +190,17 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
           throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
         const migration = cursor ? interruptedUpgrade(cursor, generation) : undefined;
         if (child.kind === "stale") {
-          await reconcile("repair");
+          await reconcile("repair", automatic);
           return NOOP;
         }
         if (migration && cursor) {
-          console.error(
+          if (!automatic) console.error(
             c.dim(
               `resuming ${cursor.failed ? "a failed" : "an interrupted"} connector upgrade (seed store ${migration.from} -> ${generation}; ` +
                 `package "${cursor.package}", phase ${cursor.phase}) …`,
             ),
           );
-          await reconcile("repair");
+          await reconcile("repair", automatic);
           return NOOP;
         }
         if (cursor?.failed) throw failedSeed(cursor);
@@ -227,8 +228,17 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
   const releaseClosure = claimUpdateClosureAccess();
   try {
   assertReleasedSeedWriter(generation, "reconcile");
-  if (mode === "auto" && readStamp()?.generation !== undefined && readStamp()?.generation !== generation)
-    await assertAutomaticSeedManagers(generation);
+  if ((mode === "auto" || automatic) && readStamp()?.generation !== undefined && readStamp()?.generation !== generation) {
+    // Validate the selected prefix before treating a Manager observation failure as a hold.
+    connectorConfigDir();
+    try { await assertAutomaticSeedManagers(generation); }
+    catch (error) {
+      if (!automatic) throw error;
+      const detail = (error instanceof Error ? error.message : String(error)).split(/[\r\n;]/, 1)[0]!.trim();
+      console.error(`${detail || "A local Manager could not be identified"}; its connectors stay at their existing version until the Manager is restarted`);
+      return NOOP;
+    }
+  }
   const lock = acquireReconcileLock();
   try {
     // Claim the mutation lock INSIDE the reconcile lock's finally: if it throws (an operator `cotal

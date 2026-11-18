@@ -10,12 +10,17 @@ export async function assertAutomaticSeedManagers(generation: string): Promise<v
   if (connectorConfigDir() !== globalConfigDir()) return;
   for (const manager of recordedUpdateManagers({}, logicalExecutionEntry() ?? entryScript())) {
     if (!manager.process || assertRecordIdentity(manager.process).kind !== "match")
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a local Manager changed before connector reconciliation; no connectors were changed");
-    const target = await resolveControlTarget({ space: manager.space, server: manager.server }, "control-caller-admin", manager.instanceId, { onRefusal: "throw", readOnly: true });
-    const { cliControl } = await import("../lib/control.js");
-    const reply = await askManager(cliControl, target.space, target.server, "managerStatus", undefined, target.auth, "owner", undefined, { instanceId: manager.instanceId });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `Manager ${manager.instanceId} in ${manager.space} changed before connector reconciliation; no connectors were changed`);
+    let reply;
+    try {
+      const target = await resolveControlTarget({ space: manager.space, server: manager.server }, "control-caller-admin", manager.instanceId, { onRefusal: "throw", readOnly: true });
+      const { cliControl } = await import("../lib/control.js");
+      reply = await askManager(cliControl, target.space, target.server, "managerStatus", undefined, target.auth, "owner", undefined, { instanceId: manager.instanceId });
+    } catch {
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `Manager ${manager.instanceId} in ${manager.space} could not confirm its running generation; no connectors were changed`);
+    }
     if (!reply.ok || assertRecordIdentity(manager.process).kind !== "match")
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `Manager ${manager.instanceId} could not confirm its running generation; no connectors were changed`);
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `Manager ${manager.instanceId} in ${manager.space} could not confirm its running generation; no connectors were changed`);
     const version = (reply.data as { version?: unknown } | undefined)?.version;
     if (version !== generation)
       throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `Manager ${manager.instanceId} in ${manager.space} still runs Cotal ${typeof version === "string" ? version : "an unidentified version"}; automatic connector reconciliation left this home's extensions unchanged`);
