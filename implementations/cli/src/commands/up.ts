@@ -2362,12 +2362,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // `-js -sd … -p … -a …`, which never called a renderer at all — so the required transport union
   // protected the auth path and was silent on the open one, and a cert/key pair passed to an
   // open-mode `up` would have been accepted while the listener came up in cleartext.
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { port, host, transport, maxFileStore, maxPayload: brokerMaxPayload });
+  const renderingBinary = setup?.brokerBinary ?? await resolveNatsServer();
+  if (!renderingBinary.version) throw new Error(`Cannot read nats-server version from ${renderingBinary.path}; refusing to render broker configuration`);
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore, maxPayload: brokerMaxPayload });
   const natsArgs = [
     "-c", confPath,
     ...(boundListener ? ["--name", boundListener.serverName] : []),
   ];
-  const natsServer = await resolveNatsServer();
+  const natsServer = renderingBinary;
   const bin = natsServer.path;
   await seedBeforeLaunch();
 
@@ -4318,14 +4320,16 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   const port = Number(new URL(server).port) || 4222;
   // Same rule as the foreground path: every route to a listener names its transport (see
   // `writeOpenBrokerConf`). Detach must not be the mode where the fence quietly does not apply.
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { port, host, transport, maxFileStore: opts.maxFileStore, maxPayload, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum });
+  const renderingBinary = setup?.brokerBinary ?? await resolveNatsServer();
+  if (!renderingBinary.version) throw new Error(`Cannot read nats-server version from ${renderingBinary.path}; refusing to render broker configuration`);
+  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore: opts.maxFileStore, maxPayload, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum });
   // Trust preparation awaits; the pinned store is checked again before its config is handed back.
   if (opts.existingStore) recheckExistingStore(opts.existingStore, { space, storeDir });
   const args = [
     "-c", confPath,
     ...(opts.boundListener ? ["--name", opts.boundListener.serverName] : []),
   ];
-  const { path: bin, source, version } = await resolveNatsServer();
+  const { path: bin, source, version } = renderingBinary;
   return { root, server, space, useAuth, storeDir, seedFile, host, transport, setup, maxPayload, confPath, args, bin, source, version };
 }
 
@@ -5595,11 +5599,11 @@ function checkStartStore(storeDir: string | undefined, space: string): void {
  * mode through a renderer is what makes the union total: there is now no route to a listener that
  * does not state its transport.
  */
-function writeOpenBrokerConf(storeDir: string, space: string, opts: { port: number; host: string; transport: BrokerTransport; maxFileStore?: number; maxPayload?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number }): string {
+function writeOpenBrokerConf(storeDir: string, space: string, opts: { brokerVersion: string; port: number; host: string; transport: BrokerTransport; maxFileStore?: number; maxPayload?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number }): string {
   const confPath = cotalPath("server-open.conf");
   writeBrokerConfig(
     confPath,
-    namedOpenConfig(openServerConfig({ port: opts.port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, maxPayload: opts.maxPayload, logFile: opts.logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum, transport: opts.transport }), space),
+    namedOpenConfig(openServerConfig({ brokerVersion: opts.brokerVersion, port: opts.port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, maxPayload: opts.maxPayload, logFile: opts.logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum, transport: opts.transport }), space),
   );
   return confPath;
 }
@@ -5671,7 +5675,7 @@ async function authSetup(
   // rather than two trailing optional numbers: a transposed pair of those renders a wrong
   // configuration in silence.
   requested: { authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; manager?: boolean; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number } = {},
-): Promise<{ confPath: string; creds: string; wsPort: number; moveWebsocketPort: () => Promise<number>; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number; maxPayload?: number; accountResolver: "memory" | "full" }> {
+): Promise<{ brokerBinary: NatsServer; confPath: string; creds: string; wsPort: number; moveWebsocketPort: () => Promise<number>; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number; maxPayload?: number; accountResolver: "memory" | "full" }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());
   let auth: SpaceAuth | undefined = await getSpaceAuth(store, space).catch((error: unknown) => { throw unreadableTrust(error); });
@@ -5800,7 +5804,9 @@ async function authSetup(
   const accountResolver = brokerAccountResolver(cotalRoot(), resolverChoice === "full" ? "full" : undefined);
   // Owner-private like the auth dir: nats-server writes each pushed claim here.
   if (accountResolver.kind === "full") mkSecretDir(accountResolver.directory);
-  const render = (ws: number) => writeBrokerConfig(confPath, serverConfig(auth, spaces, { transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, authTimeout, maxPayload, accountResolver, logFile: requested.logFile, logfileSizeLimit: requested.logfileSizeLimit, logfileMaxNum: requested.logfileMaxNum, host, wsPort: ws, wsHost: host, extraAccounts }));
+  const brokerBinary = await resolveNatsServer();
+  if (!brokerBinary.version) throw new Error(`Cannot read nats-server version from ${brokerBinary.path}; refusing to render broker configuration`);
+  const render = (ws: number) => writeBrokerConfig(confPath, serverConfig(auth, spaces, { brokerVersion: brokerBinary.version!, transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, authTimeout, maxPayload, accountResolver, logFile: requested.logFile, logfileSizeLimit: requested.logfileSizeLimit, logfileMaxNum: requested.logfileMaxNum, host, wsPort: ws, wsHost: host, extraAccounts }));
   render(wsPort);
   // The chosen port is free now, but nothing holds it until the broker binds it. When another process
   // takes it first, the broker exits before readiness, and a controller stack start renders this
@@ -5810,7 +5816,7 @@ async function authSetup(
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.
   const creds = await mintCreds(auth, newIdentity(), "provisioner");
-  return { confPath, creds, wsPort, moveWebsocketPort, ...(prepared ? { prepared, stateDir } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), accountResolver: resolverChoice };
+  return { brokerBinary, confPath, creds, wsPort, moveWebsocketPort, ...(prepared ? { prepared, stateDir } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), accountResolver: resolverChoice };
 }
 
 /**

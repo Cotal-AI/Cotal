@@ -3353,6 +3353,8 @@ export function openServerConfig(opts: {
   port?: number;
   host?: string;
   storeDir: string;
+  /** Version of the broker this configuration targets. Enables version-specific JetStream limits. */
+  brokerVersion?: string;
   /** JetStream file storage cap in bytes (`max_file_store`). Omitted leaves nats-server's dynamic
    *  default. nats-server fixes the cap at start and refuses a reload that changes it. */
   maxFileStore?: number;
@@ -3373,7 +3375,7 @@ export function openServerConfig(opts: {
 host: ${host}
 port: ${port}
 max_control_line: ${MAX_CONTROL_LINE_BYTES}
-${opts.maxPayload !== undefined ? `max_payload: ${opts.maxPayload}\n` : ""}${logBlock}${renderTlsBlock(opts.transport)}${renderJetStreamBlock("openServerConfig", opts.storeDir, opts.maxFileStore)}
+${opts.maxPayload !== undefined ? `max_payload: ${opts.maxPayload}\n` : ""}${logBlock}${renderTlsBlock(opts.transport)}${renderJetStreamBlock("openServerConfig", opts.storeDir, opts.maxFileStore, opts.brokerVersion)}
 `;
 }
 
@@ -3402,17 +3404,21 @@ function renderLogBlock(renderer: string, opts: { logFile?: string; logfileSizeL
 
 /** The exact `jetstream{}` block both broker renderers write for this store and cap, for a caller
  *  that must find or replace it in a rendered configuration. */
-export function brokerJetStreamBlock(storeDir: string, maxFileStore?: number): string {
-  return renderJetStreamBlock("brokerJetStreamBlock", storeDir, maxFileStore);
+export function brokerJetStreamBlock(storeDir: string, maxFileStore?: number, brokerVersion?: string): string {
+  return renderJetStreamBlock("brokerJetStreamBlock", storeDir, maxFileStore, brokerVersion);
 }
 
-/** The one place the `jetstream{}` block is produced, shared by both broker renderers. An unset
- *  cap renders the bare `store_dir` block; a set cap must be a positive integer byte count. */
-function renderJetStreamBlock(renderer: string, storeDir: string, maxFileStore: number | undefined): string {
-  if (maxFileStore === undefined) return `jetstream { store_dir: ${JSON.stringify(storeDir)} }`;
+/** The shared JetStream block. A set file cap must be positive; brokers 2.15 and later
+ *  also need an explicit unlimited default consumer count. */
+function renderJetStreamBlock(renderer: string, storeDir: string, maxFileStore: number | undefined, brokerVersion?: string): string {
+  const version = brokerVersion === undefined ? undefined : /^(\d+)\.(\d+)\.\d+/.exec(brokerVersion);
+  if (brokerVersion !== undefined && !version) throw new Error(`${renderer}: invalid brokerVersion ${JSON.stringify(brokerVersion)}`);
+  const limits = version && (Number(version[1]) > 2 || Number(version[1]) === 2 && Number(version[2]) >= 15)
+    ? ", limits { default_max_consumers: -1 }" : "";
+  if (maxFileStore === undefined) return `jetstream { store_dir: ${JSON.stringify(storeDir)}${limits} }`;
   if (!Number.isSafeInteger(maxFileStore) || maxFileStore <= 0)
     throw new Error(`${renderer}: maxFileStore must be a positive integer number of bytes (got ${String(maxFileStore)})`);
-  return `jetstream { store_dir: ${JSON.stringify(storeDir)}, max_file_store: ${maxFileStore} }`;
+  return `jetstream { store_dir: ${JSON.stringify(storeDir)}, max_file_store: ${maxFileStore}${limits} }`;
 }
 
 /** The one place a `tls{}` block is produced, shared by both broker renderers.
@@ -3474,6 +3480,8 @@ export function serverConfig(
     port?: number;
     host?: string;
     storeDir: string;
+    /** Version of the broker this configuration targets. Enables version-specific JetStream limits. */
+    brokerVersion?: string;
     /** JetStream file storage cap in bytes (`max_file_store`). Omitted leaves nats-server's dynamic
      *  default. nats-server fixes the cap at start and refuses a reload that changes it. */
     maxFileStore?: number;
@@ -3545,7 +3553,7 @@ export function serverConfig(
 host: ${host}
 port: ${port}
 max_control_line: ${MAX_CONTROL_LINE_BYTES}
-${opts.maxPayload === undefined ? "" : `max_payload: ${opts.maxPayload}\n`}${opts.authTimeout === undefined ? "" : `authorization { timeout: ${opts.authTimeout} }\n`}${logBlock}${tlsBlock}${renderJetStreamBlock("serverConfig", opts.storeDir, opts.maxFileStore)}
+${opts.maxPayload === undefined ? "" : `max_payload: ${opts.maxPayload}\n`}${opts.authTimeout === undefined ? "" : `authorization { timeout: ${opts.authTimeout} }\n`}${logBlock}${tlsBlock}${renderJetStreamBlock("serverConfig", opts.storeDir, opts.maxFileStore, opts.brokerVersion)}
 ${websocket}operator: ${broker.operator.jwt}
 system_account: ${broker.sys.pub}
 ${renderAccountResolver(opts.accountResolver)}resolver_preload: {
