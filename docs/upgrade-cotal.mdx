@@ -267,6 +267,11 @@ On Linux, a supervisor in another user's installation or an isolated container d
 custody. A supervisor that resolves to this installation still counts, including one launched
 through sudo. If attribution remains uncertain, update refuses with the process ID, numeric user
 ID and stop command before contacting an unselected remote Manager.
+From 0.167.1, an update run inside another account's controller project leaves that project's
+records and processes untouched and reports that continuity was not checked. It does not borrow
+the account's credentials or reconcile its configuration. Explicit space, server, credential and
+Manager selections keep their normal checks. Run `cotal update` as the normal account afterwards
+to reconcile that account's connectors and extensions.
 On 0.164.6 and older, an unrelated container or another user's Manager can instead produce
 `a manager for this mesh runs on this machine; reading its custody`, followed by
 `running manager continuity check` and a refused manager-caller exchange. That old updater
