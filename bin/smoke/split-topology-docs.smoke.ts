@@ -149,8 +149,9 @@ check(
   /stdio: \["ignore", fd, fd\]/.test(deliveryProc),
 );
 check(
-  "claim 3: docs name project logs and empty journalctl for a oneshot wrapper",
-  recoveryGuide.includes("These logs are under the project's `.cotal/`, not `~/.cotal`") &&
+  "claim 3: docs name the controller's service logs, the legacy launcher's project logs and empty journalctl for a oneshot wrapper",
+  recoveryGuide.includes("These logs live in the Cotal home's service-instance store, not the project's `.cotal/`") &&
+    recoveryGuide.includes("Only the retained legacy launcher writes these files under the mesh's project folder") &&
     operationGuideText.includes("`journalctl -u <unit>` can be empty") &&
     deliveryGuide.includes("does not put those lines in that unit's journal"),
 );
