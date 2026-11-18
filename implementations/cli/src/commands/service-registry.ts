@@ -43,7 +43,8 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (!["list", "show", "add", "remove", "start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode) || extra.length || (mode === "list" ? name !== undefined : mode !== "add" && name === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "use service, or service show/add/remove/start/stop/restart/status/logs/install/uninstall with a definition name");
   if (name !== undefined) localRecordName(name);
   if (args.values.preset !== undefined) {
-    if (mode !== "add" || args.values.file !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--preset belongs to service add and cannot combine with --file");
+    if (mode !== "add") throw new CommandFailure("refused", "USAGE_INVALID", "--preset belongs to service add");
+    if (args.values.file !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--preset belongs to service add and cannot combine with --file");
     const preset = resolveServicePreset(String(args.values.preset));
     const allowed = new Set(["space", "json", "plain", "preset", ...servicePresetFlags(preset).map((flag) => flag.name)]);
     if (Object.keys(args.values).some((name) => !allowed.has(name))) throw new CommandFailure("refused", "USAGE_INVALID", "a supplied flag does not belong to the selected service preset");

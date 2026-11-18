@@ -3,6 +3,7 @@ import { cachedUpdateSummary, jsonFlag, paintFor, writeResult } from "@cotal-ai/
 import { commandSurface } from "../ext-loader.js";
 import { printCommandList, printHelpPath } from "../help.js";
 import { unknownCommandMessage } from "../lib/nearest-word.js";
+import { findServicePreset, servicePresetCommand } from "../lib/service-presets.js";
 import { cliVersion, extensionVersions, readExtensionVersions } from "../lib/version.js";
 import { managerServiceCommand } from "./manager-service.js";
 import { readUpdatePending } from "../lib/update-pending.js";
@@ -20,6 +21,10 @@ export async function help(args: ParsedArgs): Promise<void> {
   if (word === undefined) return paintFor(process.stdout, () => printCommandList(commands));
   const cmd = findCommand(commands, word);
   if (!cmd || cmd.name.startsWith("__")) throw new Error(unknownCommandMessage(commands, word));
+  if (cmd.name === "service" && path.length === 2 && path[0] === "start" && findServicePreset(path[1]!)) {
+    paintFor(process.stdout, () => printHelpPath(servicePresetCommand(cmd, path), ["start"]));
+    return;
+  }
   paintFor(process.stdout, () => printHelpPath(managerServiceCommand(cmd, path)?.cmd ?? cmd, path));
 }
 
