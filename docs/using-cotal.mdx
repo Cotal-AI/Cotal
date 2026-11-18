@@ -62,7 +62,7 @@ cotal use <space>
 cotal who
 ```
 
-Login registers the spaces that authority makes available to you. Selection sets the default target. A running project-local stack takes priority for ordinary commands; a prepared but stopped folder leaves the selected mesh in effect. Use `--space <space>` when the target must be explicit.
+Login registers the spaces that authority makes available to you. An explicit `cotal use` selection applies in every folder, including a running space's project folder. Only an automatically adopted selection yields to a running project-local stack; a prepared but stopped folder leaves the selected mesh in effect. Use `--space <space>` when the target must be explicit.
 
 Run `cotal spawn --foreground --space <space>` to launch locally against that space.
 Without `--foreground`, an interactive spawn can offer a choice when several of your
