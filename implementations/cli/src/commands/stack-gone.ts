@@ -52,7 +52,7 @@ export function goneRootDown(values: ParsedArgs["values"]): { space: string; roo
  *  went with it, and `down --space` stops the stack it left running. Any other refusal as it is. */
 export function goneStackRefusal(failure: CommandFailure): CommandFailure {
   const { space, root } = (failure.target ?? {}) as { space?: unknown; root?: unknown };
-  if (failure.code !== "DEPENDENCY_UNAVAILABLE" || typeof space !== "string" || typeof root !== "string") return failure;
+  if (!["DEPENDENCY_UNAVAILABLE", "TARGET_UNAVAILABLE"].includes(failure.code) || typeof space !== "string" || typeof root !== "string") return failure;
   const gone = goneStackRoot(space);
   if (gone === undefined || canonicalRoot(gone) !== canonicalRoot(root)) return failure;
   return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `space "${space}" started in ${root}, and that folder is gone with the seed it held, so no credential for its stack can be made here`, {
