@@ -199,9 +199,10 @@ A foreground `up` holds the root's maintenance lock only while it starts the sta
 `cotal down` from another terminal can then stop the stack. On a controller stack, foreground `up`
 sees the completed stop or preserve, prints `Foreground stack released` and exits 0. On the
 retained launcher, foreground `up` prints `Foreground stack released` and exits 0 when another
-`cotal down` requested the broker stop, including when it had to force the broker to exit. A broker
-that exits cleanly after startup also releases the terminal. The notice does not report whether
-`down` has updated the mesh registry.
+`cotal down` sent the broker's stop signal, including when it had to force the broker to exit.
+The notice does not report whether `down` has updated the mesh registry. If the stop receipt cannot
+be written, `down` warns and still stops the broker. The foreground command may then report an
+unexpected exit because it cannot verify the stop.
 On a controller stack, Ctrl-C or `SIGTERM` in that terminal runs the same guarded stop as bare
 `cotal down` and exits 130 or 143. A signal while the stack is still starting lets the start settle,
 then runs that stop. If startup fails, the stop still runs before that failure is printed. A hangup,
@@ -273,7 +274,7 @@ its version on the `Broker executable` line, and `--json` carries them as `resul
 The next step is to read that log, then fix the file or take it off PATH, and run `cotal up` again. A
 broker still running when the wait ends leaves the outcome unconfirmed, `OPERATION_UNKNOWN`, exit 3.
 A foreground `up` on the retained launcher stops its members when its broker exits. An unexpected
-exit before startup finishes or an unexpected nonzero or signalled exit ends `up` with exit 5. Its
+broker exit ends `up` with exit 5, even if the broker itself exited 0. Its
 diagnostic names the exit code or signal and reports whether it found that mesh's registration.
 A broker that exits before `up` records the mesh leaves it unrecorded. The next step is to read the
 output above, then fix the file or take it off PATH, and run `cotal up` again.

@@ -7,6 +7,7 @@ import {
   DELIVERY_CREDS_KIND,
   MEMBERSHIP_CONFIG_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
+  NATS_PIDFILE,
   WEB_CREDS_KIND,
   segmentedKey,
   spaceMaterialDir,
@@ -47,6 +48,7 @@ import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { c, stderrLine } from "../ui.js";
 import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { pidfileState, pidfileTargets } from "./down.js";
+import { brokerStopReceiptPath } from "../lib/broker-stop.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { readStackJournal, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
@@ -400,10 +402,11 @@ function possiblyRunning(component: LocalProcess, context: LocalProcessContext, 
 /** Fixed filesystem targets shared by native identity cleanup and its read-only impact plan. */
 export function localIdentityCleanupTargets(root: string, space: string) {
   const control = join(root, ".cotal");
+  const brokerReceipt = brokerStopReceiptPath(join(control, NATS_PIDFILE));
   return {
     material: spaceMaterialDir(root, space), renewal: renewalRecordPath(root, space),
     legacy: [...SYSTEM_CREDS_FILES, MEMBERSHIP_CONFIG_KIND, "renewal.json"].map((name) => join(control, name)),
-    runtime: pidfileTargets(space, root).flatMap(([path]) => [path, `${path}.identity`]),
+    runtime: [...pidfileTargets(space, root).flatMap(([path]) => [path, `${path}.identity`]), brokerReceipt, `${brokerReceipt}.lock`, `${brokerReceipt}.lock.reclaim`],
     run: join(control, "run"), auth: authDir(root),
   };
 }

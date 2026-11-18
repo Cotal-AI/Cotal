@@ -11,8 +11,8 @@
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM. An external `down` releases
- * the foreground terminal even if it must kill a wedged broker. A broker that exits cleanly
- * before the retained launcher finishes startup still fails the launch.
+ * the foreground terminal even if it must kill a wedged broker and is interrupted before reaping.
+ * Unrequested broker exits still fail `up`. An unavailable receipt cannot block shutdown.
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -21,11 +21,12 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { channelBucket } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, spaceKey, stopReservationPath, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, formatRecord, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, spaceKey, stopReservationPath, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
 import { checkInheritedPipeCleanup } from "./_foreground-pipe-fixture.js";
+import { brokerStopReceiptPath } from "../src/lib/broker-stop.js";
 import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
@@ -59,7 +60,7 @@ function token(path: string): ProcessIdentityRecord | undefined {
   return pin.kind === "match" ? pin.record : undefined;
 }
 
-async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; exitDuringStartup?: boolean; forceDown?: boolean }): Promise<boolean> {
+async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; exitDuringStartup?: boolean; externalDown?: "forced" | "interrupted" | "unwritable-receipt"; directTerm?: boolean }): Promise<boolean> {
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
   for (const p of [root, home, mesh, join(mesh, ".cotal"), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
@@ -82,6 +83,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
   const state = observeOwnedChild(child);
   const owned = new Map<string, ProcessIdentityRecord>();
   const brokerPath = join(mesh, ".cotal/nats.pid");
+  const receiptPath = brokerStopReceiptPath(brokerPath);
   const registryPath = join(home, "machine", "meshes", `space.${spaceKey(space)}.json`);
   const managerPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: mesh, space });
   const deliveryPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root: mesh, space });
@@ -218,6 +220,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.equal(state.code, 0, "external down releases the foreground terminal with exit 0"); passed++;
       assert.match(err, /Foreground stack released: nats-server exited cleanly\./); passed++;
       assert.doesNotMatch(err, /exited unexpectedly|recorded|repair:/); passed++;
+      assert.equal(existsSync(receiptPath), false, "foreground owner consumed the broker receipt"); passed++;
       assert.equal(await portOpen(port), false, "own-root down closed listener"); passed++;
       assert.equal([...owned.values()].some(live), false, "own-root down removed exact owned births"); passed++;
       console.log(`${refusalBoundary ? "PASS" : "INCONCLUSIVE"} foreground-up-signals ${name}: native startup-capability refusal=${refusalBoundary}, resumed serving, external down released foreground with exit ${state.code}`);
@@ -225,27 +228,80 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
     }
     ownRecords();
     const broker = token(brokerPath); assert.ok(broker && live(broker));
-    if (options.forceDown) {
+    if (options.externalDown === "forced" || options.externalDown === "interrupted") {
       suspended = broker;
       process.kill(broker.pid, "SIGSTOP");
+    }
+    if (options.externalDown) {
       const downArgs = ["down", "--yes"];
       assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
+      if (options.externalDown === "interrupted") {
+        assert.ok(child.pid);
+        child.kill("SIGSTOP");
+        try {
+          const down = spawn(process.execPath, ["--import", tsx, cliEntry, ...downArgs], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
+          const downState = observeOwnedChild(down);
+          let downOut = "", downErr = "";
+          down.stdout?.on("data", (data: Buffer) => { downOut += data.toString(); });
+          down.stderr?.on("data", (data: Buffer) => { downErr += data.toString(); });
+          try {
+            // Wait for forced exit while up cannot reap. Interrupt before down confirms ESRCH.
+            await until(async () => {
+              if (downState.exited || downState.error) throw new Error(`down exited before interruption: ${downErr}`);
+              return !await portOpen(port);
+            }, 45_000, () => downErr, 10);
+            assert.ok(existsSync(stopReservationPath(brokerPath)) && live(broker), "down still waits for the unreaped broker"); passed++;
+            down.kill("SIGTERM");
+            await sleep(50);
+            down.kill("SIGTERM");
+            await waitForOwnedChild(() => downState.closed, 5_000, `${root}: interrupted down streams drained`);
+            assert.equal(downState.code, 143, downErr); passed++;
+            assert.equal(readFileSync(receiptPath, "utf8"), `${formatRecord(broker)}\nSIGKILL`, "the exact delivered SIGKILL outlives down"); passed++;
+          } finally {
+            await finishOwnedChild(down, downState, () => {}, () => [], `${root}: interrupted down`);
+            writeFileSync(join(root, "down.json"), JSON.stringify({ code: downState.code, out: downOut, err: downErr }), { mode: 0o600 });
+          }
+        } finally {
+          if (!state.exited) child.kill("SIGCONT");
+        }
+        await waitForOwnedChild(() => state.closed, 5_000, `${root}: resumed foreground owner streams drained`);
+        assert.equal(state.code, 0, err); passed++;
+        assert.match(err, /Foreground stack released: another command requested the nats-server stop\./); passed++;
+        assert.doesNotMatch(err, /exited unexpectedly|recorded|repair:/); passed++;
+        assert.equal(existsSync(registryPath), true, "interrupted down did not claim or complete registry cleanup"); passed++;
+        assert.equal(existsSync(receiptPath), false, "resumed foreground owner consumed the receipt"); passed++;
+        assert.equal(live(broker), false, "the broker's exact birth is gone"); passed++;
+        console.log(`PASS foreground-up-signals ${name}: interrupted down still explains the forced exit`);
+        return true;
+      }
+      if (options.externalDown === "unwritable-receipt") mkdirSync(receiptPath);
       const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs, 60_000);
       writeFileSync(join(root, "down.json"), JSON.stringify(down), { mode: 0o600 });
       assert.equal(down.code, 0, down.err); passed++;
       assert.ok(down.out.includes(`stopped nats-server (pid ${broker.pid})`), down.out); passed++;
       await waitForOwnedChild(() => state.closed, 5_000, `${root}: external down streams drained`);
-      assert.equal(state.code, 0, `forced external stop releases the terminal: ${err}`); passed++;
-      assert.match(err, /Foreground stack released: another command requested the nats-server stop\./); passed++;
-      assert.doesNotMatch(err, /Trapped "terminated" signal|exited unexpectedly|recorded|repair:/); passed++;
+      if (options.externalDown === "unwritable-receipt") {
+        assert.match(down.err, /could not write the broker stop receipt/); passed++;
+        assert.equal(state.code, 5, "foreground cannot verify the stop without a receipt"); passed++;
+        assert.doesNotMatch(err, /Foreground stack released/); passed++;
+        const clean = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["clean", "all", "--dry-run"]);
+        assert.equal(clean.code, 0, clean.err); passed++;
+        assert.match(clean.out, /\.cotal\/nats\.pid\.stopping\.broker.*stale runtime record/); passed++;
+      } else {
+        assert.equal(state.code, 0, `forced external stop releases the terminal: ${err}`); passed++;
+        assert.match(err, /Foreground stack released: another command requested the nats-server stop\./); passed++;
+        assert.doesNotMatch(err, /Trapped "terminated" signal|exited unexpectedly|recorded|repair:/); passed++;
+        assert.equal(existsSync(receiptPath), false, "foreground owner consumed the forced stop receipt"); passed++;
+      }
       assert.equal(existsSync(stopReservationPath(brokerPath)), false, "down released the stop reservation"); passed++;
       assert.equal(existsSync(registryPath), false, "external down removed the named registration"); passed++;
       assert.equal(await portOpen(port), false, "external down closed the listener"); passed++;
-      assert.equal(live(broker), false, "the suspended broker's exact birth is gone"); passed++;
-      console.log(`PASS foreground-up-signals ${name}: external down stopped the suspended broker, and up exited 0`);
+      assert.equal(live(broker), false, "the broker's exact birth is gone"); passed++;
+      console.log(`PASS foreground-up-signals ${name}: down stopped the broker and completed registry cleanup`);
       return true;
     }
     if (options.crash) process.kill(broker.pid, "SIGKILL");
+    else if (options.directTerm) process.kill(broker.pid, "SIGTERM");
     else {
       assert.ok(child.pid);
       if (options.signal === "SIGTERM") child.kill("SIGTERM");
@@ -261,9 +317,12 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
     // Close can depend on a retained broker's pipes. Never wait unboundedly before cleanup.
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: successful owner streams drained`);
     assert.equal(await portOpen(port), false, "the owned broker listener closed"); passed++;
-    if (options.crash) {
+    if (options.crash || options.directTerm) {
       assert.equal(state.code, 5, "unexpected broker loss remains a failed run"); passed++;
-      assert.ok(err.includes(`nats-server exited unexpectedly (signal SIGKILL); the mesh "${space}" is still recorded;`), err); passed++;
+      const detail = options.crash ? "signal SIGKILL" : "code 0";
+      assert.ok(err.includes(`nats-server exited unexpectedly (${detail}); the mesh "${space}" is still recorded;`), err); passed++;
+      assert.ok(err.includes(`repair: \`cotal up --server nats://127.0.0.1:${port} --space ${space}\``), err); passed++;
+      assert.equal(existsSync(registryPath), true, "unrequested exit kept its registration"); passed++;
       assert.doesNotMatch(err, /Foreground stack released/); passed++;
     } else {
       const signalExit = options.signal === "SIGTERM" ? 143 : 130;
@@ -539,7 +598,10 @@ async function controllerHoldCell(): Promise<void> {
 
 console.log(`foreground-up-signals retained evidence: ${base}`);
 await cell("exit-during-startup", { exitDuringStartup: true });
-await cell("forced-external-down", { forceDown: true });
+await cell("forced-external-down", { externalDown: "forced" });
+await cell("interrupted-external-down", { externalDown: "interrupted" });
+await cell("unwritable-stop-receipt", { externalDown: "unwritable-receipt" });
+await cell("direct-broker-term", { directTerm: true });
 await cell("crash", { crash: true });
 await checkInheritedPipeCleanup();
 passed += 10;

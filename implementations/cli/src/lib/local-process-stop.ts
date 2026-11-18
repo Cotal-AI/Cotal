@@ -41,19 +41,18 @@ export function unattributableRecordSteps(label: string, path: string): { check:
   };
 }
 
+type StopTarget = { pid: number; token: string } | { pid: number; token?: undefined };
+
 export interface StopLocalProcessOptions {
   /** Runs while this caller holds the `.stopping` reservation, after exact target verification and
    * immediately before the stop request. Throwing aborts without signalling and preserves the pid record. */
-  beforeSignal?: (attempt: {
-    target: { pid: number; token: string } | { pid: number; token?: undefined };
-    stopper: { pid: number; marker: string };
-  }) => void;
+  beforeSignal?: (attempt: { target: StopTarget; stopper: { pid: number; marker: string } }) => void;
   /** Runs, still under the reservation, when a stop that entered `beforeSignal` ends without a
    * confirmed stop. It undoes what `beforeSignal` published: done after the reservation is released,
    * the undo could remove what the next stop to take the reservation published. */
   afterFailedSignal?: () => void;
-  /** Runs under the same reservation after a signalled process's exit is confirmed. */
-  afterConfirmedStop?: () => void;
+  /** Wrap the verified signal send under the stop reservation, preserving its result. */
+  signal?: (target: StopTarget, signal: "SIGTERM" | "SIGKILL", send: () => void) => void;
   /** The pid the caller decided to stop. A record naming another pid, an absent record or an empty
    *  husk cannot confirm that target stopped. Leave those records and artifacts untouched and return false. */
   pid?: number;
@@ -208,9 +207,14 @@ export async function stopLocalProcess(
       stopper: { pid: process.pid, marker },
     };
     options.beforeSignal?.(attempt);
+    const signalProcess = (signal: "SIGTERM" | "SIGKILL") => {
+      const send = () => { process.kill(pid, signal); };
+      if (options.signal) options.signal(attempt.target, signal, send);
+      else send();
+    };
     try {
       if (cooperative) cleanupRequest = requestLocalStop(pidPath, attempt);
-      else process.kill(pid, "SIGTERM");
+      else signalProcess("SIGTERM");
     } catch (e) {
       // ONLY an ESRCH proves the process is already gone (safe to clear). EPERM (exists, another
       // user's) or any other errno (EIO, argument errors, unknown) means we could NOT confirm death
@@ -231,14 +235,13 @@ export async function stopLocalProcess(
     const graceDeadline = Date.now() + (cooperative ? 20_000 : 15_000);
     while (probeLiveness(pid) !== "dead" && Date.now() < graceDeadline) await sleep(100);
     if (probeLiveness(pid) !== "dead") {
-      try { process.kill(pid, "SIGKILL"); } catch { /* raced to exit */ }
+      try { signalProcess("SIGKILL"); } catch { /* raced to exit */ }
       const hardDeadline = Date.now() + 3_000;
       while (probeLiveness(pid) !== "dead" && Date.now() < hardDeadline) await sleep(100);
     }
     if (probeLiveness(pid) !== "dead")
       throw new Error(`${component.label} (pid ${pid}) did not exit, or its death could not be confirmed; its pidfile was preserved`);
     stopped = true;
-    options.afterConfirmedStop?.();
     console.log(c.green(`✓ stopped ${component.label} (pid ${pid})`));
     return true;
   } finally {

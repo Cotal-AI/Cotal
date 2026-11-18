@@ -1,55 +1,68 @@
-import { lstatSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { writeSecretFileAtomic } from "@cotal-ai/core";
-import { assertRecordIdentity, canonicalLocalProcessPath, formatRecord, identityRecord, NATS_PIDFILE, parsePid, parseRecord, readContainedRecord, stopReservationPath, type LocalProcess, type LocalProcessContext, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { acquireLock, canonicalLocalProcessPath, formatRecord, NATS_PIDFILE, readContainedRecord, stopReservationPath, type LocalProcess, type LocalProcessContext, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { stopLocalProcess } from "./local-process-stop.js";
 
-const intentPath = (pidPath: string): string => `${stopReservationPath(pidPath)}.broker`;
+export const brokerStopReceiptPath = (pidPath: string): string => `${stopReservationPath(pidPath)}.broker`;
 
-function reservationIdentity(path: string): string | undefined {
-  const stat = lstatSync(path, { bigint: true, throwIfNoEntry: false });
-  return stat?.isFile() ? `${stat.dev}:${stat.ino}` : undefined;
+/** Receipt I/O is diagnostic, not stop authority. Its failures cannot block the verified signal
+ * or turn a confirmed broker exit into a failed stop. */
+function receiptIo<T>(operation: string, run: () => T): T | undefined {
+  try { return run(); }
+  catch (error) { console.error(`! could not ${operation} the broker stop receipt: ${(error as Error).message}`); }
 }
 
-/** Publish a broker stop request only after the stop verifies its target. The reservation covers
- * the pending request, and confirmed exits leave a receipt for a delayed foreground launcher. */
+function lockReceipt(root: string, path: string) {
+  const lockPath = `${path}.lock`;
+  const lock = readContainedRecord(root, lockPath);
+  if (lock.state === "unread") throw new Error(`${lock.at} is ${lock.why}`);
+  return acquireLock(lockPath, { waitMs: 1000, pollMs: 10, label: "the broker stop receipt lock" });
+}
+
+/** Publish only after sending the signal, without waiting for the broker to be reaped. The reader
+ * takes the same lock, so even an immediate child exit cannot race publication. */
 export function stopRetainedStackProcess(component: LocalProcess, context: LocalProcessContext): Promise<boolean> {
   if (component.pidFile !== NATS_PIDFILE) return stopLocalProcess(component, context);
-  const path = intentPath(canonicalLocalProcessPath(NATS_PIDFILE, context));
-  let requested: string | undefined;
+  const path = brokerStopReceiptPath(canonicalLocalProcessPath(NATS_PIDFILE, context));
+  let termReceipt: string | undefined;
   return stopLocalProcess(component, context, {
-    beforeSignal: ({ target, stopper }) => {
-      if (target.token === undefined) return;
-      const owner = identityRecord(stopper.pid);
-      const reservation = reservationIdentity(stopper.marker);
-      if (!("token" in owner) || reservation === undefined) return;
-      const broker = formatRecord({ pid: target.pid, token: target.token });
-      writeSecretFileAtomic(path, `${broker}\n${formatRecord(owner)}\n${reservation}`);
-      requested = broker;
+    signal: (target, signal, send) => {
+      if (target.token === undefined) return send();
+      const lock = receiptIo("lock", () => lockReceipt(context.root, path));
+      try {
+        send();
+        if (!lock) return;
+        const record = `${formatRecord({ pid: target.pid, token: target.token })}\n${signal}`;
+        receiptIo("write", () => writeSecretFileAtomic(path, record));
+        if (signal === "SIGTERM") termReceipt = record;
+      } finally {
+        if (lock) receiptIo("unlock", () => lock.release());
+      }
     },
-    afterFailedSignal: () => { if (requested !== undefined) rmSync(path, { force: true }); },
-    afterConfirmedStop: () => { if (requested !== undefined) writeSecretFileAtomic(path, requested); },
+    // A TERM that timed out is not evidence of a later exit. Keep a delivered KILL receipt even
+    // when down times out or is interrupted before the foreground owner reaps its child.
+    afterFailedSignal: () => {
+      if (termReceipt !== undefined) receiptIo("clear", () => takeReceipt(context.root, path, (raw) => raw === termReceipt));
+    },
   });
 }
 
-/** Recognize a confirmed stop of this broker birth or a request backed by its live reservation. */
-export function brokerStopRequested(root: string, pidPath: string, target: ProcessIdentityRecord): boolean {
-  const path = intentPath(pidPath), expected = formatRecord(target);
-  const record = readContainedRecord(root, path);
-  if (record.state === "content") {
-    if (record.raw === expected) return true;
-    const [broker, owner, inode, extra] = record.raw.split("\n");
-    if (broker === expected && owner !== undefined && inode !== undefined && extra === undefined) {
-      const stopper = parseRecord(owner);
-      const marker = stopReservationPath(pidPath);
-      const reservation = readContainedRecord(root, marker);
-      if (stopper.kind === "record" && reservation.state === "content" && parsePid(reservation.raw) === stopper.record.pid) {
-        try {
-          if (reservationIdentity(marker) === inode && assertRecordIdentity(stopper.record).kind === "match") return true;
-        } catch { /* The reservation is not verified. Check whether the stopper confirmed exit. */ }
-      }
-    }
+function takeReceipt(root: string, path: string, matches: (raw: string) => boolean): string | undefined {
+  const lock = lockReceipt(root, path);
+  try {
+    const row = readContainedRecord(root, path);
+    if (row.state === "unread") throw new Error(`${row.at} is ${row.why}`);
+    if (row.state !== "content" || !matches(row.raw)) return undefined;
+    receiptIo("remove", () => rmSync(path, { force: true }));
+    return row.raw;
+  } finally {
+    receiptIo("unlock", () => lock.release());
   }
-  // A confirming stopper can replace pending evidence before releasing the reservation.
-  const confirmed = readContainedRecord(root, path);
-  return confirmed.state === "content" && confirmed.raw === expected;
+}
+
+/** Consume the receipt for this exact child. A TERM does not explain an unrelated SIGKILL. */
+export function consumeBrokerStopReceipt(root: string, pidPath: string, target: ProcessIdentityRecord, code: number | null, signal: NodeJS.Signals | null): boolean {
+  const birth = formatRecord(target), term = `${birth}\nSIGTERM`, kill = `${birth}\nSIGKILL`;
+  const receipt = receiptIo("read", () => takeReceipt(root, brokerStopReceiptPath(pidPath), (raw) => raw === term || raw === kill));
+  return receipt === kill ? signal === "SIGKILL" : receipt === term && (code === 0 || signal === "SIGTERM");
 }

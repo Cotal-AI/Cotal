@@ -2,7 +2,7 @@ import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js"
 import { drainAndClose } from "@cotal-ai/core";
 import { type ChildProcess } from "node:child_process";
 import { spawnBroker } from "../lib/broker-spawn.js";
-import { brokerStopRequested } from "../lib/broker-stop.js";
+import { consumeBrokerStopReceipt } from "../lib/broker-stop.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { createConnection, createServer, isIP } from "node:net";
@@ -2397,7 +2397,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const brokerPidPath = join(root, ".cotal", NATS_PIDFILE);
   const child = spawnBroker(bin, natsArgs, { cwd: root, stdio: "inherit", detached: process.platform !== "win32" });
   let activationFinished = !resumeAttempt;
-  let startupFinished = false;
   const broker = await recordSpawnedListener(child, listenerStartedAt, boundListener);
   releaseStartupLock();
   child.on("error", (err) => {
@@ -2455,8 +2454,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // its folder keeps both, as `cotal down` does, so the name stays the folder's.
   child.on("exit", async (code, signal) => {
     if (failedListeners.has(child)) return;
-    const requested = broker !== undefined && brokerStopRequested(root, brokerPidPath, broker);
-    const clean = code === 0 && startupFinished;
+    const requested = broker !== undefined && consumeBrokerStopReceipt(root, brokerPidPath, broker, code, signal);
     removePidPair(brokerPidPath, String(child.pid));
     // One teardown at a time: a stop started while another is in flight is refused the reservation
     // that one holds, so wait for a Ctrl-C teardown already running instead of racing it.
@@ -2466,7 +2464,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
     // Only the shutdown driven by this terminal (Ctrl-C, SIGTERM) unrecords the mesh here. An
     // external `down` owns its own registry cleanup, and an unexpected exit keeps the record.
-    if (stopping) {
+    if (requested) {
+      // A delivered stop signal is not proof that down finished registry cleanup.
+      stderrLine("", code === 0 ? "Foreground stack released: nats-server exited cleanly." : "Foreground stack released: another command requested the nats-server stop.", c.dim);
+      if (activationFinished) process.exit(0);
+    } else if (stopping) {
       // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
       // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
       // record — removing by name would clobber the live winner and hide it from the registry.
@@ -2480,10 +2482,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (getCurrent() === space) clearCurrent();
       }
       if (activationFinished) process.exit(stopSignal === "SIGTERM" ? 143 : 130);
-    } else if (requested || clean) {
-      // The request and the exit prove nothing about whether `down` finished registry cleanup.
-      stderrLine("", code === 0 ? "Foreground stack released: nats-server exited cleanly." : "Foreground stack released: another command requested the nats-server stop.", c.dim);
-      if (activationFinished) process.exit(0);
     } else {
       // The record is kept ON PURPOSE: it still names the store this broker opened, so a repair
       // `up` reopens that SAME store instead of falling back to the root's default, and a
@@ -2504,7 +2502,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         outcome = `; could not read the registration for "${space}"; ${repair}`;
       }
       stderrLine("✗ ", `nats-server exited unexpectedly (${detail})${outcome}`, c.red);
-      // A broker exit before startup finishes is a failure even if the broker itself exited 0.
+      // An unrequested exit is a failure even if the broker itself exited 0.
       if (activationFinished) process.exit(exitCode("failed", "OPERATION_FAILED"));
     }
   });
@@ -2582,7 +2580,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       startupLock,
     );
     activationFinished = true;
-    startupFinished = true;
   }
   await new Promise<void>(() => {});
   } finally {
