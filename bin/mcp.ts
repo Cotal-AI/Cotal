@@ -13,6 +13,10 @@ const command: Command = {
   group: "Agents",
   summary: "serve Cotal tools over stdio for an MCP-only host",
   usage: "cotal mcp [--space <name>]",
+  examples: [
+    { command: "cotal mcp --space main", note: "serve the tools for the local space main" },
+    { command: "cotal mcp", note: "serve them for the default space" },
+  ],
   flags,
   validate(args) {
     if (args.positionals.length || (args.values.space !== undefined && !String(args.values.space).trim()))

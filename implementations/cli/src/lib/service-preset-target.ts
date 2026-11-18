@@ -106,9 +106,10 @@ export function presetDefinition(space: string, root: string, preset: ServicePre
 /** Resolve a preset name given to a service action to the one definition of this space it means.
  *  A saved definition of that exact name always wins and is returned as itself. Otherwise a start
  *  with no definition saves one from the preset's defaults and the options it named; a start of an
- *  existing, stopped one with other options saves it again. A log read of `manager` or `stack-manager`
- *  with no such definition reaches the manager `up` recorded by PID, or the log it left once it
- *  stopped. Undefined when the name is no preset. */
+ *  existing, stopped one with other options saves it again. With no saved `stack-manager`, stop and
+ *  restart identify the manager `up` recorded by PID so their refusal names its stack stop. A log
+ *  read of `manager` or `stack-manager` reaches that manager, or the log it left once it stopped.
+ *  Undefined when the name is no preset. */
 export function resolvePresetService(space: string, root: string, requested: string, mode: string, values: ParsedArgs["values"]): PresetServiceTarget | undefined {
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   const exact = store.read(requested);
@@ -122,11 +123,13 @@ export function resolvePresetService(space: string, root: string, requested: str
     return redefine(space, root, preset!, exact, requested, options, values);
   }
   if (!preset) {
-    // `up`'s retained launcher saves no stack-manager, so for a log read that name means the manager it started.
-    const manager = mode === "logs" && requested === STACK_DEFINITION.manager ? findServicePreset("manager") : undefined;
+    // The retained launcher saves no stack-manager. Logs read its manager, and stop/restart
+    // identify it only to refuse service control with the working stack stop.
+    const manager = requested === STACK_DEFINITION.manager && ["logs", "stop", "restart"].includes(mode) ? findServicePreset("manager") : undefined;
     if (!manager) return undefined;
     const recorded = recordedPresetProcess(space, root, manager);
-    return recorded ? { requested, name: requested, preset: manager.name, saved: null, recorded } : stoppedManagerLog(space, root, requested, manager);
+    if (recorded) return { requested, name: requested, preset: manager.name, saved: null, recorded };
+    return mode === "logs" ? stoppedManagerLog(space, root, requested, manager) : undefined;
   }
   const chosen = presetDefinition(space, root, preset, requested, mode);
   if (chosen) return options.length ? redefine(space, root, preset, chosen, requested, options, values) : { requested, name: chosen.name, preset: preset.name, saved: null };

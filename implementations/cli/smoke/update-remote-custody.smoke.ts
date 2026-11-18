@@ -55,6 +55,13 @@ try {
     await assert.rejects(readManagerContinuity({ space, on }), (e: unknown) => (e as { code?: string }).code === "USAGE_INVALID" && String((e as Error).message).includes("--on"), `${why} is refused as a manager pin before the continuity read`);
   }
 
+  // Linux custody inspection must not require procps options absent from BusyBox.
+  if (process.platform === "linux") {
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "ps"), "#!/bin/sh\necho 'ps: unrecognized option: w' >&2\nexit 1\n", { mode: 0o700 });
+    process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
+  }
   const baseline = supervisorMayServe(space);
   if (baseline) {
     console.log("note: a supervisor on this machine may already serve any space; the skip is not asserted here");

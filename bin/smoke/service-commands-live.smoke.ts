@@ -174,7 +174,7 @@ try {
     check("  and cotal service logs stack-manager reads the same file", stackManager.outcome === "ok" && stackManager.result?.path === json.result?.path && stackManager.result?.lines?.length === 5, stackManager);
     const refusedStop = envelope(upCotal(["manager", "stop", "--yes", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
     check("cotal manager stop still refuses it UNSUPPORTED with the stack advice",
-      refusedStop.outcome === "refused" && refusedStop.error?.code === "UNSUPPORTED" && refusedStop.error.remedy === "it stops with its stack through `cotal down`, or where `cotal supervise` runs it", refusedStop);
+      refusedStop.outcome === "refused" && refusedStop.error?.code === "UNSUPPORTED" && refusedStop.error.remedy === "it stops with its stack through `cotal down`, or where `cotal supervise` runs it; stopping that manager stops every hosted workflow run it drives, and `cotal down` also stops the broker and agents", refusedStop);
     const refusedInstall = envelope(upCotal(["manager", "install", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
     check("  and so does cotal manager install --dry-run while it runs, with the same advice",
       refusedInstall.outcome === "refused" && refusedInstall.error?.code === "UNSUPPORTED" && refusedInstall.error.remedy === refusedStop.error?.remedy, refusedInstall);

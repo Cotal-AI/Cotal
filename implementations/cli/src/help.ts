@@ -204,7 +204,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     const explicit = selected && readCurrentSelection()?.source === "explicit";
     space = (explicit ? selected : folder) ?? selected ?? (preparedHere && canonicalRoot(preparedHere.root) === canonicalRoot(held!.root) ? held!.space : undefined);
     if (!explicit && selected && folder !== undefined && folder !== selected) outside = selected;
-    if (explicit && folder && folder !== selected) folderHeld = `commands here target the selected space "${selected}"; reach this folder's space with --space ${folder} or cotal use --clear`;
+    if (explicit && folder && folder !== selected) folderHeld = `commands here target the selected space "${selected}"; reach this folder's space with --space ${folder} or \`cotal use --clear\``;
     // The same `up` the note under a command's heading names, with `--root` from another folder.
     const upAt = (dir: string, name: string): string => upCommand(dir, name, ...(canonicalRoot(dir) === canonicalRoot(root) ? [] : ["--root", shellWord(dir)]));
     if (held) {

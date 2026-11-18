@@ -416,6 +416,8 @@ try {
   const beforeDown = records(SPACE).length;
   const down = await run(["provision"], { space: SPACE, name: "claude_app", session: "session-down" });
   check("a mesh that is not answering opens nothing", down.code === 1 && /is not answering/.test(down.reply?.error) && records(SPACE).length === beforeDown, down.out);
+  // A bare `cotal up` run outside the mesh's folder starts a new space, so the remedy names its root (#7371).
+  check("  and says to start it from its own root", String(down.reply?.error).endsWith(` up --root ${root}\`.`), down.reply?.error);
   const downRetire = await run(["retire"], { dir: kept.dir });
   check("retire on a mesh that is not answering is refused", downRetire.code === 1 && /not answering/.test(downRetire.reply?.error), downRetire.out);
   check("  and keeps what a later retire needs", existsSync(join(kept.dir, "agent.creds")) && existsSync(join(kept.dir, "identity.json")));

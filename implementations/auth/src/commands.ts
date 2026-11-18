@@ -166,7 +166,7 @@ async function chooseAccountUrl(args: ParsedArgs, mode: "login" | "logout"): Pro
   const providers = new Map(cached.map((item) => [item.idp, item.sub]));
   if (mode === "login") for (const mesh of loadMeshes()) if (mesh.userAuth?.idp.url) providers.set(normalizeIdpUrl(mesh.userAuth.idp.url), providers.get(normalizeIdpUrl(mesh.userAuth.idp.url)));
   if (mode === "login" && providers.size === 0) {
-    console.error("Signing in to Cotal Cloud. For another host, use cotal login --idp <url>.");
+    console.error("Signing in to Cotal Cloud. For another host, use `cotal login --idp <url>`.");
     return COTAL_CLOUD_IDP;
   }
   if (providers.size === 1 && (mode === "logout" || providers.has(COTAL_CLOUD_IDP) || !canChooseAccount())) return providers.keys().next().value;
@@ -307,7 +307,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       ...(refreshedServices.length ? [{ title: "Manager services signed in", blocks: [{ kind: "lines" as const, lines: refreshedServices.map(service => `Signed in ${oneLine(service)} with the same approval.`) }] }] : []),
       ...(skippedServices.length ? [{ title: "Manager services skipped", blocks: [{ kind: "lines" as const, lines: skippedServices }] }] : []),
       ...(discovered.length ? [{ title: "Your spaces", blocks: [{ kind: "fields" as const, rows: discovered.map((m): [string, string] => [m.space, [m.catalogName ?? m.space, m.catalogRole].filter(Boolean).join(" · ")]) }] }] : []),
-      ...(selected ? [{ title: "Selected space", blocks: [{ kind: "lines" as const, lines: [`Selected ${oneLine(selected)}. Change it with cotal use <name>.`] }] }] : []),
+      ...(selected ? [{ title: "Selected space", blocks: [{ kind: "lines" as const, lines: [`Selected ${oneLine(selected)}. Change it with \`cotal use <name>\`.`] }] }] : []),
       { title: "Next", blocks: [{ kind: "commands", items: selected
         ? [{ command: "cotal status", description: "See your space and this machine" }, { command: "cotal chat", description: "Join a conversation" }, { command: "cotal space", description: "See your spaces" }]
         : discovered.length

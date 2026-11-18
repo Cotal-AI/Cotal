@@ -157,9 +157,9 @@ const composed: Command = { ...command, async run(args) {
     retainedReconciliation = true;
     for (const manager of managers) {
       const command = findMesh(manager.space)?.userAuth?.remote
-        ? `cotal manager restart --with-agents --yes --space ${shellPath(manager.space)}`
-        : `cotal down --with-agents --yes --space ${shellPath(manager.space)} && cotal up --space ${shellPath(manager.space)}`;
-      console.log(`Manager ${manager.instanceId} keeps its agents on the previous version and takes the installed version at its next restart. When their work is finished, restart from its recorded folder: cd ${shellPath(manager.root)} && ${command}`);
+        ? `\`cd ${shellPath(manager.root)} && cotal manager restart --with-agents --yes --space ${shellPath(manager.space)}\``
+        : `\`cd ${shellPath(manager.root)} && cotal down --with-agents --yes --space ${shellPath(manager.space)} && cotal up --space ${shellPath(manager.space)}\``;
+      console.log(`Manager ${manager.instanceId} keeps its agents on the previous version and takes the installed version at its next restart. When their work is finished, restart from its recorded folder: ${command}`);
     }
   }, isCurrent() {
     currentPackages = updateRuntime.isCurrent?.() === true;

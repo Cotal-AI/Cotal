@@ -17,7 +17,7 @@ import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { exitCode, findCotalRoot, isCommandFailure, recordMesh, recordPreparedSpace, type CommandFailure } from "@cotal-ai/workspace";
+import { exitCode, findCotalRoot, isCommandFailure, recordMesh, recordPreparedSpace, setCurrent, type CommandFailure } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
 import { mint } from "../src/commands/mint.js";
 import { persona } from "../src/commands/persona.js";
@@ -174,6 +174,18 @@ try {
       assert.deepEqual([fixedEnvelope.result.repair.requested, fixedEnvelope.result.repair.attempted], [true, false], `${what}: repair requested, not attempted`);
       assert.ok(fixed.code === undefined || fixed.code === 0, `${what}: exit 0 (${fixed.code})`);
     }
+
+    // 5b. The same bare run while another folder's static space is the selection (#7375): the root's
+    //     own space is still the scope, where the selection used to send the user to a space's root.
+    const staticRoot = join(base, "static");
+    mkdirSync(join(staticRoot, ".cotal"), { recursive: true });
+    recordMesh({ space: "fest", server: "nats://127.0.0.1:3", root: staticRoot, mode: "auth", ts: new Date().toISOString(), origin: "manual" });
+    setCurrent("fest");
+    const selected = await diagnose({ json: true }, openRoot);
+    const selectedEnvelope = JSON.parse(selected.out) as { outcome: string; result: { space: string | null; credentialScope: string } };
+    assert.deepEqual([selectedEnvelope.outcome, selectedEnvelope.result.space, selectedEnvelope.result.credentialScope], ["no-op", "offen", "open-space"],
+      "doctor in an open space's root with another space selected: the root's open space, a no-op");
+    assert.ok(selected.code === undefined || selected.code === 0, `doctor in an open space's root with another space selected: exit 0 (${selected.code})`);
   }
 } finally {
   process.chdir(startCwd);

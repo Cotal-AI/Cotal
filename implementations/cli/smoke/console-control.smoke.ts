@@ -9,7 +9,7 @@
  *   2. `:status <seat>` finds a seat on EITHER manager, repeatedly: the inspect is located and
  *      pinned to the hosting manager like stop/attach, never a class-queue guess. The locate step
  *      is also proven on its own, deterministically: `:status` on a seat no manager hosts is
- *      refused from live presence before either manager receives a named inspect.
+ *      refused once both managers' seat lists miss it, before either receives a named inspect.
  *   3. `D` then `f` force-kills the seat on manager 2 (targeted, so pinned to its host).
  *   4. `:spawn <persona> <name>` submits the spawn action under the REQUESTED name (not the
  *      persona's), shows the accepted name, and the new seat joins the roster.
@@ -192,7 +192,8 @@ try {
   m = s.mark();
   await s.command("status nobody");
   const t0 = Date.now();
-  const located = await s.waitFor(/status: no managed agent "nobody" in live presence for this space/, 90_000, m);
+  // A presence miss asks each manager for its live seats, so the refusal names both of them.
+  const located = await s.waitFor(/status: no managed agent "nobody" on any of the 2 reachable manager instance\(s\) in this space/, 90_000, m);
   const asks = inspected.map(rows => rows.get("nobody") ?? 0);
   const observedBoth = inspected[0]!.has("w1") && inspected[1]!.has("w2");
   check(":status on an absent live name refuses before either Manager is asked to inspect it", located && observedBoth && asks.every(count => count === 0), { asks, observedBoth, after: `${Math.round((Date.now() - t0) / 1000)}s`, notice: clean(s.out.slice(m)).match(/status: [^│\n]*/g)?.slice(-2), tail: clean(s.out.slice(m)).slice(-200) });

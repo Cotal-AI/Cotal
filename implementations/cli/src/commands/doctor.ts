@@ -42,6 +42,7 @@ import {
   REMINTABLE_DAEMON_CREDS,
   type Report,
   resolveMeshTarget,
+  loadMeshes,
   staleSystemCreds,
   STORE_CONTENTS,
   storeContentsText,
@@ -114,8 +115,12 @@ export function validateDoctorArguments(args: ParsedArgs): void {
 /** The space registered as open at this root, if any. Missing signing trust alone is never read as
  *  an open space. */
 function recordedOpenSpace(root: string, space: string | undefined): string | undefined {
+  // Bare, the scope is the one space registered at this root, not a selection made for other
+  // commands: resolving the selection names another folder's space, and the open branch is missed.
+  const here = space === undefined ? [...new Set(loadMeshes().filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space))] : [];
+  const named = space ?? (here.length === 1 ? here[0] : undefined);
   try {
-    const target = resolveMeshTarget(root, { ...(space === undefined ? {} : { space }), readOnly: true });
+    const target = resolveMeshTarget(root, { ...(named === undefined ? {} : { space: named }), readOnly: true });
     return target.mode === "open" && target.origin !== undefined && canonicalRoot(target.root) === canonicalRoot(root) ? target.space : undefined;
   } catch { return undefined; }
 }

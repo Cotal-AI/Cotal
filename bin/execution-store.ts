@@ -38,7 +38,7 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
     accessSync(installedRoot, constants.W_OK);
     accessSync(dirname(dirname(installedRoot)), constants.W_OK);
   }
-  catch { throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run cotal update as your normal account, without sudo`); }
+  catch { throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run \`cotal update\` as your normal account, without sudo`); }
   const store = executionStore(installedRoot), shared = executionShared(installedRoot);
   if (!lstatSync(store, { throwIfNoEntry: false })) { mkdirSync(store, { mode: 0o700 }); if (shared) chmodSync(store, 0o755); }
   if (!lstatSync(store).isDirectory() || lstatSync(store).isSymbolicLink()) throw new Error("unsafe execution generation store");

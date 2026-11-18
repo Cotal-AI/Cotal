@@ -103,7 +103,7 @@ function selectionView(s: Selection): Report {
   // `use` reads no broker, so it says when this folder's space is the target rather than whether it is.
   if (s.folder && s.folder !== s.current) lines.push({ text: readCurrentSelection()?.source === "adopted"
     ? `  commands here target this folder's space "${s.folder}" while it runs; use --space ${s.current} to reach the adopted selection`
-    : `  commands here target "${s.current}"; reach this folder's space with --space ${s.folder} or cotal use --clear`, tone: "hint" });
+    : `  commands here target "${s.current}"; reach this folder's space with --space ${s.folder} or \`cotal use --clear\``, tone: "hint" });
   if (readCurrentSelection()?.source === "adopted") lines.push({ text: "  Cotal adopted this selection automatically; another folder's running space takes precedence", tone: "hint" });
   return { sections: [{ blocks: [{ kind: "lines", lines }] }] };
 }
