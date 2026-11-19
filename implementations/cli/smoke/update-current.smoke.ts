@@ -2,6 +2,7 @@ import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmdirSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
@@ -45,6 +46,38 @@ for (const consistent of [false, true]) {
   assert.deepEqual(actions, []);
   assert.deepEqual(lines, ["The registry cannot be reached; nothing was changed."]);
 }
+async function closedPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  if (!address || typeof address === "string") throw new Error("no loopback port");
+  return address.port;
+}
+const proxyPort = await closedPort();
+let registryPort = await closedPort();
+while (registryPort === proxyPort) registryPort = await closedPort();
+const proxyHome = mkdtempSync(join(tmpdir(), "cotal-update-proxy-"));
+try {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:cotal_|npm_config_|(?:https?_proxy|all_proxy|proxy|no_proxy)$)/i.test(key)));
+  const update = (extra: NodeJS.ProcessEnv) => spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", "--self"], {
+    cwd: proxyHome, encoding: "utf8", timeout: 30_000,
+    env: { ...env, HOME: proxyHome, USERPROFILE: proxyHome, COTAL_HOME: join(proxyHome, "cotal"),
+      XDG_CONFIG_HOME: join(proxyHome, "config"), LOCALAPPDATA: join(proxyHome, "local"), APPDATA: join(proxyHome, "roaming"),
+      npm_config_userconfig: join(proxyHome, "user.npmrc"), npm_config_globalconfig: join(proxyHome, "global.npmrc"),
+      npm_config_prefix: join(proxyHome, "prefix"), npm_config_registry: `https://127.0.0.1:${registryPort}`,
+      COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", ...extra },
+  });
+  const proxy = { HTTPS_PROXY: `http://example-user:example-password@127.0.0.1:${proxyPort}` };
+  const refused = update(proxy);
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stderr, /npm proxy refused the connection \(ECONNREFUSED\).*HTTP_PROXY and HTTPS_PROXY/);
+  assert.doesNotMatch(refused.stdout + refused.stderr, /example-user|example-password|127\.0\.0\.1/);
+  const direct = update({ ...proxy, NO_PROXY: "127.0.0.1" });
+  assert.equal(direct.status, 0, direct.stdout + direct.stderr);
+  assert.equal(direct.stdout.trim(), "The registry cannot be reached; nothing was changed.");
+  assert.doesNotMatch(direct.stderr, /proxy refused/i);
+} finally { rmSync(proxyHome, { recursive: true, force: true }); }
 const { seedInstallationCurrent } = await import("../src/seed/reconcile.js");
 assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not proven current");
 const { registryArrivalCell } = await import("../../../bin/smoke/update-registry-arrival.smoke.mjs");

@@ -442,7 +442,12 @@ When a newer release exists, Cotal first downloads and integrity-checks its `cot
 of its first-party runtime dependency closure through npm, using a temporary cache and no install
 scripts. Each registry request has a 15-second timeout. Package installs and archive checks retry
 transient network failures twice, waiting one second and then two seconds. The latest-version read
-keeps a single attempt. Missing release archives wait up to ten minutes before keeping the installed
+keeps a single attempt. If npm reports a refused connection to the proxy set by `HTTP_PROXY` or
+`HTTPS_PROXY`, manual `cotal update --self` fails and leaves the installation unchanged. Check those
+proxy settings and retry. Cotal neither prints the proxy URL nor bypasses it. An unavailable registry
+without a confirmed proxy refusal remains a no-op.
+
+Missing release archives wait up to ten minutes before keeping the installed
 version. Invalid metadata, integrity failures and scoped registry access errors refuse before global
 installation or connector reconciliation. Since 0.167.1, registry access refusals report npm's error
 code rather than asking you to wait for publication. For a refused scoped connection, check the
