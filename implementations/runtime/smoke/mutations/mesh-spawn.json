@@ -207,7 +207,7 @@
     },
     {
       "name": "the placement target is dropped from the step-identity PROJECTION",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "          ...(req.placement !== undefined\n            ? { placement: { endpoint: req.placement.endpoint, instanceId: req.placement.instanceId } }\n            : {}),\n",
       "replace": "",
       "expectRed": "a replay whose ONLY edit is the placement instance id diverges at the recorded spawn step, with two different input hashes and nothing dispatched to the new target",
