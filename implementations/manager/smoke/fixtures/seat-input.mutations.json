@@ -62,7 +62,7 @@
   "mutations": [
     {
       "name": "the authorization is dropped from the `input` handler, keeping everything else",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/command-dispatch.ts",
       "find": "        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);\n        if (denied) throw new EpEnvelopeError(\"permission-denied\", denied, undefined, \"not-executed\");\n        return this.inputAuthorized(a, args(ctx));",
       "replace": "        return this.inputAuthorized(a, args(ctx));",
       "expectRed": "a caller that did NOT spawn the seat is refused (permission-denied, the shared named-control policy)",
