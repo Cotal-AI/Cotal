@@ -277,18 +277,19 @@ if (!brokerDisplayOnly) {
   ] as const)
     check(`control: ${label} gets no bare up`, !/(^|\s)cotal up(\s{2}|$)/m.test(next), next);
   check("control: a controller stack is not read from legacy pidfiles", !/(^|\s)cotal up(\s{2}|$)/m.test(legacyNext(["manager"], { controllerStack: true })), legacyNext(["manager"], { controllerStack: true }));
+  // The rig registers its spaces with `meshes add --force`, so each mode is recorded and shown as not checked.
   const plain = run(["status", "--space", "alpha", "--plain"]);
   const NOT_DIALED = `Unselected spaces are not dialed - \`${displayCmd()} status --all\` dials each`;
   check("the other registration carries no connection state, and one note says why, once",
-    /^ {2}beta +open$/m.test(plain.stdout) && !/^ {2}\S+ +not checked/m.test(plain.stdout) &&
+    /^ {2}beta +open, not checked$/m.test(plain.stdout) && !/^ {2}\S+ +not checked/m.test(plain.stdout) &&
       (plain.stdout.match(/are not dialed/g) ?? []).length === 1 && plain.stdout.includes(NOT_DIALED), plain.stdout);
   check("the selected space is the first row, marked, with its own dialed state",
-    /^ {2}-> alpha +unreachable[^\n]* +open$/m.test(plain.stdout) &&
+    /^ {2}-> alpha +unreachable[^\n]* +open, not checked$/m.test(plain.stdout) &&
       plain.stdout.indexOf("-> alpha") < plain.stdout.indexOf("beta "), plain.stdout);
   const wide = run(["status", "--space", "alpha", "--plain", "--wide"]);
   check("--wide groups the spaces under their broker addresses again and keeps their origin",
     new RegExp(`^ {2}nats://127.0.0.1:${a}$`, "m").test(wide.stdout) && new RegExp(`^ {2}nats://127.0.0.1:${b}$`, "m").test(wide.stdout) &&
-      /^ {2}-> alpha +unreachable[^\n]* +open - registered endpoint$/m.test(wide.stdout) && !wide.stdout.includes(NOT_DIALED), shown(wide));
+      /^ {2}-> alpha +unreachable[^\n]* +open, not checked - registered endpoint$/m.test(wide.stdout) && !wide.stdout.includes(NOT_DIALED), shown(wide));
   check("control: the default report has no broker address as a group title",
     !new RegExp(`^ {2}nats://127.0.0.1:${a}$`, "m").test(plain.stdout), plain.stdout);
   const all = run(["status", "--space", "alpha", "--all", "--json"]);
@@ -300,7 +301,7 @@ if (!brokerDisplayOnly) {
   check("a --server that names another address leaves the selected registration not checked", byName(other.envelope).alpha === "not-checked" && other.envelope?.result?.selected.connection === "unreachable", { items: byName(other.envelope), connection: other.envelope?.result?.selected.connection });
   const otherPlain = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${await freePort()}`, "--plain"]);
   check("…and its row carries no connection state, under the note that says what was dialed",
-    /^ {2}-> alpha +open$/m.test(otherPlain.stdout) && !/^ {2}\S+ +not checked/m.test(otherPlain.stdout) && otherPlain.stdout.includes("are not dialed"), otherPlain.stdout);
+    /^ {2}-> alpha +open, not checked$/m.test(otherPlain.stdout) && !/^ {2}\S+ +not checked/m.test(otherPlain.stdout) && otherPlain.stdout.includes("are not dialed"), otherPlain.stdout);
   const same = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${a}`, "--json"]);
   check("control: a --server that names the recorded address checks it", byName(same.envelope).alpha === "unreachable", byName(same.envelope));
   // Under `--all` with a `--server` that names another address, the selected row shows its own

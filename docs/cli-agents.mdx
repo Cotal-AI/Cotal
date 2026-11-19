@@ -56,7 +56,9 @@ may end the agent. On `SIGTERM` or `SIGHUP`, a spawn in this terminal forwards t
 child process, waits for it to stop, retires the seat's provisioned credentials and launch files,
 and exits with the signal's status. A manager runs the launch only when you
 ask for one. `--detach` (`-d`) hands it to a manager, waits until the agent joins, and returns
-without attaching. `--on <instance>` hands it to that manager and attaches this terminal to the
+without attaching. If no manager is running, the launch starts nothing and names the local project
+where `cotal up` starts the manager. For a space that runs elsewhere, start its manager there.
+`--on <instance>` hands it to that manager and attaches this terminal to the
 agent (see [Managed launch view](cli-agent-views.mdx#managed-launch-view)), when that manager's runtime streams a
 terminal. The built-in `pty` runtime streams one. The `tmux`, `cmux`, `orca` and `herdr` runtimes
 start the agent in a surface they do not own and stream none, so a launch on one of those managers

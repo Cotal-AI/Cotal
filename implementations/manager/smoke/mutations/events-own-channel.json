@@ -61,7 +61,7 @@
     },
     {
       "name": "E2 the spawn seam reads the read-set only, and forgets the post-set",
-      "file": "implementations/manager/src/seat-launch.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "const foreign = foreignEventChannels([...allowSubscribe, ...(allowPublish ?? [])], agentTriple.owner, agentTriple.actor);",
       "replace": "const foreign = foreignEventChannels([...allowSubscribe], agentTriple.owner, agentTriple.actor);",
       "expectRed": "a spawn asking to POST to another agent's event channel is refused too",
@@ -124,7 +124,7 @@
     },
     {
       "name": "E9 the spawn door prints the route for the OTHER mesh than the one it is running on",
-      "file": "implementations/manager/src/seat-launch.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "            `spawn: ${this.readerRemedy(agentTriple.owner, foreign[0]!)}`,",
       "replace": "            `spawn: \\`cotal actor grant <reader> --owner ${agentTriple.owner} --scope '' --allow-subscribe '${foreign[0]!}' --allow-publish ''\\`, with every field spelled out.`,",
       "expectRed": "the refusal prints a mint command, naming a profile and a channel",

@@ -12,7 +12,7 @@
   "mutations": [
     {
       "name": "write the spawn intent without the reserved custody reference",
-      "file": "implementations/manager/src/seat-launch.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "ownerInstanceId: this.managerInstanceId, runtime: custody }),",
       "replace": "ownerInstanceId: this.managerInstanceId }),",
       "expectRed": "a seat whose spawn never reached the slot activation is still reaped by its reserved reference",

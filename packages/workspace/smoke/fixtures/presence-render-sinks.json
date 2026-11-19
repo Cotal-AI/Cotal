@@ -5514,6 +5514,13 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
+      "anchor": " from ${p.root}`, tone: \"waiting\" },\n      { text: movedR",
+      "class": "non-render/control",
+      "rationale": "Prepared space view: \"waiting\" is the color tone for a stack journal whose folder was moved, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
       "anchor": "ed with --force`, tone: \"waiting\" }],\n    [\"origin\", orig",
       "class": "non-render/control",
       "rationale": "Space detail mode field: \"waiting\" is the color tone for a mode space add --force did not check, not any peer's presence."
@@ -6609,13 +6616,6 @@
       "anchor": "status + \" `cotal endpoint describe manager` reads its commands.\"",
       "class": "non-render/control",
       "rationale": "The status variable holds command guidance for inspecting the manager, not an agent's presence or reported progress."
-    },
-    {
-      "path": "implementations/cli/src/commands/space.ts",
-      "kind": "status-token",
-      "anchor": " from ${p.root}`, tone: \"waiting\" },\n      { text: movedR",
-      "class": "non-render/control",
-      "rationale": "The waiting tone styles a moved-project warning. It does not report any agent's presence or progress."
     },
     {
       "path": "implementations/cli/src/commands/service-registry.ts",
