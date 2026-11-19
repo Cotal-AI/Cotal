@@ -1,0 +1,122 @@
+{
+  "suite": [
+    "implementations/acp/smoke/agent.smoke.ts",
+    "implementations/acp/smoke/frames.smoke.ts"
+  ],
+  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, and the frame mapping neither repeats nor misreports a seat's events",
+  "command": "pnpm --filter @cotal-ai/acp test",
+  "proveWith": "pnpm mutation-proof --config implementations/acp/mutations/acp-agent.json",
+  "why": [
+    "Each mutation is a plausible one-line regression in the protocol layer or the frame mapping. The smokes import src directly, so no build runs between the mutation and the suite."
+  ],
+  "mutations": [
+    {
+      "name": "a probe's delete writes to the hidden store",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        if (session.seat) options.hidden.add(session.seat.lifecycleUid);",
+      "replace": "        options.hidden.add(session.seat?.lifecycleUid ?? params.sessionId);",
+      "expectRed": "deleting a session that never spawned hides nothing"
+    },
+    {
+      "name": "frames that beat the spawn reply are dropped",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "    for (const frame of held?.frames ?? []) deliver(session, frame);",
+      "replace": "    void held;",
+      "expectRed": "frames published before the spawn reply still reach the client"
+    },
+    {
+      "name": "a turn answers with its tool calls left open",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        const closes = session.mapper.closeOpen(close).map((u) => send(session, u));",
+      "replace": "        const closes: Promise<void>[] = [];",
+      "expectRed": "a tool call left open is closed before the prompt answers"
+    },
+    {
+      "name": "terminal sign-in offered to every client",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      authMethods: params.clientCapabilities?.auth?.terminal",
+      "replace": "      authMethods: params.clientCapabilities !== undefined",
+      "expectRed": "a client that runs no terminal is offered no sign-in"
+    },
+    {
+      "name": "a sign-in failure reported as an internal error",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      throw e instanceof SignInRequired ? RequestError.authRequired(undefined, e.message) : RequestError.internalError(undefined, e.message);",
+      "replace": "      throw RequestError.internalError(undefined, e.message);",
+      "expectRed": "a space that needs a sign-in fails session/new with -32000"
+    },
+    {
+      "name": "list compares folders without resolving symlinks",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      const want = params.cwd ? canonical(params.cwd) : undefined;",
+      "replace": "      const want = params.cwd;",
+      "expectRed": "session/list matches the folder through a symlink"
+    },
+    {
+      "name": "list ignores hidden runs",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "(row) => !hidden.has(row.lifecycleUid) && (",
+      "replace": "(row) => (",
+      "expectRed": "a hidden run is not listed"
+    },
+    {
+      "name": "a replay is not marked as replay",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        for (const update of updates) await send(session, update, true);",
+      "replace": "        for (const update of updates) await send(session, update);",
+      "expectRed": "session/load replays before it answers, marked as replay"
+    },
+    {
+      "name": "the channel choice is not passed to the spawn",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "          ...(session.selection.channel !== NO_CHANNEL ? { subscribe: [session.selection.channel] } : {}),",
+      "replace": "          ...(session.selection.channel === NO_CHANNEL ? { subscribe: [session.selection.channel] } : {}),",
+      "expectRed": "it spawns in the session's folder with the prompt and the chosen options"
+    },
+    {
+      "name": "a failed run answers as a finished turn",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "    if (run.outcome === \"error\") turn.fail(",
+      "replace": "    if (run.outcome === \"never\") turn.fail(",
+      "expectRed": "a failed run fails the prompt with the seat's message"
+    },
+    {
+      "name": "applications without an event plane are offered",
+      "file": "implementations/acp/src/options.ts",
+      "find": "  return catalogs.filter((c) => c.available && c.eventPlane);",
+      "replace": "  return catalogs.filter((c) => c.available);",
+      "expectRed": "applications without an event plane are not offered"
+    },
+    {
+      "name": "a variant carries to a model that lacks it",
+      "file": "implementations/acp/src/options.ts",
+      "find": "      return variantsOf(offer, next).includes(selection.variant) ? next : { ...next, variant: DEFAULT_VARIANT };",
+      "replace": "      return next;",
+      "expectRed": "a variant does not carry to a model that lacks it"
+    },
+    {
+      "name": "a frame maps again when a history read and the live tap overlap",
+      "file": "implementations/acp/src/frames.ts",
+      "command": "npx tsx implementations/acp/smoke/frames.smoke.ts",
+      "find": "    if (this.seen.has(key)) return { updates: [], runs: [] };",
+      "replace": "    void key;",
+      "expectRed": "a frame already mapped maps to nothing"
+    },
+    {
+      "name": "a failed tool call shows as completed",
+      "file": "implementations/acp/src/frames.ts",
+      "command": "npx tsx implementations/acp/smoke/frames.smoke.ts",
+      "find": "status: value?.isError === true ? \"failed\" : \"completed\" });",
+      "replace": "status: \"completed\" });",
+      "expectRed": "the result marker ends the call as failed when it says so"
+    },
+    {
+      "name": "RUN_ERROR loses the seat's message",
+      "file": "implementations/acp/src/frames.ts",
+      "command": "npx tsx implementations/acp/smoke/frames.smoke.ts",
+      "find": "ts: frame.ts, ...(text(event.message) ? { message: text(event.message) } : {}) });",
+      "replace": "ts: frame.ts });",
+      "expectRed": "RUN_ERROR ends the frame's run with the seat's message"
+    }
+  ]
+}
