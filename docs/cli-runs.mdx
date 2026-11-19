@@ -17,7 +17,7 @@ cotal run start --file <program> [--timeout <dur>] [--local --admit-read <channe
 cotal run resume <runId> [--local --file <program>] [--on <instance>]
 cotal run [--endpoint <ep>] [--json] [--on <instance>]
 cotal run --page --on <instance> [--limit <n>] [--cursor <cursor>] [--endpoint <ep>]
-cotal run show <runId> [--endpoint <ep>] [--limit <n>] [--json] [--on <instance>]
+cotal run show <runId> [--endpoint <ep>] [--json | [--plain] [--limit <n>]] [--on <instance>]
 cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
 cotal run amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
 cotal run revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>]
@@ -130,9 +130,11 @@ An equal token never admits a different holder.
 If a broker outage prevents a hosted run's final status write, the manager retries that write
 while the attempt's connection remains open, including when NATS returns before JetStream
 can answer. The program does not advance during this repair.
-Once JetStream answers, `run` and `run show` report the recorded terminal state. A newer
-attempt's status is never overwritten. If the manager stops first, its next boot takes back
-runs still recorded `running`.
+Once JetStream answers, `run` and `run show` report the recorded state. If the outage also
+interrupted a journal append, the same manager can resume the run after recording the release.
+It replays the journal under a new attempt instead of retrying the interrupted append. It does
+not take over a run that was revoked or that another attempt already holds. If the manager
+stops first, its next boot takes back runs still recorded `running`.
 
 A run recorded `released` has no recorded reason. Its `Released` section points to the executing
 manager's log for a hosted run or the driving process's output for a locally driven run. A journal
@@ -293,17 +295,22 @@ These three forms are offline and reject mesh or caller selection. Validation ch
 language and nothing a broker decides, so a valid program over the broker's message limit is still
 refused by a hosted `start`. A program that does not validate is refused by all three with every problem listed: its
 code, position, cause and fix, as a hosted `start` lists them. `--json` carries them under
-`result.problems`. A warning leaves the program valid. All three print it on stderr with its code,
+`result.problems`. For a JavaScript syntax error, use the reported position. Its line and column
+both start at 1, and the cause describes the error without repeating the position.
+A warning leaves the program valid. All three print it on stderr with its code,
 position, cause and fix, and `validate --json` lists it under `result.warnings`. One is L3021, a `fanOut` over a list written in the call whose items carry no
 `id` and that passes no `key`, which the run refuses when it reaches it. A list held in a variable
-gets no warning, because it can change before the call; the run refuses it the same way. Plan lists validated static call sites in source order; it does not evaluate branches,
-loop counts or an execution schedule. Simulation uses the native simulator with a JSON results
-script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
+gets no warning, because it can change before the call; the run refuses it the same way.
+Plan lists validated static call sites in source order with their one-based line numbers. It counts
+JavaScript line breaks, including bare CR, the same way validation does. It does not evaluate
+branches, loop counts or an execution schedule. Simulation uses the native simulator with a JSON
+results script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
 checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and
-`artifact`; any other shape, a scripted `at` included, is refused `SCHEMA_INVALID`, because the
-simulator stamps `at` from virtual time. A scripted turn result needs a `status` of `done`, `blocked` or
-`handoff` and may carry `to` and `note`; any other shape, a scripted `at` included, is refused the
-same way. When the script has no result for an effect, the
+`artifact`. An invalid checkpoint result is refused with `SCHEMA_INVALID`. The refusal names the
+results file and the entry to correct before rerunning. The simulator stamps `at` from virtual
+time, so you cannot script it. A scripted turn result needs a `status` of `done`, `blocked` or
+`handoff` and may carry `to` and `note`. An invalid turn result, including a scripted `at`, is also
+refused with `SCHEMA_INVALID`. When the script has no result for an effect, the
 simulation does not complete: it exits 5 with `OPERATION_FAILED`, the message names the step and the
 entry to add, and `target.step` carries the step. When the program itself fails under the script,
 as a checkpoint scripted `expired` under the default `onExpiry: "fail"` does with L4007, the
@@ -354,7 +361,8 @@ names its code and cause.
 
 Inside a manager-launched static or open seat, `run turns` reads that seat's assigned turns and
 `run yield <turn-id> --status <done|blocked|handoff>` reports an outcome. Handoff also requires
-`--to <agent>`; `--note <text>` carries context. The native launcher supplies the caller context.
+`--to <agent>`; `--note <text>` carries context. If the turn ID is missing, the refusal points to
+`cotal run turns` and shows the status and handoff flags. The native launcher supplies the caller context.
 These forms verify the seat's own credential and manager, never substitute an operator caller,
 and refuse user-auth self impersonation. They skip operator catalog and installation repair.
 Yielding one turn does not complete the entire workflow.

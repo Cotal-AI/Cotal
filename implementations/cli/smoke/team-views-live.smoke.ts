@@ -5,6 +5,7 @@
  *  A. `team`, `team show <id>`, `team deploy --dry-run`, `team boot --dry-run` and
  *     `team remove <id> --dry-run` each exit 0 with outcome `ok` and `completeness` `partial`, and
  *     the report says what the read does not establish, with no failure line on stderr.
+ *     An unreadable record makes the inventory exit 4 without losing readable deployments.
  *  B. a card without `deliveryClass: live`: the apply refuses `UNSUPPORTED`, names the cards and
  *     says what to set, and its preview warns `LIVE_DELIVERY_REQUIRED` for the same cards.
  *  C. a reapply of the identical settled deployment is a no-op, and the preview says so instead of
@@ -106,6 +107,22 @@ try {
   check("team exits 0 and says the inventory is not complete",
     reported(inventory, "do not establish a complete historical or live team inventory"), inventory.out.slice(-800));
   check("team --json is ok and partial in completeness", answered(cotal(s, "team", "--json")));
+  const malformed = join(realpathSync(s), ".cotal", "team-boot-attempt-abcdef0123456789.json");
+  writeFileSync(malformed, "{\n", { mode: 0o600 });
+  try {
+    const partial = cotal(s, "team", "--json");
+    const result = envelope(partial.stdout);
+    const items = result?.result?.items;
+    check("team --json exits 4 and retains readable deployments and the unreadable path",
+      partial.status === 4 && partial.stderr === "" && result?.outcome === "partial" && result.completeness === "partial" &&
+      result.error?.code === "OPERATION_PARTIAL" && Array.isArray(items) && items.some((item) => item.deploymentId === deployment) &&
+      result.warnings?.some((warning) => warning.code === "DEPLOYMENT_RECORD_UNREADABLE" && warning.target.path === malformed) === true, partial.out);
+    const plain = cotal(s, "team", "--plain");
+    check("team --plain exits 4 and keeps the inventory and warning",
+      plain.status === 4 && plain.stdout.includes(deployment) && plain.stderr.includes("A local deployment record could not be read or validated"), plain.out);
+  } finally {
+    rmSync(malformed);
+  }
   const shown = cotal(s, "team", "show", deployment);
   check("team show <id> exits 0 and says the receipt is historical",
     reported(shown, "This is historical, not current broker state"), shown.out.slice(-800));

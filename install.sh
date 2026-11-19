@@ -836,8 +836,10 @@ EOF
 # PATH
 # ---------------------------------------------------------------------------------------
 
-PATH_STATE="" # already | added:<file> | manual
+PATH_STATE="" # already | added | manual
 PATH_RC=""
+PATH_UPDATED=""
+PATH_MANUAL=""
 
 on_path() {
   case ":$PATH:" in
@@ -846,8 +848,6 @@ on_path() {
   esac
 }
 
-# One marked block, appended once. Delete the block to undo it; re-running this installer
-# will not stack a second copy.
 setup_path() {
   if on_path; then
     PATH_STATE="already"
@@ -859,34 +859,33 @@ setup_path() {
   fi
 
   _shell=$(basename "${SHELL:-sh}")
-  _marker="# cotal"
+  _login_rc=""
   case "$_shell" in
     zsh)
       PATH_RC="${ZDOTDIR:-$HOME}/.zshrc"
       _line="export PATH=$(shquote "$BIN_DIR"):\"\$PATH\""
       ;;
     bash)
-      # Linux logs you into an interactive shell reading .bashrc; macOS Terminal starts a
-      # login shell reading .bash_profile. Prefer whichever this box already uses.
-      #
-      # Held in two variables rather than one space-separated list on purpose: a $HOME
-      # containing a space would word-split the list, and the fallback would then name a
-      # truncated path OUTSIDE the home directory and append the PATH block to it.
-      if [ "$OS" = "darwin" ]; then
-        _first="$HOME/.bash_profile"
-        _second="$HOME/.bashrc"
-      else
-        _first="$HOME/.bashrc"
-        _second="$HOME/.bash_profile"
-      fi
-      if [ -f "$_first" ]; then
-        PATH_RC="$_first"
-      elif [ -f "$_second" ]; then
-        PATH_RC="$_second"
-      else
-        PATH_RC="$_first"
-      fi
       _line="export PATH=$(shquote "$BIN_DIR"):\"\$PATH\""
+      if [ "$OS" = "linux" ]; then
+        # An interactive non-login shell reads .bashrc. A login shell reads the first
+        # readable login file, which need not source .bashrc. Default to .profile so
+        # creating a file does not mask an existing lower-priority profile.
+        PATH_RC="$HOME/.bashrc"
+        _login_rc="$HOME/.profile"
+        for _profile in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+          if [ -f "$_profile" ] && [ -r "$_profile" ]; then
+            _login_rc="$_profile"
+            break
+          fi
+        done
+        # A login profile can also source .bashrc. Add the directory only once.
+        _line="case \":\$PATH:\" in *:$(shquote "$BIN_DIR"):*) ;; *) $_line ;; esac"
+      elif [ -f "$HOME/.bash_profile" ] || [ ! -f "$HOME/.bashrc" ]; then
+        PATH_RC="$HOME/.bash_profile"
+      else
+        PATH_RC="$HOME/.bashrc"
+      fi
       ;;
     fish)
       PATH_RC="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
@@ -897,6 +896,28 @@ setup_path() {
       return 0
       ;;
   esac
+
+  write_path_block || PATH_MANUAL=$(tildify "$PATH_RC")
+  if [ -n "$_login_rc" ]; then
+    PATH_RC="$_login_rc"
+    write_path_block || PATH_MANUAL="${PATH_MANUAL:+$PATH_MANUAL, }$(tildify "$PATH_RC")"
+  fi
+  if [ -n "$PATH_MANUAL" ]; then
+    PATH_STATE="manual"
+  elif [ -n "$PATH_UPDATED" ]; then
+    PATH_STATE="added"
+  else
+    PATH_STATE="already"
+  fi
+  if [ -n "$PATH_UPDATED" ]; then
+    PATH="$BIN_DIR:$PATH"
+    export PATH
+  fi
+}
+
+# Append one marked block per startup file, even when the installer is run again.
+write_path_block() {
+  _marker="# cotal"
 
   # Containment, enforced rather than assumed: this installer writes nothing outside $HOME,
   # so a computed rc path that escaped it is a bug, and appending to it would be the damage.
@@ -909,15 +930,13 @@ setup_path() {
   # resolved path against the physically resolved $HOME to catch a symlinked escape.
   case "$PATH_RC" in
     ../* | */../* | */..)
-      PATH_STATE="manual"
-      return 0
+      return 1
       ;;
   esac
   case "$PATH_RC" in
     "$HOME"/*) ;;
     *)
-      PATH_STATE="manual"
-      return 0
+      return 1
       ;;
   esac
 
@@ -935,27 +954,19 @@ setup_path() {
   case "$_anc_real" in
     "$_real_home" | "$_real_home"/*) ;;
     *)
-      PATH_STATE="manual"
-      return 0
+      return 1
       ;;
   esac
 
-  mkdir -p "$(dirname "$PATH_RC")" 2>/dev/null || {
-    PATH_STATE="manual"
-    return 0
-  }
+  mkdir -p "$(dirname "$PATH_RC")" 2>/dev/null || return 1
 
   # And the final destination itself, following the rc file if it is a link. A refusal from
   # resolved_target (an unresolvable chain) is a refusal here too.
-  _rc_real=$(resolved_target "$PATH_RC") || {
-    PATH_STATE="manual"
-    return 0
-  }
+  _rc_real=$(resolved_target "$PATH_RC") || return 1
   case "$_rc_real" in
     "$_real_home"/*) ;;
     *)
-      PATH_STATE="manual"
-      return 0
+      return 1
       ;;
   esac
 
@@ -965,24 +976,19 @@ setup_path() {
   # to printing the line rather than risk a duplicate.
   _lock="$PATH_RC.cotal-lock"
   if ! mkdir "$_lock" 2>/dev/null; then
-    PATH_STATE="manual"
-    return 0
+    return 1
   fi
 
   if [ -f "$PATH_RC" ] && grep -qF "$_marker" "$PATH_RC" 2>/dev/null; then
     rmdir "$_lock" 2>/dev/null || true
-    PATH_STATE="already"
     return 0
   fi
   if ! { printf '\n%s\n%s\n' "$_marker" "$_line" >>"$PATH_RC"; } 2>/dev/null; then
     rmdir "$_lock" 2>/dev/null || true
-    PATH_STATE="manual"
-    return 0
+    return 1
   fi
   rmdir "$_lock" 2>/dev/null || true
-  PATH_STATE="added:$PATH_RC"
-  PATH="$BIN_DIR:$PATH"
-  export PATH
+  PATH_UPDATED="${PATH_UPDATED:+$PATH_UPDATED, }$(tildify "$PATH_RC")"
 }
 
 # The child shell can inspect PATH, but cannot clear its parent's command cache or aliases.
@@ -1080,18 +1086,21 @@ next_steps() {
   blank
   head_line "Next"
   case "$PATH_STATE" in
-    added:*)
-      _rc=${PATH_STATE#added:}
-      printf '    %s%s%s   %sreload your shell, once%s\n' "$C_BRAND" "exec $(basename "${SHELL:-sh}")" "$C_OFF" "$C_DIM" "$C_OFF"
+    added)
+      _reload="exec $_shell"
+      if [ -n "$_login_rc" ]; then _reload="exec bash -l"; fi
+      printf '    %s%s%s   %sreload your shell, once%s\n' "$C_BRAND" "$_reload" "$C_OFF" "$C_DIM" "$C_OFF"
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
-      blank
-      dim_line "PATH updated in $(tildify "$_rc")"
       ;;
     manual)
       printf '    %s%s%s\n' "$C_BRAND" "export PATH=$(shquote "$BIN_DIR"):\"\$PATH\"" "$C_OFF"
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
       blank
-      dim_line "Add that export to your shell rc to make it permanent."
+      if [ -n "$PATH_MANUAL" ]; then
+        dim_line "Add that export to: $PATH_MANUAL"
+      else
+        dim_line "Add that export to your shell rc to make it permanent."
+      fi
       ;;
     *)
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
@@ -1099,6 +1108,10 @@ next_steps() {
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal spawn" "$C_OFF" "$C_DIM" "put an agent on it" "$C_OFF"
       ;;
   esac
+  if [ -n "$PATH_UPDATED" ]; then
+    blank
+    dim_line "PATH updated in $PATH_UPDATED"
+  fi
   blank
   dim_line "Docs $DOCS_URL"
   blank
@@ -1250,8 +1263,8 @@ main() {
   setup_path
   case "$PATH_STATE" in
     already) ok_line "$(tildify "$BIN_DIR") is on your PATH" ;;
-    added:*) ok_line "Added $(tildify "$BIN_DIR") to your PATH" ;;
-    manual) warn_line "$(tildify "$BIN_DIR") is not on your PATH yet" ;;
+    added) ok_line "Added $(tildify "$BIN_DIR") to your shell's PATH configuration" ;;
+    manual) warn_line "PATH setup for $(tildify "$BIN_DIR") needs a manual step" ;;
   esac
 
   report_path_selection

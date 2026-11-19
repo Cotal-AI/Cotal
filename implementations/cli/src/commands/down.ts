@@ -20,6 +20,7 @@ import {
   clearPreservationPrepareIntent,
   completeMaintenanceCut,
   loadMeshes,
+  maintenanceLockHolder,
   meshesForRoot,
   localProcessPath,
   localProcessPathCandidates,
@@ -28,6 +29,7 @@ import {
   findMesh,
   findPreparedSpace,
   getCurrent,
+  localProcessOwnerStatus,
   legacyStackElsewhere,
   legacyStackOtherHome,
   stackHomeRemedy,
@@ -39,6 +41,7 @@ import {
   writeResult,
   type Report,
   readMaintenanceJournal,
+  readMaintenanceLockHolder,
   readContainedRecord,
   readMaintenanceResumeDocument,
   readPreservationCommitIntent,
@@ -108,7 +111,7 @@ import { stopNamedServiceSet } from "./service-set-stop.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
 import { assertNoLiveServices, bareDownServicesView, liveServicesRefusal, planBareDownServices, type BareDownService } from "./down-services.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
-import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
+import { assertEndpointUnreachable, waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { captureSeatCheckpoint } from "../lib/seat-capture.js";
 import { processRecorded, stopInFlight, stopLocalProcess, UnattributableRecord, unattributableRecordSteps } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
@@ -116,7 +119,7 @@ import { ensureDelivery, removeDeliveryCredentials, stopDelivery } from "../lib/
 import { controllerStackRecorded, deliveryLeaseAfterStop, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
 import { noticeBetweenSteps } from "../lib/interrupt-notice.js";
 import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "./stack-gone.js";
-import { readStackJournal, recordedProcessLine } from "../lib/stack-journal.js";
+import { readStackJournal, recordedProcessLine, recordedProcessesUnder } from "../lib/stack-journal.js";
 import { restoreNextStep } from "../lib/restore.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
 import { askManager } from "@cotal-ai/workspace/control";
@@ -196,7 +199,7 @@ export function validateDownArguments(args: ParsedArgs): void {
   if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined && (args.values.file === undefined || typeof args.values.file === "string" && recordedStackPreview())) return;
   // A folder holding another folder's registered space answers with a refusal, not with the lines a
   // bare stop prints, so structured output carries it rather than refusing the flag.
-  if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && (stoppedLegacyStack() || recordsElsewhere(canonicalRoot(cotalRoot()), "stop")))) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
+  if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && (stoppedLegacyStack() || readMaintenanceJournal(cotalRoot())?.state === "ready" || recordsElsewhere(canonicalRoot(cotalRoot()), "stop")))) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
 }
 
 /** A bare `down` stops only the stack of the folder it runs in. When this folder's root holds no
@@ -494,6 +497,27 @@ function guardLegacyBareDown(): { space: string; server: string; mode?: string }
   return { space: mesh.space, server: mesh.server, mode: mesh.mode };
 }
 
+/** Before any legacy stop or stopped receipt, let a foreground launch finish starting its daemons. */
+async function awaitForegroundStartup(root: string, preview: boolean): Promise<void> {
+  const starting = () => {
+    const holder = readMaintenanceLockHolder(root);
+    return holder?.operation === "foreground up" && localProcessOwnerStatus(holder.owner) !== "dead" ? holder.owner : undefined;
+  };
+  const owner = starting();
+  if (!owner) return;
+  const refusal = () => new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a foreground \`cotal up\` (pid ${owner.pid}) is still starting this stack; nothing was stopped`, {
+    target: { root, holderPid: owner.pid },
+    remedy: "press Ctrl-C in the terminal running `cotal up`, or wait for startup to finish and retry `cotal down --yes`",
+  });
+  const broker = verifyIdentityPin(join(root, ".cotal", NATS_PIDFILE));
+  if (preview || broker.kind !== "match" || !localMeshesForRoot(root).some((mesh) => mesh.origin === "up")) throw refusal();
+  const deadline = Date.now() + 20_000;
+  for (let current = starting(); current; current = starting()) {
+    if (current.id !== owner.id || Date.now() >= deadline) throw refusal();
+    await sleep(200);
+  }
+}
+
 /** Bare down reads each process record it stops where the record lies, as the stopped-stack census
  *  does. A record that read leaves unread (a link on its path, a record that is not a regular file,
  *  is larger than a record, cannot be opened or changes while it is read) refuses before the first
@@ -550,13 +574,41 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
   // A legacy root whose stack is already stopped: a bare down and its preview stop nothing.
   if (bareStop(args.values)) {
-    const stopped = stoppedLegacyStack();
+    const root = canonicalRoot(cotalRoot());
+    await awaitForegroundStartup(root, values["dry-run"] === true);
+    const maintenance = readMaintenanceJournal(root);
+    if (maintenance?.state === "ready") {
+      const space = maintenance.space, server = maintenance.cut.launch.server;
+      const target = { root, space, server, state: maintenance.state };
+      const blocked = (why: string) => new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this stack's preserved cut is ready, but ${why}; nothing was stopped`, { target, remedy: "run `cotal status` to inspect the stack and its maintenance state" });
+      const busy = () => {
+        const holder = maintenanceLockHolder(root);
+        return holder !== undefined && holder !== "dead";
+      };
+      const mayRun = () => recordedProcessesUnder(root, [space]).length > 0 || planBareDownServices(space).some((row) => row.action !== "already-stopped");
+      if (busy()) throw blocked("a maintenance operation still holds the root");
+      if (mayRun())
+        throw blocked("recorded processes may still be running");
+      try { await assertEndpointUnreachable(server); }
+      catch { throw blocked("the recorded broker address could not be confirmed offline"); }
+      // An up can begin during the listener probe. Do not let a changed cut authorize the receipt.
+      const current = readMaintenanceJournal(root);
+      if (busy() || current?.state !== "ready" || current.cut.attemptId !== maintenance.cut.attemptId || mayRun())
+        throw blocked("the stack changed while it was checked");
+      if (values["with-agents"] === true) throw blocked("stopping agents requires a running manager");
+      return writeResult(presentationOf(args.values), { command: "down", target, result: { kind: "stack-not-running", ...target }, noOp: true }, () => ({ space, sections: [
+        { title: `The stack in ${root} is already stopped`, blocks: [{ kind: "lines", lines: ["The preserved cut is ready and was left unchanged."] }] },
+        { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal status", description: "See the next maintenance step" }] }] },
+      ] }));
+    }
+    const stopped = maintenance && maintenance.state !== "active" ? undefined : stoppedLegacyStack();
     // A root that never started a stack never ran a manager, so it has no agents to stop.
     if (stopped) {
       const { started, ...target } = stopped;
       // Missing pidfiles are not proof the daemons stopped. A live lease refuses before this
       // answers that nothing is running, and before the broker is stopped.
       await refuseLiveUnrecordedDaemons(localProcessSurface(), { root: target.root, space: target.space ?? resolveRuntimeSpace(process.cwd()) });
+      await awaitForegroundStartup(root, true);
       return nothingRunning(presentationOf(args.values), target, values["with-agents"] === true && started, [], values["dry-run"] === true);
     }
   }
@@ -627,6 +679,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     if (cotalRoot() !== target.root) throw changed();
     validateDownArguments(args);
     if (controllerStackRecorded(target.root)) throw changed();
+    await awaitForegroundStartup(target.root, false);
     const current = guardLegacyBareDown();
     if (current.space !== guarded.space || current.server !== guarded.server || resolveRuntimeSpace(process.cwd()) !== folderCtx().space) throw changed();
     refuseUncontainedRecords(selected, folderCtx());
@@ -675,6 +728,8 @@ async function downCommand(args: ParsedArgs): Promise<void> {
       allStopped = false;
       if (e instanceof UnattributableRecord) unattributable.push(e);
       stderrLine("✗ ", `${(e as Error).message}`, c.red);
+      // A live manager may still need delivery. Do not tear down anything under a refused stop.
+      if (component.name === "manager") break;
     }
   }
   if (!allStopped) {

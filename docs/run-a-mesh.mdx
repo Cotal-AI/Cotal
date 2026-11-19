@@ -67,6 +67,9 @@ Its Machine section identifies the running installation and version.
 Check the connector rows before launching an agent.
 
 The component check distinguishes absent processes, components that are not serving, and refused requests.
+An open mesh needs no delivery daemon, so its absence does not fail the check.
+An observed store write failure or full store makes the broker `not-serving` even when its listener answers.
+On a stopped local stack, `status` and `ps` name an unwritable store and its permission repair before recommending a restart.
 Follow the report's next action if the stack is incomplete.
 The report also warns if the recorded broker store is missing or its directory was replaced.
 `status --space <name>` checks that local stack's root even from another folder. Coincident folder

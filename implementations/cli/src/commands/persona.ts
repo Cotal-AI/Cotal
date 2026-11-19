@@ -6,7 +6,7 @@ import {
   ConfirmationRequired,
   parseCommaList, CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
   writeResult, type Presentation, type Report,
-  recordOperationSpace,
+  personaDefinitionProblem, recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas } from "../lib/personas.js";
@@ -143,12 +143,6 @@ async function createSource(name: string, path: string, values: Values): Promise
     const def = validatePersona(bytes, source);
     // The file's own name is known, so name it and the create that keeps it.
     if (def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy: `create it under its own name with \`cotal persona create ${def.name} --file ${values.file}\`, or set its name to '${name}'` });
-    // A role is an address `send -r` reaches, so a role it would refuse is refused here.
-    if (def.role !== undefined) {
-      if (/[\u0000-\u001f\u007f]/u.test(def.role)) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${source}: role takes a label without control characters`);
-      try { assertValidRole(def.role); }
-      catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${source}: ${(error as Error).message}`); }
-    }
     return bytes;
   }
   if (values.subscribe === undefined) throw usage('provide --subscribe <a,b> or --subscribe "" for none');
@@ -190,7 +184,7 @@ function list(catalog: PersonaCatalog, presentation: Presentation): void {
     warnings: [
       ...malformed.map(entry => entry.notRegular
         ? { code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path }, message: `${entry.error}; it was not read` }
-        : { code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}${entry.encoding ? `: ${entry.encoding}; save it as UTF-8` : ""}` }),
+        : { code: "SCHEMA_INVALID", target: { name: entry.name, path: entry.path }, message: `cannot parse persona '${entry.name}' at ${entry.path}: ${personaDefinitionProblem(entry.error, entry.path)}` }),
       ...linked.map(entry => ({ code: "PERMISSION_DENIED", target: { name: entry.name, path: entry.path, link: entry.link }, message: `persona '${entry.name}' at ${entry.path} is a link to ${entry.link}; persona show, edit and remove refuse a link` })),
     ],
     ...(malformed.length ? { partial: { message: "some persona definitions could not be read" } } : {}),

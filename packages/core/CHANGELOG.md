@@ -1,5 +1,22 @@
 # @cotal-ai/core
 
+## 0.170.0
+
+### Minor Changes
+
+- 2b1659e: Add a host-only, bounded read-only observer for a space's pending work and authority. The observer uses the current stream layout, reports incomplete or changing state as unknown, and closes its native connection before returning. It does not activate hibernation or migrate data.
+
+### Patch Changes
+
+- ad6d984: Show why persona definitions are unreadable, return exit 4 for an incomplete legacy catalog, and reject invalid roles and null launch options before starting an application.
+- 3afefa8: Move the endpoint's channel registry cache, its replay and delivery-class lookups and the registry watch into an internal module without changing the endpoint API.
+- 0e42b19: Move the endpoint's durable backstop registries, leases and membership writes into an internal module without changing the endpoint API.
+- dd478d4: Move the endpoint's peer-readable liveness responder and probe into an internal module without changing the endpoint API.
+- 6170fc9: Move the endpoint messaging verbs into an internal module without changing the endpoint API.
+- 8c965ac: Move the endpoint's card model and working-directory overlays into its internal presence module without changing the endpoint API.
+- b73a8de: Move the endpoint's channel join, leave and listing calls and its membership feed watches into an internal module without changing the endpoint API.
+- 20ff353: Hosted workflows resume from their journals when JetStream returns after a broker outage interrupts a journal write.
+
 ## 0.169.0
 
 ### Minor Changes

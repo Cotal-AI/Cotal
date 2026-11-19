@@ -121,8 +121,8 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
 {
   const fresh = cotal([]);
   local("bare cotal prints the entry screen and writes nothing", fresh);
-  check("a fresh machine is pointed to sign-in and setup", /^No space is selected\.$/m.test(fresh.stdout) && /^Start here\n  cotal login  [^\n]*\n  cotal setup  /m.test(fresh.stdout), shown(fresh));
-  check("the entry screen names common commands and where the rest are", /^Everyday\n  cotal ps  /m.test(fresh.stdout) && /^More\n  cotal help  /m.test(fresh.stdout), shown(fresh));
+  check("a fresh machine is pointed to sign-in and setup", /^No space is selected\.$/m.test(fresh.stdout) && /^Start here\n  (?:pnpm )?cotal login  [^\n]*\n  (?:pnpm )?cotal setup  /m.test(fresh.stdout), shown(fresh));
+  check("the entry screen names common commands and where the rest are", /^Everyday\n  (?:pnpm )?cotal ps  /m.test(fresh.stdout) && /^More\n  (?:pnpm )?cotal help  /m.test(fresh.stdout), shown(fresh));
   const ghost = cotal([], (home) => writeFileSync(join(home, "current-mesh"), "ghost\n"));
   local("bare cotal with a selected space writes nothing", ghost);
   check("the entry screen names the selected space, and says when it is not recorded here", ghost.stdout.startsWith("ghost · not recorded · "), shown(ghost));
@@ -137,14 +137,14 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   });
   local("bare cotal with a prepared space selected writes nothing", elsewhere);
   check("a selected prepared space is started from its folder",
-    elsewhere.stdout.startsWith("planned · prepared · ") && /^Start here\n  cotal up --root \S+\/project +Start this space$/m.test(elsewhere.stdout) && !elsewhere.stdout.includes("cotal spawn"), shown(elsewhere));
+    elsewhere.stdout.startsWith("planned · prepared · ") && /^Start here\n  (?:pnpm )?cotal up --root \S+\/project +Start this space$/m.test(elsewhere.stdout) && !elsewhere.stdout.includes("cotal spawn"), shown(elsewhere));
   const here = cotal([], (home) => {
     mkdirSync(join(dirname(home), ".cotal"));
     prepare(home, "planned", dirname(home));
   });
   local("bare cotal in a prepared folder writes nothing", here);
   check("the space prepared in this folder is named and started here, with nothing selected",
-    here.stdout.startsWith("planned · prepared here · ") && /^Start here\n  cotal up +Start this space$/m.test(here.stdout) && !here.stdout.includes("No space is selected"), shown(here));
+    here.stdout.startsWith("planned · prepared here · ") && /^Start here\n  (?:pnpm )?cotal up +Start this space$/m.test(here.stdout) && !here.stdout.includes("No space is selected"), shown(here));
   // A space this machine started records its root, as `up` does, and stops being a prepared one.
   const register = (cotalHome: string, space: string, root: string): void => {
     mkdirSync(join(cotalHome, "meshes"), { recursive: true });
@@ -156,11 +156,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   });
   local("bare cotal in a started space's folder writes nothing", running);
   check("the space started in this folder leads, with nothing selected, and setup is not the first step",
-    running.stdout.startsWith("live · local · ") && /^Start here\n  cotal spawn +Open your default agent$/m.test(running.stdout) && !running.stdout.includes("No space is selected"), shown(running));
+    running.stdout.startsWith("live · local · ") && /^Start here\n  (?:pnpm )?cotal spawn +Open your default agent$/m.test(running.stdout) && !running.stdout.includes("No space is selected"), shown(running));
   const away = cotal([], (home) => register(home, "live", join(dirname(home), "project")));
   local("bare cotal outside any space's folder writes nothing", away);
   check("with spaces on the machine but none selected or here, it names use and space instead of setup",
-    /^No space is selected\.$/m.test(away.stdout) && /^Start here\n  cotal use <name> +Choose the space commands use\n  cotal space +List the spaces on this machine$/m.test(away.stdout) && !away.stdout.includes("cotal setup  Choose"), shown(away));
+    /^No space is selected\.$/m.test(away.stdout) && /^Start here\n  (?:pnpm )?cotal use <name> +Choose the space commands use\n  (?:pnpm )?cotal space +List the spaces on this machine$/m.test(away.stdout) && !away.stdout.includes("cotal setup  Choose"), shown(away));
 }
 
 // ── Help ───────────────────────────────────────────────────────────────────────────────────────────
@@ -205,6 +205,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     "a subcommand resolves by alias and by its command's alias, in help and in --help",
     same(subHelp, cotal(["help", "x", "rm"])) && same(subHelp, cotal(["ext", "rm", "--help"])) && same(subHelp, cotal(["x", "remove", "-h"])),
   );
+  const showHelp = cotal(["run", "show", "--help"]);
+  check("run show usage puts --limit in the text alternative to --json",
+    showHelp.status === 0 && showHelp.stdout.includes("[--json | [--plain] [--limit <n>]]"), shown(showHelp));
+  check("run show help says its --limit cannot be combined with --json",
+    /^  --limit <n>[^\n]*show:[^\n]*cannot be combined with --json/m.test(showHelp.stdout), shown(showHelp));
   refused("help of an unknown command is a usage error", cotal(["help", "nope"]), /unknown command: nope/);
   refused("help of an unknown subcommand is a usage error", cotal(["help", "ext", "nope"]), /cotal ext has no subcommand "nope"/);
   refused("help of a hidden internal subcommand is a usage error", cotal(["help", "ext", "__update-add"]), /cotal ext has no subcommand "__update-add"/);
@@ -495,10 +500,20 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     [["spawn", "dev", "--foreground", "--on", "a".repeat(30)], /^✗ a spawn in this terminal takes no structured receipt, manager credential or manager pin\n {2}add -d to launch it through a manager/],
     [["attach"], /^✗ name the agent to attach without an interactive terminal\n {2}run `cotal ps`, then `cotal attach <name>`/],
     [["run", "show"], /^✗ run show takes one identifier\n {2}`cotal run` lists the runs; run `cotal run show <run-id>`/],
-    [["run", "yield"], /^✗ run yield takes one identifier\n {2}`cotal run turns` lists your turns; run `cotal run yield <turn-id>`/],
   ] as const) {
     const r = cotal([...argv], undefined, noSeed);
     check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && said.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
+  }
+  const missingTurn = cotal(["run", "yield"], undefined, noSeed);
+  const yieldForm = /^✗ run yield takes one identifier\n {2}`cotal run turns` lists your turns\. Run `(cotal run yield <turn-id> --status <done\|blocked\|handoff>)`\. For a handoff, add `(--to <agent>)`\./.exec(missingTurn.stderr);
+  check("run yield without an id names the required status and handoff destination without printing help",
+    missingTurn.status === 1 && !!yieldForm && !missingTurn.stderr.includes("Usage"), shown(missingTurn));
+  if (yieldForm) for (const status of ["done", "blocked", "handoff"]) {
+    const command = yieldForm[1]!.replace("<turn-id>", "example-turn").replace("<done|blocked|handoff>", status);
+    const destination = status === "handoff" ? ` ${yieldForm[2]!.replace("<agent>", "example-agent")}` : "";
+    const copied = cotal((command + destination).split(" ").slice(1), undefined, noSeed);
+    check(`the printed run yield form for ${status} passes usage validation`,
+      copied.status === 2 && copied.stderr.includes("require a manager-launched seat's own shell"), shown(copied));
   }
   // An editor setting that is the path of an existing file runs as that program, spaces and all.
   const spacedDir = mkdtempSync(join(tmpdir(), "cotal entry editor "));
@@ -553,6 +568,24 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     shown16.status === 1 && shown16.stdout.includes(`w16.md: ${saved}`) && /"remedy":"save \S+w16\.md as UTF-8"/.test(shown16.stdout), shown(shown16));
   const old16 = cotal(["personas", "list"], utf16, noSeed);
   check("personas list names it by its encoding too", old16.stdout.includes(`w16.md: ${saved}; save it as UTF-8`), shown(old16));
+  const wrongModel = (home: string) => {
+    seeded(home);
+    writeFileSync(join(home, "..", ".cotal", "agents", "wrong-model.md"), "---\nname: wrong-model\nmodel: 42\n---\n");
+    writeFileSync(join(home, "..", ".cotal", "agents", "wrong-yaml.md"), "---\nname: wrong-yaml\nmodel: [private-value\n---\n");
+  };
+  const modelReason = /wrong-model\.md: "model" must be a string; got number/;
+  const yamlReason = /wrong-yaml\.md: the frontmatter is not valid YAML at line 3/;
+  const invalidPlain = cotal(["persona", "--plain"], wrongModel, noSeed);
+  const invalidJson = cotal(["persona", "--json"], wrongModel, noSeed);
+  const report = JSON.parse(invalidJson.stdout) as { outcome: string; result: { items: { name: string; valid: boolean }[] }; warnings: { code: string; message: string }[] };
+  check("persona --plain lists the parser rules without quoting the YAML excerpt",
+    invalidPlain.status === 4 && /default +.*readable/m.test(invalidPlain.stdout) && modelReason.test(invalidPlain.stderr) && yamlReason.test(invalidPlain.stderr) && !invalidPlain.stderr.includes("private-value"), shown(invalidPlain));
+  check("persona --json keeps readable definitions and returns only the safe parser reasons for invalid definitions",
+    invalidJson.status === 4 && report.outcome === "partial" && report.result.items.some((item) => item.name === "default" && item.valid) &&
+      report.warnings.some((w) => w.code === "SCHEMA_INVALID" && modelReason.test(w.message)) && report.warnings.some((w) => w.code === "SCHEMA_INVALID" && yamlReason.test(w.message)) && !invalidJson.stdout.includes("private-value"), shown(invalidJson));
+  const partialLegacy = cotal(["personas", "list"], wrongModel, noSeed);
+  check("personas list exits 4 but still prints readable entries and the parser reason",
+    partialLegacy.status === 4 && /^default\s/m.test(partialLegacy.stdout) && modelReason.test(partialLegacy.stdout), shown(partialLegacy));
   // A catalog file that is a FIFO would block a read, so the list marks it unreadable and names it
   // rather than waiting on it.
   if (process.platform !== "win32") {
@@ -645,12 +678,13 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const raw = /[\x07\x1b]/;
   const hostile = (home: string) => {
     mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
-    writeFileSync(join(home, "..", ".cotal", "agents", "h.md"), `---\nname: h\nrole: "r\\e]0;PWN\\aR"\ndescription: "d\\e[2JD"\n---\nbody ${E}B\n`);
+    writeFileSync(join(home, "..", ".cotal", "agents", "h.md"), card);
   };
+  const card = `---\nname: h\nrole: reviewer\ndescription: "d\\e]0;PWN\\aR\\e[2JD"\n---\nbody ${E}B\n`;
   for (const argv of [["personas", "list"], ["personas", "list", "-v"]]) {
     const r = cotal(argv, hostile, noSeed);
     check(`cotal ${argv.join(" ")} escapes the catalog's control characters`,
-      r.status === 0 && !raw.test(r.stdout + r.stderr) && r.stdout.includes("r\\u001b]0;PWN\\u0007R") && r.stdout.includes("d\\u001b[2JD") &&
+      r.status === 0 && !raw.test(r.stdout + r.stderr) && r.stdout.includes("d\\u001b]0;PWN\\u0007R\\u001b[2JD") &&
         (argv.length === 2 || r.stdout.includes("    body \\u001b]0;PWN\\u0007\\u001b[2JB")), shown(r));
   }
   // A parser diagnostic spans lines, and each is printed on its own rather than as escaped breaks.
@@ -658,8 +692,8 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
     writeFileSync(join(home, "..", ".cotal", "agents", "broken.md"), "---\nname: broken\nmodel: [unclosed\n---\nbody\n");
   }, noSeed);
-  check("personas list prints a YAML diagnostic as lines, with no escaped line breaks",
-    unparseable.status === 0 && /⨯ unparseable .*at line 2, column 17:$/m.test(unparseable.stdout) && /^ {4}model: \[unclosed$/m.test(unparseable.stdout) && /^ {20}\^$/m.test(unparseable.stdout) && !unparseable.stdout.includes("\\u000a"), shown(unparseable));
+  check("personas list exits 4 and prints a YAML diagnostic as lines, with no escaped line breaks",
+    unparseable.status === 4 && /⨯ unparseable .*at line 2, column 17:$/m.test(unparseable.stdout) && /^ {4}model: \[unclosed$/m.test(unparseable.stdout) && /^ {20}\^$/m.test(unparseable.stdout) && !unparseable.stdout.includes("\\u000a"), shown(unparseable));
   // Only a catalog folder that does not exist lists as empty. One that cannot be read is refused, as
   // `persona` refuses it, under the space it read. A folder this account owns whose mode denies it is
   // given the chmod that lets it read, and the run leaves the mode as it was. Any other read error
@@ -709,7 +743,6 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   }, noSeed);
   check("personas list prints a long first prompt line whole when nothing limits the width",
     wide.status === 0 && wide.stdout.includes(`  ${longLine}\n`) && !wide.stdout.includes("…"), shown(wide));
-  const card = `---\nname: h\nrole: "r\\e]0;PWN\\aR"\ndescription: "d\\e[2JD"\n---\nbody ${E}B\n`;
   const piped = cotal(["personas", "show", "h"], hostile, noSeed);
   check("personas show piped writes the file byte for byte and nothing else", piped.status === 0 && piped.stdout === card, shown(piped));
   // Legacy `personas show` refuses as `persona show` does: a missing persona, an invalid definition and

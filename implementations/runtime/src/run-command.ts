@@ -1143,7 +1143,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (first !== undefined) usage(`run ${raw} takes no positional argument`);
   } else if (verb === "answer" || verb === "amend") {
     if (!first || !second) usage(`run ${verb} requires a run id and step key`);
-  } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns; run `cotal run yield <turn-id>`" : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
+  } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns. Run `cotal run yield <turn-id> --status <done|blocked|handoff>`. For a handoff, add `--to <agent>`." : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],
     "admit-read": ["start"], "admit-publish": ["start"], adopt: [], release: [], "discard-approvals": [],
