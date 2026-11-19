@@ -666,8 +666,14 @@ if (process.platform === "linux") {
   if (previousSelection) {
     if (previousSelection.source === "adopted") setAdoptedCurrent(previousSelection.space); else setCurrent(previousSelection.space);
   }
-  check("status there names the other home even when this home prepared a space at the root",
-    status.status === 4 && status.env?.error?.code === "OPERATION_PARTIAL" && status.env?.warnings?.some((warning: { code: string }) => warning.code === "FOLDER_BROKER_UNAVAILABLE") && status.env?.result?.selected?.code === "not-started" && /member records are missing/.test(status.env.result.selected.message ?? ""), { status: status.status, selected: status.env?.result?.selected, warnings: status.env?.warnings, error: status.env?.error });
+  const broker = status.env?.result?.folder?.processes?.find((row: { name: string }) => row.name === "nats");
+  const warning = status.env?.warnings?.find((row: { code: string }) => row.code === "FOLDER_BROKER_UNAVAILABLE");
+  check("status is partial when a prepared root has a live stack with missing member records and no recorded home",
+    status.status === 4 && status.env?.error?.code === "OPERATION_PARTIAL" && broker?.state === "unknown" &&
+      warning?.target?.root === awayRoot && warning?.target?.space === "away" && /member records are missing/.test(warning.message ?? "") &&
+      status.env?.result?.selected?.code === "not-started" && /member records are missing/.test(status.env.result.selected.message ?? "") &&
+      status.env?.result?.hints?.some((hint: string) => hint.includes("COTAL_HOME set to the Cotal home the stack was started under")),
+    { status: status.status, broker, selected: status.env?.result?.selected, warnings: status.env?.warnings, error: status.env?.error, hints: status.env?.result?.hints });
   removePreparedSpace("away");
   await new Promise((done) => { awayManager.once("exit", done); awayManager.kill("SIGKILL"); });
   rmSync(awayRecord);
