@@ -99,7 +99,7 @@
     },
     {
       "name": "S11 a readiness cancel clears the debt before the seat exits",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/spawn-goal.ts",
       "find": "        if (this.onceWatched.has(goalKey(onceRef))) void this.commitOnceCancel(",
       "replace": "        if (false) void this.commitOnceCancel(",
       "expectRed": "a seat that never joins: its task is cancelled at once, and its debt is kept while its process still runs"
