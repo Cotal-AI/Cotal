@@ -29,7 +29,7 @@ const c = (label: string, cond: boolean, detail?: unknown): void => {
 const pending = (what: string): void => console.log(`  ⏳ PENDING (blocked on the spec changes this depends on): ${what}`);
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "manager.ts");
-const src = readFileSync(SRC, "utf8") + "\n" + readFileSync(join(dirname(SRC), "turn-relay.ts"), "utf8") + "\n" + readFileSync(join(dirname(SRC), "goal-writer.ts"), "utf8");
+const src = readFileSync(SRC, "utf8") + "\n" + readFileSync(join(dirname(SRC), "turn-relay.ts"), "utf8") + "\n" + readFileSync(join(dirname(SRC), "goal-writer.ts"), "utf8") + "\n" + readFileSync(join(dirname(SRC), "command-dispatch.ts"), "utf8");
 const count = (needle: string): number => src.split(needle).length - 1;
 
 const coverageDoc = readFileSync(join(dirname(SRC), "..", "..", "..", "docs", "control-discovery.mdx"), "utf8");
@@ -57,8 +57,10 @@ c("WRONG-TODAY: `launch` is wired through the SAME serveSpawnGoal chokepoint",
   count("launch: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(") === 1);
 // The count is the point: it pins TWO and only two. A third action command wired the same way
 // later would be a third thing the flip has to move, and a per-name cell would not notice it.
+// The command table reaches the chokepoint through one dependency arrow, which is wiring, not a command.
+const spawnGoalSites = count("this.serveSpawnGoal(") - count("serveSpawnGoal: (...args) => this.serveSpawnGoal(...args),");
 c("WRONG-TODAY: EXACTLY two commands route through it — a third would be a third thing to move",
-  count("this.serveSpawnGoal(") === 2, { sites: count("this.serveSpawnGoal(") });
+  spawnGoalSites === 2, { sites: spawnGoalSites });
 c("WRONG-TODAY: the chokepoint itself still exists",
   count("private async serveSpawnGoal(") === 1);
 pending("both commands accept through the journal rail (submission → decision fact → goal bind) and serveSpawnGoal is DELETED");

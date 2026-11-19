@@ -24,7 +24,7 @@
     },
     {
       "name": "D2 drop the served caller from define-persona",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/command-dispatch.ts",
       "find": "this.opDefinePersona(args(ctx), callerOf(ctx), false, ctx.subject.caller)",
       "replace": "this.opDefinePersona(args(ctx), callerOf(ctx), false)",
       "expectRed": "a define-persona capability the definer does not hold is refused at the door, naming it",

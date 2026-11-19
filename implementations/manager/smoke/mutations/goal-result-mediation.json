@@ -14,7 +14,7 @@
   "mutations": [
     {
       "name": "M1 substitute local owner for authenticated caller owner",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/command-dispatch.ts",
       "find": "const result = await readGoalResult(gw.ctx, goalRefOf(ctx.subject, goalId));",
       "replace": "const result = await readGoalResult(gw.ctx, goalRefOf({ ...ctx.subject, caller: { ...ctx.subject.caller, owner: DEV_OWNER } }, goalId));",
       "expectRed": "goal-result does not disclose a terminal to another owner",
@@ -22,7 +22,7 @@
     },
     {
       "name": "M2 omit the canonical result read",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/command-dispatch.ts",
       "find": "const result = await readGoalResult(gw.ctx, goalRefOf(ctx.subject, goalId));",
       "replace": "const result = undefined;",
       "expectRed": "goal-result reads the real manager's committed terminal for its authenticated caller",

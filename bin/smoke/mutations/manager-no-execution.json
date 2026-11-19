@@ -48,9 +48,9 @@
     },
     {
       "name": "manifest refusal delayed until after real inline persistence",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/command-dispatch.ts",
       "find": "      launch: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h, ctx.subject.route))),",
-      "replace": "      launch: (ctx) => this.serveGated(ctx, () => { if (args(ctx).spec !== undefined) persistLaunchSpec(this.workspaceRoot, parseLaunchSpec(args(ctx).spec, \"inline launch spec\")); return this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h, ctx.subject.route)); }),",
+      "replace": "      launch: (ctx) => this.serveGated(ctx, async () => { if (args(ctx).spec !== undefined) { const { persistLaunchSpec, parseLaunchSpec } = await import(\"./launch.js\"); persistLaunchSpec(this.workspaceRoot, parseLaunchSpec(args(ctx).spec, \"inline launch spec\")); } return this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h, ctx.subject.route)); }),",
       "expectRed": "served launch/run refusals produce no host requests or launch files",
       "cell": "served launch/run refusals produce no host requests or launch files",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
