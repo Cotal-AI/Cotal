@@ -44,7 +44,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--restore-only registry` | artifact selection | Restore only the registry component |
 | `--accept-missing-source` | off | Explicit disaster consent when the inode-bound preserved source is absent |
 | `--accept-stale-checkpoint` | off | Explicit consent to resume a seat whose checkpoint was captured outside its recorded recency horizon |
-| `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs. A root whose first `up` recorded another mode refuses it |
+| `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs. A controller stack whose first `up` recorded another mode refuses it. A legacy folder that already ran with static auth also refuses it, even after `cotal down` |
 | `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger. A root whose first `up` recorded another mode refuses it. A stopped root whose space has user-auth state refuses a start without it, `--open` included, as `CONFLICT`, exit 2, before anything is written; add `--user-auth` to start it |
 | `--idp <url>` | none | With `--user-auth`: the IdP auth base URL to pin on first enable. A later run may omit it or pass any spelling that normalizes to the pinned URL, such as one with a trailing slash; a different IdP is refused. With `-f`, overrides the manifest's `broker.idp` under the same rules: https (or http on a loopback IP literal), with no credentials, query or fragment |
 | `--exchange-public-port <n>` | none | With `--user-auth`: add the public exchange face on this loopback port, for an HTTPS reverse proxy to forward to |
@@ -126,15 +126,15 @@ leaves the other space's `down` and its reads reaching this one. When the named 
 runs from another folder refuses `CONFLICT` as well. Its Next names
 `cotal up --space <name>` to start a separate space in this folder, and the `cotal down` that stops
 the other one in its own folder. A background boot also brings up the control plane (delivery daemon in auth
-mode, then the manager). An open mesh runs no delivery daemon, also in a root that still holds a
-static stack's accounts, and its manager mints no credentials from those accounts, so static and
-open boots can alternate in one folder. Their store then holds both accounts, and a backup holds
-one, so a restore there leaves the other account's streams in the store it sets aside (see
-[Backups](cli-backups.mdx#backups)). This prevents new affected stores; it does not repair an
-open account where an older build already staged manager credential families. Those registrations
-can still refuse, and reconciliation requires liveness evidence that the open mesh cannot currently
-provide. A manager that stops on such a gate says this in its log, including that
-`cotal manager reconcile` refuses the gate. Keep that store intact; upgrading alone does not recover that state.
+mode, then the manager). An open mesh runs no delivery daemon. In a legacy folder that already ran
+with static auth, `cotal up --open` refuses `CONFLICT` (exit 2) whether the broker is running
+or stopped. Run bare `cotal up` to keep static auth, or run `cotal up --open` in a separate project folder.
+If an earlier version alternated static and open boots in one folder, its store can still hold both
+accounts. A backup holds one, so a restore leaves the other account's streams in the store it sets
+aside (see [Backups](cli-backups.mdx#backups)). Older builds could also stage manager credential
+families in the open account. Those registrations can still refuse, and reconciliation needs
+liveness evidence that the open mesh cannot provide. If the manager stops on this check, its log
+says why `cotal manager reconcile` refuses. Keep that store intact. Upgrading alone does not recover it.
 `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
 pidfile to leave stale. Authenticated starts and refreshes warn that no local process re-signs the

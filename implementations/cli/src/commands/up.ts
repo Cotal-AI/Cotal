@@ -1727,6 +1727,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // lookup below misses its own mesh and the space claim refuses it (#3889).
     const recordedSpace = values.space ?? folderSpace();
     const registration = localMeshesForRoot(cotalRoot()).find((m) => m.space === recordedSpace);
+    const recorded = resumeAttempt ? undefined : retainedLegacyBroker(cotalRoot());
+    // An account can be provisioned before the first boot, so require a registration or rendered config.
+    if (!resumeAttempt && values.open === true && (registration?.mode === "auth" || recorded?.open === false) && !hasUserAuthState(cotalRoot(), recordedSpace, { readOnly: true }))
+      throw new CommandFailure("refused", "CONFLICT", "this folder has already run with static auth, so `--open` cannot start it without auth", {
+        target: { root: cotalRoot(), space: recordedSpace },
+        remedy: "run bare `cotal up` to keep static auth here, or run `cotal up --open` in a new project folder for a separate open space",
+      });
     // A stopped legacy root's own files decide its start: its `down` dropped the registration that
     // kept its address, or kept one for a space named after its folder, which only holds the name.
     // With no address flag, it starts again at the address its last start rendered, and in open
@@ -1741,9 +1748,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // daemon and no line saying so, and the broker that had served its agents unauthenticated now
     // refused them. The address still follows the flags; the recorded mode is inherited whenever
     // this start names no mode of its own.
-    const recorded = resumeAttempt ? undefined : retainedLegacyBroker(cotalRoot());
-    // A flag still wins: `--open` over a root that last ran with auth starts it open, as it always
-    // has, and `--user-auth` asks for the mode the user-auth state decides. Only silence inherits.
     if (recorded?.open && values["user-auth"] !== true) values.open = true;
     const retained = implicit ? recorded : undefined;
     // An address up chooses for a TLS broker names TLS, as an explicit one must.
