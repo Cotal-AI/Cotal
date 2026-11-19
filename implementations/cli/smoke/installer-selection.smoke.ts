@@ -83,6 +83,16 @@ try {
   writeFileSync(join(npmPackage, "dist/cotal.js"), '#!/usr/bin/env node\nconsole.log(process.argv[2] === "--entry" ? process.argv[1] : "cotal-ai 0.0.0");\n', { mode: 0o755 });
   const installation = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
   assert(installation.includes("`wget` instead of `curl`") && installation.includes("wget -qO- https://get.cotal.ai | sh -s -- --no-setup"), "the install guide offers the wget bootstrap");
+  const managedFlags = installation.match(/^curl -fsSL https:\/\/get\.cotal\.ai \| sh -s -- (--no-setup --vendor-node)$/m)?.[1];
+  assert(managedFlags, "the install guide shows how to select managed Node without setup");
+  const managedHome = join(root, "managed-home");
+  mkdirSync(managedHome);
+  const plan = spawnSync("/bin/sh", [resolve(import.meta.dirname, "../../../install.sh"), ...managedFlags.split(" "), "--dry-run"], {
+    env: { HOME: managedHome, PATH: toolPath, NO_COLOR: "1" }, encoding: "utf8", timeout: 10_000,
+  });
+  assert.equal(plan.status, 0, output(plan));
+  assert.match(output(plan), /would download Node .* and verify its SHA-256/, "the documented flags select managed Node even with Node on PATH");
+  assert.deepEqual(readdirSync(managedHome), [], "the dry run leaves the home untouched");
   const shellLauncher = join(npmHome, ".local", "bin", "cotal");
   mkdirSync(dirname(shellLauncher), { recursive: true });
   const shellLauncherBody = "#!/bin/sh\nprintf 'shell installer launcher\\n'\n";
@@ -408,7 +418,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 108 : 87, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 112 : 91, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

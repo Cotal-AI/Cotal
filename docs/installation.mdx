@@ -51,6 +51,17 @@ It uses a suitable Node.js 22.10 or newer already on your machine, or installs o
 When the installer uses your system `node`, the launcher keeps using that executable path after
 a supported Node upgrade. If that path disappears or Node falls below 22.10, rerun the installer.
 
+On Rocky Linux 9, a minimal AppStream Node.js installation without `nodejs-full-i18n` can crash in
+`Intl.Segmenter` when Cotal formats terminal output. `cotal --version` can succeed even when
+`cotal up` or `cotal status` exits 139. If you cannot install the missing system package, install
+Cotal with its managed Node.js runtime:
+
+```bash
+curl -fsSL https://get.cotal.ai | sh -s -- --no-setup --vendor-node
+```
+
+If you also installed Cotal with npm, run `~/.local/bin/cotal` to select the shell installation.
+
 Before reporting success, the installer runs the installed launcher with `--version`.
 If it cannot start, installation exits with an error and prints the command's output.
 If you selected an older release, run the installer again without `--version` to select the latest release.
@@ -117,6 +128,18 @@ See [Run a mesh](run-a-mesh.mdx#the-stack) before reusing an existing broker.
 
 The CLI sends usage telemetry by default. Run `cotal telemetry off` to disable it.
 [Telemetry](telemetry.mdx) lists the fields and other opt-outs.
+
+### Rocky Linux 9 AppStream Node.js
+
+If you use Rocky Linux 9 AppStream Node.js, install the matching `nodejs-full-i18n` package:
+
+```bash
+sudo dnf install nodejs-full-i18n
+```
+
+If Cotal is already installed with npm, you do not need to reinstall it after adding that package.
+If `cotal up` reports a previous connector seed failure, run `cotal ext seed --repair`, then retry `cotal up`.
+If you cannot install system packages, use the [shell installer with `--vendor-node`](#use-the-shell-installer).
 
 ### Switch from a shell installation
 
