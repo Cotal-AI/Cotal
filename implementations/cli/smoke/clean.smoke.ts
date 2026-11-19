@@ -409,14 +409,27 @@ try {
   const refusals: { code?: string; message?: string; remedy?: string }[] = [];
   process.chdir(namedRoot);
   try {
-    for (const [target, values] of [["store", { space: "other", "dry-run": true }], ["store", { space: "other", force: true }], ["all", { space: "other", force: true }], ["store", { server: "nats://127.0.0.1:4999", force: true }], ["all", { creds: "absent.creds", "dry-run": true }], ["restore-attempt", { space: "other", attempt: "restore-00000000-0000-4000-8000-000000000000", force: true }]] as const) {
+    for (const [target, values] of [
+      ["store", { space: "other", "dry-run": true }],
+      ["store", { space: "other", force: true }],
+      ["all", { space: "other", force: true }],
+      ["store", { server: "nats://127.0.0.1:4999", force: true }],
+      ["all", { creds: "absent.creds", "dry-run": true }],
+      ["restore-attempt", { space: "other", attempt: "restore-00000000-0000-4000-8000-000000000000", force: true }],
+      ["store", { server: "nats://127.0.0.1:4999", creds: "absent.creds", "store-dir": "other store", "dry-run": true }],
+    ] as const) {
       try { await clean({ positionals: [target], values: { ...values }, raw: [] }); refusals.push({}); }
       catch (error) { refusals.push(error as { code?: string; message?: string; remedy?: string }); }
     }
   } finally { process.chdir(namedCwd); }
   check("store, all and restore-attempt with --space, --server or --creds each refuse USAGE_INVALID before any read",
-    refusals.length === 6 && refusals.every((r) => r.code === "USAGE_INVALID" && /the mesh for clean history only; clean [a-z-]+ acts on the root of the folder it runs in, so nothing was removed$/.test(r.message ?? "")), refusals);
-  check("the refusal names its flag and the folder to run it in", refusals[0]?.message?.startsWith("--space picks ") === true && refusals[0].remedy === "run `cotal clean store` in the project folder of the root to clean, without --space", refusals[0]);
+    refusals.length === 7 && refusals.every((r) => r.code === "USAGE_INVALID" && /the mesh for clean history only; clean [a-z-]+ acts on the root of the folder it runs in, so nothing was removed$/.test(r.message ?? "")), refusals);
+  check("the refusal names both spellings of the space selector",
+    refusals[0]?.remedy === "if you ran this from the project you intend to clean, rerun from the same directory, removing only --space (-s) and its value", refusals[0]);
+  check("the refusal tells the operator to keep the directory and remove only the refused server flag and value",
+    refusals[3]?.message?.startsWith("--server picks ") === true && refusals[3].remedy === "if you ran this from the project you intend to clean, rerun from the same directory, removing only --server and its value", refusals[3]);
+  check("the refusal names every refused mesh flag and keeps the directory and other options",
+    refusals[6]?.message?.startsWith("--server, --creds pick ") === true && refusals[6].remedy === "if you ran this from the project you intend to clean, rerun from the same directory, removing only --server, --creds and their values", refusals[6]);
   check("...and the store and the space identity stay", existsSync(join(namedRoot, ".cotal", "nats", "jetstream", "stream.dat")) && existsSync(join(namedRoot, ".cotal", "auth", "auth.json")));
   rmSync(namedRoot, { recursive: true, force: true });
 

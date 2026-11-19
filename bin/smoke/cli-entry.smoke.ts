@@ -205,6 +205,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     "a subcommand resolves by alias and by its command's alias, in help and in --help",
     same(subHelp, cotal(["help", "x", "rm"])) && same(subHelp, cotal(["ext", "rm", "--help"])) && same(subHelp, cotal(["x", "remove", "-h"])),
   );
+  const showHelp = cotal(["run", "show", "--help"]);
+  check("run show usage puts --limit in the text alternative to --json",
+    showHelp.status === 0 && showHelp.stdout.includes("[--json | [--plain] [--limit <n>]]"), shown(showHelp));
+  check("run show help says its --limit cannot be combined with --json",
+    /^  --limit <n>[^\n]*show:[^\n]*cannot be combined with --json/m.test(showHelp.stdout), shown(showHelp));
   refused("help of an unknown command is a usage error", cotal(["help", "nope"]), /unknown command: nope/);
   refused("help of an unknown subcommand is a usage error", cotal(["help", "ext", "nope"]), /cotal ext has no subcommand "nope"/);
   refused("help of a hidden internal subcommand is a usage error", cotal(["help", "ext", "__update-add"]), /cotal ext has no subcommand "__update-add"/);

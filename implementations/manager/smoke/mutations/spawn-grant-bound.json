@@ -20,7 +20,7 @@
   "mutations": [
     {
       "name": "S1 drop the bound's refusal",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "    if (boundRefusal) return { ok: false, error: boundRefusal };",
       "replace": "    void boundRefusal;",
       "expectRed": "reading a channel the spawner cannot read is refused by name",
@@ -44,7 +44,7 @@
     },
     {
       "name": "S4 stop clamping the callerAcl default",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "        return bound.kind === \"bounded\" ? own.filter((ch) => grantOverreach(this.space, bound.caller, bound.ceiling, { [field]: [ch] }).length === 0) : own;",
       "replace": "        return own;",
       "expectRed": "clamped to what the spawner's evidence holds",
@@ -52,7 +52,7 @@
     },
     {
       "name": "S5 give a caller with no evidence the callerAcl default",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "        scoped = !personaNamesChannels && opts.callerAcl && bound.kind !== \"none\" ? {",
       "replace": "        scoped = !personaNamesChannels && opts.callerAcl ? {",
       "expectRed": "a channel-less persona still spawns for it",

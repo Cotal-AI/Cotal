@@ -1,5 +1,12 @@
 # @cotal-ai/connector-core
 
+## 0.170.0
+
+### Patch Changes
+
+- 0ba92fc: Document how to export Markdown without the source and version line and how to restore a missing default persona.
+- e824b50: A channel set quiet, muted or left during a turn no longer has that turn's posts delivered again when the turn fails. The change now applies to them once the failed turn releases them, so they stay readable with `cotal_inbox` instead.
+
 ## 0.169.0
 
 ### Minor Changes
