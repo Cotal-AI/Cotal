@@ -253,7 +253,8 @@ check("up in a copied folder refuses CONFLICT, exit 2, naming the folder its jou
   for (const command of ["ps", "whoami"]) {
     const r = run([command, "--json"], copy);
     check(`${command} in a copy targets the explicit selection`,
-      command === "ps" ? selectedRefusal(r) : r.status === 0 && r.envelope?.outcome === "ok" && r.envelope.target?.space === "sel07", shown(r));
+      command === "ps" ? selectedRefusal(r) : r.status === 4 && r.envelope?.outcome === "partial" && r.envelope.target?.space === "sel07"
+        && r.envelope.warnings?.some((warning) => warning.code === "MODE_NOT_CHECKED") === true, shown(r));
   }
   // Bare cotal reads no broker, so it names what the folder holds from its records, with the step the
   // reads name, and status reports under the space they name, as the reads refuse under it.

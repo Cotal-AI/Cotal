@@ -277,9 +277,9 @@ check("it wrote no persona, pidfile or store in the home's .cotal", !existsSync(
 // there is nothing to stop or preview, and name `cotal up` in a project as status does.
 sandbox(home);
 const homeDown = run(["down", "--yes"], home);
-check("down --yes in a home with no stack is TARGET_NOT_FOUND, nothing to stop, and names `cotal up` in a project", homeDown.status === 2 && /there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to stop/.test(homeDown.stderr) && homeDown.stderr.includes("run `cotal up` in a project"), shown(homeDown));
+check("down --yes in a home with no stack is TARGET_NOT_FOUND, nothing to stop, and names `cotal up` in a project", homeDown.status === 2 && /there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to stop/.test(homeDown.stderr) && /run `(?:pnpm )?cotal up` in a project/.test(homeDown.stderr), shown(homeDown));
 const homePreview = run(["down", "--dry-run", "--json"], home);
-check("down --dry-run in a home with no stack is TARGET_NOT_FOUND, nothing to preview, and names `cotal up` in a project", homePreview.status === 2 && homePreview.envelope?.error?.code === "TARGET_NOT_FOUND" && /no stack started or registered, so there is nothing to preview/.test(homePreview.envelope.error.message ?? "") && homePreview.envelope.error.remedy === "run `cotal up` in a project", shown(homePreview));
+check("down --dry-run in a home with no stack is TARGET_NOT_FOUND, nothing to preview, and names `cotal up` in a project", homePreview.status === 2 && homePreview.envelope?.error?.code === "TARGET_NOT_FOUND" && /no stack started or registered, so there is nothing to preview/.test(homePreview.envelope.error.message ?? "") && /^run `(?:pnpm )?cotal up` in a project$/.test(homePreview.envelope.error.remedy ?? ""), shown(homePreview));
 
 // A fresh folder under the home, whose only .cotal above it is the home's, becomes its own project
 // root on a bare up, also under a home that holds a stack. A run refused before it writes there leaves
