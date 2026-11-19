@@ -475,8 +475,8 @@ try {
   const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home, DO_NOT_TRACK: "1" };
   for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
   childEnv.COTAL_HOME = home;
-  const native = (args: string[]) => spawnSync(process.execPath, [binary, ...args], {
-    cwd: MESH, env: childEnv, encoding: "utf8", timeout: 30_000,
+  const native = (args: string[], cwd = MESH, env = childEnv) => spawnSync(process.execPath, [binary, ...args], {
+    cwd, env, encoding: "utf8", timeout: 30_000,
   });
   for (const [label, raw, expected] of cases) {
     for (const verb of ["persona", "personas"] as const) {
@@ -501,6 +501,38 @@ try {
     const grants = JSON.parse(result.stdout).result.grants as { read: string[]; post: string[] };
     check(`mint: ${label} read list keeps absence distinct from empty`, JSON.stringify(grants.read) === JSON.stringify(raw === undefined ? ["default-read"] : expected));
     check(`mint: ${label} post list keeps absence distinct from empty`, JSON.stringify(grants.post) === JSON.stringify(raw === undefined ? ["default-post"] : expected));
+  }
+
+  const encodedSource = join(scratch, "encoded.md");
+  const encodedFile = agentFilePath(MESH, "encoded");
+  writeFileSync(encodedSource, Buffer.from("---\nname: encoded\n---\nReview café changes.\n", "latin1"));
+  const encodedArgs = ["persona", "create", "encoded", "--file", encodedSource, "--plain"];
+  const invalidEncoding = native(encodedArgs);
+  check("persona create refuses invalid UTF-8 with a resave remedy and writes nothing",
+    invalidEncoding.status === 1 && invalidEncoding.stderr.includes("SCHEMA_INVALID") &&
+    invalidEncoding.stderr.includes(`${encodedSource}: it is not valid UTF-8`) &&
+    invalidEncoding.stderr.includes(`save ${encodedSource} as UTF-8`) && !existsSync(encodedFile), invalidEncoding.stderr);
+  const utf8 = Buffer.from("---\r\nname: encoded\r\n---\r\nReview café and the literal � symbol.\r\n");
+  writeFileSync(encodedSource, utf8);
+  const validEncoding = native(encodedArgs);
+  check("persona create accepts valid UTF-8 and keeps the original bytes",
+    validEncoding.status === 0 && readFileSync(encodedFile).equals(utf8), validEncoding.stdout + validEncoding.stderr);
+
+  const decoyFile = agentFilePath(ALPHA, "encoded");
+  const decoy = "---\nname: encoded\n---\nAlpha instructions.\n";
+  writeFileSync(decoyFile, decoy);
+  for (const selector of [["--space", "alpha"], ["--server", "nats://127.0.0.1:4301"]]) {
+    const conflict = native(["persona", "create", "encoded", "--prompt", "Do not change.", "--subscribe", "", ...selector, "--plain"], scratch);
+    const remedy = conflict.stderr.match(/change it with `([^`]+)`, or remove it with `([^`]+)` first/);
+    check(`persona create conflict keeps ${selector[0]} in both recovery commands`,
+      conflict.status === 2 && conflict.stderr.includes("CONFLICT") &&
+      remedy?.[1] === `cotal persona edit encoded ${selector.join(" ")}` &&
+      remedy?.[2] === `cotal persona remove encoded ${selector.join(" ")}`, conflict.stderr);
+    const edit = native([...remedy![1]!.split(" ").slice(1), "--json"], scratch, { ...childEnv, VISUAL: "true" });
+    const receipt = JSON.parse(edit.stdout);
+    check(`the suggested edit with ${selector[0]} opens alpha, not the selected catalog`,
+      edit.status === 0 && receipt.target?.space === "alpha" && receipt.outcome === "no-op" &&
+      readFileSync(decoyFile, "utf8") === decoy && readFileSync(encodedFile).equals(utf8), edit.stdout + edit.stderr);
   }
 
   for (const [field, value, expected] of [

@@ -175,7 +175,7 @@
     },
     {
       "name": "the manager trusts the answerer's lease claim (the row-holder comparison dropped)",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/credential-renewal.ts",
       "find": "    const holder = await this.ep.deliveryLeaseHolder(Manager.DELIVERY_SHARD);\n    if (holder === undefined)\n      throw new Error(\n        \"this manager could not read the delivery lease row, so it cannot verify that the answering \" +\n          \"responder is the process that reloads the standing credentials - nothing reminted\",\n      );\n    if (holder !== answer.responder)\n      throw new Error(\n        `the delivery-admin rail was answered by ${answer.responder}, which is not the holder of ` +\n          `this space's delivery lease (${holder}), so its SecretStore is not the store the daemon ` +\n          `reloads from - nothing reminted`,\n      );",
       "replace": "    void this.ep;",
       "expectRed": "a NON-HOLDER answer with the manager's own store is REFUSED: the manager does not take the renewal lease (#1694)",
@@ -206,7 +206,7 @@
     },
     {
       "name": "a refused pass keeps the held renewal lease (the catch-path release dropped)",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/credential-renewal.ts",
       "find": "    } catch (e) {\n      this.daemonRenewalEligible = false;\n      if (this.daemonRenewalOwner) await this.ep.releaseDaemonRenewalLease().catch(() => {});\n      this.daemonRenewalOwner = false;\n      throw e;\n    }",
       "replace": "    } catch (e) {\n      this.daemonRenewalEligible = false;\n      this.daemonRenewalOwner = false;\n      this.daemonRenewalOwner = true;\n      throw e;\n    }",
       "expectRed": "a no-responder rail while the row names a holder REFUSES (undetermined, never absent) and the manager holds no renewal lease",

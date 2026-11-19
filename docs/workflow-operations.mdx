@@ -92,10 +92,16 @@ writes the lines before the resume point again.
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
 cotal run                                               # list run records and their recorded state
 cotal run show run-3f2a90c41b7e0d5a6c884e19b02df4a1                        # print the record and its last 20 journal rows; --limit <n> prints up to 1000, --json all
-cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"yes"'
 cotal run amend run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"no"'   # record a changed position
 cotal run check run-3f2a90c41b7e0d5a6c884e19b02df4a1 build-v2.cotal.js   # check an edited program against the journal
+```
+
+To recover an interrupted run, resume it only after it no longer has an active driver.
+Answer a checkpoint on an active run directly with `cotal run answer`.
+
+```bash
+cotal run resume <runId>
 ```
 
 A program that does not validate is refused before anything is recorded, with every problem in the

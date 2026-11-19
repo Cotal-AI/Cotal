@@ -156,6 +156,7 @@ for (const [argv, rerun] of [
   [["stop", "default_agent", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
   [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --space elsewhere --on <instance>"],
+  [["ps", "--slots", "--server", "nats://127.0.0.1:39200", "--on", "bogus"], "cotal ps --slots --server nats://127.0.0.1:39200 --on <instance>"],
   [["models", "--harness", "claude", "--on", "bad"], "cotal models --harness claude --on <instance>"],
   [["spawn", "default", "-d", "--on", "bad"], "cotal spawn default -d --on <instance>"],
 ] as const) {

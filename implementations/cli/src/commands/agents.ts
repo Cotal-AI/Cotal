@@ -592,7 +592,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
   let on: string | undefined;
   let census: SeatCensus;
   try {
-    on = await managerPin(v, onRerun(`cotal ${command}`, v));
+    on = await managerPin(v, onRerun("cotal ps", v, slots ? ["--slots"] : []));
     census = await readSeats(v, command, on);
   } catch (e) {
     const parts = isConnectRefusal(e) ? e.parts : isWorkspaceTargetError(e) && e.code === "not-started" ? workspaceErrorParts({ kind: "target", error: e }) : undefined;
