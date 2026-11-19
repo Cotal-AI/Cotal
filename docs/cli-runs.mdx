@@ -17,7 +17,7 @@ cotal run start --file <program> [--timeout <dur>] [--local --admit-read <channe
 cotal run resume <runId> [--local --file <program>] [--on <instance>]
 cotal run [--endpoint <ep>] [--json] [--on <instance>]
 cotal run --page --on <instance> [--limit <n>] [--cursor <cursor>] [--endpoint <ep>]
-cotal run show <runId> [--endpoint <ep>] [--limit <n>] [--json] [--on <instance>]
+cotal run show <runId> [--endpoint <ep>] [--json | [--plain] [--limit <n>]] [--on <instance>]
 cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
 cotal run amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
 cotal run revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>]
