@@ -13,7 +13,7 @@
  * Run: pnpm smoke:leading-output-flags
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -24,7 +24,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { command?: string; outcome?: string; error?: { code?: string } }
+interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string }; warnings?: { code?: string }[] }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-leading-flags-"));
@@ -34,8 +34,8 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-const run = (args: string[]) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], config = env.XDG_CONFIG_HOME) => {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env: { ...env, XDG_CONFIG_HOME: config }, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
@@ -44,6 +44,56 @@ const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdo
 
 const after = run(["version", "--json"]);
 check("control: version --json writes one envelope", after.status === 0 && after.envelope?.command === "version", shown(after));
+
+const duplicateInput = "Option '--no-input' cannot be repeated";
+const jsonDuplicate = (r: ReturnType<typeof run>, command: string) => r.status === 1 && r.stderr === "" &&
+  r.envelope?.command === command && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+  r.envelope.error.message === duplicateInput;
+for (const args of [
+  ["--json", "--no-input", "--no-input", "version"],
+  ["--no-input", "--no-input", "-j", "--", "-V"],
+  ["--no-input", "version", "--no-input", "--json"],
+  ["version", "--no-input", "--no-input", "--json"],
+]) {
+  const r = run(args);
+  check(`${args.join(" ")} preserves the JSON refusal`, jsonDuplicate(r, "version"), shown(r));
+}
+
+const configHelp = run(["config", "get", "--help"]);
+check("config get help is scoped", configHelp.status === 0 && configHelp.stdout.includes("cotal config get <key>") && !configHelp.stdout.includes("--verbose"), shown(configHelp));
+for (const args of [
+  ["config", "get", "harness", "--no-input", "--no-input"],
+  ["--no-input", "--no-input", "cfg", "get", "harness", "--", "--json", "--plain"],
+]) {
+  const r = run(args);
+  check(`${args.join(" ")} refuses with the exact subcommand help`, r.status === 1 && r.stdout === "" &&
+    r.stderr === `✗ ${duplicateInput}\n${configHelp.stdout}`, shown(r));
+}
+
+const brokenConfig = join(home, "broken-config");
+mkdirSync(join(brokenConfig, "cotal", "extensions"), { recursive: true });
+writeFileSync(join(brokenConfig, "cotal", "extensions", "extensions.json"), "invalid manifest\n");
+const managerDuplicate = run(["manager", "--runtime", "pty", "start", "--dry-run", "--no-input", "--no-input"], brokenConfig);
+check("unreadable preset inventory does not hide the manager lifecycle verb", managerDuplicate.status === 1 &&
+  managerDuplicate.stdout === "" && managerDuplicate.stderr.startsWith(`✗ ${duplicateInput}\ncotal manager start\n`), shown(managerDuplicate));
+
+for (const placement of ["leading", "trailing"]) {
+  const config = join(home, `promotion-${placement}`), cotal = join(config, "cotal");
+  const root = join(cotal, "extensions"), stage = join(cotal, ".extensions.stage-probe.ready");
+  const old = join(cotal, ".extensions.rollback-probe"), journal = join(cotal, ".extensions-promotion.json");
+  mkdirSync(stage, { recursive: true });
+  writeFileSync(join(stage, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "duplicate-probe", spec: "duplicate-probe", version: "1.0.0", commands: [{
+    name: "duplicate-probe", aliases: ["dup-probe"], summary: "Test promoted command metadata", flags: [{ name: "json", short: "j", type: "boolean" }], outputs: ["json"],
+  }, { name: "config", summary: "Test a built-in name collision" }] }] }));
+  const stat = lstatSync(stage);
+  writeFileSync(journal, JSON.stringify({ v: 1, root, stage, old, stageIdentity: { dev: String(stat.dev), ino: String(stat.ino), birth: stat.birthtimeMs } }), { mode: 0o600 });
+  const global = ["--no-input", "--no-input"];
+  const args = placement === "leading" ? [...global, "dup-probe", "-j"] : ["dup-probe", ...global, "-j"];
+  const r = run(args, config);
+  check(`${placement} duplicates use the promoted alias grammar on the first invocation`, jsonDuplicate(r, "duplicate-probe") &&
+    r.envelope?.warnings?.some((warning) => warning.code === "EXTENSION_COMMAND_COLLISION") === true &&
+    !existsSync(journal) && existsSync(root), shown(r));
+}
 
 for (const args of [["--json", "version"], ["-j", "version"], ["--no-input", "--json", "version"], ["--json", "--no-input", "version"]]) {
   const r = run(args);

@@ -390,14 +390,15 @@ async function controllerHangupCell(): Promise<void> {
 async function controllerSighupCell(): Promise<void> {
   const name = "controller-sighup";
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
-  for (const p of [root, home, mesh, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  const caller = join(root, "caller");
+  for (const p of [root, home, mesh, caller, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
   recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
   const port = await freePort(); assert.notEqual(port, 4222);
   const space = `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
   assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
-  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`, "--root", "../mesh", "--store-dir", "./relative-store", "--log-file", "./broker.log"], { cwd: caller, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "";
   child.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
   child.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
@@ -409,6 +410,9 @@ async function controllerSighupCell(): Promise<void> {
       if (state.exited) throw new Error(`CLI exited before the stack was ready: ${err}`);
       return out.includes("Controller stack started") && existsSync(hold) && out.includes("cotal down");
     }, 120_000, () => err.slice(-3000));
+    assert.ok(existsSync(join(caller, "relative-store")) && existsSync(join(caller, "broker.log"))
+      && !existsSync(join(mesh, "relative-store")) && !existsSync(join(mesh, "broker.log")), "--root leaves both relative broker paths in the invoking folder"); passed++;
+    assert.ok(readFileSync(join(mesh, ".cotal/server-open.conf"), "utf8").includes(`log_file: ${JSON.stringify(join(realpathSync(caller), "broker.log"))}`), "the selected root's broker config names the caller's log"); passed++;
     assert.ok(child.pid); process.kill(child.pid, "SIGHUP");
     await until(() => { if (state.error) throw state.error; return state.exited; }, 30_000, () => err.slice(-3000));
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: hangup owner streams drained`);

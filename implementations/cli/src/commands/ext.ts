@@ -65,7 +65,7 @@ export function validateExtArguments(args: ParsedArgs): void {
     throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
   }
   if ((sub === "add" || sub === "remove") && (args.positionals.length !== 2 || !operand)) throw usage(EXT_USAGE);
-  if (sub === "seed" && args.positionals.length !== 1) throw usage(EXT_USAGE);
+  if (sub === "seed" && args.positionals.length !== 1) throw usage("cotal ext seed takes no operands");
 }
 
 /**

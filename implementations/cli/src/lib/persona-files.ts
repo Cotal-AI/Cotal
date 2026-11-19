@@ -9,8 +9,8 @@ import {
   type AgentDef,
 } from "@cotal-ai/core";
 import {
-  cachedPreferences, CommandFailure, ConfirmationRequired, explicitNoInputFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes, movedProject,
-  localWriteFailure, personaDefinitionProblem, resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
+  cachedPreferences, CommandFailure, ConfirmationRequired, cotalDirLink, explicitNoInputFlag, findCotalRoot, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, legacyStackOtherHome, loadMeshes, meshesForRoot, movedProject,
+  localWriteFailure, personaDefinitionProblem, preparedSpaceAt, resolveMeshTarget, resolvePreference, retainedLegacyBroker, retainedOpenSpace, stackJournalPath, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -20,7 +20,7 @@ import { catalogFolderProblem, linkTarget } from "./personas.js";
 export interface PersonaCatalog { root: string; space: string }
 export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeMs: number }
 
-/** Resolve once, without inventing a broker for a prepared space or falling back to the cwd. */
+/** Resolve the catalog without requiring a running broker or guessing which space owns the cwd. */
 export function personaCatalog(values: { space?: string; server?: string }): PersonaCatalog {
   try {
     const target = resolveMeshTarget(process.cwd(), { ...values, readOnly: true });
@@ -35,6 +35,14 @@ export function personaCatalog(values: { space?: string; server?: string }): Per
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && !values.server && error.details.root && error.details.space && !error.details.rootMissing)
       return catalogAt(error.details.root, error.details.space);
+    if (error.code === "unknown-space" && values.space !== undefined && values.server === undefined) {
+      const root = findCotalRoot();
+      // Legacy down can drop the registration, but the rendered open config still names the space.
+      if (isGenuineSpace(root) && cotalDirLink(root) === undefined && !existsSync(stackJournalPath(root)) &&
+          !preparedSpaceAt(root) && meshesForRoot(root).length === 0 && retainedLegacyBroker(root)?.open &&
+          retainedOpenSpace(root) === values.space && legacyStackOtherHome(root) === undefined)
+        return catalogAt(root, values.space);
+    }
     const { message, remedy } = workspaceErrorParts({ kind: "target", error });
     // A folder whose records name no space already has its next step, including a team file there.
     // Every other no-mesh refusal is a machine with nothing selected: the catalog is read offline,

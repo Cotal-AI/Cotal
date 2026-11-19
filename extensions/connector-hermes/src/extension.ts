@@ -1,8 +1,9 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { existsSync, mkdtempSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
+import { discardLaunchArtifacts, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { aclEnv, controlEndpoint, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
 import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
@@ -47,6 +48,7 @@ export const hermesConnector: Connector = {
   // `uv` is the external harness. It provisions the project-pinned `hermes` command below, so a
   // separately installed `hermes` on PATH is neither required nor sufficient to launch this seat.
   requires: ["uv"],
+  supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("the Hermes connector does not support exact-session continuation");
     // Hermes is Unix-only: its sidecar bridge + hook relay use AF_UNIX `.sock` paths and a Python
@@ -112,12 +114,23 @@ export const hermesConnector: Connector = {
       env.HERMES_MODEL = opts.model;
       env.COTAL_MODEL = opts.model;
     }
-    // Creds and broker URL ride a 0600 file; only its path is exported. This connector's launcher
-    // mints the control endpoint itself and merges the token into a file of its own (see launch.ts).
-    // This one is written after every refusal above, and its directory is a launch artifact the
-    // launcher removes once the child has exited.
+    if (opts.validateOnly) return { command: "", args: [] };
     const artifacts: string[] = [];
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+    try {
+      // The exit watcher owns the socket directory and the single carrier even on a forced stop.
+      const control = controlEndpoint(opts.space, opts.name, artifacts);
+      env.COTAL_CONTROL_SOCKET = control.path;
+      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+      const seat = hermesSeatHome(opts.space, opts.name);
+      if (!adoptHome && !opts.resume && !existsSync(join(seat.home, HERMES_FORK_RECORD))) {
+        const root = mkdtempSync(join(tmpdir(), "cotal-hermes-"));
+        artifacts.push(root);
+        env.COTAL_HERMES_SEAT_HOME = join(root, "profiles", basename(seat.home));
+      }
+    } catch (error) {
+      discardLaunchArtifacts(artifacts);
+      throw error;
+    }
     return {
       command: LAUNCH_COMMAND,
       args: [LAUNCH_ENTRY],

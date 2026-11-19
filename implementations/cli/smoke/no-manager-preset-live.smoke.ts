@@ -22,6 +22,7 @@ import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, skipSuite, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { readManagerSeatCap } from "@cotal-ai/workspace";
 
 if (process.platform !== "linux") skipSuite("the native manager child is Linux-only");
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -64,6 +65,12 @@ try {
   anchor = recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   const up = cotal("up", "--detach", "--no-manager", "--server", server, "--space", space);
   check("fixture: a controller stack starts with --no-manager", up.status === 0 && existsSync(join(root, ".cotal", "stack-controller.json")), shown(up));
+  const cap = () => readManagerSeatCap({ root, space });
+  check("the broker-only stack has no saved manager seat cap", cap() === undefined, cap());
+  const conflictingStore = (requestedCap: string) => cotal("up", "--space", space, "--seat-cap", requestedCap, "--store-dir", join(root, "wrong-store"), "--json");
+  const refusedCap = conflictingStore("2");
+  check("a conflicting store refuses without saving the requested seat cap",
+    refusedCap.status === 2 && refusedCap.env?.error?.code === "CONFLICT" && refusedCap.env.error.message.includes("recorded broker inputs") && cap() === undefined, { refused: shown(refusedCap), seatCap: cap() });
   const added = cotal("service", "add", "mgr", "--preset", "manager", "--root", root, "--runtime", "pty", "--space", space);
   const started = cotal("service", "start", "mgr", "--space", space);
   const mgr = running("mgr");
@@ -89,13 +96,20 @@ try {
   const stopped = cotal("svc", "stop", "mgr", "--instance", id, "--space", space, "--yes");
   check("the named stop stops the service", stopped.status === 0 && running("mgr") === undefined, shown(stopped));
   const again = cotal("up", "--json");
-  check("bare up then starts the stack's own manager", again.status === 0 && running("stack-manager") !== undefined, shown(again));
+  check("bare up starts the stack's own manager without saving the refused cap", again.status === 0 && running("stack-manager") !== undefined && cap() === undefined, shown(again));
   const after = cotal("status", "--json");
   const settled = after.env?.result?.folder as { noManager?: boolean; managerService?: unknown } | undefined;
   check("status no longer reads the stack as --no-manager", after.status === 0 && settled?.noManager === false && settled.managerService === null, shown(after));
 
   const down = cotal("down", "--yes");
   check("down --yes stops the stack", down.status === 0 && instances().every((row) => row.observedProcess !== "running"), shown(down));
+  const capped = cotal("up", "--space", space, "--seat-cap", "3", "--json");
+  check("a successful start records the cap its manager accepted", capped.status === 0 && cap() === 3, { started: shown(capped), seatCap: cap() });
+  const downCapped = cotal("down", "--yes");
+  check("the capped stack stops normally", downCapped.status === 0, shown(downCapped));
+  const refusedReplacement = conflictingStore("2");
+  check("a refused restart leaves the last accepted seat cap intact", refusedReplacement.status === 2 && refusedReplacement.env?.error?.code === "CONFLICT" && cap() === 3,
+    { refused: shown(refusedReplacement), seatCap: cap() });
 } catch (error) {
   check("scenario completed", false, (error as Error).stack ?? String(error));
 } finally {

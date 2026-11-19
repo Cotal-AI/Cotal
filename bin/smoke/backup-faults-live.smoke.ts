@@ -169,6 +169,21 @@ async function backupStageFaultScenario(): Promise<void> {
       }
       const plain = run("backup", "create", join(notFolder, "backup"));
       assert.ok(plain.status === 1 && plain.stderr.includes("ENOTDIR") && !plain.stderr.includes("Usage"), `the path refusal prints no command help\n${plain.stderr}`);
+
+      symlinkSync("self-loop", join(root, "self-loop"));
+      const beforeAttempts = attemptResidue(root).sort();
+      for (const path of [join(root, "self-loop", "backup"), join(loop, "backup")]) {
+        for (const command of [["backup", "inspect", path], ["backup", "verify", path], ["backup", "restore", path], ["up", "--restore", path, "--detach"]]) {
+          const refused = run(...command, "--plain");
+          const output = refused.stdout + refused.stderr;
+          assert.equal(refused.status, 1, `${command.join(" ")} refuses the loop\n${output}`);
+          assert.match(output, /Code:\s+USAGE_INVALID/);
+          assert.ok(output.includes(path) && output.includes("symbolic-link loop (ELOOP)") && output.includes("fix the symbolic link"), output);
+          assert.doesNotMatch(output, /Outcome unconfirmed|cotal status/);
+        }
+      }
+      assert.equal(createHash("sha256").update(readFileSync(journal)).digest("hex"), prior, "looped artifact paths leave the preservation journal unchanged");
+      assert.deepEqual(attemptResidue(root).sort(), beforeAttempts, "looped artifact paths leave no restore attempt");
     }
     for (const [path, missing] of [[nowhere, "folder"], [join(root, "no-such-artifact"), "artifact"]] as const) {
       const restore = run("backup", "restore", path, "--json");
@@ -219,12 +234,31 @@ async function backupStageFaultScenario(): Promise<void> {
       assert.ok(!existsSync(join(root, ".cotal", material, "bk")) && !existsSync(join(root, ".cotal", material, "bk2")), `that refusal writes nothing in ${material}`);
     }
     rmSync(join(root, "material-link"));
-    if (process.getuid?.() !== 0) {
-      const locked = join(root, "locked");
-      mkdirSync(locked, { mode: 0o500 });
-      const denied = run("backup", "create", join(locked, "bk"), "--json");
-      const deniedEnvelope = JSON.parse(denied.stdout) as { error?: { code?: string; message?: string; remedy?: string } };
-      assert.ok(denied.status === 2 && deniedEnvelope.error?.code === "PERMISSION_DENIED" && (deniedEnvelope.error.message ?? "").includes(`cannot write ${locked}`) && (deniedEnvelope.error.remedy ?? "").includes(`chmod u+w ${locked}`), `an unwritable folder is refused by name\n${denied.stdout}${denied.stderr}`);
+    if (process.getuid && process.getuid() !== 0) {
+      const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+      for (const [folder, flags] of [["read only", []], ["operator's `archive` …", ["--plain"]]] as const) {
+        const locked = join(root, folder);
+        const destination = join(locked, "archive");
+        mkdirSync(locked, { mode: 0o500 });
+        const before = readFileSync(journal, "utf8");
+        const denied = run("backup", "create", destination, ...flags);
+        assert.equal(denied.status, 2, denied.stderr);
+        assert.match(denied.stderr, /PERMISSION_DENIED/);
+        assert.ok(denied.stderr.includes(`cannot write ${join(root, folder.replace("…", "..."))}`), "the refusal names the folder");
+        assert.ok(!existsSync(destination), "the refusal writes no backup");
+        assert.equal(readFileSync(journal, "utf8"), before, "the refusal leaves the cut unchanged");
+        const command = /\nNext\n +make that folder writable with (`+)(chmod u\+w .+?)\1,/.exec(denied.stderr)?.[2];
+        assert.ok(command, `Next shows a copyable chmod command\n${denied.stderr}`);
+        must("apply the printed chmod", spawnSync("sh", ["-c", command], { cwd: root, env, encoding: "utf8", timeout: 10_000 }));
+        assert.equal(lstatSync(locked).mode & 0o777, 0o700, "chmod changed the named folder");
+        must("create in the repaired folder", run("backup", "create", destination));
+        must("verify the backup in the repaired folder", run("backup", "verify", destination));
+      }
+      const invisible = join(root, "read\u200donly");
+      mkdirSync(invisible, { mode: 0o500 });
+      const denied = run("backup", "create", join(invisible, "archive"), "--plain");
+      assert.equal(denied.status, 2, denied.stderr);
+      assert.match(denied.stderr, /make that folder writable, or name a destination/);
     }
     // A --store-dir that is not the cut's store is a conflict naming both stores.
     const emptyStore = join(root, "empty-store");

@@ -60,7 +60,7 @@
     },
     {
       "name": "the dashboard starts channel reads without its response-deadline signal",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-read.ts",
       "command": "pnpm smoke:history-cancellation && pnpm smoke:web-history-cancellation",
       "completionMarker": "WEB HISTORY CANCELLATION:",
       "find": "          (await ep.multiChannelHistory(chans.map((ch) => ch.channel), { limit, signal }))",
@@ -93,7 +93,7 @@
     },
     {
       "name": "the chat source answers empty while the deadline stands, so the feed serves a whole-marked page with no chat in it",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-read.ts",
       "command": "pnpm smoke:web-activity-read-cost",
       "completionMarker": "activity-read-cost smoke:",
       "find": "          (await ep.multiChannelHistory(chans.map((ch) => ch.channel), { limit, signal }))\n            .map(({ channel, msg }) => ({ mode: \"chat\" as const, channel, msg })),",
