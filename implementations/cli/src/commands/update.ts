@@ -1115,38 +1115,59 @@ async function npmProxyRefused(result: CommandResult, rt: UpdateRuntime): Promis
   let error: { code?: unknown; summary?: unknown } | undefined;
   try { error = JSON.parse(result.stdout)?.error; }
   catch { return false; }
-  if (error?.code !== "ECONNREFUSED" || typeof error.summary !== "string") return false;
+  if ((error?.code !== "ECONNREFUSED" && error?.code !== "FETCH_ERROR") || typeof error.summary !== "string") return false;
   const refused = /^(?:FetchError: )?request to (\S+) failed, reason: connect ECONNREFUSED (\S+):(\d+)$/.exec(error.summary);
   if (!refused) return false;
   const [, request, address, port] = refused;
   const registry = URL.parse(request);
   if (!registry || (registry.protocol !== "http:" && registry.protocol !== "https:") || !isIP(address)) return false;
 
+  const proxy = npmConfiguredProxy(rt, registry);
+  if (!proxy) return false;
+  const socks = /^socks(?:4a?|5h?)?:$/.test(proxy.protocol);
+  if (!socks && (error.code !== "ECONNREFUSED" || (proxy.protocol !== "http:" && proxy.protocol !== "https:"))) return false;
   const portOf = (url: URL) => url.port || (url.protocol === "https:" ? "443" : "80");
+  if ((socks ? proxy.port || "1080" : portOf(proxy)) !== port) return false;
+
   const normalizeIp = (ip: string) => isIP(ip) === 6 ? new SocketAddress({ address: ip, family: "ipv6" }).address : ip;
   const refusedAddress = normalizeIp(address);
   const addressesOf = async (url: URL) => {
     const host = url.hostname.replace(/^\[|\]$/g, "");
     return isIP(host) ? [normalizeIp(host)] : (await lookup(host, { all: true })).map(item => normalizeIp(item.address));
   };
-  // If the same socket could belong to the registry, there is no proof npm used a proxy.
-  try { if (portOf(registry) === port && (await addressesOf(registry)).includes(refusedAddress)) return false; }
+  try { if (!(await addressesOf(proxy)).includes(refusedAddress)) return false; }
   catch { return false; }
-
-  const candidates = Object.entries(rt.env)
-    .filter(([key]) => /^(?:https?_proxy|proxy|npm_config_(?:https_)?proxy)$/i.test(key))
-    .map(([, value]) => value);
-  // Query separately because npm withholds a value that contains credentials.
-  for (const key of ["https-proxy", "proxy"]) {
-    const config = npmRead(rt, ["config", "get", key]);
-    if (config.status === 0) candidates.push(config.stdout.trim());
+  // The same socket could belong to the registry if it bypassed the configured proxy.
+  try { return portOf(registry) !== port || !(await addressesOf(registry)).includes(refusedAddress); }
+  catch (cause) {
+    // A registry may resolve only through its proxy. A missing local name cannot be the refused
+    // socket, but a temporary resolver failure is inconclusive.
+    return (cause as NodeJS.ErrnoException).code === "ENOTFOUND";
   }
-  const matches = await Promise.allSettled([...new Set(candidates)].map(async value => {
-    const proxy = value && URL.parse(value);
-    return !!proxy && (proxy.protocol === "http:" || proxy.protocol === "https:") && portOf(proxy) === port
-      && (await addressesOf(proxy)).includes(refusedAddress);
-  }));
-  return matches.some(match => match.status === "fulfilled" && match.value);
+}
+
+/** npm hides protected values from `config get` but lists their redacted URLs in text mode. */
+function npmConfiguredProxy(rt: UpdateRuntime, registry: URL): URL | null {
+  const config = npmRead(rt, ["config", "list", "--long", "--no-json", "--color=false"]);
+  if (config.status !== 0 || config.error) return null;
+  const proxies = new Map<string, string | null>();
+  for (const line of config.stdout.split(/\r?\n/)) {
+    if (line.startsWith('; "publishConfig" from ')) break;
+    // npm comments out overridden values. A missing or unreadable active value is inconclusive.
+    const setting = /^(https-proxy|proxy) = (.*)$/.exec(line);
+    if (!setting) continue;
+    try {
+      const value: unknown = JSON.parse(setting[2]);
+      if (typeof value !== "string" && value !== null && value !== false) return null;
+      proxies.set(setting[1], value || null);
+    } catch { return null; }
+  }
+  if (proxies.size !== 2) return null;
+  const env = new Map(Object.entries(rt.env).map(([key, value]) => [key.toLowerCase(), value]));
+  // npm-registry-fetch gives its HTTPS setting priority, then the npm agent checks the environment.
+  const proxy = proxies.get("https-proxy") || proxies.get("proxy") || env.get("https_proxy")
+    || (registry.protocol === "http:" ? env.get("http_proxy") || env.get("proxy") : undefined);
+  return proxy ? URL.parse(proxy) : null;
 }
 
 /** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies. */

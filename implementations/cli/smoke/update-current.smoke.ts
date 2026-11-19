@@ -68,7 +68,8 @@ try {
       XDG_CONFIG_HOME: join(proxyHome, "config"), XDG_RUNTIME_DIR: join(proxyHome, "runtime"), TMPDIR: proxyHome, TMP: proxyHome, TEMP: proxyHome,
       LOCALAPPDATA: join(proxyHome, "local"), APPDATA: join(proxyHome, "roaming"),
       npm_config_userconfig: userConfig, npm_config_globalconfig: join(proxyHome, "global.npmrc"),
-      npm_config_registry: `https://127.0.0.1:${registryPort}`, COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", ...extra },
+      npm_config_registry: `https://127.0.0.1:${registryPort}`, npm_config_prefix: join(proxyHome, "prefix"),
+      COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", ...extra },
   });
   const checkRefusal = (refused: ReturnType<typeof update>) => {
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
@@ -79,8 +80,18 @@ try {
   checkRefusal(update({ https_proxy: `http://example-user:example-password@localhost:${proxyPort}` }));
   writeFileSync(userConfig, `https-proxy=http://127.0.0.1:${proxyPort}\n`);
   checkRefusal(update({}));
+  writeFileSync(userConfig, `proxy=http://example-user:example-password@localhost:${proxyPort}\n`);
+  checkRefusal(update({}));
+  writeFileSync(userConfig, `https-proxy=socks5://127.0.0.1:${proxyPort}\n`);
+  checkRefusal(update({}));
   writeFileSync(userConfig, "");
-  for (const extra of [{}, { HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`, NO_PROXY: "127.0.0.1" },
+  const privateRegistry = `https://proxy-only.test.invalid:${proxyPort}`;
+  checkRefusal(update({ npm_config_registry: privateRegistry, HTTPS_PROXY: `http://127.0.0.1:${proxyPort}` }));
+  checkRefusal(update({ npm_config_registry: privateRegistry, HTTPS_PROXY: `socks5h://127.0.0.1:${proxyPort}` }));
+  for (const extra of [
+    {},
+    { HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`, NO_PROXY: "127.0.0.1" },
+    { HTTPS_PROXY: `http://127.0.0.1:${registryPort}`, npm_config_noproxy: "127.0.0.1" },
     { HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`, COTAL_AUTO_UPDATE: "1" }]) {
     const offline = update(extra);
     assert.equal(offline.status, 0, offline.stdout + offline.stderr);
