@@ -66,8 +66,11 @@ async function reconcileInstalledGeneration(): Promise<void> {
 /** Poll cheap package metadata. Expensive validation and activation attempts back off on failure. */
 export function watchDaemonGeneration(version: string, changed: (version: string) => Promise<void>, report: (line: string) => void, pending: (version: string | undefined, reason?: string) => void = () => {}, activate = true): () => void {
   const file = packageFile();
+  const entry = join(dirname(file), "dist", "cotal.js");
+  const initialProbeMs = 5000, maxProbeMs = 60_000;
   let busy = false, closed = false, candidate: string | undefined;
   let retryAt = 0, delay = 5000, lastReport = "";
+  let probeMs = initialProbeMs;
   const announce = (line: string) => { if (line !== lastReport) { lastReport = line; report(line); } };
   const failed = (next: string, reason: string) => {
     pending(next, reason);
@@ -83,13 +86,13 @@ export function watchDaemonGeneration(version: string, changed: (version: string
     try {
       next = observeExecutionVersion(dirname(file));
     } catch { return; }
-    if (next === version) { candidate = undefined; retryAt = 0; delay = 5000; pending(undefined); return; }
+    if (next === version) { candidate = undefined; retryAt = 0; delay = 5000; probeMs = initialProbeMs; pending(undefined); return; }
     try {
-      const deferred = deferredUpdateActivation(join(dirname(file), "dist", "cotal.js"), next);
+      const deferred = deferredUpdateActivation(entry, next);
       if (deferred) { pending(next, deferred); announce(`daemon: installed CLI ${next} activation deferred: ${deferred}; current generation remains loaded`); return; }
     } catch { pending(next, "activation authority is unreadable; current generation remains loaded"); return; }
     if (candidate !== next) {
-      candidate = next; retryAt = 0; delay = 5000;
+      candidate = next; retryAt = 0; delay = 5000; probeMs = initialProbeMs;
       const reason = activate ? "verifying the installed entry" : "no verified native launch marker; automatic activation is unavailable; use the installed CLI to restart this daemon";
       pending(next, reason);
       announce(`daemon: installed CLI generation changed to ${next}; ${reason}`);
@@ -97,18 +100,26 @@ export function watchDaemonGeneration(version: string, changed: (version: string
     }
     if (!activate || Date.now() < retryAt) return;
     busy = true;
-    const child = spawn(process.execPath, [join(dirname(file), "dist", "cotal.js"), "--version"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    let output = "", settled = false;
+    const child = spawn(process.execPath, [entry, "--version"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let output = "", settled = false, timedOut = false;
     child.stdout.on("data", (chunk) => { if (output.length < 1024) output += String(chunk); });
     child.stderr.resume();
-    const timeout = setTimeout(() => child.kill("SIGKILL"), 5000);
+    const budget = probeMs;
+    const timeout = setTimeout(() => { timedOut = child.kill("SIGKILL"); }, budget);
     child.once("error", () => { clearTimeout(timeout); settled = true; if (!closed) failed(next, "the installed entry could not start"); });
     child.once("close", (code) => {
       clearTimeout(timeout);
       if (settled || closed) return;
+      if (timedOut) {
+        // A healthy cold launch can outlive the initial probe. Only a measured
+        // timeout earns this generation more time, not an invalid version or exit.
+        probeMs = Math.min(maxProbeMs, budget * 4);
+        failed(next, `entry verification timed out after ${budget / 1000}s`);
+        return;
+      }
       if (code !== 0 || output.split(/\r?\n/, 1)[0] !== `cotal-ai ${next}`) { failed(next, `entry verification did not confirm its version (exit ${code})`); return; }
       try { if (updateActivationBlocked()) { busy = false; return; } } catch { busy = false; return; }
-      try { if (deferredUpdateActivation(join(dirname(file), "dist", "cotal.js"), next)) { busy = false; return; } } catch { busy = false; return; }
+      try { if (deferredUpdateActivation(entry, next)) { busy = false; return; } } catch { busy = false; return; }
       void changed(next).catch((error: unknown) => { if (!closed) failed(next, error instanceof Error ? error.message : "the replacement could not be activated"); });
     });
   }, 1000);

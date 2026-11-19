@@ -2,4 +2,4 @@
 "cotal-ai": patch
 ---
 
-Let manual self-updates on Linux restart the prepared machine daemon without waiting for the old daemon to verify the new release again.
+Let manual self-updates on Linux restart a prepared machine daemon, and let future daemons give a slow version probe more time on retry.
