@@ -645,12 +645,15 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
  *  command run there names. A linked `.cotal`, and a copy whose recorded folder still holds the
  *  journal, use the stack from there. A moved folder moves back when this machine records its stack
  *  or its space. If the old path is gone and the retained instances are confirmed stopped, it can
- *  also be forgotten and adopted. When this machine records neither the stack nor the space, moving
- *  back would not start it. A recorded path that `cotal up` refuses is never the way back. */
+ *  also be forgotten and adopted at an admissible path. When this machine records neither the
+ *  stack nor the space, moving back would not start it. A path that `cotal up` refuses is never
+ *  the way back. */
 export function stackElsewhereRemedy(root: string, recordedRoot: string, space: string, members: unknown, operation?: unknown): string {
   if (cotalDirLink(root) !== undefined) return `use the stack from ${recordedRoot}, which holds it; this folder only links to its records`;
   if (recordsMovedTo(recordedRoot, root)) return `${moveRecordsBack(recordedRoot, root)}; then use the stack from ${recordedRoot}`;
   if (existsSync(stackJournalPath(recordedRoot))) return `use the stack from ${recordedRoot}, which holds it; this copy does not`;
+  const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
+  if (pathProblem) return `${pathProblem}; rename the folder without those characters, then check it with \`cotal status\``;
   let block: StackAdoptionBlock | undefined, adopt: string | undefined;
   try {
     block = stackAdoptionBlock(root, recordedRoot, space, members);

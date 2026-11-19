@@ -152,6 +152,23 @@ for (const open of [false, true]) {
       const output = `${run.stdout}${run.stderr}`;
       return output.includes(`use the stack from ${project}`) && !/space forget|--adopt/.test(output);
     }));
+  const originalJournal = readFileSync(join(project, ".cotal", "stack-controller.json"));
+  const invalidPaths: [string, string][] = [[`${project}\u202einvalid`, "bidirectional formatting mark"]];
+  if (process.platform !== "win32") invalidPaths.push([`${project}\tinvalid`, "a tab"]);
+  for (const [invalid, problem] of invalidPaths) {
+    renameSync(project, invalid);
+    try {
+      const upInvalid = cli(invalid, "up", "--plain");
+      check(`up refuses the renamed project path with ${problem}`, upInvalid.status === 1 && `${upInvalid.stdout}${upInvalid.stderr}`.includes("USAGE_INVALID"));
+      for (const [command, run] of [["status", cli(invalid, "status", "--plain")], ["space show", cli(invalid, "space", "show", space, "--plain")]] as const) {
+        const output = `${run.stdout}${run.stderr}`;
+        check(`${command} explains ${problem} and withholds forget and adopt`, run.status === 0 && output.includes(problem) && output.includes("rename the folder without those characters") && !/space forget|--adopt/.test(output));
+      }
+      check(`diagnosing ${problem} does not rewrite the journal`, readFileSync(join(invalid, ".cotal", "stack-controller.json")).equals(originalJournal));
+    } finally {
+      renameSync(invalid, project);
+    }
+  }
   renameSync(project, renamed);
   const journal = join(renamed, ".cotal", "stack-controller.json");
   const before = readFileSync(journal);
