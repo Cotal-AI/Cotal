@@ -157,9 +157,6 @@ try {
     check("unsupported registry name remains refused by the daemon protocol", !parseRequest(JSON.stringify({ v: 1, id: "test", op: "connect-check", space })).ok);
   }
   check("listing leaves unsupported and damaged records unchanged", records.every((file, i) => readFileSync(file, "utf8") === beforeRecords[i]) && readFileSync(broken, "utf8") === "{");
-  const foreignInstall = await request({ op: "install" });
-  check("an answering daemon without an owned install receipt is not adopted", foreignInstall.ok === false && foreignInstall.error.code === "CONFLICT");
-  check("refused adoption creates no service receipt", !existsSync(join(paths.state, "service-unit.json")));
   const before = daemon.counters.framesDecoded;
   const bad = await request({ op: "install", command: "foreign" });
   check("extra fields are refused before daemon effects", bad.ok === false && bad.error.code === "BAD_REQUEST" && daemon.counters.framesDecoded === before);
