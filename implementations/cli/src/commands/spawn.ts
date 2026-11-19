@@ -1344,7 +1344,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // persona — `cotal spawn` with no args launches `<root>/.cotal/agents/default.md`.
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space, preferences: cachedPreferences() });
   const personaProject = resolvePath(target.personaRoot, "..", "..");
-  const path = redeemedEnrollment && values.config ? resolvePath(values.config) : agentFilePath(personaProject, ref);
+  const path = values.file !== undefined || (redeemedEnrollment && values.config) ? resolvePath(ref) : agentFilePath(personaProject, ref);
   // The product default of a catalog nothing prepared, as a Cloud space's is until a spawn, is
   // written from the shipped template here and launched. A named or preferred persona is the
   // user's own choice, so one that is missing is still refused.

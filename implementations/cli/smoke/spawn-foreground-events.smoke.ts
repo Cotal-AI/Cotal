@@ -45,6 +45,7 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-fg-events-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-fg-events-root-"));
+const caller = mkdtempSync(join(tmpdir(), "cotal-fg-events-caller-"));
 process.env.COTAL_HOME = home;
 process.env.COTAL_NO_PROMPT = "1";
 
@@ -199,6 +200,18 @@ const openRun = (extra: string[]): Promise<{ opts?: LaunchOpts; exited?: number;
 console.log("cotal spawn (foreground): the launch bag an armed session needs");
 
 try {
+  {
+    const previous = process.cwd();
+    writeFileSync(join(caller, "probe.md"), "---\nname: caller-probe\n---\nCaller persona.\n");
+    writeFileSync(join(root, "probe.md"), "---\nname: mesh-probe\n---\nMesh persona.\n");
+    try {
+      process.chdir(caller);
+      const local = await run(["spawn", "--foreground", "--file", "probe.md", "--space", "fgevents", "-H", "fg-probe-live"]);
+      check("foreground --file uses the caller's persona even when the mesh has the same filename", local.opts?.name === "caller-probe", local.stderr);
+      const named = await run(["spawn", "--foreground", "probe", "--space", "fgevents", "-H", "fg-probe-live"]);
+      check("foreground catalog names still read the selected mesh persona", named.opts?.name === "probe", named.stderr);
+    } finally { process.chdir(previous); }
+  }
   {
     const path = process.env.PATH;
     const pin = process.env.COTAL_OPENCODE_BIN;
@@ -365,11 +378,12 @@ try {
 } finally {
   broker.kill("SIGKILL");
   rmSync(root, { recursive: true, force: true });
+  rmSync(caller, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 24;
+const EXPECTED = 26;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
