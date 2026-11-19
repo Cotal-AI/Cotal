@@ -436,6 +436,20 @@ try {
       assert.equal(readMaintenanceJournal(createRoot)?.state, "cut-intent", "and claimed nothing");
       chmodSync(exposedFolder, 0o700);
     }
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      const readOnlyFolder = join(root, "create owner's [backup]");
+      const artifact = join(readOnlyFolder, "artifact");
+      const quotedFolder = `'${root.replaceAll("'", "'\\''")}/create owner'\\''s [backup]'`;
+      mkdirSync(readOnlyFolder, { mode: 0o500 });
+      await assert.rejects(
+        backup({ positionals: ["create", artifact], values: {}, raw: [] }),
+        (error: unknown) => isCommandFailure(error) && error.code === "PERMISSION_DENIED"
+          && error.remedy === `make that folder writable with \`chmod u+w ${quotedFolder}\`, or name a destination in a folder this account can write`,
+        "a create into a read-only folder quotes its path as one shell word",
+      );
+      assert.equal(existsSync(artifact), false, "the permission refusal wrote no artifact");
+      assert.equal(readMaintenanceJournal(createRoot)?.state, "cut-intent", "and claimed nothing");
+    }
     await assert.rejects(
       backup({ positionals: ["create", join(root, "create-artifact")], values: {}, raw: [] }),
       (error: unknown) => isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED" && error.message.endsWith("maintenance state is cut-intent") && (error.target as { space?: string }).space === "create",
