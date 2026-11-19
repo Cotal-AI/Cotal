@@ -163,12 +163,10 @@ export interface LaunchOpts {
    *  connector's SQLite DB + serve pidfile) pin it here so a per-agent working directory ({@link cwd})
    *  — which can point at any repo — doesn't scatter that state into the target tree. */
   workspaceRoot?: string;
-  /** The authorized directory a seat runs in, set by the manager or by foreground `--cwd`.
-   *  A connector can declare native startup choices for that directory. A foreground launch
-   *  without `--cwd` runs in the operator's terminal and omits it. */
+  /** The authorized directory a supervised seat runs in, set by the manager beside runtime spawn.
+   *  A connector can declare native startup choices for that directory. A foreground launch runs
+   *  in the operator's terminal and omits it. */
   cwd?: string;
-  /** Native execution in the caller's terminal, which can answer application trust prompts. */
-  foreground?: boolean;
 }
 
 /** The `once` seat a {@link Connector.retireAfterExit} call is about: the launch inputs that

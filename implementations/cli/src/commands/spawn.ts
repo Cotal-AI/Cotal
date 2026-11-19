@@ -1326,7 +1326,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       reason = code === "ENOENT" ? "does not exist" : code === "ENOTDIR" ? "is not a directory" : `cannot be used (${oneLine((error as Error).message)})`;
     }
     if (reason !== undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `--cwd ${JSON.stringify(requestedCwd)} ${reason}. Nothing was launched.`, {
-      target: { cwd: requestedCwd }, remedy: "pass an existing directory to --cwd",
+      target: { path: requestedCwd }, remedy: "pass an existing directory to --cwd",
     });
   }
 
@@ -1585,7 +1585,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     endpoints: copyPersonaEndpoints(def.endpoints) ?? [], prompt: values.prompt,
     resume: values.resume, events: launchEvents, eventPayloads, eventsRequired,
     mcpServers, mcpServersExclusive: shareTools !== undefined, envAllow,
-    workspaceRoot: target.root, cwd: launchCwd, foreground: true,
+    // Keep the foreground directory on the child spawn. Connector cwd marks a supervised seat.
+    workspaceRoot: target.root,
   };
   try {
     if (connector.supportsLaunchValidation) connector.buildLaunch({ ...launchOpts, validateOnly: true });

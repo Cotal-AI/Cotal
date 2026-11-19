@@ -364,11 +364,10 @@ export const claudeConnector: Connector = {
     // option and resumes nothing. A Claude session id never starts with one.
     if (opts.resume?.startsWith("-"))
       throw new Error(`claude connector: cannot resume ${JSON.stringify(opts.resume)}: a session id cannot start with '-' (claude reads it as an option)`);
-    // A managed seat has nobody at its terminal to notice a
+    // A managed seat (the manager marks one with its `cwd`) has nobody at its terminal to notice a
     // channel that did not bind. A carried home declares the server itself (placeCarried); a
     // foreground launch keeps Claude's own notice.
-    const managedCwd = opts.foreground ? undefined : opts.cwd;
-    if (managedCwd !== undefined && !opts.carried) assertChannelServerDeclared(MCP_SERVER_NAME, managedCwd);
+    if (opts.cwd !== undefined && !opts.carried) assertChannelServerDeclared(MCP_SERVER_NAME, opts.cwd);
     // BOTH loaders, deliberately. The dev-channels ref binds the wake CHANNEL, but on current
     // claude (measured on 2.1.246) it no longer loads the plugin's HOOKS — the MCP server came up
     // and every lifecycle hook was simply never invoked. That silence took out everything the
@@ -471,11 +470,11 @@ export const claudeConnector: Connector = {
       // is gated by the spawn capability itself; every `claude` flag is forwarded verbatim.
       // A managed seat has no human at its terminal, so a permission prompt under the default mode
       // is a prompt nobody answers: the seat's first mesh tool call stalled there and it looked dead
-      // to its peers. Bypass is the default for a managed seat. A
+      // to its peers. Bypass is the default for a managed seat, which the manager marks with `cwd`. A
       // foreground launch runs in the operator's terminal and keeps Claude's own mode, so the operator
       // answers its prompts there. An operator who wants another mode passes
       // `--opt permission-mode=<mode>`, and either permission flag in the passthrough wins.
-      if (managedCwd && !passthrough.some(([k]) => k === "permission-mode" || k === "dangerously-skip-permissions"))
+      if (opts.cwd && !passthrough.some(([k]) => k === "permission-mode" || k === "dangerously-skip-permissions"))
         args.push("--permission-mode", "bypassPermissions");
       for (const [k, val] of passthrough) {
         if (val === "") args.push(`--${k}`);
@@ -497,7 +496,7 @@ export const claudeConnector: Connector = {
         ...(opts.once ? { confirmNotice: `messages from ${CHANNEL_REF} inject directly in this session` } : {}),
         confirmReady: CLAUDE_READY_TEXTS,
         confirmBlockers: CLAUDE_STARTUP_BLOCKERS,
-        ...(managedCwd ? { confirmBefore: CLAUDE_WORKSPACE_TRUST_REPLIES } : {}),
+        ...(opts.cwd ? { confirmBefore: CLAUDE_WORKSPACE_TRUST_REPLIES } : {}),
         control,
         ...(opts.carried ? { resumeRecordPath: carriedForkRecord(opts.carried.home) } : {}),
         ...(artifacts.length > 0 ? { artifacts } : {}),

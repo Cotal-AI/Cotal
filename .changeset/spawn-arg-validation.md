@@ -1,8 +1,6 @@
 ---
 "@cotal-ai/core": patch
 "@cotal-ai/cli": patch
-"@cotal-ai/pi": patch
-"@cotal-ai/connector-claude-code": patch
 "cotal-ai": patch
 ---
 

@@ -1395,9 +1395,8 @@ for (const assistant of [
     const unprompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model", events: false }).args;
     ok(unprompted[unprompted.length - 1] === "flag/model", "no prompt, no positional argument: the last argument is still the model value");
     ok(
-      piConnector.buildLaunch({ space: "test", name: "pi", events: false }).env?.COTAL_PI_SUPERVISED_CWD === undefined
-      && piConnector.buildLaunch({ space: "test", name: "pi", events: false, cwd: root, foreground: true }).env?.COTAL_PI_SUPERVISED_CWD === undefined,
-      "a foreground Pi launch keeps the native interactive project-trust flow, including with --cwd",
+      piConnector.buildLaunch({ space: "test", name: "pi", events: false }).env?.COTAL_PI_SUPERVISED_CWD === undefined,
+      "a foreground Pi launch keeps the native interactive project-trust flow",
     );
     checks += 11;
   } finally {

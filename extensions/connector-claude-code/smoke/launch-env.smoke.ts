@@ -180,8 +180,8 @@ check(
 );
 
 // A managed seat has nobody at its terminal to answer a permission prompt, so the launch bypasses
-// prompts unless the operator's launch options name a permission flag themselves. A foreground
-// launch keeps Claude's own mode, even when it selects a working directory.
+// prompts unless the operator's launch options name a permission flag themselves. The manager marks
+// a managed launch with its `cwd`; a foreground launch has none and keeps Claude's own mode.
 const permissionModes = (args: string[]): string[] =>
   args.flatMap((a, i) => (a === "--permission-mode" ? [args[i + 1] ?? ""] : []));
 // A managed launch needs a declared cotal server: this project's .mcp.json names one, so the cells
@@ -195,7 +195,6 @@ const savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
 process.env.CLAUDE_CONFIG_DIR = emptyProfile;
 let refusal = "";
 try { claudeConnector.buildLaunch({ space: "smoke", name: "claude-7", events: false, cwd: bareCwd } as never); } catch (e) { refusal = (e as Error).message; }
-const foreground = claudeConnector.buildLaunch({ space: "smoke", name: "claude-6", events: false, cwd: bareCwd, foreground: true });
 if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
 check("a managed launch with no declared cotal server refuses and names the remedy", /server:cotal/.test(refusal) && /cotal setup/.test(refusal), refusal);
 const defaultArgs = claudeConnector.buildLaunch({ space: "smoke", name: "claude-3", events: false, cwd: managedCwd } as never).args;
@@ -204,10 +203,11 @@ check(
   JSON.stringify(permissionModes(defaultArgs)) === JSON.stringify(["bypassPermissions"]),
   permissionModes(defaultArgs),
 );
+const foregroundArgs = claudeConnector.buildLaunch({ space: "smoke", name: "claude-6", events: false } as never).args;
 check(
-  "a foreground launch with an explicit cwd keeps Claude's own permissions and workspace trust prompts",
-  permissionModes(foreground.args).length === 0 && !foreground.args.includes("--dangerously-skip-permissions") && foreground.confirmBefore === undefined,
-  foreground.args.filter((a) => a.includes("permission")),
+  "a foreground launch with no permission option keeps Claude's own mode",
+  permissionModes(foregroundArgs).length === 0 && !foregroundArgs.includes("--dangerously-skip-permissions"),
+  foregroundArgs.filter((a) => a.includes("permission")),
 );
 const promptedArgs = claudeConnector.buildLaunch({
   space: "smoke",
