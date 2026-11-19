@@ -74,6 +74,40 @@ test('actual lifecycle wrapper forwards launch PID and retains candidates even o
   }
 });
 
+test('filtered login reads the exact warning and retries only explicitly missing controls', () => {
+  const reader = helper.slice(helper.indexOf('function Read-SingleText'), helper.indexOf("if ($Action -eq 'connected-view')"));
+  assert.match(reader, /if \(\$direct\) \{ return \$direct \}/);
+  assert.match(reader, /\$textNodes\.Count -ne 1/);
+  assert.match(helper, /\$errText = Read-SingleText \$errControls\[0\] 'login-error'/);
+  assert.match(helper, /\$controls\.Count -eq 0.*\$id -cin @\('open-settings', 'settings-title', 'autostart'\)/);
+  assert.match(helper, /\$subExit -eq 1[\s\S]*?\$refusal\.ok -eq \$false -and \$refusal\.action -ceq \$subAction/);
+  assert.match(helper, /catch \{\s*# Retry only explicitly marked[^\n]+\n\s*if \(\$_\.Exception\.Message -cnotmatch '\^COTAL_FILTERED_SETTINGS_NOT_READY:[^\n]+\$'\) \{ throw \}/);
+  assert.match(helper, /\$cellsProgress\['error'\] = \$_\.Exception\.Message\s+Save-CellsProgress\s+throw/);
+});
+
+test('filtered login records the helper exit even when no JSON is returned', async t => {
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  t.mock.method(childProcess, 'execFile', (_file, _args, options, cb) => {
+    assert.equal(options.timeout, 180_000);
+    cb(Object.assign(new Error('helper terminated'), { signal: 'SIGTERM', killed: true }), '', 'not retained');
+  });
+  syncBuiltinESMExports();
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  const root = mkdtempSync(join(tmpdir(), 'desktop-login-exit-'));
+  try {
+    await assert.rejects(nativeLifecycle('C:\\owned\\cotal-desktop.exe', 'prove-login-cells', { COTAL_DESKTOP_E2E_NATIVE_LOG: join(root, 'native-errors.jsonl') }, 42), /candidate evidence unavailable/);
+    const raw = readFileSync(join(root, 'windows-login-helper-exit.jsonl'), 'utf8');
+    assert.doesNotMatch(raw, /not retained/);
+    const { at, ...receipt } = JSON.parse(raw);
+    assert.ok(Number.isFinite(Date.parse(at)));
+    assert.deepEqual(receipt, { action: 'prove-login-cells', appPid: 42, code: null, signal: 'SIGTERM', killed: true, stdoutBytes: 0, stderrBytes: 12 });
+  } finally {
+    Object.defineProperty(process, 'platform', platform);
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
 test('close-window receives launch-pinned PID only after separate duplicate-process admission', () => {
   assert.match(wrapper, /appPid\?: number/);
   assert.match(wrapper, /args\.push\("-AppPid", String\(appPid\)\)/);

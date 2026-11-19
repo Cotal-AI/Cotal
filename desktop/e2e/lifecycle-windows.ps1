@@ -523,7 +523,17 @@ public static class FilteredAppLauncher {
             if ($targetPid -gt 0) { $subArgs += @('-AppPid', [string]$targetPid) }
             if ($DaemonPid -gt 0) { $subArgs += @('-DaemonPid', [string]$DaemonPid, '-DaemonStart', $DaemonStart) }
             $subOut = & $psExe @subArgs
-            if ($LASTEXITCODE -ne 0) { throw "Sub-action $subAction failed ($LASTEXITCODE): $subOut" }
+            $subExit = $LASTEXITCODE
+            if ($subExit -ne 0) {
+                if ($subAction -eq 'read-login-settings' -and $subExit -eq 1) {
+                    $refusal = try { $subOut | ConvertFrom-Json } catch { $null }
+                    if ($null -ne $refusal -and $refusal.ok -eq $false -and $refusal.action -ceq $subAction -and
+                        $refusal.error -cmatch '^COTAL_FILTERED_SETTINGS_NOT_READY:(open-settings|settings-title|autostart)$') {
+                        throw $refusal.error
+                    }
+                }
+                throw "Sub-action $subAction failed ($subExit): $subOut"
+            }
             return ($subOut | ConvertFrom-Json)
         }
         $cellsFile = if ($env:COTAL_DESKTOP_E2E_NATIVE_LOG) { Join-Path (Split-Path -Parent $env:COTAL_DESKTOP_E2E_NATIVE_LOG) 'windows-login-cells.json' } else { $null }
@@ -617,7 +627,13 @@ public static class FilteredAppLauncher {
             if ($waitIdx -eq 40) { throw 'Filtered Medium-integrity app did not show its Cotal window.' }
             $filteredSettings = $null
             for ($settingsIdx = 0; $settingsIdx -lt 40; $settingsIdx++) {
-                try { $filteredSettings = Invoke-Self 'read-login-settings' $filteredPid } catch { $filteredSettings = $null }
+                try {
+                    $filteredSettings = Invoke-Self 'read-login-settings' $filteredPid
+                } catch {
+                    # Retry only explicitly marked zero matches for controls that can be mounting.
+                    if ($_.Exception.Message -cnotmatch '^COTAL_FILTERED_SETTINGS_NOT_READY:(open-settings|settings-title|autostart)$') { throw }
+                    $filteredSettings = $null
+                }
                 if ($filteredSettings -and $filteredSettings.result.checked -eq $false) { break }
                 Start-Sleep -Milliseconds 250
             }
@@ -720,9 +736,21 @@ public static class FilteredAppLauncher {
                         id = $id; windowHwnd = $windowHwnd; samples = $samples; uiaDescendants = $uiaDescendants
                     }
                 })
+                if ($Action -eq 'read-login-settings' -and $controls.Count -eq 0 -and $id -cin @('open-settings', 'settings-title', 'autostart')) {
+                    throw "COTAL_FILTERED_SETTINGS_NOT_READY:$id"
+                }
                 if ($controls.Count -ne 1) { throw "Exact AutomationId '$id' unavailable or ambiguous in owned window. WebView2 accessibility support required." }
                 if ($controls[0].Current.IsOffscreen) { throw "Exact AutomationId '$id' is offscreen." }
                 return $controls[0]
+            }
+            function Read-SingleText([System.Windows.Automation.AutomationElement]$element, [string]$labelName) {
+                $direct = $element.Current.Name
+                if ($direct) { return $direct }
+                $textNodes = @(Children $element | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Text -and $_.Current.Name })
+                if ($textNodes.Count -ne 1) {
+                    throw "Expected one named Text child under '$labelName', found $($textNodes.Count)."
+                }
+                return $textNodes[0].Current.Name
             }
             if ($Action -eq 'connected-view') {
                 $heading = Exact-Control 'connection-title'

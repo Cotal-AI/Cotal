@@ -29,6 +29,15 @@ export async function nativeLifecycle(binary: string, action: LifecycleAction, e
   }
   const stdout = await new Promise<string>((resolve, reject) => {
     execFile(command, args, { env, encoding: "utf8", windowsHide: true, timeout: action === "prove-login-cells" ? 180_000 : 45_000, maxBuffer: 512 * 1024 }, (error, out, stderr) => {
+      if (windows && action === "prove-login-cells" && env.COTAL_DESKTOP_E2E_NATIVE_LOG) {
+        try {
+          appendFileSync(join(dirname(env.COTAL_DESKTOP_E2E_NATIVE_LOG), "windows-login-helper-exit.jsonl"), `${JSON.stringify({
+            at: new Date().toISOString(), action, appPid, code: error?.code ?? (error ? null : 0),
+            signal: error?.signal ?? null, killed: error?.killed ?? false,
+            stdoutBytes: Buffer.byteLength(out), stderrBytes: Buffer.byteLength(stderr),
+          })}\n`, { mode: 0o600 });
+        } catch { /* Evidence collection cannot replace the helper outcome. */ }
+      }
       if (windows && env.COTAL_DESKTOP_E2E_NATIVE_LOG) {
         try {
           const report = JSON.parse(out.trim());
