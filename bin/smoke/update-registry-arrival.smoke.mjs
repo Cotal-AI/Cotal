@@ -213,10 +213,11 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       const preload = join(root, 'pause.cjs');
       // Stop after spawn returned but before the parent could publish or authorize the child.
       if (pending) writeFileSync(preload, `const fs = require('node:fs'); const cp = require('node:child_process'); const spawn = cp.spawn; cp.spawn = (...args) => { const child = spawn(...args); const marker = ${JSON.stringify(marker)}; if (fs.existsSync(marker) && JSON.parse(fs.readFileSync(marker, 'utf8')).phase === 'pending') process.kill(process.pid, 'SIGSTOP'); return child; }; require('node:module').syncBuiltinESMExports();`);
-      const first = run(process.execPath, [...(pending ? ['--require', preload] : []), entry, 'update', '--self'], 60000);
+      // Archive preflight and npm installation must finish before the interruption window opens.
+      const first = run(process.execPath, [...(pending ? ['--require', preload] : []), entry, 'update', '--self'], 120000);
       const updater = interrupted;
       abandoned = first;
-      const deadline = Date.now() + 30000;
+      const deadline = Date.now() + 90000;
       let record;
       while (Date.now() < deadline && updater.exitCode === null && updater.signalCode === null) {
         const row = existsSync(marker) ? JSON.parse(readFileSync(marker, 'utf8')) : undefined;
@@ -228,7 +229,11 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
         }
         await new Promise(done => setTimeout(done, 5));
       }
-      assert(record, 'the real updater reached the requested interruption window');
+      if (!record) {
+        if (updater.exitCode === null && updater.signalCode === null) updater.kill('SIGKILL');
+        const result = await first;
+        assert.fail(`the real updater did not reach the ${scenario} interruption window (exit ${result.code}, signal ${result.signal}):\n${result.output}`);
+      }
       if (pending) {
         assert.equal(record.pid, undefined);
         const children = readFileSync(`/proc/${updater.pid}/task/${updater.pid}/children`, 'utf8').trim();
