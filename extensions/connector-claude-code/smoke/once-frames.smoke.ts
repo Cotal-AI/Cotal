@@ -12,7 +12,7 @@
  * synthesized frames over a scripted endpoint. Run: pnpm smoke:claude-once-frames
  */
 import { MeshAgent } from "@cotal-ai/connector-core";
-import type { AgentConfig, HookEvent, InboxItem } from "@cotal-ai/connector-core";
+import type { AgentConfig, HookEvent } from "@cotal-ai/connector-core";
 import { mintLifecycleUid } from "@cotal-ai/core";
 import { HOOK_CONTEXT_CHARS, createClaudeHandle } from "../src/hooks.js";
 
@@ -24,7 +24,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const tick = () => new Promise((r) => setTimeout(r, 25));
 
 /** One seat holding one once task, over a scripted endpoint that records its reports. */
-const seat = async (prompt = "write the summary") => {
+const seat = async (prompt = "write the summary", queuedDm?: string) => {
   const uid = mintLifecycleUid();
   const cfg: AgentConfig = {
     space: "smoke", name: "seat", servers: "nats://127.0.0.1:1", kind: "agent", tls: false,
@@ -33,6 +33,13 @@ const seat = async (prompt = "write the summary") => {
   };
   const reports: string[] = [];
   const agent = new MeshAgent(cfg);
+  // Feed the real inbox before swapping the endpoint for scripted control calls.
+  if (queuedDm !== undefined) {
+    agent.ep.emit("message", {
+      id: "m1", ts: 1, space: cfg.space, from: { id: "bob", name: "bob" }, to: agent.ep.card.id,
+      parts: [{ kind: "text", text: queuedDm }],
+    }, { ack: () => {}, nak: () => {}, durable: false }, { kind: "dm", historical: false });
+  }
   const row = { goalId: "o1", payload: JSON.stringify({ context: prompt, once: { spawner: "lead" } }), acceptedAt: Date.now(), once: true };
   (agent as unknown as { ep: unknown }).ep = {
     principal: { owner: "local", actor: "seat" },
@@ -111,17 +118,17 @@ console.log("\n2. the budget: the task comes first, and what does not fit beside
   check("a task that cannot fit the frame is not put on it and stays unclaimed", !TASK.test(text3) && huge.state() === "pending" && huge.reports.length === 0, { length: text3.length, state: huge.state() });
   // One pending peer message, with no room beside a task that fits the frame alone.
   const wrapper = (await seat("p")).agent.peekPendingTurns()!.text.length - 1;
-  const crowded = await seat("p".repeat(HOOK_CONTEXT_CHARS - wrapper - 50));
-  const message: InboxItem = { id: "m1", recvKey: "m1", ts: 1, fromId: "local.BOB", fromName: "bob", kind: "dm", mentionsMe: false, historical: false, text: "x".repeat(4_000) };
-  const inbox = crowded.agent.peekInbox.bind(crowded.agent);
-  crowded.agent.peekInbox = (scope) => scope === "automatic" ? [message] : inbox(scope);
+  const message = "x".repeat(4_000);
+  const crowded = await seat("p".repeat(HOOK_CONTEXT_CHARS - wrapper - 50), message);
   const ev5 = frame("UserPromptSubmit");
   const text5 = contextOf(await plain.handle(crowded.agent, ev5));
   plain.onReply(ev5, true, true);
   await tick();
+  const waiting = crowded.agent.drainInbox(undefined, "automatic");
   check("a pending message with no room beside a task that fits alone stays waiting, and the task rides the frame within the cap",
-    TASK.test(text5) && !text5.includes("xxxxx") && !text5.includes("still waiting") && text5.length <= HOOK_CONTEXT_CHARS && crowded.state() === "confirmed",
-    { length: text5.length, state: crowded.state(), start: text5.slice(0, 80) });
+    TASK.test(text5) && !text5.includes("xxxxx") && !text5.includes("still waiting") && text5.length <= HOOK_CONTEXT_CHARS && crowded.state() === "confirmed" &&
+    waiting.length === 1 && waiting[0]?.text === message,
+    { length: text5.length, state: crowded.state(), waiting: waiting.length });
   const refused = await seat();
   refused.agent.claimTurns = () => false;
   const ev4 = frame("UserPromptSubmit");
