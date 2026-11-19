@@ -98,17 +98,18 @@ try {
     refused.status === 1 && refused.stdout === "" && /Outcome:\s+refused/.test(refused.stderr) && /Code:\s+USAGE_INVALID/.test(refused.stderr)
     && refused.stderr.includes("declares 2 agent(s)") && refused.stderr.includes("Next") && refused.stderr.includes("drop --no-manager"), refused);
 
-  const preview = cli("up", "-f", manifest, "--server", SERVER, "--dry-run", ...rotation, "--json");
-  const plan = preview.status === 0 ? JSON.parse(preview.stdout) : undefined;
-  ok("JSON preview accepts CLI rotation with a manifest-relative log path", plan?.outcome === "ok" && plan.result?.server === SERVER
-    && plan.result?.logFile === logFile && plan.result?.logfileSizeLimit === 1048576 && plan.result?.logfileMaxNum === 3, preview);
+  const preview = cli("up", "-f", manifest, "--server", SERVER, "--dry-run", ...rotation);
+  ok("text preview shows the manifest-relative log path and both CLI rotation bounds", preview.status === 0
+    && preview.stdout.includes(`Broker log file: ${JSON.stringify(logFile)}`)
+    && preview.stdout.includes("Broker log rotation size limit: 1048576 bytes")
+    && preview.stdout.includes("Maximum broker log files: 3"), preview);
   ok("the refusals and preview started nothing and created no records or log", !await portOpen(PORT) && readdirSync(join(root, ".cotal")).length === 0 && !existsSync(logFile));
 
   const noLog = join(manifestDir, "no-log.yaml");
   writeFileSync(noLog, readFileSync(manifest, "utf8").replace(', logFile: "./broker.log"', ""));
-  const missing = cli("up", "-f", noLog, "--server", SERVER, "--dry-run", ...rotation, "--json");
+  const missing = cli("up", "-f", noLog, "--server", SERVER, "--dry-run", ...rotation);
   ok("manifest rotation still refuses when neither source names a log path", missing.status === 1
-    && JSON.parse(missing.stdout).error?.code === "USAGE_INVALID" && JSON.parse(missing.stdout).error?.remedy.includes("broker.logFile"), missing);
+    && missing.stdout === "" && missing.stderr.includes("require --log-file or broker.logFile"), missing);
 
   // 1) fresh up -f with a --server OVERRIDE (the manifest declares the decoy port; the flag wins).
   const up = cli("up", "-f", manifest, "--server", SERVER, "--logfile-size-limit", "1048576");

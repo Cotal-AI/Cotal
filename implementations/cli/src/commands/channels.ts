@@ -59,7 +59,7 @@ function patch(values: Values): ChannelConfig {
   return {
     ...(values.replay !== undefined ? { replay: values.replay } : {}),
     ...(values["no-replay"] ? { replay: false } : {}),
-    ...(values.window !== undefined ? { replayWindow: values.window } : {}),
+    ...(values.window !== undefined ? { replayWindow: values.window.trim() } : {}),
     ...(delivery !== undefined ? { deliveryClass: delivery } : {}),
     ...(values.desc !== undefined ? { description: values.desc } : {}),
     ...(values.instructions !== undefined ? { instructions: values.instructions } : {}),

@@ -14,10 +14,11 @@
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { recordsBucket } from "@cotal-ai/core";
 import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
@@ -225,6 +226,12 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       if (options.ready) {
         assert.ok(timeline.indexOf("stopped delivery daemon") < timeline.indexOf('Trapped "terminated" signal'), "delivery stop report precedes broker SIGTERM"); passed++;
         assert.doesNotMatch(err, /could not list|refusing bare manager stop|spare.capability|NOT BOUND/i, "ready shutdown has no listing, spare or unbound failure"); passed++;
+        const store = join(mesh, ".cotal", "nats");
+        const bucket = recordsBucket(space);
+        const files = readdirSync(store, { recursive: true, withFileTypes: true });
+        assert.ok(files.some((file) => file.isDirectory() && file.name === `KV_${bucket}`), "the stopped broker retained its records stream"); passed++;
+        const consumers = files.filter((file) => file.name === "meta.inf" && file.parentPath.split(/[\\/]/).slice(-3, -1).join("/") === `KV_${bucket}/obs`);
+        assert.ok(consumers.every((file) => JSON.parse(readFileSync(join(file.parentPath, file.name), "utf8")).filter_subject !== `$KV.${bucket}.goalidx.manager.>`), "the stopped broker has no persisted manager goal-index scan consumer"); passed++;
       }
       assert.equal([...owned.values()].some(live), false, "no recorded owned process survives successful teardown"); passed++;
       assert.deepEqual([brokerPath, managerPath, deliveryPath].filter((file) => existsSync(file)), [], "no recorded pidfile survives successful teardown"); passed++;
