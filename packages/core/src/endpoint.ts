@@ -66,7 +66,7 @@ import { isConsumerNotFound, isJetStreamMissing, isStreamNotFound } from "./jets
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { nextHeartbeat } from "./presence-heartbeat.js";
-import { anycastStoreDefinition, createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, PRESENCE_STORAGE } from "./streams.js";
+import { anycastStoreDefinition, createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, PRESENCE_STORAGE } from "./streams.js";
 import { DELIVERY_LIMIT_HEADER, PLANE3_MAX_MSGS_PER_SUBJECT } from "./backup-config.js";
 import {
   jetstream,
@@ -108,28 +108,20 @@ import type {
   DmHistoryRead,
   HistoryMessage,
   DeliveryClass,
-  MembershipRecord,
   ChannelMembership,
   MembershipEntry,
   MembershipChange,
   MembershipSnapshot,
   Plane3Entry,
 } from "./types.js";
-import {
-  openMembersRegistry,
-  commitMemberRevision,
-  tombstoneMember,
-  activateMember,
-  readMember,
-  deleteMember,
-  listMembers,
-} from "./members.js";
-import { openAclRegistry, readAcl, readAclForAlias, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
+import { listMembers } from "./members.js";
+import { readAcl } from "./acls.js";
 import type { DeliveryLeaseInfo, ManagerLeaseInfo } from "./lease.js";
 import { EndpointDeliveryLease } from "./endpoint-delivery-lease.js";
 import { EndpointDeliveryPlane, type MaybePromise } from "./endpoint-delivery-plane.js";
 import { EndpointControlPlane } from "./endpoint-control-plane.js";
 import { EndpointMessaging, assertPartsSerializable } from "./endpoint-messaging.js";
+import { EndpointDurableBackstop } from "./endpoint-durable-backstop.js";
 import { ackWaitOf, authenticatedChannelMessage, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import {
   openChannelRegistry,
@@ -167,12 +159,6 @@ import {
   dmStream,
   dmDurable,
   dlvStream,
-  dinboxSubject,
-  FANOUT_DURABLE,
-  managerBucket,
-  MANAGER_LEASE_KEY,
-  MANAGER_RENEWAL_LEASE_KEY,
-  managerLeaseKey,
   membershipInAllow,
   isConcreteChannel,
   isChannelFamily,
@@ -190,7 +176,6 @@ import {
   assertLifecycleToken,
   mintLifecycleUid,
   lifecycleNameKey,
-  memberKey,
   DEV_OWNER,
   spacePrefix,
   spaceWildcard,
@@ -2771,7 +2756,6 @@ export class CotalEndpoint extends EventEmitter {
     return this.controlPlane.requestBoundReply(nc, subject, body, reply, timeoutMs);
   }
 
-
   /** Send a control request to a service and await its reply (client side). Like {@link requestDelivery},
    *  the reply rides a BOUNDED subject UNDER the request subject (`ctl.<service>.<id>.reply.<uuid>`), not
    *  the per-id `_INBOX`.
@@ -2786,14 +2770,12 @@ export class CotalEndpoint extends EventEmitter {
     return this.controlPlane.requestControl(service, req, timeoutMs);
   }
 
-
   /** The caller this connection's endpoint requests ride as: the legacy triple, or the issued
    *  caller with its discovered generation (SPEC 13.15). It names the reply rail this connection's
    *  credential reads, which is where a manager's turn notice for it lands (SPEC 14.3). */
   serviceRailCaller(): EpCaller {
     return this.controlPlane.serviceRailCaller();
   }
-
 
   /** Follow this caller's goal on its standing connection, subscribing before submission.
    *  A submitter may use a separate short-lived control credential for the same caller triple;
@@ -2808,7 +2790,6 @@ export class CotalEndpoint extends EventEmitter {
     return this.controlPlane.followServiceGoal(endpoint, submit, deadlineMs, opts);
   }
 
-
   /** The resolved, digest-verified command surface of `endpoint` as this connection's caller sees
    *  it. Unpinned calls cache the complete discovery surface, and `refresh` drops both the full
    *  handle and any command-specific invocation handles. `instanceId` selects one instance without
@@ -2818,7 +2799,6 @@ export class CotalEndpoint extends EventEmitter {
     return this.controlPlane.describeService(endpoint, opts);
   }
 
-
   /** The caller a registry listing rides (SPEC 13.15). An issued connection lists as itself. Any
    *  other connection reads the listing generation the issuer bound to the credential it presented,
    *  under the token its connection id and that credential's expiry derive. `undefined`: that
@@ -2826,7 +2806,6 @@ export class CotalEndpoint extends EventEmitter {
   async listingCaller(): Promise<IssuedCaller | undefined> {
     return this.controlPlane.listingCaller();
   }
-
 
   /** One page of the registry's `endpoints` answer (SPEC 13.20) over this connection
    *  ({@link listRegistryEndpoints}). The describe rides this connection's own caller; the question
@@ -2838,7 +2817,6 @@ export class CotalEndpoint extends EventEmitter {
   > {
     return this.controlPlane.listEndpoints(input, opts);
   }
-
 
   /** Ask the registry over `nc` under `listing`: this connection, or another of this caller triple
    *  such as a manager-call connection. The describe rides this connection, whose view holds the
@@ -2853,7 +2831,6 @@ export class CotalEndpoint extends EventEmitter {
   ): Promise<{ unbound: true } | { unbound?: false; reply: EpAttributedReply; page?: RegistryEndpointsOutput }> {
     return this.controlPlane.listEndpointsOver(nc, listing, input, opts);
   }
-
 
   /** GENERIC v0.4 service invoke over this endpoint's own connection: resolve
    *  the named endpoint's registered surface — describe, §13.7 store fetch, digest-verified
@@ -4088,19 +4065,43 @@ export class CotalEndpoint extends EventEmitter {
   // read on the mixed store. (v3: this all moved off the manager — the manager is lifecycle-only; it
   // records the read-ACL at mint via commitAcl.) See `.internal/research/stage4-impl-design.md`.
 
-  /** Lazily open the privileged members registry KV (delivery daemon / open-mode self). */
+  /** The Plane-3 registries, manager and daemon-renewal leases, and durable membership writes of this
+   *  endpoint. Every dependency is read when it is used, so a field assigned after construction is seen. */
+  private readonly durableBackstop = new EndpointDurableBackstop({
+    nc: () => this.nc,
+    js: () => this.js,
+    jsm: () => this.jsm,
+    setJsm: (manager) => { this.jsm = manager; },
+    space: () => this.space,
+    card: () => this.card,
+    authed: () => this.authed,
+    channelKv: () => this.channelKv,
+    presence: () => this.presence,
+    deliveryPlane: () => this.deliveryPlane,
+    membersKv: () => this.membersKv,
+    setMembersKv: (kv) => { this.membersKv = kv; },
+    aclKv: () => this.aclKv,
+    setAclKv: (kv) => { this.aclKv = kv; },
+    managerLeaseKv: () => this.managerLeaseKv,
+    setManagerLeaseKv: (kv) => { this.managerLeaseKv = kv; },
+    daemonRenewalLeaseRevision: () => this.daemonRenewalLeaseRevision,
+    setDaemonRenewalLeaseRevision: (revision) => { this.daemonRenewalLeaseRevision = revision; },
+    notLiveMsg: () => this.notLiveMsg(),
+    consumerInfo: (stream, durable) => this.consumerInfo(stream, durable),
+    manager: () => this.manager(),
+    chatFrontier: () => this.chatFrontier(),
+    aclAllows: (owner, lifecycleUid, channel) => this.aclAllows(owner, lifecycleUid, channel),
+    catchupCopy: (...args) => this.catchupCopy(...args),
+  });
+
+  /** Forwards to the durable backstop's {@link EndpointDurableBackstop.membersRegistry}. */
   private async membersRegistry(): Promise<KV> {
-    if (!this.nc) throw new Error(this.notLiveMsg());
-    this.membersKv ??= await openMembersRegistry(this.nc, this.space);
-    return this.membersKv;
+    return this.durableBackstop.membersRegistry();
   }
 
-  /** Lazily open the durable read-ACL registry KV. Privileged write (the manager records an agent's
-   *  ACL at mint); the delivery daemon reads it fresh per durable entry to re-authorize. */
+  /** Forwards to the durable backstop's {@link EndpointDurableBackstop.aclRegistry}. */
   private async aclRegistry(): Promise<KV> {
-    if (!this.nc) throw new Error(this.notLiveMsg());
-    this.aclKv ??= await openAclRegistry(this.nc, this.space);
-    return this.aclKv;
+    return this.durableBackstop.aclRegistry();
   }
 
   /** Privileged ({@link DurableProvisioner}): record an agent's read ACL in the durable registry at
@@ -4109,7 +4110,7 @@ export class CotalEndpoint extends EventEmitter {
    *  durable-joins without holding any in-memory ledger. Written ATOMICALLY ({@link writeAclRecord}),
    *  so a present record is always complete (`[]` = known no-read, never a half-write). */
   async commitAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void> {
-    await writeAclRecord(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe);
+    return this.durableBackstop.commitAcl(targetId, lifecycleUid, allowSubscribe);
   }
 
   /**
@@ -4118,7 +4119,7 @@ export class CotalEndpoint extends EventEmitter {
    * write is not crypto-bound to credential bytes.
    */
   async reissueAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void> {
-    await writeAclReissue(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe);
+    return this.durableBackstop.reissueAcl(targetId, lifecycleUid, allowSubscribe);
   }
 
   /** The server-side delivery daemon's fresh-per-entry ACL read: one LIFECYCLE's current read ACL
@@ -4126,7 +4127,7 @@ export class CotalEndpoint extends EventEmitter {
    *  if no record (an unknown lifecycle — the reader DEFERS, never drops). A present `[]` (known
    *  no-read) returns `[]` (the reader DROPS). */
   async aclForOwner(owner: string, lifecycleUid: string): Promise<string[] | undefined> {
-    return (await readAcl(await this.aclRegistry(), owner, lifecycleUid))?.record.allowSubscribe;
+    return this.durableBackstop.aclForOwner(owner, lifecycleUid);
   }
 
   /** Resolve an ALIAS to its single live lifecycle-keyed ACL row (`readAclForAlias`): the daemon's
@@ -4138,13 +4139,7 @@ export class CotalEndpoint extends EventEmitter {
     issuedAllowSubscribe: string[];
     lifecycleUid: string;
   } | undefined> {
-    const row = await readAclForAlias(await this.aclRegistry(), principal);
-    if (row === undefined) return undefined;
-    const allow = row.record.allowSubscribe;
-    // Legacy rows predate the ceiling field: treat missing as equal to allowSubscribe so behaviour
-    // matches what that row already exposed. New rows always carry an explicit ceiling.
-    const issued = row.record.issuedAllowSubscribe ?? allow;
-    return { allowSubscribe: allow, issuedAllowSubscribe: issued, lifecycleUid: row.lifecycleUid };
+    return this.durableBackstop.aclForAlias(principal);
   }
 
   /** Is this shard's lease row one THIS ENDPOINT INSTANCE wrote? The question a daemon whose renew
@@ -4350,38 +4345,6 @@ export class CotalEndpoint extends EventEmitter {
   async readDeliveryLeaseEntry(shardIndex: number): Promise<{ info: DeliveryLeaseInfo; revision: number } | undefined> {
     return this.deliveryLease.readDeliveryLeaseEntry(shardIndex);
   }
-
-  /** Ensure + bind the manager singleton-lease bucket. Mirrors the presence-bucket pattern (connectAndBind):
-   *  AUTH mode OPENs the bucket pre-created at `cotal up` (the scoped `supervisor` cred holds no
-   *  STREAM.CREATE — and `open` binds direct=false, so the CAS-conflict `kv.get` inside `acquire` rides
-   *  STREAM.MSG.GET, the verb the supervisor grants, never DIRECT.GET). OPEN mode (no creds) create-firsts:
-   *  `Kvm.open` binds LAZILY — it does NOT verify the stream exists or throw when it's missing (a fresh
-   *  bucket then fails 'stream not found' on the first write), so `create` is the ensure-exists call (it
-   *  makes the bucket or, when another endpoint already did, throws and we bind the existing one). Either
-   *  way the per-KEY CAS create stays the only single-flight gate, so a lost bucket-create race never reads
-   *  as "lease held". */
-  private async managerLeaseRegistry(): Promise<KV> {
-    if (!this.nc) throw new Error(this.notLiveMsg());
-    if (this.managerLeaseKv) return this.managerLeaseKv;
-    // A JetStream client of its own, so every operation on this bucket carries the lease budget's
-    // attempt deadline rather than the library default. The default is TTL/2, which would let one
-    // attempt spend the whole renew window (see MANAGER_LEASE_ATTEMPT_MS). Scoped to this bucket:
-    // every op on it is a single small keyed request, and nothing else shares this client.
-    const kvm = new Kvm(jetstream(this.nc, { timeout: MANAGER_LEASE_ATTEMPT_MS }));
-    if (this.authed) {
-      this.managerLeaseKv = await kvm.open(managerBucket(this.space));
-    } else {
-      try {
-        this.managerLeaseKv = await kvm.create(managerBucket(this.space), { ttl: MANAGER_LEASE_TTL_MS });
-      } catch {
-        // OPEN mode has no broker ACLs, so a permission denial is impossible here. `create` is only
-        // the ensure-exists attempt; `open` below is the authority after either a pre-existing bucket
-        // or a create race, and it still throws if the bucket cannot actually be used.
-        this.managerLeaseKv = await kvm.open(managerBucket(this.space));
-      }
-    }
-    return this.managerLeaseKv;
-  }
   /** Take or keep the per-SPACE daemon-credential renewal lease (#1634), returning whether THIS
    *  instance now holds it. One atomic CAS `create` per pass: it succeeds for whoever arrives first
    *  and throws for everyone else, so exactly one manager remints even when several share the
@@ -4390,42 +4353,13 @@ export class CotalEndpoint extends EventEmitter {
    *  never fails a start. A crashed holder's key TTL-expires with the bucket, so the next pass hands
    *  the lease to a survivor with no operator step. */
   async holdDaemonRenewalLease(instanceId: string): Promise<boolean> {
-    const kv = await this.managerLeaseRegistry();
-    const held = this.daemonRenewalLeaseRevision;
-    if (held !== undefined) {
-      try {
-        this.daemonRenewalLeaseRevision = await kv.update(MANAGER_RENEWAL_LEASE_KEY, this.encodeDaemonRenewalLease(instanceId), held);
-        return true;
-      } catch {
-        // The revision moved (our key TTL-expired and a peer took it). Re-contend below rather than
-        // keep reminting on a lease we no longer hold.
-        this.daemonRenewalLeaseRevision = undefined;
-      }
-    }
-    try {
-      this.daemonRenewalLeaseRevision = await kv.create(MANAGER_RENEWAL_LEASE_KEY, this.encodeDaemonRenewalLease(instanceId));
-      return true;
-    } catch {
-      return false; // another manager holds it: exactly one owner is the point
-    }
+    return this.durableBackstop.holdDaemonRenewalLease(instanceId);
   }
 
   /** Release the renewal lease on a clean stop so a peer takes over at once rather than at the TTL.
    *  CAS-guarded, so a lease we already lost is never deleted out from under its new holder. */
   async releaseDaemonRenewalLease(): Promise<void> {
-    const held = this.daemonRenewalLeaseRevision;
-    this.daemonRenewalLeaseRevision = undefined;
-    if (held === undefined) return;
-    try {
-      await (await this.managerLeaseRegistry()).delete(MANAGER_RENEWAL_LEASE_KEY, { previousSeq: held });
-    } catch {
-      // Best-effort: a moved revision means it is not ours, and a broker failure is recovered by the
-      // bucket TTL. Shutdown must not claim deletion.
-    }
-  }
-
-  private encodeDaemonRenewalLease(instanceId: string): Uint8Array {
-    return new TextEncoder().encode(JSON.stringify({ instanceId, since: Date.now() }));
+    return this.durableBackstop.releaseDaemonRenewalLease();
   }
 
   /** Read the per-space daemon-credential renewal-lease row (the one {@link holdDaemonRenewalLease}
@@ -4433,13 +4367,7 @@ export class CotalEndpoint extends EventEmitter {
    *  this through the SAME bucket the hold attempt opened, to name the live holder in its refusal —
    *  `managerLeaseKv` is private, so this is the exported read beside {@link readManagerLease}. */
   async readDaemonRenewalLease(): Promise<{ instanceId: string; since: number } | undefined> {
-    const e = await (await this.managerLeaseRegistry()).get(MANAGER_RENEWAL_LEASE_KEY);
-    if (!e || e.operation !== "PUT") return undefined;
-    return JSON.parse(new TextDecoder().decode(e.value)) as { instanceId: string; since: number };
-  }
-
-  private encodeManagerLease(info: ManagerLeaseInfo): Uint8Array {
-    return new TextEncoder().encode(JSON.stringify(info));
+    return this.durableBackstop.readDaemonRenewalLease();
   }
   /** Acquire THIS logical instance's liveness lease via ATOMIC CAS create on its own per-instance key
    *  ({@link managerLeaseKey}). THROWS only if that SAME instance id already holds a live key (a same-root
@@ -4448,12 +4376,12 @@ export class CotalEndpoint extends EventEmitter {
    *  key and coexists. A crashed holder's key auto-expires (bucket TTL). Returns the
    *  lease revision (for renew). */
   async acquireManagerLease(info: Omit<ManagerLeaseInfo, "since">): Promise<number> {
-    return (await this.managerLeaseRegistry()).create(managerLeaseKey(info.instanceId), this.encodeManagerLease({ ...info, since: Date.now() }));
+    return this.durableBackstop.acquireManagerLease(info);
   }
   /** Renew THIS instance's held key (CAS update against `revision`) before the bucket TTL expires it.
    *  Throws if the revision moved (lost the lease). Returns the new revision. */
   async renewManagerLease(info: Omit<ManagerLeaseInfo, "since">, revision: number): Promise<number> {
-    return (await this.managerLeaseRegistry()).update(managerLeaseKey(info.instanceId), this.encodeManagerLease({ ...info, since: Date.now() }), revision);
+    return this.durableBackstop.renewManagerLease(info, revision);
   }
   /** Read THIS instance's OWN lease key, keyed (not the `lease.*` sweep {@link readManagerLease} does).
    *
@@ -4465,18 +4393,14 @@ export class CotalEndpoint extends EventEmitter {
    *  `created` is the broker's write time of the row (epoch ms), which is what the bucket TTL counts
    *  from. */
   async readOwnManagerLease(instanceId: string): Promise<{ info: ManagerLeaseInfo; revision: number; created: number } | undefined> {
-    const e = await (await this.managerLeaseRegistry()).get(managerLeaseKey(instanceId));
-    if (!e || e.operation !== "PUT") return undefined;
-    return { info: JSON.parse(new TextDecoder().decode(e.value)) as ManagerLeaseInfo, revision: e.revision, created: e.created.getTime() };
+    return this.durableBackstop.readOwnManagerLease(instanceId);
   }
   /** Release THIS instance's key on clean shutdown so a same-id restart re-acquires immediately. CAS-guarded
    *  by `revision`: if we already LOST it (renew gap) the stored revision has moved, and the conditional
    *  delete is refused and rejects, like any broker failure; a shutdown that must finish anyway catches
    *  it. Keyed per instance, so a release NEVER touches a sibling manager's key (security pin 6). */
   async releaseManagerLease(instanceId: string, revision?: number): Promise<void> {
-    const kv = await this.managerLeaseRegistry();
-    if (revision === undefined) await kv.delete(managerLeaseKey(instanceId));
-    else await kv.delete(managerLeaseKey(instanceId), { previousSeq: revision });
+    return this.durableBackstop.releaseManagerLease(instanceId, revision);
   }
   /** Read a live manager liveness lease, or undefined if NONE (no manager instance holds the space). A
    *  presence/existence check for the CLI's `spawn -f` reuse and `waitLeaseGone`, which only need "is any
@@ -4494,55 +4418,7 @@ export class CotalEndpoint extends EventEmitter {
    *  revision PER KEY and drops keys whose final state is a marker, so a peer's DEL can only retire that
    *  peer's own key and can never mask a live one. */
   async readManagerLease(): Promise<ManagerLeaseInfo | undefined> {
-    if (!this.nc) return undefined;
-    try {
-      const jsm = this.jsm ?? (this.jsm = await jetstreamManager(this.nc));
-      const stream = `KV_${managerBucket(this.space)}`;
-      const prefix = `$KV.${managerBucket(this.space)}.${MANAGER_LEASE_KEY}.`;
-      // STREAM.INFO to learn WHICH instance keys exist, then one point-get per key. NOT a bucket
-      // scan: `liveKvEntries` binds a push consumer, and this principal's grant on this bucket is
-      // STREAM.INFO + STREAM.MSG.GET + the `lease.*` publish only (`provision.ts`, supervisor). A
-      // consumer here is a permissions violation for the very callers this probe serves, and no
-      // open-mesh test can see that, because an open mesh has no permissions to violate.
-      const info = await jsm.streams.info(stream, { subjects_filter: `${prefix}*` });
-      let newest: { data: Uint8Array; seq: number } | undefined;
-      for (const subject of Object.keys(info.state.subjects ?? {})) {
-        // `last_by_subj` is CORRECT PER KEY and wrong across keys. Scoped to one instance's subject
-        // it returns that instance's latest state, so a DEL here retires only its own key. The
-        // defect was asking one wildcard for the newest message in the whole subtree, where a
-        // stopping peer's tombstone outranks a live sibling's older PUT.
-        let m;
-        try {
-          m = await jsm.streams.getMessage(stream, { last_by_subj: subject });
-        } catch (e) {
-          if ((e as { code?: unknown }).code === JetStreamApiCodes.NoMessageFound) continue;
-          throw e;
-        }
-        if (m === null) continue; // key vanished between INFO and GET: it is not a live holder
-        // A 10037 above means the key vanished between INFO and GET: it is not a live holder. A
-        // denial or failed read is not absence and is rethrown.
-        const op = m.header?.get("KV-Operation");
-        if (op === "DEL" || op === "PURGE" || m.data.length === 0) continue;
-        if (newest === undefined || m.seq > newest.seq) newest = { data: m.data, seq: m.seq };
-      }
-      if (newest === undefined) return undefined;
-      return JSON.parse(new TextDecoder().decode(newest.data)) as ManagerLeaseInfo;
-    } catch (e) {
-      // ABSENCE MUST BE PROVEN, NOT INFERRED FROM A FAILED READ. Exactly two outcomes mean "genuinely
-      // no manager": 10037, no message on the subtree, and a missing bucket — this probe is open-only
-      // and on an authed mesh nothing creates it until a manager first takes a lease, so a space that
-      // has never run one has no stream to read. Every OTHER failure (a JetStream hiccup, a request
-      // timeout, a permissions refusal, or `liveKvEntries` refusing a pass that died mid-delivery) used
-      // to return undefined here as well, and every caller reads undefined as "the space is empty": the
-      // CLI's `spawn -f` reuse stands a SECOND manager up against a live one and `waitLeaseGone` reports
-      // the space free. A read that failed is not evidence of absence, so refuse loudly rather than
-      // degrade (AGENTS.md: no fallbacks). This is the wider of the two doors the point-get fix closes:
-      // it needs only a transient error, where the tombstone path needed a peer to stop.
-      const code = (e as { code?: unknown }).code;
-      if (code === 10037) return undefined;
-      if (code === 404 || /stream not found/i.test((e as Error)?.message ?? "")) return undefined;
-      throw e;
-    }
+    return this.durableBackstop.readManagerLease();
   }
 
   /** Privileged: one owner's NON-TOMBSTONED durable memberships as `{channel, generation, activated}` —
@@ -4552,71 +4428,29 @@ export class CotalEndpoint extends EventEmitter {
    *  still routes under the pure-interval predicate (a crash-stuck pending activation) — without reading
    *  the privileged KV itself. */
   async ownerMemberships(owner: string, lifecycleUid: string): Promise<{ channel: string; generation: number; activated: boolean }[]> {
-    // LIFECYCLE-EXACT (SPEC 13.1): an alias-wide listing would hand a same-alias successor the
-    // PREDECESSOR's rows/generations (both incarnations share the alias), and a first-match consumer
-    // like leaveChannel could then act on the wrong incarnation's state. Rows are filtered to the
-    // caller's own uid; the uid is caller-asserted but confined to its own authenticated alias, the
-    // same trust shape as durableLeave.
-    const recs = await listMembers(await this.membersRegistry(), { owner });
-    return recs
-      .filter((r) => r.lifecycleUid === lifecycleUid && r.leaveCursor === undefined)
-      .map((r) => ({ channel: r.channel, generation: r.generation, activated: r.activated === true }));
+    return this.durableBackstop.ownerMemberships(owner, lifecycleUid);
   }
 
   /** Effective delivery class read AUTHORITATIVELY from the registry KV (not the watch cache) — so a
    *  `live`→`durable` flip is seen by fan-out without a cache-propagation gap (red-team MED-3), and a
    *  reader just started need not wait for the cache to fill. */
   async deliveryClassFresh(channel: string): Promise<DeliveryClass> {
-    if (!this.channelKv) return effectiveDeliveryClass(undefined, undefined);
-    const [cfg, defaults] = await Promise.all([
-      isConcreteChannel(channel) ? readChannelConfig(this.channelKv, channel) : Promise.resolve(undefined),
-      readChannelDefaults(this.channelKv),
-    ]);
-    return effectiveDeliveryClass(cfg, defaults);
+    return this.durableBackstop.deliveryClassFresh(channel);
   }
 
-  /** Collision-safe `@mention` → owner-id resolution: a name that resolves to exactly one present
-   *  peer wins; 0 or >1 matches drop (never fan a directed durable copy to an unrelated same-named
-   *  bystander — red-team LOW; SPEC §4 unique instance id). */
+  /** Forwards to the durable backstop's {@link EndpointDurableBackstop.resolveOwnerByName}. */
   private resolveOwnerByName(name: string): string | undefined {
-    const matches = [...this.presence.values()].filter((p) => p.card.name.toLowerCase() === name.toLowerCase());
-    return matches.length === 1 ? matches[0].card.id : undefined;
+    return this.durableBackstop.resolveOwnerByName(name);
   }
 
-  /** Plane-3 publish-dedupe key for a fan-out/transfer entry: the message id plus the member
-   *  lifecycle (`keySuffix`). One message reaches one lifecycle once, whichever membership row and
-   *  whichever writer (fan-out or any row's catch-up) produced the copy (#5404), within the stream's
-   *  duplicate window. An empty `msg.id` contributes NO msgID (#673, SPEC §4: two `id: ""` posts MUST
-   *  NOT collapse to one delivery) — a plain publish, never an empty or salted one — so an id-less
-   *  message is at-least-once on the durable plane (a redelivery may reach the member twice; the
-   *  receiver already treats each as its own delivery). */
+  /** Forwards to the durable backstop's {@link EndpointDurableBackstop.plane3MsgId}. */
   private plane3MsgId(entry: Plane3Entry, keySuffix: string): Partial<JetStreamPublishOptions> {
-    return entry.msg.id === "" ? {} : { msgID: `${entry.msg.id}:${keySuffix}` };
+    return this.durableBackstop.plane3MsgId(entry, keySuffix);
   }
 
-  /** Publish one fan-out entry into a member LIFECYCLE's mixed inbox (`dinbox.<o>.<a>.<uid>`, SPEC
-   *  §13.1: fan-out addresses the member row's RECORDED lifecycle, never the alias's current
-   *  occupant), idempotent via `Nats-Msg-Id` (`<msgId>:<principal>:<lifecycleUid>`) so a catch-up copy
-   *  and a racing fan-out copy collapse, from the same row or from two rows that both cover the post.
-   *  The `principal` is the member's owner+actor dot-form. */
+  /** Forwards to the durable backstop's {@link EndpointDurableBackstop.publishDinbox}. */
   private async publishDinbox(principal: string, lifecycleUid: string, entry: Plane3Entry): Promise<void> {
-    if (!this.js) return;
-    const p = parsePrincipalKey(principal);
-    if (!p) throw new Error(`publishDinbox: "${principal}" is not a valid member principal <owner>.<actor>`);
-    await this.js.publish(dinboxSubject(this.space, p.owner, p.actor, lifecycleUid), JSON.stringify(entry), {
-      // JetStream dedupe is STREAM-WIDE, so the id must carry the LIFECYCLE too: with an alias-keyed
-      // id, lifecycle A's copy would suppress a same-alias successor B's copy of the same message —
-      // cross-lifecycle suppression, not dedup. It carries no row generation: two rows of one
-      // lifecycle covering the post must collapse to one copy.
-      ...this.plane3MsgId(entry, `${principal}:${lifecycleUid}`),
-    });
-  }
-
-  /** The fan-out consumer's delivered stream-seq — the activation-fence upper bound (red-team
-   *  BLOCKER-1: the shared fan-out cursor advances independently of the stream frontier). */
-  private async fanoutDeliveredSeq(): Promise<number> {
-    const info = await this.consumerInfo(chatStream(this.space), FANOUT_DURABLE);
-    return info?.delivered?.stream_seq ?? 0;
+    return this.durableBackstop.publishDinbox(principal, lifecycleUid, entry);
   }
 
   /**
@@ -4646,42 +4480,7 @@ export class CotalEndpoint extends EventEmitter {
     lifecycleUid: string,
     opts: { aclFence?: boolean } = {},
   ): Promise<{ durable: boolean; reason?: string; generation?: number }> {
-    if (!this.js) throw new Error(this.notLiveMsg());
-    await this.manager(); // ensure jsm — a non-consuming provisioner inits it lazily; catch-up + fence need it
-    const kv = await this.membersRegistry();
-    const existing = await readMember(kv, channel, owner, lifecycleUid);
-    const open = existing?.record.state === "durable-active" && existing.record.leaveCursor === undefined;
-    if (open && existing!.record.activated)
-      return { durable: true, generation: existing!.record.generation }; // fully activated — idempotent
-    // Either a NEW join (no record / a tombstone to supersede) → fresh joinCursor + bumped generation,
-    // OR a retry of an INCOMPLETE activation (durable-active but not yet activated, from an earlier
-    // crash or failed catch-up) → re-run catch-up over the SAME join window, no bump. The record is committed
-    // `activated:false` first and routes IN-INTERVAL immediately (fan-out + reader deliver via the
-    // pure-interval durableEligible) so no live message published during catch-up is lost. `activated`
-    // gates only the REPORT — durableJoin returns true / channelMembers lists the owner only after the
-    // catch-up confirms. A join that never completes catch-up still routes live (harmless: the agent is
-    // live-subscribed and DLV is id-deduped) but honestly reports durable:false and stays hidden.
-    const joinCursor = open ? existing!.record.joinCursor : await this.chatFrontier();
-    const generation = open ? existing!.record.generation : (existing?.record.generation ?? 0) + 1;
-    const base: MembershipRecord = {
-      channel, owner, lifecycleUid, state: "durable-active", joinCursor, generation,
-      activated: false, writerIdentity: this.card.id, updatedAt: Date.now(),
-    };
-    if (!open) {
-      if (opts.aclFence && !(await this.aclAllows(owner, lifecycleUid, channel)))
-        throw new Error(`durableJoin: "${channel}" is no longer within the read ACL of lifecycle ${lifecycleUid} (narrowed or retired); no membership row was written`);
-      const written = await commitMemberRevision(kv, base);
-      if (opts.aclFence) await this.keepRowIfAclAllows(kv, owner, lifecycleUid, channel, written.revision);
-    }
-    const fence = Math.max(await this.chatFrontier(), await this.fanoutDeliveredSeq());
-    await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);
-    // Flip → reported durable, ATOMICALLY: refuse if a concurrent SAME-generation leave (tombstone) or a
-    // rejoin superseded this pending join while catch-up ran. A blind same-gen commit would clobber the
-    // tombstone (clear leaveCursor) and resurrect the membership, reopening §7 (review-general-2 BLOCKER).
-    const activated = await activateMember(kv, channel, owner, lifecycleUid, generation, joinCursor);
-    if (!activated)
-      return { durable: false, reason: "activation superseded by a concurrent leave or rejoin", generation };
-    return { durable: true, generation };
+    return this.durableBackstop.durableJoinFor(owner, channel, lifecycleUid, opts);
   }
 
   /** Whether one lifecycle's exact ACL row allows a membership on `channel` now (a family must lie
@@ -4692,43 +4491,10 @@ export class CotalEndpoint extends EventEmitter {
     return row !== undefined && membershipInAllow(row.record.allowSubscribe, channel);
   }
 
-  /** The post-write half of {@link durableJoinFor}'s `aclFence`: keep the row just written (at
-   *  `revision`) only on proof that the lifecycle's ACL row still allows the channel, and refuse the
-   *  join otherwise. When the ACL row proves the channel is no longer allowed, no row of the lifecycle
-   *  on that channel is wanted, so the row goes by its exact key whoever wrote its latest revision.
-   *  When the read itself fails, nothing is proven either way, so only this write is taken back: a
-   *  later revision belongs to another join of the same lifecycle, which may have been authorized. */
-  private async keepRowIfAclAllows(kv: KV, owner: string, lifecycleUid: string, channel: string, revision: number): Promise<void> {
-    let disallowed = false;
-    let why: string;
-    try {
-      if (await this.aclAllows(owner, lifecycleUid, channel)) return;
-      disallowed = true;
-      why = "was narrowed or retired while the row was written";
-    } catch (e) {
-      why = `could not be re-read after the row was written (${(e as Error).message})`;
-    }
-    const fail = (outcome: string, cause?: unknown) =>
-      new Error(`durableJoin: the read ACL of lifecycle ${lifecycleUid} ${why}; ${outcome}`, cause === undefined ? undefined : { cause });
-    try {
-      if (disallowed) await deleteMember(kv, channel, owner, lifecycleUid);
-      else await kv.purge(memberKey(channel, owner, lifecycleUid), { previousSeq: revision });
-    } catch (e) {
-      if (!disallowed && isCasLoss(e))
-        throw fail(`a later write replaced its "${channel}" row, which was left to that write`);
-      throw fail(`removing its "${channel}" row failed (${(e as Error).message})`, e);
-    }
-    throw fail(`its "${channel}" row was removed`);
-  }
-
   /** Privileged durable-LEAVE write: tombstone the membership at `leaveCursor = frontier` so the
    *  backstop denies `seq > leaveCursor` while a pre-leave entry stays deliverable (SPEC §7 interval). */
   async durableLeaveFor(owner: string, channel: string, lifecycleUid: string, expectedGeneration?: number): Promise<void> {
-    if (!this.deliveryPlane.plane3) return; // not a Plane-3 host — no membership to tombstone
-    const kv = await this.membersRegistry();
-    // expectedGeneration (captured by the agent at durableJoin) refuses a stale leave from tombstoning
-    // a newer rejoin (StaleMembershipWrite) — a durable-disable primitive otherwise.
-    await tombstoneMember(kv, channel, owner, lifecycleUid, await this.chatFrontier(), this.card.id, expectedGeneration);
+    return this.durableBackstop.durableLeaveFor(owner, channel, lifecycleUid, expectedGeneration);
   }
 
   /** Idempotently copy the eligible chat messages in `(fromSeqExcl, toSeqIncl]` for `channel` into the
