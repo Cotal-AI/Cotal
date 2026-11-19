@@ -17,6 +17,15 @@ export interface PiSessionEntry {
   };
 }
 
+/**
+ * True for a turn its user stopped. Pi records an abort while the reply streams as `aborted`. When
+ * Escape lands during a tool call, Pi 0.84.3 records the next reply as an `error` carrying the
+ * platform's AbortError text instead (measured live). A timeout's abort reads differently.
+ */
+function stopped(message: NonNullable<PiSessionEntry["message"]>): boolean {
+  return message.stopReason === "aborted" || (message.stopReason === "error" && message.errorMessage === "This operation was aborted");
+}
+
 /** Pi persists completed messages, not live deltas. User messages have no separable peer authorship. */
 export function createPiMapper(threadId: string, resumedRun?: string, resumedTools: readonly string[] = []): RecordMapper<PiSessionEntry> {
   let open = resumedRun;
@@ -57,7 +66,10 @@ export function createPiMapper(threadId: string, resumedRun?: string, resumedToo
     if (entry.message.stopReason === "error" || entry.message.stopReason === "aborted") {
       for (const toolCallId of tools) events.push(toolCallEnd({ toolCallId, timestamp: ts }));
       tools.clear();
-      events.push(runError({ message: entry.message.errorMessage || entry.message.stopReason, timestamp: ts }));
+      // A stopped turn did not fail, so it ends as an interrupt.
+      events.push(stopped(entry.message)
+        ? runFinished({ threadId, runId, timestamp: ts, outcome: { type: "interrupt", interrupts: [{ id: entry.id, reason: "aborted" }] } })
+        : runError({ message: entry.message.errorMessage || entry.message.stopReason, timestamp: ts }));
       open = undefined;
     } else if (entry.message.stopReason === "stop" || entry.message.stopReason === "length") {
       if (tools.size) throw new Error(`Pi AG-UI: terminal assistant entry ${entry.id} has unclosed native tool calls`);

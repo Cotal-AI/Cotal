@@ -1,5 +1,59 @@
 # cotal-ai
 
+## 0.171.2
+
+### Patch Changes
+
+- d283195: Backup commands now explain symbolic-link loops, `up` rejects an empty `--restore` path before starting anything, and setup help labels the self-hosted example as interactive while the installation guide shows the full scripted command.
+- 7a433a6: Report self-update registry connection failures with npm's error code and the scoped registry setting to check instead of asking users to wait for publication.
+- 19cc4d2: Fix the CLI setup smoke tests so their Codex stand-ins report the plugin version they installed.
+- 31dc8ae: Keep the requested space in broker preset retries and preserve the saved manager settings when a console host override or stack start is rejected.
+- 7a433a6: Show the correct foreground start command for an explicit daemon home and report saved automatic update preferences even when another daemon owns the socket.
+- 66aef17: Shutdown preserves the requested agent teardown in its confirmation commands, setup points stopped projects to startup, and spawn offers compatible launch and manager restart commands.
+- 7a433a6: Wait for a simultaneous self-update of the same npm installation and recheck its installed CLI before replacing packages again.
+- 0a5fe42: Quote the folder path in the `backup create` permission error so the suggested `chmod` command works for paths with spaces.
+- 00be9bc: Retry the startup scan after a broker interruption so eligible workflow runs can resume without another manager restart.
+- 7a433a6: Continue self-update from the restored version, show when an update is still running, and remove abandoned release archive caches without disturbing active checks.
+- 4c5ba54: Keep npm-installed Cotal usable when Node is off PATH, leave recovery files untouched on offline updates, and preserve the npm launcher when the shell installer finds a recorded daemon service.
+- 7a433a6: Self-update reports when a signal stops npm's dependency check, and `cotal update` accepts the recorded broker URL of a stopped local stack without restarting it.
+- Updated dependencies [d283195]
+- Updated dependencies [7a433a6]
+- Updated dependencies [08ac896]
+- Updated dependencies [87b8626]
+- Updated dependencies [d388cfe]
+- Updated dependencies [da8cb2b]
+- Updated dependencies [576ce19]
+- Updated dependencies [bf9f8a8]
+- Updated dependencies [ae7fa49]
+- Updated dependencies [31dc8ae]
+- Updated dependencies [2af222f]
+- Updated dependencies [6eea486]
+- Updated dependencies [66aef17]
+- Updated dependencies [7a433a6]
+- Updated dependencies [7a433a6]
+- Updated dependencies [0a5fe42]
+- Updated dependencies [112c892]
+- Updated dependencies [00be9bc]
+- Updated dependencies [7a433a6]
+- Updated dependencies [eb18727]
+- Updated dependencies [a45b7bd]
+- Updated dependencies [a55bdb0]
+- Updated dependencies [4c5ba54]
+- Updated dependencies [7a433a6]
+- Updated dependencies [549b02c]
+- Updated dependencies [7fbd856]
+- Updated dependencies [5ce3bda]
+  - @cotal-ai/cli@0.171.2
+  - @cotal-ai/core@0.171.2
+  - @cotal-ai/connector-core@0.171.2
+  - @cotal-ai/manager@0.171.2
+  - @cotal-ai/workspace@0.171.2
+  - @cotal-ai/auth@0.171.2
+  - @cotal-ai/delivery@0.171.2
+  - @cotal-ai/registry@0.171.2
+  - @cotal-ai/runtime@0.171.2
+  - @cotal-ai/seat@0.171.2
+
 ## 0.171.1
 
 ### Patch Changes

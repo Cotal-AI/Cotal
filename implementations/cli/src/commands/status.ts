@@ -166,6 +166,8 @@ import { rootStoreProblem } from "../lib/store-dir.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 import { askManager } from "@cotal-ai/workspace/control";
+import { readCursor } from "../seed/lock.js";
+import { reconcileCursorPath } from "../seed/paths.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` is a broad, recovery-oriented report: it exits 0, or 4 when it could not read part of what
@@ -480,6 +482,15 @@ export async function status(args: ParsedArgs): Promise<void> {
   if (preferencesFolder) hints.push(`protect the preferences folder: ${preferencesFolder.remedy}`);
   const machine = await readMachine(selected, gaps, hints);
   const extensions = readExtensions(gaps);
+  let seed: ReturnType<typeof readCursor>;
+  try {
+    const cursor = readCursor();
+    if (cursor?.failed !== undefined) seed = cursor;
+  } catch (error) {
+    const path = reconcileCursorPath();
+    const code = (error as NodeJS.ErrnoException).code;
+    gaps.add("EXTENSIONS_UNREADABLE", `the connector seed cursor at ${path} could not be read${code ? ` (${code})` : ""}`, { path });
+  }
   const skewedExtensions = extensions.items?.filter((item) => item.package.startsWith("@cotal-ai/") && item.version !== machine.version) ?? [];
   const extensionWarnings: OutputWarning[] = skewedExtensions.length ? [{
     code: "EXTENSION_VERSION_SKEW",
@@ -545,7 +556,9 @@ export async function status(args: ParsedArgs): Promise<void> {
     ? await managerEndpoint(selected.target)
     : undefined;
   // Two readers can name the same unreadable record, so each hint is listed once.
-  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), ...(outsideStackManager ? { outsideStackManager } : {}), hints: [...new Set(hints)] };
+  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), ...(outsideStackManager ? { outsideStackManager } : {}), hints: seed?.failed !== undefined
+    ? [`Fix the recorded cause first:\n${seed.failed}`, `Then run \`${displayCmd()} ext seed --repair\` before starting a space`, ...(recovery ? [recovery] : [])]
+    : [...new Set(hints)] };
   const parts = gaps.warnings.length;
   // A preference variable `config set` would refuse is named, but it was read, so the run stays complete.
   // An unreadable preferences file is already a gap, so the variables are checked without it.
@@ -567,7 +580,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       warnings: [...gaps.warnings, ...extensionWarnings, ...invalidValues, ...survivors],
       ...(parts ? { partial: { message: `status could not read ${parts === 1 ? "one part" : `${parts} parts`} of what it reports; the warnings name ${parts === 1 ? "it" : "each"}` } } : {}),
     },
-    (result) => statusView(result, Boolean(values.verbose), Boolean(values.all) || Boolean(values.wide)),
+    (result) => statusView(result, Boolean(values.verbose), Boolean(values.all) || Boolean(values.wide), seed),
   );
   if (values.components) await printComponentHealth(selected, store);
 }
@@ -1935,7 +1948,7 @@ function extensionsCell(e: StatusResult["extensions"]): Cell | undefined {
  * with the same version spelled out on each, and the broker executable's full bundled path on a
  * healthy machine: a block of text whose signal a reader had to hunt for.
  */
-function machineOverview(r: StatusResult, wide: boolean): Section {
+function machineOverview(r: StatusResult, wide: boolean, seed?: ReturnType<typeof readCursor>): Section {
   const m = r.machine;
   const tones = { ok: "ok", warn: "waiting", error: "failed", off: "hint" } as const;
   const setUp = setUpApplications(m);
@@ -1967,6 +1980,7 @@ function machineOverview(r: StatusResult, wide: boolean): Section {
     ? r.extensions.items === null ? stateCell("manifest could not be read", "failed") : r.extensions.items.length ? r.extensions.items.map((item) => `${item.label} v${item.version}`).join(" · ") : undefined
     : extensionsCell(r.extensions);
   if (extensions !== undefined) rows.push(["Extensions", extensions]);
+  if (seed) rows.push(["Connector setup", stateCell(`incomplete · ${seed.package} failed during ${seed.phase}`, "failed")]);
   return {
     title: "This machine",
     blocks: [
@@ -2033,7 +2047,7 @@ function spaceStateCell(r: StatusResult, entry: StatusResult["meshes"]["items"][
  * is not a group title: it groups spaces by an address a reader does not act on here, and `cotal
  * space show <name>` names it. `--all` and `--wide` keep the grouped report.
  */
-function spacesOverview(r: StatusResult, wide: boolean): Section {
+function spacesOverview(r: StatusResult, wide: boolean, seedFailed: boolean): Section {
   const blocks: Section["blocks"][number][] = [];
   // The space this report is for: the target it resolved or the space it is about, else the selection
   // it could not resolve.
@@ -2044,7 +2058,7 @@ function spacesOverview(r: StatusResult, wide: boolean): Section {
     detail: cell(signsInText(entry, wide), "hint"),
   });
   const columns = [{ key: "space", label: "Space" }, { key: "state", label: "Connection" }, { key: "detail", label: "Signs in" }];
-  if (!r.meshes.items.length && !r.meshes.unreadable.length) blocks.push({ kind: "lines", lines: [cell("No spaces registered", "hint"), cell(`Sign in to Cotal Cloud with \`${displayCmd()} login\`.`, "hint")] });
+  if (!r.meshes.items.length && !r.meshes.unreadable.length) blocks.push({ kind: "lines", lines: [cell("No spaces registered", "hint"), ...(seedFailed ? [] : [cell(`Sign in to Cotal Cloud with \`${displayCmd()} login\`.`, "hint")])] });
   else if (wide) {
     const groups = new Map<string, StatusResult["meshes"]["items"]>();
     for (const entry of r.meshes.items) {
@@ -2182,7 +2196,11 @@ function backupRecovery(maintenance: StatusResult["maintenance"]): string | null
   return maintenance?.state === "claimed" || maintenance?.state === "restore-ready" ? maintenance.next : null;
 }
 
-function nextActions(r: StatusResult): Section {
+function nextActions(r: StatusResult, seedFailed: boolean): Section {
+  if (seedFailed) return {
+    title: "Next",
+    blocks: [{ kind: "lines", lines: r.hints.flatMap(hint => hint.split("\n").map(line => cell(line, "hint"))) }],
+  };
   const recovery = backupRecovery(r.maintenance);
   if (recovery) return { title: "Next", blocks: [...new Set([recovery, ...r.hints])].map((hint) => ({ kind: "lines", lines: [cell(hint, "hint")] })) };
   const cmd = displayCmd();
@@ -2205,7 +2223,8 @@ function nextActions(r: StatusResult): Section {
       items.push({ command: `${cmd} ps`, description: "List managed agents" });
   } else if (noApplication) items.push({ command: `${cmd} setup`, description: r.selected.code === "not-started" ? "Set up an agent application" : "Set up an agent application and a space" });
   if (r.selected.resolved || !noApplication) {
-    items.push({ command: `${cmd} use`, description: "Choose another space" });
+    items.push({ command: `${cmd} space`, description: "List the spaces on this machine" });
+    items.push({ command: `${cmd} use <name>`, description: "Select the default space" });
     if (r.meshes.items.length > 1) items.push({ command: `${cmd} status --all`, description: "Check every registered space" });
   }
   // A stopped broker is resumed, not restarted. A local controller stack that does not answer,
@@ -2371,7 +2390,7 @@ function maintenanceOverview(maintenance: StatusResult["maintenance"]): Section 
 
 /** The approved screen hierarchy; record-level diagnostics are opt-in. `wide` reports every row in
  *  full, as `--all` and `--wide` ask. */
-export function statusView(r: StatusResult, verbose = false, wide = false): Report {
+export function statusView(r: StatusResult, verbose = false, wide = false, seed?: ReturnType<typeof readCursor>): Report {
   const selected = selectedOverview(r);
   // This folder's own stack under another selection, with the lines it has when it is selected.
   const held = folderStack(r.folder, r.selected), heldLines = held ? stackLines(r.folder) : [];
@@ -2379,9 +2398,9 @@ export function statusView(r: StatusResult, verbose = false, wide = false): Repo
   const owned = ownedServicesOverview(r.services);
   const attempts = bootAttemptOverview(r.bootAttempts);
   const maintenance = maintenanceOverview(r.maintenance);
-  const sections = [machineOverview(r, wide), spacesOverview(r, wide), ...(selected ? [selected] : []), ...(heldSection ? [heldSection] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
+  const sections = [machineOverview(r, wide, seed), spacesOverview(r, wide, Boolean(seed)), ...(selected ? [selected] : []), ...(heldSection ? [heldSection] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
   if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected, r.folder, stackDeliveryPid(r), r.store?.state === "full"));
-  sections.push(nextActions(r));
+  sections.push(nextActions(r, Boolean(seed)));
   return { sections };
 }
 

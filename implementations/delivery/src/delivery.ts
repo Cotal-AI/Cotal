@@ -14,6 +14,7 @@ import {
   isCasLoss,
   isPermissionDenied,
   isReachable,
+  isStreamNotFound,
   leaseKey,
   mintCreds,
   newIdentity,
@@ -836,6 +837,8 @@ async function runStartedDelivery(
   /** Set once close() released the lease and proved every connection closed. */
   let closedClean = false;
   let membership: MembershipFeedHandle | undefined;
+  let membershipRetry: ReturnType<typeof setTimeout> | undefined;
+  let membershipAttempt: Promise<void> | undefined;
   let timerWriter: { handle: TimerWriterHandle; nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>>; native: ReturnType<typeof watchNativeConnection> } | undefined;
   /** Every timer writer connection that has not reported closed, the retry loop's earlier ones included. */
   const timerWriterConns = new Set<Awaited<ReturnType<ReturnType<typeof dialerFor>>>>();
@@ -923,6 +926,7 @@ async function runStartedDelivery(
   const close = (): Promise<void> => {
     if (closePromise !== undefined) return closePromise;
     stopping = true;
+    clearTimeout(membershipRetry);
     if (renew !== undefined) clearInterval(renew);
     health.stop();
     stopLeaseWatch?.();
@@ -960,6 +964,7 @@ async function runStartedDelivery(
         wakeTimerWriterBackoff?.();
         try { await timerWriterAttempt; } catch { /* startup or broker fault */ }
         try { await ep.stop(); } catch { /* broker may be gone */ }
+        await membershipAttempt;
       }
       if (left !== undefined)
         throw new Error(`delivery: the lease for shard ${shard} is still held by ${ep.ownsDeliveryLease(left.info) ? "this instance" : left.info.holder} after close`);
@@ -1087,9 +1092,9 @@ async function runStartedDelivery(
     : `✓ delivery daemon up (space ${space}${shards > 1 ? `, shard ${shard}/${shards}` : ""}) — stop with: \`cotal down\``);
 
   // Broker-sourced graph membership: a SEPARATE module on its OWN connections (system-account CONNZ
-  // reader + data-account feed writer), isolated from Plane-3. Fail-soft — a missing cred / start error
-  // logs and the graph degrades to traffic-only; Plane-3 delivery is never affected.
-  try {
+  // reader + data-account feed writer), isolated from Plane-3. Retry a missing derived store
+  // without holding up lane startup or asking the feed's standing credential to create it.
+  const startGraphMembership = async (retryMs: number): Promise<void> => {
     // Pass the INJECTED store (hosted KMS/Vault), NOT credsSrc.store — that one may be an FS store over
     // an arbitrary `--creds` path, whereas membership-rw lives under the workstation `.cotal/` key. With
     // no injected store, startMembership falls back to the workstation FS store.
@@ -1097,22 +1102,36 @@ async function runStartedDelivery(
     // `accountId` is the account THIS daemon's own cred authenticates as (pinned above), not a
     // `.cotal/membership.json` read: the file was never an independent source (same directory as the
     // creds, so a wrong root was wrong for both) and a hosted composition has none.
-    ({ handle: membership, down: membershipDown } = await startMembership(
-      { space, server, accountId: scanTarget.expectedAccount, root },
-      store,
-      log,
-    ));
-  } catch (e) {
-    membershipDown = (e as Error).message;
-    log.err(`! membership: failed to start (${membershipDown}); graph membership degraded, delivery unaffected`);
-  }
+    try {
+      const { handle, down } = await startMembership(
+        { space, server, accountId: scanTarget.expectedAccount, root },
+        store,
+        log,
+      );
+      if (stopping) {
+        try { await handle?.stop(); } catch { /* broker may be gone */ }
+        return;
+      }
+      membership = handle;
+      membershipDown = down;
+    } catch (e) {
+      if (stopping) return;
+      membershipDown = (e as Error).message;
+      const missingStore = e instanceof Error && isStreamNotFound(e.cause);
+      log.err(`! membership: failed to start (${membershipDown}); graph membership degraded, delivery unaffected${missingStore ? `; retrying in ${retryMs / 1000}s` : ""}`);
+      if (missingStore) {
+        membershipRetry = setTimeout(() => {
+          membershipRetry = undefined;
+          membershipAttempt = startGraphMembership(Math.min(retryMs * 2, 60_000)).finally(() => {
+            membershipAttempt = undefined;
+          });
+        }, retryMs).unref();
+      }
+    }
+  };
+  await startGraphMembership(5_000);
 
-  // A store read can finish after a startup health fault closed the endpoint. Dispose the feed
-  // it just returned before rejecting; it did not exist when the original close ran.
-  if (heldStartupFailure !== undefined) {
-    await membership?.stop();
-    throw heldStartupFailure;
-  }
+  if (heldStartupFailure !== undefined) throw heldStartupFailure;
 
   // The TIMER WRITER (SPEC 13.2): the pump that turns workflow `.schedule` requests into armed
   // broker schedules. Hosted here because this daemon is the space's standing server-side process;
@@ -1177,6 +1196,7 @@ async function runStartedDelivery(
     }
     if (stopping) return;
     stopping = true;
+    clearTimeout(membershipRetry);
     if (renew !== undefined) clearInterval(renew);
     health.stop();
     stopLeaseWatch?.();
@@ -1236,6 +1256,7 @@ async function runStartedDelivery(
       try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
       try { if (timerWriter) await drainAndClose(timerWriter.nc); } catch { /* broker may be gone */ }
       try { await ep.stop(); } catch { /* broker may be gone */ }
+      await membershipAttempt;
       process.exit(code);
     })();
   };
@@ -1576,6 +1597,7 @@ async function runStartedDelivery(
     // While the writer is absent its retry loop is dialing, starting or backing off, so a
     // connection of its own may exist that nothing here can name yet.
     if (timerWriter === undefined || timerWriterConns.size !== 1) throw unsettled("the timer writer is not connected");
+    if (membershipAttempt !== undefined) throw unsettled("the membership feed is starting");
     return [
       ...ep.nativeConnections().map((binding) => ({ label: "endpoint" as const, ...binding })),
       ...(membership?.nativeDataConnections() ?? []).map((binding) => ({ label: "membership-rw" as const, ...binding })),

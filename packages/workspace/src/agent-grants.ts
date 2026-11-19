@@ -9,13 +9,15 @@ export interface AgentGrants { read: string[]; post: string[]; role: string | nu
  *  publish rows its post ACL, and the `svc_<role>` TASK bind row its role. */
 export function agentGrants(nats: { pub?: { allow?: string[] }; sub?: { allow?: string[] } }, space: string): AgentGrants {
   const chat = `${spacePrefix(space)}.chat.`;
+  const allowed = (rows: unknown): string[] => Array.isArray(rows) ? rows.filter((row): row is string => typeof row === "string") : [];
   const channels = (rows: readonly string[], own: boolean) => [...new Set(rows.filter((row) => row.startsWith(chat))
     .map((row) => row.slice(chat.length).split("."))
     .filter(([owner, actor]) => own ? owner !== "*" && actor !== "*" : owner === "*" && actor === "*")
     .map((parts) => parts.slice(2).join(".")).filter(Boolean))];
   const task = `$JS.API.CONSUMER.INFO.${taskStream(space)}.svc_`;
-  const role = (nats.pub?.allow ?? []).find((row) => row.startsWith(task))?.slice(task.length);
-  return { read: channels(nats.sub?.allow ?? [], false), post: channels(nats.pub?.allow ?? [], true), role: role || null };
+  const post = allowed(nats.pub?.allow);
+  const role = post.find((row) => row.startsWith(task))?.slice(task.length);
+  return { read: channels(allowed(nats.sub?.allow), false), post: channels(post, true), role: role && /^[A-Za-z0-9_-]+$/.test(role) ? role : null };
 }
 
 /** The `auth mint` flags that give a new key these grants, each led by a space. A new key holds only

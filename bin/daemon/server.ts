@@ -26,7 +26,8 @@ import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, typ
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
-import { findMesh, homeCotalDir, isCommandFailure, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
+import { findMesh, homeCotalDir, isCommandFailure, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
+import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
@@ -445,7 +446,30 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           const result = await run;
           counters.serviceAnswered++;
           if (req.op === "service-connect" && result.state === "not-registered") return result;
-          return { ...result, manager: req.op === "service-status" ? await managers.refresh(req.space) : managers.status(req.space) };
+          const manager = req.op === "service-status" ? await managers.refresh(req.space) : managers.status(req.space);
+          // Read guidance only for these replies, after disconnect has finished removing records.
+          if (!manager.registrationCleanup && ((req.op === "service-status" && (result.state === "not-requested" || result.state === "unsupported")) ||
+              (req.op === "service-disconnect" && result.state === "disconnected"))) {
+            let damaged = false;
+            try {
+              const { entries, unusable } = readMeshRegistry();
+              // Keep pre-hex registrations visible without mistaking a damaged canonical record for a legacy one.
+              damaged = unusable.some(error => error.file === meshFile(req.space));
+              if (!damaged && entries.some(entry => entry.space === req.space && entry.mode !== "user")) {
+                if (req.op === "service-status") return { space: req.space, state: "unsupported", message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY };
+                return { ...result, manager: { ...manager, next: NON_USER_AUTH_REMEDY } };
+              }
+            } catch (error) {
+              if (!isMeshRegistryError(error)) throw error;
+              damaged = true;
+            }
+            if (damaged) {
+              const remedy = "run `cotal daemon spaces` to identify unreadable records, then restore the mesh registry";
+              if (req.op === "service-status") return { space: req.space, state: "unavailable", message: "the mesh registry could not be read for this space", remedy };
+              return { ...result, manager: { ...manager, next: remedy } };
+            }
+          }
+          return { ...result, manager };
         });
         return;
       }

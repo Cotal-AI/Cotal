@@ -42,6 +42,7 @@ import {
   terminalWidth,
   userCotalDir,
   type OperationScope,
+  type OutputWarning,
   staleStoreHint,
 } from "@cotal-ai/workspace";
 import { c, stderrLine } from "./ui.js";
@@ -96,27 +97,18 @@ function takeGlobalFlag(word: string): boolean {
   return true;
 }
 
-/** Node's unknown-option error, trimmed to its first sentence, with the nearest of `cmd`'s flags. */
-function parseErrorMessage(cmd: Command, e: Error): string {
-  const message = e.message.split(".")[0]!;
-  const option = (e as { code?: string }).code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" ? /^Unknown option '(--[^']+)'/.exec(message)?.[1] : undefined;
-  const hint = option ? didYouMean(option, [...(cmd.flags ?? []).map((flag) => `--${flag.name}`), "--no-color", "--no-input", "--help"]) : "";
-  return hint ? `${message} - ${hint}` : message;
-}
-
-/** `words` without the global flags before any `--`, each applied. A global flag is given once, as
- *  any flag is: one already in `words` or in `leading`, those taken before the command word, is the
- *  usage error a repeated flag of `cmd` is. */
-function stripGlobalFlags(words: readonly string[], leading: ReadonlySet<string> = new Set(), cmd?: Command): string[] {
+/** Separate globals before `--` without applying them to a command that takes its words raw. */
+function splitGlobalFlags(words: readonly string[], leading: ReadonlySet<string>): { rest: string[]; flags: Set<string>; repeated?: string } {
   const end = words.indexOf("--");
-  const taken = new Set(leading);
+  const flags = new Set<string>();
+  let repeated: string | undefined;
   const head = (end === -1 ? words : words.slice(0, end)).filter((word) => {
-    if (taken.has(word)) usageExit(`Option '${word}' cannot be repeated`, cmd, cmd !== undefined && asksForJson(cmd, words), words.includes("--plain"));
-    if (!takeGlobalFlag(word)) return true;
-    taken.add(word);
+    if (!GLOBAL_FLAG_WORDS.has(word)) return true;
+    if (leading.has(word) || flags.has(word)) repeated ??= word;
+    flags.add(word);
     return false;
   });
-  return end === -1 ? head : [...head, ...words.slice(end)];
+  return { rest: end === -1 ? head : [...head, ...words.slice(end)], flags, repeated };
 }
 
 /** Whether `cmd` takes its words raw: it declares so, or it is an internal command, whose words are
@@ -125,10 +117,14 @@ function takesWordsRaw(cmd: Command | undefined): boolean {
   return Boolean(cmd && (cmd.rawArgs || cmd.name.startsWith("__")));
 }
 
-/** The words `cmd` parses: the global flags are the kernel's, except for a command that takes its
- *  words raw. */
-function ownWords(cmd: Command | undefined, words: readonly string[], leading: ReadonlySet<string>): string[] {
-  return takesWordsRaw(cmd) ? [...words] : stripGlobalFlags(words, leading, cmd);
+/** Refuse a repeated global flag using the command's output mode and subcommand help. */
+async function repeatedGlobalFlag(word: string, cmd: Command | undefined, words: string[], warnings: OutputWarning[] = []): Promise<never> {
+  const { cmd: found, rest } = await serviceSurface(takesWordsRaw(cmd) ? undefined : cmd, words, true);
+  const end = rest.indexOf("--");
+  const options = end === -1 ? rest : rest.slice(0, end);
+  const json = found !== undefined && asksForJson(found, rest);
+  if (!json) for (const warning of warnings) console.error(c.red(`! ${warning.message}`));
+  return runOperation({ warnings }, () => usageExit(`Option '${word}' cannot be repeated`, found, json, options.includes("--plain"), undefined, rest));
 }
 
 /** Whether the invoked mode declares a structured output, so it reports every outcome by the 0 to 5
@@ -202,19 +198,16 @@ function configFolderRefusal(problem: ConfigFolderProblem): CommandFailure {
  * The overlay cannot list the command yet, so the built-in `ext` is found through the registry,
  * which resolves its alias too.
  */
-async function extSeedGate(registry: Registry, argv: string[], configFolder: ConfigFolderProblem | undefined, leading: ReadonlySet<string>): Promise<boolean> {
-  const [word, ...words] = argv;
-  const extCmd = word === undefined || !registry.has("command", word) ? undefined : registry.resolve<Command>("command", word);
-  if (extCmd?.name !== "ext" || metadataPositionals(extCmd, words).positionals[0]?.value !== "seed") return false;
+async function extSeedGate(extCmd: Command | undefined, words: string[], configFolder: ConfigFolderProblem | undefined): Promise<boolean> {
+  if (extCmd === undefined || !extSeedSubcommand(extCmd, words)) return false;
   // A help request short-circuits to usage and mutates NOTHING (the maintenance run writes the seed
   // stamp/manifest).
-  if (asksForHelp(argv)) {
+  if (asksForHelp(words)) {
     paintFor(process.stdout, () => printHelpPath(extCmd, ["seed"]));
     return true;
   }
+  const parsed = parseOrExit(extCmd, words);
   if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);
-  const parsed = parseCommandArgs(extCmd, stripGlobalFlags(argv.slice(1), leading, extCmd));
-  extCmd.validate?.(parsed);
   recoverExtensionPromotion();
   await extCmd.run(parsed);
   return true;
@@ -394,11 +387,22 @@ function typographicOption(word: string, names: ReadonlySet<string>, shorts: Rea
   return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: ${names.has(typed[1]!) ? "--" : "-"}${typed[1]}` };
 }
 
+/** Identify seed before recovery, even when a typographic maintenance flag precedes it. */
+function extSeedSubcommand(cmd: Command, words: readonly string[]): Subcommand | undefined {
+  if (cmd.name !== "ext") return undefined;
+  const seed = findSubcommand(cmd, "seed");
+  if (!seed) return undefined;
+  const end = words.indexOf("--");
+  const names = new Set(seed.flagNames);
+  const scope = words.filter((word, index) => (end !== -1 && index >= end) || !typographicOption(word, names));
+  return metadataPositionals(cmd, scope).positionals[0]?.value === "seed" ? seed : undefined;
+}
+
 /** An option the parser would misread without an error: a short option written `-c=value`, which
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
-function misspelledOption(cmd: Command, rest: readonly string[]): { message: string; remedy: string } | undefined {
-  const names = new Set<string>([...(cmd.flags ?? []).map((flag) => flag.name), ...GLOBAL_FLAGS]);
+function misspelledOption(cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined, seed: Subcommand | undefined): { message: string; remedy?: string } | undefined {
+  const names = new Set<string>([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS]);
   const shorts = new Set<string>((cmd.flags ?? []).flatMap((flag) => (flag.short ? [flag.short] : [])));
   for (const [index, word] of rest.entries()) {
     if (word === "--") return undefined;
@@ -414,19 +418,27 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
       return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
     }
     const typed = typographicOption(word, names, shorts);
+    // A value on a seed maintenance switch is invalid, not a request to run the bare switch.
+    if (typed && seed && word.includes("=") && seed.flagNames?.some((name) => typed.remedy.endsWith(`--${name}`)))
+      return { message: typed.message };
     if (typed) return typed;
   }
   return undefined;
 }
 
-/** A parse error as a refusal. Node's message is trimmed to its first sentence, and the hint its tail
- *  carries is given as the remedy in this CLI's words: a word that starts with `-` goes after `--`,
+/** A parse error as a refusal. Node's own usage guidance is replaced with this CLI's remedies:
+ *  a word that starts with `-` goes after `--` only where the command takes operands,
  *  an option value that starts with `-` is written `--name=value`, and an option given with no value,
  *  last or before another of the command's options, is named with its placeholder. */
-function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[]): { message: string; remedy?: string } {
-  const message = parseErrorMessage(cmd, error);
-  if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" && cmd.positionals !== undefined)
-    return { message, remedy: "to pass a word that starts with \"-\", put -- before it" };
+function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined, takesOperands: boolean): { message: string; remedy?: string } {
+  if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
+    const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
+    const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
+    const hint = option ? didYouMean(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : "";
+    const message = hint ? `${reason} - ${hint}` : reason;
+    return takesOperands ? { message, remedy: "to pass a word that starts with \"-\", put -- before it" } : { message };
+  }
+  const message = error.message.split(".")[0]!;
   const missingValue = (flag: FlagSpec) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}` });
   const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
   const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
@@ -445,16 +457,18 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
 
 /** `rest` parsed against `cmd`'s declared flags, positionals and subcommands, or a usage exit. */
 function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
-  const json = asksForJson(cmd, rest);
-  const plain = rest.includes("--plain");
-  const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest);
-  if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, rest);
+  const seed = extSeedSubcommand(cmd, rest);
+  const json = !seed && asksForJson(cmd, rest);
+  const plain = !seed && rest.includes("--plain");
+  const flagNames = seed?.flagNames ?? (cmd.name === "spawn" ? cmd.flagNames : undefined);
+  const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest, flagNames, seed);
+  if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, seed ? [seed.name] : rest);
   let parsed: ParsedArgs;
   try {
     parsed = parseCommandArgs(cmd, rest);
   } catch (e) {
     if (isArgError(e)) {
-      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest);
+      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, flagNames, !seed && cmd.positionals !== undefined);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
     throw e;
@@ -570,6 +584,22 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
   paintFor(process.stdout, () => printHelpPath(cmd, unknown === undefined ? path : [...path, unknown]));
 }
 
+/** A service invocation takes its preset's flags, and `manager <verb>` is `service <verb> manager`.
+ *  Preset details can enrich a duplicate refusal but cannot replace it. */
+async function serviceSurface(found: Command | undefined, words: string[], forRefusal = false): Promise<{ cmd: Command | undefined; rest: string[] }> {
+  if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
+  try {
+    const [{ servicePresetCommand }, { managerServiceCommand }] = await serviceSurfaces();
+    if (found.name === "service") return { cmd: servicePresetCommand(found, words), rest: words };
+    const lifecycle = managerServiceCommand(found, words, forRefusal);
+    return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv } : { cmd: found, rest: words };
+  } catch (error) {
+    if (forRefusal || asksForHelp(words)) return { cmd: found, rest: words };
+    const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
+    return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
+  }
+}
+
 /**
  * Dispatch `argv` against the commands self-registered in a {@link Registry}. The single entry point
  * a composition root calls — no hardcoded command list.
@@ -589,27 +619,40 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // refuses them there. The built-in surface decides that before any extension overlay is read.
   const output: string[] = [];
   const leadingGlobals = new Set<string>();
+  let repeatedLeading: string | undefined;
   let lead = 0;
   for (; lead < argv.length; lead++) {
     const word = argv[lead]!;
     if (OUTPUT_FLAG_WORDS.has(word)) output.push(word);
-    else if (leadingGlobals.has(word)) usageExit(`Option '${word}' cannot be repeated`);
+    else if (leadingGlobals.has(word)) repeatedLeading ??= word;
     else if (takeGlobalFlag(word)) leadingGlobals.add(word);
     else break;
   }
   if (argv[lead] === "--") lead++;
-  if (output.length && lead >= argv.length) usageExit(`${output[0]} needs a command after it - run \`cotal help\` to list commands`);
-  if (output.length && takesWordsRaw(findCommand(registry.all<Command>("command"), argv[lead])))
-    usageExit(`${output[0]} before ${argv[lead]} is not read - ${argv[lead]} takes its words raw, with no output flags`);
-  argv = [...argv.slice(lead, lead + 1), ...output, ...argv.slice(lead + 1)];
+  const original = argv[lead];
+  const word = original === "--version" || original === "-V" ? "version"
+    : original === "--help" || original === "-h" ? "help" : original;
+  const words = [...output, ...argv.slice(lead + 1)];
+  const builtin = findCommand(registry.all<Command>("command"), word);
+  const globals = splitGlobalFlags(words, leadingGlobals);
+  const ownWords = (cmd: Command | undefined): string[] => {
+    if (takesWordsRaw(cmd)) return [...words];
+    for (const option of globals.flags) takeGlobalFlag(option);
+    return [...globals.rest];
+  };
+  const duplicate = (cmd: Command | undefined) => repeatedLeading ?? (takesWordsRaw(cmd) ? undefined : globals.repeated);
+  if (repeatedLeading && (word === undefined || takesWordsRaw(builtin))) return repeatedGlobalFlag(repeatedLeading, undefined, []);
+  if (output.length && word === undefined) usageExit(`${output[0]} needs a command after it - run \`cotal help\` to list commands`);
+  if (output.length && takesWordsRaw(builtin))
+    usageExit(`${output[0]} before ${original} is not read - ${original} takes its words raw, with no output flags`);
   // A recorded unit boots from built-in code only. Even reading the extension overlay can
   // prevent recovery from an unrelated broken manifest. Validate before any handoff custody,
   // installation repair, package materialization or target preparation. This is one exact
   // private entry, not an exemption for arbitrary internal or extension command names.
-  if (argv[0] === "__service-unit") {
+  if (word === "__service-unit") {
     if (!registry.has("command", "__service-unit")) usageExit("the native unit entry is not available in this composition root");
     const unit = registry.resolve<Command>("command", "__service-unit");
-    const parsed = parseOrExit(unit, argv.slice(1));
+    const parsed = parseOrExit(unit, words);
     try { await unit.run(parsed); }
     catch (error) {
       failureExit(unit, isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original unit entry did not confirm its outcome; no replacement or repair was attempted"), false, true);
@@ -618,32 +661,42 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   }
   // Before any ordinary dispatch outcome can exit, a spawn takes its handoff, and no command lets a
   // child inherit the variable. The unit entry refuses such a handoff without consuming its file.
-  takeManagedHandoffCustody(process.env, findCommand(registry.all<Command>("command"), argv[0])?.name === "spawn");
+  takeManagedHandoffCustody(process.env, builtin?.name === "spawn");
   setInstalledExtensionsEnabled(Boolean(opts.extensions));
-  // The global spellings of help and version are the `help` and `version` commands.
-  if (argv[0] === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
-  if (argv[0] === "--version" || argv[0] === "-V") argv = ["version", ...argv.slice(1)];
-  else if (argv[0] === "--help" || argv[0] === "-h") argv = ["help", ...argv.slice(1)];
+  const builtinDuplicate = builtin && duplicate(builtin);
+  if (builtinDuplicate) return repeatedGlobalFlag(builtinDuplicate, builtin, ownWords(builtin));
+  if (word === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
   // The built-in check reports an unreadable inventory itself. Do not require that inventory to
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
-  const builtin = findCommand(registry.all<Command>("command"), argv[0]);
-  const updateCheck = builtin?.name === "update" && argv.includes("--check") && !asksForHelp(argv.slice(1))
-    && parseOrExit(builtin, ownWords(builtin, argv.slice(1), leadingGlobals)).values.check === true;
+  const updateCheck = builtin?.name === "update" && words.includes("--check") && !asksForHelp(words)
+    && parseOrExit(builtin, ownWords(builtin)).values.check === true;
   const configFolder = globalConfigDirProblem();
   if (opts.extensions && !updateCheck) {
     try {
-      if (await extSeedGate(registry, argv, configFolder, leadingGlobals)) return;
+      if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder)) return;
       recoverExtensionPromotion();
     } catch (e) {
+      if (repeatedLeading) {
+        const warnings: OutputWarning[] = [];
+        let found: Command | undefined;
+        try { found = findCommand(overlayExtensions(registry, collisionWarning(warnings)), word); }
+        catch { /* The current manifest cannot supply refusal context. */ }
+        return repeatedGlobalFlag(repeatedLeading, found, ownWords(found), warnings);
+      }
       seedRefusal(e);
       process.exit(1);
     }
   }
-  const surface = (): Command[] => {
+  function collisionWarning(warnings: OutputWarning[]) {
+    return (message: string) => { warnings.push({ code: "EXTENSION_COMMAND_COLLISION", target: null, message: message.slice(2) }); };
+  }
+  const pendingWarnings: OutputWarning[] = [];
+  const surface = (warnings?: OutputWarning[]): Command[] => {
     let commands: Command[];
     try {
-      commands = opts.extensions && !updateCheck ? overlayExtensions(registry) : registry.all<Command>("command");
+      commands = opts.extensions && !updateCheck ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
+      if (repeatedLeading) usageExit(`Option '${repeatedLeading}' cannot be repeated`);
       // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
       // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
       stderrLine("✗ ", (e as Error).message, c.red);
@@ -661,27 +714,14 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     setCommandSurface(commands); // the completion dispatcher reads the SAME surface help renders
     return commands;
   };
-  let commands = surface();
-  const [word, ...words] = argv;
+  let commands = surface(duplicate(undefined) ? pendingWarnings : undefined);
   if (word === undefined) return paintFor(process.stdout, () => printEntry(commands));
   let cmd = findCommand(commands, word);
-  let rest = ownWords(cmd, words, leadingGlobals);
+  let rest = ownWords(cmd);
+  const repeated = duplicate(cmd);
+  if (repeated) return repeatedGlobalFlag(repeated, cmd, rest, pendingWarnings);
+  for (const warning of pendingWarnings) console.error(c.red(`! ${warning.message}`));
   const wantsHelp = asksForHelp(rest);
-  // A service invocation takes its preset's flags, and `manager <verb>` is `service <verb> manager`.
-  // Both are read again after the seed below re-resolves the command.
-  const serviceSurface = async (found: Command | undefined, words: string[]): Promise<{ cmd: Command | undefined; rest: string[] }> => {
-    if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
-    const [{ servicePresetCommand }, { managerServiceCommand }] = await serviceSurfaces();
-    try {
-      if (found.name === "service") return { cmd: servicePresetCommand(found, words), rest: words };
-      const lifecycle = managerServiceCommand(found, words);
-      return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv } : { cmd: found, rest: words };
-    } catch (error) {
-      if (asksForHelp(words)) return { cmd: found, rest: words };
-      const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
-      return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
-    }
-  };
   ({ cmd, rest } = await serviceSurface(cmd, rest));
   // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
   // counts too, and before anything runs, so the one-time notice precedes the command's output.
@@ -746,10 +786,14 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       process.exit(1);
     }
     if (!deferred) {
-      commands = surface();
+      const warnings: OutputWarning[] = [];
+      commands = surface(duplicate(undefined) ? warnings : undefined);
       cmd = findCommand(commands, word);
       if (!cmd) usageExit(unknownCommandMessage(commands, word));
-      ({ cmd, rest } = await serviceSurface(cmd, ownWords(cmd, words, leadingGlobals)));
+      const repeated = duplicate(cmd);
+      if (repeated) return repeatedGlobalFlag(repeated, cmd, ownWords(cmd), warnings);
+      for (const warning of warnings) console.error(c.red(`! ${warning.message}`));
+      ({ cmd, rest } = await serviceSurface(cmd, ownWords(cmd)));
       arm();
     }
   }

@@ -1,5 +1,29 @@
 # @cotal-ai/manager
 
+## 0.171.2
+
+### Patch Changes
+
+- bf9f8a8: Move seat stop, exit cause recording, recursive reap and the named despawn doors into their own component without changing the manager API.
+- 31dc8ae: Keep the requested space in broker preset retries and preserve the saved manager settings when a console host override or stack start is rejected.
+- 112c892: Fix `cotal down` leaving delivery and the broker running when the manager records a completed stop and exits during the receipt check.
+- 00be9bc: Retry the startup scan after a broker interruption so eligible workflow runs can resume without another manager restart.
+- a55bdb0: Refuse invalid spawn arguments and inaccessible working directories before provisioning credentials, reject pi resume flags, and remove Hermes launch credentials, sockets and disposable profiles after stopping.
+- Updated dependencies [08ac896]
+- Updated dependencies [87b8626]
+- Updated dependencies [d388cfe]
+- Updated dependencies [576ce19]
+- Updated dependencies [31dc8ae]
+- Updated dependencies [2af222f]
+- Updated dependencies [7a433a6]
+- Updated dependencies [7a433a6]
+- Updated dependencies [a55bdb0]
+- Updated dependencies [7fbd856]
+- Updated dependencies [5ce3bda]
+  - @cotal-ai/core@0.171.2
+  - @cotal-ai/workspace@0.171.2
+  - @cotal-ai/seat@0.171.2
+
 ## 0.171.1
 
 ### Patch Changes

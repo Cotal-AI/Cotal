@@ -152,7 +152,7 @@
     },
     {
       "name": "an unstamped copy counts as no count",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-options.ts",
       "find": "  if (value === undefined || value === \"\") return PLANE3_MAX_MSGS_PER_SUBJECT;",
       "replace": "  if (value === undefined || value === \"\") return null;",
       "expectRed": "1000 copies without the stamp warn, at 1000, as the old daemon's count was",
@@ -161,7 +161,7 @@
     },
     {
       "name": "an unstamped copy counts as 999",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-options.ts",
       "find": "  if (value === undefined || value === \"\") return PLANE3_MAX_MSGS_PER_SUBJECT;",
       "replace": "  if (value === undefined || value === \"\") return PLANE3_MAX_MSGS_PER_SUBJECT - 1;",
       "expectRed": "999 copies without the stamp give no notice",
