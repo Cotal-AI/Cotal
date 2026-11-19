@@ -193,7 +193,7 @@ interface SetupResult {
   readonly actions: readonly ActionRun[];
   /** Every runtime setup offers: `pty`, the official ones and each installed third-party one. */
   readonly runtimes: readonly RuntimeSetup[];
-  /** Every file or folder setup wrote, in order. Empty when a rerun changed nothing. */
+  /** Files and folders setup recorded writing. Empty when a rerun changed nothing. */
   readonly written: readonly Written[];
   readonly startup: SetupStartup;
   /** The command that comes next, and the folder to run it in when that matters. */
@@ -663,7 +663,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     const provider = await connectorSetupProvider(candidate.connector);
     const entry = findMesh(inputs.space);
     const signedIn = provider?.connector && entry?.mode === "user" ? await signedInSpace(entry) : undefined;
-    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv(), ...(signedIn ? { signedIn } : {}) }, provider));
+    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv(), wrote, ...(signedIn ? { signedIn } : {}) }, provider));
     // Recheck inside each selected action so lost readiness is a recorded failure, never a skipped step.
     const share = await connectorSetupProvider(candidate.connector);
     if (share?.mcpServers) await actions.run(candidate.value, actionStep(share.mcpServers, connectorShareInput(candidate.connector), share));

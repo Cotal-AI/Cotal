@@ -18,6 +18,8 @@ export interface ConnectorSetupInput {
   /** The argv that runs this Cotal CLI, `[node, ...loaderFlags, entry]` by absolute path, so an asset
    *  the action installs can run the CLI without `cotal` on its PATH. */
   readonly cotal: readonly string[];
+  /** Report a setup write for the command's receipt after it succeeds. */
+  readonly wrote?: (what: string, path: string) => void;
   /** Prepare an unattended machine host without changing its Desktop or project integration. */
   readonly machineHost?: boolean;
   /** Current authored skills for refreshing an already installed skills integration. */

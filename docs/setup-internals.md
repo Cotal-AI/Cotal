@@ -17,7 +17,7 @@ Startup is a separate step. A terminal prompt offers it, and `--start` requests 
 passes `--start` must also pass `--detach`. The dashboard remains a separately configured `web`
 service preset.
 
-Setup announces every file it writes with a `→ wrote …` line from `provenance.wrote`. The line goes
+Setup announces recorded writes with a `→ wrote …` line from `provenance.wrote`. The line goes
 to stderr, or to stdout with the error when a stderr write fails. Each announcement is one line. A
 control character or Unicode line separator in a path, such as a newline in `HOME`, prints as a
 `\uXXXX` escape.
@@ -97,8 +97,9 @@ answer makes the result `partial`. `setUpRuntimes` never removes a runtime.
 An application whose `requires` is not on PATH runs none of its actions. The result is then
 `partial`, with the rest saved.
 
-`prepare` records each write in the result's `written` list. The result is a `no-op` only when that
-list is empty, no connector action ran, and no startup was requested.
+`prepare` records setup writes in the result's `written` list. A connector's install action can
+report writes to the same list through `ConnectorSetupInput.wrote`. The result is a `no-op` only
+when the list is empty, no connector action ran, and no startup was requested.
 
 The rich presentation narrates actions through `runSteps`. `--json` and `--plain` run them quietly
 and keep stdout for the result. The old `--auth` and `--open` flags are gone, and
