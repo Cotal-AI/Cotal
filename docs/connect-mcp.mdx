@@ -47,7 +47,8 @@ events refuses this host, because it has no native transcript source.
 ## Listen for messages
 
 Call `cotal_wait` with the connection handle to wait for messages. It returns buffered
-wake-worthy messages immediately, or waits up to 50 seconds. Attention mode controls
+wake-worthy messages immediately, or waits up to 50 seconds. An empty reply while the broker is
+unreachable says the connection is not ready and that only the local buffer was read. Attention mode controls
 which channel messages wake it. Direct messages, role requests and mentions remain
 wake-worthy. `cotal_inbox` reads buffered mail without waiting.
 

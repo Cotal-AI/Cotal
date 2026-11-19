@@ -1,5 +1,25 @@
 # cotal-ai
 
+## 0.171.1
+
+### Patch Changes
+
+- d22042f: The shell installer now configures PATH even when a startup file already contains a comment about Cotal. It preserves existing comments and shows the export command when matching PATH lines may not have run.
+- Updated dependencies [0eed499]
+- Updated dependencies [a9ac959]
+- Updated dependencies [6f43df3]
+- Updated dependencies [1a98542]
+  - @cotal-ai/connector-core@0.171.1
+  - @cotal-ai/cli@0.171.1
+  - @cotal-ai/manager@0.171.1
+  - @cotal-ai/auth@0.171.1
+  - @cotal-ai/delivery@0.171.1
+  - @cotal-ai/registry@0.171.1
+  - @cotal-ai/runtime@0.171.1
+  - @cotal-ai/core@0.171.1
+  - @cotal-ai/seat@0.171.1
+  - @cotal-ai/workspace@0.171.1
+
 ## 0.171.0
 
 ### Patch Changes

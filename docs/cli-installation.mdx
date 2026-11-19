@@ -515,7 +515,7 @@ Third-party extensions are listed with their installed version and recorded spec
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
 a future follow-up. When `update --self` cannot reach the registry before selecting a release,
 it reports that nothing changed and exits 0 without reconciling packages or inspecting Manager
-custody. From 0.167.1, losing registry connectivity during release checks, extension-dependency
+custody. It does not create an update recovery record. From 0.167.1, losing registry connectivity during release checks, extension-dependency
 checks or target staging also reports that nothing changed and exits 0 before replacement.
 A failed first-party scoped metadata read still names the `@cotal-ai:registry` setting and exits 1.
 Authentication, permission, integrity and target pre-install refusals still exit nonzero.

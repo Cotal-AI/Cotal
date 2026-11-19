@@ -362,9 +362,9 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   }
   const code = await executeUpdate(Boolean(args.values.self), rt, args.values);
   if (code !== 0) process.exitCode = code;
-  else {
-    if (childBinding(rt).kind !== "bound") clearUpdateRecovery();
-    if (args.values.self !== true && childBinding(rt).kind !== "bound") recordUpdateCompletion(rt.version(), "manual update reconciled", true);
+  else if (args.values.self !== true && childBinding(rt).kind !== "bound") {
+    clearUpdateRecovery();
+    recordUpdateCompletion(rt.version(), "manual update reconciled", true);
   }
 }
 
@@ -1736,9 +1736,10 @@ export function installedUpdatePrefix(packageRoot: string, entry: string): strin
     return undefined;
   const prefix = dirname(dirname(modules));
   const meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string };
+  const linked = realpathSync(join(prefix, "bin", "cotal"));
   if (basename(root) !== "cotal-ai" || !meta.version ||
       verifyGlobalEntry(modules, meta.version) !== realpathSync(entry) ||
-      realpathSync(join(prefix, "bin", "cotal")) !== realpathSync(entry))
+      (linked !== realpathSync(entry) && linked !== join(root, "dist", "cotal-npm")))
     throw new Error("the invoked cotal package and its global bin link do not identify the same install");
   return prefix;
 }
