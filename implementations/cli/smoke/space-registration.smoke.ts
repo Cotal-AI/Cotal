@@ -11,6 +11,9 @@
  * their folder. A forget of a running space names `cotal down`: on a legacy root it says that down
  * drops the record, and for a controller stack, whose down keeps it prepared, it names forget again.
  * `meshes rm` of that stack says the same and names `space forget`.
+ * When two registry files are damaged, an exact-name forget removes only its own record and warns
+ * about the other one it leaves behind, instead of refusing with the other's remedy, while the
+ * listing still refuses while any damaged record remains.
  * `space add` refuses a name `space create` refuses. A refusal for a name no space has, from
  * create, show or forget, carries it as `target.requested` with no `Mesh:` heading, while a
  * registration an earlier release made under such a name is still headed with it.
@@ -374,6 +377,66 @@ setCurrent("keep");
   const unknown = await json(["space", "forget", "never"]);
   check("forgetting an unknown name is TARGET_NOT_FOUND, exit 2", refused(unknown, 2, "TARGET_NOT_FOUND") && /cotal space/.test(unknown.env?.error?.remedy ?? ""), shown(unknown));
   check("forget takes exactly one name", refused(await json(["space", "forget"]), 1, "USAGE_INVALID") && refused(await json(["space", "forget", "a", "b"]), 1, "USAGE_INVALID"));
+
+  // Two damaged registry files must not send forgets in a circle (#7826): each exact-name forget
+  // removes only its own record and warns about the other one it leaves behind, while the
+  // listing still refuses while any damaged record remains.
+  const kiloAdded = await json(["space", "add", "kilo", "--server", DEAD, "--root", root, "--force"]);
+  const limaAdded = await json(["space", "add", "lima", "--server", DEAD, "--root", root, "--force"]);
+  check("rig: two offline spaces are added", kiloAdded.status === 0 && limaAdded.status === 0 && findMesh("kilo") !== undefined && findMesh("lima") !== undefined, [kiloAdded, limaAdded].map((r) => shown(r)));
+  const kiloFile = join(meshesDir(), `${spaceSegment("kilo")}.json`), limaFile = join(meshesDir(), `${spaceSegment("lima")}.json`);
+  writeFileSync(kiloFile, "not JSON\n");
+  writeFileSync(limaFile, `{"space":"lima",\n`);
+  const listedDamaged = await json(["space"]);
+  check("a listing still refuses while any damaged record remains, naming the first damaged file",
+    refused(listedDamaged, 1, "SCHEMA_INVALID") && (listedDamaged.env?.error?.message ?? "").includes(kiloFile) && (listedDamaged.env?.error?.remedy ?? "").includes("cotal space forget kilo"), shown(listedDamaged));
+  const forgetKilo = await json(["space", "forget", "kilo"]);
+  check("forget of one damaged space succeeds while another record is damaged, and removes only its own file",
+    forgetKilo.status === 0 && forgetKilo.env?.result.kind === "space-forgotten" && !existsSync(kiloFile) && existsSync(limaFile), shown(forgetKilo));
+  check("...and it warns about the damaged record it leaves, naming the forget that clears it",
+    forgetKilo.env?.warnings.some((w: { code: string; message: string }) => w.code === "MESH_REGISTRY_DAMAGED" && w.message.includes(limaFile) && w.message.includes("cotal space forget lima")), forgetKilo.env?.warnings);
+  const listedOneDamaged = await json(["space"]);
+  check("...and the listing still refuses on the record that remains",
+    refused(listedOneDamaged, 1, "SCHEMA_INVALID") && (listedOneDamaged.env?.error?.message ?? "").includes(limaFile), shown(listedOneDamaged));
+  const forgetLima = await json(["space", "forget", "lima"]);
+  const listedClean = await json(["space"]);
+  check("forget of the second damaged space then succeeds, and the listing works again",
+    forgetLima.status === 0 && forgetLima.env?.result.kind === "space-forgotten" && !existsSync(limaFile) && findMesh("lima") === undefined && listedClean.status === 0, shown(forgetLima));
+
+  // The same circle must not survive for a space this machine started (#7826): its forget
+  // runs the gone-folder checks, which used to re-read the whole registry and throw on any
+  // other damaged record. The root here exists, so no gone-folder refusal applies.
+  const upServer = `nats://127.0.0.1:${await freePort()}`;
+  recordMesh({ space: "up1", server: upServer, root, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  recordMesh({ space: "beta", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  const betaFile = join(meshesDir(), `${spaceSegment("beta")}.json`);
+  writeFileSync(betaFile, "not JSON\n");
+  const forgetUp1 = await json(["space", "forget", "up1"]);
+  check("forget of a started space succeeds while another record is damaged, and removes only its own file",
+    forgetUp1.status === 0 && forgetUp1.env?.result.kind === "space-forgotten" && !existsSync(join(meshesDir(), `${spaceSegment("up1")}.json`)) && existsSync(betaFile), shown(forgetUp1));
+  check("...and it warns about the damaged record it leaves, naming the forget that clears it",
+    forgetUp1.env?.warnings.some((w: { code: string; message: string }) => w.code === "MESH_REGISTRY_DAMAGED" && w.message.includes(betaFile) && w.message.includes("cotal space forget beta")), forgetUp1.env?.warnings);
+  const forgetBeta = await json(["space", "forget", "beta"]);
+  check("forget of the damaged record it warned about then succeeds",
+    forgetBeta.status === 0 && forgetBeta.env?.result.kind === "space-forgotten" && !existsSync(betaFile), shown(forgetBeta));
+
+  if (process.platform === "linux") {
+    // With the folder gone, the forget runs the full gone-folder refusal path, which also
+    // re-read the registry before this fix. No process runs there and nothing listens on its
+    // broker address, so the forget succeeds.
+    const up2Server = `nats://127.0.0.1:${await freePort()}`;
+    const goneRoot = join(home, "deleted-up2");
+    recordMesh({ space: "up2", server: up2Server, root: goneRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+    recordMesh({ space: "gamma", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+    const gammaFile = join(meshesDir(), `${spaceSegment("gamma")}.json`);
+    writeFileSync(gammaFile, "not JSON\n");
+    const forgetUp2 = await json(["space", "forget", "up2"]);
+    check("forget of a started space whose folder is gone succeeds while another record is damaged",
+      forgetUp2.status === 0 && forgetUp2.env?.result.kind === "space-forgotten" && !existsSync(join(meshesDir(), `${spaceSegment("up2")}.json`)) && existsSync(gammaFile), shown(forgetUp2));
+    const forgetGamma = await json(["space", "forget", "gamma"]);
+    check("forget of the damaged record it warned about then succeeds",
+      forgetGamma.status === 0 && forgetGamma.env?.result.kind === "space-forgotten" && !existsSync(gammaFile), shown(forgetGamma));
+  }
 
   recordMesh({ space: "listed", server: LIVE, root, mode: "user", origin: "catalog", catalogOwner: "acct-1", userAuth: { provider: "cotal", idp: { url: "https://idp.test", issuer: "https://idp.test", audience: "cotal" }, remote: true, endpoints: { url: "https://auth.test" }, sentinelCredsPath: join(root, "sentinel.creds") }, ts: new Date(0).toISOString() });
   const catalog = await json(["space", "forget", "listed"]);

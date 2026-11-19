@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, findMesh, getCurrent, identityRecord, isCommandFailure, loadMeshes, localMeshesForRoot, loopbackListeners, oneLine, presentationOf, processesNaming,
-  readProcessCommand, recordOperationSpace, removeMesh, removeMeshesByRoot, renderReport, writeResult, type Report,
+  readProcessCommand, recordOperationSpace, removeMesh, removeMeshesByRoot, renderReport, writeResult, type MeshEntry, type Report,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -59,10 +59,11 @@ export function goneLegacyRoot(space: string): string | undefined {
 }
 
 /** Find only this account's retained children with exact launch arguments and the registered cwd.
- *  An address alone never authorizes a signal, and a creation pin is rechecked before each stop. */
-export function goneLegacyMembers(space: string, root: string): { role: StackRole; pid: number; token: string }[] {
+ *  An address alone never authorizes a signal, and a creation pin is rechecked before each stop.
+ *  Pass the already-read record when the caller holds it, so another space's damaged record does
+ *  not block the lookup; otherwise the record is read here, as `down` does. */
+export function goneLegacyMembers(space: string, root: string, mesh: MeshEntry | undefined = findMesh(space)): { role: StackRole; pid: number; token: string }[] {
   if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "finding a retained stack after its folder is deleted requires Linux process arguments and working directories; nothing was stopped");
-  const mesh = findMesh(space);
   if (!mesh || mesh.root !== root) throw new CommandFailure("refused", "CONFLICT", "the deleted stack's registration changed; nothing was stopped");
   const found = processesNaming("");
   if (found.kind !== "pids") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `could not inspect the deleted stack's processes (${found.why}); its registration was kept`);
