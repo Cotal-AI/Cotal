@@ -613,44 +613,9 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     const creds = readCredsFile(flags.creds);
     // Keep recorded TLS policy, or require the transport the explicit URL names.
     const tls = tlsIntent(server, recorded?.tlsRequired === true);
-    try {
-      await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) });
-    } catch (e) {
-      // A rejected credential whose own permissions name another space is reported with that space.
-      const owner = isConnectRefusal(e) && e.code === "PERMISSION_DENIED" ? spaceInCreds(creds) : undefined;
-      if (owner === undefined) throw e;
-      const at = brokerAddressForDisplay(server) ?? "an invalid broker address";
-      // A `--server` other than the one the credential's space is registered at sends it to another
-      // broker, so the step back drops `--server` rather than keeping it.
-      const ownerMesh = findMesh(owner);
-      const elsewhere = flags.server !== undefined && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
-      if (owner === space) {
-        if (elsewhere === undefined) {
-          const rejection = await recordedCredentialRejection(space, creds);
-          if (rejection === undefined) throw e;
-          const claims = credsClaims(creds);
-          const mint = claims.name === "agent" ? `mint a new key with the grants it held: \`cotal auth mint <label>${grantMintFlags(agentGrants(claims.nats ?? {}, space))} --out <new file>\`` : `mint a new key: \`cotal auth mint <label>${typeof claims.name === "string" ? ` --profile ${claims.name}` : ""} --out <new file>\``;
-          if (rejection.kind === "other-account") {
-            // A local account says nothing about an unrelated broker with the same space name.
-            if (ownerMesh?.mode !== "auth" || ownerMesh.server !== server) throw e;
-            const message = `credentials rejected at ${at}: space "${space}" has a different local identity from the one that issued ${flags.creds}, as after reset space and a new up`;
-            const remedy = `the old credential cannot authenticate to this identity; from ${ownerMesh.root}, ${mint}`;
-            throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path: flags.creds } });
-          }
-          // The account here records the revocation, so the refusal says so instead of "check your creds".
-          const message = `credentials rejected at ${at}: the key ${claims.sub} in ${flags.creds} was revoked at ${new Date(rejection.at * 1000).toISOString()} with auth revoke-credential`;
-          const remedy = `a revoked key is not signed again; ${mint}`;
-          throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path: flags.creds } });
-        }
-        const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}", which is registered here at ${elsewhere}, not ${at}`;
-        const remedy = `drop --server to use ${owner}'s broker at ${elsewhere}, or point --server at it`;
-        throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, credentialSpace: owner, path: flags.creds, server: at } });
-      }
-      const message = `credentials rejected at ${at}: ${flags.creds} is a credential for space "${owner}"${named ? `, not "${space}"` : ""}`;
-      const use = elsewhere !== undefined ? `use it with --space ${owner} and without --server, which dials ${owner}'s broker at ${elsewhere}` : ownerMesh ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`;
-      const remedy = `${use}${named ? `, or mint one for "${space}" with \`cotal auth mint <label> --space ${space} --out <file>\`` : ""}`;
-      throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { ...(named ? { space } : {}), credentialSpace: owner, path: flags.creds } });
-    }
+    await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) }, {
+      space, path: flags.creds, named, addressFlags: flags.server !== undefined ? "--server" : undefined,
+    });
     return { server, space, tls, creds };
   }
   // A raw OPEN remote mesh: explicit `--server` + a `--space` that isn't locally registered. Naming
@@ -998,10 +963,60 @@ export function readCredsFileOrExit(path: string): string {
   }
 }
 
-/** Reachability check for a RAW (off-registry) connection — one plain sentence, never a registry/
- *  stale-entry message and never a prune. Used by the `--creds` escape hatch and `join`'s explicit
- *  (link/token/creds) path, both of which connect to a broker the user named, not the registry. */
-export async function reachableOrThrow(server: string, auth: RawAuth = {}): Promise<void> {
+interface CredentialContext {
+  space: string;
+  path: string;
+  named: boolean;
+  addressFlags?: "--server" | "--link" | "--server and --link";
+  provision?: boolean;
+}
+
+/** Classify a broker-rejected file from its declared space and recorded local trust. */
+async function rejectCredential(e: ConnectRefusal, server: string, creds: string, context: CredentialContext): Promise<never> {
+  const { space, path, named, addressFlags, provision } = context;
+  const owner = spaceInCreds(creds);
+  if (owner === undefined) throw e;
+  const at = brokerAddressForDisplay(server) ?? "an invalid broker address";
+  const ownerMesh = findMesh(owner);
+  const elsewhere = addressFlags && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
+  const provisionFlags = provision ? " --provision" : "";
+  const pairing = provision ? ", then join with the lifecycle UID that mint reports" : "";
+  if (owner === space) {
+    if (elsewhere !== undefined) {
+      const message = `credentials rejected at ${at}: ${path} is a credential for space "${owner}", which is registered here at ${elsewhere}, not ${at}`;
+      const remedy = addressFlags === "--server"
+        ? `drop --server to use ${owner}'s broker at ${elsewhere}, or point --server at it`
+        : `use --space ${owner} without ${addressFlags} to reach its registered broker at ${elsewhere}`;
+      throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, credentialSpace: owner, path, server: at } });
+    }
+    const rejection = await recordedCredentialRejection(space, creds);
+    if (rejection === undefined) throw e;
+    const claims = credsClaims(creds);
+    const mint = claims.name === "agent"
+      ? `mint a new key with the grants it held: ${codeSpan(`cotal auth mint <label>${provision ? ` --space ${shellPath(space)}` : ""}${provisionFlags}${grantMintFlags(agentGrants(claims.nats ?? {}, space))} --out <new file>`)}${pairing}`
+      : `mint a new key: \`cotal auth mint <label>${typeof claims.name === "string" ? ` --profile ${claims.name}` : ""} --out <new file>\``;
+    if (rejection.kind === "other-account") {
+      // A local account says nothing about an unrelated broker with the same space name.
+      if (ownerMesh?.mode !== "auth" || ownerMesh.server !== server) throw e;
+      const message = `credentials rejected at ${at}: space "${space}" has a different local identity from the one that issued ${path}, as after reset space and a new up`;
+      const remedy = `the old credential cannot authenticate to this identity; from ${ownerMesh.root}, ${mint}`;
+      throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path } });
+    }
+    const message = `credentials rejected at ${at}: the key ${claims.sub} in ${path} was revoked at ${new Date(rejection.at * 1000).toISOString()} with auth revoke-credential`;
+    const remedy = `a revoked key is not signed again; ${mint}`;
+    throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path } });
+  }
+  const message = `credentials rejected at ${at}: ${path} is a credential for space "${owner}"${named ? `, not "${space}"` : ""}`;
+  const use = elsewhere !== undefined ? `use it with --space ${owner} and without ${addressFlags}, which dials ${owner}'s broker at ${elsewhere}` : ownerMesh ? `use it with --space ${owner}` : `use it with --space ${owner} --server <url of its broker>`;
+  const claims = provision && named ? credsClaims(creds) : undefined;
+  const grants = claims?.name === "agent" ? grantMintFlags(agentGrants(claims.nats ?? {}, owner)) : "";
+  const mint = codeSpan(`cotal auth mint <label> --space ${provision ? shellPath(space) : space}${provisionFlags}${grants} --out <file>`);
+  const remedy = `${use}${named ? `, or mint one for "${space}" with ${mint}${pairing}` : ""}`;
+  throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { ...(named ? { space } : {}), credentialSpace: owner, path } });
+}
+
+/** Check reachability without pruning. With credential context, diagnose a broker-rejected file. */
+export async function reachableOrThrow(server: string, auth: RawAuth = {}, credential?: CredentialContext): Promise<void> {
   // A credential past its own expiry is dead, and no endpoint presents it, but the broker still
   // accepts it until its last second ends. So it is refused without a dial.
   let probe: ProbeResult = auth.creds !== undefined && inspectCredHealth(auth.creds).state === "expired" ? { ok: false, reason: "stale-auth" } : await probeConnect(server, auth);
@@ -1019,7 +1034,10 @@ export async function reachableOrThrow(server: string, auth: RawAuth = {}): Prom
   const kind = probe.reason === "timeout" || probe.reason === "unreachable" ? "transient" : "permanent";
   const code: RefusalCode =
     kind === "transient" ? "TARGET_UNAVAILABLE" : probe.reason === "tls-unsupported" ? "DEPENDENCY_UNAVAILABLE" : probe.reason === "auth-required" && hasAuth ? "PERMISSION_DENIED" : "AUTH_REQUIRED";
-  throw workspaceRefusal({ kind: "reachable", reason: probe.reason, server, hasAuth }, { kind, code, ...(probe.reason === "auth-required" && !hasAuth ? { native: { code: "CREDENTIALS_MISSING" } } : {}) });
+  const refusal = workspaceRefusal({ kind: "reachable", reason: probe.reason, server, hasAuth }, { kind, code, ...(probe.reason === "auth-required" && !hasAuth ? { native: { code: "CREDENTIALS_MISSING" } } : {}) });
+  if (credential && auth.creds !== undefined && code === "PERMISSION_DENIED")
+    return rejectCredential(refusal, server, auth.creds, credential);
+  throw refusal;
 }
 
 /** {@link reachableOrThrow} with the exiting disposition. */
