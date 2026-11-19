@@ -314,6 +314,9 @@ export interface Connector extends Extension {
    *  and fails with a clear error naming a missing one. Optional — omit for connectors
    *  whose harness runs in-process. */
   readonly requires?: readonly string[];
+  /** Additional launch guidance to include when an executable in {@link requires} is missing.
+   *  A returned prerequisite replaces the suggestion to retry unchanged. */
+  missingBinaryLaunchGuidance?(opts: Pick<LaunchOpts, "model">): { message: string; spawnExampleArgs?: string } | undefined;
   /** Directory of installable editor-plugin assets shipped with the connector
    *  (e.g. a Claude Code plugin dir), when the agent type needs a one-time
    *  plugin install. Consumers (like `cotal setup`) resolve it via the registry

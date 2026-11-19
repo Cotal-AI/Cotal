@@ -1461,10 +1461,20 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   }
   const binaryPins: Record<string, string | undefined> = { opencode: process.env.COTAL_OPENCODE_BIN, codex: process.env.COTAL_CODEX_BIN };
   const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(binaryPins[bin]?.trim() || bin));
-  if (missing.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${agentType} needs ${missing.join(", ")} on PATH; nothing was launched`, {
-    target: { space, path },
-    remedy: `Follow ${["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/"} to install ${missing.join(", ")}, then retry: \`${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}\``,
-  });
+  if (missing.length) {
+    const binaries = missing.join(", ");
+    const guide = ["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/";
+    const prerequisite = connector.missingBinaryLaunchGuidance?.({ model });
+    const message = `${agentType} needs ${binaries} on PATH; nothing was launched`;
+    const install = `Follow ${guide} to install ${binaries}`;
+    const remedy = prerequisite?.spawnExampleArgs
+      ? `${install}. For a basic launch: ${codeSpan(`${displayCmd()} spawn ${prerequisite.spawnExampleArgs}`)}`
+      : prerequisite ? install : `${install}, then retry: ${codeSpan(`${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}`)}`;
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", prerequisite ? `${message}. ${prerequisite.message}` : message, {
+      target: { space, path },
+      remedy,
+    });
+  }
   if (variant && !connector.supportsModelVariant) {
     throw new CommandFailure("refused", "USAGE_INVALID", `${agentType} connector does not support model variants (variant)`, { target: { space, path } });
   }
