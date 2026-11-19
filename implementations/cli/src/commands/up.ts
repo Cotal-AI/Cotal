@@ -1611,9 +1611,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // A bare one in a folder holding the records of a space registered for another folder does not take
   // that name over, as `down` there does not stop it.
   if (!values.file && values.space === undefined) await refuseRecordsElsewhere(meshRoot);
-  if (values.json || values.plain) {
-    // `up -f` always takes the retained launcher, so the controller route is no remedy there. Its
-    // manifest is checked first, so a manifest that does not validate gets its own refusal.
+  if (values.plain || (values.json && !values["dry-run"])) {
+    // Manifest apply takes the retained launcher. Check its manifest before refusing the output mode.
     if (values.file) {
       const path = resolve(values.file);
       try { loadManifest(path); } catch (e) { throw manifestFileRefusal(e, path); }
@@ -1637,6 +1636,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       await upManifest(values.file, {
         transport,
         dryRun: true,
+        presentation: presentationOf(values),
         server: values.server,
         host: values.host,
         space: values.space,
@@ -1653,7 +1653,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         logfileSizeLimit,
         logfileMaxNum,
       });
-      if (previewRoot) console.log(c.yellow("! this preview used the invoking folder, not the inherited home store; before applying, prepare it with `cotal space create <space> --root .`"));
+      if (previewRoot) (values.json ? console.error : console.log)(c.yellow("! this preview used the invoking folder, not the inherited home store; before applying, prepare it with `cotal space create <space> --root .`"));
       return;
     }
     const lock = acquireStackOperationLock(cotalRoot());
@@ -3601,39 +3601,45 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     prepared = loadManifest(resolve(file));
   } catch (e) {
     if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh boot manifest changed or could not be resolved before startup; no broker was started", { target: { path: resolve(file), space: opts.space } });
+    if (opts.presentation === "json") throw manifestFileRefusal(e, resolve(file));
     failManifest(e);
   }
   if (opts.freshTeamBoot && opts.space !== prepared.manifest.space)
     throw new CommandFailure("refused", "CONFLICT", "the fresh boot manifest no longer names the selected space; no broker was started", { target: { selectedSpace: opts.space, declaredSpace: prepared.manifest.space } });
+  if (opts.dryRun && opts.presentation === "json" && opts.space !== undefined && opts.space !== prepared.manifest.space)
+    throw new CommandFailure("refused", "USAGE_INVALID", "--space does not match the manifest's space", {
+      target: { selectedSpace: opts.space, declaredSpace: prepared.manifest.space }, remedy: "drop --space, or change the manifest",
+    });
   refuseManifestSpaceMismatch(prepared, opts.space);
   // The auth-mode sources (flags vs manifest) must AGREE — any mismatch names both sources and the
   // exact correction in one sentence (a no-fallback identity decision, never a bare enum error).
   const declared = prepared.manifest.broker?.auth;
   const declaredStr = declared === undefined ? '"static" (the unset default)' : JSON.stringify(declared);
+  const structured = opts.freshTeamBoot || opts.presentation === "json";
   if (opts.open && declared === "user") {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "CONFLICT", "--open contradicts this manifest's user-auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
+    if (structured) throw new CommandFailure("refused", "CONFLICT", "--open contradicts this manifest's user-auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
     console.error(c.red('✗ --open contradicts this manifest\'s broker.auth: "user" - a user-auth space cannot run unauthenticated. Drop --open, or change the manifest.'));
     process.exit(1);
   }
   if (opts.userAuth && declared !== "user") {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "CONFLICT", "--user-auth contradicts this manifest's declared auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
+    if (structured) throw new CommandFailure("refused", "CONFLICT", "--user-auth contradicts this manifest's declared auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
     stderrLine("✗ ", `--user-auth requires manifest broker.auth: "user" (this manifest's broker.auth is ${declaredStr}). Either set broker.auth: "user" in the manifest, or drop --user-auth.`, c.red);
     process.exit(1);
   }
   if (opts.idp && declared !== "user") {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "CONFLICT", "--idp needs this manifest's user-auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
+    if (structured) throw new CommandFailure("refused", "CONFLICT", "--idp needs this manifest's user-auth mode; no trust or broker was changed", { target: { space: prepared.manifest.space } });
     stderrLine("✗ ", `--idp is for user-auth spaces (this manifest's broker.auth is ${declaredStr}) - set broker.auth: "user" in the manifest, or drop --idp.`, c.red);
     process.exit(1);
   }
   const idpProblem = opts.idp === undefined ? undefined : idpUrlProblem(opts.idp, "--idp");
   if (idpProblem) {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", idpProblem, { target: { space: prepared.manifest.space } });
+    if (structured) throw new CommandFailure("refused", "SCHEMA_INVALID", idpProblem, { target: { space: prepared.manifest.space } });
     stderrLine("✗ ", `${idpProblem}`, c.red);
     process.exit(1);
   }
   const serverProblems = opts.server === undefined ? [] : serverUrlProblems(opts.server, "--server");
   if (serverProblems.length) {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", serverProblems.join("; "), { target: { space: prepared.manifest.space } });
+    if (structured) throw new CommandFailure("refused", "SCHEMA_INVALID", serverProblems.join("; "), { target: { space: prepared.manifest.space } });
     for (const problem of serverProblems) stderrLine("✗ ", `${problem}`, c.red);
     process.exit(1);
   }
@@ -3688,8 +3694,11 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // see. Without it, `cotal up -f open.yaml --rotate-sys` boots an open broker, exits 0 and rotates
   // nothing: a rotation ask answered with silent success, the exact failure class this change
   // exists to remove. Before the dry-run print and before anything boots.
-  if (opts.rotateSys && open)
-    throw new Error("--rotate-sys is for auth meshes: this manifest sets broker.auth: false (open), so there is no system account or $SYS credentials to rotate");
+  if (opts.rotateSys && open) {
+    const message = "--rotate-sys is for auth meshes: this manifest sets broker.auth: false (open), so there is no system account or $SYS credentials to rotate";
+    if (opts.presentation === "json") throw new CommandFailure("refused", "USAGE_INVALID", message);
+    throw new Error(message);
+  }
   // Before the dry-run print and before connector preflight or any write, as the refusals above.
   if (!opts.storeDir) refuseUnnamedLastStore(cotalPath("nats"));
   else refuseMissingNamedStore(resolve(opts.storeDir));
@@ -3707,8 +3716,19 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     // command refuses is the same green-lit-a-refusal failure class.
     const dryConn = await preflightConnectors(prepared);
     if (dryConn) {
+      if (opts.presentation === "json") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "connector preflight failed; no broker was started", { target: { space: m.space }, remedy: dryConn });
       stderrLine("✗ ", `connector preflight failed: ${dryConn}`, c.red);
       process.exit(1);
+    }
+    if (opts.presentation === "json") {
+      const broker = m.broker;
+      writeResult("json", { command: "up", target: { space: m.space, root: cotalRoot(), path: resolve(file) }, result: {
+        kind: "manifest-up-preview", dryRun: true, server: brokerAddressForDisplay(server) ?? null,
+        authMode: open ? "open" : userAuth ? "user-auth" : "static-auth", manager: !effectiveNoManager, runtime,
+        channels: m.channels.map((channel) => channel.name), agents: eff.agents.map((agent) => agent.name),
+        logFile: broker?.logFile ?? null, logfileSizeLimit: broker?.logfileSizeLimit ?? null, logfileMaxNum: broker?.logfileMaxNum ?? null,
+      }, warnings: eff.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })) }, () => ({ sections: [] }));
+      return;
     }
     if (opts.transport.kind === "tls-required") announceTransport(opts.transport);
     console.log(renderUpPlan(eff, server));
