@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { isLoopbackLiteral } from "@cotal-ai/core/loopback";
 import { parse as parseYaml } from "yaml";
-import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
+import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootControlProblem, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { brokerAddressForDisplay } from "./broker-display.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { isCommandFailure, recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
@@ -583,6 +583,48 @@ function journalInstanceIds(members: unknown): string[] {
   }).filter((id): id is string => typeof id === "string");
 }
 
+function recordedProcessGone(pin: unknown): boolean {
+  const process = pin as Partial<ProcessIdentityRecord> | null | undefined;
+  if (typeof process?.pid !== "number" || !Number.isInteger(process.pid) || process.pid <= 0 || process.pid > 2_147_483_647 || typeof process.token !== "string" || !/^\d{1,20}$/.test(process.token)) return false;
+  const { kind } = assertRecordIdentity({ pid: process.pid, token: process.token });
+  return kind === "gone" || kind === "mismatch";
+}
+
+/** A completed down does not cover a different instance under the same definition or an
+ *  unresolved replacement. The hint requires the matching terminal records and no live pins. */
+function knownStackStopped(space: string, recordedRoot: string, members: unknown, operation: unknown): boolean {
+  const down = operation as { kind?: unknown; phase?: unknown } | null | undefined;
+  if (down?.kind !== "down" || down.phase !== "completed" || !Array.isArray(members) || lstatSync(recordedRoot, { throwIfNoEntry: false }) !== undefined) return false;
+  if (findMesh(space) !== undefined || findPreparedSpace(space)?.root !== recordedRoot) return false;
+  const definitions = new Map<string, string | null>();
+  const remaining = new Set<string>();
+  for (const row of members) {
+    const member = row as { definition?: unknown; instanceId?: unknown; state?: unknown; replacement?: unknown } | null;
+    if (typeof member?.definition !== "string" || definitions.has(member.definition) || member.replacement !== undefined) return false;
+    const id = member.instanceId;
+    if (id === null) {
+      if (member.state !== "not-attempted") return false;
+    } else {
+      if (typeof id !== "string" || remaining.has(id) || (member.state !== "stopped" && member.state !== "already-stopped")) return false;
+      remaining.add(id);
+    }
+    definitions.set(member.definition, id);
+  }
+  if (remaining.size === 0) return false;
+  type Instance = { instanceId?: unknown; definition?: unknown; space?: unknown; state?: unknown; process?: unknown; custody?: { custodian?: unknown } };
+  const instances = new ProtectedRecordStore("services", space, (value) => value as Instance | null, "instances");
+  for (const { name, record: { value } } of instances.list()) {
+    if (typeof value?.definition !== "string") return false;
+    if (!remaining.has(name) && !definitions.has(value.definition)) continue;
+    if (name !== definitions.get(value.definition) || value.instanceId !== name || value.space !== space
+      || (value.state !== "stopped" && value.state !== "failed")
+      || (value.process !== undefined && !recordedProcessGone(value.process))
+      || (value.custody !== undefined && !recordedProcessGone(value.custody?.custodian))) return false;
+    remaining.delete(name);
+  }
+  return remaining.size === 0;
+}
+
 /** Why `space create --adopt` may not take over, at `root`, the stack journal that `recordedRoot`
  *  recorded for `space` with these members: this folder's `.cotal` links to another's, the recorded
  *  root still holds the journal, this home records one of its member instances, or the space is
@@ -603,15 +645,22 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
 /** The next step in `root`, whose stack journal `recordedRoot` recorded for `space`, which every
  *  command run there names. A linked `.cotal`, and a copy whose recorded folder still holds the
  *  journal, use the stack from there. A moved folder moves back when this machine records its stack
- *  or its space, and is adopted with `space create --adopt` when it records neither, because moving
- *  it back would then not start it. A recorded path that `cotal up` refuses is never the way back. */
-export function stackElsewhereRemedy(root: string, recordedRoot: string, space: string, members: unknown): string {
+ *  or its space. A confirmed stopped stack at a missing path can also be forgotten and adopted.
+ *  When the machine records neither, moving it back would not start it. */
+export function stackElsewhereRemedy(root: string, recordedRoot: string, space: string, members: unknown, operation?: unknown): string {
   if (cotalDirLink(root) !== undefined) return `use the stack from ${recordedRoot}, which holds it; this folder only links to its records`;
   if (recordsMovedTo(recordedRoot, root)) return `${moveRecordsBack(recordedRoot, root)}; then use the stack from ${recordedRoot}`;
   if (existsSync(stackJournalPath(recordedRoot))) return `use the stack from ${recordedRoot}, which holds it; this copy does not`;
   let block: StackAdoptionBlock | undefined | null;
-  try { block = stackAdoptionBlock(root, recordedRoot, space, members); } catch { block = null; }
-  const adopt = block === undefined ? `adopt it with \`cotal space create ${space} --adopt --root ${shellPath(root)}\`` : block?.kind === "recorded" ? block.remedy : undefined;
+  let stoppedRemedy: string | undefined;
+  try {
+    block = stackAdoptionBlock(root, recordedRoot, space, members);
+    if (block?.kind === "known" && !rootPathProblem(root) && !rootControlProblem(root) && knownStackStopped(space, recordedRoot, members, operation)) {
+      const name = shellPath(space);
+      stoppedRemedy = `forget it with ${codeSpan(`cotal space forget ${name}`)}, then run ${codeSpan(`cotal space create ${name} --adopt --root ${shellPath(root)}`)}`;
+    }
+  } catch { block = null; }
+  const adopt = block === undefined ? `adopt it with \`cotal space create ${space} --adopt --root ${shellPath(root)}\`` : block?.kind === "recorded" ? block.remedy : stoppedRemedy;
   if (adopt === undefined) return movedRootRemedy(recordedRoot);
   if (rootPathProblem(recordedRoot) !== undefined) return `to run it from this folder, ${adopt}; \`cotal up\` refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`;
   return block === undefined
@@ -629,11 +678,11 @@ function stackRecord(root: string): { server?: string; stackSpace?: string; home
   try { file = lstatSync(path); } catch { return undefined; }
   if (!file.isFile() || file.size > 64 * 1024) return {};
   try {
-    const journal = JSON.parse(readFileSync(path, "utf8")) as { server?: unknown; space?: unknown; members?: unknown; root?: unknown; recovery?: { home?: unknown } } | null;
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { server?: unknown; space?: unknown; members?: unknown; root?: unknown; operation?: unknown; recovery?: { home?: unknown } } | null;
     if (!journal) return {};
     const elsewhere = typeof journal.root === "string" && journal.root !== canonicalRoot(root) ? journal.root : undefined;
     return { ...(typeof journal.server === "string" ? { server: journal.server } : {}), ...(typeof journal.space === "string" ? { stackSpace: journal.space } : {}), ...(stackRunsUnderOtherHome(root, journal) ? { home: homeCotalDir() } : {}),
-      ...(elsewhere !== undefined ? { recordedRoot: elsewhere, stackRemedy: stackElsewhereRemedy(canonicalRoot(root), elsewhere, typeof journal.space === "string" ? journal.space : "<space>", journal.members) } : {}),
+      ...(elsewhere !== undefined ? { recordedRoot: elsewhere, stackRemedy: stackElsewhereRemedy(canonicalRoot(root), elsewhere, typeof journal.space === "string" ? journal.space : "<space>", journal.members, journal.operation) } : {}),
       ...(stackRunsUnderOtherHome(root, journal) && typeof journal.recovery?.home === "string" ? { stackRemedy: `run the command from this folder with COTAL_HOME=${shellPath(journal.recovery.home)}` } : {}) };
   } catch {
     return {};
