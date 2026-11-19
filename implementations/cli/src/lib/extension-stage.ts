@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
@@ -89,6 +89,13 @@ export function stageExtensions(): ExtensionStage {
   // The stage is this process's own: under a umask of 0002 the folder above, and on Node before
   // 24.22 every copied folder, would be group-writable and the protected-path rule would refuse it.
   repairInstallModes(prefix);
+  // npm and the verifier rewrite these files. A read-only source copy keeps its modes.
+  if (process.platform !== "win32") for (const name of ["package.json", "package-lock.json"]) {
+    const path = join(prefix, name), stat = lstatSync(path, { throwIfNoEntry: false });
+    if (!stat) continue;
+    if (!stat.isFile()) throw new Error(`extension stage metadata is not a regular file: ${path}`);
+    if ((stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
+  }
   let promoted = false;
   return {
     config: stageConfig, prefix,

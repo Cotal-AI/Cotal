@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { executionIdentity } from "./execution-identity.js";
 import { acquireLock, processStartToken } from "./advisory-lock.js";
@@ -12,6 +12,8 @@ import { homeCotalDir } from "./cotal-home.js";
 import { MANAGER_PIDFILE, localProcessPathCandidates, recordedLocalProcessPaths } from "./local-process.js";
 import { commandIsCotalSupervisor, readProcessRecord } from "./pid.js";
 import { probeLiveness } from "./liveness.js";
+import { CommandFailure } from "./output.js";
+import { assertProtectedEntry, protectedLocalDirectory } from "./protected-records.js";
 
 interface ConnectorHolder {
   v: 1;
@@ -204,6 +206,65 @@ function currentConfig(id: { entry: string; version: string; path: string }): st
 export function connectorConfigDir(): string {
   const id = identity();
   return id ? currentConfig(id) ?? previousConfig(id) ?? (["extensions", "seed"].some(name => existsSync(join(globalConfigDir(), name))) ? globalConfigDir() : join(id.path, "cotal")) : globalConfigDir();
+}
+
+/** Make the current POSIX connector store and its selection directories writable before staging an update.
+ * Change only owner write on managed directories. Do not walk other installations or follow links. */
+export function prepareConnectorConfigForUpdate(): void {
+  const config = resolve(globalConfigDir());
+  const uid = process.getuid!();
+  const what = "the Cotal connector configuration";
+  const refuse = (path: string, reason: string, remedy: string): never => {
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} at ${path} ${reason}. No CLI update was staged.`, {
+      target: { path }, native: { outcome: "not-executed" }, remedy: `${remedy}, then run \`cotal update --self\` again`,
+    });
+  };
+  let parent = dirname(config);
+  while (!lstatSync(parent, { throwIfNoEntry: false })) parent = dirname(parent);
+  protectedLocalDirectory(parent, what);
+
+  const prepare = (path: string): boolean => {
+    const stat = lstatSync(path, { throwIfNoEntry: false });
+    if (!stat) return false;
+    if (!stat.isDirectory()) refuse(path, "is not a real directory", "use a physical directory without symlinks");
+    if (stat.uid !== uid) refuse(path, "is owned by another account", "ask the owner or an administrator to restore ownership of this Cotal directory to your account");
+    assertProtectedEntry(what, path, stat);
+    try {
+      if ((stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
+      accessSync(path, constants.R_OK | constants.W_OK | constants.X_OK);
+    } catch {
+      refuse(path, "is not accessible for updates by this account", "restore write access and make the directory readable and searchable on a writable filesystem");
+    }
+    return true;
+  };
+  // Both retention paths come from this module, rooted at globalConfigDir(). Check components
+  // in order so an existing link cannot redirect the repair outside the configuration.
+  const preparePath = (path: string): void => {
+    const child = relative(config, path);
+    if (!child) return;
+    if (child === ".." || child.startsWith(`..${sep}`)) throw new Error("connector configuration escaped its config directory");
+    let directory = config;
+    for (const part of child.split(sep)) {
+      directory = join(directory, part);
+      if (!prepare(directory)) return;
+    }
+  };
+  const walk = (path: string): void => {
+    if (!prepare(path)) return;
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      if (entry.isDirectory()) walk(join(path, entry.name));
+    }
+  };
+  if (!prepare(config)) {
+    try { accessSync(parent, constants.W_OK | constants.X_OK); }
+    catch { refuse(parent, "cannot be written to create the config folder", "restore write access to the containing directory or choose a writable XDG_CONFIG_HOME"); }
+    return;
+  }
+  const id = identity();
+  if (id) preparePath(id.path);
+  const selected = resolve(connectorConfigDir());
+  preparePath(selected);
+  for (const name of ["seed", "extensions"]) walk(join(selected, name));
 }
 
 /** Implicit recovery may mutate current or canonical state, never a predecessor exposed only for reads. */

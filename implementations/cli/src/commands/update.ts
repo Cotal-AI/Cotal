@@ -34,6 +34,7 @@ import {
   liveUpdateClosureOwner,
   recoveryProcessStartToken,
   observeUnownedRecovery,
+  prepareConnectorConfigForUpdate,
 } from "@cotal-ai/workspace";
 import { retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
@@ -315,6 +316,16 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", refusal, {
         native: { outcome: "not-executed" },
       });
+    }
+  }
+  if (args.values.self === true && rt.prepareExecution) {
+    try { prepareConnectorConfigForUpdate(); }
+    catch (error) {
+      const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`, {
+        native: { outcome: "not-executed" }, remedy: "check ownership and write access to the Cotal connector configuration, then run `cotal update --self` again",
+      });
+      recordUpdateRefusal(rt.version(), failure.remedy ? `${failure.message} Next: ${failure.remedy}` : failure.message);
+      throw failure;
     }
   }
   if (await recoverInterruptedUpdate(rt) && args.values.self !== true) return;
@@ -1357,6 +1368,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     snapshot = snapshotUpdateClosure();
     rt.out(`✓ recovery snapshot saved (${((Date.now() - snapshotStarted) / 1000).toFixed(1)} s)`);
   } catch (error) {
+    try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
     releaseClosure?.();
     await releaseAdmission?.();
     releaseGlobal();

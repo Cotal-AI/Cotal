@@ -43,11 +43,22 @@ if (process.platform !== "win32") {
     const root = mkdtempSync(join(tmpdir(), "promotion-umask-"));
     roots.push(root);
     process.env.XDG_CONFIG_HOME = root;
-    if (existing) { mkdirSync(join(root, "cotal", "extensions", "node_modules"), { recursive: true, mode: 0o755 }); writeFileSync(join(root, "cotal", "extensions", "package.json"), "{}", { mode: 0o644 }); }
+    const live = join(root, "cotal", "extensions");
+    const metadata = ["package.json", "package-lock.json"];
+    if (existing) {
+      mkdirSync(join(live, "node_modules"), { recursive: true, mode: 0o755 });
+      for (const name of metadata) writeFileSync(join(live, name), "{}", { mode: 0o400 });
+    }
     const previous = process.umask(0o002);
     try {
       const stage = stageExtensions();
-      try { assert.deepEqual(shared(stage.prefix), []); } finally { stage.discard(); }
+      try {
+        assert.deepEqual(shared(stage.prefix), []);
+        if (existing) for (const name of metadata) {
+          assert.equal(lstatSync(join(stage.prefix, name)).mode & 0o777, 0o600);
+          assert.equal(lstatSync(join(live, name)).mode & 0o777, 0o400);
+        }
+      } finally { stage.discard(); }
     } finally { process.umask(previous); }
   }
   console.log("a stage made under a umask of 0002 holds no group or other write, with and without a live prefix");
