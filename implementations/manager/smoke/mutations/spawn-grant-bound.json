@@ -28,7 +28,7 @@
     },
     {
       "name": "S2 treat a caller with no issued generation as exempt",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "    if (!isIssuedCaller(caller))\n      return { kind: \"none\", reason: \"its credential carries no issued generation (an unissued mint or a legacy rail)\" };",
       "replace": "    if (!isIssuedCaller(caller)) return { kind: \"exempt\" };",
       "expectRed": "a caller with no issued generation hands on no grant",
@@ -36,7 +36,7 @@
     },
     {
       "name": "S3 treat evidence that does not resolve as exempt",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      return { kind: \"none\", reason: `its issued evidence does not resolve: ${rejectionText(e)}` };",
       "replace": "      void e;\n      return { kind: \"exempt\" };",
       "expectRed": "evidence that does not resolve hands on no grant",
@@ -60,7 +60,7 @@
     },
     {
       "name": "S6 ignore the evidence's standing",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      return issuedSpawnerStanding(evidence) === \"bounded\" ? { kind: \"bounded\", caller, ceiling: evidence.permissions } : { kind: \"exempt\" };",
       "replace": "      return { kind: \"bounded\", caller, ceiling: evidence.permissions };",
       "expectRed": "an operator instrument is exempt",
@@ -68,7 +68,7 @@
     },
     {
       "name": "S7 leave the helper's own event plane unmeasured",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      eventsOver = armsEvents && (bound.kind === \"none\"",
       "replace": "      eventsOver = false && armsEvents && (bound.kind === \"none\"",
       "expectRed": "a spawner without its own event plane cannot arm a helper's",
