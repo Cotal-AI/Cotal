@@ -246,7 +246,7 @@ interface PersonaCatalog {
 /** One local process row: the state word, the pid it recorded, and what else the row knows. */
 interface ProcessRow {
   name: string;
-  state: "running" | "stopped" | "not-serving" | "unknown" | "unreadable";
+  state: "running" | "stopped" | "not-recorded" | "not-serving" | "unknown" | "unreadable";
   pid: number | null;
   detail: string | null;
   /** The nats summary's source. Older serialized reports and other components may omit it. */
@@ -1118,6 +1118,8 @@ function processRow(name: string, p: PidfileState, detail: string | null): Proce
 function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, gaps: Gaps): ProcessRow {
   const { state, pid, detail } = legacy;
   const row: ProcessRow = { ...legacy, source: journal ? "owned-service" : "legacy-pidfile", legacyPidfile: { state, pid, detail }, ownedService: null };
+  // A missing or empty legacy record gives no process to observe, regardless of the connection.
+  if (!journal && state === "stopped" && pid === null) row.state = "not-recorded";
   if (!journal) return row;
   if (stackRunsUnderOtherHome(journal.root, journal) && journal.recovery?.home !== homeCotalDir())
     return { ...row, state: "unknown", pid: null, detail: `stack member records belong to ${journal.recovery?.home ?? "another Cotal home"}` };
@@ -1680,6 +1682,7 @@ function personaCell(p: PersonaCatalog, dim = false): Cell {
 }
 
 function processCell(p: ProcessRow): Cell {
+  if (p.state === "not-recorded") return stateCell("no local process record", "hint");
   const detail = p.detail ? ` · ${p.detail}` : "";
   if (p.state === "unreadable" || p.state === "unknown") return cell(p.detail ?? "process state unknown", "failed");
   if (p.state === "not-serving") return cell(`not serving (pid ${p.pid})${detail}`, "failed");
@@ -2236,7 +2239,7 @@ function nextActions(r: StatusResult): Section {
     const broker = exited.includes("nats"), manager = exited.includes("manager");
     const notes = [...(broker ? ["up reopens the recorded store"] : []), ...(manager ? ["pass --runtime again if the manager ran on one"] : [])];
     items.unshift({ command: `${cmd} up`, description: `Restart this folder's ${broker && manager ? "broker and manager" : broker ? "broker" : "manager"}, which exited; ${notes.join("; ")}` });
-  } else if (!storeBlocked && local && r.selected.resolved && r.selected.connection === "unreachable" && (r.folder.processes ?? []).every((row) => row.state === "stopped")) {
+  } else if (!storeBlocked && local && r.selected.resolved && r.selected.connection === "unreachable" && (r.folder.processes ?? []).every((row) => row.state === "stopped" || row.state === "not-recorded")) {
     // A clean down leaves every member stopped with no pidfile. Spawn and ps need the stack, so the
     // bare `up` that starts it again on its recorded address and store comes first.
     items.unshift({ command: `${cmd} up`, description: "Start this folder's stopped stack again; pass --runtime again if the manager ran on one" });

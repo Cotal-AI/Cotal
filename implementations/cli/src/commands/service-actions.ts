@@ -466,9 +466,15 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       await Promise.race([started.exit.done, shutdownDone]);
       if (shutdown) await shutdown;
       if (signal && !started.exit.observed()) { process.exitCode = signal === "SIGINT" ? 130 : 143; return; }
-      const exit = started.exit.result(), current = serviceInstanceStore(space).read(started.instance.name);
-      // A retained native stop keeps its record: only that stop's own receipt settles it.
-      if (current && current.record.value.process?.pid === started.instance.record.value.process?.pid && current.record.value.process?.token === started.instance.record.value.process?.token && !retainedStopRequest(current.record.value)) serviceInstanceStore(space).commit(current.name, current, { ...current.record.value, state: "stopped", readiness: "not-checked", adapterReadiness: undefined, exit, updatedAt: new Date().toISOString() });
+      const exit = started.exit.result();
+      // Wait for a concurrent stop to record its receipt before adding the child's exit status.
+      const hold = store.pin(definition);
+      try {
+        const instances = serviceInstanceStore(space), current = instances.read(started.instance.name);
+        const value = current?.record.value, startedValue = started.instance.record.value;
+        // A stop still unsettled after releasing the hold keeps its record.
+        if (current && value && value.launchRequestId === startedValue.launchRequestId && value.process?.pid === startedValue.process?.pid && value.process?.token === startedValue.process?.token && value.state !== "stopping" && !retainedStopRequest(value)) instances.commit(current.name, current, { ...value, state: "stopped", readiness: "not-checked", adapterReadiness: undefined, exit, updatedAt: new Date().toISOString() });
+      } finally { hold.release(); }
       process.exitCode = signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : exit.code === 0 ? 0 : 5;
     } catch (error) {
       if (isCommandFailure(error)) process.stderr.write(`${renderReport(commandFailureReport(error), presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);

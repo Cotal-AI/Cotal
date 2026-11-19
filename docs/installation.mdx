@@ -106,7 +106,7 @@ The launcher uses it when Node is not on PATH. If that executable is gone, resto
 Cotal includes a `nats-server` binary for its local broker.
 If you put your own `nats-server` on PATH, Cotal uses it when its folder is not writable by other accounts.
 Otherwise it uses the bundled binary. `cotal up` refuses a selected broker older than 2.12 and names its path and version.
-`cotal status` shows which binary Cotal will run.
+`cotal status --verbose` shows which binary Cotal will run in the `NATS` row of the `Machine` section.
 An older deployment with a file-backed presence bucket needs 2.14.5 or newer to avoid a known write failure.
 See [Run a mesh](run-a-mesh.mdx#the-stack) before reusing an existing broker.
 

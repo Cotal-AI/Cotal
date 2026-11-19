@@ -861,8 +861,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     all: () => [...new Set([...spaces(true), ...live.keys()])].map(status),
     async disconnect(space: string, options?: { account?: boolean }) {
       // A crash during child shutdown must not restore a withdrawn hosting intent.
-      rmSync(daemonManagerIntentFile(space, home), { force: true });
-      let l = live.get(space);
+      const intent = daemonManagerIntentFile(space, home);
+      const hadIntent = existsSync(intent);
+      rmSync(intent, { force: true });
+      const l = live.get(space);
       if (l) {
         l.stopping = true;
         if (l.timer) clearTimeout(l.timer);
@@ -871,13 +873,13 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         await l.healthTask;
         await l.starting;
       }
-      if (!l) { l = { view: status(space), stopping: true, failures: 0 }; live.set(space, l); }
-      const held = l;
+      const held = l ?? { view: status(space), stopping: true, failures: 0 };
       let instanceId = held.view.instanceId ?? readManagerCleanup(home, space)?.instanceId;
       const remedy = () => instanceId
         ? `inspect the registration, then run \`cotal endpoint deregister manager ${instanceId} --space ${space} --yes\``
         : `inspect the recorded Manager identity for ${space}, then remove its registration with \`cotal endpoint deregister manager <instance-id> --space ${space} --yes\``;
       const incomplete = (reason: string): never => {
+        live.set(space, held);
         refuse(held, reason, remedy());
         if (held.view.registrationCleanup === "pending") {
           held.view = { ...held.view, state: "stopped", pid: undefined };
@@ -891,6 +893,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         instanceId = remoteManagerClient.loadRemoteManagerInstanceId(daemonManagerRoot(space, home), space) ?? instanceId;
       }
       catch { incomplete("the recorded Manager identity could not be read; its registration may be left behind"); }
+      if (!l && !hadIntent && !instanceId && !existsSync(refusalFile(space))) return;
+      live.set(space, held);
       if (instanceId) {
         held.view = { ...held.view, instanceId };
         let cleanup = readManagerCleanup(home, space);
