@@ -61,10 +61,14 @@ To work in two spaces, add two instances, one per space.
 | In the client | On the mesh |
 | --- | --- |
 | A new thread | Nothing yet. A thread that is opened and dropped leaves no agent. |
-| The thread's first prompt | Spawns an agent in the thread's folder, with that prompt as its first task. The thread's id is the agent's name. |
+| The thread's first prompt | Spawns an agent in the thread's folder, with that prompt as its first task. The thread's id is the agent's name. The turn ends when that first task's run ends. |
+| A later prompt | Reaches the agent as a direct message from you. The turn ends once the agent has started working and stopped again. |
 | Listing sessions | The managed agents in that folder, including ones you spawned elsewhere. |
 | Importing a session | Shows what the agent's event channel still holds, then follows it live. |
 | Deleting a session | Hides that agent run from the list. The agent keeps running. |
+
+If the agent does not start working on a later prompt within 30 seconds, the turn ends with a note saying so.
+The agent still has the message, and answers it when it gets to it.
 
 A turn shows the agent's messages, its reasoning when the application publishes it, and its tool calls by name and status.
 Tool arguments and results stay off the ordinary event channel, so the client does not show them.
@@ -102,7 +106,7 @@ When this machine records no space at all, it runs `cotal setup` instead.
 ## Limits [#limits]
 
 - Stopping a turn from the client does not interrupt the agent yet. The turn keeps running.
-- Only a thread's first prompt reaches its agent. A later prompt is refused until it can be tied to the turn it starts.
+- A later prompt ends when the agent stops working. When the agent was already busy as the prompt arrived, the turn can end when that earlier work does.
 - Work an agent does between your prompts, such as answering a peer, does not show live in T3 Code.
 - An agent on another machine's manager shows its conversation and tool calls, but T3 Code shows no diffs or checkpoints for it.
 - A rollback in T3 Code starts a fresh session, which spawns a new agent.

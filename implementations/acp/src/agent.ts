@@ -6,6 +6,10 @@
  * with that prompt as its kickoff, in the session's folder, through the session's manager. The seat
  * belongs to the manager and outlives this process.
  *
+ * A later prompt is a direct message from the operator. Cotal does not tie a message to the run it
+ * starts, so that prompt answers when the seat stops working: its presence is no longer `working` and
+ * no run that started after the message is open. A seat that does not start working soon after the message ends the prompt too.
+ *
  * Every update of a turn is sent before the prompt answers. A client may drop updates that arrive
  * after a prompt settled, so nothing is left to send afterwards.
  */
@@ -25,7 +29,12 @@ export const COMMANDS = [
 
 /** How long a seat may be absent from the roster during a turn before the turn fails. */
 const ABSENT_MS = 20_000;
-const WATCH_MS = 2_000;
+const WATCH_MS = 250;
+/** How long a later prompt waits for the seat to start working on it. */
+export const START_MS = 30_000;
+/** How long a seat must stay stopped, with no run open, before a later prompt answers. Presence and
+ *  the last frames travel separately, so this lets the last frames arrive first. */
+export const SETTLE_MS = 2_000;
 /** Frames from a seat no session holds are kept this long, in case a spawn reply names it next. */
 const UNCLAIMED_MS = 120_000;
 const UNCLAIMED_FRAMES = 500;
@@ -45,15 +54,26 @@ export interface CotalAgentOptions {
   readonly version: string;
   /** Mints a new session's id, which becomes its seat's name. */
   readonly newName?: () => string;
+  /** Overrides `START_MS` and `SETTLE_MS`. */
+  readonly waits?: { readonly startMs?: number; readonly settleMs?: number };
 }
 
 interface Turn {
   readonly stop: (reason: StopReason) => void;
   readonly fail: (error: Error) => void;
-  /** The run that answers this prompt, once it started. */
-  runId?: string;
-  /** A run that starts at or after this time answers the prompt. */
+  /** `run`: the first run that starts at or after `after` answers the prompt. `idle`: the prompt
+   *  answers once the seat started working and stopped again. */
+  readonly until: "run" | "idle";
+  /** Runs that start at or after this time belong to the prompt. */
   readonly after: number;
+  /** The run that answers a `run` prompt, once it started. */
+  runId?: string;
+  /** The runs that started at or after `after`. One that fails fails the prompt. */
+  readonly runs: Set<string>;
+  /** The seat has been seen working since the prompt was sent. */
+  started: boolean;
+  /** Since when the seat has been stopped with no run open. */
+  quietSince?: number;
   lastSeen: number;
   timer?: ReturnType<typeof setInterval>;
 }
@@ -65,6 +85,9 @@ interface Session {
   selection: Selection;
   seat?: SeatRef;
   mapper: FrameMapper;
+  /** The seat's runs that started and have not ended, with when each started. A later prompt answers
+   *  only once its own runs ended. */
+  open: Map<string, number>;
   turn?: Turn;
   client: AgentContext;
 }
@@ -102,6 +125,8 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
   let opened: Promise<Mesh> | undefined;
   let stopFollowing: (() => void) | undefined;
   const newName = options.newName ?? defaultName;
+  const startMs = options.waits?.startMs ?? START_MS;
+  const settleMs = options.waits?.settleMs ?? SETTLE_MS;
 
   const send = (session: Session, update: SessionUpdate, replay = false): Promise<void> =>
     session.client.notify(methods.client.session.update, { sessionId: session.id, update, ...(replay ? { _meta: { isReplay: true } } : {}) });
@@ -125,19 +150,26 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
   const deliver = (session: Session, frame: SeatFrame): void => {
     const { updates, runs } = session.mapper.map(frame);
     for (const update of updates) void send(session, update).catch((e: Error) => options.log(`session ${session.id}: update not sent: ${e.message}`));
-    for (const run of runs) onRun(session, run);
+    for (const run of runs) {
+      if (run.kind === "start") session.open.set(run.runId, run.ts);
+      else session.open.delete(run.runId);
+      onRun(session, run);
+    }
   };
 
   const onRun = (session: Session, run: RunSignal): void => {
     const turn = session.turn;
     if (!turn) return;
     if (run.kind === "start") {
-      if (turn.runId === undefined && run.ts >= turn.after) turn.runId = run.runId;
+      if (run.ts < turn.after) return;
+      turn.runs.add(run.runId);
+      turn.started = true;
+      turn.runId ??= run.runId;
       return;
     }
-    if (run.runId !== turn.runId) return;
+    if (!turn.runs.has(run.runId)) return;
     if (run.outcome === "error") turn.fail(new Error(`${session.seat?.name ?? session.id}'s turn failed${run.message ? `: ${run.message}` : ""}`));
-    else turn.stop("end_turn");
+    else if (turn.until === "run" && run.runId === turn.runId) turn.stop("end_turn");
   };
 
   const mesh = (): Promise<Mesh> => {
@@ -164,6 +196,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
     if (session.seat) byPrincipal.delete(principal(session.seat));
     session.seat = undefined;
     session.mapper = new FrameMapper();
+    session.open = new Map();
   };
 
   const offerFor = async (m: Mesh, machine?: string): Promise<Offer> => {
@@ -183,8 +216,10 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
     await send(session, { sessionUpdate: "available_commands_update", availableCommands: COMMANDS.map((c) => ({ ...c })) });
   };
 
-  /** Run one turn to its end. Every update is sent before this resolves. */
-  const runTurn = (session: Session, m: Mesh, after: number, start: () => Promise<void>): Promise<StopReason> =>
+  /** Run one turn to its end. Every update is sent before this resolves. A `run` prompt belongs to the
+   *  seat's first run. An `idle` prompt's runs are the ones that start at or after the time `start`
+   *  resolves with. */
+  const runTurn = (session: Session, m: Mesh, until: Turn["until"], start: () => Promise<number | void>): Promise<StopReason> =>
     new Promise<StopReason>((resolve, reject) => {
       let settled = false;
       const finish = (close: "completed" | "failed", then: () => void) => {
@@ -195,8 +230,13 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         const closes = session.mapper.closeOpen(close).map((u) => send(session, u));
         void Promise.allSettled(closes).then(then);
       };
+      // A fresh seat's first run answers its kickoff prompt, whatever its clock says.
+      let after = until === "run" ? 0 : Infinity;
       const turn: Turn = {
-        after,
+        until,
+        get after() { return after; },
+        runs: new Set(),
+        started: false,
         lastSeen: Date.now(),
         stop: (reason) => finish("completed", () => resolve(reason)),
         fail: (error) => finish("failed", () => reject(RequestError.internalError(undefined, error.message))),
@@ -204,10 +244,37 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       session.turn = turn;
       turn.timer = setInterval(() => {
         if (!session.seat) return;
-        if (m.presence(session.seat) !== undefined) turn.lastSeen = Date.now();
-        else if (Date.now() - turn.lastSeen > ABSENT_MS) turn.fail(new Error(`${session.seat.name} left the mesh during its turn`));
+        const now = Date.now();
+        const status = m.presence(session.seat);
+        if (status === undefined) {
+          if (now - turn.lastSeen > ABSENT_MS) turn.fail(new Error(`${session.seat.name} left the mesh during its turn`));
+          return;
+        }
+        turn.lastSeen = now;
+        if (until !== "idle" || after === Infinity) return;
+        if (status === "working") turn.started = true;
+        if (!turn.started) {
+          if (now - after > startMs) {
+            clearInterval(turn.timer);
+            const line = `${session.seat.name} has the message but has not started on it yet.`;
+            void send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } }).finally(() => turn.stop("end_turn"));
+          }
+          return;
+        }
+        const running = [...turn.runs].some((id) => session.open.has(id));
+        if (status === "working" || running) turn.quietSince = undefined;
+        else if (now - (turn.quietSince ??= now) >= settleMs) turn.stop("end_turn");
       }, WATCH_MS);
-      start().catch((e: Error) => turn.fail(e));
+      start().then((at) => {
+        if (at === undefined) return;
+        after = at;
+        // A run may have started while the message was being stored.
+        for (const [runId, ts] of session.open) {
+          if (ts < at) continue;
+          turn.runs.add(runId);
+          turn.started = true;
+        }
+      }, (e: Error) => turn.fail(e));
     });
 
   const slash = async (session: Session, m: Mesh, text: string): Promise<StopReason | undefined> => {
@@ -261,7 +328,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       const m = await mesh();
       const offer = await offerFor(m);
       const id = newName();
-      const session: Session = { id, cwd: params.cwd, offer, selection: initialSelection(offer), mapper: new FrameMapper(), client };
+      const session: Session = { id, cwd: params.cwd, offer, selection: initialSelection(offer), mapper: new FrameMapper(), open: new Map(), client };
       sessions.set(id, session);
       setImmediate(() => void announce(session).catch(() => {}));
       return { sessionId: id, configOptions: configOptions(offer, session.selection) };
@@ -291,12 +358,15 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       const handled = await slash(session, m, text);
       if (handled) return { stopReason: handled };
       if (!text) throw RequestError.invalidParams(undefined, "the prompt is empty");
-      if (session.seat) throw RequestError.internalError(undefined, "a later prompt to a running agent is not available yet");
+      const running = session.seat;
+      if (running) {
+        const stopReason = await runTurn(session, m, "idle", async () => (await m.dm(running, text)).storedAt);
+        return { stopReason };
+      }
       const { agent: harness, model } = parseModel(session.selection.model);
       const why = refusal(session.offer.catalogs, harness);
       if (why) throw RequestError.invalidParams(undefined, why);
-      // A fresh seat's first run answers its kickoff prompt, whatever its clock says.
-      const stopReason = await runTurn(session, m, 0, async () => {
+      const stopReason = await runTurn(session, m, "run", async () => {
         const seat = await m.spawn({
           name: session.id,
           agent: harness,
@@ -346,6 +416,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         offer,
         selection: { ...base, model: `${row.agent}/${row.model ?? "default"}`, ...(row.managerInstanceId ? { machine: row.managerInstanceId } : {}) },
         mapper: new FrameMapper(),
+        open: new Map(),
         client,
       };
       const previous = sessions.get(row.name);

@@ -11,6 +11,8 @@
  *    turn reaches the client before the prompt answers, frames that beat the spawn reply are kept,
  *    and a tool call left open is closed;
  *  - a failed run fails the prompt with the seat's message;
+ *  - a later prompt is a direct message, and answers once the seat stopped working and the runs it
+ *    started ended, or once the seat did not start on it in time;
  *  - `session/list` hides deleted runs and matches a folder through symlinks;
  *  - `session/load` replays before it answers, marked as replay, then follows live;
  *  - the slash commands answer locally, and `/despawn` stops the seat.
@@ -50,7 +52,11 @@ class FakeMesh implements Mesh {
   despawned: string[] = [];
   rows: SeatRow[] = [];
   history = new Map<string, SeatFrame[]>();
-  present = new Set<string>();
+  /** Presence status by actor. */
+  present = new Map<string, string>();
+  dms: { seat: string; text: string }[] = [];
+  /** What a seat does when a direct message reaches it. */
+  onDm: (seat: SeatRef) => void = () => {};
   closed = false;
   /** Frames a spawned seat publishes: `before` ahead of the spawn reply, `after` once it answered. */
   script: { before: AguiEventLike[][]; after: AguiEventLike[][] } = { before: [], after: [] };
@@ -67,7 +73,7 @@ class FakeMesh implements Mesh {
   async spawn(req: SpawnRequest): Promise<SeatRef> {
     this.spawned.push(req);
     const seat: SeatRef = { name: req.name, owner: "local", actor: `actor-${req.name}`, lifecycleUid: `life-${req.name}`, managerInstanceId: "m1" };
-    this.present.add(seat.actor);
+    this.present.set(seat.actor, "working");
     for (const e of this.script.before) this.emit(seat, e);
     const after = this.script.after;
     setTimeout(() => { for (const e of after) this.emit(seat, e); }, 10);
@@ -75,10 +81,15 @@ class FakeMesh implements Mesh {
   }
   async seats() { return this.rows; }
   async despawn(seat: SeatRef) { this.despawned.push(seat.name); }
-  async dm(): Promise<{ storedAt: number }> { throw new Error("not used"); }
+  async dm(seat: SeatRef, text: string): Promise<{ storedAt: number }> {
+    this.dms.push({ seat: seat.name, text });
+    const storedAt = Date.now();
+    this.onDm(seat);
+    return { storedAt };
+  }
   followFrames(on: (f: SeatFrame) => void) { this.listeners.push(on); return () => (this.listeners = this.listeners.filter((l) => l !== on)); }
   async frameHistory(seat: SeatRef) { return this.history.get(seat.name) ?? []; }
-  presence(seat: SeatRef) { return this.present.has(seat.actor) ? "working" : undefined; }
+  presence(seat: SeatRef) { return this.present.get(seat.actor); }
   async roster() { return [{ name: "alice", status: "idle", role: "reviewer" }]; }
   async channels() { return ["general", "ops"]; }
   async close() { this.closed = true; }
@@ -94,7 +105,7 @@ function connect(open: () => Promise<Mesh>, terminal = true) {
   const updates: SessionNotification[] = [];
   const hidden = new MemoryHidden();
   let n = 0;
-  const app = cotalAgent({ mesh: open, hidden, log: () => {}, version: "0.0.0-smoke", newName: () => `acp-s${++n}` });
+  const app = cotalAgent({ mesh: open, hidden, log: () => {}, version: "0.0.0-smoke", newName: () => `acp-s${++n}`, waits: { startMs: 300, settleMs: 100 } });
   const conn = client({ name: "smoke" })
     .onNotification(methods.client.session.update, ({ params }) => void updates.push(params))
     .connect(app);
@@ -195,6 +206,31 @@ check("/roster answers locally", roster.stopReason === "end_turn" && updates.som
 updates.length = 0;
 await agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "/channels" }] });
 check("/channels lists the space's channels", updates.some((u) => JSON.stringify(u.update).includes("#general")), updates);
+
+// later prompts
+const actor = `actor-${sid}`;
+const after = (ms: number, f: () => void) => void setTimeout(f, ms);
+mesh.present.set(actor, "idle");
+mesh.onDm = (seat) => {
+  after(20, () => { mesh.present.set(actor, "working"); mesh.emit(seat, [{ type: "RUN_STARTED", runId: "r2" }, { type: "TEXT_MESSAGE_START", messageId: "a", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "a", delta: "on it" }], "r2"); });
+  // Presence reports idle before the run's last frame arrives.
+  after(250, () => mesh.present.set(actor, "idle"));
+  after(700, () => mesh.emit(seat, [{ type: "TEXT_MESSAGE_CONTENT", messageId: "a", delta: " and done" }, { type: "TEXT_MESSAGE_END", messageId: "a" }, { type: "RUN_FINISHED", runId: "r2" }], "r2"));
+};
+updates.length = 0;
+const later = await within(agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "and again" }] }));
+const laterSeen = updates.filter((u) => u.sessionId === sid).map((u) => JSON.stringify(u.update)).join("\n");
+check("a later prompt goes to the seat as a direct message", mesh.dms.length === 1 && mesh.dms[0]!.seat === sid && mesh.dms[0]!.text === "and again", mesh.dms);
+check("a later prompt answers end_turn once the seat stopped working", later?.stopReason === "end_turn", later);
+check("a later prompt answers only after the runs it started ended", laterSeen.includes(" and done"), laterSeen);
+mesh.onDm = () => {};
+updates.length = 0;
+const ignored = await within(agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "anyone?" }] }));
+check("a later prompt the seat does not start on answers, and says so", ignored?.stopReason === "end_turn" && updates.some((u) => JSON.stringify(u.update).includes("has not started on it")), { ignored, updates });
+mesh.onDm = (seat) => after(20, () => mesh.emit(seat, [{ type: "RUN_STARTED", runId: "r3" }, { type: "RUN_ERROR", message: "out of credit" }], "r3"));
+const laterFailed = await errorOf(within(agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "once more" }] })));
+check("a failed run after a later prompt fails it with the seat's message", laterFailed?.code === -32603 && laterFailed.message?.includes("out of credit") === true, laterFailed);
+mesh.onDm = () => {};
 
 // list and delete
 mesh.rows = [
