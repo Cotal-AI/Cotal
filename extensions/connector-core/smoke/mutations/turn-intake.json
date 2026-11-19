@@ -171,7 +171,7 @@
     },
     {
       "name": "MO4 (MP8): drop COTAL_MANAGER_INSTANCE from Manager.startAgent local spawn spec.env",
-      "file": "implementations/manager/src/seat-launch.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "        spec = connector.buildLaunch(launchOpts);\n        if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);\n        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };",
       "replace": "        spec = connector.buildLaunch(launchOpts);\n        if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);\n        spec.env = { ...spec.env };",
       "expectRed": "R3a: Manager.startAgent local spawn sets COTAL_MANAGER_INSTANCE on spec.env when the connector buildLaunch does not",
