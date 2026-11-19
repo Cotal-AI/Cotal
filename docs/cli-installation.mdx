@@ -45,6 +45,7 @@ Setup saves preparation before a separate startup decision. Configure-only is th
 application, runtimes, project folder and space.
 It shows the answers before it writes: Save writes them, Change asks every question again with the
 answers kept, and Cancel saves nothing.
+An empty `--project` is refused before setup writes anything. Use `--project .` for the current folder.
 
 Choose Cloud to set up a space of your Cotal Cloud account. When no Cloud space is registered on
 this machine, setup signs you in first: it prints the approval link and code, opens your browser,
@@ -256,8 +257,10 @@ reconciliation children. A relative `--creds` path keeps its meaning from the or
 After `update --self` replaces the installation, its verified replacement waits up to 120 seconds
 for the recorded same-installation daemon to load the new version and its intended hosted Managers
 to answer. It prints this wait before the continuity check. The daemon owns its automatic restart;
-the updater does not start a competing restart. Connector reconciliation still requires the
-continuity check to answer. If activation does not finish, the failure names the last daemon or
+the updater does not start a competing native job. On Linux, after a manual update verifies and
+reconciles the replacement, it asks the prepared daemon to exit so systemd can start the new version.
+Connector reconciliation still requires the continuity check to answer. If activation does not
+finish, the failure names the last daemon or
 Manager state and asks you to inspect `cotal daemon status` and the recorded user service, restore
 the connection, then run `cotal update` again. A machine without a recorded daemon service keeps
 the existing update path.
@@ -736,8 +739,10 @@ the seed keeps stdout to itself:
 | `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current. Refuses to downgrade a newer shared store. |
 
-Maintenance flags may precede `seed`: `cotal ext --repair seed` is equivalent to
-`cotal ext seed --repair`, including when the extensions manifest is corrupt.
+Pass at most one maintenance flag. Flags may precede `seed`: `cotal ext --repair seed` is
+equivalent to `cotal ext seed --repair`. If the extensions manifest is corrupt, repair moves
+the damaged file aside and rebuilds the built-in inventory. Add any third-party extensions
+recorded in that file again with `cotal ext add`.
 
 A seed that fails names the connector and the reason, such as npm missing from PATH. Until
 `cotal ext seed --repair` finishes it, each command that seeds refuses. The refusal says whether
@@ -849,7 +854,8 @@ Only an automatically adopted selection yields to a running space registered for
 With no space running here it is the selected space, or the only running one.
 With none of those it reads your defaults. `--user` reads your defaults alone.
 
-`set` and `unset` change your defaults, or your values for one space with `--space`. Only `harness`
+`set` and `unset` change your defaults, or your values for one space with `--space`.
+`config set` saves a preference without installing or refreshing connectors. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
 machine, and refuses any other name with `TARGET_NOT_FOUND` (exit 2) and the known spaces.
 A read and `unset --space` also take a space that still holds a saved value, so a value left for

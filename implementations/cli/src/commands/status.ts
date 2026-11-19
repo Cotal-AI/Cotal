@@ -42,6 +42,7 @@ import {
   type RolledBackRun,
   brokerAddressForDisplay,
   brokerCheck,
+  brokerUrlKey,
   canonicalRoot,
   CLI_USER_ACTOR,
   codeSpan,
@@ -2859,14 +2860,15 @@ async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | u
   try {
     const context = { root: target.root, space: target.space };
     const journal = readStackJournal(target.root)?.journal;
-    if (journal?.space === target.space && journal.server === target.server) {
+    const serverKey = brokerUrlKey(target.server);
+    if (journal?.space === target.space && brokerUrlKey(journal.server) === serverKey) {
       const member = journal.members.find((row) => row.role === "broker");
       const instance = serviceInstances(target.space, STACK_DEFINITION.broker).find((row) => row.name === member?.instanceId);
       const observed = instance && instanceProjection(instance).observedProcess;
       if (!instance || observed && ["gone", "foreign-pid", "previous-boot"].includes(observed))
         return { name: "broker", verdict: "absent", facts: [`registered ${address}`, observed ?? "no local instance"] };
       if (observed !== "running") return { name: "broker", verdict: "refused", facts: [`registered ${address}`, `local process ${observed}`] };
-    } else if (target.origin === "up" && target.mode !== "user" && (target.recordedServer === undefined || target.recordedServer === target.server)) {
+    } else if (target.origin === "up" && target.mode !== "user" && (target.recordedServer === undefined || brokerUrlKey(target.recordedServer) === serverKey)) {
       const record = processRecord(NATS_PIDFILE, context);
       const verdict = processVerdict(record);
       if (verdict) return { name: "broker", verdict, facts: [`registered ${address}`, ...pidFacts(record), ...(record.kind === "dead" ? ["stale pidfile"] : [])] };

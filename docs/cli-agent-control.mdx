@@ -499,8 +499,10 @@ A write the manager cannot confirm, such as a terminal write that failed partway
 the seat before you send it again.
 
 With no manager running, as after `cotal service stop stack-manager`, `input` refuses
-`TARGET_UNAVAILABLE` (exit 2) before it sends anything and names bare `cotal up`, as `ps` does.
-`stop` and `attach` find their seat the same way and refuse the same. A manager that stays
+`TARGET_UNAVAILABLE` (exit 2) before it sends anything. `stop` and `attach` find their seat the
+same way and refuse the same. Like `ps`, they name the local project where `cotal up` starts the
+manager. For a space that runs elsewhere, they tell you to start the manager where its stack runs.
+A manager that stays
 registered but does not answer, such as one that crashed, leaves `input` and `stop` waiting out its
 answer deadline. They then refuse `TARGET_UNAVAILABLE` too, since nothing was sent, with
 `cotal status` as the next step.

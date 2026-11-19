@@ -5,9 +5,9 @@ import { ensureDirNoSymlink, writeSecretFileCreateOnly } from "@cotal-ai/core";
 import { CommandFailure, protectedLocalDirectory, readLocalRecordSource } from "@cotal-ai/workspace";
 
 function ownedDirectory(path: string, privateState = false): void {
-  protectedLocalDirectory(path);
+  const privateAncestor = protectedLocalDirectory(path);
   const stat = lstatSync(path);
-  if (process.getuid === undefined || !stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & (privateState ? 0o077 : 0o022)) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the proposed systemd state directory is not owned and protected; no unit file was published");
+  if (process.getuid === undefined || !stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & (privateState ? 0o077 : privateAncestor ? 0o002 : 0o022)) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the proposed systemd state directory is not owned and protected; no unit file was published");
 }
 
 /** Check the unit directory without creating it. Missing descendants are allowed only beneath
