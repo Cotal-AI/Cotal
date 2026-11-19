@@ -7,7 +7,8 @@ import {
   validateServiceStartupPath, type LocalProcess, type ServicePreset,
 } from "@cotal-ai/workspace";
 import { authServiceFlags } from "./daemon-flags.js";
-import { authServiceConfiguration, runAuthService } from "./service.js";
+import { authServiceConfiguration } from "./service.js";
+import { runAuthService } from "./service-host.js";
 
 const daemonOptions = authServiceFlags.filter((flag) => flag.name !== "space");
 const portOptions = new Set(["port", "exchange-public-port"]);

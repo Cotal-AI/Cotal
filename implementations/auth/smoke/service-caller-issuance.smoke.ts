@@ -22,7 +22,7 @@ import { ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../src/st
 import { saveIdpSession } from "../src/login.js";
 import { serviceEndpointHostCall, type ServiceEndpointValues } from "../src/service-host-client.js";
 import { deriveOwnerForIdpSubject } from "../src/derive.js";
-import { startAuthService, type AuthServiceHandle } from "../src/service.js";
+import { startAuthService, type AuthServiceHandle } from "../src/service-host.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { checks } from "./_service-custody-fixture.js";
 
