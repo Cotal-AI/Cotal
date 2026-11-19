@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1095,
+    "total": 1096,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 873
+    "non-render/control": 874
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -7487,6 +7487,13 @@
       "anchor": "rt.claimGlobalUpdate(root)",
       "class": "non-render/control",
       "rationale": "Recovery claims installation mutation custody for a validated npm root, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "process.exitCode = result.status ?? 1",
+      "class": "non-render/control",
+      "rationale": "The resumed update inherits its child process exit status, not an agent presence or activity state."
     },
     {
       "path": "implementations/cli/src/commands/update.ts",
