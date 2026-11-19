@@ -43,6 +43,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pickFreePort } from "../../manager/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-fg-events-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-fg-events-root-"));
@@ -105,7 +106,7 @@ const inputProbe: Connector = {
   eventChannel: undefined,
   foregroundLaunchRefusal: ({ model }) => model ? undefined : {
     message: "the probe needs a resolved model",
-    spawnExampleArgs: "--harness fg-probe-inputs --model <model>",
+    modelRequired: true,
   },
 };
 registry.register(inputProbe);
@@ -228,16 +229,20 @@ try {
     try {
       const missing = await openRun(["--agent", "fg-probe-binary"]);
       check("a missing harness refuses before launch construction", missing.opts === undefined && missing.exited === 2, missing.stderr);
-      const bothMissing = await openRun(["--harness", "fg-probe-inputs"]);
+      const bothMissing = await openRun(["--harness", "fg-probe-inputs", "--name", "kept_name"]);
       check("missing binary and input are both reported with a corrected example before launching",
         bothMissing.opts === undefined && bothMissing.exited === 2 && bothMissing.stderr.includes("DEPENDENCY_UNAVAILABLE")
           && bothMissing.stderr.includes("needs opencode on PATH") && bothMissing.stderr.includes("the probe needs a resolved model")
-          && bothMissing.stderr.includes("spawn --harness fg-probe-inputs --model <model>")
+          && bothMissing.stderr.includes(`--file ${shellWord(persona)} --server ${server} --space fgevents --harness fg-probe-inputs --name kept_name --no-events --model <model>`)
           && !bothMissing.stderr.includes("then retry:"), bothMissing.stderr);
       const incompatible = await run(["spawn", "--foreground", "--file", persona, "--space", "fgremote", "--harness", "fg-probe-inputs"]);
       check("required event policy refuses without suggesting a launch that cannot run in the space",
         incompatible.opts === undefined && incompatible.exited === 1 && incompatible.stderr.includes("requires the event plane by registration policy")
           && !incompatible.stderr.includes("then retry:") && !incompatible.stderr.includes("--model <model>"), incompatible.stderr);
+      const explicitEvents = await openRun(["--harness", "fg-probe-inputs", "--events", "--model", "test-model"]);
+      check("explicit unsupported events are refused before giving a missing-binary retry",
+        explicitEvents.opts === undefined && explicitEvents.exited === 1 && explicitEvents.stderr.includes("omit --events")
+          && !explicitEvents.stderr.includes("then retry:"), explicitEvents.stderr);
       const configured = await openRun(["--harness", "fg-probe-inputs", "--model", "test-model"]);
       check("an already configured launch still gets the original retry for a missing binary",
         configured.exited === 2 && configured.stderr.includes("DEPENDENCY_UNAVAILABLE")
@@ -416,7 +421,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 30;
+const EXPECTED = 31;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

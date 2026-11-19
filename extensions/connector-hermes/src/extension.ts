@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
-import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, requireAdoptedDirectory, requireManagedModel } from "./profile-inputs.js";
+import { ADOPT_HOME_ENV, LaunchRefused, ManagedModelRequired, adoptedHome, requireManagedModel, validateAdoptedProfile } from "./profile-inputs.js";
 import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
@@ -48,18 +48,14 @@ export const hermesConnector: Connector = {
   // `uv` is the external harness. It provisions the project-pinned `hermes` command below, so a
   // separately installed `hermes` on PATH is neither required nor sufficient to launch this seat.
   requires: ["uv"],
-  foregroundLaunchRefusal({ model }) {
-    let spawnExampleArgs: string | undefined;
+  foregroundLaunchRefusal({ model, hasPersona }) {
     try {
       const home = adoptedHome();
-      if (home) requireAdoptedDirectory(home);
-      else {
-        spawnExampleArgs = "--harness hermes --no-events --model <model>";
-        requireManagedModel(model);
-      }
+      if (home) validateAdoptedProfile(home, hasPersona);
+      else requireManagedModel(model);
     } catch (error) {
       if (!(error instanceof LaunchRefused)) throw error;
-      return { message: error.message, spawnExampleArgs };
+      return { message: error.message, modelRequired: error instanceof ManagedModelRequired };
     }
   },
   buildLaunch(opts: LaunchOpts): LaunchSpec {

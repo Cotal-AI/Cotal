@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, discardLaunchArtifacts, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
-import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, requireAdoptedDirectory, requireManagedModel } from "./profile-inputs.js";
+import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, requireManagedModel, validateAdoptedProfile } from "./profile-inputs.js";
 import { startSidecar } from "./sidecar.js";
 import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
 
@@ -175,13 +175,7 @@ const cmp = (a: [number, number], b: [number, number]): number => a[0] - b[0] ||
  * silent enable would be a write to a human's configuration that they never asked for.
  */
 export function setupAdoptedProfile(home: string, opts: { persona?: string }): void {
-  requireAdoptedDirectory(home);
-
-  // A persona is applied by overwriting SOUL.md, which this mode must not touch. Accepting one and
-  // never applying it would leave the operator waiting on an identity that never took effect, so
-  // it is refused the same way an unsubmittable initial prompt is.
-  if (opts.persona)
-    throw new Error(`${ADOPT_HOME_ENV} runs the operator's own profile, whose SOUL.md is not overwritten, so the agent file's persona cannot be applied — remove the persona from the agent file, or drop ${ADOPT_HOME_ENV} to use a managed profile`);
+  validateAdoptedProfile(home, Boolean(opts.persona));
 
   const pluginDst = join(home, "plugins", "cotal");
   rmSync(pluginDst, { recursive: true, force: true });

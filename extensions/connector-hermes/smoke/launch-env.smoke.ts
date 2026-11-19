@@ -9,7 +9,7 @@
  */
 import { strict as nodeAssert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -53,7 +53,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 181;
+const EXPECTED_CELLS = 184;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -353,19 +353,27 @@ process.env.COTAL_HERMES_ADOPT_HOME = "/srv/op/.hermes";
 const adoptEnv = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-adopt" }).env ?? {};
 assert.equal(adoptEnv.COTAL_HERMES_ADOPT_HOME, "/srv/op/.hermes", "the adopt-home opt-in reaches the launcher");
 process.env.COTAL_HERMES_ADOPT_HOME = opAdopt;
-assert.equal(hermesConnector.foregroundLaunchRefusal!({}), undefined, "an existing adopted profile needs no explicit model");
+const checkInputs = (model?: string, hasPersona = false) => hermesConnector.foregroundLaunchRefusal!({ model, hasPersona });
+assert.equal(checkInputs(), undefined, "an existing adopted profile needs no explicit model");
+assert.match(checkInputs(undefined, true)?.message ?? "", /persona cannot be applied/, "an adopted profile cannot apply persona text");
 process.env.COTAL_HERMES_ADOPT_HOME = join(opAdopt, "no-such-profile");
-assert.match(hermesConnector.foregroundLaunchRefusal!({})?.message ?? "", /does not exist/, "a missing adopted profile does not satisfy preflight");
+assert.match(checkInputs()?.message ?? "", /does not exist/, "a missing adopted profile does not satisfy preflight");
 process.env.COTAL_HERMES_ADOPT_HOME = join(opAdopt, "config.yaml");
-assert.match(hermesConnector.foregroundLaunchRefusal!({})?.message ?? "", /is not a directory/, "a file cannot be adopted as a profile");
+assert.match(checkInputs()?.message ?? "", /is not a directory/, "a file cannot be adopted as a profile");
+const loop = join(opAdopt, "loop");
+symlinkSync(loop, loop);
+process.env.COTAL_HERMES_ADOPT_HOME = loop;
+const loopingAdopt = checkInputs();
+assert.match(loopingAdopt?.message ?? "", /Cannot inspect.*ELOOP/, "a cyclic path is an actionable refusal");
+assert.equal(loopingAdopt?.modelRequired, false, "fixing a cyclic path does not need a model flag");
 process.env.COTAL_HERMES_ADOPT_HOME = "relative-profile";
-const relativeAdopt = hermesConnector.foregroundLaunchRefusal!({ model: "vendor/model" });
+const relativeAdopt = checkInputs("vendor/model");
 assert.match(relativeAdopt?.message ?? "", /is not an absolute path/, "a model cannot mask an invalid adopt-home path");
-assert.equal(relativeAdopt?.spawnExampleArgs, undefined, "a model flag cannot fix the adopt-home path");
+assert.equal(relativeAdopt?.modelRequired, false, "a model flag cannot fix the adopt-home path");
 process.env.COTAL_HERMES_ADOPT_HOME = "   ";
-assert.equal(hermesConnector.foregroundLaunchRefusal!({})?.spawnExampleArgs, "--harness hermes --no-events --model <model>", "a blank opt-in still needs a model");
+assert.equal(checkInputs()?.modelRequired, true, "a blank opt-in still needs a model");
 delete process.env.COTAL_HERMES_ADOPT_HOME;
-assert.equal(hermesConnector.foregroundLaunchRefusal!({ model: "vendor/model" }), undefined, "a managed profile accepts a resolved model");
+assert.equal(checkInputs("vendor/model"), undefined, "a managed profile accepts a resolved model");
 const plainEnv = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-plain" }).env ?? {};
 assert.ok(!("COTAL_HERMES_ADOPT_HOME" in plainEnv), "without the opt-in the child gets the managed default");
 

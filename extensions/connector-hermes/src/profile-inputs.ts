@@ -9,8 +9,10 @@ const MISSING_MANAGED_MODEL =
 /** A launch refusal the launcher prints as a diagnosis without an internal stack. */
 export class LaunchRefused extends Error {}
 
+export class ManagedModelRequired extends LaunchRefused {}
+
 export function requireManagedModel(model: string | undefined): asserts model is string {
-  if (!model) throw new LaunchRefused(MISSING_MANAGED_MODEL);
+  if (!model) throw new ManagedModelRequired(MISSING_MANAGED_MODEL);
 }
 
 /** A blank opt-in means a managed profile. Refuse relative paths to keep the profile independent
@@ -23,10 +25,19 @@ export function adoptedHome(env: NodeJS.ProcessEnv = process.env): string | unde
   return raw;
 }
 
-export function requireAdoptedDirectory(home: string): void {
-  const profile = statSync(home, { throwIfNoEntry: false });
+export function validateAdoptedProfile(home: string, hasPersona: boolean): void {
+  let profile;
+  try {
+    profile = statSync(home, { throwIfNoEntry: false });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (typeof code !== "string") throw error;
+    throw new LaunchRefused(`Cannot inspect ${ADOPT_HOME_ENV}=${home} (${code}). Point it at an accessible Hermes profile directory.`, { cause: error });
+  }
   if (!profile)
     throw new LaunchRefused(`${ADOPT_HOME_ENV}=${home} does not exist. Point it at an existing Hermes profile directory, usually ~/.hermes.`);
   if (!profile.isDirectory())
     throw new LaunchRefused(`${ADOPT_HOME_ENV}=${home} is not a directory. Point it at your Hermes profile directory.`);
+  if (hasPersona)
+    throw new LaunchRefused(`${ADOPT_HOME_ENV} runs your own profile, whose SOUL.md is not overwritten, so the agent file's persona cannot be applied. Remove the persona text from the agent file or unset ${ADOPT_HOME_ENV} to use a managed profile.`);
 }

@@ -1454,18 +1454,27 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
-  // A required event plane makes this connector unusable in the space, regardless of its local
-  // prerequisites. Refuse before suggesting a different invocation that cannot run here either.
-  if (eventsRequired && !connector.eventChannel) {
-    console.error(c.red(`✗ ${policySpace} requires the event plane by registration policy, but connector "${connector.name}" does not publish one`));
+  // Resolve the event plane before offering a dependency retry for an invocation that cannot run.
+  const supportsEvents = !!connector.eventChannel;
+  const launchEvents = eventsRequired || events === true || (events !== false && supportsEvents);
+  if (launchEvents && !supportsEvents) {
+    console.error(c.red(eventsRequired
+      ? `✗ ${policySpace} requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
+      : `✗ connector "${connector.name}" does not publish an AG-UI event plane; omit --events to launch it without one`));
     process.exit(1);
   }
   const binaryPins: Record<string, string | undefined> = { opencode: process.env.COTAL_OPENCODE_BIN, codex: process.env.COTAL_CODEX_BIN };
   const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(binaryPins[bin]?.trim() || bin));
-  const inputRefusal = connector.foregroundLaunchRefusal?.({ model });
-  const example = inputRefusal?.spawnExampleArgs
-    ? `Example: ${codeSpan(`${displayCmd()} spawn ${inputRefusal.spawnExampleArgs}`)}`
-    : undefined;
+  const inputRefusal = connector.foregroundLaunchRefusal?.({ model, hasPersona: Boolean(def.persona) });
+  let example: string | undefined;
+  if (inputRefusal?.modelRequired && handoffText === undefined && enrollmentUrl === undefined) {
+    const terminator = args.raw.indexOf("--");
+    const before = terminator < 0 ? args.raw : args.raw.slice(0, terminator);
+    const after = terminator < 0 ? [] : args.raw.slice(terminator);
+    const optOut = !supportsEvents && events !== false ? ["--no-events"] : [];
+    const words = [...before.map(shellWord), ...optOut, "--model", "<model>", ...after.map(shellWord)];
+    example = `Example: ${codeSpan(`${displayCmd()} spawn ${words.join(" ")}`)}`;
+  }
   if (missing.length) {
     const binaries = missing.join(", ");
     const guide = ["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/";
@@ -1540,17 +1549,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   let allowPublish = parseCommaList(values["allow-publish"]) ?? def.allowPublish;
-  // The AG-UI event plane, refused HERE for the same reason the manager refuses it before
-  // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
-  // roll back. The GRANT cannot be derived yet, because it is keyed on the principal and in user
-  // mode the owner is resolved inside the provisioning call below.
-  // Default events on only where supported. An explicit request or registration policy still refuses below.
-  const launchEvents = eventsRequired || events === true || (events !== false && !!connector.eventChannel);
+  // The event grant cannot be derived yet: it is keyed on the principal, and in user mode the
+  // owner is resolved inside the provisioning call below.
   const eventPayloads = policy?.eventPayloads !== "withheld" && !values["no-event-payloads"] && def.eventPayloads !== false;
-  if (launchEvents && !connector.eventChannel) {
-    console.error(c.red(`✗ connector "${connector.name}" does not publish an AG-UI event plane; omit --events to launch it without one`));
-    process.exit(1);
-  }
   // A REMOTE user mesh (registered with `meshes add --from`) that advertises a provisioning
   // endpoint: the mesh grants the row and pre-creates the durables inside the owner's envelope,
   // because the material to do that locally — the space's owner secret and account signer — only
