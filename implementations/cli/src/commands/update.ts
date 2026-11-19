@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { lookup } from "node:dns/promises";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isIP, SocketAddress } from "node:net";
@@ -103,6 +103,8 @@ interface CommandResult {
   readonly error?: string;
 }
 
+type NpmReadOptions = Pick<SpawnSyncOptions, "cwd" | "env">;
+
 export interface ExecutionReplacement {
   readonly entry: string;
   readonly journal: string;
@@ -165,7 +167,7 @@ export interface UpdateRuntime {
   checkout(): boolean;
   /** The verified prefix of an installed POSIX npm CLI, absent for a checkout or local/npx copy. */
   installPrefix(): string | undefined;
-  npm(args: string[], inherit?: boolean): CommandResult;
+  npm(args: string[], inherit?: boolean, options?: NpmReadOptions): CommandResult;
   npmAsync(args: string[]): Promise<CommandResult>;
   spawn(file: string, args: string[], env: NodeJS.ProcessEnv, inherit?: boolean): CommandResult;
   spawnGlobal(
@@ -1100,10 +1102,10 @@ function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok:
   }
 }
 
-function npmRead(rt: UpdateRuntime, args: string[]): CommandResult {
+function npmRead(rt: UpdateRuntime, args: string[], options?: NpmReadOptions): CommandResult {
   const cache = mkdtempSync(join(tmpdir(), "cotal-npm-view-"));
   try {
-    return rt.npm([...args, "--cache", cache, "--logs-max=0", "--update-notifier=false"]);
+    return rt.npm([...args, "--cache", cache, "--logs-max=0", "--update-notifier=false"], false, options);
   } finally {
     rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
@@ -1148,7 +1150,13 @@ async function npmProxyRefused(result: CommandResult, rt: UpdateRuntime): Promis
 
 /** npm hides protected values from `config get` but lists their redacted URLs in text mode. */
 function npmConfiguredProxy(rt: UpdateRuntime, registry: URL): URL | null {
-  const config = npmRead(rt, ["config", "list", "--long", "--no-json", "--color=false"]);
+  // npm config rejects workspace selection. Let npm find its project first, since disabling
+  // workspaces from a member would instead load that member's .npmrc.
+  const env = Object.fromEntries(Object.entries(rt.env).filter(([key]) => !/^npm_config_workspaces?$/i.test(key)));
+  const project = npmRead(rt, ["prefix"], { env });
+  const cwd = project.stdout.replace(/\r?\n$/, "");
+  if (project.status !== 0 || project.error || !isAbsolute(cwd) || /[\r\n]/.test(cwd)) return null;
+  const config = npmRead(rt, ["config", "list", "--no-workspaces", "--long", "--no-json", "--color=false"], { cwd, env });
   if (config.status !== 0 || config.error) return null;
   const proxies = new Map<string, string | null>();
   for (const line of config.stdout.split(/\r?\n/)) {
@@ -1163,10 +1171,10 @@ function npmConfiguredProxy(rt: UpdateRuntime, registry: URL): URL | null {
     } catch { return null; }
   }
   if (proxies.size !== 2) return null;
-  const env = new Map(Object.entries(rt.env).map(([key, value]) => [key.toLowerCase(), value]));
+  const proxyEnv = new Map(Object.entries(rt.env).map(([key, value]) => [key.toLowerCase(), value]));
   // npm-registry-fetch gives its HTTPS setting priority, then the npm agent checks the environment.
-  const proxy = proxies.get("https-proxy") || proxies.get("proxy") || env.get("https_proxy")
-    || (registry.protocol === "http:" ? env.get("http_proxy") || env.get("proxy") : undefined);
+  const proxy = proxies.get("https-proxy") || proxies.get("proxy") || proxyEnv.get("https_proxy")
+    || (registry.protocol === "http:" ? proxyEnv.get("http_proxy") || proxyEnv.get("proxy") : undefined);
   return proxy ? URL.parse(proxy) : null;
 }
 
@@ -1712,12 +1720,12 @@ async function runNpmAsync(args: string[]): Promise<CommandResult> {
   }
 }
 
-function runNpm(args: string[], inherit = false): CommandResult {
+function runNpm(args: string[], inherit = false, options?: NpmReadOptions): CommandResult {
   try {
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
     const result = spawnSync(file, spawnArgs, inherit
-      ? { stdio: "inherit", windowsVerbatimArguments }
-      : { encoding: "utf8", windowsVerbatimArguments });
+      ? { ...options, stdio: "inherit", windowsVerbatimArguments }
+      : { ...options, encoding: "utf8", windowsVerbatimArguments });
     return {
       status: result.status,
       stdout: `${result.stdout ?? ""}`,

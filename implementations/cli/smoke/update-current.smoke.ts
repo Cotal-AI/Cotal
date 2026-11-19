@@ -62,8 +62,8 @@ const proxyEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) =
 const proxyHome = mkdtempSync(join(tmpdir(), "cotal-update-proxy-"));
 try {
   const userConfig = join(proxyHome, "user.npmrc");
-  const update = (extra: NodeJS.ProcessEnv) => spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", "--self"], {
-    cwd: proxyHome, encoding: "utf8", timeout: 30_000,
+  const update = (extra: NodeJS.ProcessEnv, cwd = proxyHome) => spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", "--self"], {
+    cwd, encoding: "utf8", timeout: 30_000,
     env: { ...proxyEnv, HOME: proxyHome, USERPROFILE: proxyHome, COTAL_HOME: join(proxyHome, "cotal"),
       XDG_CONFIG_HOME: join(proxyHome, "config"), XDG_RUNTIME_DIR: join(proxyHome, "runtime"), TMPDIR: proxyHome, TMP: proxyHome, TEMP: proxyHome,
       LOCALAPPDATA: join(proxyHome, "local"), APPDATA: join(proxyHome, "roaming"),
@@ -98,6 +98,14 @@ try {
     assert.equal(offline.stdout.trim(), "The registry cannot be reached; nothing was changed.");
     assert.doesNotMatch(offline.stderr, /proxy refused/i);
   }
+  const project = join(proxyHome, "workspace"), member = join(project, "packages", "member");
+  mkdirSync(join(member, ".cotal"), { recursive: true });
+  writeFileSync(join(project, "package.json"), JSON.stringify({ private: true, workspaces: ["packages/*"] }));
+  writeFileSync(join(member, "package.json"), JSON.stringify({ name: "member", private: true }));
+  writeFileSync(join(project, ".npmrc"), `https-proxy=http://example-user:example-password@127.0.0.1:${proxyPort}\n`);
+  writeFileSync(join(member, ".npmrc"), `https-proxy=http://127.0.0.1:${registryPort}\n`);
+  checkRefusal(update({}, member));
+  checkRefusal(update({ NPM_CONFIG_WORKSPACE: "member" }, member));
 } finally {
   rmSync(proxyHome, { recursive: true, force: true });
 }

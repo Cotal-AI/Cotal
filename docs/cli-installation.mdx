@@ -423,8 +423,9 @@ transient network failures twice, waiting one second and then two seconds. The l
 keeps a single attempt. If npm reports a refused socket that Cotal can attribute to a configured
 HTTP(S) or SOCKS proxy, a manual `cotal update --self` exits 1 without replacing packages or
 reconciling connectors. Check `HTTP_PROXY`, `HTTPS_PROXY`, or npm's `proxy` and `https-proxy`
-settings and try again. Cotal does not print the proxy URL or bypass the proxy. A registry failure
-that cannot be attributed to a proxy remains a no-op. Missing archives or invalid
+settings and try again. From an npm workspace member, this check uses the workspace root's npm
+configuration. Cotal does not print the proxy URL or bypass the proxy. A registry failure that
+cannot be attributed to a proxy remains a no-op. Missing archives or invalid
 metadata refuse before global installation or connector reconciliation, with a registry propagation
 hint and a request to check registry access and try again in a few minutes. This preflight does not
 guarantee later registry requests or third-party dependency downloads will succeed.
