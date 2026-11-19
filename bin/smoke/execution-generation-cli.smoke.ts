@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -30,10 +30,12 @@ if (!["linux", "darwin"].includes(process.platform)) {
     assert.equal(JSON.parse(docs.stdout).command, "docs");
     const originalManifest = readFileSync(join(installed, "package.json"), "utf8");
     const originalVersion = JSON.parse(originalManifest).version as string;
+    writeExecutionDescriptor(installed, descriptor);
     writeFileSync(join(installed, "package.json"), JSON.stringify({ ...JSON.parse(originalManifest), version: "99.0.0" }));
     const publishing = spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });
     assert.equal(publishing.status, 0, publishing.stderr);
     assert.equal(publishing.stdout.split("\n")[0], `cotal-ai ${originalVersion}`, "loaded code identity must not come from newly published canonical metadata");
+    assert.equal(existsSync(executionDescriptorPath(installed)), false, "--version retires the descriptor superseded by the package-manager install");
     const daemonIdentity = spawnSync(process.execPath, ["--input-type=module", "-e", `const {binVersion}=await import(${JSON.stringify(pathToFileURL(join(installed, "dist/daemon/command.js")).href)}); console.log(binVersion());`], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });
     assert.equal(daemonIdentity.status, 0, daemonIdentity.stderr);
     assert.equal(daemonIdentity.stdout.trim(), originalVersion, "daemon identity must name loaded code, not the canonical manifest");
@@ -52,6 +54,6 @@ console.log(updateRuntime.version(), installedCliVersion());`], { env: process.e
     assert.notEqual(stopped.status, 0, "retained package without runtime dependencies must not silently use the old installed graph");
     assert.match(stopped.stderr, /ERR_MODULE_NOT_FOUND/);
     assert.ok(readFileSync(executionDescriptorPath(installed)).length > 0);
-    console.log("execution generation CLI: real version/docs defaults pass; retained missing closure refuses");
+    console.log("execution generation CLI: version retires the superseded descriptor and refuses a retained package missing its closure");
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
