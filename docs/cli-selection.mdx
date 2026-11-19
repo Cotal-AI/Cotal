@@ -1084,6 +1084,13 @@ then `cotal down --yes`, which kills a member that does not exit, and `cotal up`
 
 ### Partial reads
 
+A recorded connector seed failure makes setup incomplete, even when the installed extension
+versions match. The `Connector setup` row names the package and phase. Next shows the recorded
+cause before `cotal ext seed --repair` instead of suggesting startup or sign-in. The same guidance
+appears in `hints` in JSON. Reading a recorded seed failure does not change the report's exit
+status, and status neither repairs nor clears the record. If the seed cursor cannot be read,
+status names the file in an `EXTENSIONS_UNREADABLE` warning and reports a partial read.
+
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its
 delivery responder row says the responder is not used and suggests no command. A controller stack
