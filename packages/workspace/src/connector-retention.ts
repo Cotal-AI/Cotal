@@ -13,7 +13,7 @@ import { MANAGER_PIDFILE, localProcessPathCandidates, recordedLocalProcessPaths 
 import { commandIsCotalSupervisor, readProcessRecord } from "./pid.js";
 import { probeLiveness } from "./liveness.js";
 import { CommandFailure } from "./output.js";
-import { assertProtectedEntry, protectedLocalDirectory } from "./protected-records.js";
+import { protectedLocalDirectory } from "./protected-records.js";
 
 interface ConnectorHolder {
   v: 1;
@@ -218,14 +218,14 @@ export function connectorConfigPhysicalPath(path: string): string {
 }
 
 /** Make the current POSIX connector store and its selection directories writable before staging an update.
- * Change only owner write on managed directories. Do not walk other installations or follow links. */
+ * Restore owner write and remove shared write on owned directories. Do not follow links. */
 export function prepareConnectorConfigForUpdate(): void {
   const config = resolve(globalConfigDir());
   const uid = process.getuid!();
   const what = "the Cotal connector configuration";
-  const refuse = (path: string, reason: string, remedy: string): never => {
+  const refuse = (path: string, reason: string, remedy: string, unwritable = false): never => {
     throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} at ${path} ${reason}. No CLI update was staged.`, {
-      target: { path }, native: { outcome: "not-executed" }, remedy: `${remedy}, then run \`cotal update --self\` again`,
+      target: { path }, native: { outcome: "not-executed", ...(unwritable ? { code: "CONNECTOR_CONFIG_UNWRITABLE" } : {}) }, remedy: `${remedy}, then run \`cotal update --self\` again`,
     });
   };
   let parent = dirname(config);
@@ -236,16 +236,16 @@ export function prepareConnectorConfigForUpdate(): void {
     const code = (error as NodeJS.ErrnoException).code;
     return code === "EACCES" || code === "EPERM" || code === "EROFS";
   };
-  const denyAccess = (path: string): never => refuse(path, "is not accessible for updates by this account", "restore write access and make the directory readable and searchable on a writable filesystem");
+  const denyAccess = (path: string): never => refuse(path, "is not accessible for updates by this account", "restore write access and make the directory readable and searchable on a writable filesystem", true);
 
   const prepare = (path: string, nested = false): boolean => {
     const stat = lstatSync(path, { throwIfNoEntry: false });
     if (!stat || nested && stat.isSymbolicLink()) return false;
     if (!stat.isDirectory()) refuse(path, "is not a real directory", "use a physical directory without symlinks");
-    if (stat.uid !== uid) refuse(path, "is owned by another account", "ask the owner or an administrator to restore ownership of this Cotal directory to your account");
-    assertProtectedEntry(what, path, stat);
+    if (stat.uid !== uid) refuse(path, "is owned by another account", "ask the owner or an administrator to restore ownership of this Cotal directory to your account", true);
     try {
-      if ((stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
+      const mode = (stat.mode & 0o7755) | 0o200;
+      if (mode !== (stat.mode & 0o7777)) chmodSync(path, mode);
       accessSync(path, constants.R_OK | constants.W_OK | constants.X_OK);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -284,7 +284,7 @@ export function prepareConnectorConfigForUpdate(): void {
     try { accessSync(parent, constants.W_OK | constants.X_OK); }
     catch (error) {
       if (!accessError(error)) throw error;
-      refuse(parent, "cannot be written to create the config folder", "restore write access to the containing directory or choose a writable XDG_CONFIG_HOME");
+      refuse(parent, "cannot be written to create the config folder", "restore write access to the containing directory or choose a writable XDG_CONFIG_HOME", true);
     }
     return;
   }

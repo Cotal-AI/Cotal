@@ -1,8 +1,9 @@
-import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { provenance } from "@cotal-ai/workspace";
 import { assertReleasedSeedWriter, seedStoreDir, seedStorePath, shippedSourceDir } from "./paths.js";
 import { sharedPlacements } from "./shared.js";
+import { writableDirectories } from "../lib/install-umask.js";
 
 /**
  * The durable seed store: a stable, per-generation copy of each shipped connector payload that
@@ -19,16 +20,6 @@ import { sharedPlacements } from "./shared.js";
 function payloadFilter(root: string, from: string): boolean {
   const segments = relative(root, from).split(sep);
   return !segments.includes("node_modules") && !segments.includes(".git");
-}
-
-/** Private store copies need writable directories, even when the shipped payload is read-only. */
-function writableDirectories(path: string): void {
-  const stat = lstatSync(path, { throwIfNoEntry: false });
-  if (!stat?.isDirectory()) return;
-  chmodSync(path, stat.mode | 0o700);
-  for (const entry of readdirSync(path, { withFileTypes: true })) {
-    if (entry.isDirectory()) writableDirectories(join(path, entry.name));
-  }
 }
 
 /**

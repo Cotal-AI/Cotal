@@ -624,8 +624,12 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const builtin = findCommand(registry.all<Command>("command"), argv[0]);
   const updateCheck = builtin?.name === "update" && argv.includes("--check") && !asksForHelp(argv.slice(1))
     && parseOrExit(builtin, ownWords(builtin, argv.slice(1), leadingGlobals)).values.check === true;
+  // A self-update owns promotion recovery after checking and repairing its write destinations.
+  // It never needs the connector overlay to resolve the built-in command.
+  const selfUpdate = builtin?.name === "update" && argv.includes("--self");
+  const useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate;
   const configFolder = globalConfigDirProblem();
-  if (opts.extensions && !updateCheck) {
+  if (useExtensionOverlay) {
     try {
       recoverExtensionPromotion();
       if (await extSeedGate(registry, argv, configFolder, leadingGlobals)) return;
@@ -637,7 +641,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const surface = (): Command[] => {
     let commands: Command[];
     try {
-      commands = opts.extensions && !updateCheck ? overlayExtensions(registry) : registry.all<Command>("command");
+      commands = useExtensionOverlay ? overlayExtensions(registry) : registry.all<Command>("command");
     } catch (e) {
       // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
       // rendered as the CLI's one red line, not an unhandled-rejection stack dump.

@@ -41,6 +41,7 @@ import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
+import { recoverExtensionPromotion } from "../lib/extension-stage.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
 import { cliVersion, installedCliVersion } from "../lib/version.js";
@@ -319,18 +320,23 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
     }
   }
   if (args.values.self === true && rt.prepareExecution) {
-    try { prepareConnectorConfigForUpdate(); }
-    catch (error) {
+    try {
+      prepareConnectorConfigForUpdate();
+      // An interrupted promotion can replace the extensions directory with a read-only copy.
+      if (recoverExtensionPromotion()) prepareConnectorConfigForUpdate();
+    } catch (error) {
       const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`, {
         native: { outcome: "not-executed" }, remedy: "check the reported connector configuration problem, then run `cotal update --self` again",
       });
-      if (failure.code === "PERMISSION_DENIED") {
+      if (failure.native?.code === "CONNECTOR_CONFIG_UNWRITABLE") {
         recordUpdateRefusal(rt.version(), failure.remedy ? `${failure.message} Next: ${failure.remedy}` : failure.message);
       } else {
         recordUpdateDeferral(rt.version(), `connector configuration preflight: ${preflightDetail(error)}`);
       }
       throw failure;
     }
+  } else if (args.values.self === true) {
+    recoverExtensionPromotion();
   }
   if (await recoverInterruptedUpdate(rt) && args.values.self !== true) return;
   // A folder above the config folder is not one this command repairs. Refuse it before the mode

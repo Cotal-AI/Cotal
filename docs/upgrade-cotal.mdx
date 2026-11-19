@@ -88,12 +88,15 @@ refusal in 0.159.1 through 0.160.7 and the Manager-selection refusal before 0.16
 For an npm installation, install once with `npm install -g cotal-ai@latest`, then run `cotal update`.
 For a shell installation, rerun its installer as described under [Reconcile the installation](#reconcile-the-installation).
 If no machine daemon is installed, successful reconciliation completes the update without querying a daemon endpoint.
-On this POSIX update path, `cotal update --self` restores owner write permission on the connector
-configuration directories you own, including the selected connector set, before downloading release
-archives. A configuration parent reached through a symlink must still be protected at its physical
-path. The repair leaves source files alone and does not follow links inside the Cotal configuration.
+On this POSIX update path, `cotal update --self` restores owner write and removes group and other
+write on the connector configuration directories you own before recovering a pending extension
+promotion or downloading release archives. A configuration parent reached through a symlink must
+still be protected at its physical path. The repair leaves source files alone and does not follow
+links inside the Cotal configuration.
 If a required directory cannot be made writable, the updater names it and refuses before staging a
 new CLI generation. Restore access and run the update again as the same account.
+An automatic update retries a failed configuration protection check. A directory owned by another
+account or on an unwritable filesystem can pause automatic updates until a successful manual update.
 An unwritable installation refuses before staging and names the owning install command.
 If this first check refuses, `cotal update --self` exits 2 and reports that the installation
 cannot update itself from this account and no changes were made. The original reason and owning

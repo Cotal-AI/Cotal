@@ -3,7 +3,7 @@ import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realp
 import { dirname, join, resolve } from "node:path";
 import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
-import { repairInstallModes } from "./install-umask.js";
+import { repairInstallModes, writableDirectories } from "./install-umask.js";
 
 interface Promotion {
   readonly v: 1;
@@ -34,14 +34,18 @@ function checkedRecord(): Promotion | undefined {
   return record;
 }
 /** Complete a journaled directory promotion while holding the ordinary closure and prefix barriers. */
-export function recoverExtensionPromotion(): void {
-  if (!canRecoverConnectorConfig()) return;
-  if (!checkedRecord()) return;
+export function recoverExtensionPromotion(): boolean {
+  if (!canRecoverConnectorConfig() || !checkedRecord()) return false;
   const releaseClosure = claimUpdateClosureAccess(true);
   try {
-    if (!canRecoverConnectorConfig()) return;
+    if (!canRecoverConnectorConfig()) return false;
     const release = claimExtensionMutation();
-    try { const record = checkedRecord(); if (record) finish(record); }
+    try {
+      const record = checkedRecord();
+      if (!record) return false;
+      finish(record);
+      return true;
+    }
     finally { release(); }
   } finally { releaseClosure(); }
 }
@@ -83,6 +87,10 @@ export function stageExtensions(): ExtensionStage {
   protectedLocalDirectory(realpathSync(config));
   const stage = mkdtempSync(join(config, ".extensions.stage-"));
   const stageConfig = join(stage, "config"), prefix = join(stageConfig, "cotal", "extensions");
+  const discard = () => {
+    if (process.platform !== "win32") writableDirectories(stage);
+    rmSync(stage, { recursive: true, force: true });
+  };
   try {
     mkdirSync(dirname(prefix), { recursive: true, mode: 0o700 });
     if (existsSync(root)) cpSync(root, prefix, { recursive: true, verbatimSymlinks: true });
@@ -97,7 +105,7 @@ export function stageExtensions(): ExtensionStage {
       if ((stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
     }
   } catch (error) {
-    try { rmSync(stage, { recursive: true, force: true }); }
+    try { discard(); }
     catch (cleanup) { throw new AggregateError([error, cleanup], `extension staging failed: ${String(error)}. Could not discard ${stage}: ${String(cleanup)}`); }
     throw error;
   }
@@ -119,7 +127,7 @@ export function stageExtensions(): ExtensionStage {
       catch (error) { console.error(`! could not remove completed extension stage ${stage} (${error instanceof Error ? error.message : String(error)}); remove it by hand`); }
     },
     retain() { promoted = true; },
-    discard() { if (!promoted) rmSync(stage, { recursive: true, force: true }); },
+    discard() { if (!promoted) discard(); },
   };
 }
 /** Bind an isolated staged verifier to its live parent's original writer lock. */

@@ -15,6 +15,16 @@ export function withInstallUmask<T>(spawn: () => T): T {
   }
 }
 
+/** Restore owner access on private directory copies without following links or changing files. */
+export function writableDirectories(path: string): void {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat?.isDirectory()) return;
+  if ((stat.mode & 0o700) !== 0o700) chmodSync(path, (stat.mode & 0o7777) | 0o700);
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    if (entry.isDirectory()) writableDirectories(join(path, entry.name));
+  }
+}
+
 /** Remove group and other write from every folder and file under `root` this account owns, without
  *  following a link, and return how many changed; a missing `root` changes nothing. An installer from
  *  before its 022 umask, or a seed run before its npm children got one, left Cotal's install or its

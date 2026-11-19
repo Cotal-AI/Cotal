@@ -27,14 +27,15 @@ const home = join(root, "home"), config = join(root, "config"), cotal = join(roo
 for (const path of [home, config, cotal, runtime]) mkdirSync(path, { mode: 0o700 });
 const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
 const env: NodeJS.ProcessEnv = { ...clean, HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", npm_config_prefix: prefix };
-const run = (overrides: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "update", "--self"], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 30_000 });
+const run = (overrides: NodeJS.ProcessEnv = {}, extra: string[] = []) => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "update", "--self", ...extra], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 30_000 });
+const offline = { npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" };
 const packageBefore = readFileSync(join(installed, "package.json"), "utf8");
 try {
   const directories = [installed, join(installed, "dist"), join(prefix, "lib/node_modules"), join(prefix, "lib")];
   for (const paths of [directories, [join(prefix, "lib/node_modules")]]) {
     for (const path of paths) chmodSync(path, 0o500);
     // Registry unavailability returns success without replacement, after real destination preflight.
-    const repaired = run({ npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" });
+    const repaired = run(offline);
     check.equal(repaired.status, 0, repaired.stderr);
     check.doesNotMatch(repaired.stderr, /sudo npm|EACCES|Request refused/);
     for (const path of paths) check.equal(lstatSync(path).mode & 0o777, 0o700, "only owner write is restored");
@@ -56,7 +57,7 @@ try {
   symlinkSync(outside, join(extensions, "external"));
   const configDirs = [globalConfig, sets, active, seed, extensions];
   for (const dir of [...configDirs, unrelated, outside]) chmodSync(dir, 0o500);
-  const configRepair = run({ npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" });
+  const configRepair = run(offline);
   check.equal(configRepair.status, 0, configRepair.stderr);
   check.match(configRepair.stdout, /The registry cannot be reached\. No new CLI version was installed\./);
   for (const dir of configDirs) check.equal(lstatSync(dir).mode & 0o777, 0o700, dir);
@@ -70,7 +71,7 @@ try {
   symlinkSync(legacy, alias);
   const legacySeed = join(legacy, "cotal", "seed");
   chmodSync(legacySeed, 0o500);
-  const aliased = run({ XDG_CONFIG_HOME: alias, npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" });
+  const aliased = run({ ...offline, XDG_CONFIG_HOME: alias });
   check.equal(aliased.status, 0, aliased.stderr);
   check.equal(lstatSync(legacySeed).mode & 0o777, 0o700);
 
@@ -104,7 +105,7 @@ fs.readdirSync = (path, ...args) => {
 };
 syncBuiltinESMExports();\n`);
   const churnEnv = { COTAL_AUTO_UPDATE: "1", NODE_OPTIONS: `${nodeOptions ?? ""} --import=${pathToFileURL(churn).href}` };
-  const churnResult = run({ ...churnEnv, npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" });
+  const churnResult = run({ ...churnEnv, ...offline });
   check.equal(churnResult.status, 0, churnResult.stderr);
   check.equal(existsSync(vanishedDuringChmod) || existsSync(vanishedDuringRead), false);
   const attemptPath = join(cotal, "update-attempt.json");
@@ -119,6 +120,52 @@ syncBuiltinESMExports();\n`);
   check.ok(readAttempt().next < Number.MAX_SAFE_INTEGER);
   check.deepEqual(readdirSync(extensions).sort(), ["external", "preserve-mode"]);
   check.equal(existsSync(registryInvoked), false);
+
+  const automatic = { COTAL_AUTO_UPDATE: "1" };
+  chmodSync(config, 0o777);
+  const unsafeParent = run({ ...automatic, PATH: tools });
+  check.equal(unsafeParent.status, 2, unsafeParent.stderr);
+  check.ok(unsafeParent.stderr.includes(config), unsafeParent.stderr);
+  check.match(unsafeParent.stderr, /chmod go-w/);
+  check.equal(lstatSync(config).mode & 0o777, 0o777, "external parent must not be changed");
+  check.match(readAttempt().result, /^connector configuration preflight:/);
+  check.ok(readAttempt().next < Number.MAX_SAFE_INTEGER);
+  check.equal(existsSync(registryInvoked), false);
+  chmodSync(config, 0o770);
+  // PATH intentionally lacks the group lookup utility. Failure to prove protection is retryable.
+  const unprovedParent = run({ ...automatic, PATH: tools });
+  check.equal(unprovedParent.status, 2, unprovedParent.stderr);
+  check.match(unprovedParent.stderr, /private-group proof is unavailable|its group is not your primary group/);
+  check.ok(readAttempt().next < Number.MAX_SAFE_INTEGER);
+  check.equal(existsSync(registryInvoked), false);
+  chmodSync(config, 0o700);
+
+  const stage = join(active, ".extensions.stage-proof.ready"), old = join(active, ".extensions.rollback-proof");
+  const stagedPackage = join(stage, "node_modules", "sample");
+  mkdirSync(stagedPackage, { recursive: true, mode: 0o700 });
+  writeFileSync(join(stagedPackage, "marker"), "verified stage\n", { mode: 0o400 });
+  chmodSync(stagedPackage, 0o577);
+  for (const path of [stage, extensions]) chmodSync(path, 0o500);
+  const identity = (path: string) => { const stat = lstatSync(path); return { dev: String(stat.dev), ino: String(stat.ino), birth: stat.birthtimeMs }; };
+  const journal = join(active, ".extensions-promotion.json");
+  writeFileSync(journal, JSON.stringify({ v: 1, root: extensions, stage, old, stageIdentity: identity(stage), oldIdentity: identity(extensions) }), { mode: 0o400 });
+  chmodSync(active, 0o500);
+  const invalid = run({ PATH: tools }, ["--bad-flag"]);
+  check.equal(invalid.status, 1, invalid.stderr);
+  check.equal(lstatSync(active).mode & 0o777, 0o500);
+  check.equal(existsSync(journal), true, "invalid self-update must not recover a promotion");
+  const recovered = run({ ...offline, ...automatic });
+  check.equal(recovered.status, 0, recovered.stderr);
+  check.doesNotMatch(recovered.stderr, /EACCES/);
+  for (const path of [journal, stage, old]) check.equal(existsSync(path), false, path);
+  const promoted = join(extensions, "node_modules", "sample");
+  check.equal(readFileSync(join(promoted, "marker"), "utf8"), "verified stage\n");
+  check.equal(lstatSync(join(promoted, "marker")).mode & 0o777, 0o400);
+  check.equal(lstatSync(promoted).mode & 0o777, 0o755, "owner write restored and shared write removed");
+  check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  check.equal(readAttempt().result, "waiting for registry availability");
+  check.ok(readAttempt().next < Number.MAX_SAFE_INTEGER);
+
   chmodSync(seed, 0o500);
   const configRefusal = run({ PATH: tools, COTAL_AUTO_UPDATE: "1", TEST_READ_ONLY: seed, NODE_OPTIONS: `${nodeOptions ?? ""} --import=${pathToFileURL(readOnly).href}` });
   check.equal(configRefusal.status, 2, configRefusal.stderr);
@@ -130,7 +177,7 @@ syncBuiltinESMExports();\n`);
   check.equal(existsSync(registryInvoked), false);
   check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
   check.equal(readAttempt().next, Number.MAX_SAFE_INTEGER);
-  const foreignConfig = run({ PATH: tools, TEST_ROOT_OWNED: seed, NODE_OPTIONS: `${nodeOptions ?? ""} --import=${pathToFileURL(rootOwned).href}` });
+  const foreignConfig = run({ ...automatic, PATH: tools, TEST_ROOT_OWNED: seed, NODE_OPTIONS: `${nodeOptions ?? ""} --import=${pathToFileURL(rootOwned).href}` });
   check.equal(foreignConfig.status, 2, foreignConfig.stderr);
   check.ok(foreignConfig.stderr.includes(seed), foreignConfig.stderr);
   check.match(foreignConfig.stderr, /is owned by another account/);
@@ -138,6 +185,7 @@ syncBuiltinESMExports();\n`);
   check.equal(lstatSync(seed).mode & 0o777, 0o500);
   check.equal(existsSync(registryInvoked), false);
   check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  check.equal(readAttempt().next, Number.MAX_SAFE_INTEGER);
   chmodSync(seed, 0o700);
   const installCommand = `npm install -g --prefix '${prefix.replace(/'/g, "'\\''")}' cotal-ai@latest`;
   chmodSync(installed, 0o500);

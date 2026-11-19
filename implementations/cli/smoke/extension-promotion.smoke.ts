@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
@@ -68,11 +68,18 @@ if (process.platform !== "win32") {
   roots.push(root);
   process.env.XDG_CONFIG_HOME = root;
   const config = join(root, "cotal"), malformed = join(config, "extensions", "package-lock.json");
-  mkdirSync(malformed, { recursive: true, mode: 0o700 });
-  writeFileSync(join(malformed, "keep"), "original");
-  assert.throws(() => stageExtensions(), /extension stage metadata is not a regular file.*package-lock\.json/);
-  assert.deepEqual(readdirSync(config), ["extensions"], "failed preparation must discard its stage");
-  assert.equal(readFileSync(join(malformed, "keep"), "utf8"), "original");
+  const nested = join(malformed, "nested"), outside = join(root, "outside");
+  mkdirSync(nested, { recursive: true, mode: 0o700 });
+  mkdirSync(outside, { mode: 0o700 });
+  writeFileSync(join(nested, "keep"), "original");
+  symlinkSync(outside, join(nested, "outside"));
+  for (const path of [nested, malformed, outside]) chmodSync(path, 0o500);
+  try {
+    assert.throws(() => stageExtensions(), /extension stage metadata is not a regular file.*package-lock\.json/);
+    assert.deepEqual(readdirSync(config), ["extensions"], "failed preparation must discard its stage");
+    assert.equal(readFileSync(join(nested, "keep"), "utf8"), "original");
+    for (const path of [nested, malformed, outside]) assert.equal(lstatSync(path).mode & 0o777, 0o500);
+  } finally { for (const path of [nested, malformed, outside]) chmodSync(path, 0o700); }
   console.log("invalid package metadata leaves no stage and preserves the live prefix");
   passed++;
 }
