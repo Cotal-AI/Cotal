@@ -274,7 +274,7 @@ import {
   currentControllerAttempt, managerResumeAttempt, relaunchCommittedManager, settleControllerResume, startControllerMember, startControllerMembers,
 } from "../lib/controller-resume.js";
 import { removeRetiredBrokerInstance } from "../lib/controller-restore.js";
-import { acquireStackOperationLock, stackRecoveryHost, admittedStackRestore, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
+import { acquireStackOperationLock, knownStackRecoveryHost, admittedStackRestore, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import { serviceDefinitionStore } from "../lib/service-definitions.js";
 import { MissingFlags } from "../lib/missing-flags.js";
@@ -4739,7 +4739,8 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
     const pin = verifyIdentityPin(role === "broker" ? join(m.root, ".cotal", template) : localProcessPath(template, { root: m.root, space: m.space }));
     if (pin.kind === "match") nativeMembers.push({ role, process: pin.record });
   }
-  const recorded: MeshEntry = { ...m, origin, ...(nativeMembers.length ? { nativeMembers, nativeHost: stackRecoveryHost() } : {}) };
+  const nativeHost = nativeMembers.length ? knownStackRecoveryHost() : undefined;
+  const recorded: MeshEntry = { ...m, origin, ...(nativeHost !== undefined ? { nativeMembers, nativeHost } : {}) };
   recordMesh(provenance === "refresh" ? { ...prior, ...recorded } : recorded);
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
