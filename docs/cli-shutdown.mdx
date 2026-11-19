@@ -103,7 +103,9 @@ nothing. It refuses neither bare `down` nor a stop of `stack-broker`, `down --dr
 a complete bare `down` removes it with its pin and names it in a `STALE_PROCESS_RECORD` warning. The
 process that holds a reused pid is never signalled. The broker scope
 is checked again after its dependants stop. A failure stops the sequence and preserves completed and
-unattempted members. A member stopped by signal that has not exited 15 seconds after SIGTERM gets
+unattempted members. When `down` finds the original manager process gone during its stop, it checks
+for a matching completion receipt before continuing. Process exit alone does not confirm that stop.
+A member stopped by signal that has not exited 15 seconds after SIGTERM gets
 SIGKILL. Its row then reads `stopped with SIGKILL`, and a `STOP_ESCALATED` warning names its pid.
 Only a complete confirmed stop removes the delivery credential and local registration. After the
 delivery daemon stops, `down` reads its lease. When the daemon was already gone, or the lease still
