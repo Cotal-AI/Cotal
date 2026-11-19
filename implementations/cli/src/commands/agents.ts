@@ -585,7 +585,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
   const command = slots ? "slots" : "ps";
   const kind = slots ? "slots" : "seats";
   refuseControlCreds(v.creds, v.space);
-  const on = await managerPin(v, onRerun(`cotal ${command}`, v));
+  const on = await managerPin(v, onRerun("cotal ps", v, slots ? ["--slots"] : []));
   let census: SeatCensus;
   try {
     census = await readSeats(v, command, on);

@@ -411,7 +411,10 @@ async function recordedManagerLogs(name: string, recorded: { pid: number | null;
 function previewPresetStart(resolved: PresetServiceTarget, space: string, root: string, args: ParsedArgs, presentation: ReturnType<typeof presentationOf>, commandName: string): void {
   const definition = servicePresetDefinition(resolveServicePreset(resolved.preset), space, args.values, root, "start", false);
   const launch = definition.launch as Extract<ServiceDefinitionInput["launch"], { type: "adapter" }>;
-  writeResult(presentation, { command: commandName, target: { space, name: resolved.name, executionHost: "this-machine" }, result: { kind: "service-operation-preview", operation: "start", dryRun: true, definitionWouldBeSaved: true, preset: resolved.preset, adapter: launch.adapter, optionNames: Object.keys(launch.options).sort(), saved: false, allocated: false, providerCodeLoaded: false } }, (): Report => ({ sections: [{ title: "Service operation preview", blocks: [
+  const target = { space, name: resolved.name, executionHost: "this-machine" };
+  const { capabilities } = resolveServiceAdapter(launch.adapter, launch.options, false).declaration;
+  if (args.values["new-instance"] && !capabilities.multiInstance || args.values.foreground && !capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
+  writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: "start", dryRun: true, definitionWouldBeSaved: true, preset: resolved.preset, adapter: launch.adapter, optionNames: Object.keys(launch.options).sort(), saved: false, allocated: false, providerCodeLoaded: false } }, (): Report => ({ sections: [{ title: "Service operation preview", blocks: [
     { kind: "fields", rows: [["Action", "start"], ["Service", resolved.name], ["Space", space], ["Definition", `would be saved from the ${resolved.preset} preset`], ["Options", Object.keys(launch.options).sort().map((name) => `--${name}`).join(", ") || "none"]] },
     { kind: "lines", lines: ["Nothing was saved, launched or loaded. The real start saves this definition first, then starts it."] },
   ] }] }));

@@ -318,6 +318,15 @@ setCurrent("keep");
   const whoUnchecked = await json(["whoami", "--space", "dead1"]);
   check("whoami does not state an unchecked mode as fact: partial, exit 4, MODE_NOT_CHECKED",
     whoUnchecked.status === 4 && whoUnchecked.env?.outcome === "partial" && whoUnchecked.env.result.modeChecked === false && whoUnchecked.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(whoUnchecked));
+  const legacyForced = await run(["meshes", "add", "legacy-unchecked", "--server", DEAD, "--root", root, "--mode", "open", "--force"]);
+  check("legacy meshes add also records the mode as unchecked when forced",
+    legacyForced.status === 0 && legacyForced.stdout.includes("recorded without verifying") && findMesh("legacy-unchecked")?.unchecked === true, shown(legacyForced));
+  const legacyWho = await json(["whoami", "--space", "legacy-unchecked"]);
+  check("whoami reports partial access for a legacy forced registration",
+    legacyWho.status === 4 && legacyWho.env?.outcome === "partial" && legacyWho.env.result.modeChecked === false && legacyWho.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(legacyWho));
+  const legacyShow = await run(["space", "show", "legacy-unchecked", "--plain"]);
+  check("space show marks a legacy forced registration as unchecked",
+    legacyShow.status === 0 && /mode:\s+open, not checked: added with --force/.test(legacyShow.stdout), shown(legacyShow));
 
   clearCurrent();
   const unselected = await json(["space", "add", "open3", "--server", LIVE, "--root", root]);

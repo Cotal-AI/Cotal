@@ -490,6 +490,8 @@ export function validateSpawnArguments(args: ParsedArgs): void {
   presentationOf(values);
   if (args.positionals[0] !== undefined && !args.positionals[0].trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "persona cannot be empty", { remedy: "name a persona, or omit it to use the default persona" });
+  if (values.resume !== undefined && !values.resume.trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "--resume needs a session id (got an empty value)");
   // `runCli` has already taken the handoff into custody and deleted its variable.
   const internal = holdsManagedHandoff() || Boolean(process.env[ENROLLMENT_URL_ENV] || process.env[ENROLLMENT_FILE_ENV]);
   if (!holdsManagedHandoff() && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined))
@@ -1233,12 +1235,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // either managed persona spelling; direct execution has no manager placement to select.
   if (values.on !== undefined && direct) {
     stderrLine("✗ ", "--on pins a managed imperative launch; a spawn in this terminal does not take that manager selector", c.red);
-    process.exit(1);
-  }
-  // `--resume ""` / `--resume=` means the operator asked to resume but named no session — fail loud
-  // rather than silently spawn a fresh one (no fallbacks). An absent flag (undefined) is fine.
-  if (values.resume !== undefined && !values.resume.trim()) {
-    console.error("--resume needs a session id (got an empty value)");
     process.exit(1);
   }
   if (values.model !== undefined && !values.model.trim()) {
