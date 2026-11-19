@@ -104,6 +104,15 @@ function parseErrorMessage(cmd: Command, e: Error): string {
   return hint ? `${message} - ${hint}` : message;
 }
 
+/** Refuse a repeated global flag using the command's output mode and subcommand help. */
+function repeatedGlobalFlag(word: string, cmd: Command | undefined, words: readonly string[]): never {
+  const end = words.indexOf("--");
+  const options = end === -1 ? words : words.slice(0, end);
+  const json = cmd !== undefined && asksForJson(cmd, words);
+  const plain = cmd !== undefined && options.includes("--plain");
+  usageExit(`Option '${word}' cannot be repeated`, cmd, json, plain, undefined, words);
+}
+
 /** `words` without the global flags before any `--`, each applied. A global flag is given once, as
  *  any flag is: one already in `words` or in `leading`, those taken before the command word, is the
  *  usage error a repeated flag of `cmd` is. */
@@ -111,7 +120,7 @@ function stripGlobalFlags(words: readonly string[], leading: ReadonlySet<string>
   const end = words.indexOf("--");
   const taken = new Set(leading);
   const head = (end === -1 ? words : words.slice(0, end)).filter((word) => {
-    if (taken.has(word)) usageExit(`Option '${word}' cannot be repeated`, cmd, cmd !== undefined && asksForJson(cmd, words), words.includes("--plain"));
+    if (taken.has(word)) repeatedGlobalFlag(word, cmd, words);
     if (!takeGlobalFlag(word)) return true;
     taken.add(word);
     return false;
@@ -578,19 +587,32 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // refuses them there. The built-in surface decides that before any extension overlay is read.
   const output: string[] = [];
   const leadingGlobals = new Set<string>();
+  let repeatedLeading: string | undefined;
   let lead = 0;
   for (; lead < argv.length; lead++) {
     const word = argv[lead]!;
     if (OUTPUT_FLAG_WORDS.has(word)) output.push(word);
-    else if (leadingGlobals.has(word)) usageExit(`Option '${word}' cannot be repeated`);
+    else if (leadingGlobals.has(word)) repeatedLeading ??= word;
     else if (takeGlobalFlag(word)) leadingGlobals.add(word);
     else break;
   }
   if (argv[lead] === "--") lead++;
+  // Normalize the global help and version spellings before resolving refusal context.
+  const original = argv[lead];
+  const command = original === "--version" || original === "-V" ? "version"
+    : original === "--help" || original === "-h" ? "help" : original;
+  const builtin = findCommand(registry.all<Command>("command"), command);
+  const wordsAfterCommand = [...output, ...argv.slice(lead + 1)];
+  if (repeatedLeading !== undefined) {
+    // A known invalid invocation needs only display metadata. It must not recover or seed the
+    // extension installation to report the refusal.
+    const cmd = builtin ?? (command !== undefined && opts.extensions ? findCommand(surface(true), command) : undefined);
+    repeatedGlobalFlag(repeatedLeading, takesWordsRaw(cmd) ? undefined : cmd, wordsAfterCommand);
+  }
   if (output.length && lead >= argv.length) usageExit(`${output[0]} needs a command after it - run \`cotal help\` to list commands`);
-  if (output.length && takesWordsRaw(findCommand(registry.all<Command>("command"), argv[lead])))
-    usageExit(`${output[0]} before ${argv[lead]} is not read - ${argv[lead]} takes its words raw, with no output flags`);
-  argv = [...argv.slice(lead, lead + 1), ...output, ...argv.slice(lead + 1)];
+  if (output.length && takesWordsRaw(builtin))
+    usageExit(`${output[0]} before ${original} is not read - ${original} takes its words raw, with no output flags`);
+  argv = command === undefined ? [] : [command, ...wordsAfterCommand];
   // A recorded unit boots from built-in code only. Even reading the extension overlay can
   // prevent recovery from an unrelated broken manifest. Validate before any handoff custody,
   // installation repair, package materialization or target preparation. This is one exact
@@ -607,15 +629,11 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   }
   // Before any ordinary dispatch outcome can exit, a spawn takes its handoff, and no command lets a
   // child inherit the variable. The unit entry refuses such a handoff without consuming its file.
-  takeManagedHandoffCustody(process.env, findCommand(registry.all<Command>("command"), argv[0])?.name === "spawn");
+  takeManagedHandoffCustody(process.env, builtin?.name === "spawn");
   setInstalledExtensionsEnabled(Boolean(opts.extensions));
-  // The global spellings of help and version are the `help` and `version` commands.
   if (argv[0] === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
-  if (argv[0] === "--version" || argv[0] === "-V") argv = ["version", ...argv.slice(1)];
-  else if (argv[0] === "--help" || argv[0] === "-h") argv = ["help", ...argv.slice(1)];
   // The built-in check reports an unreadable inventory itself. Do not require that inventory to
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
-  const builtin = findCommand(registry.all<Command>("command"), argv[0]);
   const updateCheck = builtin?.name === "update" && argv.includes("--check") && !asksForHelp(argv.slice(1))
     && parseOrExit(builtin, ownWords(builtin, argv.slice(1), leadingGlobals)).values.check === true;
   const configFolder = globalConfigDirProblem();
@@ -628,10 +646,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       process.exit(1);
     }
   }
-  const surface = (): Command[] => {
+  function surface(includeExtensions: boolean): Command[] {
     let commands: Command[];
     try {
-      commands = opts.extensions && !updateCheck ? overlayExtensions(registry) : registry.all<Command>("command");
+      commands = includeExtensions ? overlayExtensions(registry) : registry.all<Command>("command");
     } catch (e) {
       // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
       // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
@@ -649,8 +667,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     }
     setCommandSurface(commands); // the completion dispatcher reads the SAME surface help renders
     return commands;
-  };
-  let commands = surface();
+  }
+  const includeExtensions = opts.extensions === true && !updateCheck;
+  let commands = surface(includeExtensions);
   const [word, ...words] = argv;
   if (word === undefined) return paintFor(process.stdout, () => printEntry(commands));
   let cmd = findCommand(commands, word);
@@ -732,7 +751,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       process.exit(1);
     }
     if (!deferred) {
-      commands = surface();
+      commands = surface(includeExtensions);
       cmd = findCommand(commands, word);
       if (!cmd) usageExit(unknownCommandMessage(commands, word));
       ({ cmd, rest } = await serviceSurface(cmd, ownWords(cmd, words, leadingGlobals)));
