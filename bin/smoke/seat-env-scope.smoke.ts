@@ -27,7 +27,7 @@
  *       wrote it: never recursively, never outside the OS temp root
  *   A10 every COTAL_ name a connector's launch emits is one the operator-env-keep census parses
  *   A11 the material's private directory is on the spec's artifacts, and a real child started
- *       through reclaimWithChild removes it on exit without using or changing the agent's PATH
+ *       through reclaimWithChild removes it on exit without system utilities or a changed PATH
  *
  * A2 is the one that could not have been faked by reading the same object the assertion was written
  * against: the seat is a real `node` process started with the connector's env, and the observer is a
@@ -45,12 +45,14 @@
  *    not theoretical: it is exactly where a real defect lived until a reviewer read the Python.
  *
  * Run: `pnpm smoke:seat-env-scope`
+ * On Linux with rootless Bubblewrap: `pnpm smoke:seat-env-scope --without-system-utilities`
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, createSpaceAuth, discardLaunchArtifacts, discardLaunchMaterial, mintCreds, mintLifecycleUid, newIdentity, readLaunchMaterial, reclaimWithChild, registry, writeLaunchMaterial, type Connector, type LaunchOpts, type UserAuthLaunch } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv, materialEnv, OPERATOR_ENV_KEEP, scrubLaunchMaterial } from "@cotal-ai/connector-core";
 import "@cotal-ai/connector-claude-code";
@@ -60,6 +62,24 @@ import "@cotal-ai/connector-hermes";
 import "@cotal-ai/connector-jcode";
 import "@cotal-ai/pi";
 import { perSpawnAssignments } from "../../extensions/connector-core/smoke/_per-spawn-census.js";
+
+// Exercise the same cleanup assertions with the shell's default utility path stripped.
+if (process.argv[2] === "--without-system-utilities") {
+  assert.equal(process.platform, "linux", "A11: system utility isolation requires Linux and Bubblewrap");
+  const smoke = fileURLToPath(import.meta.url);
+  const temp = mkdtempSync(join(tmpdir(), "cotal-no-system-utilities-"));
+  const sandbox = ["--unshare-user", "--unshare-pid", "--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev",
+    "--proc", "/proc", "--bind", temp, temp, "--setenv", "TMPDIR", temp, "--tmpfs", "/usr/bin"];
+  if (realpathSync("/bin") !== "/usr/bin") sandbox.push("--tmpfs", "/bin");
+  sandbox.push("--ro-bind", process.execPath, process.execPath, "--ro-bind", realpathSync("/bin/sh"), "/bin/sh");
+  const check = 'if command -p -v sleep || command -p -v rm; then echo "A11: system utilities are still visible" >&2; exit 2; fi; exec "$@"';
+  const result = spawnSync("bwrap", [...sandbox, "/bin/sh", "-c", check, "check", process.execPath, "--import", "tsx", smoke],
+    { stdio: "inherit", timeout: 45_000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, `A11: smoke without system utilities failed (${result.signal ?? result.status})`);
+  console.log("✓ A11: watcher cleanup works without default system utilities");
+  process.exit(0);
+}
 
 /** The variables that carry material a descendant has no business holding. `COTAL_CONTROL_SOCKET` is
  *  deliberately NOT here: it is a path, the socket refuses an unauthenticated frame, and the
@@ -197,13 +217,20 @@ for (const name of CONNECTORS) {
     const agentBin = join(work, "agent-bin");
     const utilityLog = join(work, "watcher-utility");
     mkdirSync(agentBin);
-    // These probes still perform the operation so a broken watcher can exit after being detected.
+    const node = `'${process.execPath.replace(/'/g, "'\\''")}'`;
+    // These probes work even on a host with no system utilities and let a broken watcher finish.
     for (const utility of ["sleep", "rm"])
-      writeFileSync(join(agentBin, utility), `#!/bin/sh\nprintf '%s\\n' '${utility}' >> "$UTILITY_LOG"\ncommand -p ${utility} "$@"\n`, { mode: 0o700 });
-    const launched = reclaimWithChild({ command: process.execPath, args: ["-e", "process.stdout.write(process.env.PATH)"], artifacts: spec.artifacts });
-    const child = spawnSync(launched.command, launched.args, { env: { PATH: agentBin, UTILITY_LOG: utilityLog }, encoding: "utf8" });
-    assert.equal(child.status, 0, `A11: the reclaim-wrapped child did not exit cleanly (${child.status ?? child.signal})`);
-    assert.equal(child.stdout, agentBin, "A11: the reclaim wrapper changed the child's PATH");
+      writeFileSync(join(agentBin, utility), `#!/bin/sh\nprintf '%s\\n' '${utility}' >> "$UTILITY_LOG"\nunset NODE_OPTIONS\nexec ${node} -e '${
+        utility === "sleep"
+          ? "setTimeout(() => {}, Number(process.argv[1]) * 1000)"
+          : 'require("node:fs").rmSync(process.argv[3], { recursive: true, force: true })'
+      }' -- "$@"\n`, { mode: 0o700 });
+    writeFileSync(join(agentBin, "fixture-agent"), '#!/bin/sh\n[ -d "$1" ] || exit 1\nprintf "%s\\n%s\\n" "$PATH" "$NODE_OPTIONS"\nexit 29\n', { mode: 0o700 });
+    const launched = reclaimWithChild({ command: "fixture-agent", args: [materialDir], artifacts: spec.artifacts });
+    const env = { PATH: agentBin, UTILITY_LOG: utilityLog, NODE_OPTIONS: "--invalid-watcher-fixture-option" };
+    const child = spawnSync(launched.command, launched.args, { env, encoding: "utf8", timeout: 15_000 });
+    assert.equal(child.status, 29, `A11: lost the reclaim-wrapped child's exit status (${child.status ?? child.signal}): ${child.stderr}`);
+    assert.equal(child.stdout, `${env.PATH}\n${env.NODE_OPTIONS}\n`, "A11: the reclaim wrapper changed the child's environment");
     const deadline = Date.now() + 15_000;
     while (existsSync(materialDir) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
     assert.equal(existsSync(materialDir), false, `A11: the ${name} launch material directory survived its child's exit`);

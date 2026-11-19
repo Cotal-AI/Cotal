@@ -21,9 +21,9 @@
  * other launcher starts the child through {@link reclaimWithChild}, so a watcher beside the child
  * removes them once the child is gone, even when the launcher was killed.
  * What stays until the OS temp reaper removes it: the files of a spawn that threw anything but
- * {@link SpawnRefused} before its child started, those of a watcher that was SIGKILLed or could not
- * sleep while its launcher was dead, and on Windows, which has no POSIX shell to run the watcher,
- * those of a killed launcher.
+ * {@link SpawnRefused} before its child started, those of a watcher that was itself SIGKILLed while
+ * its launcher was dead, and on Windows, which has no POSIX shell to run the watcher, those of a
+ * killed launcher.
  *
  * WHAT OWNER-PRIVATE MEANS. Each file is 0600 inside a 0700 directory. That is OS-user isolation:
  * any process running as the same user can read the file while it exists, as it can the agent file
@@ -110,32 +110,42 @@ function assertArtifactDirs(artifacts: readonly string[]): void {
   }
 }
 
-/** Run by `/bin/sh -c` as `<script> cotal-launch <n> <n dirs> <command> <args...>`. The watcher
- *  ignores the hangup, interrupt and terminate signals a closing terminal or a stop sends to the
- *  child's process group, holds no terminal, and polls the shell's pid, which `exec` hands to the
- *  command. A reused pid only delays the removal. The watcher uses the POSIX default utility path
- *  without changing the child's PATH. It is the only owner left once the launcher is dead, so it
- *  tries every directory it could not remove again every five seconds until all are gone. If sleep
- *  itself fails, the watcher exits rather than spinning. */
-const RECLAIM_SCRIPT = `p=$$ n=$1
-shift
-(
-  trap '' HUP INT QUIT TERM
-  while command -p kill -0 "$p" 2>/dev/null; do
-    command -p sleep 1 || exit 1
-  done
-  while :; do
-    i=0 left=0
-    for d; do
-      [ "$i" -lt "$n" ] || break
-      command -p rm -rf -- "$d" || left=1
-      i=$((i + 1))
-    done
-    [ "$left" = 0 ] && break
-    command -p sleep 5 || exit 1
-  done
-) </dev/null >/dev/null 2>&1 &
-shift "$n"
+/** The shell execs the agent in place, so its pid stays valid until the agent exits. Only ESRCH
+ *  proves the pid is gone. PID reuse or a permission change can delay removal, never hasten it.
+ *  Once the agent is gone, retry any failed removal every five seconds. */
+const RECLAIM_WATCHER = `import { rmSync } from "node:fs";
+import { setTimeout as wait } from "node:timers/promises";
+const pid = Number(process.argv[1]);
+let dirs = JSON.parse(process.argv[2]);
+while (true) {
+  try { process.kill(pid, 0); }
+  catch (error) { if (error.code === "ESRCH") break; }
+  await wait(1_000);
+}
+while (dirs.length) {
+  dirs = dirs.filter((dir) => {
+    try { rmSync(dir, { recursive: true, force: true }); return false; }
+    catch { return true; }
+  });
+  if (dirs.length) await wait(5_000);
+}`;
+
+/** Start the watcher in its own session so terminal and process-group signals cannot stop it.
+ *  Wait for this bootstrap before the shell execs the agent. A spawn refusal is reported on stderr
+ *  and fails the launch. Neither process needs an executable from PATH. */
+const START_RECLAIM_WATCHER = `import { spawn } from "node:child_process";
+const watcher = spawn(process.execPath, ["--input-type=module", "-e", ${JSON.stringify(RECLAIM_WATCHER)}, "--", ...process.argv.slice(1)], {
+  detached: true, stdio: "ignore", env: {},
+});
+watcher.once("error", (error) => {
+  console.error("could not start the launch artifact watcher: " + error.message);
+  process.exitCode = 1;
+});
+watcher.unref();`;
+
+/** Run as `/bin/sh -c <script> cotal-launch <node> <bootstrap> <dirs-json> <command> <args...>`. */
+const RECLAIM_SCRIPT = `NODE_OPTIONS= "$1" --input-type=module -e "$2" -- "$$" "$3" </dev/null >/dev/null || exit $?
+shift 3
 exec "$@"`;
 
 /**
@@ -151,10 +161,11 @@ export function reclaimWithChild(spec: LaunchSpec): LaunchSpec {
   const dirs = spec.artifacts;
   if (!dirs?.length || process.platform === "win32") return spec;
   assertArtifactDirs(dirs);
+  const paths = JSON.stringify(dirs.map((dir) => resolve(dir)));
   return {
     ...spec,
     command: "/bin/sh",
-    args: ["-c", RECLAIM_SCRIPT, "cotal-launch", String(dirs.length), ...dirs, spec.command, ...spec.args],
+    args: ["-c", RECLAIM_SCRIPT, "cotal-launch", process.execPath, START_RECLAIM_WATCHER, paths, spec.command, ...spec.args],
   };
 }
 

@@ -114,7 +114,7 @@ A refusal before any process starts permits immediate removal.
 On POSIX systems, managed runtimes and direct foreground launches use `reclaimWithChild`.
 It starts a watcher and replaces the shell with the child process.
 The watcher removes the files after the child exits, even if the launcher was killed.
-It uses the system's standard utilities without changing the child's `PATH`.
+It uses the launcher's Node executable by absolute path, so cleanup does not need system utilities or change the child's `PATH`.
 It retries failed removal every five seconds.
 
 The in-process PTY runtime reports exit to the manager.
