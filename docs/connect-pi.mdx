@@ -88,6 +88,11 @@ mkdir -p ~/.pi/agent/extensions
 cp node_modules/@cotal-ai/pi/dist/standalone.js ~/.pi/agent/extensions/cotal.js
 ```
 
+`cotal update` and `cotal update --self` leave your standalone copy unchanged. The connector for managed seats is updated separately by Cotal.
+After upgrading Cotal, run `npm install @cotal-ai/pi@<version>` in the directory where you installed the npm package.
+Replace `<version>` with the version shown by `cotal --version`, then repeat the copy to the location your pi host uses.
+If you edited the copied file, review your changes before replacing it.
+
 Discovery alone does not join a mesh.
 The extension activates only with a Cotal identity, such as a managed launch provides.
 It stays inactive in ordinary pi sessions without that identity.

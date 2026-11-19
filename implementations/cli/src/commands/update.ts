@@ -663,7 +663,6 @@ async function reconcileCurrent(
     }
     if (!entries.length) {
       rt.out(c.dim("operator extensions: none installed"));
-      return finish(ok);
     }
 
     for (const entry of entries) {
@@ -709,6 +708,7 @@ async function reconcileCurrent(
       }
       rt.out(c.green(`✓ ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
     }
+    if (ok) rt.out(`If you copied the standalone pi extension, Cotal leaves it unchanged. Run \`npm install @cotal-ai/pi@${current}\` and repeat the copy (https://docs.cotal.ai/docs/connect-pi/#load-the-extension-into-your-own-host).`);
     return finish(ok);
   } finally {
     releaseMutation();

@@ -271,12 +271,17 @@ try {
     return `${run.stdout ?? ""}${run.stderr ?? ""}`;
   };
   const reconciled = (out: string) => out.split("\n").find((line) => line.includes("connectors reconciled")) ?? "";
-  const kept = reconciled(update());
+  const advice = `If you copied the standalone pi extension, Cotal leaves it unchanged. Run \`npm install @cotal-ai/pi@${umbrellaVersion}\` and repeat the copy`;
+  const standaloneDir = join(home, ".pi", "agent", "extensions");
+  const noticeCount = (out: string) => out.split("\n").filter(line => line.includes(advice)).length;
+  const keptOutput = update();
+  const kept = reconciled(keptOutput);
   check(
     "cotal update verifies all seven built-ins against the shipped payload and reinstalls none",
     Object.keys(seededPkgs).every((name) => new RegExp(`verified [^;]*\\b${name}\\b`).test(kept)) && !kept.includes("refreshed"),
     kept,
   );
+  check("update describes the standalone copy once without creating it on a clean home", noticeCount(keptOutput) === 1 && !existsSync(standaloneDir));
   // Real npm creates the reported existing installation while leaving its lock intact.
   const omitted = spawnSync("npm", ["install", "--omit=optional", "--legacy-peer-deps", "--install-links", "--no-audit", "--no-fund"], {
     cwd: extensionPrefix, env: updateEnv, encoding: "utf8",
@@ -284,7 +289,13 @@ try {
   check("real npm with omit=optional creates the missing-native state", omitted.status === 0 && !existsSync(nativeManifest), omitted.stderr);
   const optionalRepair = update();
   check("plain update repairs an omitted host native dependency", existsSync(nativeManifest), optionalRepair);
+  const standaloneCopy = join(standaloneDir, "cotal.js");
+  const editedCopy = "// operator-edited standalone extension\n";
+  mkdirSync(standaloneDir, { recursive: true });
+  writeFileSync(standaloneCopy, editedCopy, { flag: "wx" });
   const repeated = update();
+  check("update gives matching-version guidance once for an existing standalone copy", noticeCount(repeated) === 1);
+  check("update does not overwrite an edited standalone copy", readFileSync(standaloneCopy, "utf8") === editedCopy);
   check("repeat plain update does not reinstall any built-in", !/reinstalling every built-in|Reconciling built-in/.test(repeated), repeated);
   check("update leaves the operator's omit configuration unchanged", readFileSync(npmrc, "utf8") === "omit=optional\n");
   const tamperedRel = placements.claude?.[0] ?? "";
