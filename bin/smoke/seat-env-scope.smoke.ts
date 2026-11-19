@@ -240,7 +240,7 @@ for (const name of CONNECTORS) {
   // readers, and before #4089 nothing removed it after the seat stopped.
   const materialDir = dirname(materialPath);
   assert.ok(
-    spec.artifacts?.includes(materialDir),
+    spec.artifacts && spec.artifacts.includes(materialDir),
     `A11: the ${name} connector's launch material directory ${materialDir} is not on the spec's artifacts, so it outlives the seat`,
   );
   // And a real child started through reclaimWithChild takes it with it on exit. One connector is
