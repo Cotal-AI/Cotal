@@ -16,20 +16,16 @@ import {
   STANDING_RENEWABLE_TTL_SEC,
   discardLaunchArtifacts,
   injectedSecretStoreIdentity,
-  dialerFor,
   connectorServers,
   spawnEnvAllow,
   type DeprovisionResourceAccounting,
   idFromCreds,
   identityFromCreds,
-  inspectCredHealth,
   loadAgentFile,
   loadCotalConfig,
   type CotalConfig,
   mintCreds,
   type IssuedBinding,
-  bindIssuedStores,
-  type IssuanceSeam,
   type IssuedStore,
   mintLifecycleUid,
   newIdentity,
@@ -60,7 +56,7 @@ export type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "
 import { ServePlane } from "./serve-plane.js";
 import { NamesCapacity, type Occupancy } from "./names-capacity.js";
 import { AttachEndpoint } from "./attach-endpoint.js";
-import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor, withScopedEndpoint } from "./endpoint-evict.js";
+import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { ManagedStaticLifecycle, STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
 export { STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
@@ -77,6 +73,7 @@ import { PersonaCatalog } from "./persona-catalog.js";
 import { TerminalInput } from "./terminal-input.js";
 import { StatusAndModels, MANAGER_VERSION } from "./status-and-models.js";
 import { ReadinessWait } from "./readiness-wait.js";
+import { BrokerTransport } from "./broker-transport.js";
 export { PASTE_END, PASTE_START, RUNTIME_NO_TERMINAL_DETAIL } from "./terminal-input.js";
 import { CredentialRenewal, credRenewIntervalMs, REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft, sameStrings } from "./credential-renewal.js";
 import { SeatLaunch, foreignEventChannels, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
@@ -92,7 +89,7 @@ import { TranscriptReceiver } from "./transcript-receive.js";
 // manager-side adapter (transport + slot orchestration + the terminal) — see static-lifecycle.ts.
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { recordsBucket, epAuthBucket, ensureAuthorityStores, standaloneConnectOpts, type LifecycleStateTransport, type StaticManagedSlotRow } from "@cotal-ai/core";
+import { recordsBucket, ensureAuthorityStores, standaloneConnectOpts, type LifecycleStateTransport, type StaticManagedSlotRow } from "@cotal-ai/core";
 // The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
 // per-session credentials on their own short-lived connections).
@@ -105,9 +102,6 @@ import { MANAGER_ENDPOINT, type ManagerConnectorStatus, type ManagerStaticReconc
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 import {
-  staticLifecycleTransport,
-  recordSlotCredential,
-  appendStaticCredentialRow,
   ownedBySibling,
 } from "./static-lifecycle.js";
 
@@ -1022,35 +1016,11 @@ export class Manager {
    * family stays live and this records what the host may have signed but the manager never adopted. */
   private remoteRenewalDebt?: { at: number; processEpoch: number; reason: string; unadoptedSubjects: string[] };
 
-  /** Every broker dial this manager makes, through ONE transport decision.
-   *
-   *  `this.servers` is whatever the mesh record held (`cotal supervise` reads it from there), so it
-   *  can be a `ws://`/`wss://` broker published through an HTTPS edge. The raw node transport
-   *  refuses such a URL instead of dialing it, so the scheme picks the dialer here rather than at
-   *  thirteen call sites. `dialerFor` also owns the websocket transport's options, which is why
-   *  callers below still pass their own auth options unchanged. */
-  private dial(opts: Parameters<ReturnType<typeof dialerFor>>[0]): Promise<NatsConnection> {
-    const servers = this.servers ?? DEFAULT_SERVER;
-    return dialerFor(servers)({ ...opts, servers });
-  }
+  /** {@link BrokerTransport.dial}. */
+  private dial(...args: Parameters<BrokerTransport["dial"]>): ReturnType<BrokerTransport["dial"]> { return this.brokerTransportComponent.dial(...args); }
 
-  /** Initial NATS timeout is per dial, not per server list. Keep the aggregate deadline too, and
-   * close a late result rather than letting an abandoned preflight or recovery install a transport. */
-  private async dialRemoteStanding(opts: Parameters<ReturnType<typeof dialerFor>>[0], deadline: number): Promise<NatsConnection> {
-    const ms = remoteStandingTimeLeft(deadline);
-    const pending = this.dial({ ...opts, timeout: ms });
-    try {
-      const nc = await withTimeout(pending, ms, "remote manager standing dial exceeded its 10000ms aggregate budget");
-      remoteStandingTimeLeft(deadline);
-      if (this.leaseStopping) throw new Error("manager stopped while a remote standing dial was in flight");
-      return nc;
-    } catch (e) {
-      // Timing out our wait does not cancel connect(). It still owns its socket until it rejects
-      // or returns a connection, which must close without serving or changing a current holder.
-      void pending.then((nc) => nc.close(), () => {}).catch((error) => console.error(`! remote manager abandoned standing dial cleanup: ${rejectionText(error)}`));
-      throw e;
-    }
-  }
+  /** {@link BrokerTransport.dialRemoteStanding}. */
+  private dialRemoteStanding(...args: Parameters<BrokerTransport["dialRemoteStanding"]>): ReturnType<BrokerTransport["dialRemoteStanding"]> { return this.brokerTransportComponent.dialRemoteStanding(...args); }
 
   private readonly seatCustody = new SeatCustody({
     staticAuth: () => !!this.auth && !this.userMode,
@@ -1376,6 +1346,22 @@ export class Manager {
     shutdownReadiness: () => this.shutdownReadiness,
     managedPrincipal: (...args) => this.managedPrincipal(...args),
     onAgentExit: (...args) => this.onAgentExit(...args),
+  });
+
+  /** Broker dials and scoped executor connections. Every dependency reads through at its use. */
+  private readonly brokerTransportComponent = new BrokerTransport({
+    auth: () => this.auth,
+    endpointServeExecutorExpiresInSeconds: () => this.endpointServeExecutorExpiresInSeconds,
+    leaseStopping: () => this.leaseStopping,
+    managerInstanceId: () => this.managerInstanceId,
+    remoteAuthority: () => this.remoteAuthority,
+    remoteBundleAdoption: () => this.remoteBundleAdoption,
+    remoteExecutorCreds: () => this.remoteExecutorCreds,
+    servers: () => this.servers,
+    space: () => this.space,
+    transportDown: () => this.transportDown,
+    renewRemoteExecutor: (...args) => this.renewRemoteExecutor(...args),
+    renewRemoteStandingBundle: (...args) => this.renewRemoteStandingBundle(...args),
   });
 
   /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
@@ -3042,40 +3028,14 @@ export class Manager {
     await this.retireConnection(s.nc, () => s.handle.stop());
   }
 
-  /** Retire a dedicated connection on stop: drain it while its transport is up, close it while the
-   *  client is reconnecting it. A drain on a reconnecting connection does not fail, it waits for the
-   *  reconnect, so the stop would last as long as the outage; a broker this connection cannot reach
-   *  has nothing left to flush. `flush` (the serve loop's own drain) runs only while the transport is
-   *  up. Best-effort, so a graceful stop completes its remaining teardown even when the broker is gone. */
-  private async retireConnection(nc: NatsConnection, flush?: () => Promise<unknown>): Promise<void> {
-    if (this.transportDown.has(nc)) {
-      try { await nc.close(); } catch { /* best effort */ }
-      return;
-    }
-    if (flush) try { await flush(); } catch { /* best effort */ }
-    try { await drainAndClose(nc); } catch { /* best effort */ }
-  }
+  /** {@link BrokerTransport.retireConnection}. */
+  private retireConnection(...args: Parameters<BrokerTransport["retireConnection"]>): ReturnType<BrokerTransport["retireConnection"]> { return this.brokerTransportComponent.retireConnection(...args); }
 
-  /** A failed candidate must not extend preparation by draining subscriptions on a stalled socket.
-   * Close only that candidate first. Native stop still owns any already-dispatched handlers, whose
-   * outcomes remain unknown to callers and must not be replayed; they do not hold family adoption. */
-  private async discardServeCandidate(nc: NatsConnection, handle?: EpServeHandle): Promise<void> {
-    await nc.close();
-    if (handle) void handle.stop().catch((e) => console.error(`! remote manager discarded serve candidate cleanup: ${rejectionText(e)}`));
-  }
+  /** {@link BrokerTransport.discardServeCandidate}. */
+  private discardServeCandidate(...args: Parameters<BrokerTransport["discardServeCandidate"]>): ReturnType<BrokerTransport["discardServeCandidate"]> { return this.brokerTransportComponent.discardServeCandidate(...args); }
 
-  /** Track a dedicated connection's transport into {@link transportDown} from the first moment:
-   *  nats.js reports `disconnect` when the socket drops and `reconnect` only after it has re-sent the
-   *  connection's subscriptions. If the status stream itself fails, the transport can no longer be
-   *  observed, so it counts as down. */
-  private trackTransport(nc: NatsConnection): void {
-    void (async () => {
-      for await (const st of nc.status()) {
-        if (st.type === "disconnect") this.transportDown.add(nc);
-        else if (st.type === "reconnect") this.transportDown.delete(nc);
-      }
-    })().catch(() => this.transportDown.add(nc));
-  }
+  /** {@link BrokerTransport.trackTransport}. */
+  private trackTransport(...args: Parameters<BrokerTransport["trackTransport"]>): ReturnType<BrokerTransport["trackTransport"]> { return this.brokerTransportComponent.trackTransport(...args); }
 
   private async opFinalizeResume(rawArgs: unknown): Promise<ControlReply> {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
@@ -4797,127 +4757,20 @@ export class Manager {
   /** {@link SeatStop.findManagedByTarget}. */
   private findManagedByTarget(...args: Parameters<SeatStop["findManagedByTarget"]>): ReturnType<SeatStop["findManagedByTarget"]> { return this.seatStopComponent.findManagedByTarget(...args); }
 
-  /** Run one static §13.1 lifecycle OPERATION over an ephemeral, key-pinned `lifecycle-executor`
-   *  connection: the credential's grants name exactly ONE incarnation's head/uid/gate/
-   *  cred-family/slot keys, so the write authority exists only for this operation's window and
-   *  can move nothing else. The transport is the direct-KV binding the shared core saga drives. */
-  private async withLifecycleExecutor<T>(
-    pin: { owner: string; actor: string; lifecycleUid: string; alias: string },
-    fn: (t: LifecycleStateTransport) => Promise<T>,
-  ): Promise<T> {
-    if (!this.auth) throw new Error("withLifecycleExecutor: no space auth (an open mesh has no lifecycle registry)");
-    const identity = newIdentity();
-    const creds = await mintCreds(this.auth, identity, "lifecycle-executor", {
-      lifecycleExecutor: { owner: pin.owner, actor: pin.actor, lifecycleUid: pin.lifecycleUid, alias: pin.alias },
-    });
-    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
-    try {
-      const kvm = new Kvm(nc);
-      const recordsKv = await kvm.open(recordsBucket(this.space));
-      const authKv = await kvm.open(epAuthBucket(this.space));
-      return await fn(staticLifecycleTransport(recordsKv, authKv));
-    } finally {
-      await drainAndClose(nc);
-    }
-  }
+  /** {@link BrokerTransport.withLifecycleExecutor}. */
+  private withLifecycleExecutor<T>(pin: { owner: string; actor: string; lifecycleUid: string; alias: string }, fn: (t: LifecycleStateTransport) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withLifecycleExecutor(pin, fn); }
 
-  /** Run one SPEC 13.15 issuance operation over an ephemeral `issuer` connection: the evidence
-   *  stage/release of one mint, or the retirement walk of one lifecycle's issuances. The store
-   *  handle and the accepted-row KV live only for this window; the standing supervisor holds no
-   *  grant on either bucket. */
-  private async withIssuer<T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>): Promise<T> {
-    if (!this.auth) throw new Error("withIssuer: no space auth (an open mesh issues nothing)");
-    const creds = await mintCreds(this.auth, newIdentity(), "issuer");
-    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
-    try {
-      const kvm = new Kvm(nc);
-      return await fn(await bindIssuedStores(kvm, await jetstreamManager(nc), this.space));
-    } finally {
-      await drainAndClose(nc);
-    }
-  }
+  /** {@link BrokerTransport.withIssuer}. */
+  private withIssuer<T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withIssuer(fn); }
 
-  /** The issuance seam of ONE static credential mint (SPEC 13.15): the evidence is bound to the
-   *  incarnation's own `cred.<uid>` ledger family, so the family's revocation (the static
-   *  terminal) retires every issuance that named it. The finalizer is the §13.1 ledger append
-   *  (slot credentialId + `cred.<uid>.<credId>` row); release runs it, then activates. */
-  private issuanceSeam(i: { store: IssuedStore; accepted: KV }, mode: "issue" | "renew", a: { name: string; id: string; lifecycleUid: string }, exp: number): IssuanceSeam {
-    return {
-      mode,
-      store: i.store,
-      accepted: i.accepted,
-      sources: mode === "issue" ? [{ space: this.space, bucket: epAuthBucket(this.space), key: `cred.${a.lifecycleUid}` }] : [],
-      finalize: async (credentialId) => {
-        await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {
-          await recordSlotCredential(t, DEV_OWNER, a.name, a.lifecycleUid, credentialId);
-          await appendStaticCredentialRow(t, { lifecycleUid: a.lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, a.id).key, exp });
-        });
-      },
-    };
-  }
+  /** {@link BrokerTransport.issuanceSeam}. */
+  private issuanceSeam(...args: Parameters<BrokerTransport["issuanceSeam"]>): ReturnType<BrokerTransport["issuanceSeam"]> { return this.brokerTransportComponent.issuanceSeam(...args); }
 
-  /** Run one §13.1 endpoint-instance maintenance operation over an ephemeral,
-   *  key-pinned `endpoint-serve-executor` connection: the credential's grants name exactly the
-   *  manager instance's `epgate`/`epcred` keys plus its registration's two records keys, so the
-   *  gate CAS, mint fence, spec/governance writes, and clean deregistration ride a one-shot scoped
-   *  authority. The remote boot goal-index sweep instead uses the authenticated host-owned scan.
-   *  This is NEVER the manager's standing seed/supervisor connection. */
-  private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
-    const identity = this.remoteAuthority?.identities.executor ?? newIdentity();
-    if (this.remoteAuthority && (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy")) {
-      // Shutdown has drained and discarded the standing serve context. Renew only its scoped
-      // maintenance executor through the existing host operation; never resurrect standing duties.
-      if (this.leaseStopping) await this.renewRemoteExecutor(true);
-      else if (this.remoteAuthority.renewStandingBundle) {
-        // The renewal drains old handlers after adopting. A handler waiting here must be
-        // released at adoption, not after its own completion is required by that drain.
-        const renewal = this.renewRemoteStandingBundle(true);
-        void renewal.catch((error) => console.error(`! remote manager standing renewal completion: ${rejectionText(error)}`));
-        await this.remoteBundleAdoption;
-        if (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy") {
-          await renewal;
-          throw new Error("standing renewal did not adopt a healthy scoped executor");
-        }
-      } else await this.renewRemoteExecutor(true);
-    }
-    const creds = this.remoteExecutorCreds ?? (this.auth
-      ? await mintCreds(this.auth, identity, "endpoint-serve-executor", {
-          endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },
-          ...(this.endpointServeExecutorExpiresInSeconds !== undefined
-            ? { expiresInSeconds: this.endpointServeExecutorExpiresInSeconds }
-            : {}),
-        })
-      : undefined);
-    if (!creds) throw new Error("withEndpointServeExecutor: no scoped executor authority (an open mesh must use the bare path)");
-    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
-    try {
-      const kvm = new Kvm(nc);
-      return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
-    } finally {
-      await drainAndClose(nc);
-    }
-  }
+  /** {@link BrokerTransport.withEndpointServeExecutor}. */
+  private withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withEndpointServeExecutor(fn); }
 
-  /** The open-mesh counterpart of {@link withEndpointServeExecutor}: an OPEN mesh has no
-   *  credential system, so there is no scoped executor to mint - the same §13.1 gate/records
-   *  writes ride a bare one-shot connection (the broker enforces nothing on an open mesh; the
-   *  ceremony still produces the real gate, epoch, and registration the serve rails run on). */
-  private async withOpenServeConnection<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
-    if (this.auth || this.remoteAuthority)
-      throw new Error("withOpenServeConnection: an authenticated mesh must use the scoped endpoint-serve executor");
-    const nc = await this.dial({ maxReconnectAttempts: 0 });
-    try {
-      const kvm = new Kvm(nc);
-      // An open mesh may be a RAW broker (no `cotal up` provisioning ran), and `Kvm.open` binds
-      // lazily without checking the stream exists — create-or-verify the §13.12 authority stores
-      // first (the same mode-neutral treatment {@link registerManagerService} gives the contract
-      // store), or the first gate write dies "stream not found".
-      await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
-      return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
-    } finally {
-      await drainAndClose(nc);
-    }
-  }
+  /** {@link BrokerTransport.withOpenServeConnection}. */
+  private withOpenServeConnection<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withOpenServeConnection(fn); }
 
   /** {@link StatusAndModels.hostedSeatCount}. */
   hostedSeatCount(...args: Parameters<StatusAndModels["hostedSeatCount"]>): ReturnType<StatusAndModels["hostedSeatCount"]> { return this.statusAndModelsComponent.hostedSeatCount(...args); }
@@ -5304,37 +5157,11 @@ export class Manager {
   /** {@link SeatStop.lifecycleMembershipRefusal}. */
   private lifecycleMembershipRefusal(...args: Parameters<SeatStop["lifecycleMembershipRefusal"]>): ReturnType<SeatStop["lifecycleMembershipRefusal"]> { return this.seatStopComponent.lifecycleMembershipRefusal(...args); }
 
-  /** Open a short-lived PROVISIONER connection, run the onboarding ops on it, and drain it (closure (ii),
-   *  residual 2). The DM/DLV consumer-create surface — the irreducible onboarding power — lives only for
-   *  this window, never as a standing grant on the long-lived supervisor. A provision-only endpoint
-   *  (no presence/consume/channel-watch) connected with memory-only `provisioner` creds; it sets its own
-   *  `inboxPrefix` so JS-API replies land on the `_INBOX_<id>.>` the provisioner cred subscribes. */
-  private async withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> {
-    if (!this.auth) throw new Error("withProvisioner: no space auth (an open mesh has no scoped creds)");
-    // Onboarding runs several provisioning ops, so it keeps the provisioner profile's five-minute window.
-    return withScopedEndpoint({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth: this.auth }, "provisioner", "provisioner", fn, 5 * 60);
-  }
+  /** {@link BrokerTransport.withProvisioner}. */
+  private withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withProvisioner(fn); }
 
-  /** A connection holding this instance's transfer reader grants (docs/design/resume-transfer.md
-   *  section 6) for this one receive or sweep: minted from the space's signing seed, or issued by the
-   *  host to a remote manager. An open mesh enforces no grants, so a bare one-shot connection is that
-   *  reader there. */
-  private async withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
-    const issue = this.remoteAuthority?.mintTransferReader;
-    if (this.remoteAuthority && !issue) throw new Error("withTransferReader: this manager's remote authority issues no transfer reader");
-    const identity = newIdentity();
-    const creds = issue
-      ? await issue(identity)
-      : this.auth && await mintCreds(this.auth, identity, "transfer-reader", { transferReader: { instanceId: this.managerInstanceId } });
-    const nc = await this.dial(creds
-      ? { ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 }
-      : { maxReconnectAttempts: 0 });
-    try {
-      return await fn(nc);
-    } finally {
-      await drainAndClose(nc);
-    }
-  }
+  /** {@link BrokerTransport.withTransferReader}. */
+  private withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withTransferReader(fn); }
 
   /** {@link SeatStop.opPurge}. */
   private opPurge(...args: Parameters<SeatStop["opPurge"]>): ReturnType<SeatStop["opPurge"]> { return this.seatStopComponent.opPurge(...args); }
