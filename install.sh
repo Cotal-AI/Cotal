@@ -733,14 +733,14 @@ read_installed_version() {
 
 check_connector_downgrade() {
   [ -n "$PREVIOUS_VERSION" ] && [ "$PREVIOUS_VERSION" != "$1" ] || return 0
-  # The staged CLI has a different installation identity. Ask the active CLI for its
-  # extension prefix before moving either package, so retained sets resolve as usual.
   if ! COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 DO_NOT_TRACK=1 \
-    "$NODE_BIN" - "$PREVIOUS_VERSION" "$1" "$INSTALL_DIR/lib/node_modules/$COTAL_PKG/dist/cotal.js" <<'NODE'
+    "$NODE_BIN" - "$PREVIOUS_VERSION" "$1" "$INSTALL_DIR/lib/node_modules/$COTAL_PKG" \
+    "$STAGED_INSTALL/lib/node_modules/$COTAL_PKG" <<'NODE'
 const { spawnSync } = require('node:child_process');
+const { randomBytes } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const [previous, requested, entry] = process.argv.slice(2);
+const [previous, requested, installed, staged] = process.argv.slice(2);
 
 // The bootstrap has no dependencies of its own. Compare release and prerelease identifiers
 // from the installed packages, rather than the requested npm tag or range.
@@ -770,14 +770,45 @@ function compare(a, b) {
     (preA.length && preB.length ? compareIdentifiers(preA, preB) : Number(!preA.length) - Number(!preB.length));
 }
 
+function targetExtensions() {
+  const modules = fs.realpathSync.native(path.dirname(installed));
+  const packageName = path.basename(installed);
+  const logicalEntry = path.join(modules, packageName, 'dist/cotal.js');
+  const store = path.join(path.dirname(modules), '.cotal-generations');
+  try { fs.mkdirSync(store, { mode: 0o700 }); }
+  catch (error) { if (error.code !== 'EEXIST') throw error; }
+  const info = fs.lstatSync(store);
+  if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o022))
+    throw new Error(`the execution store is not an owned, protected directory: ${store}`);
+  const probe = path.join(store, randomBytes(16).toString('hex'));
+  const candidate = path.join(probe, packageName);
+  fs.mkdirSync(probe, { mode: 0o700 });
+  try {
+    // The target's resolver keys connector state by logical entry, not by the physical stage.
+    // Use the existing retained layout, without publishing an execution descriptor or running
+    // a command that can inherit or seed a set.
+    fs.renameSync(staged, candidate);
+    try {
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        import { realpathSync } from 'node:fs';
+        Object.defineProperty(globalThis, Symbol.for('cotal.execution.identity'), {
+          value: Object.freeze({ logicalEntry: process.argv[1], loadedEntry: realpathSync.native('dist/cotal.js') }),
+        });
+        const { extensionsDir } = await import('@cotal-ai/workspace');
+        process.stdout.write(extensionsDir());
+      `, logicalEntry], { cwd: candidate, encoding: 'utf8', timeout: 30000, killSignal: 'SIGKILL' });
+      if (result.error || result.status !== 0)
+        throw new Error(`could not resolve the requested release's extension prefix: ${result.error?.message ?? (result.stderr.trim() || `exit ${result.status}`)}`);
+      if (!result.stdout || path.basename(result.stdout) !== 'extensions')
+        throw new Error('the requested release did not resolve an extension prefix');
+      return result.stdout;
+    } finally { fs.renameSync(candidate, staged); }
+  } finally { fs.rmdirSync(probe); }
+}
+
 try {
   if (compare(requested, previous) >= 0) process.exit(0);
-  const result = spawnSync(process.execPath, [entry, 'ext', 'root'], { encoding: 'utf8', timeout: 30000 });
-  if (result.error || result.status !== 0)
-    throw new Error(`could not read the installed extension prefix: ${result.error?.message ?? (result.stderr.trim() || `exit ${result.status}`)}`);
-  const extensions = result.stdout.replace(/\r?\n$/, '');
-  if (!extensions || path.basename(extensions) !== 'extensions')
-    throw new Error('the installed Cotal did not report an extension prefix');
+  const extensions = targetExtensions();
   const stamp = path.join(path.dirname(extensions), 'seed', 'stamp.json');
   const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
   const bytes = Buffer.alloc(8193);
@@ -834,7 +865,7 @@ install_cotal() {
   spin_stop
 
   # The active package and launcher stay intact until the requested release can start.
-  if ! _version_output=$(COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 "$NODE_BIN" "$STAGED_INSTALL/lib/node_modules/$COTAL_PKG/dist/cotal.js" --version 2>&1); then
+  if ! _version_output=$(COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 "$NODE_BIN" "$STAGED_INSTALL/lib/node_modules/$COTAL_PKG/dist/cotal.js" --version); then
     printf '%s\n' "$_version_output" >&2
     if [ "$OPT_VERSION" != latest ]; then
       die "The installed Cotal could not start." \
