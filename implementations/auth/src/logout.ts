@@ -1,6 +1,6 @@
 import { CommandFailure, removeCatalogMeshes } from "@cotal-ai/workspace";
 import { clearSharedServiceSessions } from "./service-sessions.js";
-import { deleteIdpSession, deleteIdpSpaceCatalog, loadIdpSession, revokeIdpSession, withIdpSessionLock } from "./login.js";
+import { clearOidcSession, deleteIdpSession, deleteIdpSpaceCatalog, loadIdpSession, revokeIdpSession, withIdpSessionLock } from "./login.js";
 
 export type SignOutIdpSessionResult =
   | { kind: "logout"; localLogin: "absent"; serverRevoked: null }
@@ -16,6 +16,10 @@ export async function signOutIdpSession({ dir, idp, local }: {
   try { session = loadIdpSession(dir, idp); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the cached login could not be read; nothing was cleared", { target: { idp } }); }
   if (!session) return { kind: "logout", localLogin: "absent", serverRevoked: null };
+  if (session.mode === "oidc") {
+    await clearOidcSession(dir, session, local);
+    return { kind: "logout", serverRevoked: !local, localLoginCleared: true, removedRegistrations: [], skippedServices: [] };
+  }
   // Local sign-out forgets this machine's login without contacting the provider, whose session stays valid.
   if (!local) {
     try { await revokeIdpSession(idp, session.token); }
@@ -28,7 +32,7 @@ export async function signOutIdpSession({ dir, idp, local }: {
   try {
     withIdpSessionLock(dir, () => {
       const current = loadIdpSession(dir, idp);
-      if (current && current.token !== session!.token) return;
+      if (current && (current.mode === "oidc" || current.token !== session!.token)) return;
       deleteIdpSession(dir, idp);
       localCleared = true;
       if (session!.sub) removed = removeCatalogMeshes(deleteIdpSpaceCatalog(dir, idp, session!.sub));

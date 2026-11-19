@@ -250,35 +250,31 @@ passed, not before.
 
 ## IdP compatibility [#idp-compatibility]
 
-The low-level `createIdpBridge` accepts EdDSA/Ed25519 JWTs with configured issuer, audience, and pinned JWKS. RS256 and ES256 tokens need host-side normalization or re-issuance before entering this bridge.
+The bridge accepts EdDSA/Ed25519 proofs with a pinned issuer, single audience, and JWKS URL.
+Providers that issue only RS256 or ES256 need a host-side adapter. Better Auth remains the default:
+login uses `/device/code`, `/device/token`, and `/token`, and the space pins `<base>/jwks` and the
+IdP origin as issuer and audience. Better Auth itself is a development and test dependency.
 
-The stock end-to-end flow expects Better Auth conventions. `cotalAuthProvider` pins `<base>/jwks` and issuer and audience to the IdP origin. The login client uses `/device/code`, `/device/token`, and `/token` with an opaque revocable session.
+For a compatible OpenID Connect provider, enable device authorization, refresh and token exchange
+for a public client. It must publish device and token endpoints in discovery, return an opaque
+refresh token for `openid offline_access`, and exchange an access token for an EdDSA ID token whose
+sole audience is the client ID. Configure the space with the exact issuer and verification keys:
 
-A Better-Auth-shaped EdDSA IdP can use that flow. Another production IdP requires host-provided login and provider wiring around `createIdpBridge` and `createUserTokenIssuer`. It is not a configuration-only change.
+```bash
+cotal up --user-auth --idp <issuer> --idp-audience <client-id> --idp-jwks-uri <jwks-url>
+cotal login --oidc --idp <issuer> --client-id <client-id>
+```
 
-Better Auth is a development dependency of `@cotal-ai/auth`. Only `dev-idp.ts` and smoke tests import it, not runtime `src`. The runtime coupling is the generic bridge and auth-provider extension.
+`--oidc` is explicit. Discovery and credential requests refuse redirects. Login saves the refresh
+token and writes replacements atomically when the provider rotates it. Access tokens and mesh
+proofs stay in memory. `cotal logout --idp <issuer>` revokes the refresh token if discovery supplied
+a revocation endpoint. Use `--local` to forget the local sign-in without contacting the provider.
+OIDC mode covers CLI sign-in and ordinary mesh access. It does not supply Better Auth's Cloud account
+APIs, space catalog or automatic sign-in copying to other stores. A proof without signed password
+freshness still cannot authorize [private tool results](embedding.mdx#private-tool-results).
 
-Importing `@cotal-ai/auth` self-registers `cotalAuthProvider`. `resolveAuthProvider()` refuses two registered providers. A host using registry resolution cannot also register a competing provider. Issuer, audience, and JWKS pins remain required in every composition.
-
-
-The low-level bridge accepts **EdDSA/Ed25519** JWTs with configured pins; a provider that
-issues RS256 or ES256 tokens (many managed OIDC services do) needs a host-side normalization or
-re-issuance adapter first, because the reference bridge pins the token algorithm to EdDSA. The
-reference implementation ships **Better Auth** as a
-dev and test fixture only (it is a `devDependency` of `@cotal-ai/auth`; the only code that imports
-it is the `dev-idp.ts` harness and the smoke tests, never the runtime `src`). The one runtime
-coupling to an IdP is the `idp.ts` bridge plus the `auth-provider` extension. The bridge core
-(`createIdpBridge`) is IdP-generic for **EdDSA** tokens (issuer, audience, JWKS as configuration).
-The stock end-to-end flow around it, though, is **Better-Auth-shaped**: `cotalAuthProvider` pins
-`<base>/jwks` and issuer/audience to the IdP origin, and the login client speaks Better Auth's
-device-code endpoints (`/device/code`, `/device/token`, `/token`) with an opaque revocable session.
-So a Better-Auth-shaped EdDSA IdP uses the stock flow directly; **any other production IdP is a
-hosted-composability gap, not a configuration change**. A host integrates it by building its own
-login and provider wiring on the low-level primitives (`createIdpBridge`, `createUserTokenIssuer`),
-not by reusing the stock provider. Note that importing `@cotal-ai/auth` self-registers
-`cotalAuthProvider`, and `resolveAuthProvider()` throws when two providers are registered, so a host
-on the registry-resolution path must not also register its own. Whatever the path, never loosen the
-issuer/audience/JWKS pins to force-fit an IdP.
+Importing `@cotal-ai/auth` self-registers `cotalAuthProvider`. `resolveAuthProvider()` refuses two
+registered providers. Issuer, audience, and JWKS pins remain required in every composition.
 
 ### Offline secret inventory
 

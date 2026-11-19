@@ -152,7 +152,7 @@ export async function whoami(args: ParsedArgs): Promise<void> {
       owner,
       actor: signedIn ? CLI_USER_ACTOR : null,
       subject: st.login?.sub ?? null,
-      loginExpiresAt: st.login ? new Date(st.login.expiresAt * 1000).toISOString() : null,
+      loginExpiresAt: st.login?.expiresAt === undefined ? null : new Date(st.login.expiresAt * 1000).toISOString(),
       grant,
     } as const;
     if (grant === null || grant === "not-granted") result = { ...base, identity, read: [], post: [], dms: false, capabilities: [] };
@@ -312,7 +312,7 @@ function whoamiView(r: WhoamiResult, preparedRoot?: string): Report {
   ];
   if (id.kind === "user") {
     rows.push(["principal", id.principal ?? { text: id.subject ? "not known on this machine" : "not signed in", tone: "waiting" }]);
-    if (id.subject) rows.push(["login", `${id.subject}, cached expiry ${id.loginExpiresAt}`]);
+    if (id.subject) rows.push(["login", id.loginExpiresAt === null ? id.subject : `${id.subject}, cached expiry ${id.loginExpiresAt}`]);
   }
   rows.push(["read", grantText(r.read, "no channels")], ["post", grantText(r.post, "no channels")], ["dm history", r.dms === null ? { text: "unknown", tone: "waiting" } : r.dms ? "yes" : "no"], ["capabilities", grantText(r.capabilities, "none")]);
   const hints: Cell[] = [];

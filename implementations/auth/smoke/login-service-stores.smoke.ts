@@ -17,6 +17,7 @@ import { mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams, type Remot
 import { spaceKey } from "@cotal-ai/workspace";
 import { killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { Manager, remoteManagerClient as client, registerRemoteManagerAuthority, managerClusterArtifacts, type ManagerOptions } from "../../manager/dist/index.js";
+import { betterAuthSessionToken } from "../src/login.js";
 import { startAuthService, fetchIdpJwt, requireIdpSession, revokeIdpSession, loadIdpSession, IdpSessionRejectedError } from "../src/index.js";
 import { remoteManagerRegistrationProof } from "../src/authority-client.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
@@ -113,7 +114,7 @@ try {
   // platform authority. It is not the provider HTTP discovery path: the hosted fixture keeps
   // its unrelated pinned IdP, and no JWT is submitted to that fixture's bridge.
   const door = async (request: any): Promise<any> => {
-    try { await fetchIdpJwt(base, requireIdpSession(serviceHome, base).token); }
+    try { await fetchIdpJwt(base, requireIdpSession(serviceHome, base), undefined, serviceHome); }
     catch (e) { if (request.operation === "renewStandingBundle" && e instanceof IdpSessionRejectedError && e.message.includes("rejected the cached session (expired or revoked)")) refused++; throw e; }
     const result = await service!.platformControlAuthority!({ v: 1, kind: "platform-control-authority", space: a.space, accountPublicKey: a.accountPublicKey, assignmentRevision: 1, request });
     if (request.operation === "renewStandingBundle") renewed++;
@@ -162,7 +163,7 @@ try {
   const skippedBefore = readFileSync(join(skippedHome, "idp-sessions.json"), "utf8");
   // The independent seed login can refresh the proven service, so revoke its
   // current handle before testing the mixed default-home reapproval.
-  await revokeIdpSession(base, requireIdpSession(serviceHome, base).token);
+  await revokeIdpSession(base, betterAuthSessionToken(requireIdpSession(serviceHome, base)));
   await until(() => refused > 0 && renewalErrors > 0, "real Manager timer logged refusal after service session revocation");
   const successes = renewed;
   const receipt = await login(undefined, true);
@@ -204,7 +205,7 @@ try {
   if (mixedFailures.length) { await logout(); }
 
   assert.ok(receipt.includes(`Signed in cotal-manager@${key}.service with the same approval.`), "login names the refreshed Manager service");
-  assert.equal(receipt.includes(requireIdpSession(operatorStore, base).token), false, "receipt does not print the approved token");
+  assert.equal(receipt.includes(betterAuthSessionToken(requireIdpSession(operatorStore, base))), false, "receipt does not print the approved token");
   assert.notEqual(requireIdpSession(operatorStore, base).token, operatorSession.token);
   const priorRefusals = refused, priorErrors = renewalErrors;
   await until(() => renewed > successes || refused > priorRefusals && renewalErrors > priorErrors, "real Manager timer runs after default-home reapproval");

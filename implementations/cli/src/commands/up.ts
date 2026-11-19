@@ -64,6 +64,7 @@ import {
   mkSecretDir,
   openPrivateAppend,
   writeSecretFile,
+  type AuthIdpInput,
   type AuthPrepared,
   type SpaceAuth,
   type ChannelRegistryFile,
@@ -388,7 +389,9 @@ export const upFlags: FlagSpec[] = [
   { name: "accept-stale-checkpoint", type: "boolean", description: "explicit consent to resume a seat checkpoint captured outside its recorded recency horizon" },
   { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
   { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
-  { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
+  { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL, or the exact issuer with explicit trust flags" },
+  { name: "idp-audience", type: "string", value: "<audience>", description: "with --idp-jwks-uri: pin this IdP proof audience instead of deriving it from the auth base URL" },
+  { name: "idp-jwks-uri", type: "string", value: "<url>", description: "with --idp-audience: pin the IdP keys at this URL" },
   { name: "exchange-public-port", type: "string", value: "<n>", description: "with --user-auth: also serve the PUBLIC exchange face on this loopback port (TLS terminates at a reverse proxy)" },
   { name: "exchange-public-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the advertised public base URL (the reverse proxy's address)" },
   { name: "exchange-trusted-proxy", type: "boolean", description: "with --exchange-public-port: attribute peers by the last X-Forwarded-For hop (opt-in; default: socket address)" },
@@ -448,6 +451,9 @@ export function validateUpArguments(args: ParsedArgs): void {
     throw new CommandFailure("refused", "USAGE_INVALID", "--user-auth and --open contradict - a user-auth space cannot run unauthenticated", { remedy: "drop --open for user auth, or drop --user-auth for an open space" });
   if (args.values.idp !== undefined && args.values["user-auth"] !== true && !args.values.file)
     throw new CommandFailure("refused", "USAGE_INVALID", '--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest', { remedy: "use --user-auth --idp <auth base URL>, without --open" });
+  if ((args.values["idp-audience"] !== undefined || args.values["idp-jwks-uri"] !== undefined) &&
+      (args.values.idp === undefined || args.values["idp-audience"] === undefined || args.values["idp-jwks-uri"] === undefined || args.values.restore !== undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", "pass --idp <issuer>, --idp-audience <audience> and --idp-jwks-uri <url> together for a user-auth stack, without --restore");
   if (args.values["no-manager"] === true && args.values.runtime !== undefined)
     throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager cannot be combined with --runtime because no manager starts", { remedy: "drop --runtime, or drop --no-manager to select a manager runtime" });
   // Only an omitted --runtime selects the default runtime. An empty one, as an unset variable gives,
@@ -982,7 +988,7 @@ const NO_MANAGER_DURING_RECOVERY = "--no-manager is refused while this root has 
 
 async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?: () => void, freshTeamBoot = false, restoreSink?: (result: RestoreStartupResult) => void): Promise<void> {
   const values = args.values as {
-    server?: string; "store-dir"?: string; "max-file-store"?: string; "log-file"?: string; "logfile-size-limit"?: string; "logfile-max-num"?: string; "auth-timeout"?: string; "max-payload"?: string; "account-resolver"?: string; space?: string; root?: string; open?: boolean; "user-auth"?: boolean; "service-endpoints"?: boolean; idp?: string;
+    server?: string; "store-dir"?: string; "max-file-store"?: string; "log-file"?: string; "logfile-size-limit"?: string; "logfile-max-num"?: string; "auth-timeout"?: string; "max-payload"?: string; "account-resolver"?: string; space?: string; root?: string; open?: boolean; "user-auth"?: boolean; "service-endpoints"?: boolean; idp?: string; "idp-audience"?: string; "idp-jwks-uri"?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
     channels?: string; detach?: boolean; foreground?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean; "recreate-membership-store"?: boolean; "recreate-issued-stores"?: string;
@@ -998,6 +1004,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     __invokedRoot?: string;
     __folderNamed?: boolean;
   };
+  const idpTrust: AuthIdpInput["idpTrust"] = values["idp-audience"] === undefined ? undefined : { audience: values["idp-audience"], jwksUri: values["idp-jwks-uri"]! };
   if (freshTeamBoot && (!values.file || values.restore || values.__restoreAttempt || values.__ordinaryResumeAttempt || values["rotate-sys"] || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot accepts one manifest and its selected lifetime, not a restore, rotation or manager-free override");
   if (values["manager-name"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain `cotal up` starts; it cannot be combined with --restore, --file or --no-manager");
   if (values["seat-cap"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--seat-cap caps the manager a plain `cotal up` starts; it cannot be combined with --restore, --file or --no-manager");
@@ -1112,14 +1119,18 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const stackSpace = values.space ?? folderSpace();
     if (values.space === undefined && unnamedDefault(root, stackSpace)) assertSelectionNotMoved(root, stackSpace);
     recordOperationSpace(stackSpace);
-    if (!readMaintenanceJournal(root)) {
+    const journal = readMaintenanceJournal(root);
+    if (idpTrust && journal) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "explicit IdP trust flags cannot be used during a pending recovery; resume with the retained pin");
+    if (!journal) {
       const controller = controllerStackApplies(root, stackSpace, values);
       const recordedStack = readStackJournal(root);
-      if ((recordedStack?.journal.mode ?? requestedStackMode(values)) === "user" && (!recordedStack || values.idp !== undefined)) {
+      const mode = recordedStack?.journal.mode ?? requestedStackMode(values);
+      if (idpTrust && mode !== "user") throw new CommandFailure("refused", "CONFLICT", "explicit IdP trust flags require a user-auth stack; the recorded mode was not changed");
+      if (mode === "user" && (!recordedStack || values.idp !== undefined)) {
         const server = values.server ?? recordedStack?.journal.server ?? localMeshesForRoot(root).find((m) => m.space === stackSpace)?.server ?? (values.host ? reconcileHostAndServer(values.host, undefined) : DEFAULT_SERVER);
         const transport = resolveTransport(values, undefined, root, { persist: false, quiet: true });
         if (controller) assertUserStackTransport(server, transport.kind === "tls-required");
-        await preflightUserStack(root, stackSpace, values.idp);
+        await preflightUserStack(root, stackSpace, values.idp, idpTrust);
       }
     }
     // A runtime with no installed provider refuses here, before the lock creates its layout and
@@ -1583,7 +1594,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
-          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
+          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp !== undefined ? { idp: values.idp, idpTrust } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
       if (values.foreground) await holdForegroundStack(meshRoot, start);
@@ -1635,6 +1646,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         open: values.open,
         userAuth: wantUser,
         idp: values.idp,
+        idpTrust,
         rotateSys: values["rotate-sys"],
         maxSessions,
         noManager,
@@ -1666,6 +1678,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         open: values.open,
         userAuth: wantUser,
         idp: values.idp,
+        idpTrust,
         rotateSys: values["rotate-sys"],
         maxSessions,
         noManager,
@@ -2136,6 +2149,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
             store: workspaceSecretStore(root),
             dir: stateDir,
             idpUrl: values.idp,
+            idpTrust,
           });
         } catch (e) {
           stderrLine("✗ ", `${(e as Error).message}`, c.red);
@@ -2275,7 +2289,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       accountResolver,
       space: values.space,
       open: values.open,
-      userAuth: wantUser ? { idpUrl: values.idp } : undefined,
+      userAuth: wantUser ? { idpUrl: values.idp, idpTrust } : undefined,
       rotateSys: values["rotate-sys"],
       ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
@@ -2366,7 +2380,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // Decided above the branch; the dial host is only settled here (a port collision may have moved
   // the server, and the hostname is what the certificate has to match).
   assertServesDialHost(transport, new URL(server).hostname);
-  const brokerSetup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore, false, { authTimeout, maxPayload, accountResolver, manager: values["no-manager"] !== true }) : undefined;
+  const brokerSetup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp, idpTrust } : undefined, transport, values["rotate-sys"], maxFileStore, false, { authTimeout, maxPayload, accountResolver, manager: values["no-manager"] !== true }) : undefined;
   const brokerMaxPayload = brokerSetup?.maxPayload ?? maxPayload ?? readBrokerPolicy(cotalRoot())?.maxPayload;
   const port = Number(new URL(server).port) || 4222;
   // Both modes go through a RENDERER, never bare CLI flags. Open mode used to start from
@@ -3652,7 +3666,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
       remedy: opts.server !== undefined ? `pass --server ${tlsAddress(server)}` : `set broker.servers to ${tlsAddress(server)} in ${file}`,
     });
   const open = m.broker?.auth === false; // default is auth
-  const userAuth = m.broker?.auth === "user" ? { idpUrl: m.broker.idp } : undefined;
+  const userAuth = m.broker?.auth === "user" ? { idpUrl: m.broker.idp, idpTrust: opts.idpTrust } : undefined;
   const runtime = m.runtime ?? "pty";
   if (open && (m.defaults?.deliveryClass === "durable" || m.channels.some((channel) => channel.deliveryClass === "durable")))
     throw new CommandFailure("refused", "UNSUPPORTED", "this open manifest explicitly requests durable channel delivery, but the open broker has no delivery daemon; no channel metadata or broker was written", { target: { space: m.space, defaultDurable: m.defaults?.deliveryClass === "durable", channels: m.channels.filter((channel) => channel.deliveryClass === "durable").map((channel) => channel.name) }, remedy: "use static/user authentication for durable delivery, or declare live delivery for an open mesh" });
@@ -3687,7 +3701,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // Before the dry-run print and before connector preflight or any write, as the refusals above.
   if (!opts.storeDir) refuseUnnamedLastStore(cotalPath("nats"));
   else refuseMissingNamedStore(resolve(opts.storeDir));
-  if (userAuth) await preflightUserStack(cotalRoot(), m.space, userAuth.idpUrl);
+  if (userAuth) await preflightUserStack(cotalRoot(), m.space, userAuth.idpUrl, userAuth.idpTrust);
   checkStartStore(opts.storeDir, m.space);
 
   if (opts.dryRun) {
@@ -3901,6 +3915,7 @@ interface UpManifestFlags {
   open?: boolean;
   userAuth?: boolean;
   idp?: string;
+  idpTrust?: AuthIdpInput["idpTrust"];
   /** `--rotate-sys` on the manifest path: the same class-3 renewal, carried to the ONE boot that
    *  renders the broker config (`startMeshDetached`), never to the owner-derivation pre-resolve. */
   rotateSys?: boolean;
@@ -4257,7 +4272,7 @@ export interface DetachOpts {
   space?: string;
   open?: boolean;
   /** USER MODE: enable per-user auth (presence = on; `idpUrl` pins the IdP on first enable). */
-  userAuth?: { idpUrl?: string };
+  userAuth?: AuthIdpInput;
   /** Rotate the space's system account before rendering the broker config, re-minting the two $SYS
    *  creds against the successor. Only this boot (and the foreground one) may set it: rotation is
    *  complete only when the broker it starts is the one carrying the rewritten config. */
@@ -5623,7 +5638,7 @@ async function authSetup(
   server: string,
   space: string,
   host: string = "127.0.0.1",
-  user: { idpUrl?: string } | undefined,
+  user: AuthIdpInput | undefined,
   // NON-OPTIONAL, and it used to default to `{ kind: "plaintext" }`. That default was the hole: the
   // manifest path called this with five arguments and silently got a cleartext listener while the
   // operator's `--tls-cert` sat validated and unused. A default here cannot be right, because the
@@ -5726,6 +5741,7 @@ async function authSetup(
         store: workspaceSecretStore(cotalRoot()),
         dir: stateDir,
         idpUrl: user.idpUrl,
+        idpTrust: user.idpTrust,
       });
     } catch (e) {
       throw e instanceof Error ? e : new Error(String(e));

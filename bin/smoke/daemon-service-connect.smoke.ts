@@ -2610,6 +2610,7 @@ process.stdin.once('data', () => {
           if (process.argv.includes("--account-custody-repro")) {
             const alias = idpUrl.replace("127.0.0.1", "[::ffff:127.0.0.1]");
             const session = loadIdpSession(home, idpUrl)!;
+            assert.equal(session.mode, undefined);
             custodyOldFails = true;
             saveIdpSession(home, alias, { ...session, sub: undefined });
             const refreshed = await cli("spaces", "--refresh");

@@ -96,7 +96,7 @@ export async function connectCheck(space: string, home: string = homeCotalDir(),
   // The cached handle's presence and advisory expiry do not prove the IdP still accepts it.
   // Reuse the stock bounded JWT cache, so readiness and registration agree on revocation.
   try {
-    const jwt = await fetchIdpJwt(ua.idp.url, session.token, signal);
+    const jwt = await fetchIdpJwt(ua.idp.url, session, signal, home);
     const header = decodeProtectedHeader(jwt), claims = decodeJwt(jwt);
     const signature = jwt.split(".")[2] ?? "";
     const now = Date.now() / 1000;

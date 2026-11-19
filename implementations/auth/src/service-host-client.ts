@@ -245,7 +245,8 @@ function serviceHostEndpoint(dir: string, space: string, what: string): ServiceH
 
 /** POST one host request to the resolved host with a fresh IdP proof and return the engine's parsed answer. */
 async function postServiceEndpointHost(target: ServiceHostTarget, request: ServiceHostRouteRequest): Promise<ServiceHostResult> {
-  const idpToken = await fetchIdpJwt(target.idpUrl, requireIdpSession(homeCotalDir(), target.idpUrl).token);
+  const home = homeCotalDir();
+  const idpToken = await fetchIdpJwt(target.idpUrl, requireIdpSession(home, target.idpUrl), undefined, home);
   const res = await fetch(target.endpoint, {
     method: "POST", redirect: "manual",
     headers: { "content-type": "application/json", ...(target.authorization !== undefined ? { authorization: target.authorization } : {}) },

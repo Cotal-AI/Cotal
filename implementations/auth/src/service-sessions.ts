@@ -7,6 +7,8 @@ import { deleteIdpSession, loadIdpSession, normalizeIdpUrl, saveIdpSession, with
  * expiry and revocation, rather than manufacturing a new credential or extending its lifetime. */
 export function refreshServiceSessions(directory: string, idpUrl: string, session: IdpSession, skipped?: string[]): string[] {
   if (!session.sub) throw new Error("a proved account subject is required before refreshing Manager sign-ins");
+  // Independent service stores cannot share a refresh token that rotates on each use.
+  if (session.mode === "oidc") return [];
   return visitServiceSessions(directory, idpUrl, session, false, skipped);
 }
 
@@ -59,7 +61,7 @@ function visitServiceSessions(directory: string, idpUrl: string, session: IdpSes
         assertServiceLoginStore(store);
         readLocalRecordSource(join(pinned, "idp-sessions.json"), 256 * 1024, true);
         const previous = loadIdpSession(pinned, idp);
-        if (!previous) return;
+        if (!previous || previous.mode === "oidc") return;
         if (!previous.sub || previous.sub !== session.sub) {
           if (clear) return;
           throw new Error("the service sign-in belongs to a different or unproved account");

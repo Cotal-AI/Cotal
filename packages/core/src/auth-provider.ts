@@ -790,10 +790,8 @@ export interface ChatSessionRetireResult {
 export interface UserAuthStatus {
   /** The space's pinned IdP base URL (always known — it is part of the user-auth material). */
   idpUrl: string;
-  /** This machine's cached login for that IdP; absent = not signed in. `name` is the account name
-   *  the IdP gave at `cotal login`, display only, and absent when the IdP gave none or an older
-   *  build wrote the login. */
-  login?: { sub: string; expiresAt: number; name?: string };
+  /** This machine's cached login, absent if signed out. Expiry may be unknown and `name` is display only. */
+  login?: { sub: string; expiresAt?: number; name?: string };
   /** The login's derived owner token (`u_…`) for this space. */
   owner?: string;
   /** The (owner, actor) interactive ledger row: its lists when granted, `"not-granted"` when the
@@ -803,11 +801,16 @@ export interface UserAuthStatus {
     | "not-granted";
 }
 
-/** The provisioning input — deliberately NARROW (a capability boundary, not a convenience): the
- *  operator seed signs the provider's dedicated account(s) once; the data-account signing seed is
- *  projected into the service's own key file because minting scoped data-account users at connect
- *  time IS the service's function. Nothing else of the space bundle crosses this seam. */
-export interface AuthPrepareInput {
+/** Operator-supplied IdP trust inputs. The provider validates and persists them. */
+export interface AuthIdpInput {
+  idpUrl?: string;
+  /** Explicit proof audience and key source for a provider whose base URL is its exact issuer. */
+  idpTrust?: { audience: string; jwksUri: string };
+}
+
+/** The operator seed signs the provider's dedicated accounts once. The service uses the
+ * data-account signing seed to mint scoped users. Nothing else of the space bundle crosses. */
+export interface AuthPrepareInput extends AuthIdpInput {
   space: string;
   /** The space operator's signing seed — used once per fresh space, to sign the provider's
    *  dedicated account(s) into the operator's trust chain. */
@@ -823,20 +826,14 @@ export interface AuthPrepareInput {
    *  discovery). The caller keys it — today `<root>/.cotal/auth/<space>`; a future
    *  (broker, space) key is a caller change, never an on-disk format break. */
   dir: string;
-  /** The operator's external identity-provider base URL (`up --user-auth --idp <url>`), OPAQUE to
-   *  core — the provider pins/persists it (first call requires one; a later call must match the
-   *  persisted pin or omit it; re-pointing an IdP is a migration, never a flag flip). */
-  idpUrl?: string;
 }
 
 /** The read-only {@link AuthProvider.preflightServer} input: only what the pre-effect checks read.
  *  No seed, signing key or secret store crosses this seam. */
-export interface AuthPreflightInput {
+export interface AuthPreflightInput extends AuthIdpInput {
   space: string;
   /** The same provider state dir {@link AuthPrepareInput.dir} names. Read only; never created. */
   dir: string;
-  /** The same opaque IdP base URL {@link AuthPrepareInput.idpUrl} carries. */
-  idpUrl?: string;
 }
 
 /** The {@link AuthProvider.preflightServer} result. `required`: a first enable needs an input the

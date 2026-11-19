@@ -1861,7 +1861,7 @@ try {
   // A genuine signerless participant, registered through the stock auth authority service.
   // The owner's actor has spawn and supervise, but never admin.
   grantActor(dir, { ...cliRow0, scope: ["spawn", "supervise"], allowPublish: ["general", `events.${OWNER}.>`] });
-  const idpToken = await fetchIdpJwt(base, loadIdpSession(home, base)!.token);
+  const idpToken = await fetchIdpJwt(base, loadIdpSession(home, base)!, undefined, home);
   const authorityCall = async <T,>(request: unknown): Promise<T> => {
     const info = loadAuthServiceInfo(dir)!;
     const response = await fetch(`${info.url}/manager-service-authority`, { method: "POST",

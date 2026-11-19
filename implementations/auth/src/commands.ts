@@ -137,6 +137,8 @@ function validateAccountArguments(args: ParsedArgs, mode: "login" | "logout"): v
   }
   if (args.values["client-id"] !== undefined && !String(args.values["client-id"]).trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
+  if (mode === "login" && args.values.oidc === true && (args.values.idp === undefined || args.values["client-id"] === undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--oidc requires --idp <issuer> and --client-id <id>");
   if (mode === "login" && inputDisabledByFlag()) throw new CommandFailure("refused", "UNSUPPORTED", "this provider login uses device approval and has no noninteractive grant in this client", { remedy: "sign in from an interactive terminal" });
 }
 
@@ -159,7 +161,10 @@ export async function chooseAccountChoice(args: ParsedArgs, mode: "login" | "log
 async function chooseAccountUrl(args: ParsedArgs, mode: "login" | "logout"): Promise<string | undefined> {
   if (args.values.cloud && args.values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
   if (mode === "login" && args.values.cloud === true) return COTAL_CLOUD_IDP;
-  if (typeof args.values.idp === "string") return normalizeIdpUrl(mode === "login" ? cloudAuthUrl(args.values.idp) : args.values.idp);
+  if (typeof args.values.idp === "string") {
+    if (mode === "login" && args.values.oidc === true) return args.values.idp;
+    return normalizeIdpUrl(mode === "login" ? cloudAuthUrl(args.values.idp) : args.values.idp);
+  }
   let cached: ReturnType<typeof listIdpAccounts>;
   try { cached = listIdpAccounts(homeCotalDir()); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "cached account metadata could not be read; it was not reset"); }
@@ -232,7 +237,7 @@ async function runNativeMigration(args: ParsedArgs, from: string): Promise<void>
 }
 
 async function runLogin(args: ParsedArgs): Promise<void> {
-  const values = args.values as { idp?: string; "client-id"?: string };
+  const values = args.values as { idp?: string; "client-id"?: string; oidc?: boolean };
   validateAccountArguments(args, "login");
   const presentation = presentationOf(args.values);
   if (typeof args.values["migrate-from"] === "string") {
@@ -242,7 +247,8 @@ async function runLogin(args: ParsedArgs): Promise<void> {
   const choice = await chooseAccountChoice(args, "login");
   if (choice === undefined) { console.error("Sign-in cancelled. No provider session was requested."); return; }
   await legibly(async () => {
-    const idp = normalizeIdpUrl(choice.url);
+    const oidc = values.oidc === true;
+    const idp = oidc ? choice.url : normalizeIdpUrl(choice.url);
     // establishIdpSession proves the session mints user JWTs BEFORE persisting it — a failed
     // proof leaves no cache entry to fool requireIdpSession later. Every provider request runs
     // before that, so a provider that cannot be reached leaves nothing cached: a dependency
@@ -251,6 +257,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       dir: homeCotalDir(),
       idpUrl: idp,
       clientId: values["client-id"] ?? DEFAULT_CLIENT_ID,
+      oidc,
       expectedPins: choice.discoveryPins && { idpUrl: choice.discoveryPins.url, issuer: choice.discoveryPins.issuer, audience: choice.discoveryPins.audience },
       onPrompt: (p) => {
         console.error(renderReport({ sections: [{ title: "Approve sign-in", blocks: [
@@ -261,7 +268,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       },
     }).catch((error: unknown) => {
       if (error instanceof IdpUnreachableError)
-        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${error.message}; no session was cached`, { target: { idp }, remedy: "check --idp <auth base URL>; it must serve <base>/device/code" });
+        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${error.message}; no session was cached`, { target: { idp }, remedy: oidc ? "check --idp <issuer> and its discovery and token endpoints" : "check --idp <auth base URL>; it must serve <base>/device/code" });
       throw error;
     });
     const skippedServices: string[] = [];
@@ -296,7 +303,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     // prefer the IdP's email/name claim; the raw `sub` stays as the stable id (dim when secondary).
     console.log(renderReport({ sections: [
       { title: "Signed in", blocks: [
-        { kind: "fields", rows: [["Account", label || sub], ["Subject", sub], ["Provider", idp], ["Session expires", new Date(session.expiresAt * 1000).toISOString()], ["Chat name", session.name ?? "none"]] },
+        { kind: "fields", rows: [["Account", label || sub], ["Subject", sub], ["Provider", idp], ["Session expires", session.expiresAt === undefined ? "not reported by provider" : new Date(session.expiresAt * 1000).toISOString()], ["Chat name", session.name ?? "none"]] },
         { kind: "lines", lines: [
           ...(saved ? [{ text: `Chat sessions use your saved name "${saved}".`, tone: "hint" as const }]
             : session.name ? []
@@ -719,7 +726,7 @@ const authCommands: Command[] = [
     group: "Identity",
     summary: "sign in to Cotal Cloud or another host with device approval",
     examples: [{ command: "cotal login", note: "sign in to Cotal Cloud and approve sign-in" }, { command: "cotal login --idp <url>", note: "sign in to one provider" }],
-    usage: "cotal login [<name> | --cloud | --idp <auth base URL> | --migrate-from <old auth URL>] [--client-id <id>] [--no-browser] [--plain]",
+    usage: "cotal login [<name> | --cloud | --idp <url> | --migrate-from <old auth URL>] [--oidc] [--client-id <id>] [--no-browser] [--plain]",
     positionals: "[<name>]",
     prepareMeshTarget: false,
     outputs: ["plain"],
@@ -729,7 +736,8 @@ const authCommands: Command[] = [
       { name: "cloud", type: "boolean", description: "Sign in to Cotal Cloud" },
       { name: "migrate-from", type: "string", value: "<old auth URL>", description: "Approve an endorsed native origin migration for a registered account" },
       { name: "no-browser", type: "boolean", description: "Print approval instructions without opening a browser" },
-      { name: "idp", type: "string", value: "<auth base URL>", description: "Auth base URL, e.g. <origin>/api/auth" },
+      { name: "idp", type: "string", value: "<url>", description: "Provider auth base URL, or the exact issuer with --oidc" },
+      { name: "oidc", type: "boolean", description: "Use OIDC discovery and device authorization (requires --idp and --client-id)" },
       { name: "client-id", type: "string", value: "<id>", description: "OAuth device-flow client id" },
     ],
     run: runLogin,
@@ -983,8 +991,8 @@ async function authGroup(args: ParsedArgs): Promise<void> {
   try { accounts = listIdpAccounts(homeCotalDir()); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "cached account metadata could not be read; nothing was reset"); }
   const items = accounts.map((account) => {
-    const expiry = new Date(account.expiresAt * 1000);
-    return { provider: account.idp, subject: account.sub ?? null, cachedExpiry: account.expiresAt, cachedExpiryIso: Number.isFinite(expiry.getTime()) ? expiry.toISOString() : null, cachedExpiryPassed: account.expiresAt * 1000 <= Date.now(), verification: "not-checked" };
+    const expiry = account.expiresAt === undefined ? undefined : new Date(account.expiresAt * 1000);
+    return { provider: account.idp, subject: account.sub ?? null, cachedExpiry: account.expiresAt ?? null, cachedExpiryIso: expiry && Number.isFinite(expiry.getTime()) ? expiry.toISOString() : null, cachedExpiryPassed: account.expiresAt === undefined ? null : account.expiresAt * 1000 <= Date.now(), verification: "not-checked" };
   });
   // The Next lines name a real space: the requested one, else the one a bare command resolves. With
   // none, they point to the space list rather than print an unfilled `--space`.
@@ -997,7 +1005,7 @@ async function authGroup(args: ParsedArgs): Promise<void> {
     ? [{ command: "cotal space", description: "See registered spaces and choose one" }]
     : [{ command: `cotal whoami --space ${space}`, description: "Resolve the selected space's actual CLI caller" }, { command: `cotal auth grants --space ${space}`, description: "Read the locally authoritative actor ledger" }];
   writeResult(presentationOf(args.values), { command: "auth", target: { requestedSpace: args.values.space ?? null }, result: { kind: "account-cache", items, liveAuthorization: "not-checked" } }, (result) => ({ sections: [
-    { title: "Cached accounts", blocks: [result.items.length ? { kind: "table", columns: [{ key: "provider", label: "Provider" }, { key: "subject", label: "Account subject" }, { key: "expiry", label: "Cached expiry" }, { key: "state", label: "Cache state" }], rows: result.items.map((account) => ({ provider: account.provider, subject: account.subject ?? "not cached", expiry: account.cachedExpiryIso ?? "not representable", state: account.cachedExpiryPassed ? "expiry passed" : "not verified online" })) } : { kind: "lines", lines: ["No cached provider accounts."] }, { kind: "lines", lines: [{ text: "Cache metadata only. A sign-in is not a space grant and this view does not prove current session validity or live authorization. Tokens and grant secrets are not printed.", tone: "hint" }] }] },
+    { title: "Cached accounts", blocks: [result.items.length ? { kind: "table", columns: [{ key: "provider", label: "Provider" }, { key: "subject", label: "Account subject" }, { key: "expiry", label: "Cached expiry" }, { key: "state", label: "Cache state" }], rows: result.items.map((account) => ({ provider: account.provider, subject: account.subject ?? "not cached", expiry: account.cachedExpiryIso ?? (account.cachedExpiry === null ? "not reported by provider" : "not representable"), state: account.cachedExpiryPassed ? "expiry passed" : "not verified online" })) } : { kind: "lines", lines: ["No cached provider accounts."] }, { kind: "lines", lines: [{ text: "Cache metadata only. A sign-in is not a space grant and this view does not prove current session validity or live authorization. Tokens and grant secrets are not printed.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [...spaceSteps, { command: "cotal login", description: "Choose a provider and approve sign-in" }] }] },
   ] }));
 }

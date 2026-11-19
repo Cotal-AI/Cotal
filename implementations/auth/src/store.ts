@@ -35,9 +35,11 @@ import {
   credsFromJwt,
   identityFromCreds,
   isAccountNkey,
+  isCredentialTransportUrl,
   jwtFromCreds,
   mkSecretDir,
   writeSecretFileCreateOnly,
+  type AuthIdpInput,
   type SecretStore,
   type SpaceAuth,
 } from "@cotal-ai/core";
@@ -45,7 +47,7 @@ import { decode, encodeUser, Types, type Account, type ClaimsData, type User } f
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { identityOf, loadAuthInstanceIdentity, removeAuthInstanceIdentity, spaceSegment, type AuthInstanceIdentity } from "@cotal-ai/workspace";
 import { createCalloutAuth, type CalloutAuth, type CalloutProvisionInput } from "./callout.js";
-import { normalizeIdpUrl } from "./login.js";
+import { normalizeIdpUrl, normalizeOidcIssuer } from "./login.js";
 import {
   createUserTokenIssuer,
   exportSigningKey,
@@ -344,9 +346,8 @@ const IDP_FILE = "idp.json";
 
 /** The persisted pin of THE external IdP this space trusts (plan gate 4: "pin IdP JWKS/issuer/
  *  audience"). All four strings are frozen at `up --user-auth --idp <url>` time; nothing here is
- *  ever read from a presented token. Better Auth conventions seed the derivation (issuer/audience =
- *  the base URL's origin, JWKS under `<base>/jwks`) — a strict-OIDC IdP with different values plugs
- *  in by editing the pin file deliberately, not by the client guessing. */
+ *  ever read from a presented token. Better Auth conventions supply the default. A standards
+ *  provider uses an explicit audience and JWKS URL, with its exact issuer as the input URL. */
 export interface PinnedIdp {
   /** The auth base URL as given (normalized; the `cotal login --idp` target). */
   url: string;
@@ -369,7 +370,7 @@ interface IdpFile extends PinnedIdp {
 export function loadPinnedIdp(dir: string): PinnedIdp | undefined {
   const f = readStoreFile<IdpFile>(join(dir, IDP_FILE), "IdP pin");
   if (!f) return undefined;
-  if (!f.url || !f.issuer || !f.audience || !f.jwksUri)
+  if (![f.url, f.issuer, f.audience, f.jwksUri].every(v => typeof v === "string" && v.length > 0))
     throw new Error(`${join(dir, IDP_FILE)}: malformed IdP pin - re-pin with \`cotal up --user-auth --idp <url>\``);
   if (f.dmReaderAudience !== undefined && (typeof f.dmReaderAudience !== "string" || !f.dmReaderAudience || f.dmReaderAudience === f.audience))
     throw new Error(`${join(dir, IDP_FILE)}: dmReaderAudience must be a non-empty string that differs from audience`);
@@ -380,10 +381,10 @@ export function loadPinnedIdp(dir: string): PinnedIdp | undefined {
  *  either omit it (reuse the pin) or must MATCH it once normalized — re-pointing a space at a
  *  different IdP re-keys every derived owner (the issuer is part of the derivation input), a
  *  migration this refuses to do as a flag side-effect. */
-export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
+export function ensurePinnedIdp(dir: string, idpUrl?: string, trust?: AuthIdpInput["idpTrust"]): PinnedIdp {
   const existing = loadPinnedIdp(dir);
-  if (existing) return verifyPinnedIdp(dir, existing, idpUrl);
-  const pin = derivePinnedIdp(idpUrl);
+  if (existing) return verifyPinnedIdp(dir, existing, idpUrl, trust);
+  const pin = derivePinnedIdp(idpUrl, trust);
   mkSecretDir(dir);
   try {
     writeSecretFileCreateOnly(join(dir, IDP_FILE), JSON.stringify({ ver: STORE_VER, ...pin } satisfies IdpFile, null, 2));
@@ -392,7 +393,7 @@ export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
     // Another process pinned between our read and this create: its pin decides, as for a later call.
     const winner = loadPinnedIdp(dir);
     if (!winner) throw new Error(`idp-pin-create-lost: ${join(dir, IDP_FILE)} exists but holds no readable IdP pin - remove it deliberately, then re-pin`);
-    return verifyPinnedIdp(dir, winner, idpUrl);
+    return verifyPinnedIdp(dir, winner, idpUrl, trust);
   }
   return pin;
 }
@@ -400,11 +401,20 @@ export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
 /** The pin a first enable would write, derived without touching disk. Shared by
  *  {@link ensurePinnedIdp} and {@link checkPinnedIdp} so the pre-effect check and the real pin can
  *  never disagree on the required URL, its normalization or its error text. */
-function derivePinnedIdp(idpUrl: string | undefined): PinnedIdp {
+function derivePinnedIdp(idpUrl: string | undefined, trust?: AuthIdpInput["idpTrust"]): PinnedIdp {
   if (!idpUrl)
     throw new Error("user auth needs an IdP on first enable - run with --idp <auth base URL> (Better Auth: <origin>/api/auth)");
   // Same normalization + scheme guard as `cotal login` (https, or http on a loopback IP literal; no
   // query/hash/userinfo) — the pin and the login cache must key on the SAME canonical URL.
+  if (trust !== undefined) {
+    if (!trust || typeof trust !== "object") throw new Error("explicit IdP trust requires an audience and a JWKS URL");
+    const jwks = typeof trust.jwksUri === "string" && URL.parse(trust.jwksUri);
+    if (!jwks || !isCredentialTransportUrl(jwks) || jwks.username || jwks.password || jwks.hash)
+      throw new Error("the pinned JWKS must be an absolute HTTPS URL without credentials or a fragment (HTTP loopback IPs are allowed for local development)");
+    if (typeof trust.audience !== "string" || !trust.audience.trim() || trust.audience !== trust.audience.trim())
+      throw new Error("the pinned IdP audience must be a non-empty string without surrounding whitespace");
+    return { url: normalizeOidcIssuer(idpUrl), issuer: idpUrl, audience: trust.audience, jwksUri: jwks.href };
+  }
   const url = normalizeIdpUrl(idpUrl);
   const origin = new URL(url).origin;
   return { url, issuer: origin, audience: origin, jwksUri: `${url}/jwks` };
@@ -413,18 +423,23 @@ function derivePinnedIdp(idpUrl: string | undefined): PinnedIdp {
 /** Read-only form of {@link ensurePinnedIdp}: the same refusals for a missing, malformed or
  *  conflicting `--idp`, with no directory, pin or other write. `fresh` is true when no pin exists
  *  yet, which is when a first enable must also prove the IdP serves a JWKS. */
-export function checkPinnedIdp(dir: string, idpUrl?: string): { pin: PinnedIdp; fresh: boolean } {
+export function checkPinnedIdp(dir: string, idpUrl?: string, trust?: AuthIdpInput["idpTrust"]): { pin: PinnedIdp; fresh: boolean } {
   const existing = loadPinnedIdp(dir);
-  if (existing) return { pin: verifyPinnedIdp(dir, existing, idpUrl), fresh: false };
-  return { pin: derivePinnedIdp(idpUrl), fresh: true };
+  if (existing) return { pin: verifyPinnedIdp(dir, existing, idpUrl, trust), fresh: false };
+  return { pin: derivePinnedIdp(idpUrl, trust), fresh: true };
 }
 
-function verifyPinnedIdp(dir: string, pinned: PinnedIdp, idpUrl: string | undefined): PinnedIdp {
+function verifyPinnedIdp(dir: string, pinned: PinnedIdp, idpUrl: string | undefined, trust?: AuthIdpInput["idpTrust"]): PinnedIdp {
   if (idpUrl !== undefined && normalizeIdpUrl(idpUrl) !== pinned.url)
     throw new Error(
       `this space's IdP is pinned to ${pinned.url}; --idp ${idpUrl} would re-key every derived owner. ` +
         `Re-pointing an IdP is a migration - remove ${join(dir, IDP_FILE)} deliberately if you mean it.`,
     );
+  if (trust !== undefined) {
+    const requested = derivePinnedIdp(idpUrl, trust);
+    if (requested.issuer !== pinned.issuer || requested.audience !== pinned.audience || requested.jwksUri !== pinned.jwksUri)
+      throw new Error("this space already pins the IdP issuer, audience and JWKS; changing any of them requires a deliberate migration");
+  }
   return pinned;
 }
 
