@@ -726,6 +726,81 @@ read_installed_version() {
     "$_pkg" 2>/dev/null || true
 }
 
+check_connector_downgrade() {
+  [ -n "$PREVIOUS_VERSION" ] && [ "$PREVIOUS_VERSION" != "$1" ] || return 0
+  # The staged CLI has a different installation identity. Ask the active CLI for its
+  # extension prefix before moving either package, so retained sets resolve as usual.
+  if ! COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 DO_NOT_TRACK=1 \
+    "$NODE_BIN" - "$PREVIOUS_VERSION" "$1" "$INSTALL_DIR/lib/node_modules/$COTAL_PKG/dist/cotal.js" <<'NODE'
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const [previous, requested, entry] = process.argv.slice(2);
+
+// The bootstrap has no dependencies of its own. Compare release and prerelease identifiers
+// from the installed packages, rather than the requested npm tag or range.
+function versionParts(version) {
+  const parts = typeof version === 'string' && /^(\d+\.\d+\.\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
+  if (!parts || parts[0] !== version) throw new Error(`invalid version ${JSON.stringify(version)}`);
+  const release = parts[1].split('.'), pre = parts[2]?.split('.') ?? [];
+  if ([...release, ...pre].some(part => /^0\d+$/.test(part)))
+    throw new Error(`invalid version ${JSON.stringify(version)}`);
+  return [release, pre];
+}
+
+function compareIdentifiers(a, b) {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] === b[i]) continue;
+    const an = /^\d+$/.test(a[i]), bn = /^\d+$/.test(b[i]);
+    if (an !== bn) return an ? -1 : 1;
+    if (an && a[i].length !== b[i].length) return a[i].length - b[i].length;
+    return a[i] < b[i] ? -1 : 1;
+  }
+  return a.length - b.length;
+}
+
+function compare(a, b) {
+  const [releaseA, preA] = versionParts(a), [releaseB, preB] = versionParts(b);
+  return compareIdentifiers(releaseA, releaseB) ||
+    (preA.length && preB.length ? compareIdentifiers(preA, preB) : Number(!preA.length) - Number(!preB.length));
+}
+
+try {
+  if (compare(requested, previous) >= 0) process.exit(0);
+  const result = spawnSync(process.execPath, [entry, 'ext', 'root'], { encoding: 'utf8', timeout: 30000 });
+  if (result.error || result.status !== 0)
+    throw new Error(`could not read the installed extension prefix: ${result.error?.message ?? (result.stderr.trim() || `exit ${result.status}`)}`);
+  const extensions = result.stdout.replace(/\r?\n$/, '');
+  if (!extensions || path.basename(extensions) !== 'extensions')
+    throw new Error('the installed Cotal did not report an extension prefix');
+  const stamp = path.join(path.dirname(extensions), 'seed', 'stamp.json');
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
+  const bytes = Buffer.alloc(8193);
+  let fd;
+  try { fd = fs.openSync(stamp, O_RDONLY | O_NOFOLLOW | O_NONBLOCK); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (fd !== undefined) {
+    let length = 0;
+    try {
+      if (!fs.fstatSync(fd).isFile()) throw new Error(`the connector seed stamp is not a regular file: ${stamp}`);
+      for (let count; length < bytes.length && (count = fs.readSync(fd, bytes, length, bytes.length - length)); ) length += count;
+      if (length === bytes.length) throw new Error(`the connector seed stamp is too large: ${stamp}`);
+    } finally { fs.closeSync(fd); }
+    const { generation } = JSON.parse(bytes.toString('utf8', 0, length));
+    if (compare(generation, requested) > 0)
+      throw new Error(`the connector seed store is at generation ${generation}, newer than the requested release ${requested}: ${path.dirname(stamp)}`);
+  }
+} catch (error) {
+  console.error(error.message);
+  process.exitCode = 1;
+}
+NODE
+  then
+    die "Could not select Cotal $1. Cotal $PREVIOUS_VERSION was kept." \
+      "Keep using the installed release, or restore compatible connector state from a backup before retrying the older release."
+  fi
+}
+
 install_cotal() {
   PREVIOUS_VERSION=$(read_installed_version)
   STAGED_INSTALL=$(mktemp -d "$INSTALL_DIR/.install-stage.XXXXXX")
@@ -765,6 +840,9 @@ install_cotal() {
   fi
   [ -x "$STAGED_INSTALL/bin/cotal" ] || [ -L "$STAGED_INSTALL/bin/cotal" ] ||
     die "$COTAL_PKG installed without its cotal executable."
+  _staged_version=$(printf '%s\n' "$_version_output" | sed -n '1s/^cotal-ai //p')
+  [ -n "$_staged_version" ] || die "The staged Cotal did not report its version."
+  check_connector_downgrade "$_staged_version"
   mkdir -p "$INSTALL_DIR/lib/node_modules" "$INSTALL_DIR/bin"
   _active="$INSTALL_DIR/lib/node_modules/$COTAL_PKG"
   if [ -e "$_active" ] || [ -L "$_active" ]; then
