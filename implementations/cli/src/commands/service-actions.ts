@@ -172,7 +172,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     if (prompts.isCancel(selected)) return cancelled();
     id = selected;
   }
-  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "install");
+  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "install" || mode === "status");
   // A preset name resolved to another saved name keeps the name the person typed beside it.
   const target = { space, name, instanceId: selected?.name ?? null, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
   if (["start", "stop", "restart"].includes(mode)) assertNoServiceUnitAttempts(space, name);
@@ -223,17 +223,22 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     return;
   }
   if (mode === "status") {
-    const result = instanceProjection(selected!);
-    const pending = serviceInstallIntentFor(space, selected!.name)?.record.value;
+    if (!selected) {
+      const result = { kind: "service-status", space, definition: name, instanceId: null, recordedState: "not started" };
+      writeResult(presentation, { command: commandName, target, result }, (row): Report => ({ sections: [{ title: "Service status", blocks: [{ kind: "fields", rows: [["Definition", row.definition], ["Space", row.space], ["Recorded state", row.recordedState]] }] }] }));
+      return;
+    }
+    const result = instanceProjection(selected);
+    const pending = serviceInstallIntentFor(space, selected.name)?.record.value;
     const installIntent = pending ? serviceInstallIntentProjection(pending) : null;
-    const removal = serviceUninstallIntentFor(space, selected!.name)?.record.value;
+    const removal = serviceUninstallIntentFor(space, selected.name)?.record.value;
     const uninstallIntent = removal ? serviceUninstallIntentProjection(removal) : null;
-    const action = serviceUnitActionFor(space, selected!.name)?.record.value;
+    const action = serviceUnitActionFor(space, selected.name)?.record.value;
     const unitAction = action ? { attemptId: action.attemptId, unit: action.unit, unitPath: action.unitPath, operation: action.operation, position: action.position, targetGeneration: action.targetGeneration ?? null, updatedAt: action.updatedAt } : null;
     const installObservation = pending ? observeSystemdAttempt(pending) : null;
     const uninstallObservation = removal ? observeSystemdAttempt(removal) : null;
     const actionObservation = action ? observeSystemdAttempt(action) : null;
-    const nativeSupervisor = observeRecordedSupervisor(selected!.record.value, result.supervisorRecord);
+    const nativeSupervisor = observeRecordedSupervisor(selected.record.value, result.supervisorRecord);
     const incomplete = installIntent !== null || uninstallIntent !== null || unitAction !== null || result.supervisorRecord.mechanism !== "none-recorded" && (nativeSupervisor.state !== "observed" || nativeSupervisor.daemonReloadRequired || nativeSupervisor.dropInsReported || nativeSupervisor.mainProcessAttribution === "different-or-unattributed" || nativeSupervisor.mainProcessAttribution === "not-reported" && result.observedProcess === "running");
     writeResult(presentation, { command: commandName, target, result: { kind: "service-status", ...result, listeners: result.observedProcess === "running" ? definitionListeners(definition) ?? null : [], executable: runningExecutable(result), nativeSupervisor, installIntent, uninstallIntent, unitAction, installObservation, uninstallObservation, actionObservation }, warnings: await readinessAddressSurvivors(space, [name]), ...(incomplete ? { completeness: "partial" as const, partial: { message: installIntent ? "A service installation attempt is retained; its submitted or acknowledged effects are not a completed owned supervisor. Inspect its private store and native unit before any retry." : uninstallIntent ? "A native removal attempt is retained; a disabled or missing unit is not proof its private store and receipt were cleaned. Inspect each named step before reconciliation." : unitAction ? "A native service action is retained; its submission and unit state require reconciliation before a new control request." : "The recorded supervisor could not be established as the unchanged complete loaded configuration with an attributed main process. No direct-process fallback or readiness was inferred." } } : {}) }, (row): Report => ({ sections: [
       ...instanceView(row, "Service instance").sections,

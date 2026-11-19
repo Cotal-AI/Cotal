@@ -152,6 +152,18 @@ try {
     chmodSync(script, 0o700);
     const add = cotal(["service", "add", "hello", "--exec", `${script} 'big world'`]);
     check("service add hello --exec saves your program in one command", add.status === 0 && inventory().definitions.includes("hello"), out(add));
+    const notStartedJson = cotal(["service", "status", "hello", "--json"]);
+    const notStartedReceipt = JSON.parse(notStartedJson.stdout) as { outcome: string; completeness: string; result: { definition: string; instanceId: string | null; recordedState: string } | null };
+    check("service status reports a saved service with no instance as not started in JSON",
+      notStartedJson.status === 0 && notStartedReceipt.outcome === "ok" && notStartedReceipt.completeness === "complete" && notStartedReceipt.result?.definition === "hello" && notStartedReceipt.result.instanceId === null && notStartedReceipt.result.recordedState === "not started", out(notStartedJson));
+    const notStartedText = cotal(["service", "status", "hello"]);
+    const afterStatus = cotal(["service", "--json"]);
+    const { instances } = (JSON.parse(afterStatus.stdout) as { result: { instances: { definition: string }[] } }).result;
+    check("service status shows not started in text and leaves the service without an instance",
+      notStartedText.status === 0 && /Recorded state:\s+not started/.test(notStartedText.stdout) && !instances.some((instance) => instance.definition === "hello"), { text: out(notStartedText), instances });
+    const missingInstance = cotal(["service", "status", "hello", "--instance", "00000000-0000-4000-8000-000000000000", "--json"]);
+    check("service status still refuses an explicitly named instance that does not exist",
+      missingInstance.status === 2 && (JSON.parse(missingInstance.stdout) as { error?: { code: string } }).error?.code === "TARGET_NOT_FOUND", out(missingInstance));
     const helloStart = cotal(["service", "start", "hello"]);
     helloUp = helloStart.status === 0;
     check("service start hello starts it", helloUp && /Recorded state:\s+running/.test(out(helloStart)), out(helloStart));
