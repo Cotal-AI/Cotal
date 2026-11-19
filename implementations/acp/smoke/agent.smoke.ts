@@ -73,9 +73,11 @@ class FakeMesh implements Mesh {
     const f: SeatFrame = { owner: seat.owner, actor: seat.actor, threadId: "t", runId, epoch: "e", seq: ++this.seq, events, ts: Date.now() };
     for (const l of this.listeners) l(f);
   }
-  async catalogs() { return CATALOGS; }
-  async managers() { return [{ instanceId: "m1", host: "here", local: true }]; }
-  async personas() { return ["default", "reviewer"]; }
+  catalogsAsked: (string | undefined)[] = [];
+  async catalogs(instanceId?: string) { this.catalogsAsked.push(instanceId); return CATALOGS; }
+  async managers() { return [{ instanceId: "m1", host: "here", local: true }, { instanceId: "m2", host: "there", local: false }]; }
+  /** Each manager holds its own persona catalog. */
+  async personas(instanceId?: string) { return instanceId === "m2" ? ["default", "builder"] : ["default", "reviewer"]; }
   async spawn(req: SpawnRequest): Promise<SeatRef> {
     this.spawned.push(req);
     if (this.spawnDelay) await tick(this.spawnDelay);
@@ -155,6 +157,7 @@ await init;
 const created = await agent.request(methods.agent.session.new, { cwd: link, mcpServers: [] });
 const model = created.configOptions?.find((o) => o.id === "model") as { currentValue: string; options: { group: string; options: { value: string }[] }[] } | undefined;
 check("session/new launches nothing", mesh.spawned.length === 0);
+check("session/new reads the lists of this machine's manager", mesh.catalogsAsked[0] === "m1", mesh.catalogsAsked);
 check("the model select starts at the default application's own default", model?.currentValue === "claude/default", model);
 check("applications without an event plane are not offered", !model?.options.some((g) => g.group === "hermes"), model?.options.map((g) => g.group));
 check("each application lists its default first", model?.options.every((g) => g.options[0]!.value === `${g.group}/default`) === true, model);
@@ -180,6 +183,10 @@ check("an application without an event plane is refused as invalid params", bad?
 opts = (await set("model", "claude/my-custom")).configOptions;
 const custom = opts.find((o) => o.id === "model") as unknown as { currentValue: string; options: { options: { value: string }[] }[] };
 check("a custom model id is accepted and offered as a choice", custom.currentValue === "claude/my-custom" && custom.options.some((g) => g.options.some((o) => o.value === "claude/my-custom")), custom);
+const personaChoices = (o: typeof opts) => (o.find((x) => x.id === "persona") as unknown as { options: { value: string }[] } | undefined)?.options.map((c) => c.value) ?? [];
+opts = (await set("machine", "m2")).configOptions;
+check("choosing another machine offers that manager's personas", personaChoices(opts).includes("builder") && !personaChoices(opts).includes("reviewer"), personaChoices(opts));
+await set("machine", "m1");
 await set("model", "claude/opus");
 await set("persona", "reviewer");
 const noChannel = await errorOf(set("channel", "nowhere"));

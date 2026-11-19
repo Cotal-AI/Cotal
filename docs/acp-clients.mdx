@@ -109,6 +109,7 @@ When this machine records no space at all, it runs `cotal setup` instead.
 - A later prompt ends when the agent stops working. When the agent was already busy as the prompt arrived, the turn can end when that earlier work does.
 - Work an agent does between your prompts, such as answering a peer, does not show live in T3 Code.
 - An agent on another machine's manager shows its conversation and tool calls, but T3 Code shows no diffs or checkpoints for it.
+- An agent on another machine's manager starts in the thread's folder, so that folder must exist on that machine. Otherwise the spawn is refused.
 - A rollback in T3 Code starts a fresh session, which spawns a new agent.
 - Pi agents publish text as completed messages, so their replies arrive whole.
 - Questions an agent stops to ask, such as tool permissions, are not forwarded to the client yet.
