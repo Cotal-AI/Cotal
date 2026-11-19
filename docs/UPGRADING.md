@@ -149,8 +149,9 @@ authoritative rebuild and stamps a fresh heartbeat.
 A broker restart drops both Memory presence and membership stores. No background component restores
 them after a broker-only systemd/Docker restart or reboot. From the deployment's project root, run
 `cotal up --space <space>` to recreate them with provisioner authority. A reconnect alone does not
-recreate either stream. A new membership feed refuses missing storage and names that command; an
-already-running feed logs the same repair and its view stays stale. Embedded platforms must invoke
+recreate either stream. If the membership store is missing at startup, the delivery daemon names
+that command and retries the feed without interrupting delivery. An already-running feed logs the
+same repair and its view stays stale until it rebuilds. Embedded platforms must invoke
 `reconcileSpaceMemoryBuckets` after their broker restart or wake before treating these views as
 ready; standing membership credentials cannot create streams.
 
