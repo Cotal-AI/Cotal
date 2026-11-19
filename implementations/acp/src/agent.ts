@@ -74,6 +74,10 @@ interface Turn {
   started: boolean;
   /** Since when the seat has been stopped with no run open. */
   quietSince?: number;
+  /** A cancel arrived: `requested` until the interrupt key is written, then when it was. */
+  cancelled?: "requested" | number;
+  /** Interrupt the seat for a `session/cancel`. */
+  readonly cancel: () => void;
   lastSeen: number;
   timer?: ReturnType<typeof setInterval>;
 }
@@ -232,19 +236,45 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       };
       // A fresh seat's first run answers its kickoff prompt, whatever its clock says.
       let after = until === "run" ? 0 : Infinity;
+      let begun = false;
+      const interrupt = (): void => {
+        const seat = session.seat;
+        if (!seat) return;
+        m.interrupt(seat).then(() => {
+          if (turn.cancelled === "requested") turn.cancelled = Date.now();
+        }, (e: Error) => {
+          turn.cancelled = undefined;
+          options.log(`session ${session.id}: interrupt refused: ${e.message}`);
+          void send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Could not stop ${seat.name}: ${e.message}. The turn keeps running.` } });
+        });
+      };
+      // After a cancel, the prompt answers `cancelled` however the turn ends.
       const turn: Turn = {
         until,
         get after() { return after; },
         runs: new Set(),
         started: false,
         lastSeen: Date.now(),
-        stop: (reason) => finish("completed", () => resolve(reason)),
-        fail: (error) => finish("failed", () => reject(RequestError.internalError(undefined, error.message))),
+        stop: (reason) => turn.cancelled !== undefined ? finish("failed", () => resolve("cancelled")) : finish("completed", () => resolve(reason)),
+        fail: (error) => turn.cancelled !== undefined ? finish("failed", () => resolve("cancelled")) : finish("failed", () => reject(RequestError.internalError(undefined, error.message))),
+        cancel: () => {
+          if (turn.cancelled !== undefined) return;
+          turn.cancelled = "requested";
+          // A cancel that beats the spawn reply or the stored message interrupts once that lands.
+          if (begun) interrupt();
+        },
       };
       session.turn = turn;
       turn.timer = setInterval(() => {
         if (!session.seat) return;
         const now = Date.now();
+        if (typeof turn.cancelled === "number") {
+          // Connectors end an interrupted run differently or not at all, so wait briefly for it.
+          const running = [...turn.runs].some((id) => session.open.has(id));
+          if (!running || now - turn.cancelled >= settleMs) turn.stop("cancelled");
+          return;
+        }
+        if (turn.cancelled === "requested") return;
         const status = m.presence(session.seat);
         if (status === undefined) {
           if (now - turn.lastSeen > ABSENT_MS) turn.fail(new Error(`${session.seat.name} left the mesh during its turn`));
@@ -266,6 +296,8 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         else if (now - (turn.quietSince ??= now) >= settleMs) turn.stop("end_turn");
       }, WATCH_MS);
       start().then((at) => {
+        begun = true;
+        if (turn.cancelled === "requested") interrupt();
         if (at === undefined) return;
         after = at;
         // A run may have started while the message was being stored.
@@ -383,8 +415,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       return { stopReason };
     })
     .onNotification(methods.agent.session.cancel, ({ params }) => {
-      const session = sessions.get(params.sessionId);
-      if (session?.turn) options.log(`session ${session.id}: cancel is not available yet; the turn keeps running`);
+      sessions.get(params.sessionId)?.turn?.cancel();
     })
     .onRequest(methods.agent.session.list, async ({ params }) => {
       const m = await mesh();
