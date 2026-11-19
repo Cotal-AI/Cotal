@@ -8,6 +8,9 @@ test("account journeys observe the existing connection-status button without wea
   const markup = read("../index.html");
   assert.equal([...markup.matchAll(/id="connection-status"/g)].length, 1);
   assert.match(markup, /<button id="connection-status"[^>]*>.*<span id="tray-label"/);
+  const button = markup.match(/<button id="connection-status"[^>]*>.*?<\/button>/)?.[0];
+  assert.ok(button, "connection status button markup must be present");
+  assert.doesNotMatch(button, /\b(?:role|aria-live)\s*=/, "the status button must not contain a live region");
   const journey = read("./first-run.ts");
   assert.doesNotMatch(journey, /driver\.text\("tray-label"\)/);
   assert.match(journey, /account Ready label", \(\) => driver\.text\("connection-status"\), value => value === "Ready"/);
