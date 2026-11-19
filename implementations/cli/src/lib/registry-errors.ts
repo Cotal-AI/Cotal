@@ -3,8 +3,9 @@ import { CommandFailure, oneLine, spaceFromSegment, type MeshRegistryError } fro
 import { shellWord } from "./endpoint-errors.js";
 
 /** The step that clears a damaged record: `space forget` removes a record its file name ties to a
- *  space, whether a registration or a prepared space. */
-function removeStep(file: string): string {
+ *  space, whether a registration or a prepared space. Also the warning a forget that leaves a
+ *  damaged record behind names, so the record stays visible instead of silently skipped. */
+export function removeStep(file: string): string {
   const space = file.endsWith(".json") ? spaceFromSegment(basename(file, ".json")) : undefined;
   return space === undefined ? "restore the record from backup or remove it" : `restore the record from backup, or remove it with \`cotal space forget ${oneLine(shellWord(space))}\``;
 }
