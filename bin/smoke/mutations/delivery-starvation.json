@@ -46,7 +46,7 @@
     },
     {
       "name": "M11 CONTROL: the ws transport loses its larger probe budget",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-dial.ts",
       "find": "  return wsServers(servers) ? 5000 : 1000;",
       "replace": "  return 1000;",
       "expectRed": "M6 the probe budget is the transport's own: ws gets 5s, tcp gets 1s",
