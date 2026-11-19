@@ -202,6 +202,13 @@ const dupNested = new TextEncoder().encode('{"id":"req-1","args":{"a":1,"a":2}}'
 const dupNestedOutcome = decideAdmission(dupNested, JSON.parse(new TextDecoder().decode(dupNested)), subj, CEIL);
 c("c8 a duplicate NESTED name is caught too",
   dupNestedOutcome.outcome === "quarantine" && dupNestedOutcome.cause === "no-canonical-form");
+const escapedDuplicate = String.raw`{"id":"req-1","op":{"endpoint":"manager","command":"spawn"},"args":{"a":1,"\u0061":2}}`;
+const escapedDuplicateOutcome = decideAdmission(new TextEncoder().encode(escapedDuplicate), JSON.parse(escapedDuplicate), subj, CEIL);
+c("c8 a JSON escape of the same name is a duplicate",
+  escapedDuplicateOutcome.outcome === "quarantine" && escapedDuplicateOutcome.cause === "no-canonical-form", escapedDuplicateOutcome);
+const escapedDistinct = String.raw`{"id":"req-1","op":{"endpoint":"manager","command":"spawn"},"args":{"n":1,"\n":2}}`;
+const escapedDistinctOutcome = decideAdmission(new TextEncoder().encode(escapedDistinct), JSON.parse(escapedDistinct), subj, CEIL);
+c("c8 an escaped newline and the letter n are distinct names", escapedDistinctOutcome.outcome === "admit", escapedDistinctOutcome);
 // THE NEGATIVE SIDE, which is what stops the scanner degenerating into "refuse everything".
 // Each fixture below is BUILT and then serialised, never hand-escaped — my first attempt at writing
 // those escapes by hand produced invalid JSON.
