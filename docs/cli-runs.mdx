@@ -354,7 +354,8 @@ names its code and cause.
 
 Inside a manager-launched static or open seat, `run turns` reads that seat's assigned turns and
 `run yield <turn-id> --status <done|blocked|handoff>` reports an outcome. Handoff also requires
-`--to <agent>`; `--note <text>` carries context. The native launcher supplies the caller context.
+`--to <agent>`; `--note <text>` carries context. If the turn ID is missing, the refusal points to
+`cotal run turns` and shows the status and handoff flags. The native launcher supplies the caller context.
 These forms verify the seat's own credential and manager, never substitute an operator caller,
 and refuse user-auth self impersonation. They skip operator catalog and installation repair.
 Yielding one turn does not complete the entire workflow.

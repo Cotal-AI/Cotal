@@ -164,7 +164,8 @@ still checks and uses the whole value. A usage error is found before any effect,
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
 `--`, which the refusal names, and an option value that starts with one is written `--limit=-1`,
-which the refusal gives. An option given with no value, last or just before another option, is
+which the refusal gives. The refusal quotes values that a POSIX shell would split or expand, as in
+`--search='-help usage'`. An option given with no value, last or just before another option, is
 refused naming the option and its placeholder. A short option takes its value after a space, so `-c=general` is refused
 rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
 typeset text, is refused naming the option it meant, rather than read as a positional. Before the
