@@ -13,6 +13,8 @@
  *  - a failed run fails the prompt with the seat's message;
  *  - a later prompt is a direct message, and answers once the seat stopped working and the runs it
  *    started ended, or once the seat did not start on it in time;
+ *  - a cancel interrupts the seat through its manager and answers `cancelled` however the run ends,
+ *    including a cancel that beats the spawn reply; a refused interrupt is said in the thread;
  *  - `session/list` hides deleted runs and matches a folder through symlinks;
  *  - `session/load` replays before it answers, marked as replay, then follows live;
  *  - the slash commands answer locally, and `/despawn` stops the seat.
@@ -57,6 +59,10 @@ class FakeMesh implements Mesh {
   dms: { seat: string; text: string }[] = [];
   /** What a seat does when a direct message reaches it. */
   onDm: (seat: SeatRef) => void = () => {};
+  interrupted: string[] = [];
+  /** What a seat does when its manager writes the interrupt key. A throw is the manager's refusal. */
+  onInterrupt: (seat: SeatRef) => void = () => {};
+  spawnDelay = 0;
   closed = false;
   /** Frames a spawned seat publishes: `before` ahead of the spawn reply, `after` once it answered. */
   script: { before: AguiEventLike[][]; after: AguiEventLike[][] } = { before: [], after: [] };
@@ -72,6 +78,7 @@ class FakeMesh implements Mesh {
   async personas() { return ["default", "reviewer"]; }
   async spawn(req: SpawnRequest): Promise<SeatRef> {
     this.spawned.push(req);
+    if (this.spawnDelay) await tick(this.spawnDelay);
     const seat: SeatRef = { name: req.name, owner: "local", actor: `actor-${req.name}`, lifecycleUid: `life-${req.name}`, managerInstanceId: "m1" };
     this.present.set(seat.actor, "working");
     for (const e of this.script.before) this.emit(seat, e);
@@ -81,6 +88,7 @@ class FakeMesh implements Mesh {
   }
   async seats() { return this.rows; }
   async despawn(seat: SeatRef) { this.despawned.push(seat.name); }
+  async interrupt(seat: SeatRef) { this.onInterrupt(seat); this.interrupted.push(seat.name); }
   async dm(seat: SeatRef, text: string): Promise<{ storedAt: number }> {
     this.dms.push({ seat: seat.name, text });
     const storedAt = Date.now();
@@ -279,6 +287,56 @@ updates.length = 0;
 const failed = await errorOf(within(agent.request(methods.agent.session.prompt, { sessionId: second.sessionId, prompt: [{ type: "text", text: "go" }] })));
 check("a failed run fails the prompt with the seat's message", failed?.code === -32603 && failed.message?.includes("rate limited") === true, failed);
 check("its open tool call is closed as failed", updates.some((u) => u.update.sessionUpdate === "tool_call_update" && (u.update as { status: string }).status === "failed"), updates);
+
+// cancel
+const cancel = (sessionId: string) => conn.agent.notify(methods.agent.session.cancel, { sessionId });
+const seatOf = (name: string): SeatRef => ({ name, owner: "local", actor: `actor-${name}`, lifecycleUid: `life-${name}` });
+const settled = (p: Promise<{ stopReason: string } | undefined>) => p.catch((e: Error) => ({ stopReason: `error: ${e.message}` }));
+const go = (sessionId: string) => settled(within(agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "count" }] })));
+
+const c1 = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+mesh.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }, { type: "TOOL_CALL_START", toolCallId: "k1", toolCallName: "Bash" }]], after: [] };
+// Pi ends an interrupted run as an error.
+mesh.onInterrupt = (seat) => after(10, () => mesh.emit(seat, [{ type: "RUN_ERROR", message: "run failed" }], "r1"));
+updates.length = 0;
+const p1 = go(c1.sessionId);
+await tick(50);
+await cancel(c1.sessionId);
+const r1 = await p1;
+check("a cancel interrupts the seat through its manager", mesh.interrupted.includes(c1.sessionId), mesh.interrupted);
+check("a cancelled prompt answers cancelled when the interrupted run ends as an error", r1?.stopReason === "cancelled", r1);
+check("a cancelled turn closes its open tool call as failed", updates.some((u) => u.update.sessionUpdate === "tool_call_update" && (u.update as { toolCallId: string; status: string }).toolCallId === "k1" && (u.update as { status: string }).status === "failed"), updates);
+
+// Claude never ends an interrupted run.
+const c2 = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+mesh.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [] };
+mesh.onInterrupt = () => {};
+const p2 = go(c2.sessionId);
+await tick(50);
+await cancel(c2.sessionId);
+check("a cancel answers cancelled when the interrupted run never ends", (await p2)?.stopReason === "cancelled");
+
+const c3 = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+mesh.onInterrupt = () => { throw new Error("interrupt is not supported by connector codex"); };
+updates.length = 0;
+const p3 = go(c3.sessionId);
+await tick(50);
+await cancel(c3.sessionId);
+await tick(50);
+check("a refused interrupt is said in the thread", updates.some((u) => u.sessionId === c3.sessionId && JSON.stringify(u.update).includes("Could not stop") && JSON.stringify(u.update).includes("connector codex")), updates);
+mesh.emit(seatOf(c3.sessionId), [{ type: "RUN_FINISHED", runId: "r1" }], "r1");
+check("after a refused interrupt the turn keeps running and ends as usual", (await p3)?.stopReason === "end_turn");
+
+const c4 = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+mesh.spawnDelay = 150;
+mesh.onInterrupt = (seat) => after(10, () => mesh.emit(seat, [{ type: "RUN_FINISHED", runId: "r1" }], "r1"));
+const p4 = go(c4.sessionId);
+await tick(20);
+await cancel(c4.sessionId);
+const r4 = await p4;
+check("a cancel that beats the spawn reply interrupts once the seat exists", mesh.interrupted.includes(c4.sessionId) && r4?.stopReason === "cancelled", { r4, interrupted: mesh.interrupted });
+mesh.spawnDelay = 0;
+mesh.onInterrupt = () => {};
 
 let threw = false;
 try { promptText([{ type: "image", data: "", mimeType: "image/png" }]); } catch { threw = true; }

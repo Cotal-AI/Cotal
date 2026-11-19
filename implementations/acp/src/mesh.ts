@@ -111,6 +111,9 @@ export interface Mesh {
   seats(): Promise<SeatRow[]>;
   /** Stop one seat through the manager that holds it. */
   despawn(seat: SeatRef): Promise<void>;
+  /** Interrupt the seat's live turn: its manager writes the connector's interrupt key into the
+   *  seat's terminal. Rejects, naming why, when the manager refuses. */
+  interrupt(seat: SeatRef): Promise<void>;
   /** Send `text` to the seat as a direct message from the operator. Resolves with when the broker
    *  stored it, epoch ms. */
   dm(seat: SeatRef, text: string): Promise<{ storedAt: number }>;

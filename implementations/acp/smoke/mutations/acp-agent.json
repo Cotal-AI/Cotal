@@ -3,9 +3,9 @@
     "implementations/acp/smoke/agent.smoke.ts",
     "implementations/acp/smoke/frames.smoke.ts"
   ],
-  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, and the frame mapping neither repeats nor misreports a seat's events",
+  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, later prompts end when the seat stops working, a cancel interrupts the seat and answers cancelled, and the frame mapping neither repeats nor misreports a seat's events",
   "command": "pnpm --filter @cotal-ai/acp test",
-  "proveWith": "pnpm mutation-proof --config implementations/acp/mutations/acp-agent.json",
+  "proveWith": "pnpm mutation-proof --config implementations/acp/smoke/mutations/acp-agent.json",
   "why": [
     "Each mutation is a plausible one-line regression in the protocol layer or the frame mapping. The smokes import src directly, so no build runs between the mutation and the suite."
   ],
@@ -117,6 +117,48 @@
       "find": "ts: frame.ts, ...(text(event.message) ? { message: text(event.message) } : {}) });",
       "replace": "ts: frame.ts });",
       "expectRed": "RUN_ERROR ends the frame's run with the seat's message"
+    },
+    {
+      "name": "a later prompt answers while its run is still open",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        if (status === \"working\" || running) turn.quietSince = undefined;",
+      "replace": "        if (status === \"working\") turn.quietSince = undefined;",
+      "expectRed": "a later prompt answers only after the runs it started ended"
+    },
+    {
+      "name": "a later prompt the seat never starts on waits forever",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "          if (now - after > startMs) {",
+      "replace": "          if (false) {",
+      "expectRed": "a later prompt the seat does not start on answers, and says so"
+    },
+    {
+      "name": "a cancel is ignored",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      sessions.get(params.sessionId)?.turn?.cancel();",
+      "replace": "      void params;",
+      "expectRed": "a cancel interrupts the seat through its manager"
+    },
+    {
+      "name": "a cancelled turn whose run errors fails instead of answering cancelled",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        fail: (error) => turn.cancelled !== undefined ? finish(\"failed\", () => resolve(\"cancelled\")) : finish(\"failed\", () => reject(RequestError.internalError(undefined, error.message))),",
+      "replace": "        fail: (error) => finish(\"failed\", () => reject(RequestError.internalError(undefined, error.message))),",
+      "expectRed": "a cancelled prompt answers cancelled when the interrupted run ends as an error"
+    },
+    {
+      "name": "a cancel that beats the spawn reply is dropped",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        if (turn.cancelled === \"requested\") interrupt();",
+      "replace": "        void interrupt;",
+      "expectRed": "a cancel that beats the spawn reply interrupts once the seat exists"
+    },
+    {
+      "name": "a refused interrupt is silent",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "          void send(session, { sessionUpdate: \"agent_message_chunk\", content: { type: \"text\", text: `Could not stop ${seat.name}: ${e.message}. The turn keeps running.` } });",
+      "replace": "          void seat;",
+      "expectRed": "a refused interrupt is said in the thread"
     }
   ]
 }

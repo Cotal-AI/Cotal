@@ -105,7 +105,7 @@ When this machine records no space at all, it runs `cotal setup` instead.
 
 ## Limits [#limits]
 
-- Stopping a turn from the client does not interrupt the agent yet. The turn keeps running.
+- Stopping a turn sends the agent's interrupt key through its manager. Claude Code and Pi agents support it. For any other application, the thread says the agent could not be stopped and the turn keeps running.
 - A later prompt ends when the agent stops working. When the agent was already busy as the prompt arrived, the turn can end when that earlier work does.
 - Work an agent does between your prompts, such as answering a peer, does not show live in T3 Code.
 - An agent on another machine's manager shows its conversation and tool calls, but T3 Code shows no diffs or checkpoints for it.

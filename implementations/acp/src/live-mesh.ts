@@ -200,6 +200,12 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
       if (!reply.ok) throw failure(reply, `${seat.name} did not stop`);
     },
 
+    async interrupt(seat: SeatRef) {
+      const id = target.mode === "user" ? principalKey(seat.owner, seat.actor).key : seat.actor;
+      const reply = await control(client, ctx, "interrupt", { name: seat.name }, { expectedTarget: { id, lifecycleUid: seat.lifecycleUid } });
+      if (!reply.ok) throw failure(reply, `${seat.name} was not interrupted`);
+    },
+
     async dm(seat: SeatRef, text: string) {
       const s = await session();
       const storedAt = Date.now();
