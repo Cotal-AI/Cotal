@@ -68,9 +68,8 @@
  *     DEPENDENCY_UNAVAILABLE naming `systemctl --user show-environment`. Each has a Next, in plain
  *     and --json, and writes no receipt.
  *
- * L6's dry-run cell needs a systemd user manager to answer its own config directory. Where there is
- * none it is skipped by name and counted, never reported as passed. L8 needs none: it refuses before
- * any unit is rendered.
+ * L6 uses a read-only systemd environment fixture. The CLI still checks the real directory chain
+ * and refuses native actions outside the fixture. L8 refuses before any unit is rendered.
  *
  * Applying an install writes a unit into the operator's own `~/.config/systemd/user` and enables it
  * with their user manager, which this suite will not do. So `install` and `uninstall` are covered
@@ -84,7 +83,7 @@ import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdte
 import { constants } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { flockExclusiveNb, peerCredentials } from "@cotal-ai/seat";
@@ -141,17 +140,13 @@ const peerUid = (s: Parameters<typeof peerCredentials>[0]) => peerCredentials(s)
 const serve = () => serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
 
 const children: ChildProcess[] = [];
-/** The operator's own runtime directory, which `systemctl --user` needs to reach its bus. Only the
- *  cells that read the user manager use it, and they write nothing outside the sandbox. */
-const realRuntimeDir = process.env.XDG_RUNTIME_DIR;
 /** The daemon as a real child whose own pid is the daemon's, so a SIGKILL kills the holder. */
-function child(args: string[], opts: { userManager?: boolean; env?: NodeJS.ProcessEnv; directory?: string } = {}): ChildProcess {
-  const runtime = opts.userManager && realRuntimeDir ? realRuntimeDir : rtDir;
+function child(args: string[], opts: { env?: NodeJS.ProcessEnv; directory?: string } = {}): ChildProcess {
   const entry = opts.directory === undefined
     ? ["--import", import.meta.resolve("tsx"), join(repo, "bin", "cotal.ts")]
     : [join(repo, "bin", "dist", "daemon-cwd.js"), opts.directory];
   const c = spawn(process.execPath, [...entry, "daemon", ...args], {
-    cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: runtime, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", ...opts.env }, stdio: ["ignore", "pipe", "pipe"],
+    cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", ...opts.env }, stdio: ["ignore", "pipe", "pipe"],
   });
   children.push(c);
   return c;
@@ -173,24 +168,12 @@ async function cliEnv(env: NodeJS.ProcessEnv, ...args: string[]): Promise<{ stat
 /** The built CLI entry. A systemd unit must pin a durable executable, so the install cells drive
  *  this rather than the tsx loader the other cells use. */
 const shipped = join(repo, "bin", "dist", "cotal.js");
-/** {@link cliUserManager} through the shipped entry. */
-async function shippedCli(...args: string[]): Promise<{ status: number | null; doc: Record<string, any>; out: string; err: string }> {
+/** Run the shipped entry with L6's private unit directory. */
+async function shippedCli(env: NodeJS.ProcessEnv, ...args: string[]): Promise<{ status: number | null; doc: Record<string, any>; out: string; err: string }> {
   const c = spawn(process.execPath, [shipped, "daemon", ...args], {
-    cwd: root, env: { ...process.env, ...(realRuntimeDir ? { XDG_RUNTIME_DIR: realRuntimeDir } : {}), COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
+    cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", ...env }, stdio: ["ignore", "pipe", "pipe"],
   });
   children.push(c);
-  let out = "", err = "";
-  c.stdout!.on("data", (b) => { out += String(b); });
-  c.stderr!.on("data", (b) => { err += String(b); });
-  const status = await Promise.race([new Promise<number | null>((r) => c.once("exit", (x) => r(x))), sleep(120_000).then(() => { c.kill("SIGKILL"); return -1; })]);
-  let doc: Record<string, any> = {};
-  try { doc = JSON.parse(out) as Record<string, any>; } catch { /* reported by the cell */ }
-  return { status, doc, out, err };
-}
-
-/** Like {@link cli}, with the operator's real runtime directory so `systemctl --user` can answer. */
-async function cliUserManager(...args: string[]): Promise<{ status: number | null; doc: Record<string, any>; out: string; err: string }> {
-  const c = child(args, { userManager: true });
   let out = "", err = "";
   c.stdout!.on("data", (b) => { out += String(b); });
   c.stderr!.on("data", (b) => { err += String(b); });
@@ -246,7 +229,6 @@ async function impostor(path: string): Promise<{ proc: ChildProcess; gotBytes: (
   if (!out.includes("LISTENING")) throw new Error("the impostor listener never bound");
   return { proc: c, gotBytes: () => out.includes("GOT-BYTES") };
 }
-const unitDirAvailable = realRuntimeDir !== undefined && spawnSync("systemctl", ["--user", "show-environment", "--no-pager"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] }).status === 0;
 
 console.log(`daemon lifetime smoke in ${root}`);
 
@@ -467,21 +449,29 @@ try {
   });
 
   await cell("L6 install --dry-run names one unit and writes nothing", async () => {
-    if (!unitDirAvailable) {
-      skip("L6 install --dry-run", "no systemd user manager answered `systemctl --user show-environment` on this host; the real install is proven in a container");
-      return;
-    }
     if (!existsSync(shipped)) {
       skip("L6 install --dry-run", `the built entry ${shipped} is absent; run pnpm build first`);
       return;
     }
+    const native = join(root, "native");
+    const config = join(root, "config");
+    const unitDir = join(config, "systemd", "user");
+    mkdirSync(native, { mode: 0o700 });
+    mkdirSync(config, { mode: 0o700 });
+    mkdirSync(unitDir, { recursive: true });
+    chmodSync(join(config, "systemd"), 0o775);
+    chmodSync(unitDir, 0o775);
+    writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(' ') !== '--user show-environment') process.exit(89);\nconsole.log(${JSON.stringify(`XDG_CONFIG_HOME=${config.replace(/\\/g, "\\\\")}`)});\n`, { mode: 0o700 });
+    writeFileSync(join(native, "loginctl"), `#!/bin/sh\n[ "$1" = show-user ] || exit 89\nexit 1\n`, { mode: 0o700 });
+    const env = { PATH: `${native}:${process.env.PATH}` };
+    const install = (...args: string[]) => shippedCli(env, "install", "--dry-run", ...args);
     // A unit must pin a durable entry, so the loader-based entry the other cells use is refused.
-    const viaLoader = await cliUserManager("install", "--dry-run", "--json");
+    const viaLoader = await cliEnv(env, "install", "--dry-run", "--json");
     check("L6 a transient loader entry is refused UNSUPPORTED and pins no unit, exit 2", viaLoader.status === 2 && viaLoader.doc.error?.code === "UNSUPPORTED" && viaLoader.doc.result === null, { status: viaLoader.status, out: viaLoader.out.slice(0, 300) });
-    const r = await shippedCli("install", "--dry-run", "--json");
-    check("L6 it reports a would-install, exit 0", r.status === 0 && r.doc.result?.state === "would-install", { status: r.status, out: r.out.slice(0, 400) });
+    const r = await install("--json");
+    check("L6 it reports a would-install for 0775 directories under a 0700 parent, exit 0", r.status === 0 && r.doc.result?.state === "would-install", { status: r.status, out: r.out.slice(0, 400) });
     check("L6 it names the daemon's own unit", r.doc.result?.unit === "cotal-daemon.service", r.doc.result?.unit);
-    check("L6 it names an absolute unit path under the user manager's own config directory", typeof r.doc.result?.unitPath === "string" && r.doc.result.unitPath.endsWith("/systemd/user/cotal-daemon.service"), r.doc.result?.unitPath);
+    check("L6 it names the exact unit path under the user manager's config directory", r.doc.result?.unitPath === join(unitDir, "cotal-daemon.service"), r.doc.result?.unitPath);
     check("L6 it reports a sha256 digest of the bytes it would write", /^[0-9a-f]{64}$/.test(String(r.doc.result?.sha256)), r.doc.result?.sha256);
     check("L6 nothing was written: the unit path does not exist", typeof r.doc.result?.unitPath === "string" && !existsSync(r.doc.result.unitPath));
     // The policy fields are read back out of the bytes the install would write, so a template that
@@ -489,16 +479,20 @@ try {
     check("L6 the unit it would write restarts the daemon on its own", r.doc.result?.restart === "always", r.doc.result?.restart);
     check("L6 the unit it would write starts at login", r.doc.result?.wantedBy === "default.target", r.doc.result?.wantedBy);
     check("L6 it names the user whose manager would run it", r.doc.result?.user === (process.env.USER || process.env.LOGNAME), r.doc.result?.user);
+    chmodSync(unitDir, 0o777);
+    const worldWritable = await install("--json");
+    check("L6 a world-writable directory is still refused without writing a unit", worldWritable.status === 2 && worldWritable.doc.error?.code === "PERMISSION_DENIED" && !existsSync(join(unitDir, "cotal-daemon.service")), worldWritable.out);
+    chmodSync(unitDir, 0o775);
     // A recorded unit refuses a second install before anything is read from the user manager's linger.
     const receipt = join(home, "daemon", "service-unit.json");
     writeFileSync(receipt, `${JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath: join(root, "cotal-daemon.service"), unitSha256: r.doc.result?.sha256, installedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
     const receiptBefore = readFileSync(receipt, "utf8");
     try {
-      const again = await shippedCli("install", "--dry-run", "--json"), againPlain = await shippedCli("install", "--dry-run", "--plain");
+      const again = await install("--json"), againPlain = await install("--plain");
       check("L6 a receipt naming a missing unit is refused without claiming an existing install", again.status === 2 && again.doc.error?.code === "TARGET_NOT_FOUND", { status: again.status, out: again.out.slice(0, 300) });
       check("L6 the missing-source refusal is identical in plain and JSON", againPlain.status === 2 && `${againPlain.out}${againPlain.err}`.includes(again.doc.error?.message), { error: again.doc.error, plain: againPlain.out + againPlain.err });
-      const explicit = await shippedCli("install", "--daemon-home", paths.state, "--dry-run", "--json");
-      const explicitPlain = await shippedCli("install", "--daemon-home", paths.state, "--dry-run", "--plain");
+      const explicit = await install("--daemon-home", paths.state, "--json");
+      const explicitPlain = await install("--daemon-home", paths.state, "--plain");
       check("L6 an explicit target retains the same missing-source refusal", explicit.status === 2 && explicit.doc.error?.code === "TARGET_NOT_FOUND" && explicitPlain.status === 2 && `${explicitPlain.out}${explicitPlain.err}`.includes(explicit.doc.error?.message), { result: explicit.doc.result, plain: explicitPlain.out + explicitPlain.err });
       check("L6 refused installs preserve the receipt and write no unit", readFileSync(receipt, "utf8") === receiptBefore && !existsSync(r.doc.result.unitPath) && !existsSync(join(root, "cotal-daemon.service")));
     } finally {

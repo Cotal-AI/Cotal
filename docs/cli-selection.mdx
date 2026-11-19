@@ -144,18 +144,21 @@ which is `--root` or this folder, and makes `<root>/.cotal/`; `cotal up` in that
 space under that name and drops the prepared record. It also writes the `default` persona into
 `<root>/.cotal/agents` when the root has none, as setup does, and leaves one you edited as it is.
 `--json` lists the files it wrote under `result.written`. The project and its ancestors must be physical
-directories owned by you or root, with no symlinks. World write refuses. Group write is allowed only
-on a directory you own whose group is your user private group, the Debian and Ubuntu default, and
-that has no extended ACL. On Linux, `getent` must show that the group is your primary group, lists
-no other member and is no other account's primary group, and `getfacl` must show no ACL entries
+directories owned by you or root, with no symlinks. World write refuses. A Linux directory can be
+group-writable if an ancestor owned by you or root gives group and other accounts no search
+permission. Otherwise, group write is allowed only on a directory you own whose group is your user
+private group, the Debian and Ubuntu default, and that has no extended ACL. For the private-group
+check, `getent` must show that the group is your primary group, lists no other member and is no
+other account's primary group, and `getfacl` must show no ACL entries
 beyond the base ones. When `getfacl` is not installed, `python3 -I` reads the entry's extended
 attribute names without following symlinks instead. Either `system.posix_acl_access` or
 `system.posix_acl_default` means an extended ACL and refuses; unrelated attributes do not. That account list counts only when `/etc/nsswitch.conf` names `files` and
 `systemd` alone for passwd and group. A directory source such as LDAP or SSSD can list part of its
-accounts, so with one configured, group write refuses. `getent`, `getfacl` and `python3` run from your PATH
-with a 2 second limit and a 4 MiB output limit each, so the first check in a process can take a few seconds. A proven group
-holds for the life of the process. When neither ACL reader is installed, or the selected read fails, group write refuses; install the
-`acl` package for `getfacl`, or remove group write. Root-owned sticky temporary directories are
+accounts, so with one configured, the private-group check refuses. `getent`, `getfacl` and `python3`
+run from your PATH with a 2 second limit and a 4 MiB output limit each, so the first check in a
+process can take a few seconds. A proven group holds for the life of the process. When neither ACL
+reader is installed, or the selected read fails, the private-group check refuses. Install the `acl`
+package for `getfacl`, or remove group write. Root-owned sticky temporary directories are
 allowed. New control directories, the persona catalog `.cotal/agents` included, use mode 0700,
 even with a group-writable umask. An unsafe existing path refuses before the
 prepared record is written, without changing its permissions. The refusal names every unsafe path
