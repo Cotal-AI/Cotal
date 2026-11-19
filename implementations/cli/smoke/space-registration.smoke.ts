@@ -1297,6 +1297,26 @@ if (process.platform === "linux") {
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
   const down = await run(["down", "--yes"], {}, fresh);
   check("down stops it", down.status === 0, shown(down));
+  const seedRemedy = `fix or remove ${defaultSeed}`;
+  for (const [seed, problem] of [["{\n", "is not valid JSON"], ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay']] as const) {
+    writeFileSync(defaultSeed, seed);
+    const badUp = await json(["up", "--no-manager"], fresh);
+    const status = await json(["status", "--space", "demo"], fresh);
+    const statusText = await run(["status", "--space", "demo"], {}, fresh);
+    const ps = await json(["ps", "--space", "demo"], elsewhere);
+    const diagnosis = `the channels file ${defaultSeed} ${problem}`;
+    check(`up, status and ps agree on the stopped stack's seed ${problem}`,
+      badUp.status === 1 && badUp.env?.error?.message?.includes(diagnosis) && badUp.env.error.remedy === seedRemedy &&
+        status.status === 0 && status.env?.result?.selected?.code === "not-started" && status.env.result.selected.message.includes("is stopped") && status.env.result.selected.channelSeedBlocksRestart === true &&
+        status.env.result.hints.some((hint: string) => hint.includes(diagnosis) && hint.includes(seedRemedy)) &&
+        statusText.stdout.includes(seedRemedy) && !statusText.stdout.includes("start it again with `cotal up`") && !/^ +(?:pnpm )?cotal up(?:\s|$)/m.test(statusText.stdout) &&
+        refused(ps, 2, "TARGET_UNAVAILABLE") && ps.env?.error?.message?.includes(diagnosis) && ps.env.error.remedy === seedRemedy &&
+        readFileSync(defaultSeed, "utf8") === seed, { up: shown(badUp), status: status.env?.result?.hints, text: shown(statusText), ps: shown(ps) });
+  }
+  writeFileSync(defaultSeed, "{}\n");
+  const repairedPs = await json(["ps", "--space", "demo"], fresh);
+  check("repairing the seed restores ordinary restart advice", refused(repairedPs, 2, "TARGET_UNAVAILABLE") && repairedPs.env?.error?.remedy === `start it again with \`cotal up\` in ${fresh}`, shown(repairedPs));
+  unlinkSync(defaultSeed);
   // The stopped stack keeps its recorded address and broker inputs. Another --server, or a --host it
   // did not record, refuses before anything is written, naming the recorded value and the bare up
   // that starts the stack there.
