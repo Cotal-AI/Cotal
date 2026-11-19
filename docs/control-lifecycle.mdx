@@ -312,6 +312,14 @@ The manager's other control refusals follow the same rule: one raised before the
 effect, such as a denied caller, a stale target or a missing persona file, carries `not-executed`.
 See [cli.md](cli.mdx#input).
 
+`interrupt` stops a seat's live turn. It takes no input. The manager writes the key the seat's
+connector declares as `interruptKey` into the seat's terminal as one keypress, and answers with the
+seat's name. `input` cannot do this, because it delivers text as a bracketed paste, and a harness
+reads a pasted Escape as text. The command shares `input`'s row shape, authorization and operator-only
+grant. It refuses before writing when the seat is not running, when its connector declares no
+interrupt key, or when its runtime owns no input stream. The reply means the key was written. The
+turn's end, if any, rides the event plane.
+
 ## Grants [#grants]
 
 There is no broad control credential. A caller holds one capability row per command it is

@@ -76,7 +76,7 @@ export const START_TIMEOUT_MS = 40_000;
 /** v0.3 ctl op → v0.4 typed command (P2 item 1, 1c.2b): the wire names the manager REGISTERS
  *  (manager-service-contract ROWS). `start` is creation (`spawn`), a NAMED `stop` is the one
  *  owner/any-mode terminal (`despawn`), the per-agent `status` read is `inspect`; the camelCase
- *  admin family maps to its kebab-case wire names. `targeted` marks the three commands whose
+ *  admin family maps to its kebab-case wire names. `targeted` marks the commands whose
  *  `{name}` argument becomes a §13.2 target block (resolved to the agent's principal triple via
  *  the name-keyed `inspect` read — it rides the spawn capability arm, so resolution reach equals
  *  despawn/attach reach; the wire target is (owner, actor, lifecycleUid), never an alias). */
@@ -89,6 +89,7 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean; self?: 
   stopSelf: { command: "stop", self: true },
   attach: { command: "attach", targeted: true },
   input: { command: "input", targeted: true },
+  interrupt: { command: "interrupt", targeted: true },
   status: { command: "inspect" },
   ps: { command: "ps" },
   slots: { command: "slots" },

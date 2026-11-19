@@ -482,6 +482,14 @@ const INPUT_OUTPUT_SCHEMA = {
   properties: { name: { type: "string" }, bytes: { type: "integer", minimum: 0 } },
 } as const;
 
+/** `interrupt` takes no input: the target block names the seat, and its connector names the key.
+ *  `interrupt` output: the seat whose terminal took the connector's interrupt key. The key was
+ *  written, which is all the responder can know; the run's end, if any, rides the event plane. */
+const INTERRUPT_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["name"],
+  properties: { name: { type: "string" } },
+} as const;
+
 /** `turn-participate`: a native personal connection opts into the existing self turn relay.
  * The caller triple is the requested lifecycle. The manager and its issuing host derive every
  * authority fact and return a finite exact lease. This creates no managed seat and no custody. */
@@ -1064,6 +1072,7 @@ const ROWS: CommandRow[] = [
   // rides the same authorization: writing into a seat's terminal is what an attach session already
   // lets its holder do. One row, one policy, no second tier to keep in step.
   { name: "input", capability: "manager.lifecycle", input: INPUT_INPUT_SCHEMA, output: INPUT_OUTPUT_SCHEMA, targeted: true, modes: ["owner", "any"], handler: "input" },
+  { name: "interrupt", capability: "manager.lifecycle", input: VOID_SCHEMA, output: INTERRUPT_OUTPUT_SCHEMA, targeted: true, modes: ["owner", "any"], handler: "interrupt" },
   // The turn relay family rides the SAME authorization tiers already minted: driving a seat for a
   // turn is `manager.lifecycle` at owner/any exactly as `input` is (writing into a seat is what an
   // attach holder can already do), and a seat pulling or yielding ITS OWN turns is `manager.self`
@@ -1293,9 +1302,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  51 = `status.connectors` rows no longer carry `permissionRequests`. The status output schema is
  *  closed, so a revision-50 contract rejects a row without the field and this one rejects a row
- *  with it. The number moves forward because revision 50 was published. */
+ *  with it. The number moves forward because revision 50 was published.
+ *
+ *  52 = the targeted `interrupt` command, which writes the seat's connector-declared interrupt key
+ *  into its terminal. A new served command is what a revision is for. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 51, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 52, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
@@ -1360,6 +1372,7 @@ interface ManagerServiceHandlers {
   despawn(ctx: EpServeContext): unknown | Promise<unknown>;
   attach(ctx: EpServeContext): unknown | Promise<unknown>;
   input(ctx: EpServeContext): unknown | Promise<unknown>;
+  interrupt(ctx: EpServeContext): unknown | Promise<unknown>;
   turn(ctx: EpServeContext): unknown | Promise<unknown>;
   turnParticipate(ctx: EpServeContext): unknown | Promise<unknown>;
   turnPending(ctx: EpServeContext): unknown | Promise<unknown>;

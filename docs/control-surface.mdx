@@ -132,6 +132,9 @@ This is terminal control, so the command is limited to operator credentials and 
 
 See the [input authority and outcome reference](control-lifecycle.mdx#seat-input) for the distinction between refusal before delivery and failure after delivery starts.
 
+`interrupt` stops a seat's live turn by writing the key its connector declares, such as Escape, into the seat's terminal.
+It has the same authority as `input`.
+
 ## Grants [#grants]
 
 A caller receives a capability row for each command it may send.

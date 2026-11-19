@@ -131,6 +131,7 @@ export const piConnector: Connector = {
   supportsSessionContinuation: true,
   supportsSessionReopen: true,
   supportsPrompt: true, // pi takes the prompt as its positional initial message — see buildLaunch
+  interruptKey: "\x1b", // Escape aborts the live turn ("Operation aborted")
   // The driver wakes the session for a run turn and hands a once task over at most once.
   supportsTurnRelay: true,
   listModels: listPiModels,

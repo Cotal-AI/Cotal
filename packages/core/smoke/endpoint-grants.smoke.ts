@@ -135,6 +135,8 @@ c("the spawn set: spawn and resolve-agent are UNTARGETED (virgin child); despawn
 // attach write today and this really would be new authority.
 c("the spawn capability grants NO `input` row in either mode: seat input is operator-only",
   !epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.some((r) => r.includes(".manager.input.")));
+c("the spawn capability grants NO `interrupt` row: writing a seat's interrupt key is operator-only like input",
+  !epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.some((r) => r.includes(".manager.interrupt.")));
 // The operator INSTRUMENT rollups (the 1c grant-migration table's admin row): the privileged
 // instrument is read + create + persona only (structurally barred from cross-agent reach, like its
 // ctl row); the admin instrument adds ANY-mode despawn/attach (tOwner "*": operator-policy-mintable
@@ -190,10 +192,10 @@ c("the run capability set: run-start/run-resume/run-start-keyed/run-submission-s
   && JSON.stringify(runCallerCapabilities("u_abc").slice(8)) === JSON.stringify(spawnCallerCapabilities("u_abc"))
   && !spawnCallerCapabilities("u_abc").some((cap) => cap.command.startsWith("run-")));
 const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
-c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input and turn + the manager.admin family",
-  adminCaps.length === 39
-  && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,turn"
-  && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,turn"
+c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input, interrupt and turn + the manager.admin family",
+  adminCaps.length === 41
+  && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,interrupt,turn"
+  && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,interrupt,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")
   && adminCaps.filter((cap) => cap.target?.mode === "any").every((cap) => (cap.target as { tOwner?: string }).tOwner === "*")
   && ["purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation", "transcript-receive"].every((cmd) => adminCaps.some((cap) => cap.command === cmd && cap.target === undefined)));

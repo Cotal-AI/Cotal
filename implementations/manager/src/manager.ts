@@ -2421,6 +2421,9 @@ export class Manager {
   /** {@link TerminalInput.inputAuthorized}. */
   protected inputAuthorized(...args: Parameters<TerminalInput["inputAuthorized"]>): ReturnType<TerminalInput["inputAuthorized"]> { return this.terminalInputComponent.inputAuthorized(...args); }
 
+  /** {@link TerminalInput.interruptAuthorized}. */
+  protected interruptAuthorized(...args: Parameters<TerminalInput["interruptAuthorized"]>): ReturnType<TerminalInput["interruptAuthorized"]> { return this.terminalInputComponent.interruptAuthorized(...args); }
+
   /** {@link TerminalInput.attachAuthorized}. */
   protected attachAuthorized(...args: Parameters<TerminalInput["attachAuthorized"]>): ReturnType<TerminalInput["attachAuthorized"]> { return this.terminalInputComponent.attachAuthorized(...args); }
 

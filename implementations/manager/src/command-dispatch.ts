@@ -38,6 +38,7 @@ export interface CommandDispatchDeps {
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
   findManagedByTarget: (...args: Parameters<Manager["findManagedByTarget"]>) => ReturnType<Manager["findManagedByTarget"]>;
   inputAuthorized: (...args: Parameters<Manager["inputAuthorized"]>) => ReturnType<Manager["inputAuthorized"]>;
+  interruptAuthorized: (...args: Parameters<Manager["interruptAuthorized"]>) => ReturnType<Manager["interruptAuthorized"]>;
   lifecycleMembershipRefusal: (...args: Parameters<Manager["lifecycleMembershipRefusal"]>) => ReturnType<Manager["lifecycleMembershipRefusal"]>;
   list: (...args: Parameters<Manager["list"]>) => ReturnType<Manager["list"]>;
   listSpawnDirectory: (...args: Parameters<Manager["listSpawnDirectory"]>) => ReturnType<Manager["listSpawnDirectory"]>;
@@ -105,6 +106,7 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
     executionRefusal: (...args) => m["executionRefusal"](...args),
     findManagedByTarget: (...args) => m["findManagedByTarget"](...args),
     inputAuthorized: (...args) => m["inputAuthorized"](...args),
+    interruptAuthorized: (...args) => m["interruptAuthorized"](...args),
     lifecycleMembershipRefusal: (...args) => m["lifecycleMembershipRefusal"](...args),
     list: (...args) => m["list"](...args),
     listSpawnDirectory: (...args) => m["listSpawnDirectory"](...args),
@@ -176,6 +178,7 @@ export class CommandDispatch {
   private executionRefusal(...args: Parameters<Manager["executionRefusal"]>): ReturnType<Manager["executionRefusal"]> { return this.deps.executionRefusal(...args); }
   private findManagedByTarget(...args: Parameters<Manager["findManagedByTarget"]>): ReturnType<Manager["findManagedByTarget"]> { return this.deps.findManagedByTarget(...args); }
   private inputAuthorized(...args: Parameters<Manager["inputAuthorized"]>): ReturnType<Manager["inputAuthorized"]> { return this.deps.inputAuthorized(...args); }
+  private interruptAuthorized(...args: Parameters<Manager["interruptAuthorized"]>): ReturnType<Manager["interruptAuthorized"]> { return this.deps.interruptAuthorized(...args); }
   private lifecycleMembershipRefusal(...args: Parameters<Manager["lifecycleMembershipRefusal"]>): ReturnType<Manager["lifecycleMembershipRefusal"]> { return this.deps.lifecycleMembershipRefusal(...args); }
   private list(...args: Parameters<Manager["list"]>): ReturnType<Manager["list"]> { return this.deps.list(...args); }
   private listSpawnDirectory(...args: Parameters<Manager["listSpawnDirectory"]>): ReturnType<Manager["listSpawnDirectory"]> { return this.deps.listSpawnDirectory(...args); }
@@ -466,6 +469,13 @@ export class CommandDispatch {
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
         return this.inputAuthorized(a, args(ctx));
+      }),
+      // `interrupt`: the same authorization as `input`, written out for the same reason.
+      interrupt: (ctx) => this.serveGated(ctx, async () => {
+        const a = targetAgent(ctx);
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
+        if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
+        return this.interruptAuthorized(a);
       }),
       // The turn relay (§8 durable actions): `turn` shares despawn/input's reach policy — the
       // caller must hold owner-equality or admin over the TARGET seat — written out for the same
