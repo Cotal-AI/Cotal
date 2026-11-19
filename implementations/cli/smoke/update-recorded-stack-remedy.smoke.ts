@@ -86,7 +86,7 @@ try {
     const start = Date.now();
     const offline = await cli(["update", "--self"]);
     assert.equal(offline.code, 0, offline.output);
-    assert.equal(offline.output.trim(), "The registry cannot be reached; nothing was changed.");
+    assert.equal(offline.output.trim(), "The registry cannot be reached. No new CLI version was installed.");
     assert.ok(Date.now() - start < 10_000, "an unreachable registry finishes within seconds");
     assert.deepEqual(records(), beforeOffline, "offline update leaves stack and Manager records untouched");
     assert.match(await ok(["status", "--space", "remedy-proof"]), /Manager:.*answering/);

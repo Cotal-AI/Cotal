@@ -43,7 +43,7 @@ for (const consistent of [false, true]) {
   };
   assert.equal(await executeUpdate(true, offline), 0);
   assert.deepEqual(actions, []);
-  assert.deepEqual(lines, ["The registry cannot be reached; nothing was changed."]);
+  assert.deepEqual(lines, ["The registry cannot be reached. No new CLI version was installed."]);
 }
 const { seedInstallationCurrent } = await import("../src/seed/reconcile.js");
 assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not proven current");

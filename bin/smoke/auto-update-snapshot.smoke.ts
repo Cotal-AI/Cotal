@@ -35,6 +35,14 @@ try {
     process.env.XDG_CONFIG_HOME = linked;
     assert.throws(() => snapshotUpdateClosure());
     assert.equal(existsSync(join(root, "missing-target")), false);
+    const physical = join(root, "physical-config");
+    mkdirSync(physical, { mode: 0o700 });
+    const alias = join(root, "config-alias");
+    symlinkSync(physical, alias);
+    process.env.XDG_CONFIG_HOME = alias;
+    const aliased = snapshotUpdateClosure();
+    assert.equal(realpathSync(aliased.path), join(physical, "cotal", aliased.path.split(sep).at(-1)!));
+    aliased.discard();
     process.env.XDG_CONFIG_HOME = join(root, "config");
   }
   assert.equal(existsSync(config), false);

@@ -322,9 +322,13 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
     try { prepareConnectorConfigForUpdate(); }
     catch (error) {
       const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`, {
-        native: { outcome: "not-executed" }, remedy: "check ownership and write access to the Cotal connector configuration, then run `cotal update --self` again",
+        native: { outcome: "not-executed" }, remedy: "check the reported connector configuration problem, then run `cotal update --self` again",
       });
-      recordUpdateRefusal(rt.version(), failure.remedy ? `${failure.message} Next: ${failure.remedy}` : failure.message);
+      if (failure.code === "PERMISSION_DENIED") {
+        recordUpdateRefusal(rt.version(), failure.remedy ? `${failure.message} Next: ${failure.remedy}` : failure.message);
+      } else {
+        recordUpdateDeferral(rt.version(), `connector configuration preflight: ${preflightDetail(error)}`);
+      }
       throw failure;
     }
   }
@@ -549,7 +553,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     const latest = latestVersion(rt);
     if (!latest.ok) {
       if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry availability", true);
-      rt.out("The registry cannot be reached; nothing was changed.");
+      rt.out("The registry cannot be reached. No new CLI version was installed.");
       return 0;
     }
     if (compareSemver(latest.version, current) > 0) {

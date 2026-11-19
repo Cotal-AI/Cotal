@@ -208,6 +208,15 @@ export function connectorConfigDir(): string {
   return id ? currentConfig(id) ?? previousConfig(id) ?? (["extensions", "seed"].some(name => existsSync(join(globalConfigDir(), name))) ? globalConfigDir() : join(id.path, "cotal")) : globalConfigDir();
 }
 
+/** Resolve an alias above Cotal's config directory without resolving any component inside it. */
+export function connectorConfigPhysicalPath(path: string): string {
+  if (process.platform === "win32") return path;
+  const config = resolve(globalConfigDir());
+  let parent = dirname(config);
+  while (!lstatSync(parent, { throwIfNoEntry: false })) parent = dirname(parent);
+  return join(realpathSync(parent), relative(parent, path));
+}
+
 /** Make the current POSIX connector store and its selection directories writable before staging an update.
  * Change only owner write on managed directories. Do not walk other installations or follow links. */
 export function prepareConnectorConfigForUpdate(): void {
@@ -221,19 +230,28 @@ export function prepareConnectorConfigForUpdate(): void {
   };
   let parent = dirname(config);
   while (!lstatSync(parent, { throwIfNoEntry: false })) parent = dirname(parent);
-  protectedLocalDirectory(parent, what);
+  protectedLocalDirectory(realpathSync(parent), what);
 
-  const prepare = (path: string): boolean => {
+  const accessError = (error: unknown): boolean => {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "EACCES" || code === "EPERM" || code === "EROFS";
+  };
+  const denyAccess = (path: string): never => refuse(path, "is not accessible for updates by this account", "restore write access and make the directory readable and searchable on a writable filesystem");
+
+  const prepare = (path: string, nested = false): boolean => {
     const stat = lstatSync(path, { throwIfNoEntry: false });
-    if (!stat) return false;
+    if (!stat || nested && stat.isSymbolicLink()) return false;
     if (!stat.isDirectory()) refuse(path, "is not a real directory", "use a physical directory without symlinks");
     if (stat.uid !== uid) refuse(path, "is owned by another account", "ask the owner or an administrator to restore ownership of this Cotal directory to your account");
     assertProtectedEntry(what, path, stat);
     try {
       if ((stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
       accessSync(path, constants.R_OK | constants.W_OK | constants.X_OK);
-    } catch {
-      refuse(path, "is not accessible for updates by this account", "restore write access and make the directory readable and searchable on a writable filesystem");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (nested && code === "ENOENT") return false;
+      if (!accessError(error)) throw error;
+      denyAccess(path);
     }
     return true;
   };
@@ -249,15 +267,25 @@ export function prepareConnectorConfigForUpdate(): void {
       if (!prepare(directory)) return;
     }
   };
-  const walk = (path: string): void => {
-    if (!prepare(path)) return;
-    for (const entry of readdirSync(path, { withFileTypes: true })) {
-      if (entry.isDirectory()) walk(join(path, entry.name));
+  const walk = (path: string, nested = false): void => {
+    if (!prepare(path, nested)) return;
+    let entries;
+    try { entries = readdirSync(path, { withFileTypes: true }); }
+    catch (error) {
+      if (nested && (error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if (accessError(error)) denyAccess(path);
+      throw error;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) walk(join(path, entry.name), true);
     }
   };
   if (!prepare(config)) {
     try { accessSync(parent, constants.W_OK | constants.X_OK); }
-    catch { refuse(parent, "cannot be written to create the config folder", "restore write access to the containing directory or choose a writable XDG_CONFIG_HOME"); }
+    catch (error) {
+      if (!accessError(error)) throw error;
+      refuse(parent, "cannot be written to create the config folder", "restore write access to the containing directory or choose a writable XDG_CONFIG_HOME");
+    }
     return;
   }
   const id = identity();
@@ -337,7 +365,7 @@ export function retainConnectorConfig(): string {
       }
       renameSync(staging, root);
     } finally { if (existsSync(staging)) rmSync(staging, { recursive: true }); }
-    if (realpathSync(root) !== root) throw new Error("retained connector state resolved through a link");
+    if (realpathSync(root) !== connectorConfigPhysicalPath(root)) throw new Error("retained connector state resolved through a link");
     mkdirSync(join(id.path, "holders"), { mode: 0o700 });
     writeFileSync(join(id.path, "holders-v1.json"), '{"v":1}\n', { flag: "wx", mode: 0o600 });
     const record: Selection = { v: 1, entry: id.entry, version: id.version, root };

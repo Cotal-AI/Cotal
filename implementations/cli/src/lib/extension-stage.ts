@@ -83,18 +83,23 @@ export function stageExtensions(): ExtensionStage {
   protectedLocalDirectory(realpathSync(config));
   const stage = mkdtempSync(join(config, ".extensions.stage-"));
   const stageConfig = join(stage, "config"), prefix = join(stageConfig, "cotal", "extensions");
-  mkdirSync(dirname(prefix), { recursive: true, mode: 0o700 });
-  if (existsSync(root)) cpSync(root, prefix, { recursive: true, verbatimSymlinks: true });
-  else { mkdirSync(prefix, { mode: 0o755 }); writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "cotal-extensions", private: true })); }
-  // The stage is this process's own: under a umask of 0002 the folder above, and on Node before
-  // 24.22 every copied folder, would be group-writable and the protected-path rule would refuse it.
-  repairInstallModes(prefix);
-  // npm and the verifier rewrite these files. A read-only source copy keeps its modes.
-  if (process.platform !== "win32") for (const name of ["package.json", "package-lock.json"]) {
-    const path = join(prefix, name), stat = lstatSync(path, { throwIfNoEntry: false });
-    if (!stat) continue;
-    if (!stat.isFile()) throw new Error(`extension stage metadata is not a regular file: ${path}`);
-    if ((stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
+  try {
+    mkdirSync(dirname(prefix), { recursive: true, mode: 0o700 });
+    if (existsSync(root)) cpSync(root, prefix, { recursive: true, verbatimSymlinks: true });
+    else { mkdirSync(prefix, { mode: 0o755 }); writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "cotal-extensions", private: true })); }
+    // A permissive umask can leave the stage writable by other accounts.
+    repairInstallModes(prefix);
+    // npm and the verifier rewrite these files. A read-only source copy keeps its modes.
+    if (process.platform !== "win32") for (const name of ["package.json", "package-lock.json"]) {
+      const path = join(prefix, name), stat = lstatSync(path, { throwIfNoEntry: false });
+      if (!stat) continue;
+      if (!stat.isFile()) throw new Error(`extension stage metadata is not a regular file: ${path}`);
+      if ((stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
+    }
+  } catch (error) {
+    try { rmSync(stage, { recursive: true, force: true }); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], `extension staging failed: ${String(error)}. Could not discard ${stage}: ${String(cleanup)}`); }
+    throw error;
   }
   let promoted = false;
   return {

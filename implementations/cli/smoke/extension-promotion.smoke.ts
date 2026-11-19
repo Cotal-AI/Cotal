@@ -63,6 +63,18 @@ if (process.platform !== "win32") {
   }
   console.log("a stage made under a umask of 0002 holds no group or other write, with and without a live prefix");
   passed++;
+
+  const root = mkdtempSync(join(tmpdir(), "promotion-invalid-metadata-"));
+  roots.push(root);
+  process.env.XDG_CONFIG_HOME = root;
+  const config = join(root, "cotal"), malformed = join(config, "extensions", "package-lock.json");
+  mkdirSync(malformed, { recursive: true, mode: 0o700 });
+  writeFileSync(join(malformed, "keep"), "original");
+  assert.throws(() => stageExtensions(), /extension stage metadata is not a regular file.*package-lock\.json/);
+  assert.deepEqual(readdirSync(config), ["extensions"], "failed preparation must discard its stage");
+  assert.equal(readFileSync(join(malformed, "keep"), "utf8"), "original");
+  console.log("invalid package metadata leaves no stage and preserves the live prefix");
+  passed++;
 }
 
 for (const state of ["prepared", "old-renamed", "new-promoted"] as const) {
