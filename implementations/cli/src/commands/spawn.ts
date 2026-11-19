@@ -1464,15 +1464,26 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   if (missing.length) {
     const binaries = missing.join(", ");
     const guide = ["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/";
-    const prerequisite = connector.missingBinaryLaunchGuidance?.({ model });
     const message = `${agentType} needs ${binaries} on PATH; nothing was launched`;
     const install = `Follow ${guide} to install ${binaries}`;
-    const remedy = prerequisite?.spawnExampleArgs
-      ? `${install}. For a basic launch: ${codeSpan(`${displayCmd()} spawn ${prerequisite.spawnExampleArgs}`)}`
-      : prerequisite ? install : `${install}, then retry: ${codeSpan(`${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}`)}`;
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", prerequisite ? `${message}. ${prerequisite.message}` : message, {
+    if (agentType === "hermes") {
+      if (process.env.COTAL_HERMES_ADOPT_HOME?.trim()) {
+        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", message, {
+          target: { space, path },
+          remedy: `${install} and check the adopted Hermes profile's requirements before retrying.`,
+        });
+      }
+      if (!model) {
+        const example = codeSpan(`${displayCmd()} spawn --harness hermes --no-events --model <model>`);
+        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${message}. A managed Hermes profile needs a model. Set one with --model or the agent file's model: field.`, {
+          target: { space, path },
+          remedy: `${install}. For a basic launch: ${example}`,
+        });
+      }
+    }
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", message, {
       target: { space, path },
-      remedy,
+      remedy: `${install}, then retry: \`${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}\``,
     });
   }
   if (variant && !connector.supportsModelVariant) {

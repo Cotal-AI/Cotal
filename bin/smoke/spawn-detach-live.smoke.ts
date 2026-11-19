@@ -253,7 +253,7 @@ try {
     process.env.COTAL_HERMES_ADOPT_HOME = fakeBin;
     const adopt = await hermesWithoutUv();
     ok("missing uv with profile adoption points to profile requirements without demanding a model or promising a retry",
-      isCommandFailure(adopt) && adopt.code === "DEPENDENCY_UNAVAILABLE" && adopt.message.includes("adopted Hermes profile")
+      isCommandFailure(adopt) && adopt.code === "DEPENDENCY_UNAVAILABLE" && adopt.remedy?.includes("adopted Hermes profile") === true
         && !adopt.message.includes("needs a model") && adopt.remedy?.includes("https://docs.cotal.ai/docs/connect-hermes/") === true
         && !adopt.remedy.includes("then retry:"), adopt);
     delete process.env.COTAL_HERMES_ADOPT_HOME;

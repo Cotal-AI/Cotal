@@ -49,15 +49,6 @@ export const hermesConnector: Connector = {
   // separately installed `hermes` on PATH is neither required nor sufficient to launch this seat.
   requires: ["uv"],
   supportsLaunchValidation: true,
-  missingBinaryLaunchGuidance({ model }) {
-    if (process.env.COTAL_HERMES_ADOPT_HOME?.trim())
-      return { message: "Check the adopted Hermes profile's requirements in the connector guide before retrying." };
-    if (model) return undefined;
-    return {
-      message: "A managed Hermes profile needs a model. Set one with --model or the agent file's model: field.",
-      spawnExampleArgs: "--harness hermes --no-events --model <model>",
-    };
-  },
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("the Hermes connector does not support exact-session continuation");
     // Hermes is Unix-only: its sidecar bridge + hook relay use AF_UNIX `.sock` paths and a Python
