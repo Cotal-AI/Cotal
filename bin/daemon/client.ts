@@ -190,6 +190,7 @@ export async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" 
   const uid = opts.uid ?? process.geteuid!();
   const { paths } = opts;
   try {
+    if (paths.inferredRuntime !== undefined) checkDir(paths.inferredRuntime, uid);
     if (paths.parent !== undefined) checkDir(paths.parent, uid);
     checkDir(paths.dir!, uid);
     checkSocket(paths.socket, uid);

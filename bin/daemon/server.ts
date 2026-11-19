@@ -20,7 +20,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { localPeerCredentials, listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
-import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
+import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkDir, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
 import { claimSocketPath, generationOf, holdLifetime, processBirth, type HeldLifetime } from "./lifetime.js";
 import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
@@ -142,6 +142,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const { paths } = opts;
   let dirOutcome: RunningDaemon["dirOutcome"] = "none";
   if (paths.dir !== undefined) {
+    if (paths.inferredRuntime !== undefined) checkDir(paths.inferredRuntime, uid);
     if (paths.parent !== undefined) ensureDir(paths.parent, uid);
     dirOutcome = ensureDir(paths.dir, uid);
   }

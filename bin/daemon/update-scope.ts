@@ -5,12 +5,12 @@ import { readFileSync, statSync } from "node:fs";
 import { claimUpdateClosureAccess, inspectGlobalUpdateChild, readUpdateRecovery } from "@cotal-ai/workspace";
 import { updateRuntime } from "@cotal-ai/cli/update";
 import { queryDaemon } from "./client.js";
-import { daemonPaths } from "./endpoint.js";
+import { daemonPaths, daemonRuntimeEnvironment } from "./endpoint.js";
 import { installedDaemonIdentity, planUninstall, unitReceiptFile } from "./install.js";
 import { processBirth, readLifetimeRecord } from "./lifetime.js";
 
 function run(file: string, args: string[]): string {
-  return execFileSync(file, args, { encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+  return execFileSync(file, args, { env: daemonRuntimeEnvironment(), encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 function property(unit: string, name: string): string {
   return run("systemctl", ["--user", "--no-ask-password", "show", unit, `--property=${name}`, "--value"]);

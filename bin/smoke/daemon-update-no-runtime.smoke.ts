@@ -34,7 +34,9 @@ writeFileSync(join(bin, "systemctl"), `#!/bin/sh
 printf '%s %s\\n' "$*" "\${XDG_RUNTIME_DIR-<unset>}" >> "$NATIVE_LOG"
 [ "\${XDG_RUNTIME_DIR-}" = "$EXPECTED_RUNTIME" ] || exit 1
 case "$*" in
-  '--user show-environment') printf 'HOME=%s\\nXDG_CONFIG_HOME=%s\\n' "$HOME" "$XDG_CONFIG_HOME" ;;
+  '--user show-environment')
+    if [ "\${CHANGE_RUNTIME-}" = 1 ]; then chmod 0755 "$FIXTURE_RUNTIME" || exit 95; fi
+    printf 'HOME=%s\\nXDG_CONFIG_HOME=%s\\n' "$HOME" "$XDG_CONFIG_HOME" ;;
   '--user --no-ask-password --no-pager show cotal-daemon.service --property=UnitFileState --value') echo disabled ;;
   *) exit 95 ;;
 esac
@@ -56,12 +58,15 @@ async function run(args: string[], env: NodeJS.ProcessEnv) {
 const registry = createServer((_request, response) => response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })));
 await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
 try {
-  for (const kind of ["present", "dangling", "absent", "standard", "explicit", "unsafe", "self", "preinstall"] as const) {
+  for (const kind of ["present", "dangling", "absent", "standard", "explicit", "unsafe", "unsafe-unrecorded", "symlink", "file", "self", "changed-self", "preinstall", "changed-preinstall"] as const) {
     const directory = join(root, kind);
     for (const part of ["home", "cotal/daemon", "config", "cache", "data", "state", "tmp"]) mkdirSync(join(directory, part), { recursive: true, mode: 0o700 });
     const runtime = join(directory, "runtime");
     const nativeLog = join(directory, "native.log");
-    const recorded = kind !== "present" && kind !== "dangling" && kind !== "absent";
+    const unsafe = kind === "unsafe" || kind === "unsafe-unrecorded" || kind === "symlink" || kind === "file";
+    const recorded = kind !== "present" && kind !== "dangling" && kind !== "absent" && kind !== "unsafe-unrecorded";
+    const preinstall = kind === "preinstall" || kind === "changed-preinstall";
+    const changed = kind === "changed-self" || kind === "changed-preinstall";
     const receipt = join(directory, "cotal/daemon/service-unit.json");
     if (kind === "present") writeFileSync(receipt, "{}", { mode: 0o600 });
     if (kind === "dangling") symlinkSync(join(directory, "missing-receipt"), receipt);
@@ -73,9 +78,14 @@ try {
       npm_config_registry: `http://127.0.0.1:${(registry.address() as AddressInfo).port}`,
       COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1",
     };
-    if (recorded) {
+    if (changed) env.CHANGE_RUNTIME = "1";
+    if (kind === "symlink") symlinkSync(env.HOME!, runtime);
+    else if (kind === "file") writeFileSync(runtime, "not a directory", { mode: 0o600 });
+    else if (recorded || unsafe) {
       mkdirSync(runtime, { mode: 0o700 });
-      if (kind === "unsafe" || kind === "explicit") chmodSync(runtime, 0o755);
+      if (unsafe || kind === "explicit") chmodSync(runtime, 0o755);
+    }
+    if (recorded) {
       if (kind === "explicit") {
         env.XDG_RUNTIME_DIR = join(directory, "explicit-runtime");
         mkdirSync(env.XDG_RUNTIME_DIR, { mode: 0o700 });
@@ -87,7 +97,7 @@ try {
       writeFileSync(unitPath, bytes, { mode: 0o600 });
       writeFileSync(receipt, JSON.stringify({ v: 1, mechanism: "systemd-user", unit, unitPath, unitSha256: createHash("sha256").update(bytes).digest("hex"), installedAt: "2026-11-19T00:00:00.000Z" }), { mode: 0o600 });
       env.EXPECTED_RUNTIME = env.XDG_RUNTIME_DIR ?? standard;
-      if (kind !== "unsafe" && kind !== "preinstall") {
+      if (!unsafe && !preinstall) {
         // Model a user who removed every built-in, so reconciliation needs no package archives.
         const seed = join(directory, "config/cotal/seed");
         mkdirSync(seed, { recursive: true, mode: 0o700 });
@@ -95,16 +105,24 @@ try {
         writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }), { mode: 0o600 });
       }
     }
-    if (kind === "preinstall") {
+    if (preinstall) {
       const request = { v: 1, nonce: "0".repeat(32), installedEntry: entry, daemonArgv: [process.execPath, entry, "daemon", "serve"], flags: {} };
       const { code, output } = await run([join(repo, "bin/dist/execution-preinstall.js"), JSON.stringify(request)], env);
-      assert.equal(code, 0, output);
-      assert.match(output, /"disposition":"restart-empty"/);
-      assert.equal(readFileSync(nativeLog, "utf8"), `--user show-environment ${standard}\n`.repeat(2));
-      console.log("PASS staged self-update admission uses the private standard runtime");
+      if (changed) {
+        assert.equal(code, 1, output);
+        assert.match(output, /has mode 0755, not 0700/);
+        assert.doesNotMatch(output, /COTAL_PREINSTALL_RESULT/);
+        assert.equal(readFileSync(nativeLog, "utf8"), `--user show-environment ${standard}\n`);
+      } else {
+        assert.equal(code, 0, output);
+        assert.match(output, /"disposition":"restart-empty"/);
+        assert.equal(readFileSync(nativeLog, "utf8"), `--user show-environment ${standard}\n`.repeat(2));
+      }
+      console.log(`PASS staged self-update runtime case: ${kind}`);
       continue;
     }
-    const { code, output } = await run([entry, "update", ...(!recorded || kind === "self" ? ["--self"] : [])], env);
+    const self = (!recorded && !unsafe) || kind === "self" || kind === "changed-self";
+    const { code, output } = await run([entry, "update", ...(self ? ["--self"] : [])], env);
     if (kind === "present" || kind === "dangling") {
       assert.equal(code, 1, output);
       assert.match(output, /installed daemon preflight.*no installed unit recorded/);
@@ -120,11 +138,19 @@ try {
       assert.doesNotMatch(output, /installed daemon preflight/);
       assert.match(output, /wrote operator-global seed store payload/);
       assert.equal(existsSync(join(directory, "config/cotal/seed")), true, output);
-    } else if (kind === "unsafe") {
-      assert.notEqual(code, 0, output);
-      assert.match(output, /has mode 0755, not 0700/);
+    } else if (unsafe) {
+      assert.equal(code, 2, output);
+      assert.match(output, /Request refused/);
+      assert.match(output, /PERMISSION_DENIED/);
+      assert.ok(output.includes(kind === "symlink" ? "DIR_SYMLINK" : kind === "file" ? "DIR_NOT_DIRECTORY" : "DIR_WRONG_MODE"), output);
+      assert.match(output, /Next[\s\S]*inspect the (path|directory)/);
       assert.equal(existsSync(nativeLog), false, output);
       assert.equal(existsSync(join(directory, "config/cotal/seed")), false, output);
+    } else if (kind === "changed-self") {
+      assert.equal(code, 1, output);
+      assert.match(output, /installed daemon preflight:.*has mode 0755, not 0700/);
+      assert.doesNotMatch(output, /Built-in connectors|Outcome unconfirmed/);
+      assert.equal(readFileSync(nativeLog, "utf8"), `--user show-environment ${standard}\n`);
     } else {
       assert.equal(code, 0, output);
       assert.match(output, /connectors reconciled/);

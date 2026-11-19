@@ -29,7 +29,7 @@ import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-a
 import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { cloudAuthUrl, isCotalCloudIdp, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
-import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, prepareDaemonRuntimeEnvironment, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
+import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonEndpointFailure, daemonPaths, daemonPathsFor, type DaemonPaths } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
@@ -102,9 +102,7 @@ function target(args: ParsedArgs, recoverMissingHome = false): Target {
 }
 function resolveTarget(args: ParsedArgs, recoverMissingHome = false): Target {
   try {
-    const resolved = target(args, recoverMissingHome);
-    prepareDaemonRuntimeEnvironment();
-    return resolved;
+    return target(args, recoverMissingHome);
   }
   catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist; create it with mode 0700 first");
@@ -112,29 +110,9 @@ function resolveTarget(args: ParsedArgs, recoverMissingHome = false): Target {
   }
 }
 
-const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVAILABLE" | "CONFLICT" | "PERMISSION_DENIED"; remedy?: string }> = {
-  UNSUPPORTED_PLATFORM: { code: "UNSUPPORTED" },
-  NO_RUNTIME_DIR: { code: "TARGET_UNAVAILABLE", remedy: "run as the intended operating-system user with its private runtime directory available" },
-  NOT_RUNNING: { code: "TARGET_UNAVAILABLE", remedy: "start it with `cotal daemon serve`" },
-  ALREADY_RUNNING: { code: "CONFLICT", remedy: "run `cotal daemon status` for the same daemon home; inspect the conflicting endpoint with your operating system before changing it. No foreign endpoint was removed" },
-  DIR_NOT_DIRECTORY: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
-  DIR_SYMLINK: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
-  DIR_WRONG_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
-  DIR_WRONG_MODE: { code: "PERMISSION_DENIED", remedy: "inspect the directory; the daemon never changes the mode of an existing directory" },
-  SOCKET_NOT_SOCKET: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was removed" },
-  SOCKET_WRONG_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was removed" },
-  SOCKET_WRONG_MODE: { code: "PERMISSION_DENIED", remedy: "inspect the endpoint owner and protection with your operating system; its permissions differ from the daemon contract and were not repaired" },
-  PEER_UID_MISMATCH: { code: "PERMISSION_DENIED", remedy: "another user's process holds the daemon endpoint; nothing was sent" },
-  PEER_NOT_LOCK_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the conflicting listener with your operating system. For the default daemon use its COTAL_HOME. For an explicit --daemon-home use the same directory as the intended daemon. No process was stopped" },
-  LOCK_HELD: { code: "CONFLICT", remedy: "a daemon already holds this lifetime lock; run `cotal daemon status`, with the same --daemon-home when you passed one" },
-};
-
 function asFailure(e: unknown): unknown {
   if (e instanceof IdpConfigurationError) return new CommandFailure("refused", "USAGE_INVALID", e.message, { remedy: "correct COTAL_IDP_TIMEOUT_MS in the daemon environment before starting it again" });
-  if (!(e instanceof EndpointRefusal)) return e;
-  const r = REFUSAL[e.code];
-  const remedy = e.remedy ?? r.remedy;
-  return new CommandFailure("refused", r.code, e.message, { ...(remedy ? { remedy } : {}), native: { code: e.code } });
+  return e instanceof EndpointRefusal ? daemonEndpointFailure(e) : e;
 }
 
 function capacityText(total: number, free: number): string {

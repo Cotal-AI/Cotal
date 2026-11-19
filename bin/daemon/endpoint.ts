@@ -30,7 +30,7 @@ import { Socket } from "node:net";
 import { join } from "node:path";
 import { mkSecretDir } from "@cotal-ai/core";
 import { darwinUserCacheDir, localPeerCredentials, windowsDirSecurity, windowsUserSid } from "@cotal-ai/seat";
-import { homeCotalDir } from "@cotal-ai/workspace";
+import { CommandFailure, homeCotalDir } from "@cotal-ai/workspace";
 
 /** Wire protocol version. A request naming any other version is refused before any effect. */
 export const DAEMON_PROTOCOL_VERSION = 1;
@@ -66,6 +66,29 @@ export class EndpointRefusal extends Error {
   }
 }
 
+const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVAILABLE" | "CONFLICT" | "PERMISSION_DENIED"; remedy?: string }> = {
+  UNSUPPORTED_PLATFORM: { code: "UNSUPPORTED" },
+  NO_RUNTIME_DIR: { code: "TARGET_UNAVAILABLE", remedy: "run as the intended operating-system user with its private runtime directory available" },
+  NOT_RUNNING: { code: "TARGET_UNAVAILABLE", remedy: "start it with `cotal daemon serve`" },
+  ALREADY_RUNNING: { code: "CONFLICT", remedy: "run `cotal daemon status` for the same daemon home; inspect the conflicting endpoint with your operating system before changing it. No foreign endpoint was removed" },
+  DIR_NOT_DIRECTORY: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
+  DIR_SYMLINK: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
+  DIR_WRONG_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
+  DIR_WRONG_MODE: { code: "PERMISSION_DENIED", remedy: "inspect the directory; the daemon never changes the mode of an existing directory" },
+  SOCKET_NOT_SOCKET: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was removed" },
+  SOCKET_WRONG_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was removed" },
+  SOCKET_WRONG_MODE: { code: "PERMISSION_DENIED", remedy: "inspect the endpoint owner and protection with your operating system; its permissions differ from the daemon contract and were not repaired" },
+  PEER_UID_MISMATCH: { code: "PERMISSION_DENIED", remedy: "another user's process holds the daemon endpoint; nothing was sent" },
+  PEER_NOT_LOCK_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the conflicting listener with your operating system. For the default daemon use its COTAL_HOME. For an explicit --daemon-home use the same directory as the intended daemon. No process was stopped" },
+  LOCK_HELD: { code: "CONFLICT", remedy: "a daemon already holds this lifetime lock; run `cotal daemon status`, with the same --daemon-home when you passed one" },
+};
+
+/** Classify an endpoint refusal at a command boundary that has taken no effect. */
+export function daemonEndpointFailure(error: EndpointRefusal): CommandFailure {
+  const { code, remedy } = REFUSAL[error.code];
+  return new CommandFailure("refused", code, error.message, { remedy: error.remedy ?? remedy, native: { code: error.code } });
+}
+
 export interface DaemonPaths {
   /** The 0700 directory holding the socket. Absent on Windows, where `socket` is a pipe name. */
   readonly dir?: string;
@@ -73,6 +96,8 @@ export interface DaemonPaths {
   readonly socket: string;
   /** Explicit daemon home on Linux and macOS: the shared runtime directory `dir` lives in, created and checked first. */
   readonly parent?: string;
+  /** An inferred Linux runtime remains private each time an endpoint is opened or bound. */
+  readonly inferredRuntime?: string;
   /** This daemon's lifetime lock. `serve` holds an exclusive kernel lock on it while it runs, and a
    *  client sends nothing unless the process answering at `socket` is this lock's live owner. Both
    *  daemon forms have one: the default daemon's lives beside its own state. */
@@ -101,8 +126,7 @@ function host<T>(what: string, call: () => T): T {
   }
 }
 
-function linuxRuntimeDirectory(env: NodeJS.ProcessEnv): string {
-  if (env.XDG_RUNTIME_DIR) return env.XDG_RUNTIME_DIR;
+function standardLinuxRuntime(): string {
   const runtime = `/run/user/${euid()}`;
   try { checkDir(runtime); }
   catch (error) {
@@ -112,15 +136,20 @@ function linuxRuntimeDirectory(env: NodeJS.ProcessEnv): string {
   return runtime;
 }
 
-/** Pass the daemon's validated Linux runtime to native user-service tools and update children. */
-export function prepareDaemonRuntimeEnvironment(): void {
-  if (process.platform !== "linux" || process.env.XDG_RUNTIME_DIR) return;
-  try { process.env.XDG_RUNTIME_DIR = linuxRuntimeDirectory(process.env); }
+/** Resolve the current inferred runtime, if available. Explicit runtimes stay caller-selected. */
+export function inferredLinuxRuntime(): string | undefined {
+  if (process.platform !== "linux" || process.env.XDG_RUNTIME_DIR) return undefined;
+  try { return standardLinuxRuntime(); }
   catch (error) {
-    // A missing runtime is allowed for commands that do not need a daemon. Socket and unit
-    // checks still decide whether the command can proceed without it.
     if (!(error instanceof EndpointRefusal && error.code === "NO_RUNTIME_DIR")) throw error;
+    return undefined;
   }
+}
+
+/** Pass the inferred runtime only to the native tool making this call, never to an updater process. */
+export function daemonRuntimeEnvironment(): (NodeJS.ProcessEnv & { XDG_RUNTIME_DIR: string }) | undefined {
+  const runtime = inferredLinuxRuntime();
+  return runtime === undefined ? undefined : { ...process.env, XDG_RUNTIME_DIR: runtime };
 }
 
 /**
@@ -135,16 +164,17 @@ export function daemonPaths(env: NodeJS.ProcessEnv = process.env, home: string =
     return { socket: `\\\\.\\pipe\\cotal-daemon-${host("the daemon pipe name", windowsUserSid)}`, state, lock };
   }
   let runtime: string;
+  let inferredRuntime: string | undefined;
   if (process.platform === "darwin") {
     runtime = host("the daemon runtime directory", darwinUserCacheDir);
   } else {
     assertSupportedPlatform();
-    runtime = linuxRuntimeDirectory(env);
+    runtime = env.XDG_RUNTIME_DIR || (inferredRuntime = standardLinuxRuntime());
   }
   const dir = join(runtime, "cotal");
   const socket = join(dir, "daemon.sock");
   assertSocketPathFits(socket);
-  return { dir, socket, state, lock };
+  return { dir, socket, state, lock, ...(inferredRuntime === undefined ? {} : { inferredRuntime }) };
 }
 
 /**
@@ -161,7 +191,7 @@ export function daemonPathsFor(daemonHome: string, env: NodeJS.ProcessEnv = proc
   const dir = join(base.dir, tag);
   const socket = join(dir, "daemon.sock");
   assertSocketPathFits(socket);
-  return { parent: base.dir, dir, socket, state: daemonHome, lock };
+  return { ...base, parent: base.dir, dir, socket, state: daemonHome, lock };
 }
 
 export function assertSupportedPlatform(platform: NodeJS.Platform = process.platform): void {
