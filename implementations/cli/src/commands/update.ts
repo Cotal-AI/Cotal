@@ -162,6 +162,7 @@ export interface UpdateRuntime {
   claimGlobalUpdate(root: string, onWait?: () => void): () => void;
   /** Read the selected global package again after acquiring its update reservation. */
   globalVersion?(root: string): string | undefined;
+  verifyUpdatedEntry?(root: string, version: string): string;
   selfArgv(): string[];
   /** Whether this CLI runs from a source checkout, where `--self` installs a separate global copy. */
   checkout(): boolean;
@@ -222,7 +223,7 @@ export const updateRuntime: UpdateRuntime = {
   extensions: () => loadExtensionsManifest().extensions,
   verifyExtension: verifyCurrentExtension,
   claimUpdatePass: () => claimExtensionUpdatePass(),
-  claimGlobalUpdate: (root, onWait) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000, onWait }),
+  claimGlobalUpdate: (root, onWait) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000, renew: true, onWait }),
   globalVersion: (root) => {
     const path = join(root, "cotal-ai", "package.json");
     if (!existsSync(path)) return undefined;
@@ -1424,7 +1425,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
 
   let releaseGlobal: () => void;
   try {
-    releaseGlobal = rt.claimGlobalUpdate(root, () => rt.out("Waiting up to 10 minutes for another updater to release npm's global root"));
+    releaseGlobal = rt.claimGlobalUpdate(root, () => rt.out("Waiting for another updater to release npm's global root"));
   } catch (e) {
     rt.err(c.red(`✗ could not reserve npm's global root for update: ${message(e)}`));
     return 1;
@@ -1435,7 +1436,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   try {
     const installed = rt.globalVersion?.(root);
     if (installed && compareSemver(installed, current) > 0 && compareSemver(installed, targetVersion) >= 0) {
-      const entry = rt.verifyGlobalEntry(root, installed);
+      const entry = (rt.verifyUpdatedEntry ?? rt.verifyGlobalEntry)(root, installed);
       releaseGlobal();
       rt.out(`Another update installed cotal-ai@${installed}; rechecking the installed CLI`);
       const child = rt.spawn(rt.nodePath, [entry, "update", "--self", ...targetArgv(target), ...(target["stop-agents"] === true ? ["--stop-agents"] : [])], rt.env, true);

@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { registry, type Command } from "@cotal-ai/core";
 import { claimGlobalNpmUpdateLock } from "@cotal-ai/workspace";
 import { submitSystemdUnitControl } from "@cotal-ai/cli";
-import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes } from "@cotal-ai/cli/update";
+import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes, verifyGlobalEntry } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, recordUpdateActivation, writeUpdateRecovery, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
@@ -25,6 +25,7 @@ import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
 import { observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
 import { daemonServiceRequirement } from "./guidance.js";
+import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 
 /** A reconcile child of a parent that said it waits after the child and prints the line. A parent
  *  from before that marker never waits there, so its child keeps the line. */
@@ -227,7 +228,7 @@ const composed: Command = { ...command, async run(args) {
     }
   }
   const runtime = { ...updateRuntime, automaticGenerationWait: process.platform === "linux",
-    claimGlobalUpdate: (root: string, onWait?: () => void) => claimGlobalNpmUpdateLock(root, legacyRepair && root === interruptedChildRoot ? { waitMs: 10 * 60_000, onWait, repairAmbiguous: () => {
+    claimGlobalUpdate: (root: string, onWait?: () => void) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000, renew: true, onWait, ...(legacyRepair && root === interruptedChildRoot ? { repairAmbiguous: () => {
       if (repairService) {
         const plan = planUninstall(repairService, undefined);
         if (!installedDaemonIdentity(repairService).same || plan.mechanism !== "systemd-user") throw new Error("daemon installation changed before repair");
@@ -265,11 +266,21 @@ const composed: Command = { ...command, async run(args) {
         }
       }
       console.log("Retaining the interrupted update marker after confirming this account has no other application process.");
-    } } : { waitMs: 10 * 60_000, onWait }),
+    } } : {}) }),
     ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {
       preflightExecution: preflightExecutionUpdate,
       repairInstallModes: (root: string) => repairExecutionInstallModes(executionInstallRoot(), () => repairInstallModes(root)),
       executionGlobalRoot: () => dirname(executionInstallRoot()),
+      globalVersion: () => observeExecutionVersion(executionInstallRoot()),
+      verifyUpdatedEntry: (root: string, version: string) => {
+        const installed = executionInstallRoot();
+        const selected = selectExecutionProgram(installed);
+        const selectedVersion = updateRuntime.globalVersion!(dirname(selected.root));
+        if (selectedVersion !== version) throw new Error("the selected execution changed before the update recheck");
+        const packageVersion = updateRuntime.globalVersion!(root);
+        if (!packageVersion) throw new Error("the installed global package is missing");
+        return verifyGlobalEntry(root, packageVersion);
+      },
       prepareExecution: async (version: string, root: string) => {
         const execution = await prepareExecutionUpdate(version, root, receipt => { targetReceipt = receipt; admission = receipt.admission; hostedSpaces = [...receipt.hostedSpaces]; daemonObserved = receipt.daemon !== undefined; });
         replacementVersion = version;
