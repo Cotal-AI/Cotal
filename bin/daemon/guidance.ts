@@ -1,4 +1,13 @@
-import { homeCotalDir, shellPath } from "@cotal-ai/workspace";
+import { existsSync } from "node:fs";
+import { codeSpan, CommandFailure, homeCotalDir, resolveOnPath, shellPath } from "@cotal-ai/workspace";
+
+/** An unavailable systemd installation is different from an unreachable systemd user manager. */
+export function daemonServiceRequirement(home?: string): CommandFailure | undefined {
+  if (process.platform !== "linux" || (existsSync("/run/systemd/system") && resolveOnPath("systemctl"))) return undefined;
+  return new CommandFailure("refused", "UNSUPPORTED", "The Linux background service requires systemd. This environment does not provide both a running systemd and systemctl on PATH.", {
+    remedy: `Manage an existing systemd service from an environment with systemd and systemctl on PATH as the same user. If no daemon is installed or running, run ${codeSpan(daemonCommandCopy("serve", home))} under your own supervisor. Use \`cotal update --self\` for manual updates.`,
+  });
+}
 
 /** A copyable command for this daemon. Tuples keep option values distinct from boolean flags;
  *  leading-hyphen values need `=` even when shell-quoted. Windows copy targets PowerShell. */

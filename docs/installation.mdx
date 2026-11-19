@@ -77,6 +77,9 @@ The Quickstart starts the prepared space separately.
 
 ## Install with npm
 
+On Linux, use a glibc distribution to start the built-in PTY manager. The default local stack
+uses that manager. Alpine and other musl distributions cannot start it.
+
 If you already have Node.js 22.10 or newer, install as your own user, without sudo.
 The npm global prefix must be writable by your user, and its executable directory must be on PATH.
 On macOS or Linux with distribution Node, the default prefix may be root-owned.
