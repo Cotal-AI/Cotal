@@ -72,6 +72,7 @@ export {
   commitStagedIdpSession,
   fetchStagedIdpSpaceCatalog,
   fetchIdpJwt,
+  fetchStoredIdpJwt,
   revokeIdpSession,
   loadIdpSession,
   hasIdpSessions,

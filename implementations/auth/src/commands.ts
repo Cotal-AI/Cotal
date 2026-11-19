@@ -137,6 +137,10 @@ function validateAccountArguments(args: ParsedArgs, mode: "login" | "logout"): v
   }
   if (args.values["client-id"] !== undefined && !String(args.values["client-id"]).trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
+  if (args.values.oidc === true && (args.values.idp === undefined || args.values["client-id"] === undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--oidc requires --idp <issuer URL> and --client-id <id>");
+  if (args.values.audience !== undefined && (args.values.oidc !== true || !String(args.values.audience).trim()))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--audience must be non-empty and requires --oidc");
   if (mode === "login" && inputDisabledByFlag()) throw new CommandFailure("refused", "UNSUPPORTED", "this provider login uses device approval and has no noninteractive grant in this client", { remedy: "sign in from an interactive terminal" });
 }
 
@@ -159,6 +163,7 @@ export async function chooseAccountChoice(args: ParsedArgs, mode: "login" | "log
 async function chooseAccountUrl(args: ParsedArgs, mode: "login" | "logout"): Promise<string | undefined> {
   if (args.values.cloud && args.values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
   if (mode === "login" && args.values.cloud === true) return COTAL_CLOUD_IDP;
+  if (mode === "login" && args.values.oidc === true) return String(args.values.idp);
   if (typeof args.values.idp === "string") return normalizeIdpUrl(mode === "login" ? cloudAuthUrl(args.values.idp) : args.values.idp);
   let cached: ReturnType<typeof listIdpAccounts>;
   try { cached = listIdpAccounts(homeCotalDir()); }
@@ -232,7 +237,7 @@ async function runNativeMigration(args: ParsedArgs, from: string): Promise<void>
 }
 
 async function runLogin(args: ParsedArgs): Promise<void> {
-  const values = args.values as { idp?: string; "client-id"?: string };
+  const values = args.values as { oidc?: boolean; audience?: string; "client-id"?: string };
   validateAccountArguments(args, "login");
   const presentation = presentationOf(args.values);
   if (typeof args.values["migrate-from"] === "string") {
@@ -249,8 +254,9 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     // refusal, never a raw transport error.
     const { session, sub, previousSub, label } = await establishIdpSession({
       dir: homeCotalDir(),
-      idpUrl: idp,
+      idpUrl: values.oidc ? choice.url : idp,
       clientId: values["client-id"] ?? DEFAULT_CLIENT_ID,
+      ...(values.oidc ? { oidc: { audience: values.audience ?? values["client-id"]! } } : {}),
       expectedPins: choice.discoveryPins && { idpUrl: choice.discoveryPins.url, issuer: choice.discoveryPins.issuer, audience: choice.discoveryPins.audience },
       onPrompt: (p) => {
         console.error(renderReport({ sections: [{ title: "Approve sign-in", blocks: [
@@ -261,7 +267,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       },
     }).catch((error: unknown) => {
       if (error instanceof IdpUnreachableError)
-        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${error.message}; no session was cached`, { target: { idp }, remedy: "check --idp <auth base URL>; it must serve <base>/device/code" });
+        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${error.message}; no session was cached`, { target: { idp }, remedy: values.oidc ? "check --idp <issuer URL> and its OIDC discovery endpoints" : "check --idp <auth base URL>; it must serve <base>/device/code" });
       throw error;
     });
     const skippedServices: string[] = [];
@@ -296,7 +302,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     // prefer the IdP's email/name claim; the raw `sub` stays as the stable id (dim when secondary).
     console.log(renderReport({ sections: [
       { title: "Signed in", blocks: [
-        { kind: "fields", rows: [["Account", label || sub], ["Subject", sub], ["Provider", idp], ["Session expires", new Date(session.expiresAt * 1000).toISOString()], ["Chat name", session.name ?? "none"]] },
+        { kind: "fields", rows: [["Account", label || sub], ["Subject", sub], ["Provider", idp], [session.oidc ? "Initial access token expires" : "Session expires", new Date(session.expiresAt * 1000).toISOString()], ["Chat name", session.name ?? "none"]] },
         { kind: "lines", lines: [
           ...(saved ? [{ text: `Chat sessions use your saved name "${saved}".`, tone: "hint" as const }]
             : session.name ? []
@@ -719,7 +725,7 @@ const authCommands: Command[] = [
     group: "Identity",
     summary: "sign in to Cotal Cloud or another host with device approval",
     examples: [{ command: "cotal login", note: "sign in to Cotal Cloud and approve sign-in" }, { command: "cotal login --idp <url>", note: "sign in to one provider" }],
-    usage: "cotal login [<name> | --cloud | --idp <auth base URL> | --migrate-from <old auth URL>] [--client-id <id>] [--no-browser] [--plain]",
+    usage: "cotal login [<name> | --cloud | --idp <url> | --migrate-from <old auth URL>] [--oidc [--audience <audience>]] [--client-id <id>] [--no-browser] [--plain]",
     positionals: "[<name>]",
     prepareMeshTarget: false,
     outputs: ["plain"],
@@ -729,8 +735,10 @@ const authCommands: Command[] = [
       { name: "cloud", type: "boolean", description: "Sign in to Cotal Cloud" },
       { name: "migrate-from", type: "string", value: "<old auth URL>", description: "Approve an endorsed native origin migration for a registered account" },
       { name: "no-browser", type: "boolean", description: "Print approval instructions without opening a browser" },
-      { name: "idp", type: "string", value: "<auth base URL>", description: "Auth base URL, e.g. <origin>/api/auth" },
+      { name: "idp", type: "string", value: "<url>", description: "Better Auth base URL, or the exact issuer URL with --oidc" },
       { name: "client-id", type: "string", value: "<id>", description: "OAuth device-flow client id" },
+      { name: "oidc", type: "boolean", description: "Use OIDC discovery and standard OAuth device authorization and token exchange" },
+      { name: "audience", type: "string", value: "<audience>", description: "With --oidc: exchange audience, defaulting to --client-id" },
     ],
     run: runLogin,
   },

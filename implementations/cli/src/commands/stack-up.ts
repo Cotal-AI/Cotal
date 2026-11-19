@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
-import { awaitDeadDeliveryLease, CONTRACT_ARTIFACT_MAX_BYTES, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, MANAGER_START_PAYLOAD_FLOOR, mintCreds, newIdentity, openPrivateAppend, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
+import { awaitDeadDeliveryLease, CONTRACT_ARTIFACT_MAX_BYTES, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, MANAGER_START_PAYLOAD_FLOOR, mintCreds, newIdentity, openPrivateAppend, type AuthPreflightInput, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
   accountInventory,
@@ -95,7 +95,7 @@ function websocketPortTaken(error: unknown, wsPort: number, logFile: string | un
 export interface StackUpNative {
   /** `userAuth` asks the native `authSetup` user arm (`prepareServer`) and must return its private
    *  `user` material; any other mode must return none. */
-  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; noManager?: boolean; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { creds: string; wsPort: number; moveWebsocketPort(): Promise<number> }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full" }>;
+  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: Pick<AuthPreflightInput, "idpUrl" | "idpPins">; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; noManager?: boolean; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { creds: string; wsPort: number; moveWebsocketPort(): Promise<number> }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full" }>;
   /** Recreation options are accepted only on a fresh broker before space services start. */
   initializeStreams(server: string, space: string, setup: { creds: string } | undefined, seedFile: unknown, recreateIssuedStores?: string, recreateMembershipStore?: boolean): Promise<void>;
   /** On a broker the stack reuses, create the space's streams again when every one of them is gone,
@@ -154,6 +154,7 @@ export interface StackUpRequest {
   mode?: StackMode;
   /** The IdP a first user-auth enable pins (`--idp`); refused outside user mode. */
   idp?: string;
+  idpPins?: AuthPreflightInput["idpPins"];
   host?: string;
   storeDir?: string;
   maxFileStore?: number;
@@ -750,7 +751,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   if (mode === "open" && holdsBrokerAccount(root))
     throw new CommandFailure("refused", "CONFLICT", "this root holds a broker account; an open stack does not bypass its recorded authorization", { target: { root, space } });
   if (mode === "user") assertUserStackTransport(previous?.journal.server ?? request.server, request.transport.kind === "tls-required");
-  else if (request.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack; nothing was prepared", { target: { root, space } });
+  else if (request.idp !== undefined || request.idpPins !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack; nothing was prepared", { target: { root, space } });
   const brokerIsRunning = () => serviceInstances(space, STACK_DEFINITION.broker).some((row) => observeServiceProcess(row.record.value) === "running");
   if (request.authTimeout !== undefined) {
     if (mode !== "user") throw new CommandFailure("refused", "USAGE_INVALID", "--auth-timeout sets the auth callout's timeout, which only a user-auth stack has; nothing was prepared", { target: { root, space }, remedy: "drop --auth-timeout" });
@@ -852,7 +853,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // including a live refresh; only an unpinned first enable probes JWKS. Preparation checks again.
   if (mode === "user") {
     const brokerRows = serviceInstances(space, STACK_DEFINITION.broker);
-    if (request.idp !== undefined || !(brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running")) await preflightUserStack(root, space, request.idp);
+    if (request.idp !== undefined || request.idpPins !== undefined || !(brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running")) await preflightUserStack(root, space, request.idp, request.idpPins);
   }
   const roles = STACK_ROLES.filter((role) => stackRoleApplies(mode, role) && !(role === "manager" && request.noManager));
   // A replacement an earlier `up` journaled is resolved from its own record before it is carried over.
@@ -959,7 +960,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         }
         failedRole = undefined;
       }
-      prepared = await native.prepareBroker({ transport: request.transport, server, space, open: mode === "open", ...(mode === "user" ? { userAuth: request.idp !== undefined ? { idpUrl: request.idp } : {} } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(brokerStore ? { storeDir: brokerStore } : {}), ...(storePin ? { existingStore: storePin } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(brokerLogFile !== undefined ? { logFile: brokerLogFile } : {}), ...(brokerLogfileSizeLimit !== undefined ? { logfileSizeLimit: brokerLogfileSizeLimit } : {}), ...(brokerLogfileMaxNum !== undefined ? { logfileMaxNum: brokerLogfileMaxNum } : {}), ...(request.authTimeout !== undefined ? { authTimeout: request.authTimeout } : {}), ...(request.maxPayload !== undefined ? { maxPayload: request.maxPayload } : {}), ...(request.accountResolver !== undefined ? { accountResolver: request.accountResolver } : {}), ...(request.noManager ? { noManager: true } : {}), ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
+      prepared = await native.prepareBroker({ transport: request.transport, server, space, open: mode === "open", ...(mode === "user" ? { userAuth: { idpUrl: request.idp, idpPins: request.idpPins } } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(brokerStore ? { storeDir: brokerStore } : {}), ...(storePin ? { existingStore: storePin } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(brokerLogFile !== undefined ? { logFile: brokerLogFile } : {}), ...(brokerLogfileSizeLimit !== undefined ? { logfileSizeLimit: brokerLogfileSizeLimit } : {}), ...(brokerLogfileMaxNum !== undefined ? { logfileMaxNum: brokerLogfileMaxNum } : {}), ...(request.authTimeout !== undefined ? { authTimeout: request.authTimeout } : {}), ...(request.maxPayload !== undefined ? { maxPayload: request.maxPayload } : {}), ...(request.accountResolver !== undefined ? { accountResolver: request.accountResolver } : {}), ...(request.noManager ? { noManager: true } : {}), ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
       if (canonicalRoot(prepared.root) !== root || prepared.space !== space || prepared.server !== server || (prepared.setup === undefined) !== (mode === "open") || (prepared.user === undefined) !== (mode !== "user")) throw new CommandFailure("refused", "CONFLICT", "the prepared broker configuration names another root, space, address or auth mode; the stack did not continue");
       if (mode === "user") assertUserStackTransport(server, prepared.transport.kind === "tls-required");
       // The validated transport decision is recorded before the broker child starts, so its

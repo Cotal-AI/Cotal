@@ -827,6 +827,8 @@ export interface AuthPrepareInput {
    *  core — the provider pins/persists it (first call requires one; a later call must match the
    *  persisted pin or omit it; re-pointing an IdP is a migration, never a flag flip). */
   idpUrl?: string;
+  /** Explicit verification pins for the provider instead of its default audience and key URL. */
+  idpPins?: { audience: string; jwksUri: string };
 }
 
 /** The read-only {@link AuthProvider.preflightServer} input: only what the pre-effect checks read.
@@ -837,6 +839,8 @@ export interface AuthPreflightInput {
   dir: string;
   /** The same opaque IdP base URL {@link AuthPrepareInput.idpUrl} carries. */
   idpUrl?: string;
+  /** The same optional verification pins {@link AuthPrepareInput.idpPins} carries. */
+  idpPins?: AuthPrepareInput["idpPins"];
 }
 
 /** The {@link AuthProvider.preflightServer} result. `required`: a first enable needs an input the

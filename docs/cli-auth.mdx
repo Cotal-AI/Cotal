@@ -269,7 +269,7 @@ this standalone caller. User-auth issuance and managed static launch are not sup
 ## Account login [#login]
 
 If a provider refuses an expired or revoked sign-in, run `cotal login` for Cotal Cloud.
-For another provider, run `cotal login --idp <url>` with its auth base URL, then approve
+For a Better Auth provider, run `cotal login --idp <url>` with its auth base URL, then approve
 the new sign-in in your browser. On Linux, the same approval refreshes existing sign-ins
 for Manager user services whose protected unit names their sign-in store and whose
 existing session names the same provider and account. Login lists the services it refreshed.
@@ -298,8 +298,16 @@ disconnect behavior described below.
 
 ```bash
 cotal login [--cloud | --idp <auth base URL>] [--client-id <id>] [--no-browser] [--plain]
+cotal login --oidc --idp <issuer> --client-id <id> [--audience <audience>] [--no-browser] [--plain]
 cotal logout --idp <auth base URL> [--local]
 ```
+
+Use `--oidc` for a [configured standards provider](identity-service-auth.mdx#idp-compatibility).
+Its `--idp` is the exact issuer URL and `--audience` defaults to `--client-id`. Repeat those
+flags to sign in again. OIDC sign-in does not discover hosted space catalogs or copy a rotating
+refresh token to a private Manager sign-in store. Approve each separate store independently.
+OIDC logout revokes the refresh token through the advertised revocation endpoint. If the provider
+has no such endpoint, revoke the session at the provider and use `cotal logout --local` to forget it.
 
 Signs you in to a per-user-auth mesh's IdP (device code flow) and caches the session; run it
 once per machine. `--plain` presents the approval prompt and signed-in result without color.
@@ -321,7 +329,7 @@ spaces and deletes their sentinel credential files; manual registrations and the
 file that cannot be deleted is named, and the login exits 4 (`OPERATION_PARTIAL`) after signing in.
 After a login, every command on that mesh works under your identity: each connect takes a fresh IdP
 proof, exchanges it locally for a short-lived bearer, and is authorized against the actor
-ledger at connect time. A rate-limited `/token` read retries once when the IdP supplies a valid
+ledger at connect time. A rate-limited Better Auth `/token` read retries once when the IdP supplies a valid
 `Retry-After` or `X-Retry-After` hint that fits within `COTAL_IDP_TIMEOUT_MS` (30 seconds by default).
 When both hints are valid, the later minimum wins. Both reads and the wait share that deadline;
 cancellation stops the wait. Missing hints, a second refusal and other HTTP errors are not retried.

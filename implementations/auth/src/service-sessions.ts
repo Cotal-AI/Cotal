@@ -24,6 +24,8 @@ function skippedWarning(store: SkippedServiceLoginStore, clear: boolean, uncerta
 }
 
 function visitServiceSessions(directory: string, idpUrl: string, session: IdpSession, clear: boolean, skipped?: string[]): string[] {
+  // A rotating refresh token cannot be copied into stores that do not share its lock.
+  if (session.oidc) return [];
   const idp = normalizeIdpUrl(idpUrl);
   const changed: string[] = [];
   const visited = new Set<string>([resolve(directory)]);
@@ -59,7 +61,7 @@ function visitServiceSessions(directory: string, idpUrl: string, session: IdpSes
         assertServiceLoginStore(store);
         readLocalRecordSource(join(pinned, "idp-sessions.json"), 256 * 1024, true);
         const previous = loadIdpSession(pinned, idp);
-        if (!previous) return;
+        if (!previous || previous.oidc) return;
         if (!previous.sub || previous.sub !== session.sub) {
           if (clear) return;
           throw new Error("the service sign-in belongs to a different or unproved account");

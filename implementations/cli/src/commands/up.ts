@@ -71,6 +71,7 @@ import {
   writeSecretFile,
   utf16Problem,
   type AuthPrepared,
+  type AuthPreflightInput,
   type SpaceAuth,
   type ChannelConfig,
   type ChannelDefaults,
@@ -396,6 +397,8 @@ export const upFlags: FlagSpec[] = [
   { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
   { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
   { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
+  { name: "idp-audience", type: "string", value: "<audience>", description: "with --idp-jwks-uri: pin the exact proof audience for a standards OIDC issuer" },
+  { name: "idp-jwks-uri", type: "string", value: "<url>", description: "with --idp-audience: pin the OIDC issuer's JWKS URL" },
   { name: "exchange-public-port", type: "string", value: "<n>", description: "with --user-auth: also serve the PUBLIC exchange face on this loopback port (TLS terminates at a reverse proxy)" },
   { name: "exchange-public-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the advertised public base URL (the reverse proxy's address)" },
   { name: "exchange-trusted-proxy", type: "boolean", description: "with --exchange-public-port: attribute peers by the last X-Forwarded-For hop (opt-in; default: socket address)" },
@@ -453,6 +456,11 @@ export function validateUpArguments(args: ParsedArgs): void {
     throw new CommandFailure("refused", "USAGE_INVALID", "--user-auth and --open contradict - a user-auth space cannot run unauthenticated", { remedy: "drop --open for user auth, or drop --user-auth for an open space" });
   if (args.values.idp !== undefined && args.values["user-auth"] !== true && !args.values.file)
     throw new CommandFailure("refused", "USAGE_INVALID", '--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest', { remedy: "use --user-auth --idp <auth base URL>, without --open" });
+  if (args.values["idp-audience"] !== undefined || args.values["idp-jwks-uri"] !== undefined) {
+    if (args.values["user-auth"] !== true || !args.values.idp || !String(args.values["idp-audience"] ?? "").trim()
+      || !String(args.values["idp-jwks-uri"] ?? "").trim() || args.values.file !== undefined || args.values.restore !== undefined)
+      throw new CommandFailure("refused", "USAGE_INVALID", "--idp-audience and --idp-jwks-uri must be supplied together with --user-auth --idp <issuer URL>, without --file or --restore");
+  }
   if (args.values["no-manager"] === true && args.values.runtime !== undefined)
     throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager cannot be combined with --runtime because no manager starts", { remedy: "drop --runtime, or drop --no-manager to select a manager runtime" });
   // Only an omitted --runtime selects the default runtime. An empty one, as an unset variable gives,
@@ -986,6 +994,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const values = args.values as {
     server?: string; "store-dir"?: string; "max-file-store"?: string; "log-file"?: string; "logfile-size-limit"?: string; "logfile-max-num"?: string; "auth-timeout"?: string; "max-payload"?: string; "account-resolver"?: string; space?: string; root?: string; open?: boolean; "user-auth"?: boolean; "service-endpoints"?: boolean; idp?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
+    "idp-audience"?: string; "idp-jwks-uri"?: string;
     channels?: string; detach?: boolean; foreground?: boolean; host?: string; runtime?: string; file?: string; "dry-run"?: boolean;
     restore?: string; "restore-only"?: string; "accept-missing-source"?: boolean; "rotate-sys"?: boolean; "recreate-membership-store"?: boolean; "recreate-issued-stores"?: string;
     "accept-stale-checkpoint"?: boolean;
@@ -1000,6 +1009,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     __invokedRoot?: string;
     __folderNamed?: boolean;
   };
+  const idpPins = values["idp-audience"] !== undefined && values["idp-jwks-uri"] !== undefined
+    ? { audience: values["idp-audience"], jwksUri: values["idp-jwks-uri"] } : undefined;
   if (freshTeamBoot && (!values.file || values.restore || values.__restoreAttempt || values.__ordinaryResumeAttempt || values["rotate-sys"] || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot accepts one manifest and its selected lifetime, not a restore, rotation or manager-free override");
   if (values["manager-name"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain `cotal up` starts; it cannot be combined with --restore, --file or --no-manager");
   if (values["seat-cap"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--seat-cap caps the manager a plain `cotal up` starts; it cannot be combined with --restore, --file or --no-manager");
@@ -1121,7 +1132,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         const server = values.server ?? recordedStack?.journal.server ?? localMeshesForRoot(root).find((m) => m.space === stackSpace)?.server ?? (values.host ? reconcileHostAndServer(values.host, undefined) : DEFAULT_SERVER);
         const transport = resolveTransport(values, undefined, root, { persist: false, quiet: true });
         if (controller) assertUserStackTransport(server, transport.kind === "tls-required");
-        await preflightUserStack(root, stackSpace, values.idp);
+        await preflightUserStack(root, stackSpace, values.idp, idpPins);
       }
     }
     // A runtime with no installed provider refuses here, before the lock creates its layout and
@@ -1592,7 +1603,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
-          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
+          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(idpPins ? { idpPins } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
       if (values.foreground) await holdForegroundStack(meshRoot, start);
@@ -2145,6 +2156,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
             store: workspaceSecretStore(root),
             dir: stateDir,
             idpUrl: values.idp,
+            idpPins,
           });
         } catch (e) {
           stderrLine("✗ ", `${(e as Error).message}`, c.red);
@@ -2283,7 +2295,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       accountResolver,
       space: values.space,
       open: values.open,
-      userAuth: wantUser ? { idpUrl: values.idp } : undefined,
+      userAuth: wantUser ? { idpUrl: values.idp, idpPins } : undefined,
       rotateSys: values["rotate-sys"],
       ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
@@ -2373,7 +2385,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // Decided above the branch; the dial host is only settled here (a port collision may have moved
   // the server, and the hostname is what the certificate has to match).
   assertServesDialHost(transport, new URL(server).hostname);
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore, false, { authTimeout, maxPayload, accountResolver, manager: values["no-manager"] !== true }) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp, idpPins } : undefined, transport, values["rotate-sys"], maxFileStore, false, { authTimeout, maxPayload, accountResolver, manager: values["no-manager"] !== true }) : undefined;
   const brokerMaxPayload = setup?.maxPayload ?? maxPayload ?? readBrokerPolicy(cotalRoot())?.maxPayload;
   const port = Number(new URL(server).port) || 4222;
   // Both modes go through a RENDERER, never bare CLI flags. Open mode used to start from
@@ -4257,7 +4269,7 @@ export interface DetachOpts {
   space?: string;
   open?: boolean;
   /** USER MODE: enable per-user auth (presence = on; `idpUrl` pins the IdP on first enable). */
-  userAuth?: { idpUrl?: string };
+  userAuth?: Pick<AuthPreflightInput, "idpUrl" | "idpPins">;
   /** Rotate the space's system account before rendering the broker config, re-minting the two $SYS
    *  creds against the successor. Only this boot (and the foreground one) may set it: rotation is
    *  complete only when the broker it starts is the one carrying the rewritten config. */
@@ -5688,7 +5700,7 @@ async function authSetup(
   server: string,
   space: string,
   host: string = "127.0.0.1",
-  user: { idpUrl?: string } | undefined,
+  user: DetachOpts["userAuth"],
   // NON-OPTIONAL, and it used to default to `{ kind: "plaintext" }`. That default was the hole: the
   // manifest path called this with five arguments and silently got a cleartext listener while the
   // operator's `--tls-cert` sat validated and unused. A default here cannot be right, because the
@@ -5790,7 +5802,7 @@ async function authSetup(
         account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
         store: workspaceSecretStore(cotalRoot()),
         dir: stateDir,
-        idpUrl: user.idpUrl,
+        ...user,
       });
     } catch (e) {
       throw e instanceof Error ? e : new Error(String(e));

@@ -91,7 +91,7 @@ const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-
 const { jetstreamManager } = await import("@nats-io/jetstream");
 const { channelBucket, chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity, presenceBucket } = await import("@cotal-ai/core");
 const { authDir, loadLaunchPersonaFile, loadSoleSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo, loadIdpSession } = await import("../src/index.js");
+const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo } = await import("../src/index.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
 
@@ -807,11 +807,11 @@ try {
     check("…before anything was saved or launched",
       !refusedText.includes("saved manager") && !refusedText.includes("forgot manager") && shown.status === 2 && field(shown.out, "Code", "TARGET_NOT_FOUND") && !existsSync(managerPid), { start: refusedStart.out, show: shown.out });
     // A manager started while signed in keeps running after a sign-out, as one the old start left.
-    const { sub: sub2 } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
+    const { sub: sub2, session: initial } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const grant2 = await cotal(["actor", "grant", "cli", "--sub", sub2, "--full"], { cwd: root2, env });
     check("the second root grants its signed-in CLI", grant2.status === 0, grant2.out);
     // A cached sign-in the IdP revoked is refused as no sign-in is, before anything is saved or launched.
-    await revokeSignIn(loadIdpSession(home2, base)!.token);
+    await revokeSignIn(initial.token);
     const revokedStart = await cotal(["manager", "start"], { cwd: root2, env });
     const revokedText = plain(revokedStart.out);
     check("manager start with a sign-in the IdP revoked exits 2 with AUTH_REQUIRED, and Next signs in at that IdP, then starts it",
@@ -852,14 +852,14 @@ try {
     const restarted = await cotal(["up"], { cwd: root2, env });
     check("a bare up of the stopped stack starts the other members and refuses the manager the same way",
       restarted.status === 4 && field(restarted.out, "Native detail", revokedRejection) && plain(restarted.out).includes(`cotal login --idp ${base}, then run bare \`cotal up\` again`) && !existsSync(managerPid), restarted.out);
-    await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
+    const { session: replacement } = await establishIdpSession({ dir: home2, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const started = await cotal(["manager", "start"], { cwd: root2, env });
     check("signed in and granted, manager start starts it", started.status === 0 && existsSync(managerPid), started.out);
     const pid2 = Number(readFileSync(managerPid, "utf8").trim());
     // A restart over that running manager, with the sign-in revoked, is refused before anything is
     // stopped, and says that manager was left running.
     const revokedRunning = "the IdP rejected this machine's sign-in, which has expired or was revoked; the running manager was left running";
-    await revokeSignIn(loadIdpSession(home2, base)!.token);
+    await revokeSignIn(replacement.token);
     const revokedRestart = await cotal(["manager", "restart", "--yes"], { cwd: root2, env });
     const revokedRestartText = plain(revokedRestart.out);
     check("with the sign-in revoked, manager restart over the running manager exits 2 with AUTH_REQUIRED, says the running manager was left running, and Next signs in at that IdP, then restarts it",
@@ -965,7 +965,7 @@ try {
     writeFileSync(bundleFile, await (await fetch(`http://127.0.0.1:${exchangePort}/.well-known/cotal-mesh`)).text());
     const added = await cotal(["space", "add", "--file", bundleFile, "--root", joinRoot], { cwd: joinRoot, env: joinEnv });
     check("a participant under its own home registers the space from its bundle", added.status === 0, added.out);
-    const { sub: joinSub } = await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
+    const { sub: joinSub, session: initial } = await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const joinGrant = await cotal(["actor", "grant", "cli", "--sub", joinSub, "--full", "--scope", "spawn,run,role:default,supervise"], { cwd: hostRoot, env: hostEnv });
     check("the host grants the participant's signed-in CLI supervise", joinGrant.status === 0, joinGrant.out);
     const trusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: joinEnv });
@@ -1033,7 +1033,7 @@ try {
     // The participant's cached sign-in, revoked at the IdP and then removed, is refused before any launch.
     const joinManagerPid = join(joinRoot, ".cotal", `manager.${spaceKey(CA_SPACE)}.pid`);
     const joinManagerRuns = () => { try { process.kill(Number(readFileSync(joinManagerPid, "utf8").trim()), 0); return true; } catch { return false; } };
-    await revokeSignIn(loadIdpSession(joinHome, base)!.token);
+    await revokeSignIn(initial.token);
     const revokedJoin = await cotal(["manager", "start"], { cwd: joinRoot, env: joinEnv });
     const revokedJoinText = plain(revokedJoin.out);
     check("with its sign-in revoked at the IdP, the participant's manager start exits 2 with AUTH_REQUIRED, and Next signs in at that IdP, then starts it",
@@ -1048,11 +1048,11 @@ try {
     check("…and neither start left a manager running", !joinManagerRuns(), { pidFile: existsSync(joinManagerPid) ? readFileSync(joinManagerPid, "utf8") : "absent" });
     // Signed in again, its manager runs; a restart over it with that sign-in revoked is refused the same
     // way and leaves it running.
-    await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
+    const { session: replacement } = await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const joinRunning = await cotal(["manager", "start"], { cwd: joinRoot, env: joinEnv });
     check("signed in again, the participant's manager start starts it", joinRunning.status === 0 && joinManagerRuns(), joinRunning.out);
     const joinRunningPid = readFileSync(joinManagerPid, "utf8").trim();
-    await revokeSignIn(loadIdpSession(joinHome, base)!.token);
+    await revokeSignIn(replacement.token);
     const revokedJoinRestart = await cotal(["manager", "restart", "--yes"], { cwd: joinRoot, env: joinEnv });
     const revokedJoinRestartText = plain(revokedJoinRestart.out);
     check("with that sign-in revoked, the participant's manager restart exits 2 with AUTH_REQUIRED, says the running manager was left running, and Next signs in at that IdP, then restarts it",

@@ -4,7 +4,7 @@
  * persists no bearer and starts nothing.
  *
  * Every input is stock: the mesh registry entry (`findMesh`), the machine's stock IdP session
- * (`loadIdpSession` and `fetchIdpJwt`), and the registered auth provider's `serviceEndpointInfo`,
+ * (`loadIdpSession` and `fetchStoredIdpJwt`), and the registered auth provider's `serviceEndpointInfo`,
  * which reads the space's stock service authority route (GET only, no redirects, closed parser).
  * A 404 there means the
  * space does not host service endpoints (stock `serviceEndpoints` is off by default); the daemon
@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { base64url, decodeJwt, decodeProtectedHeader } from "jose";
 import { assertLifecycleToken, isAccountNkey, mintLifecycleUid, resolveAuthProvider } from "@cotal-ai/core";
 import { claimIdentityRecord, codeSpan, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
-import { fetchIdpJwt, IdpSessionRejectedError, IdpUnreachableError, loadIdpSession } from "@cotal-ai/auth";
+import { fetchStoredIdpJwt, IdpSessionRejectedError, IdpUnreachableError, loadIdpSession } from "@cotal-ai/auth";
 import type { ConnectCheckResult } from "./protocol.js";
 import { daemonCommandCopy } from "./guidance.js";
 
@@ -96,7 +96,7 @@ export async function connectCheck(space: string, home: string = homeCotalDir(),
   // The cached handle's presence and advisory expiry do not prove the IdP still accepts it.
   // Reuse the stock bounded JWT cache, so readiness and registration agree on revocation.
   try {
-    const jwt = await fetchIdpJwt(ua.idp.url, session.token, signal);
+    const jwt = await fetchStoredIdpJwt(home, ua.idp.url, signal);
     const header = decodeProtectedHeader(jwt), claims = decodeJwt(jwt);
     const signature = jwt.split(".")[2] ?? "";
     const now = Date.now() / 1000;

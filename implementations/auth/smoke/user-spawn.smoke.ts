@@ -121,7 +121,7 @@ const { decodeJwt } = await import("jose");
 const { agentCredsDir, authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, fetchIdpJwt, grantActor, loadCalloutAuth, loadAuthServiceInfo,
-  actorLedgerDir, managedActorLedgerDir, ledgerRowFilename, deriveOwnerForIdpSubject, loadOwnerSecret, loadPinnedIdp, loadIssuer, loadIdpSession,
+  actorLedgerDir, managedActorLedgerDir, ledgerRowFilename, deriveOwnerForIdpSubject, loadOwnerSecret, loadPinnedIdp, loadIssuer, fetchStoredIdpJwt,
 } = await import("@cotal-ai/auth");
 // @cotal-ai/manager + @cotal-ai/connector-core are not deps of @cotal-ai/auth. Drive the REAL Manager
 // from its built dist by relative path (shares the one @cotal-ai/core registry instance — dist — so the
@@ -1861,7 +1861,7 @@ try {
   // A genuine signerless participant, registered through the stock auth authority service.
   // The owner's actor has spawn and supervise, but never admin.
   grantActor(dir, { ...cliRow0, scope: ["spawn", "supervise"], allowPublish: ["general", `events.${OWNER}.>`] });
-  const idpToken = await fetchIdpJwt(base, loadIdpSession(home, base)!.token);
+  const idpToken = await fetchStoredIdpJwt(home, base);
   const authorityCall = async <T,>(request: unknown): Promise<T> => {
     const info = loadAuthServiceInfo(dir)!;
     const response = await fetch(`${info.url}/manager-service-authority`, { method: "POST",

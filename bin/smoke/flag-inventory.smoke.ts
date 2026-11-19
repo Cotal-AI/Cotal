@@ -84,7 +84,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   up: {
     flags: [
       "channels:string", "detach:boolean:d", "dry-run:boolean", "file:string:f", "host:string",
-      "idp:string", "manager-name:string", "max-sessions:string", "open:boolean", "runtime:string", "seat-cap:string", "server:string", "space:string",
+      "idp:string", "idp-audience:string", "idp-jwks-uri:string", "manager-name:string", "max-sessions:string", "open:boolean", "runtime:string", "seat-cap:string", "server:string", "space:string",
       // `up` starts in the background by default; `--foreground` keeps the stack in this terminal
       // and `--root` names the prepared project.
       "foreground:boolean", "root:string", "json:boolean:j", "plain:boolean",
@@ -291,7 +291,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: true,
   },
-  login: { flags: ["client-id:string", "cloud:boolean", "idp:string", "migrate-from:string", "no-browser:boolean", "plain:boolean"], positionals: true },
+  login: { flags: ["audience:string", "client-id:string", "cloud:boolean", "idp:string", "migrate-from:string", "no-browser:boolean", "oidc:boolean", "plain:boolean"], positionals: true },
   logout: { flags: ["idp:string", "json:boolean:j", "local:boolean", "plain:boolean"], positionals: false },
   // Account metadata, actor grants (the actor ledger's flags), credential mint (`--endpoint` mints an
   // endpoint caller), signer export and `retire --yes`, which refuses until its native path exists.

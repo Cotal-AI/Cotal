@@ -25,7 +25,7 @@ import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@co
 import { parseRemoteEndpointDeregisterRequest, parseRemoteEndpointDeregisterResult } from "@cotal-ai/core";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
-import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
+import { betterAuthSessionToken, deleteIdpSpaceCatalog, fetchSessionIdpJwt, fetchStoredIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, notGrantedReason, withManagedGrantTransaction } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
@@ -56,7 +56,7 @@ import {
  *  or daemon is created. `prepareServer` runs this same function first and throws its message, so
  *  the checks and their sentences cannot drift. The reason is set by which check refused, never by
  *  matching message text. */
-async function preflightServerInput({ space, dir, idpUrl }: AuthPreflightInput): Promise<AuthPreflightVerdict> {
+async function preflightServerInput({ space, dir, idpUrl, idpPins }: AuthPreflightInput): Promise<AuthPreflightVerdict> {
   const refuse = (reason: Exclude<AuthPreflightVerdict, { ok: true }>["reason"], error: unknown): AuthPreflightVerdict => ({ ok: false, reason, message: error instanceof Error ? error.message : String(error) });
   // Fail BEFORE mutation: a degenerate space (`.`/`..`/empty) must be refused before the IdP
   // probe/pin below can touch anything at a caller-provided dir.
@@ -66,12 +66,12 @@ async function preflightServerInput({ space, dir, idpUrl }: AuthPreflightInput):
   let existing;
   try { existing = loadPinnedIdp(dir); } catch (error) { return refuse("conflict", error); }
   let checked;
-  try { checked = checkPinnedIdp(dir, idpUrl); } catch (error) { return refuse(existing ? "conflict" : idpUrl === undefined ? "required" : "invalid", error); }
+  try { checked = checkPinnedIdp(dir, idpUrl, idpPins); } catch (error) { return refuse(existing ? "conflict" : idpUrl === undefined ? "required" : "invalid", error); }
   // On a FRESH enable, prove the IdP actually serves a JWKS before a space is provisioned around
   // it. Skip on re-up: an already-pinned IdP was validated at first enable, and re-probing every
   // boot would couple mesh liveness to IdP liveness.
   if (checked.fresh) {
-    try { await probeIdpJwks(idpUrl ?? checked.pin.url); } catch (error) { return refuse("unavailable", error); }
+    try { await probeIdpJwks(checked.pin.url, idpPins && checked.pin.jwksUri); } catch (error) { return refuse("unavailable", error); }
   }
   return { ok: true };
 }
@@ -114,8 +114,7 @@ export const cotalAuthProvider: AuthProvider = {
     let idpJwt: string;
     try {
       route = await managerAuthorityEndpoint(store, dir, request.space, "removing a stale manager registration");
-      const session = requireIdpSession(idpSessionDir(), route.idpUrl);
-      idpJwt = await fetchIdpJwt(route.idpUrl, session.token);
+      idpJwt = await fetchStoredIdpJwt(idpSessionDir(), route.idpUrl);
     } catch {
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "endpoint deregistration was not sent; restore the original authority and sign-in before retrying");
     }
@@ -166,15 +165,15 @@ export const cotalAuthProvider: AuthProvider = {
   removeSpaceCatalog: ({ dir, idpUrl, sub }) => deleteIdpSpaceCatalog(dir, idpUrl, sub),
   preflightServer: preflightServerInput,
   async prepareServer(input: AuthPrepareInput): Promise<AuthPrepared> {
-    const { space, store, dir, idpUrl } = input;
+    const { space, store, dir, idpUrl, idpPins } = input;
     // The same read-only checks a caller may already have run through `preflightServer`. They run
     // again here because this call is authoritative: a pin written by another process between the
     // two calls is honored by `ensurePinnedIdp` below exactly as before.
-    const verdict = await preflightServerInput({ space, dir, idpUrl });
+    const verdict = await preflightServerInput({ space, dir, idpUrl, idpPins });
     if (!verdict.ok) throw new Error(verdict.message);
     // Pin the IdP FIRST, so a fresh `up --user-auth` without --idp fails on the config error before
     // any key material is generated.
-    const idp = ensurePinnedIdp(dir, idpUrl);
+    const idp = ensurePinnedIdp(dir, idpUrl, idpPins);
     await ensureOwnerSecret(store, space);
     await ensureIssuer(store, space);
     const callout = await ensureCalloutAuth(store, { space, operatorSeed: input.operatorSeed, accountPub: input.account.pub });
@@ -274,7 +273,8 @@ export const cotalAuthProvider: AuthProvider = {
     // remote arm consumes exactly what registration pinned - it discovers nothing at connect time.
     if (!idp || !callout) return remoteUserCredentials(request);
     // The no-fallback login gate: throws the exact `cotal login --idp …` line when not signed in.
-    const session = requireIdpSession(idpSessionDir(), idp.url);
+    const sessionDir = idpSessionDir();
+    const session = requireIdpSession(sessionDir, idp.url);
     // Daemon liveness BEFORE the IdP round-trip: a down auth service must surface its exact
     // restart recovery (U10) without spending an IdP /token call — and without an unrelated
     // IdP/network failure masking it. Missing-login stays primary (the session gate above).
@@ -290,7 +290,7 @@ export const cotalAuthProvider: AuthProvider = {
         `the user-auth service for space "${space}" is not running - restart it with \`cotal up\` (or \`cotal auth-service --space ${space} --server <broker>\`)`,
       );
     // Fresh short-lived IdP proof per connect — IdP-side revocation bites HERE, at the next fetch.
-    const idpJwt = await fetchIdpJwt(idp.url, session.token);
+    const idpJwt = await fetchSessionIdpJwt(sessionDir, idp.url, session);
     let res: Response;
     try {
       res = await fetch(`${info.url}/exchange`, {
@@ -343,7 +343,7 @@ export const cotalAuthProvider: AuthProvider = {
       budget.check();
       if (!sentinelCreds) throw new Error("service authority client has no sentinel projection; refresh the registered space before setup");
       const actualProof = proof === undefined
-        ? { kind: "idp" as const, token: await fetchIdpJwt(target.idpUrl, requireIdpSession(sessionDir ?? homeCotalDir(), target.idpUrl).token, budget.signal) }
+        ? { kind: "idp" as const, token: await fetchStoredIdpJwt(sessionDir ?? homeCotalDir(), target.idpUrl, budget.signal) }
         : checked.proof;
       budget.check();
       const result = await postRemoteServiceAuthority(target.base, { request, proof: actualProof }, { signal: budget.signal, timeoutMs: budget.remainingMs() });
@@ -487,13 +487,13 @@ export const cotalAuthProvider: AuthProvider = {
    *  could walk the proof onto another host or onto plaintext. */
   async postAgentProvisioning({ url, idpUrl, actor }: { url: string; idpUrl: string; actor: string }): Promise<unknown> {
     // The no-fallback login gate: throws the exact `cotal login --idp …` line when not signed in.
-    const session = requireIdpSession(idpSessionDir(), idpUrl);
+    const sessionToken = betterAuthSessionToken(requireIdpSession(idpSessionDir(), idpUrl));
     let res: Response;
     try {
       res = await fetch(url, {
         method: "POST",
         redirect: "manual",
-        headers: { "content-type": "application/json", authorization: `Bearer ${session.token}` },
+        headers: { "content-type": "application/json", authorization: `Bearer ${sessionToken}` },
         body: JSON.stringify({ actor }),
         signal: AbortSignal.timeout(30_000),
       });
@@ -519,11 +519,11 @@ export const cotalAuthProvider: AuthProvider = {
   },
 
   async releaseAgentLifecycle({ url, idpUrl, lifecycleUid, actor }: { url: string; idpUrl: string; lifecycleUid: string; actor?: string }): Promise<AgentLifecycleRelease> {
-    const session = requireIdpSession(idpSessionDir(), idpUrl);
+    const sessionToken = betterAuthSessionToken(requireIdpSession(idpSessionDir(), idpUrl));
     const call = async (method: "GET" | "DELETE", target: string): Promise<{ status: number; body: unknown }> => {
       let res: Response;
       try {
-        res = await fetch(target, { method, redirect: "manual", headers: { authorization: `Bearer ${session.token}` }, signal: AbortSignal.timeout(30_000) });
+        res = await fetch(target, { method, redirect: "manual", headers: { authorization: `Bearer ${sessionToken}` }, signal: AbortSignal.timeout(30_000) });
       } catch (e) {
         throw new Error(`the mesh's agent endpoint did not answer at ${target} (${e instanceof Error ? e.message : String(e)})`);
       }
@@ -560,14 +560,14 @@ export const cotalAuthProvider: AuthProvider = {
     const endpoint = new URL(url);
     if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.hash)
       throw new Error("conversation identity authority must use HTTPS without userinfo or a fragment");
-    const session = requireIdpSession(idpSessionDir(), idpUrl);
+    const sessionToken = betterAuthSessionToken(requireIdpSession(idpSessionDir(), idpUrl));
     let response: Response;
     try {
       response = await fetch(endpoint, {
         method,
         redirect: "manual",
         credentials: "omit",
-        headers: { authorization: `Bearer ${session.token}`, ...(body ? { "content-type": "application/json" } : {}),
+        headers: { authorization: `Bearer ${sessionToken}`, ...(body ? { "content-type": "application/json" } : {}),
           ...(method === "POST" ? { "Cotal-Conversation-Refusals": "1" } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}),
         signal: AbortSignal.timeout(30_000),
@@ -687,9 +687,10 @@ export const cotalAuthProvider: AuthProvider = {
   async confirmLogin({ dir, space }) {
     const idpUrl = loadPinnedIdp(dir)?.url ?? remoteUserAuthEntry(dir, space)?.idp.url;
     if (!idpUrl) throw new Error(`space "${space}" has no user-auth material on this machine`);
-    const session = loadIdpSession(idpSessionDir(), idpUrl);
+    const sessionDir = idpSessionDir();
+    const session = loadIdpSession(sessionDir, idpUrl);
     if (!session) return "signed-out";
-    try { await fetchIdpJwt(idpUrl, session.token); }
+    try { await fetchSessionIdpJwt(sessionDir, idpUrl, session); }
     catch (e) {
       if (e instanceof IdpSessionRejectedError) return "rejected";
       throw e;
@@ -873,7 +874,7 @@ async function postManagerAuthority(
   signal?: AbortSignal,
 ): Promise<unknown> {
   signal?.throwIfAborted();
-  const idpJwt = preparedIdpJwt ?? await fetchIdpJwt(idpUrl, requireIdpSession(idpSessionDir(), idpUrl).token, signal);
+  const idpJwt = preparedIdpJwt ?? await fetchStoredIdpJwt(idpSessionDir(), idpUrl, signal);
   signal?.throwIfAborted();
   const response = await fetch(endpoint, {
     method: "POST",
@@ -1020,7 +1021,8 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<U
   // mint that is doomed either way (same ordering discipline as the local arm's liveness-first).
   const exchangeUrl = pinnedExchangeUrl(remote.endpoints.url, space);
   // The no-fallback login gate: throws the exact `cotal login --idp ...` line when not signed in.
-  const session = requireIdpSession(idpSessionDir(), remote.idp.url);
+  const sessionDir = idpSessionDir();
+  const session = requireIdpSession(sessionDir, remote.idp.url);
   // Only the updater opts in, and only repeatable base/Manager-view credential issuance retries.
   // Each attempt still checks the current grant and keeps the original Manager instance pin.
   const deadline = view === undefined || view === "manager-caller" ? remoteExchangeRetryDeadline() : undefined;
@@ -1033,7 +1035,7 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<U
     // Re-enter the proof reader on each attempt so its normal freshness/revocation bounds hold.
     const proofSignal = remaining === undefined ? undefined : AbortSignal.timeout(remaining);
     let idpJwt: string;
-    try { idpJwt = await fetchIdpJwt(remote.idp.url, session.token, proofSignal); }
+    try { idpJwt = await fetchSessionIdpJwt(sessionDir, remote.idp.url, session, proofSignal); }
     catch (e) { if (proofSignal?.aborted) throw hostUnavailable(); throw e; }
     const exchangeRemaining = deadline === undefined ? 15_000 : deadline - Date.now();
     if (exchangeRemaining <= 0) throw hostUnavailable();
@@ -1220,8 +1222,7 @@ function chatSessionTarget(route: ChatSessionRoute, space: string, op: ChatSessi
  *  proof rides only the request body, never an error string. */
 async function postChatSession(route: ChatSessionRoute, space: string, op: ChatSessionOp, fields: Record<string, unknown>): Promise<object> {
   const target = chatSessionTarget(route, space, op);
-  const session = requireIdpSession(idpSessionDir(), route.idpUrl);
-  const idpToken = await fetchIdpJwt(route.idpUrl, session.token);
+  const idpToken = await fetchStoredIdpJwt(idpSessionDir(), route.idpUrl);
   let res: Response;
   try {
     res = await fetch(target.url, {

@@ -1,6 +1,6 @@
 import { CommandFailure, removeCatalogMeshes } from "@cotal-ai/workspace";
 import { clearSharedServiceSessions } from "./service-sessions.js";
-import { deleteIdpSession, deleteIdpSpaceCatalog, loadIdpSession, revokeIdpSession, withIdpSessionLock } from "./login.js";
+import { deleteIdpSession, deleteIdpSpaceCatalog, loadIdpSession, revokeIdpSession, revokeStoredOidcSession, withIdpSessionLock } from "./login.js";
 
 export type SignOutIdpSessionResult =
   | { kind: "logout"; localLogin: "absent"; serverRevoked: null }
@@ -18,7 +18,10 @@ export async function signOutIdpSession({ dir, idp, local }: {
   if (!session) return { kind: "logout", localLogin: "absent", serverRevoked: null };
   // Local sign-out forgets this machine's login without contacting the provider, whose session stays valid.
   if (!local) {
-    try { await revokeIdpSession(idp, session.token); }
+    try {
+      if (session.oidc) await revokeStoredOidcSession(dir, idp, session.oidc);
+      else await revokeIdpSession(idp, session.token);
+    }
     catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: `retry logout for this provider, or revoke the session at the provider; to forget the login on this machine only, run \`cotal logout --idp ${idp} --local\`` }); }
   }
   const skippedServices: string[] = [];
@@ -28,7 +31,7 @@ export async function signOutIdpSession({ dir, idp, local }: {
   try {
     withIdpSessionLock(dir, () => {
       const current = loadIdpSession(dir, idp);
-      if (current && current.token !== session!.token) return;
+      if (current && (session.oidc ? current.oidc?.loginId !== session.oidc.loginId : current.oidc || current.token !== session.token)) return;
       deleteIdpSession(dir, idp);
       localCleared = true;
       if (session!.sub) removed = removeCatalogMeshes(deleteIdpSpaceCatalog(dir, idp, session!.sub));

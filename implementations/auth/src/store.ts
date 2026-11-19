@@ -43,7 +43,7 @@ import {
 } from "@cotal-ai/core";
 import { decode, encodeUser, Types, type Account, type ClaimsData, type User } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { identityOf, loadAuthInstanceIdentity, removeAuthInstanceIdentity, spaceSegment, type AuthInstanceIdentity } from "@cotal-ai/workspace";
+import { checkIdpUrl, identityOf, loadAuthInstanceIdentity, removeAuthInstanceIdentity, spaceSegment, type AuthInstanceIdentity } from "@cotal-ai/workspace";
 import { createCalloutAuth, type CalloutAuth, type CalloutProvisionInput } from "./callout.js";
 import { normalizeIdpUrl } from "./login.js";
 import {
@@ -345,8 +345,8 @@ const IDP_FILE = "idp.json";
 /** The persisted pin of THE external IdP this space trusts (plan gate 4: "pin IdP JWKS/issuer/
  *  audience"). All four strings are frozen at `up --user-auth --idp <url>` time; nothing here is
  *  ever read from a presented token. Better Auth conventions seed the derivation (issuer/audience =
- *  the base URL's origin, JWKS under `<base>/jwks`) — a strict-OIDC IdP with different values plugs
- *  in by editing the pin file deliberately, not by the client guessing. */
+ *  the base URL's origin, JWKS under `<base>/jwks`). Explicit verification pins use the configured
+ *  issuer URL, audience and JWKS instead. */
 export interface PinnedIdp {
   /** The auth base URL as given (normalized; the `cotal login --idp` target). */
   url: string;
@@ -380,10 +380,10 @@ export function loadPinnedIdp(dir: string): PinnedIdp | undefined {
  *  either omit it (reuse the pin) or must MATCH it once normalized — re-pointing a space at a
  *  different IdP re-keys every derived owner (the issuer is part of the derivation input), a
  *  migration this refuses to do as a flag side-effect. */
-export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
+export function ensurePinnedIdp(dir: string, idpUrl?: string, pins?: IdpVerificationPins): PinnedIdp {
   const existing = loadPinnedIdp(dir);
-  if (existing) return verifyPinnedIdp(dir, existing, idpUrl);
-  const pin = derivePinnedIdp(idpUrl);
+  if (existing) return verifyPinnedIdp(dir, existing, idpUrl, pins);
+  const pin = derivePinnedIdp(idpUrl, pins);
   mkSecretDir(dir);
   try {
     writeSecretFileCreateOnly(join(dir, IDP_FILE), JSON.stringify({ ver: STORE_VER, ...pin } satisfies IdpFile, null, 2));
@@ -392,7 +392,7 @@ export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
     // Another process pinned between our read and this create: its pin decides, as for a later call.
     const winner = loadPinnedIdp(dir);
     if (!winner) throw new Error(`idp-pin-create-lost: ${join(dir, IDP_FILE)} exists but holds no readable IdP pin - remove it deliberately, then re-pin`);
-    return verifyPinnedIdp(dir, winner, idpUrl);
+    return verifyPinnedIdp(dir, winner, idpUrl, pins);
   }
   return pin;
 }
@@ -400,31 +400,46 @@ export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
 /** The pin a first enable would write, derived without touching disk. Shared by
  *  {@link ensurePinnedIdp} and {@link checkPinnedIdp} so the pre-effect check and the real pin can
  *  never disagree on the required URL, its normalization or its error text. */
-function derivePinnedIdp(idpUrl: string | undefined): PinnedIdp {
+function derivePinnedIdp(idpUrl: string | undefined, pins: IdpVerificationPins | undefined): PinnedIdp {
   if (!idpUrl)
     throw new Error("user auth needs an IdP on first enable - run with --idp <auth base URL> (Better Auth: <origin>/api/auth)");
   // Same normalization + scheme guard as `cotal login` (https, or http on a loopback IP literal; no
   // query/hash/userinfo) — the pin and the login cache must key on the SAME canonical URL.
   const url = normalizeIdpUrl(idpUrl);
   const origin = new URL(url).origin;
+  if (pins) return { url, issuer: idpUrl, ...checkedVerificationPins(pins) };
   return { url, issuer: origin, audience: origin, jwksUri: `${url}/jwks` };
 }
 
 /** Read-only form of {@link ensurePinnedIdp}: the same refusals for a missing, malformed or
  *  conflicting `--idp`, with no directory, pin or other write. `fresh` is true when no pin exists
  *  yet, which is when a first enable must also prove the IdP serves a JWKS. */
-export function checkPinnedIdp(dir: string, idpUrl?: string): { pin: PinnedIdp; fresh: boolean } {
+export function checkPinnedIdp(dir: string, idpUrl?: string, pins?: IdpVerificationPins): { pin: PinnedIdp; fresh: boolean } {
   const existing = loadPinnedIdp(dir);
-  if (existing) return { pin: verifyPinnedIdp(dir, existing, idpUrl), fresh: false };
-  return { pin: derivePinnedIdp(idpUrl), fresh: true };
+  if (existing) return { pin: verifyPinnedIdp(dir, existing, idpUrl, pins), fresh: false };
+  return { pin: derivePinnedIdp(idpUrl, pins), fresh: true };
 }
 
-function verifyPinnedIdp(dir: string, pinned: PinnedIdp, idpUrl: string | undefined): PinnedIdp {
+type IdpVerificationPins = { audience: string; jwksUri: string };
+
+function checkedVerificationPins(pins: IdpVerificationPins): IdpVerificationPins {
+  const jwks = checkIdpUrl(pins.jwksUri);
+  if (!jwks.ok) throw new Error("the pinned JWKS must use HTTPS or a loopback HTTP URL, without credentials, a query or a fragment");
+  if (typeof pins.audience !== "string" || !pins.audience.trim()) throw new Error("the pinned IdP audience must be non-empty");
+  return { audience: pins.audience, jwksUri: jwks.url.href };
+}
+
+function verifyPinnedIdp(dir: string, pinned: PinnedIdp, idpUrl: string | undefined, pins: IdpVerificationPins | undefined): PinnedIdp {
   if (idpUrl !== undefined && normalizeIdpUrl(idpUrl) !== pinned.url)
     throw new Error(
       `this space's IdP is pinned to ${pinned.url}; --idp ${idpUrl} would re-key every derived owner. ` +
         `Re-pointing an IdP is a migration - remove ${join(dir, IDP_FILE)} deliberately if you mean it.`,
     );
+  if (pins) {
+    const supplied = checkedVerificationPins(pins);
+    if (idpUrl !== pinned.issuer || supplied.audience !== pinned.audience || supplied.jwksUri !== pinned.jwksUri)
+      throw new Error("the supplied issuer, audience or JWKS does not match this space's pinned IdP; changing the pin requires a deliberate migration");
+  }
   return pinned;
 }
 

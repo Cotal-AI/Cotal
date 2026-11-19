@@ -3,9 +3,9 @@
  * session cache (plan §"How it lands in today's code" → Client).
  *
  * Flow: ask the IdP for a device code, show the human a verification URL + user code, poll until
- * the sign-in is approved in a browser. What comes back — and the ONLY thing ever persisted — is
- * the IdP SESSION token. The short-lived IdP JWT the bridge exchanges is fetched from `/token`
- * ({@link fetchIdpJwt}) and held in memory for at most {@link JWT_CACHE_CAP_MS} (and never past
+ * sign-in is approved. Persist only the opaque Better Auth session or OIDC refresh credential.
+ * The short-lived IdP JWT is read from Better Auth's `/token` or obtained by OIDC token exchange
+ * and held in memory for at most {@link JWT_CACHE_CAP_MS} (and never past
  * its own `exp` minus a margin), one entry per (IdP, session), concurrent callers sharing one
  * request. Persisting the JWT would let a revoked session keep minting mesh access until the JWT
  * expired; the bounded in-process hold means revocation at the IdP bites within a minute, and a
@@ -13,18 +13,11 @@
  * manager hosting dozens of runs posted one `/token` per authority call and tripped the IdP's
  * per-source rate limit, failing unrelated spawns and reads with a bare HTTP 429.
  *
- * Device code, not auth-code+PKCE: it works headless (agents, SSH) and needs nothing beyond the
- * IdP's device endpoints — no OIDC provider metadata, no loopback redirect server (the plan
- * explicitly avoids Better Auth's draft OIDC-provider surface). Better Auth's
- * `deviceAuthorization` plugin is the reference IdP; the wire contract this client assumes is
- * pinned by the login smoke against a real instance. One deliberate deviation from strict
- * RFC 8628 §3.4: bodies are posted as JSON, because Better Auth's endpoint layer REJECTS
- * `application/x-www-form-urlencoded` (415). A strict-RFC IdP plugs in via a thin adapter, not
- * by bending the reference client.
+ * Better Auth uses fixed endpoints and JSON bodies. Explicit OIDC mode uses discovery and form
+ * bodies. A provider error never switches one mode to the other.
  *
- * `idpUrl` throughout is the IdP's AUTH BASE URL — every endpoint resolves under it (Better
- * Auth: `<origin>/api/auth`). Same origin posture as the JWKS pin: https, or http on a loopback IP
- * literal for local dev; embedded `user:pass@` credentials are refused (the @-confusion host spoof).
+ * The session key is the normalized provider URL. OIDC keeps the exact configured issuer for
+ * discovery and token claims, and uses same-origin endpoints without following redirects.
  *
  * Every IdP request carries a hard per-request timeout ({@link idpFetch}) — Node's global fetch
  * has none, and the poll deadline is only checked between polls, so a hung IdP would otherwise
@@ -32,18 +25,14 @@
  * forever. Override the 30s default with `COTAL_IDP_TIMEOUT_MS` for a slow IdP.
  */
 import { idpSessionDir } from "./session-context.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { decodeJwt } from "jose";
+import { decodeJwt, decodeProtectedHeader } from "jose";
 import { isCredentialTransportUrl, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
-import { loginRecoveryCommand, serviceLoginRecovery, CommandFailure, acquireLock, chatNameProblem, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
+import { loginRecoveryCommand, serviceLoginRecovery, CommandFailure, acquireLock, acquireLockAsync, chatNameProblem, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
 
-/** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
- *  opaque revocable handle, never a JWT. `expiresAt` (unix seconds) is advisory for messages;
- *  the server is the authority (a revoked session dies earlier). */
-export interface IdpSession {
-  token: string;
+interface IdpSessionAccount {
   expiresAt: number;
   /** The IdP subject this session proved at login (display + local owner derivation). Absent only
    *  in caches written by older builds — consumers that need it fail loud naming `cotal login`. */
@@ -55,6 +44,15 @@ export interface IdpSession {
   /** Account display label returned by the provider, never an authorization identity. */
   label?: string;
 }
+
+type OidcLogin = { issuer: string; clientId: string; audience: string; loginId: string; refreshToken: string };
+
+/** A cached login. `expiresAt` is advisory (Unix seconds). For OIDC it describes the most recent
+ *  access token. The refresh token is a separate field so older clients refuse the record instead
+ *  of sending it as a Better Auth session to other services. */
+export type IdpSession = IdpSessionAccount & ({ token: string; oidc?: never } | { oidc: OidcLogin; token?: never });
+
+type BetterAuthSession = Extract<IdpSession, { token: string }>;
 
 const SPACE_CATALOG_REL = "https://cotal.ai/relations/space-catalog";
 export const CATALOG_FRESH_MS = 5_000;
@@ -94,10 +92,12 @@ export interface DeviceLoginPrompt {
 }
 
 export interface DeviceLoginOpts {
-  /** The IdP auth base URL (Better Auth: `<origin>/api/auth`). */
+  /** Better Auth base URL or the exact configured OIDC issuer. */
   idpUrl: string;
   /** The OAuth client id this CLI presents; the IdP may pin it via its validateClient hook. */
   clientId: string;
+  /** Explicit standards mode. No discovery or protocol fallback when absent. */
+  oidc?: { audience: string };
   /** Retained auth URL when this approval is part of a native migration. */
   migrationFrom?: string;
   /** Shows the human the verification URL + code. Called exactly once; polling starts only after
@@ -242,7 +242,8 @@ async function idpJson<T>(url: string, res: Response, cancel?: AbortSignal): Pro
     throwIfCancelled(cancel);
     if (e instanceof DOMException && e.name === "TimeoutError")
       throw new IdpUnreachableError(`idp request to ${url} timed out reading the response body - the IdP flushed headers then stalled`);
-    throw new Error(`idp request to ${url} returned an unreadable response body: ${e instanceof Error ? e.message : String(e)}`);
+    // A JSON parser's diagnostic may quote the start of a malformed response containing tokens.
+    throw new Error(`idp request to ${url} returned an unreadable response body`);
   }
 }
 
@@ -253,16 +254,18 @@ async function idpJson<T>(url: string, res: Response, cancel?: AbortSignal): Pro
  *  unreachable host, a redirect, a non-2xx, or a body that is not a JWKS key set. A redirect is
  *  refused because it could move the check onto another host or onto plaintext, away from the URL
  *  the space pins. */
-export async function probeIdpJwks(idpUrl: string): Promise<void> {
-  const jwksUri = `${normalizeIdpUrl(idpUrl)}/jwks`; // a bad scheme throws its own message here
+export async function probeIdpJwks(idpUrl: string, explicitJwksUri?: string): Promise<void> {
+  const jwksUri = explicitJwksUri ?? `${normalizeIdpUrl(idpUrl)}/jwks`;
+  if (!checkIdpUrl(jwksUri).ok) throw new Error("the pinned JWKS URL is invalid");
+  const remedy = explicitJwksUri ? "Check --idp-jwks-uri." : "Check --idp <auth base URL>; it must serve <base>/jwks itself.";
   const res = await idpFetch(jwksUri, { redirect: "manual" });
   if (res.status >= 300 && res.status < 400)
-    throw new Error(`the IdP at ${idpUrl} answered ${jwksUri} with HTTP ${res.status}, a redirect; redirects are refused, so its target was not fetched. Check --idp <auth base URL>; it must serve <base>/jwks itself.`);
+    throw new Error(`the IdP at ${idpUrl} answered ${jwksUri} with HTTP ${res.status}, a redirect; redirects are refused, so its target was not fetched. ${remedy}`);
   if (!res.ok)
-    throw new Error(`the IdP at ${idpUrl} did not serve a JWKS: ${jwksUri} returned HTTP ${res.status}. Check --idp <auth base URL>.`);
-  const body = await idpJson<{ keys?: unknown }>(jwksUri, res);
-  if (!Array.isArray(body.keys))
-    throw new Error(`the IdP at ${idpUrl} did not return a JWKS key set at ${jwksUri}. Check --idp <auth base URL>; it must expose <base>/jwks.`);
+    throw new Error(`the IdP at ${idpUrl} did not serve a JWKS: ${jwksUri} returned HTTP ${res.status}. ${remedy}`);
+  const body = await idpJson<{ keys?: unknown } | null>(jwksUri, res);
+  if (!Array.isArray(body?.keys))
+    throw new Error(`the IdP at ${idpUrl} did not return a JWKS key set at ${jwksUri}. ${remedy}`);
 }
 
 /** True if `s` parses as a JWT — used to REJECT a JWT where an opaque session token is required.
@@ -277,20 +280,67 @@ function looksLikeJwt(s: string): boolean {
   }
 }
 
+const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+const EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
+const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
+const ID_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:id_token";
+const sane = (v: unknown, max: number): v is number => typeof v === "number" && Number.isFinite(v) && v > 0 && v <= max;
+
+function oidcEndpoint(issuer: string, field: string, value: unknown): string {
+  const checked = typeof value === "string" && checkIdpUrl(value);
+  if (!checked || !checked.ok || checked.url.origin !== new URL(issuer).origin)
+    throw new Error(`idp OIDC: ${field} must be a same-origin HTTPS URL (or HTTP on a loopback IP), without credentials, a query or a fragment`);
+  return checked.url.href;
+}
+
+async function discoverOidc(issuer: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  const url = `${normalizeIdpUrl(issuer)}/.well-known/openid-configuration`;
+  const res = await idpFetch(url, { redirect: "manual" }, signal);
+  if (!res.ok) throw new Error(`idp OIDC: discovery failed (HTTP ${res.status}); redirects are not followed`);
+  const body = await idpJson<Record<string, unknown> | null>(url, res, signal);
+  if (body?.issuer !== issuer) throw new Error("idp OIDC: discovery issuer does not match the configured issuer");
+  return body;
+}
+
+function postOidc(url: string, fields: Record<string, string>, signal?: AbortSignal): Promise<Response> {
+  return idpFetch(url, { method: "POST", redirect: "manual", body: new URLSearchParams(fields) }, signal);
+}
+
+function oidcGrant(body: { access_token?: unknown; expires_in?: unknown; refresh_token?: unknown } | null) {
+  if (typeof body?.access_token !== "string" || !body.access_token || !sane(body.expires_in, 31_536_000) ||
+    (body.refresh_token !== undefined && (typeof body.refresh_token !== "string" || !body.refresh_token || looksLikeJwt(body.refresh_token))))
+    throw new Error("idp OIDC: malformed access or opaque refresh token response");
+  return { accessToken: body.access_token, expiresAt: Math.floor(Date.now() / 1000) + body.expires_in, refreshToken: body.refresh_token };
+}
+
 /** Sign in via the RFC 8628 device flow and return the IdP session. Fail-loud on every non-happy
  *  path: a deny, an expiry, or an unknown poll error is a thrown human sentence, never a retry
  *  loop. Blocks (polling at the server's stated interval) until the human approves. */
+export function deviceLogin(opts: DeviceLoginOpts & { oidc?: undefined }): Promise<BetterAuthSession>;
+export function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession>;
 export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
+  return (await approveDeviceLogin(opts)).session;
+}
+
+async function approveDeviceLogin(opts: DeviceLoginOpts): Promise<{ session: IdpSession; oidcProof?: { accessToken: string; endpoint: string } }> {
   const base = normalizeIdpUrl(opts.idpUrl);
-  const res = await idpFetch(`${base}/device/code`, {
+  if (opts.oidc && (!opts.clientId.trim() || !opts.oidc.audience.trim() || opts.migrationFrom !== undefined))
+    throw new Error("idp OIDC: configure a non-empty client ID and audience without a native migration");
+  const oidc = opts.oidc && { issuer: opts.idpUrl, clientId: opts.clientId, audience: opts.oidc.audience };
+  const metadata = oidc && await discoverOidc(oidc.issuer, opts.signal);
+  const codeUrl = metadata ? oidcEndpoint(base, "device_authorization_endpoint", metadata.device_authorization_endpoint) : `${base}/device/code`;
+  const tokenUrl = metadata ? oidcEndpoint(base, "token_endpoint", metadata.token_endpoint) : `${base}/device/token`;
+  const post = (url: string, fields: Record<string, string>) => oidc ? postOidc(url, fields, opts.signal) : idpFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ client_id: opts.clientId }),
+    body: JSON.stringify(fields),
   }, opts.signal);
+  const res = await post(codeUrl, { client_id: opts.clientId, ...(oidc ? { scope: "openid offline_access" } : {}) });
   if (!res.ok) {
     const e = await oauthError(res, opts.signal);
     throw new IdpDeviceAuthorizationRefusedError(
-      `idp login: ${base} refused the device authorization (${e.error ?? `HTTP ${res.status}`}: ${e.error_description ?? "no detail"})`,
+      oidc ? `idp OIDC: device authorization failed (HTTP ${res.status}); redirects are not followed`
+        : `idp login: ${base} refused the device authorization (${e.error ?? `HTTP ${res.status}`}: ${e.error_description ?? "no detail"})`,
     );
   }
   const grant = await idpJson<{
@@ -300,22 +350,29 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     verification_uri_complete: string;
     expires_in: number;
     interval: number;
-  }>(`${base}/device/code`, res, opts.signal);
+  } | null>(codeUrl, res, opts.signal);
   // The WHOLE grant is shape-checked before anything is shown or polled — the timing fields
   // especially: a malicious IdP handing back `interval: "abc"` or a non-finite/absurd
   // `expires_in` would otherwise turn the poll loop into a tight (setTimeout coerces garbage to
   // ~1ms) or unbounded one. Bounds: a device code living past 24h or a poll interval past 5min
   // is not a sane grant — refuse, don't clamp.
-  const sane = (v: unknown, max: number): v is number => typeof v === "number" && Number.isFinite(v) && v > 0 && v <= max;
   if (
+    !grant ||
     typeof grant.device_code !== "string" || !grant.device_code ||
     typeof grant.user_code !== "string" || !grant.user_code ||
     typeof grant.verification_uri !== "string" || !grant.verification_uri ||
-    typeof grant.verification_uri_complete !== "string" || !grant.verification_uri_complete ||
+    ((!oidc || grant.verification_uri_complete !== undefined) && (typeof grant.verification_uri_complete !== "string" || !grant.verification_uri_complete)) ||
     !sane(grant.expires_in, 86_400) ||
     (grant.interval !== undefined && !sane(grant.interval, 300))
   )
     throw new Error(`idp login: ${base} returned a malformed device grant - refusing to poll on it`);
+  const verificationUri = grant.verification_uri;
+  const verificationUriComplete = grant.verification_uri_complete ?? verificationUri;
+  if (oidc) for (const value of [verificationUri, verificationUriComplete]) {
+    const url = URL.parse(value);
+    if (!url || !isCredentialTransportUrl(url) || url.username || url.password)
+      throw new Error("idp OIDC: invalid device verification URL");
+  }
   const retry = opts.migrationFrom === undefined ? "cotal login" : `cotal login --migrate-from ${normalizeIdpUrl(opts.migrationFrom)}`;
   const expired = `idp login: the device code expired after ${grant.expires_in}s without approval - run \`${retry}\` again`;
   // The code's lifetime runs from the grant, so a prompt that never settles fails the login at
@@ -326,8 +383,8 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   try {
     await Promise.race([
       opts.onPrompt({
-        verificationUri: grant.verification_uri,
-        verificationUriComplete: grant.verification_uri_complete,
+        verificationUri,
+        verificationUriComplete,
         userCode: grant.user_code,
         expiresInSec: grant.expires_in,
       }),
@@ -344,22 +401,19 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   for (;;) {
     await sleepUnlessCancelled(intervalSec * 1000, opts.signal);
     if (Date.now() > deadline) throw new Error(expired);
-    const poll = await idpFetch(`${base}/device/token`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        device_code: grant.device_code,
-        client_id: opts.clientId,
-      }),
-    }, opts.signal);
+    const poll = await post(tokenUrl, { grant_type: DEVICE_GRANT, device_code: grant.device_code, client_id: opts.clientId });
     if (poll.ok) {
-      const tok = await idpJson<{ access_token: string; expires_in: number }>(`${base}/device/token`, poll, opts.signal);
+      const tok = await idpJson<{ access_token: string; expires_in: number; refresh_token?: unknown } | null>(tokenUrl, poll, opts.signal);
+      if (oidc) {
+        const { accessToken, expiresAt, refreshToken } = oidcGrant(tok);
+        if (!refreshToken) throw new Error("idp OIDC: device approval did not issue a refresh token; allow offline_access for this client");
+        return { session: { expiresAt, oidc: { ...oidc, refreshToken, loginId: randomUUID() } }, oidcProof: { accessToken, endpoint: tokenUrl } };
+      }
       // Bound the session lifetime like the device grant's timing fields above (finite, positive,
       // not past a year). `expiresAt` is advisory only — the server is the revocation authority —
       // so this is a legibility/symmetry guard, not a security boundary: it refuses a hostile
       // `expires_in: 1e12` rather than caching it and printing "Session cached … until <year 33000>".
-      if (typeof tok.access_token !== "string" || !tok.access_token || !sane(tok.expires_in, 31_536_000))
+      if (typeof tok?.access_token !== "string" || !tok.access_token || !sane(tok.expires_in, 31_536_000))
         throw new Error(`idp login: ${base} returned a malformed token response`);
       // Defense-in-depth for the revocation model: we cache the OPAQUE session handle precisely so
       // that IdP revocation bites at the next /token fetch. A JWT outlives its session, so if a
@@ -367,7 +421,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
       // credential that can't be revoked.
       if (looksLikeJwt(tok.access_token))
         throw new Error(`idp login: ${base} returned a JWT as the device access token - the session token must be an opaque revocable handle, refusing to cache it; re-run \`cotal login\` after fixing the IdP`);
-      return { token: tok.access_token, expiresAt: Math.floor(Date.now() / 1000) + tok.expires_in };
+      return { session: { token: tok.access_token, expiresAt: Math.floor(Date.now() / 1000) + tok.expires_in } };
     }
     const e = await oauthError(poll, opts.signal);
     if (e.error === "authorization_pending") continue;
@@ -379,12 +433,13 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     if (e.error === "expired_token")
       throw new Error(`idp login: the device code expired before the sign-in was approved - run \`${retry}\` again`);
     throw new Error(
-      `idp login: ${base} rejected the poll (${e.error ?? `HTTP ${poll.status}`}: ${e.error_description ?? "no detail"})`,
+      oidc ? `idp OIDC: device polling failed (HTTP ${poll.status}); redirects are not followed`
+        : `idp login: ${base} rejected the poll (${e.error ?? `HTTP ${poll.status}`}: ${e.error_description ?? "no detail"})`,
     );
   }
 }
 
-type IdpJwtResult = { jwt: string; response: Response };
+type IdpJwtResult = { jwt: string; link: string | null };
 
 /** Longest an IdP JWT is reused from memory. The bound on how long a session revoked at the IdP
  *  can still mint mesh access from a process that already held a JWT. */
@@ -414,9 +469,7 @@ function jwtCacheUntil(jwt: string, now: number): number {
  *  never held, so a rate-limited or unreachable IdP is retried on the next call. Concurrent
  *  callers without a cancel signal share one proof fetch; a cancellable call makes its own fetch,
  *  so one caller's abort rejects nobody else. */
-async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?: AbortSignal): Promise<IdpJwtResult> {
-  const base = normalizeIdpUrl(idpUrl);
-  const key = `${base}\0${sessionToken}`;
+async function cachedIdpProof(key: string, fetchProof: () => Promise<IdpJwtResult>, cancel?: AbortSignal): Promise<IdpJwtResult> {
   const now = Date.now();
   const hit = jwtCache.get(key);
   if (hit) {
@@ -425,7 +478,7 @@ async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?
     } else if (hit.until > now) return hit.result;
     else jwtCache.delete(key);
   }
-  const inflight = fetchIdpJwtUncached(base, sessionToken, cancel).then(
+  const inflight = fetchProof().then(
     (result) => {
       for (const [k, e] of jwtCache) if ("until" in e && e.until <= Date.now()) jwtCache.delete(k);
       const until = jwtCacheUntil(result.jwt, Date.now());
@@ -441,6 +494,11 @@ async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?
   const entry: JwtCacheEntry = { inflight };
   if (!cancel) jwtCache.set(key, entry);
   return inflight;
+}
+
+function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?: AbortSignal): Promise<IdpJwtResult> {
+  const base = normalizeIdpUrl(idpUrl);
+  return cachedIdpProof(`${base}\0${sessionToken}`, () => fetchIdpJwtUncached(base, sessionToken, cancel), cancel);
 }
 
 /** Retry only an explicitly rate-limited proof read, never the operation that consumes its JWT.
@@ -476,12 +534,87 @@ async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: 
     if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
     const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
     if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
-    return { jwt: body.token, response: res };
+    return { jwt: body.token, link: res.headers.get("link") };
   }
 }
 
 export async function fetchIdpJwt(idpUrl: string, sessionToken: string, signal?: AbortSignal): Promise<string> {
   return (await fetchIdpJwtResponse(idpUrl, sessionToken, signal)).jwt;
+}
+
+async function oidcTokenResponse(endpoint: string, fields: Record<string, string>, operation: string, rejected: string, signal?: AbortSignal) {
+  const res = await postOidc(endpoint, fields, signal);
+  if (!res.ok) {
+    const { error } = await oauthError(res, signal);
+    if (res.status === 401 || (res.status === 400 && error === "invalid_grant")) throw new IdpSessionRejectedError(rejected);
+    // Provider error descriptions can echo credentials. Never relay one from the token endpoint.
+    throw new Error(`idp OIDC: ${operation} failed (HTTP ${res.status}); redirects are not followed`);
+  }
+  return idpJson<Record<string, unknown> | null>(endpoint, res, signal);
+}
+
+async function exchangeOidcProof(oidc: OidcLogin, endpoint: string, accessToken: string, rejected: string, signal?: AbortSignal, sub?: string): Promise<IdpJwtResult> {
+  const body = await oidcTokenResponse(endpoint, {
+    grant_type: EXCHANGE_GRANT, client_id: oidc.clientId, audience: oidc.audience,
+    subject_token: accessToken, subject_token_type: ACCESS_TOKEN_TYPE, requested_token_type: ID_TOKEN_TYPE,
+  }, "token exchange", rejected, signal);
+  const jwt = body?.access_token;
+  if (body?.issued_token_type !== ID_TOKEN_TYPE || typeof jwt !== "string" || !looksLikeJwt(jwt))
+    throw new Error("idp OIDC: token exchange did not issue an ID token");
+  const claims = decodeJwt(jwt);
+  const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  if (decodeProtectedHeader(jwt).alg !== "EdDSA" || claims.iss !== oidc.issuer || aud.length !== 1 || aud[0] !== oidc.audience ||
+    typeof claims.sub !== "string" || !claims.sub || (sub !== undefined && claims.sub !== sub) ||
+    typeof claims.iat !== "number" || !Number.isFinite(claims.iat) || Object.hasOwn(claims, "purpose") ||
+    typeof claims.exp !== "number" || !Number.isFinite(claims.exp) || claims.exp * 1000 <= Date.now())
+    throw new Error("idp OIDC: exchanged ID token does not match the required EdDSA algorithm, issuer, single audience, subject or expiry");
+  return { jwt, link: null };
+}
+
+/** Read the selected store's session and obtain its bounded in-memory mesh proof. The store is
+ *  explicit so rotation cannot write into the desktop's cache for a service login, or vice versa. */
+export async function fetchStoredIdpJwt(dir: string, idpUrl: string, signal?: AbortSignal): Promise<string> {
+  return fetchSessionIdpJwt(dir, idpUrl, requireIdpSession(dir, idpUrl), signal);
+}
+
+/** Hold the selected identity across retryable operations. Refresh may change its credential, but
+ *  not its login ID. A replacement sign-in must not be substituted midway through an exchange. */
+export async function fetchSessionIdpJwt(dir: string, idpUrl: string, session: IdpSession, signal?: AbortSignal): Promise<string> {
+  const base = normalizeIdpUrl(idpUrl);
+  const { token, oidc } = session;
+  if (!oidc) return fetchIdpJwt(base, token, signal);
+  throwIfCancelled(signal);
+  const key = oidcProofKey(dir, base, oidc);
+  const result = await cachedIdpProof(key, async () => {
+    const rejected = "idp OIDC: the provider rejected the cached sign-in; sign in again with --oidc and the same issuer, client ID and audience";
+    const metadata = await discoverOidc(oidc.issuer, signal);
+    const endpoint = oidcEndpoint(oidc.issuer, "token_endpoint", metadata.token_endpoint);
+    return withOidcSessionLock(dir, async () => {
+      const latest = requireIdpSession(dir, base);
+      if (!latest.oidc || latest.oidc.loginId !== oidc.loginId) throw new IdpSessionRejectedError("idp OIDC: the cached sign-in changed; retry using the current sign-in");
+      throwIfCancelled(signal);
+      // A request already sent may rotate the token. Finish receiving and recording that
+      // response under the lock even when the caller stops waiting for its mesh proof.
+      const body = await oidcTokenResponse(endpoint, { grant_type: "refresh_token", client_id: oidc.clientId, refresh_token: latest.oidc.refreshToken }, "refresh", rejected);
+      const grant = oidcGrant(body);
+      saveIdpSessionLocked(dir, base, { ...latest, oidc: { ...latest.oidc, refreshToken: grant.refreshToken ?? latest.oidc.refreshToken }, expiresAt: grant.expiresAt });
+      throwIfCancelled(signal);
+      return exchangeOidcProof(oidc, endpoint, grant.accessToken, rejected, signal, latest.sub);
+    });
+  }, signal);
+  if (loadIdpSession(dir, base)?.oidc?.loginId !== oidc.loginId)
+    throw new IdpSessionRejectedError("idp OIDC: the cached sign-in changed; retry using the current sign-in");
+  return result.jwt;
+}
+
+function oidcProofKey(dir: string, base: string, oidc: OidcLogin): string {
+  return `${resolve(dir)}\0${base}\0${oidc.loginId}`;
+}
+
+/** Opaque Better Auth bearer for routes whose contract is a provider session, not a mesh proof. */
+export function betterAuthSessionToken(session: IdpSession): string {
+  if (session.oidc) throw new Error("this operation requires a Better Auth session and does not support OIDC sign-in");
+  return session.token;
 }
 
 /** Optional expected identity claims checked before a staged login can be committed.
@@ -529,8 +662,10 @@ export async function stageIdpSession(
   if (opts.expectedPins?.idpUrl !== undefined && normalizeIdpUrl(opts.idpUrl) !== normalizeIdpUrl(opts.expectedPins.idpUrl))
     throw new Error("idp login: the provider URL does not match the expected login URL; nothing was saved");
   const previousSub = loadIdpSession(opts.dir, opts.idpUrl)?.sub;
-  const session = await deviceLogin(opts);
-  const tokenResult = await fetchIdpJwtResponse(opts.idpUrl, session.token, opts.signal);
+  const { session, oidcProof } = await approveDeviceLogin(opts);
+  const tokenResult = oidcProof && session.oidc
+    ? await exchangeOidcProof(session.oidc, oidcProof.endpoint, oidcProof.accessToken, "idp OIDC: the provider refused to exchange the device access token; nothing was saved", opts.signal)
+    : await fetchIdpJwtResponse(opts.idpUrl, betterAuthSessionToken(session), opts.signal);
   const jwt = tokenResult.jwt;
   let claims: Record<string, unknown>;
   try {
@@ -560,7 +695,7 @@ export async function stageIdpSession(
     ...(typeof claims.iss === "string" ? { issuer: claims.iss } : {}),
     ...(typeof claims.aud === "string" ? { audience: claims.aud } : Array.isArray(claims.aud) && claims.aud.every(a => typeof a === "string") ? { audience: Object.freeze([...claims.aud]) } : {}),
   });
-  stagedLogins.set(candidate, { opts, session, claims, previousSub, baseline, link: tokenResult.response.headers.get("link") });
+  stagedLogins.set(candidate, { opts, session, claims, previousSub, baseline, link: tokenResult.link });
   return candidate;
 }
 
@@ -579,7 +714,7 @@ export async function fetchStagedIdpSpaceCatalog(candidate: StagedIdpSession, va
   if (!catalogUrl) throw new Error("idp login: the approved provider did not advertise a same-origin catalog");
   if (typeof claims.iss !== "string" || !claims.iss) throw new Error("idp login: the approved provider did not supply an issuer");
   const account = { idpUrl, issuer: claims.iss, sub: candidate.sub, ownerKey: ownerKey(idpUrl, candidate.sub), catalogUrl };
-  const response = await idpFetch(catalogUrl, { headers: { authorization: `Bearer ${session.token}` }, redirect: "manual" }, opts.signal);
+  const response = await idpFetch(catalogUrl, { headers: { authorization: `Bearer ${betterAuthSessionToken(session)}` }, redirect: "manual" }, opts.signal);
   if (!response.ok) throw new Error(`idp login: candidate catalog failed (HTTP ${response.status})`);
   const snapshot = await idpJson<unknown>(catalogUrl, response, opts.signal);
   validate(snapshot, account);
@@ -604,6 +739,9 @@ export function commitStagedIdpSession(candidate: StagedIdpSession): { session: 
   return { session, sub: candidate.sub, ...(previousSub && previousSub !== candidate.sub ? { previousSub } : {}), ...(session.label ? { label: session.label } : {}) };
 }
 
+type EstablishLoginOpts = DeviceLoginOpts & { dir: string; expectedPins?: IdpLoginPins };
+type EstablishedLogin = ReturnType<typeof commitStagedIdpSession>;
+
 /** The whole login operation, in the only safe order: device sign-in, then PROVE the session
  *  mints a user JWT, and only then persist it. A session that can't produce a JWT must never
  *  land on disk, because it would pass {@link requireIdpSession}'s no-fallback gate as a dud and
@@ -611,7 +749,9 @@ export function commitStagedIdpSession(candidate: StagedIdpSession): { session: 
  *  `label` (email/name/preferred_username when the IdP mints one). Both are display-only: the
  *  operator must be able to read which human signed in, but verification is the bridge/callout's
  *  job, server-side. */
-export async function establishIdpSession(opts: DeviceLoginOpts & { dir: string; expectedPins?: IdpLoginPins }): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
+export function establishIdpSession(opts: EstablishLoginOpts & { oidc?: undefined }): Promise<EstablishedLogin & { session: BetterAuthSession }>;
+export function establishIdpSession(opts: EstablishLoginOpts): Promise<EstablishedLogin>;
+export async function establishIdpSession(opts: EstablishLoginOpts): Promise<EstablishedLogin> {
   return commitStagedIdpSession(await stageIdpSession(opts));
 }
 
@@ -693,11 +833,11 @@ function fresh(state: CatalogAccountState): boolean {
 }
 
 async function discoverAdvertisement(state: CatalogAccountState, session: IdpSession): Promise<CatalogAccountState> {
-  const result = await fetchIdpJwtResponse(state.idpUrl, session.token);
+  const result = await fetchIdpJwtResponse(state.idpUrl, betterAuthSessionToken(session));
   const claims = decodeJwt(result.jwt);
   if (claims.sub !== state.sub)
     throw new Error(`idp session: ${state.idpUrl} proved a different subject than the cached session - run \`${loginRecoveryCommand(state.idpUrl)}\` again`);
-  const catalogUrl = catalogUrlFromLink(state.idpUrl, result.response.headers.get("link"));
+  const catalogUrl = catalogUrlFromLink(state.idpUrl, result.link);
   return {
     ...state,
     issuer: typeof claims.iss === "string" && claims.iss ? claims.iss : state.issuer,
@@ -717,7 +857,7 @@ export function signedInMachineAccounts(dir: string): AuthSpaceCatalogAccount[] 
   const { sessions, file } = readCatalogPreparationState(dir);
   return Object.keys(sessions).sort().flatMap((idpUrl) => {
     const session = loadIdpSession(dir, idpUrl);
-    if (!session?.sub) return [];
+    if (!session?.sub || session.oidc) return [];
     const key = ownerKey(idpUrl, session.sub);
     return [accountView(file.accounts[key] ?? { idpUrl, issuer: new URL(idpUrl).origin, sub: session.sub, ownerKey: key, advertised: false })];
   });
@@ -737,7 +877,7 @@ export async function requestAccountMachine(opts: {
   const url = opts.intent
     ? `${new URL(idp).origin}/api/machines/${opts.machineId}/spaces/${encodeURIComponent(opts.intent.spaceId)}`
     : `${new URL(idp).origin}/api/cli/machines/${opts.machineId}${opts.method === "GET" ? "/spaces" : ""}`;
-  const headers: Record<string, string> = { authorization: `Bearer ${session.token}` };
+  const headers: Record<string, string> = { authorization: `Bearer ${betterAuthSessionToken(session)}` };
   if (opts.etag) headers["if-none-match"] = opts.etag;
   if (opts.method === "PUT") headers["content-type"] = "application/json";
   const body = opts.method === "PUT" ? JSON.stringify(opts.intent ? { enabled: opts.intent.enabled, expectedRevision: opts.intent.expectedRevision } : opts.metadata) : undefined;
@@ -817,6 +957,11 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
     let changed = false;
     for (const idpUrl of idps) {
       let session = loadIdpSession(opts.dir, idpUrl)!;
+      if (session.oidc) {
+        const sub = session.sub!; // required by the OIDC cache schema
+        results.push({ account: accountView({ idpUrl, issuer: session.oidc.issuer, sub, ownerKey: ownerKey(idpUrl, sub), advertised: false }), state: "no-catalog" });
+        continue;
+      }
       if (!session.sub) {
         const tokenResult = await fetchIdpJwtResponse(idpUrl, session.token);
         const claims = decodeJwt(tokenResult.jwt);
@@ -824,7 +969,7 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
           throw new Error(`idp session: ${idpUrl} minted a user JWT without a sub - run \`${loginRecoveryCommand(idpUrl)}\` again`);
         session = { ...session, sub: claims.sub };
         saveIdpSession(opts.dir, idpUrl, session);
-        saveCatalogAdvertisement(opts.dir, idpUrl, claims.iss, claims.sub, tokenResult.response.headers.get("link"));
+        saveCatalogAdvertisement(opts.dir, idpUrl, claims.iss, claims.sub, tokenResult.link);
         file = readCatalogsFile(opts.dir);
       }
       const sub = session.sub;
@@ -964,6 +1109,22 @@ export async function revokeIdpSession(idpUrl: string, sessionToken: string): Pr
     throw new Error(`idp logout: ${base}/sign-out failed (HTTP ${res.status}) - the server-side session may still be alive`);
 }
 
+/** Revoke and remove the current generation under the same lock as refresh. RFC 7009 revocation
+ *  is explicit: when no endpoint is advertised, leave the cache intact for `logout --local`. */
+export async function revokeStoredOidcSession(dir: string, idpUrl: string, expected: OidcLogin): Promise<void> {
+  const base = normalizeIdpUrl(idpUrl);
+  const metadata = await discoverOidc(expected.issuer);
+  const endpoint = oidcEndpoint(expected.issuer, "revocation_endpoint", metadata.revocation_endpoint);
+  await withOidcSessionLock(dir, async () => {
+    const current = loadIdpSession(dir, base)?.oidc;
+    if (current?.loginId !== expected.loginId) throw new Error("idp OIDC: the cached sign-in changed before revocation");
+    const res = await postOidc(endpoint, { client_id: current.clientId, token: current.refreshToken, token_type_hint: "refresh_token" });
+    if (!res.ok) throw new Error(`idp OIDC: revocation failed (HTTP ${res.status}); redirects are not followed`);
+    jwtCache.delete(oidcProofKey(dir, base, current));
+    deleteIdpSessionLocked(dir, base);
+  });
+}
+
 // ---- the machine-local session cache ----
 // Explicit-dir APIs like the workspace auth-path helpers: the caller (the `login` command) picks
 // the directory (`homeCotalDir()`); nothing here discovers paths ambiently. One file, all IdPs,
@@ -986,7 +1147,7 @@ function readSessionsFile(dir: string): SessionsFile {
     parsed = JSON.parse(readFileSync(f, "utf8")) as SessionsFile;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return { ver: SESSIONS_VER, sessions: {} };
-    throw new Error(`${f}: the session cache is not valid JSON (${e instanceof Error ? e.message : String(e)}) - delete it and run \`cotal login\` again`);
+    throw new Error(`${f}: the session cache is not valid JSON - inspect it without printing its credentials, then sign in again`);
   }
   if (parsed === null || typeof parsed !== "object")
     throw new Error(`${f}: the session cache is not a JSON object - delete it and run \`cotal login\` again`);
@@ -996,9 +1157,16 @@ function readSessionsFile(dir: string): SessionsFile {
     throw new Error(`${f}: malformed sessions map`);
   for (const [idp, session] of Object.entries(parsed.sessions)) {
     if (normalizeIdpUrl(idp) !== idp || !session || typeof session !== "object" || Array.isArray(session)
-      || typeof session.token !== "string" || !session.token
       || typeof session.expiresAt !== "number" || !Number.isFinite(session.expiresAt))
       throw new Error(`${f}: malformed session record`);
+    const { oidc } = session;
+    if (oidc === undefined ? typeof session.token !== "string" || !session.token
+      : !oidc || typeof oidc !== "object" || session.token !== undefined || typeof oidc.issuer !== "string"
+        || normalizeIdpUrl(oidc.issuer) !== idp || typeof oidc.clientId !== "string" || !oidc.clientId.trim()
+        || typeof oidc.audience !== "string" || !oidc.audience.trim() || typeof oidc.loginId !== "string" || !oidc.loginId
+        || typeof oidc.refreshToken !== "string" || !oidc.refreshToken || looksLikeJwt(oidc.refreshToken)
+        || typeof session.sub !== "string" || !session.sub)
+      throw new Error(`${f}: malformed session credential`);
   }
   return parsed;
 }
@@ -1018,7 +1186,7 @@ export function loadIdpSession(dir: string, idpUrl: string): IdpSession | undefi
   // consumer of ownerForLogin is a SEPARATE process re-reading this file, so dropping it here
   // broke both user-mode spawn entry points while every in-process test passed.
   return {
-    token: s.token,
+    ...(s.oidc ? { oidc: s.oidc } : { token: s.token }),
     expiresAt: s.expiresAt,
     ...(typeof s.sub === "string" && s.sub ? { sub: s.sub } : {}),
     ...(typeof s.label === "string" && s.label ? { label: s.label } : {}),
@@ -1034,16 +1202,27 @@ export function hasIdpSessions(dir: string): boolean {
 }
 
 const sessionLocks = new Set<string>();
+const oidcSessionLocks = new Set<string>();
 
 /** Serialize a read-modify-write of one session cache, including service-store propagation. */
 export function withIdpSessionLock<T>(dir: string, run: () => T): T {
   const path = resolve(dir, "idp-sessions.lock");
   if (sessionLocks.has(path)) return run();
   mkSecretDir(dir);
-  const lock = acquireLock(path, { label: "IdP session cache", waitMs: 5000 });
+  // A synchronous writer must not block its own event loop waiting for its refresh response.
+  const lock = acquireLock(path, { label: "IdP session cache", waitMs: oidcSessionLocks.has(path) ? 0 : 5000 });
   sessionLocks.add(path);
   try { return run(); }
   finally { sessionLocks.delete(path); lock.release(); }
+}
+
+async function withOidcSessionLock<T>(dir: string, run: () => Promise<T>): Promise<T> {
+  const path = resolve(dir, "idp-sessions.lock");
+  mkSecretDir(dir);
+  const lock = await acquireLockAsync(path, { label: "IdP session cache", waitMs: idpTimeoutMs() });
+  oidcSessionLocks.add(path);
+  try { return await run(); }
+  finally { oidcSessionLocks.delete(path); lock.release(); }
 }
 
 export function saveIdpSession(dir: string, idpUrl: string, session: IdpSession): void {
@@ -1053,7 +1232,7 @@ export function saveIdpSession(dir: string, idpUrl: string, session: IdpSession)
 function saveIdpSessionLocked(dir: string, idpUrl: string, session: IdpSession): void {
   const file = readSessionsFile(dir);
   file.sessions[normalizeIdpUrl(idpUrl)] = {
-    token: session.token,
+    ...(session.oidc ? { oidc: session.oidc } : { token: session.token }),
     expiresAt: session.expiresAt,
     ...(session.sub ? { sub: session.sub } : {}),
     ...(session.label ? { label: session.label } : {}),
