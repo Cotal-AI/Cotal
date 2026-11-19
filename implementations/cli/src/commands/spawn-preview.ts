@@ -82,7 +82,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     ] }));
     return;
   }
-  const path = values["enrollment-file"] && values.config ? resolve(values.config) : agentFilePath(root, ref);
+  const path = values.file !== undefined || (values["enrollment-file"] && values.config) ? resolve(ref) : agentFilePath(root, ref);
   let definition: AgentDef;
   // A missing product default is what the launch writes from the shipped template, so the preview
   // reads that template and writes nothing.

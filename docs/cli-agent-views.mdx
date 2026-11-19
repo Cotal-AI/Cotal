@@ -16,7 +16,9 @@ These commands report launch previews, current manager observations, and retaine
 with a positional persona or the persisted internal `--config` spelling. A bare filename is
 still a file, including when it has no extension. Managed paths remain relative to the manager's
 workspace and are read on that execution host. No file upload is implied. Direct foreground
-execution reads its local file. A supported Mesh-manifest shape returns a schema refusal with
+execution and its preview resolve relative `--file` paths from the invoking folder, even if `--cwd`
+sets a different working directory for the agent. Named personas still come from the selected space.
+A supported Mesh-manifest shape returns a schema refusal with
 the literal `cotal team deploy <file>` remedy, before agent allocation.
 
 `spawn --dry-run` never refreshes the catalog, repairs stale registrations, imports connector code,

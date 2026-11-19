@@ -374,8 +374,8 @@ export const upFlags: FlagSpec[] = [
   { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
   { name: "max-file-store", type: "string", value: "<bytes>", description: "JetStream file storage cap in bytes (default: nats-server's dynamic cap). Fixed at broker start and recorded for the next `up`; a legacy root also keeps it across `down --preserve-state`" },
   { name: "log-file", type: "string", value: "<path>", description: "nats-server log file path; recorded and reused by later starts" },
-  { name: "logfile-size-limit", type: "string", value: "<bytes>", description: "nats-server log rotation threshold in bytes; requires --log-file" },
-  { name: "logfile-max-num", type: "string", value: "<count>", description: "maximum total broker log files retained; requires --log-file" },
+  { name: "logfile-size-limit", type: "string", value: "<bytes>", description: "nats-server log rotation threshold in bytes; requires --log-file or broker.logFile in a manifest" },
+  { name: "logfile-max-num", type: "string", value: "<count>", description: "maximum total broker log files retained; requires --log-file or broker.logFile in a manifest" },
   { name: "auth-timeout", type: "string", value: "<seconds>", description: "user-auth only: how long the broker waits for the auth callout, 1 to 60 seconds (default: nats-server's 2); the auth service answers inside it. Fixed at broker start and recorded for the next `up`" },
   { name: "max-payload", type: "string", value: "<bytes>", description: "broker-wide message size limit in bytes (default: nats-server's 1048576). A manager-backed start needs at least 263168, and service endpoint caller grants need at least 2098176. Fixed at broker start and recorded for the next `up`" },
   { name: "account-resolver", type: "string", value: "<memory|full>", description: "how the broker resolves space accounts: memory (default) knows only the accounts its configuration lists, so adding one means a reload; full also keeps pushed account claims in .cotal/account-jwts, so a host can add and retire accounts on the running broker without a reload. Fixed at broker start and recorded for the next `up`" },
@@ -485,6 +485,9 @@ export function validateUpArguments(args: ParsedArgs): void {
   parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);
   parseSeatCapFlag("--seat-cap", args.values["seat-cap"] as string | undefined);
   parseMaxFileStore(args.values["max-file-store"] as string | undefined);
+  const logFile = args.values["log-file"] as string | undefined;
+  if (logFile !== undefined && (!logFile.trim() || /[\u0000-\u001f\u007f]/u.test(logFile)))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--log-file must be a non-empty file path without control characters");
   // The timeout belongs to the auth callout, which only a user-auth space has. A manifest or a
   // restore starts the broker its own record describes, so neither takes it.
   if (parseAuthTimeout(args.values["auth-timeout"] as string | undefined) !== undefined) {
@@ -935,7 +938,7 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     const previousCwd = process.cwd();
     // Path flags still mean paths relative to the invoking directory, not the selected root.
     // The recursive restore/resume re-entries inherit absolute paths and the same absolute root.
-    const paths = root ? Object.fromEntries(["file", "restore", "channels", "tls-cert", "tls-key", "store-dir"].filter((key) => typeof args.values[key] === "string" && args.values[key] !== "").map((key) => [key, resolve(String(args.values[key]))])) : {};
+    const paths = root ? Object.fromEntries(["file", "restore", "channels", "tls-cert", "tls-key", "store-dir", "log-file"].filter((key) => typeof args.values[key] === "string" && args.values[key] !== "").map((key) => [key, resolve(String(args.values[key]))])) : {};
     // The receipt's Next must run from the folder up was invoked in, which a re-entry inherits.
     const invokedRoot = root && args.values.__invokedRoot === undefined ? { __invokedRoot: canonicalRoot(cotalRoot()) } : {};
     const invocation: ParsedArgs = { ...args, values: { ...args.values, ...paths, ...(root ? { root } : {}), ...invokedRoot, detach: args.values.foreground !== true } };
@@ -1426,12 +1429,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const publicExchange = [...publicExchangeArgs(values, wantUser), ...serviceEndpointsArgs(values, wantUser)];
   const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
   const maxFileStore = parseMaxFileStore(values["max-file-store"]);
-  if (values["log-file"] !== undefined && (!values["log-file"].trim() || /[\u0000-\u001f\u007f]/u.test(values["log-file"])))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--log-file must be a non-empty file path without control characters");
   const logFile = values["log-file"] === undefined ? undefined : resolve(values["log-file"]);
   const logfileSizeLimit = parsePositiveIntegerFlag("--logfile-size-limit", values["logfile-size-limit"]);
   const logfileMaxNum = parsePositiveIntegerFlag("--logfile-max-num", values["logfile-max-num"]);
-  if (logFile === undefined && (logfileSizeLimit !== undefined || logfileMaxNum !== undefined))
+  if (!values.file && logFile === undefined && (logfileSizeLimit !== undefined || logfileMaxNum !== undefined))
     throw new CommandFailure("refused", "USAGE_INVALID", "--logfile-size-limit and --logfile-max-num require --log-file");
   const authTimeout = parseAuthTimeout(values["auth-timeout"]);
   const maxPayload = parseMaxPayload(values["max-payload"]);
@@ -3637,6 +3638,8 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // broker + launch all agree on the same values.
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, opts);
   const m = eff.manifest;
+  if (m.broker?.logFile === undefined && (opts.logfileSizeLimit !== undefined || opts.logfileMaxNum !== undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--logfile-size-limit and --logfile-max-num require --log-file or broker.logFile in the manifest", { remedy: "pass --log-file <path>, set broker.logFile in the manifest, or omit the rotation flags" });
   const host = m.broker?.host ?? "127.0.0.1";
   // Same bind-vs-probe reconciliation as the flag path: a manifest that sets `broker.host` without
   // an explicit `broker.servers` would otherwise bind one address and be probed at another.
@@ -3672,7 +3675,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // against a manifest declaring agents asks for a boot that cannot deliver its own plan. Refused
   // before the dry-run print and before anything boots.
   if (opts.noManager && eff.agents.length)
-    throw new Error(`--no-manager cannot launch this manifest: it declares ${eff.agents.length} agent(s), and a manifest's agents are booted by its manager (which --no-manager omits). Drop --no-manager, or use a broker-only manifest with no agents.`);
+    throw new FlagValueRefusal(`--no-manager cannot launch this manifest: it declares ${eff.agents.length} agent(s), and a manifest's agents are booted by its manager (which --no-manager omits)`, "drop --no-manager, or use a broker-only manifest with no agents");
   const effectiveNoManager = Boolean(opts.noManager);
   // The open-mesh refusal must be RE-STATED here, not only against the CLI `--open` flag: on this
   // path openness comes from the MANIFEST (`broker.auth: false`), which the flag-level guard cannot

@@ -957,6 +957,8 @@ previews this root's recorded stack and stops nothing. Controller-owned roots re
 `cotal up -f <file> --dry-run` starts nothing. It preflights the declared applications and can refuse
 before printing a plan if a required executable is missing. To review the declaration without
 installing those applications, use `cotal team boot <file> --dry-run` or `cotal team check <file> --graph`.
+When configured, the preview shows the effective broker log path and rotation bounds.
+A manifest that declares agents refuses `--no-manager` with `USAGE_INVALID` (exit 1), including in a preview.
 `team deploy` and `team remove` take `--dry-run` to print the plan without applying it.
 `topology` validates the manifest and renders its channel / role / ACL graph. Given a folder
 instead of a manifest file, `topology view`, `up -f`, `down -f` and the `team` commands that take a
