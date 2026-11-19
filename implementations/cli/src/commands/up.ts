@@ -439,6 +439,8 @@ function assertIssuedBackupDirArgument(raw: string): void {
  *  re-entry supplies its recorded mode explicitly rather than inheriting the new public default. */
 export function validateUpArguments(args: ParsedArgs): void {
   presentationOf(args.values);
+  if (args.values.restore === "")
+    throw new CommandFailure("refused", "USAGE_INVALID", "--restore is empty, so it names no backup folder; nothing was started or written", { remedy: "pass the backup folder as --restore <dir>, or omit --restore to start without restoring", selfContained: true });
   // A `.cotal` that is a link, or leads nowhere, is refused before anything reads through it.
   const linked = args.values.root === undefined ? linkedCotalRefusal("up") : undefined;
   if (linked) throw linked;
@@ -1002,7 +1004,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // `space create` and `down` refuse a root other local accounts can write, so `up` refuses it too,
   // before anything is written: a stack started there could not be stopped from it.
   protectedLocalDirectory(canonicalRoot(cotalRoot()), "the project root");
-  if (values.restore) {
+  if (values.restore !== undefined) {
     if (values.file || values.channels)
       throw new Error("--restore cannot be combined with --file/-f or --channels");
     // A restore REINSTATES a trust root from an artifact; a rotation SUPERSEDES the one on disk.
