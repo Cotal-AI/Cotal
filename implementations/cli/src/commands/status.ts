@@ -1121,8 +1121,12 @@ function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, ga
   // A missing or empty legacy record gives no process to observe, regardless of the connection.
   if (!journal && state === "stopped" && pid === null) row.state = "not-recorded";
   if (!journal) return row;
-  if (stackRunsUnderOtherHome(journal.root, journal) && journal.recovery?.home !== homeCotalDir())
-    return { ...row, state: "unknown", pid: null, detail: `stack member records belong to ${journal.recovery?.home ?? "another Cotal home"}` };
+  const recordedHome = journal.recovery?.home;
+  if (recordedHome !== homeCotalDir() && stackRunsUnderOtherHome(journal.root, journal)) {
+    const detail = recordedHome === undefined ? "stack member records are missing from this Cotal home" : `stack member records belong to ${recordedHome}`;
+    if (recordedHome === undefined) gaps.add("FOLDER_BROKER_UNAVAILABLE", `owned broker observation unavailable · ${detail}`, { root: journal.root, space: journal.space });
+    return { ...row, state: "unknown", pid: null, detail };
+  }
   try {
     const instances = serviceInstances(journal.space, STACK_DEFINITION.broker);
     if (instances.length === 0) {
