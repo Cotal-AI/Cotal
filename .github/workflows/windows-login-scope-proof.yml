@@ -19,7 +19,8 @@ jobs:
           node-version: '24'
           cache: pnpm
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
@@ -47,6 +48,14 @@ jobs:
       - name: Verify elevated installed app registers per-user login
         shell: pwsh
         run: ./desktop/scripts/check-presence-windows.ps1 -LoginScopeOnly
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: always() && steps.rust-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            desktop/src-tauri/target/release
+            !desktop/src-tauri/target/release/bundle
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

@@ -93,7 +93,7 @@ function Shortcuts($path) {
 function Check-LoginScope($path) {
   $userRun = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
   $machineRun = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'
-  function Read-Login($key) { Get-ItemPropertyValue -Path $key -Name Cotal -ErrorAction SilentlyContinue }
+  function Read-Login($key) { (Get-Item -LiteralPath $key).GetValue('Cotal', $null) }
   if ($null -ne (Read-Login $userRun) -or $null -ne (Read-Login $machineRun)) { throw 'Expected a fresh Windows runner with no Cotal login values.' }
   $prefs = Join-Path $env:APPDATA 'ai.cotal.desktop\presence.json'
   if (Test-Path -LiteralPath $prefs) { throw 'Expected fresh desktop preferences before the login scope check.' }
@@ -139,8 +139,8 @@ process.stdin.setEncoding('utf8').on('data', chunk => {
     }
   } finally {
     if ($app -and !$app.HasExited) { Stop-Process -Id $app.Id; $app.WaitForExit() }
-    Remove-ItemProperty -LiteralPath $userRun -Name Cotal -ErrorAction SilentlyContinue
-    Remove-ItemProperty -LiteralPath $machineRun -Name Cotal -ErrorAction SilentlyContinue
+    if ($null -ne (Read-Login $userRun)) { Remove-ItemProperty -LiteralPath $userRun -Name Cotal }
+    if ($null -ne (Read-Login $machineRun)) { Remove-ItemProperty -LiteralPath $machineRun -Name Cotal }
     Remove-Item -LiteralPath $prefs -ErrorAction SilentlyContinue
     Move-Item -LiteralPath $original -Destination $entry -Force
   }
