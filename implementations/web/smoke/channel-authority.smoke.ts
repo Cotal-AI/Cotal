@@ -125,8 +125,9 @@ for (const [label, subject] of PLANE_VECTORS) {
 // The server's derivation. Extracted from web.ts and run against the REAL parsed subjects above, so
 // this measures what the expression computes rather than how it is spelled.
 const webTs = read("../src/web.ts");
-const derivation = /const channel = parsed\?\.[^;]*;/.exec(webTs)?.[0];
-check("web.ts declares the channel derivation in one extractable statement", Boolean(derivation), { derivation });
+const webRequestTs = read("../src/web-request.ts");
+const derivation = /const channel = parsed\?\.[^;]*;/.exec(webRequestTs)?.[0];
+check("web-request.ts declares the channel derivation in one extractable statement", Boolean(derivation), { derivation });
 
 // `const` inside a vm context is a lexical binding and never becomes a property of the context
 // object, so the result is copied out explicitly. Found by this cell failing rather than by

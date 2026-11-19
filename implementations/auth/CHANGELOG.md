@@ -1,5 +1,54 @@
 # @cotal-ai/auth
 
+## 0.171.0
+
+### Patch Changes
+
+- Updated dependencies [edd19cc]
+- Updated dependencies [7ff146c]
+- Updated dependencies [725bd24]
+- Updated dependencies [bbea1c9]
+- Updated dependencies [3a01e61]
+- Updated dependencies [00fcd05]
+- Updated dependencies [11555a1]
+- Updated dependencies [67a59e9]
+- Updated dependencies [1a51b71]
+- Updated dependencies [f2f8058]
+- Updated dependencies [f976f2f]
+- Updated dependencies [58dcdc6]
+- Updated dependencies [3cae462]
+  - @cotal-ai/core@0.171.0
+  - @cotal-ai/workspace@0.171.0
+  - @cotal-ai/lang@0.171.0
+
+## 0.170.0
+
+### Minor Changes
+
+- 2b1659e: Add a host-only, bounded read-only observer for a space's pending work and authority. The observer uses the current stream layout, reports incomplete or changing state as unknown, and closes its native connection before returning. It does not activate hibernation or migrate data.
+
+### Patch Changes
+
+- 13d4130: Separate the auth service's managed lifecycle retirement into an internal module.
+  
+  Keep existing service exports and retirement behavior unchanged.
+- 2c0d279: Wait for a live manager response in the static operator smoke test and report timeouts without blaming permissions.
+- Updated dependencies [c701881]
+- Updated dependencies [ad6d984]
+- Updated dependencies [3afefa8]
+- Updated dependencies [0e42b19]
+- Updated dependencies [dd478d4]
+- Updated dependencies [6170fc9]
+- Updated dependencies [8c965ac]
+- Updated dependencies [b73a8de]
+- Updated dependencies [2b1659e]
+- Updated dependencies [07978b3]
+- Updated dependencies [20ff353]
+- Updated dependencies [3e748e8]
+  - @cotal-ai/workspace@0.170.0
+  - @cotal-ai/core@0.170.0
+  - @cotal-ai/lang@0.170.0
+
 ## 0.169.0
 
 ### Patch Changes

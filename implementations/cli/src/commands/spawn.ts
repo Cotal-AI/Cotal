@@ -165,7 +165,7 @@ import {
   verifyUserExchange,
   type UserBundle,
 } from "./meshes-add.js";
-import { askManager, describeUnanswered, liveManagerIds, managerRailGone, refuseUnregisteredManager, refuseWithoutLiveManager, START_TIMEOUT_MS, withControlConnection } from "@cotal-ai/workspace/control";
+import { askManager, describeUnanswered, liveManagerIds, managerRailGone, refuseUnregisteredManager, refuseWithoutLiveManager, START_TIMEOUT_MS, startStackManagerRemedy, withControlConnection } from "@cotal-ai/workspace/control";
 
 const ENROLLMENT_URL_ENV = "COTAL_ENROLLMENT_URL";
 const ENROLLMENT_FILE_ENV = "COTAL_ENROLLMENT_FILE";
@@ -490,6 +490,8 @@ export function validateSpawnArguments(args: ParsedArgs): void {
   presentationOf(values);
   if (args.positionals[0] !== undefined && !args.positionals[0].trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "persona cannot be empty", { remedy: "name a persona, or omit it to use the default persona" });
+  if (values.resume !== undefined && !values.resume.trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "--resume needs a session id (got an empty value)");
   // `runCli` has already taken the handoff into custody and deleted its variable.
   const internal = holdsManagedHandoff() || Boolean(process.env[ENROLLMENT_URL_ENV] || process.env[ENROLLMENT_FILE_ENV]);
   if (!holdsManagedHandoff() && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined))
@@ -978,7 +980,7 @@ async function unservedClassLaunch(flags: ConnectFlags | undefined, t: ControlTa
 function unansweredClassLaunch(t: ControlTarget, at: { target: object; native: object }): CommandFailure {
   const refused = (message: string, remedy: string) => new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}, so the launch was not sent and nothing was launched`, { ...at, remedy });
   if (t.root !== undefined && stackManagerStarting(t.root, t.space)) return refused("the stack's manager is starting", "run the spawn again once `cotal up` reports the manager started");
-  if (t.root !== undefined && stackManagerAbsent(t.root, t.space)) return refused("no manager is running for this space", "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none");
+  if (t.root !== undefined && stackManagerAbsent(t.root, t.space)) return refused("no manager is running for this space", startStackManagerRemedy(t.space, t.server));
   const pid = t.root === undefined ? undefined : runningStackManagerPid(t.root, t.space);
   if (pid !== undefined) return refused(`this space's stack manager (pid ${pid}) is running but did not answer`, `if it stays unresponsive, end that process with kill -KILL ${pid}; then bare \`cotal up\` starts the manager again`);
   return refused("no manager answered", "cotal ps shows which managers answer; run the spawn again once one does");
@@ -1233,12 +1235,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // either managed persona spelling; direct execution has no manager placement to select.
   if (values.on !== undefined && direct) {
     stderrLine("✗ ", "--on pins a managed imperative launch; a spawn in this terminal does not take that manager selector", c.red);
-    process.exit(1);
-  }
-  // `--resume ""` / `--resume=` means the operator asked to resume but named no session — fail loud
-  // rather than silently spawn a fresh one (no fallbacks). An absent flag (undefined) is fine.
-  if (values.resume !== undefined && !values.resume.trim()) {
-    console.error("--resume needs a session id (got an empty value)");
     process.exit(1);
   }
   if (values.model !== undefined && !values.model.trim()) {

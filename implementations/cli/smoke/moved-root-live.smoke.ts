@@ -1,4 +1,4 @@
-/** Status and space show diagnose a renamed running stack from another folder.
+/** Status and space show diagnose renamed stacks, both running and stopped.
  * Run: pnpm smoke:moved-root:live
  */
 import { spawnSync } from "node:child_process";
@@ -135,5 +135,27 @@ for (const open of [false, true]) {
       check(`native stack cleanup, open=${open}`, cli(project, ...args).status === 0);
     }
   }
+}
+{
+  const space = "movedstopped", project = join(home, space), renamed = `${project} renamed`;
+  mkdirSync(project, { mode: 0o700 });
+  check("prepare a project to move after shutdown", cli(project, "space", "create", space).status === 0);
+  const up = cli(project, "up", "--open", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`);
+  if (up.status !== 0) throw new Error("private stack did not start");
+  const anchor = recordSmokeSandbox({ root: project, cotalHome, xdgConfigHome: config });
+  const args = ["down", "--space", space, "--yes"];
+  assertSmokeSandboxDown(anchor, args, { cwd: project, env });
+  if (cli(project, ...args).status !== 0) throw new Error("private stack did not stop");
+  renameSync(project, renamed);
+  const selected = cli(renamed, "use", space, "--plain");
+  const show = cli(renamed, "space", "show", space, "--plain");
+  check("space show recognizes the stopped stack from its matching moved journal",
+    selected.status === 0 && show.status === 0 && /broker: +stopped/.test(show.stdout) && show.stdout.includes(`was moved from ${project}`) && show.stdout.includes(`move this folder back to ${project}`));
+  check("space show prints the exact forget and adopt commands for the renamed path",
+    show.stdout.includes(`\`cotal space forget ${space}\`, then \`cotal space create ${space} --adopt --root '${renamed}'\``) && !show.stdout.includes("--root <dir>"));
+  check("following the printed forget succeeds", cli(renamed, "space", "forget", space, "--plain").status === 0);
+  check("following the printed adopt prepares the space in the renamed folder",
+    cli(renamed, "space", "create", space, "--adopt", "--root", renamed, "--plain").status === 0 &&
+      cli(renamed, "space", "show", space, "--plain").stdout.includes(`root:     ${renamed}`));
 }
 finish();

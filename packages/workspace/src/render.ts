@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, oneLine } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
-import { userCotalDir, homeCotalDir } from "./mesh-registry.js";
+import { brokerUrlKey, userCotalDir, homeCotalDir } from "./mesh-registry.js";
 import { shellPath } from "./protected-records.js";
 import { codeSpan } from "./text-wrap.js";
 import type { MeshTarget, MeshTargetError } from "./mesh-target.js";
@@ -30,6 +30,8 @@ export type WorkspaceError =
 export interface WorkspaceErrorParts {
   readonly message: string;
   readonly remedy?: string;
+  /** The local root named by a stopped stack's restart remedy. */
+  readonly restartRoot?: string;
 }
 
 const parts = (message: string, remedy?: string): WorkspaceErrorParts => (remedy === undefined ? { message } : { message, remedy });
@@ -115,7 +117,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         : d.unsettled !== undefined
           ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)
           : d.stopped !== undefined
-            ? parts(`"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, `start it again with \`cotal up\` in ${d.root}`)
+            ? { message: `"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, remedy: `start it again with \`cotal up\` in ${d.root}`, restartRoot: d.root }
           : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
       const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
       // A legacy root whose space is registered for another folder, as a copy, a folder the name was
@@ -148,6 +150,8 @@ const NOT_ANSWERING_REMEDY = "retry; if it keeps happening, check that the broke
 /** "Is it live" failures on a registry-resolved target — the classified preflight sentence. */
 function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: boolean, pid?: number, heldBy?: string): WorkspaceErrorParts {
   const server = brokerAddressForDisplay(t.server) ?? "an invalid broker address";
+  const unrecordedAddress = (t.source === "flag-server" || t.source === "flag-space-override") &&
+    (t.recordedServer === undefined || brokerUrlKey(t.recordedServer) !== brokerUrlKey(t.server));
   switch (kind) {
     case "non-nats-listener":
       return parts(`another non-NATS listener holds ${server} while this folder's broker is stopped`, `stop the listener at ${server} and run \`cotal up\` in ${t.root}, or start on another port with \`cotal up --server nats://127.0.0.1:<port>\` there`);
@@ -159,7 +163,7 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       // A broker address `--server` supplied that is not the one recorded for this space says nothing
       // about whether that space's mesh runs: name the address that did not answer, and the recorded
       // one when there is one. The recorded broker is never tried in its place.
-      if ((t.source === "flag-server" || t.source === "flag-space-override") && t.recordedServer !== t.server)
+      if (unrecordedAddress)
         return t.recordedServer === undefined
           ? parts(`nothing answered at ${server}, the broker address --server named`, "check that address and that a broker runs there")
           : parts(`nothing answered at ${server}, the broker address --server named`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
@@ -179,7 +183,7 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       // A deleted root cannot be restarted from, so the step is moving it back or forgetting the space (#7318).
       if (!existsSync(t.root))
         return parts(`no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root}, which no longer exists`, `if that folder was moved or renamed, move it back and run \`cotal up\` there; otherwise forget the space with \`cotal space forget ${t.space}\``);
-      return parts(`no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root} but not running`, "run `cotal up` there to restart");
+      return { message: `no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root} but not running`, remedy: "run `cotal up` there to restart", restartRoot: t.root };
     // The registry-mismatch pair, like `unreachable`, must not prescribe `cotal up` for a mesh this
     // machine only registered: the repair there is the credentials under `--root`, or re-registering
     // the entry — `cotal up` would start a DIFFERENT, local mesh under that name.
@@ -194,11 +198,11 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
     case "creds-rejected":
       // Another space's broker named by `--server` rejects this space's credentials while this space
       // still runs at its recorded address, so `cotal up` is not the step: name both addresses.
-      if ((t.source === "flag-server" || t.source === "flag-space-override") && t.recordedServer !== undefined && t.recordedServer !== t.server)
+      if (unrecordedAddress && t.recordedServer !== undefined)
         return parts(`credentials for "${t.space}" were rejected at ${server}, the broker address --server named; a different mesh may be running there`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
       return parts(`credentials for "${t.space}" were rejected at ${server}; a different mesh may be running there`, "run `cotal meshes` to check, or `cotal up` here to start yours");
     case "open-wants-auth":
-      if ((t.source === "flag-server" || t.source === "flag-space-override") && t.recordedServer !== undefined && t.recordedServer !== t.server)
+      if (unrecordedAddress && t.recordedServer !== undefined)
         return parts(`broker at ${server}, the address --server named, requires auth, but "${t.space}" is recorded as an open mesh at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
       return parts(`broker at ${server} requires auth, but this mesh is open (no trust material)`, "use `--space <name>` for an auth mesh, or run `cotal up` here without `--open`");
     case "stale-auth":

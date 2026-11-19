@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
@@ -48,6 +48,8 @@ CLI
 }
 if [ "\${FIXTURE_TARGET:-}" = latest ]; then
   main --no-setup --no-modify-path
+elif [ "\${FIXTURE_MODIFY_PATH:-}" = 1 ]; then
+  main --no-setup --version "\${FIXTURE_TARGET:-0.82.2}"
 else
   main --no-setup --no-modify-path --version "\${FIXTURE_TARGET:-0.82.2}"
 fi
@@ -78,14 +80,19 @@ try {
   writeFileSync(join(npmPackage, "cotal.js"), '#!/usr/bin/env node\nconsole.log("cotal-ai 0.0.0");\n');
   chmodSync(join(npmPackage, "cotal.js"), 0o755);
   const installation = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
+  assert(installation.includes("`wget` instead of `curl`") && installation.includes("wget -qO- https://get.cotal.ai | sh -s -- --no-setup"), "the install guide offers the wget bootstrap");
+  const shellLauncher = join(npmHome, ".local", "bin", "cotal");
+  mkdirSync(dirname(shellLauncher), { recursive: true });
+  const shellLauncherBody = "#!/bin/sh\nprintf 'shell installer launcher\\n'\n";
+  writeFileSync(shellLauncher, shellLauncherBody, { mode: 0o755 });
   const npmSection = installation.split("## Install with npm")[1]?.split("## ")[0];
   const npmSteps = npmSection?.match(/```bash\n([^`]+)```/)?.[1];
   assert(npmSteps, "npm instructions include a shell command block");
-  assert(npmSteps.includes('npm config set prefix "$HOME/.local"'), "npm instructions select a user-owned prefix before installing");
-  assert(npmSteps.includes('export PATH="$HOME/.local/bin:$PATH"'), "npm instructions put the prefix's bin directory first on PATH");
+  assert(npmSteps.includes('npm config set prefix "$HOME/.npm-global"'), "npm instructions select a prefix separate from the shell launcher");
+  assert(npmSteps.includes('export PATH="$HOME/.npm-global/bin:$PATH"'), "npm instructions put the prefix's bin directory first on PATH");
   assert(npmSteps.includes("npm install -g cotal-ai"), "npm instructions retain the global install command");
   const npmEnv = {
-    HOME: npmHome, PATH: toolPath, CI: "1", NO_COLOR: "1",
+    HOME: npmHome, PATH: `${dirname(shellLauncher)}:${toolPath}`, CI: "1", NO_COLOR: "1",
     npm_config_userconfig: join(npmHome, ".npmrc"),
     npm_config_globalconfig: join(npmHome, "global-npmrc"),
     npm_config_cache: join(npmHome, ".npm"),
@@ -97,19 +104,21 @@ try {
   assert(output(npmInstall).includes("cotal-ai 0.0.0"), "the documented PATH selects npm's installed executable, including with spaces and quotes in HOME");
   const npmPrefix = spawnSync("npm", ["prefix", "-g"], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
   assert.equal(npmPrefix.status, 0, output(npmPrefix));
-  assert.equal(npmPrefix.stdout.trim(), join(npmHome, ".local"), "the documented npm prefix persists for future global installs");
+  assert.equal(npmPrefix.stdout.trim(), join(npmHome, ".npm-global"), "the documented npm prefix persists for future global installs");
+  assert.equal(readFileSync(shellLauncher, "utf8"), shellLauncherBody, "switching the selected CLI does not overwrite the shell launcher");
   const removeSection = installation.split("## Remove Cotal")[1]?.split("## ")[0];
   const removeSteps = removeSection?.match(/```bash\n([^`]+)```/)?.[1];
   assert(removeSteps, "npm removal instructions include a shell command block");
   assert(removeSteps.includes('rm -rf "$(npm root -g)/../.cotal-generations"'), "npm removal instructions clean up the retained generation store");
   assert(removeSteps.includes("npm uninstall -g cotal-ai"), "npm removal instructions uninstall the global package");
-  const fakeGen = join(npmHome, ".local", "lib", ".cotal-generations", "deadbeef");
+  const fakeGen = join(npmHome, ".npm-global", "lib", ".cotal-generations", "deadbeef");
   mkdirSync(fakeGen, { recursive: true });
   writeFileSync(join(fakeGen, "inventory.json"), "[]");
-  const npmRemove = spawnSync("/bin/sh", ["-c", `set -eu\nexport PATH="$HOME/.local/bin:$PATH"\n${removeSteps}`], { env: npmEnv, encoding: "utf8", timeout: 30_000 });
+  const npmRemove = spawnSync("/bin/sh", ["-c", `set -eu\n${removeSteps}`], { env: npmEnv, encoding: "utf8", timeout: 30_000 });
   assert.equal(npmRemove.status, 0, output(npmRemove));
-  assert(!existsSync(join(npmHome, ".local", "lib", ".cotal-generations")), "documented npm removal deletes .cotal-generations");
-  assert(!existsSync(join(npmHome, ".local", "bin", "cotal")), "documented npm removal deletes the cotal executable");
+  assert(!existsSync(join(npmHome, ".npm-global", "lib", ".cotal-generations")), "documented npm removal deletes .cotal-generations");
+  assert(!existsSync(join(npmHome, ".npm-global", "bin", "cotal")), "documented npm removal deletes the npm executable");
+  assert.equal(readFileSync(shellLauncher, "utf8"), shellLauncherBody, "npm removal leaves the shell launcher intact");
   console.log("NPM INSTALL: documented user-owned prefix, PATH, and uninstall commands passed with real npm (offline package)");
 
   const shadow = fixture("shadow");
@@ -121,6 +130,58 @@ try {
   const quote = (value: string): string => "'" + value.replaceAll("'", "'\\''") + "'";
   for (const command of ["setup", "up --detach", "spawn"])
     assert(output(shadowed).includes(`${quote(join(shadow.newBin, "cotal"))} ${command}`), `installer next step uses its absolute safely quoted executable: ${command}`);
+
+  if (process.platform === "linux") {
+    const installForBash = (f: ReturnType<typeof fixture>) => spawnSync("/bin/sh", [driver, library], {
+      env: { ...f.env, PATH: toolPath, FIXTURE_MODIFY_PATH: "1" }, encoding: "utf8",
+    });
+    const bash = (f: ReturnType<typeof fixture>, flags: string, command: string) => spawnSync("/bin/bash", [flags, `test "$HOME" = "$1" && ${command}`, "bash", f.home], {
+      env: { ...f.env, PATH: toolPath }, encoding: "utf8", timeout: 10_000,
+    });
+    const clean = fixture("clean-bash");
+    const cleanInstall = installForBash(clean);
+    assert.equal(cleanInstall.status, 0, output(cleanInstall));
+    assert(output(cleanInstall).includes("PATH updated in ~/.bashrc, ~/.profile"));
+    for (const flags of ["-ilc", "-ic"]) {
+      const shell = bash(clean, flags, "cotal --version");
+      assert.equal(shell.status, 0, output(shell));
+      assert.equal(shell.stdout.trim(), "cotal-ai 0.82.2");
+    }
+
+    const existing = fixture("existing-bash");
+    const previousRc = '# cotal\nexport PATH=' + quote(existing.newBin) + ':"$PATH"\n';
+    writeFileSync(join(existing.home, ".bashrc"), previousRc);
+    const login = join(existing.home, ".bash_login");
+    writeFileSync(login, 'printf "bash login ran\\n"\n. "$HOME/.bashrc"\n');
+    writeFileSync(join(existing.home, ".profile"), 'printf "wrong profile\\n"\n');
+    const existingInstall = installForBash(existing);
+    assert.equal(existingInstall.status, 0, output(existingInstall));
+    assert(output(existingInstall).includes("PATH updated in ~/.bash_login"));
+    const existingLogin = bash(existing, "-ilc", 'cotal --version && printf "%s\\n" "$PATH"');
+    assert.equal(existingLogin.status, 0, output(existingLogin));
+    const [profileRan, installedVersion, loginPath] = existingLogin.stdout.trim().split("\n");
+    assert.equal(profileRan, "bash login ran");
+    assert.equal(installedVersion, "cotal-ai 0.82.2");
+    assert.equal(loginPath.split(":").filter((dir) => dir === existing.newBin).length, 1);
+    const loginBefore = readFileSync(login, "utf8");
+    const rerun = installForBash(existing);
+    assert.equal(rerun.status, 0, output(rerun));
+    assert.equal(readFileSync(join(existing.home, ".bashrc"), "utf8"), previousRc);
+    assert.equal(readFileSync(login, "utf8"), loginBefore);
+    assert(!existsSync(join(existing.home, ".bash_profile")), "installer does not mask an existing .bash_login");
+
+    const linked = fixture("linked-bash");
+    const outsideProfile = join(root, "outside-profile");
+    writeFileSync(outsideProfile, "# do not change\n");
+    symlinkSync(outsideProfile, join(linked.home, ".bash_profile"));
+    const linkedInstall = installForBash(linked);
+    assert.equal(linkedInstall.status, 0, output(linkedInstall));
+    assert(output(linkedInstall).includes("Add that export to: ~/.bash_profile"));
+    assert(output(linkedInstall).includes("PATH updated in ~/.bashrc"));
+    assert.equal(readFileSync(outsideProfile, "utf8"), "# do not change\n");
+    assert(!existsSync(join(linked.home, ".profile")), "installer does not bypass the active login file");
+    console.log("BASH PATH: clean login and non-login shells, existing profile, reinstall, and an external profile symlink passed");
+  }
 
   const broken = fixture("broken");
   const crashed = spawnSync("/bin/sh", [driver, library], { env: { ...broken.env, FIXTURE_CRASH: "1", PATH: `${broken.newBin}:${toolPath}` }, encoding: "utf8" });
@@ -231,6 +292,27 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(stageRun("0.0.3").status, 0, "a later working requested release still installs");
   assert.equal(spawnSync(launcher, ["--version"], { env: stagingEnv, encoding: "utf8" }).stdout.trim(), "cotal-ai 0.0.3");
 
+  const systemBin = join(staged.home, "system-bin");
+  mkdirSync(systemBin);
+  const stableNode = join(systemBin, "node");
+  for (const name of ["node-22", "node-24"])
+    writeFileSync(join(systemBin, name), `#!/bin/sh\nexec ${quote(process.execPath)} "$@"\n`, { mode: 0o755 });
+  symlinkSync("node-22", stableNode);
+  const switchedEnv = { ...stagingEnv, PATH: `${systemBin}:${stagingEnv.PATH}`, FIXTURE_NODE: stableNode, FIXTURE_TARGET: "0.0.3" };
+  const linked = spawnSync("/bin/sh", [stagingDriver, library], { env: switchedEnv, encoding: "utf8", timeout: 90_000 });
+  assert.equal(linked.status, 0, output(linked));
+  assert.equal(readlinkSync(join(prefix, "nodebin/node")), stableNode, "installer keeps the stable executable path");
+  rmSync(stableNode);
+  symlinkSync("node-24", stableNode);
+  rmSync(join(systemBin, "node-22"));
+  const afterSwitch = spawnSync(launcher, ["--version"], { env: switchedEnv, encoding: "utf8" });
+  assert.equal(afterSwitch.status, 0, output(afterSwitch));
+  assert.equal(afterSwitch.stdout.trim(), "cotal-ai 0.0.3", "the unchanged launcher works after a system runtime switch");
+  rmSync(stableNode);
+  const missingNode = spawnSync(launcher, ["--version"], { env: switchedEnv, encoding: "utf8" });
+  assert.equal(missingNode.status, 1, output(missingNode));
+  assert.match(missingNode.stderr, /Repair it by re-running the installer/);
+
   // Real runtime discovery and linking, including relative links and nodebin on PATH.
   const runtimeHome = join(root, "runtime home's");
   const runtimeBin = join(runtimeHome, "runtime", "bin");
@@ -303,7 +385,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: 69, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 99 : 78, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

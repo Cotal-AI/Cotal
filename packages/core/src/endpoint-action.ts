@@ -1353,17 +1353,17 @@ export async function readGoalIndex(ctx: ActionContext, ref: GoalRef): Promise<G
 }
 
 /** Enumerate the endpoint's in-flight reconcile index over a RAW records KV: a successor's boot
- *  sweep opens it with the PROVISIONER credential (records CONSUMER.CREATE), never the goal-writer
- *  (which holds no enumeration grant), and settles each unterminal goal so an accepted goal is
+ *  sweep uses the PROVISIONER credential to create and delete the scan consumer. The goal-writer
+ *  has no enumeration grant. The sweep settles each unterminal goal so an accepted goal is
  *  never dropped across a manager restart. Returns each recorded GoalRef + the accepting `iid` (the
  *  hook a multi-instance sweep filters on so it never settles a live sibling's goal). */
 export async function listGoalIndex(kv: KV, endpoint: string): Promise<{ ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }[]> {
+  // The scan imports the endpoint's permission classifier. Load it after endpoint initialization.
+  const { liveKvEntries } = await import("./kv-scan.js");
   const filter = `${RECORD_KINDS.goalidx.kind}.${endpointToken(endpoint)}.>`;
   const out: { ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }[] = [];
-  for await (const key of await kv.keys(filter)) {
-    const e = await kv.get(key);
-    if (!e || e.operation !== "PUT") continue; // deleted/absent since the key listed: terminal already cleared
-    const v = parseGoalIndexEntry(decodeRecordJson(e.value, key), key);
+  for (const e of await liveKvEntries(kv, filter)) {
+    const v = parseGoalIndexEntry(decodeRecordJson(e.value, e.key), e.key);
     out.push({
       ref: { endpoint: v.endpoint, caller: { owner: v.owner, actor: v.actor, uid: v.uid }, goalId: v.goalId },
       iid: v.iid,

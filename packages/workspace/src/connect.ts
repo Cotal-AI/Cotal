@@ -36,13 +36,16 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
-import { tlsIntent } from "./broker-url.js";
+import { checkServer, tlsIntent } from "./broker-url.js";
 import { c, paintFor } from "./colors.js";
 import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { canonicalRoot, findMesh, movedProject, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
-import { isWorkspaceTargetError, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
+import { isWorkspaceTargetError, preparedLifecycle, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
+import { findPreparedSpace } from "./prepared-spaces.js";
+import { shellPath } from "./local-record-source.js";
+import { codeSpan } from "./text-wrap.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type NativeCause, type RefusalCode } from "./output.js";
@@ -665,7 +668,23 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
         { code: "TARGET_NOT_FOUND" },
       );
     const tls = tlsIntent(flags.server, false);
-    await reachableOrThrow(flags.server, { tls });
+    try {
+      await reachableOrThrow(flags.server, { tls });
+    } catch (error) {
+      if (!isConnectRefusal(error) || error.code !== "TARGET_UNAVAILABLE") throw error;
+      // Preparation can guide recovery, but it must not affect which broker we dial.
+      const prepared = findPreparedSpace(flags.space);
+      const at = checkServer(flags.server, "--server").ok && !flags.server.includes(",") ? new URL(flags.server) : undefined;
+      const local = prepared && existsSync(prepared.root) && at?.protocol === "nats:" && at.hostname === "127.0.0.1" && at.port && at.port !== "0"
+        && preparedLifecycle(prepared.root, flags.space).state === "prepared";
+      const command = local && codeSpan(`cotal up --root ${shellPath(prepared.root)} --space ${shellPath(flags.space)} --server ${shellPath(flags.server)}`);
+      const remedy = command ? `if you meant to start the prepared space here, run ${command}. Otherwise, check that address and that a broker runs there` : "check that address and that a broker runs there";
+      const message = error.failure().message;
+      throw new ConnectRefusal(`✗ ${message} - ${remedy}`, undefined, {
+        cause: error, kind: error.kind, code: error.code, parts: { message, remedy },
+        target: { space: flags.space, ...(prepared ? { root: prepared.root } : {}) },
+      });
+    }
     return { server: flags.server, space: flags.space, tls };
   }
   const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline, readOnly: opts.readOnly });

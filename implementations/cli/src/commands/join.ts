@@ -49,16 +49,16 @@ export function joinPeerLabel(card: { name: string; id?: string; role?: string }
 // refusal instead of a raw NATS stack. Shared by the self-mint provisioning step (which runs
 // BEFORE ep.start) and ep.start itself. Known TLS negotiation refusal is classified here too.
 // Unexpected failures still propagate unchanged.
-function joinAuthFailure(e: unknown, space: string, credsLifecycle?: string): CommandFailure | undefined {
+function joinAuthFailure(e: unknown, space: string, credential?: { lifecycleUid: string; channel: string }): CommandFailure | undefined {
   const msg = (e as Error)?.message ?? String(e);
   const missingInbox = e instanceof DmDurableMissingError || /consumer not found|no responders|not provisioned/i.test(msg);
   if (msg === "server does not support 'tls'")
     return new CommandFailure("refused", "UNSUPPORTED", `TLS is required to join ${space}, but this server does not support TLS`, { remedy: "ask the mesh operator for its TLS-enabled broker address" });
   // A --creds join binds the inbox its lifecycle was provisioned with. A credential minted without
   // --provision has none, and neither `cotal up` nor another --creds can make one from here.
-  if (credsLifecycle !== undefined && missingInbox)
-    return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} has no inbox provisioned for this credential's lifecycle ${credsLifecycle}, so it cannot join with it`, {
-      remedy: "ask the space's owner to mint the credential with `cotal auth mint <name> --provision`, then join with the lifecycle UID that mint reports",
+  if (credential !== undefined && missingInbox)
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} has no inbox provisioned for this credential's lifecycle ${credential.lifecycleUid}, so it cannot join with it`, {
+      remedy: credentialInboxRemedy(space, credential.channel),
     });
   if (missingInbox)
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} isn't provisioned for a console session yet`, { remedy: "run `cotal up` first, or join with --creds/--token" });
@@ -76,6 +76,11 @@ function joinAuthFailure(e: unknown, space: string, credsLifecycle?: string): Co
     });
   }
   return undefined;
+}
+
+function credentialInboxRemedy(space: string, channel: string): string {
+  const read = `--allow-subscribe ${shellWord(channel)}`;
+  return `ask the space's owner to mint the credential with \`cotal auth mint <name> --provision ${read} --space ${shellWord(space)} --no-persona --out <file>\`, then join with the lifecycle UID that mint reports. To keep the original grants, replace \`${read}\` with \`--identity <original-file>\``;
 }
 
 /** Diagnose the lifecycle-keyed grants of a static agent credential. The broker still
@@ -437,8 +442,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     if (leaving) return;
     leaving = true;
     if (lifetimeTimer !== undefined) clearTimeout(lifetimeTimer);
-    print(c.dim("leaving…"));
     rl?.close();
+    print(c.dim("leaving…"));
     try { await ep.stop(); } catch { /* closing */ }
     await leaveSeat();
     if (code === 0) {
@@ -482,7 +487,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       return lose(new CommandFailure("refused", "TARGET_NOT_FOUND", "this join can no longer reconnect: its inbox is gone from the broker", {
         target: { space },
         remedy: values.creds
-          ? "ask the space's owner to mint the credential again with `cotal auth mint <name> --provision`, then join with the lifecycle UID that mint reports"
+          ? credentialInboxRemedy(space, channel)
           : "run the same `cotal join` again to start a new session",
       }));
     print(c.yellow(`! ${e.message}`));
@@ -504,7 +509,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     await leaveSeat();
     // A bare `cotal join` binds a durable DM inbox nobody pre-created on an unprovisioned space;
     // surface that (and an auth reject) as ONE classified refusal, not a raw NATS stack.
-    throw joinAuthFailure(e, space, values.creds ? lifecycleUid : undefined) ?? e;
+    throw joinAuthFailure(e, space, values.creds ? { lifecycleUid: lifecycleUid!, channel } : undefined) ?? e;
   }
   started = true;
   if (mintedFrom !== undefined && expiresAt !== undefined) {
@@ -545,7 +550,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
           others.map((p) => who(p.card) + " " + statusBadge(p.status) + presenceDetail(p)).join(c.dim(", ")),
       );
   }, 400);
-  rl.prompt();
+  if (!leaving && !rlClosed) rl.prompt();
 
   const setStatus = async (status: PresenceStatus, activity?: string) => {
     if (activity) await ep.setActivity(activity);
@@ -555,6 +560,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   };
 
   rl.on("line", async (raw) => {
+    if (leaving || rlClosed) return;
     const line = raw.trim();
     if (!line) {
       rl.prompt();
@@ -626,9 +632,9 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
         }
       }
     } catch (e) {
-      print(c.red(`! ${(e as Error).message}`));
+      if (!leaving) print(c.red(`! ${(e as Error).message}`));
     }
-    rl.prompt();
+    if (!leaving && !rlClosed) rl.prompt();
   });
   await Promise.race([whenLost(), sessionFinished]);
 }

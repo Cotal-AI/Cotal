@@ -50,16 +50,16 @@
     },
     {
       "name": "the delivery cred loses the timer-writer consumer rows",
-      "file": "packages/core/src/provision-permissions.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "    ...timerWriterGrants(space),",
-      "replace": "    ...([] as string[]),",
+      "replace": "    ...(void timerWriterGrants, [] as string[]),",
       "expectRed": "the daemon's timer writer armed the parked .schedule (no manual pump ran)",
       "cell": "the daemon's timer writer armed the parked .schedule (no manual pump ran)",
       "note": "The shared grant set the pump binds with, removed at its one delivery consumer. The writer's bind is broker-denied, the supervised loop retries loudly, and nothing ever arms. Measured 2026-09-02: the arm cell reds first and the 'timer writer up' cell reds with it; 5 passed, 7 failed. Kills the row-set half of the permission story."
     },
     {
       "name": "the delivery cred loses the .armed publish row",
-      "file": "packages/core/src/provision-permissions.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "    `${p}.ept.*.*.*.*.armed`,",
       "replace": "    ...([] as string[]),",
       "expectRed": "the daemon's timer writer armed the parked .schedule (no manual pump ran)",

@@ -1,5 +1,17 @@
 # @cotal-ai/connector-codex
 
+## 0.171.0
+
+### Patch Changes
+
+- 7ff146c: Codex setup lists its configuration and plugin files in the JSON receipt, status reports disabled plugins, and updates leave read-only Codex configuration unchanged.
+
+## 0.170.0
+
+### Minor Changes
+
+- e6c3224: The Codex connector no longer exports its internal `codexMarketplaceDir` and `materializeCodexPlugin` helpers, which does not change plugin setup or refresh.
+
 ## 0.169.0
 
 ### Minor Changes

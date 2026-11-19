@@ -21,6 +21,7 @@ import { earlierMessages } from "./send.js";
 import { deniedWrite } from "../lib/denied-write.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
+import { channelHistoryCommand } from "../lib/history-command.js";
 import { declaredFrom } from "./send.js";
 
 export const channelFlags = [
@@ -59,7 +60,7 @@ function patch(values: Values): ChannelConfig {
   return {
     ...(values.replay !== undefined ? { replay: values.replay } : {}),
     ...(values["no-replay"] ? { replay: false } : {}),
-    ...(values.window !== undefined ? { replayWindow: values.window } : {}),
+    ...(values.window !== undefined ? { replayWindow: values.window.trim() } : {}),
     ...(delivery !== undefined ? { deliveryClass: delivery } : {}),
     ...(values.desc !== undefined ? { description: values.desc } : {}),
     ...(values.instructions !== undefined ? { instructions: values.instructions } : {}),
@@ -253,7 +254,7 @@ function registryView(result: { action: string; name?: string; space: string; re
     return { sections: [
       { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", undecodable ? "not decoded" : config ? "configured" : "no saved entry"], ...policyFields(config, registry.defaults), ["Description", config?.description || "not set"]] }, ...(undecodable ? [{ kind: "lines" as const, lines: [{ text: `The saved entry does not decode (${undecodable.error}). The key was left as it is, and the channel resolves to the default policy.`, tone: "waiting" as const }] }] : [])] },
       ...(config?.instructions ? [{ title: "Instructions · advisory", blocks: [{ kind: "lines" as const, lines: config.instructions.split(/\r?\n/) }] }] : []),
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch members ${name}`, description: "Read broker-observed membership" }, { command: `cotal history ${name}`, description: "Read retained messages within your grant" }] }] },
+      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch members ${name}`, description: "Read broker-observed membership" }, { command: channelHistoryCommand(name!), description: "Read retained messages within your grant" }] }] },
     ] };
   }
   if (result.action === "defaults") {

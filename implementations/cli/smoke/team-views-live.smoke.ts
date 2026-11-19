@@ -5,6 +5,7 @@
  *  A. `team`, `team show <id>`, `team deploy --dry-run`, `team boot --dry-run` and
  *     `team remove <id> --dry-run` each exit 0 with outcome `ok` and `completeness` `partial`, and
  *     the report says what the read does not establish, with no failure line on stderr.
+ *     An unreadable record makes the inventory exit 4 without losing readable deployments.
  *  B. a card without `deliveryClass: live`: the apply refuses `UNSUPPORTED`, names the cards and
  *     says what to set, and its preview warns `LIVE_DELIVERY_REQUIRED` for the same cards.
  *  C. a reapply of the identical settled deployment is a no-op, and the preview says so instead of
@@ -86,6 +87,24 @@ manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, { head
 
 let up = false, bUp = false;
 try {
+  const noApplications = join(base, "no-applications");
+  mkdirSync(noApplications);
+  manifest("claude.yaml", OTHER, { general: "    subscribe: [planner]\n" }, {
+    dir: c, server: SERVER_OTHER, head: "agent: claude\nagents:\n  planner:\n    instructions: Make a plan.\n",
+  });
+  const extension = cotal(c, "ext", "add", join(WT, "extensions", "connector-claude-code"));
+  check("the workspace Claude connector installs into the sandbox", extension.status === 0, extension.out);
+  const withoutApplications = (...args: string[]) => spawnSync(process.execPath, [join(WT, "bin", "dist", "cotal.js"), ...args],
+    { cwd: c, env: { ...env, PATH: noApplications }, encoding: "utf8", timeout: 180_000 });
+  const graph = withoutApplications("team", "check", "claude.yaml", "--graph");
+  check("team check renders the graph with Claude absent from PATH", graph.status === 0 && graph.stdout.includes("planner"), graph);
+  const preview = withoutApplications("team", "boot", "claude.yaml", "--dry-run");
+  check("team boot previews the declared agents with Claude absent from PATH",
+    preview.status === 0 && preview.stdout.includes("Requested agents") && preview.stdout.includes("planner"), preview);
+  const refusedUp = withoutApplications("up", "-f", "claude.yaml", "--dry-run", "--server", SERVER_OTHER);
+  check("up -f --dry-run refuses before printing a plan with Claude absent from PATH",
+    refusedUp.status === 1 && refusedUp.stdout === "" && refusedUp.stderr.includes("connector preflight failed: claude needs claude on PATH"), refusedUp);
+
   check("space create prepares the folder", cotal(s, "space", "create", SPACE).status === 0);
   up = true;
   const started = cotal(s, "up", "--server", SERVER);
@@ -106,6 +125,22 @@ try {
   check("team exits 0 and says the inventory is not complete",
     reported(inventory, "do not establish a complete historical or live team inventory"), inventory.out.slice(-800));
   check("team --json is ok and partial in completeness", answered(cotal(s, "team", "--json")));
+  const malformed = join(realpathSync(s), ".cotal", "team-boot-attempt-abcdef0123456789.json");
+  writeFileSync(malformed, "{\n", { mode: 0o600 });
+  try {
+    const partial = cotal(s, "team", "--json");
+    const result = envelope(partial.stdout);
+    const items = result?.result?.items;
+    check("team --json exits 4 and retains readable deployments and the unreadable path",
+      partial.status === 4 && partial.stderr === "" && result?.outcome === "partial" && result.completeness === "partial" &&
+      result.error?.code === "OPERATION_PARTIAL" && Array.isArray(items) && items.some((item) => item.deploymentId === deployment) &&
+      result.warnings?.some((warning) => warning.code === "DEPLOYMENT_RECORD_UNREADABLE" && warning.target.path === malformed) === true, partial.out);
+    const plain = cotal(s, "team", "--plain");
+    check("team --plain exits 4 and keeps the inventory and warning",
+      plain.status === 4 && plain.stdout.includes(deployment) && plain.stderr.includes("A local deployment record could not be read or validated"), plain.out);
+  } finally {
+    rmSync(malformed);
+  }
   const shown = cotal(s, "team", "show", deployment);
   check("team show <id> exits 0 and says the receipt is historical",
     reported(shown, "This is historical, not current broker state"), shown.out.slice(-800));

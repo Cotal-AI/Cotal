@@ -640,6 +640,8 @@ try {
     const status = cli(root, "status", "--json");
     const full = status.env?.result?.store as { state?: string; used?: number; cap?: number; path?: string } | undefined;
     check("status --json shows the store full with its bytes, cap and path", status.status === 0 && full?.state === "full" && full.cap === 70000000 && (full.used ?? 0) > 70000000 && full.path === store, { status: status.status, store: full });
+    const components = cli(root, "status", "--components");
+    check("component health grades a reachable broker with a full store not-serving", components.status !== 0 && /broker\s+not-serving/.test(components.stdout) && components.stdout.includes("store full:"), shown(components));
     const plain = cli(root, "status", "--plain");
     const fullNext = plain.stdout.slice(plain.stdout.indexOf("\nNext\n"));
     check("status shows a full Store row, and its Next names the larger cap and no history clear", /Store: +full - \d+ bytes stored, over its --max-file-store cap of 70000000/.test(plain.stdout) && fullNext.includes("up --max-file-store <bytes>") && !fullNext.includes("history clear"), plain.stdout);

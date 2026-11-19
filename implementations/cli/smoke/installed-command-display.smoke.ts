@@ -1,7 +1,7 @@
 /** Installed command suggestions remain runnable when the installer's launcher is off PATH. */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { resolveOnPath } from "@cotal-ai/workspace";
@@ -89,6 +89,36 @@ const space = "command-display";
 let attempted = false;
 try {
   suite.check("fixture PATH has no cotal, pnpm, npm or node", ["cotal", "pnpm", "npm", "node"].every((name) => !resolveOnPath(name, env)));
+  const customCache = join(sandbox, "custom-pnpm-cache"), empty = join(sandbox, "empty-project");
+  mkdirSync(empty);
+  for (const [name, modules, prefix] of [
+    ["default pnpm dlx", join(sandbox, "pnpm", "dlx", "hash", "run", "node_modules"), "pnpm dlx cotal-ai"],
+    ["custom-cache pnpm dlx", join(customCache, "dlx", "hash", "run", "node_modules"), "pnpm dlx cotal-ai"],
+    ["npx", join(sandbox, "_npx", "hash", "node_modules"), "npx cotal-ai"],
+  ] as const) {
+    const pkg = join(modules, "cotal-ai"), shims = join(modules, ".bin");
+    mkdirSync(shims, { recursive: true });
+    mkdirSync(pkg);
+    cpSync(join(repo, "bin", "dist"), join(pkg, "dist"), { recursive: true });
+    cpSync(join(repo, "bin", "package.json"), join(pkg, "package.json"));
+    symlinkSync(join(repo, "bin", "node_modules"), join(pkg, "node_modules"));
+    const entry = join(pkg, "dist", "cotal.js");
+    chmodSync(entry, 0o755);
+    symlinkSync(entry, join(shims, "cotal"));
+    const runFromCache = (args: string[], path = `${shims}:${tools}`) => spawnSync(process.execPath, [entry, ...args], {
+      cwd: empty, env: { ...env, PATH: path, npm_config_cache_dir: customCache }, encoding: "utf8", timeout: 60_000,
+    });
+    const card = runFromCache([]);
+    suite.check(`${name} card keeps its runner for every command row`, card.status === 0 &&
+      card.stdout.includes(`  ${prefix} setup `) && card.stdout.includes(`  ${prefix} status `) &&
+      card.stdout.includes(`  ${prefix} help `) && !/^  cotal /m.test(card.stdout), card);
+    const status = runFromCache(["status", "--plain"]);
+    suite.check(`${name} status suggests its runner, not the transient shim`, status.status === 0 &&
+      status.stdout.includes(`  ${prefix} login `) && status.stdout.includes(`  ${prefix} setup `) &&
+      status.stdout.includes(`\`${prefix} up\` in a project`), status);
+    const onPath = runFromCache([], `${shims}:${env.COTAL_BIN_DIR}:${tools}`);
+    suite.check(`${name} card prefers a durable cotal when present`, onPath.status === 0 && onPath.stdout.includes("  cotal status "), onPath);
+  }
   const prepared = run(["space", "create", space, "--root", root, "--json"]);
   if (prepared.code !== 0) throw new Error(`preparation failed: ${prepared.output}`);
   attempted = true;

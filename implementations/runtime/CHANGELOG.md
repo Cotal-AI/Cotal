@@ -1,5 +1,55 @@
 # @cotal-ai/runtime
 
+## 0.171.0
+
+### Patch Changes
+
+- f2f8058: Hosted workflow starts include syntax diagnostics in JSON refusals, and simulations reject invalid handoff destinations, nonnumeric clock starts, and duplicate script keys.
+- 95f1f36: The `cotal run show` help now explains that `--limit` applies only to text output and cannot be combined with `--json`.
+- 18044e7: Separate the mesh handler's turn and ask clients into an internal module without changing the runtime API.
+- Updated dependencies [edd19cc]
+- Updated dependencies [7ff146c]
+- Updated dependencies [725bd24]
+- Updated dependencies [bbea1c9]
+- Updated dependencies [3a01e61]
+- Updated dependencies [00fcd05]
+- Updated dependencies [11555a1]
+- Updated dependencies [67a59e9]
+- Updated dependencies [1a51b71]
+- Updated dependencies [f2f8058]
+- Updated dependencies [f976f2f]
+- Updated dependencies [58dcdc6]
+- Updated dependencies [3cae462]
+  - @cotal-ai/core@0.171.0
+  - @cotal-ai/workspace@0.171.0
+  - @cotal-ai/lang@0.171.0
+
+## 0.170.0
+
+### Patch Changes
+
+- a9e235f: Workflow plans report the correct call-site line numbers for every JavaScript line ending.
+- 49f387d: Quote option values in CLI corrections so they can be pasted into a shell, and show the required status and handoff destination when `cotal run yield` is missing a turn ID.
+- a171c3e: Workflow simulations now name the results file and explain what to correct when a scripted checkpoint result is invalid.
+- ee44b80: Separate the mesh handler's pause timers and settlement into an internal module without changing the runtime API.
+- 78b79b8: Separate the mesh handler's checkpoint relay and presence watch into an internal module without changing the runtime API.
+- 20ff353: Hosted workflows resume from their journals when JetStream returns after a broker outage interrupts a journal write.
+- Updated dependencies [c701881]
+- Updated dependencies [ad6d984]
+- Updated dependencies [3afefa8]
+- Updated dependencies [0e42b19]
+- Updated dependencies [dd478d4]
+- Updated dependencies [6170fc9]
+- Updated dependencies [8c965ac]
+- Updated dependencies [b73a8de]
+- Updated dependencies [2b1659e]
+- Updated dependencies [07978b3]
+- Updated dependencies [20ff353]
+- Updated dependencies [3e748e8]
+  - @cotal-ai/workspace@0.170.0
+  - @cotal-ai/core@0.170.0
+  - @cotal-ai/lang@0.170.0
+
 ## 0.169.0
 
 ### Patch Changes

@@ -25,7 +25,7 @@
  */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -53,7 +53,7 @@ import {
   serveIssuanceGateKv,
   writeServiceStatus,
 } from "@cotal-ai/core";
-import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, defaultStartToken, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
+import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, defaultStartToken, deliveryCredsKey, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -74,6 +74,7 @@ const store = join(root, "jetstream");
 // managed `.cotal` directories and COTAL_HOME, where an explicit credential export is refused.
 const WEB_SPACE = "component-health-web";
 const webRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-health-web-root-`));
+const openRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-health-open-root-`));
 const controllerRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-health-controller-root-`));
 const credsDir = mkdtempSync(join(tmpdir(), "cotal-component-health-creds-"));
 // `cotal up` and `cotal service start` below leave the stack and the dashboard in `webRoot` but
@@ -82,6 +83,7 @@ const credsDir = mkdtempSync(join(tmpdir(), "cotal-component-health-creds-"));
 const sandboxes = new Map([
   [root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome })],
   [webRoot, recordSmokeSandbox({ root: webRoot, cotalHome: home, xdgConfigHome })],
+  [openRoot, recordSmokeSandbox({ root: openRoot, cotalHome: home, xdgConfigHome })],
   [controllerRoot, recordSmokeSandbox({ root: controllerRoot, cotalHome: home, xdgConfigHome })],
 ]);
 
@@ -112,9 +114,9 @@ function cli(...args: string[]) {
   return cliIn(root, args);
 }
 
-function cliIn(cwd: string, args: string[], timeout = 30_000) {
-  assertSmokeSandboxDown(sandboxes.get(cwd), args, { cwd, env });
-  return spawnSync(TSX, [CLI, ...args], { cwd, env, encoding: "utf8", timeout });
+function cliIn(cwd: string, args: string[], timeout = 30_000, childEnv = env) {
+  assertSmokeSandboxDown(sandboxes.get(cwd), args, { cwd, env: childEnv });
+  return spawnSync(TSX, [CLI, ...args], { cwd, env: childEnv, encoding: "utf8", timeout });
 }
 
 async function cliAsync(...args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
@@ -335,6 +337,7 @@ const server = `nats://127.0.0.1:${port}`;
 let broker: ChildProcess | undefined;
 let holder: ChildProcess | undefined;
 let webStack = false;
+let openStack = false;
 let webService = false;
 let delivery: ChildProcess | undefined;
 let servingManager: { close(): Promise<void> } | undefined;
@@ -472,11 +475,73 @@ try {
   check("a healthy default stack exits 0 with the installed dashboard not-started",
     notStarted.status === 0 && /web\s+not-started · optional/.test(notStartedText) &&
       ["manager", "delivery", "broker"].every(name => new RegExp(`${name}\\s+serving`).test(notStartedText)), notStartedText);
+  const managerGuidance = (cwd: string) => {
+    const roster = cliIn(cwd, ["ps", "--json"]);
+    const manager = (JSON.parse(roster.stdout) as { result: { managers: { instanceId: string }[] } }).result.managers[0]!.instanceId;
+    for (const name of ["manager", manager]) {
+      const read = cliIn(cwd, ["status", name, "--plain"]);
+      check(`status ${name === "manager" ? "manager" : "manager instance"} explains the answering manager is not an agent`,
+        read.status === 2 && `${read.stdout}${read.stderr}`.includes(`${name} is this space's manager, which is answering, not an agent it runs`), `${read.stdout}${read.stderr}`);
+    }
+  };
+  managerGuidance(webRoot);
+  if (process.platform !== "win32") {
+    const deliveryCreds = join(webRoot, ".cotal", deliveryCredsKey(WEB_SPACE, { injected: false, root: webRoot }));
+    chmodSync(deliveryCreds, 0o644);
+    try {
+      const doctor = cliIn(webRoot, ["doctor", "auth", "--plain"]);
+      check("doctor auth refuses the exposed managed delivery credential", doctor.status === 5 && `${doctor.stdout}${doctor.stderr}`.includes("chmod 600"), `${doctor.stdout}${doctor.stderr}`);
+      for (const output of ["--plain", "--json"]) {
+        const report = cliIn(webRoot, ["status", output]);
+        const text = `${report.stdout}${report.stderr}`;
+        check(`status ${output} reports the delivery credential gap with its native repair`, report.status === 4 && text.includes("mode 0644") && text.includes("chmod 600") && text.includes("delivery.creds"), text);
+      }
+      const health = cliIn(webRoot, ["status", "--components"]);
+      const text = `${health.stdout}${health.stderr}`;
+      check("component health refuses delivery instead of dropping holder attribution", health.status === 3 && /delivery\s+refused/.test(text) && text.includes("chmod 600"), text);
+    } finally { chmodSync(deliveryCreds, 0o600); }
+    const repaired = cliIn(webRoot, ["status", "--components"]);
+    check("private delivery credentials restore serving health", repaired.status === 0 && /delivery\s+serving/.test(repaired.stdout), `${repaired.stdout}${repaired.stderr}`);
+  }
   const creds = join(credsDir, "dashboard.creds");
   // The admin profile is the one the dashboard connected with before it became a service.
   const minted = cliIn(webRoot, ["auth", "mint", "dashboard", "--profile", "admin", "--out", creds, "--space", WEB_SPACE]);
   check("the dashboard's protected credential file is minted", minted.status === 0 && existsSync(creds), `${minted.stdout}${minted.stderr}`);
   const webPort = await freePort();
+  check("space create prepares an open controller stack", cliIn(openRoot, ["space", "create", "component-health-open"]).status === 0);
+  const openUp = cliIn(openRoot, ["up", "--open", "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
+  openStack = openUp.status === 0;
+  check("an open controller stack starts", openStack, `${openUp.stdout}${openUp.stderr}`);
+  const openHealth = cliIn(openRoot, ["status", "--components"]);
+  const openText = `${openHealth.stdout}${openHealth.stderr}`;
+  check("a healthy open stack needs no delivery daemon and exits zero", openHealth.status === 0 && /delivery\s+not-started.*not used on an open mesh/.test(openText) && /broker\s+serving/.test(openText) && /manager\s+serving/.test(openText), openText);
+  managerGuidance(openRoot);
+  const openDown = cliIn(openRoot, ["down", "--yes"], 120_000);
+  openStack = openDown.status !== 0;
+  check("the open controller stack stops", openDown.status === 0, `${openDown.stdout}${openDown.stderr}`);
+  const stoppedStore = (cwd: string) => {
+    if (process.platform === "win32" || process.getuid?.() === 0) return;
+    const cleared = cliIn(cwd, ["use", "--clear"]);
+    check("clear the sibling selection before inspecting this stopped stack", cleared.status === 0, `${cleared.stdout}${cleared.stderr}`);
+    const store = join(cwd, ".cotal", "nats");
+    spawnSync("chmod", ["-R", "a-w", store]);
+    try {
+      for (const command of ["status", "ps"]) for (const output of ["--plain", "--json"]) {
+        const report = cliIn(cwd, [command, output]);
+        const text = `${report.stdout}${report.stderr}`;
+        check(`${command} ${output} names the stopped store permission repair before restart`,
+          report.status === (command === "status" ? 0 : 2) && text.includes("not writable by this account") && text.includes("chmod -R u+w") && !text.includes("reset store") && !text.includes("there to restart") && !/cotal up +Start this folder's stopped stack/.test(text), text);
+      }
+    } finally { spawnSync("chmod", ["-R", "u+rwX", store]); }
+  };
+  stoppedStore(openRoot);
+  const defaultDown = cliIn(webRoot, ["down", "--yes"], 120_000);
+  webStack = defaultDown.status !== 0;
+  check("stop the default stack before inspecting its retained store", defaultDown.status === 0, `${defaultDown.stdout}${defaultDown.stderr}`);
+  stoppedStore(webRoot);
+  const defaultUp = cliIn(webRoot, ["up", "--detach", "--space", WEB_SPACE], 120_000);
+  webStack = defaultUp.status === 0;
+  check("the default stack restarts after its store permission repair", webStack, `${defaultUp.stdout}${defaultUp.stderr}`);
   const added = cliIn(webRoot, ["service", "add", "web", "--preset", "web", "--space", WEB_SPACE, "--root", webRoot, "--creds", creds, "--read-only", "--port", String(webPort)]);
   webService = added.status === 0;
   check("service add saves the web preset for this stack", webService, `${added.stdout}${added.stderr}`);
@@ -677,17 +742,43 @@ try {
   const controllerSpace = "component-health-controller";
   const prepare = cliIn(controllerRoot, ["space", "create", controllerSpace]);
   check("prepare the controller health stack", prepare.status === 0, `${prepare.stdout}${prepare.stderr}`);
-  const controllerUp = cliIn(controllerRoot, ["up", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
+  const controllerServer = `nats://127.0.0.1:${await freePort()}`;
+  const controllerUp = cliIn(controllerRoot, ["up", "--no-manager", "--server", controllerServer], 120_000);
   controllerStack = controllerUp.status === 0;
   check("start the controller without a manager", controllerStack, `${controllerUp.stdout}${controllerUp.stderr}`);
   const omittedController = cliIn(controllerRoot, ["status", "--components", "--space", controllerSpace]);
   check("an intentionally omitted controller manager is not-started and exits 0",
     omittedController.status === 0 && /manager\s+not-started.*--no-manager/.test(omittedController.stdout), `${omittedController.stdout}${omittedController.stderr}`);
+  const slashController = cliIn(controllerRoot, ["status", "--components", "--space", controllerSpace, "--server", `${controllerServer}/`]);
+  const slashHealth = slashController.stdout.split("Component Health")[1] ?? "";
+  check("a trailing slash keeps the controller broker serving and its manager intentionally omitted",
+    slashController.status === 0 && /manager\s+not-started.*--no-manager/.test(slashHealth) && /broker\s+serving.*reachable/.test(slashHealth), `${slashController.stdout}${slashController.stderr}`);
+  const clientEnv = { ...env, COTAL_HOME: join(home, "manager-client") };
+  const clientAdd = cliIn(openRoot, ["space", "add", controllerSpace, "--server", controllerServer, "--root", controllerRoot], 30_000, clientEnv);
+  check("a second Cotal home can register the broker-only space", clientAdd.status === 0, `${clientAdd.stdout}${clientAdd.stderr}`);
+  for (const args of [["spawn", "-d"], ["stop", "sample"], ["attach", "sample"]]) {
+    const refused = cliIn(openRoot, [...args, "--space", controllerSpace]);
+    const text = `${refused.stdout}${refused.stderr}`;
+    check(`${args[0]} from another project names the project whose manager is missing`,
+      refused.status === 2 && text.includes("no manager is running for this space") && /Code:\s+TARGET_UNAVAILABLE/.test(text)
+        && text.includes(`bare \`cotal up\` in ${controllerRoot}`), text);
+    const remote = cliIn(openRoot, [...args, "--space", controllerSpace], 30_000, clientEnv);
+    const remoteText = `${remote.stdout}${remote.stderr}`;
+    check(`${args[0]} where the space is only registered tells the operator to start its manager there`,
+      remote.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(remoteText)
+        && remoteText.includes("start this space's manager where its stack runs") && !remoteText.includes("cotal up"), remoteText);
+  }
   const selectController = cliIn(controllerRoot, ["use", controllerSpace]);
   check("select the controller stack", selectController.status === 0, `${selectController.stdout}${selectController.stderr}`);
   const controllerDown = cliIn(controllerRoot, ["down", "--yes"], 120_000);
   controllerStack = controllerDown.status !== 0;
   check("stop the controller stack cleanly", !controllerStack, `${controllerDown.stdout}${controllerDown.stderr}`);
+  const pending = cliIn(controllerRoot, ["pending", "nobody", "--json"]);
+  const receipt = JSON.parse(pending.stdout) as { target?: { space?: string; root?: string; requested?: string }; error?: { code?: string; message?: string; remedy?: string } };
+  check("pending keeps the stopped-space diagnosis, the recipient, and the project's restart remedy",
+    pending.status === 2 && receipt.target?.requested === "nobody" && receipt.target.space === controllerSpace && receipt.target.root === controllerRoot
+      && receipt.error?.code === "TARGET_UNAVAILABLE" && receipt.error.message === `"${controllerSpace}" is stopped; its last operation, \`cotal down\`, completed`
+      && receipt.error.remedy === `start it again with \`cotal up\` in ${controllerRoot}`, receipt);
   const stoppedController = cliIn(controllerRoot, ["status", "--components"]);
   check("a cleanly stopped controller target is absent (1), not refused",
     stoppedController.status === 1 && /target\s+absent.*not-started/.test(stoppedController.stdout), `${stoppedController.stdout}${stoppedController.stderr}`);
@@ -773,11 +864,13 @@ try {
     cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
   }
   if (webStack) cliIn(webRoot, ["down", "--yes"], 120_000);
+  if (openStack) cliIn(openRoot, ["down", "--yes"], 120_000);
   await stop(holder);
   await stop(broker);
   rmSync(home, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
   rmSync(webRoot, { recursive: true, force: true });
+  rmSync(openRoot, { recursive: true, force: true });
   rmSync(credsDir, { recursive: true, force: true });
   rmSync(controllerRoot, { recursive: true, force: true });
 }

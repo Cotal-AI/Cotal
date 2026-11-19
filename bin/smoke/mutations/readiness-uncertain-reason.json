@@ -41,7 +41,7 @@
   "mutations": [
     {
       "name": "the manager drops the readiness detail it just built, so the terminal carries nothing to say",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });",
       "replace": "await hooks?.onOutcome?.({ kind: \"uncertain\", data: { ...(readiness.running ? { running: true } : {}) } });",
       "expectRed": "carrying the MANAGER's diagnosis",

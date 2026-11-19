@@ -1,5 +1,15 @@
 # @cotal-ai/connector-claude-code
 
+## 0.171.0
+
+No changes in this release.
+
+## 0.170.0
+
+### Patch Changes
+
+- 7e7f28a: Daemon-hosted Managers register the Claude Code wake channel before offering Claude Code installed after startup.
+
 ## 0.169.0
 
 ### Minor Changes

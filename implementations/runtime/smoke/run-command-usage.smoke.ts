@@ -283,11 +283,12 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const dir = mkdtempSync(join(tmpdir(), "run-simulate-script-"));
   const program = join(dir, "p.cotal.js");
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
-  const simulate = (script: unknown, values: Record<string, string | boolean> = {}) => {
+  const simulateText = (text: string, values: Record<string, string | boolean> = {}) => {
     const handler = join(dir, "results.json");
-    writeFileSync(handler, JSON.stringify(script));
+    writeFileSync(handler, text);
     return runWorkflow({ values: { handler, ...values }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
   };
+  const simulate = (script: unknown, values: Record<string, string | boolean> = {}) => simulateText(JSON.stringify(script), values);
   const scriptRefusal = (got: unknown, says: string) =>
     isCommandFailure(got) && got.code === "SCHEMA_INVALID" && exitCode(got.outcome, got.code) === 1 && got.message.includes(says);
   const maybe = await simulate({ checkpoints: { go: { status: "maybe" } } });
@@ -296,6 +297,12 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const at = await simulate({ checkpoints: { go: { status: "resolved", at: 5 } } });
   c("a scripted checkpoint at is refused, since the simulator stamps it from virtual time",
     scriptRefusal(at, "at is stamped from virtual time"), at);
+  const handler = join(dir, "results.json");
+  const invalidList = await simulate({ checkpoints: { go: [{ status: "resolved" }, { status: "done" }] } });
+  c("a wrong checkpoint status in a list names the results file and indexes the result to correct",
+    isCommandFailure(invalidList) && scriptRefusal(invalidList, `in ${handler}: status must be "resolved" or "expired"`)
+    && (invalidList.target as { file?: string })?.file === handler
+    && invalidList.remedy === `set checkpoints.go[1].status in ${handler} to "resolved" or "expired", then rerun the simulation`, invalidList);
   // A scripted turn result goes to the program as written, so a status no live turn yields is
   // refused like a malformed checkpoint, in any entry of a list, and a documented one still runs.
   const fertig = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: { status: "fertig" } } });
@@ -304,15 +311,38 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const turnAt = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: [{ status: "done" }, { status: "done", at: 5 }] } });
   c("a scripted turn at, in any entry of a list, is refused, since the simulator stamps it from virtual time",
     scriptRefusal(turnAt, "invalid scripted turn 'build': at is stamped from virtual time"), turnAt);
+  for (const to of [42, "ana", null, { agent: "sim.ana" }, { agent: "sim.ana", persona: "ana", worktree: 1 }]) {
+    const invalid = await simulate({ turns: { build: [{ status: "blocked" }, { status: "handoff", to }] } });
+    c(`a malformed scripted handoff names turns.build.to (${JSON.stringify(to)})`, scriptRefusal(invalid, "turns.build.to must be an agent handle"), invalid);
+  }
+  for (const text of ['{"clock":{"start":"1000"}}', '{"clock":{"start":null}}', '{"clock":{"start":1e999}}']) {
+    const invalid = await simulateText(text);
+    c(`an invalid clock start is refused (${text})`, scriptRefusal(invalid, "clock.start must be a finite number in milliseconds"), invalid);
+  }
+  for (const text of ['{"turns":{"build":{"status":"blocked"},"build":{"status":"done"}}}',
+    String.raw`{"turns":{"build":{"status":"blocked"},"b\u0075ild":{"status":"done"}}}`]) {
+    const duplicate = await simulateText(text);
+    c("duplicate scripted results name the key and suggest an array", scriptRefusal(duplicate, 'names "build" twice')
+      && isCommandFailure(duplicate) && duplicate.remedy?.includes("array") === true, duplicate);
+  }
   {
     const shown: string[] = [];
     const write = process.stdout.write;
     process.stdout.write = ((chunk: string | Uint8Array) => { shown.push(String(chunk)); return true; }) as typeof process.stdout.write;
-    let handoff: unknown;
-    try { handoff = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: { status: "handoff", to: "ana", note: "yours" } } }, { json: true }); }
-    finally { process.stdout.write = write; }
-    c("a documented turn result, a handoff with to and note, is accepted", handoff === undefined && shown.join("").includes('"outcome":"completed"'), { handoff, out: shown.join("").slice(0, 300) });
+    const to = { kind: "spawned", agent: "sim.ana", persona: "ana" };
+    let handoff: unknown, clock: unknown;
+    try {
+      writeFileSync(program, 'const builder = await spawn("builder");\nconst ana = await spawn("ana");\nfor (const attempt of [1, 2]) {\n  const result = await turn(builder, { name: "build" });\n  log(result.status, result.to?.agent === ana.agent);\n}\n');
+      handoff = await simulate({ turns: { build: [{ status: "blocked" }, { status: "handoff", to, note: "yours" }] } }, { json: true });
+      writeFileSync(program, 'await sleep("1ms");\nlog("done");\n');
+      clock = await simulate({ clock: { start: 1000 } }, { json: true });
+    } finally { process.stdout.write = write; }
+    const [turnOut, clockOut] = shown.join("").trim().split("\n").map((line) => JSON.parse(line));
+    c("sequential turn results preserve their order and carry the agent handle", handoff === undefined && turnOut.result?.outcome === "completed"
+      && JSON.stringify(turnOut.result.log.map((entry: { values: unknown }) => entry.values)) === JSON.stringify([["blocked", false], ["handoff", true]]), { handoff, turnOut });
+    c("a finite nonzero clock start still measures elapsed time from that start", clock === undefined && clockOut.result?.elapsedMs === 1, { clock, clockOut });
   }
+  writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
   // A simulation that stops says why and where: a missing entry is the script's gap, named with the
   // entry to add. An expired gate under the default onExpiry is a completed simulation whose program
   // failed with L4007 at that gate.
@@ -515,6 +545,31 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   try { await runWorkflow({ values: { plain: true }, positionals: ["validate", program], raw: [] }); } finally { console.log = log; }
   c("validate says it checked no broker message limit", out.join("\n").includes("No mesh, authority, runtime, application or broker message limit was checked."), out);
   rmSync(dir, { recursive: true, force: true });
+}
+
+// Plans use the parser's line breaks in both formats, including in a file with mixed endings.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-plan-lines-"));
+  const program = join(dir, "mixed.cotal.js");
+  const text: string[] = [], json: string[] = [];
+  const log = console.log, write = process.stdout.write;
+  try {
+    writeFileSync(program, 'log(1)\rlog(2)\r\nlog(3)\nlog(4)\u2028log(5)\u2029log(6); log(7)');
+    console.log = (...args: unknown[]) => { text.push(args.map(String).join(" ")); };
+    process.stdout.write = ((chunk: string | Uint8Array) => { json.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    await runWorkflow({ values: { plain: true }, positionals: ["plan", program], raw: [] });
+    await runWorkflow({ values: { json: true }, positionals: ["plan", program], raw: [] });
+  } finally {
+    console.log = log;
+    process.stdout.write = write;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const expected = [1, 2, 3, 4, 5, 6, 6];
+  const rows = Array.from(text.join("\n").matchAll(/^[ \t]*(\d+)[ \t]+log[ \t]*$/gm), (match) => Number(match[1]));
+  const envelope = JSON.parse(json.join("")) as { outcome: string; result: { calls: unknown } };
+  c("plan text counts each JavaScript line break once", rows.join() === expected.join(), rows);
+  c("plan JSON counts each JavaScript line break once", envelope.outcome === "ok"
+    && JSON.stringify(envelope.result.calls) === JSON.stringify(expected.map((line) => ({ call: "log", line }))), envelope);
 }
 
 // A workflow source that cannot be read is refused naming its path and the cause, before any plane.

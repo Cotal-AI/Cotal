@@ -78,7 +78,7 @@ process.env.COTAL_NO_PROMPT = "1";
 
 const {
   CotalEndpoint, createSpaceAuth, jwtFromCreds, mintCreds, newIdentity, setupSpaceStreams,
-  seedChannelRegistry, provisionAgent, mintLifecycleUid, principalKey, DEV_OWNER,
+  seedChannelRegistry, provisionAgent, mintLifecycleUid, principalKey, DEV_OWNER, dmStream,
 } = await import("@cotal-ai/core");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 const { agentSecretFilePaths, authDir, canonicalRoot, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
@@ -232,6 +232,20 @@ try {
 
   // ── 2. --provision: the same mint, and the identity can consume ─────────────────────────────
   {
+    const inboxCount = async () => {
+      const url = `${broker.monitorUrl}/jsz?accounts=true&streams=true`;
+      const data = await (await fetch(url)).json() as { account_details: { stream_detail: { name: string; state: { consumer_count: number } }[] }[] };
+      const dm = data.account_details.flatMap((account) => account.stream_detail ?? []).find((stream) => stream.name === dmStream(SPACE));
+      assert.ok(dm, "broker monitor must report the DM stream");
+      return dm.state.consumer_count;
+    };
+    const before = await inboxCount();
+    const shortPath = join(root, "too-short.creds");
+    const short = await runMint(["too_short", "--provision", "--expires-in", "1", "--allow-subscribe", "general", "--out", shortPath, "--json"]);
+    check("a one-second provisioned mint refuses up front and names the two-second minimum",
+      short.code === 1 && short.out.includes("USAGE_INVALID") && short.out.includes("--expires-in 2"), short);
+    check("the refused mint leaves neither a credential nor an inbox", !existsSync(shortPath) && await inboxCount() === before);
+
     const out = join(root, "board.creds");
     const r = await runMint(["board", "--profile", "agent", "--provision", "--role", "board", "--out", out]);
     check("mint --provision --role board succeeds", r.code === 0 && existsSync(out), r.out);
@@ -597,6 +611,17 @@ try {
       r3.code === 2 && r3.out.includes(`the referenced credential ${join(root, "missing.creds")} does not exist`), r3.out);
     check("  and mints nothing", !existsSync(out));
     // An --out folder that cannot hold the credential is named, with the cause and the step.
+    const unsafe = join(root, "out-unsafe");
+    mkdirSync(unsafe, { mode: 0o700 });
+    chmodSync(unsafe, 0o777);
+    const unsafeOut = join(unsafe, "newdir", "deeper", "x.creds");
+    const unsafeMint = await runMint(["x", "--out", unsafeOut]);
+    check("--out refuses an unsafe existing ancestor without creating missing folders",
+      unsafeMint.code === 2 && /^\s*Code:\s+PERMISSION_DENIED$/m.test(unsafeMint.out) && unsafeMint.out.includes(`${unsafe} is writable by every local account`) && readdirSync(unsafe).length === 0, unsafeMint.out);
+    chmodSync(unsafe, 0o700);
+    const safeMint = await runMint(["x", "--out", unsafeOut]);
+    check("--out creates missing folders and writes the credential after the ancestor is protected",
+      safeMint.code === 0 && existsSync(unsafeOut), safeMint.out);
     const real = join(root, "out-real"), link = join(root, "out-link");
     mkdirSync(real, { mode: 0o700 });
     symlinkSync(real, link);
@@ -845,8 +870,8 @@ try {
 
       // #7541: doctor auth includes --provision (and quotes paths) when repairing an expired exported --provision join credential.
       const spacedJoinCreds = join(exports, "with space", "exp1s.creds");
-      const provMinted = await runMint(["j_exp", "--expires-in", "1", "--provision", "--allow-subscribe", "general", "--allow-publish", "general", "--out", spacedJoinCreds, "--json"]);
-      check("#7541 fixture: provisioned exported join cred minted", provMinted.code === 0 && existsSync(spacedJoinCreds), provMinted.out);
+      const provMinted = await runMint(["j_exp", "--expires-in", "2", "--provision", "--allow-subscribe", "general", "--allow-publish", "general", "--out", spacedJoinCreds, "--json"]);
+      check("the two-second minimum still provisions and writes a credential", provMinted.code === 0 && existsSync(spacedJoinCreds), provMinted.out);
       await wait(2100);
       const docExp = await runCotal(["doctor", "auth", "--space", "offlinecheck", "--json"]);
       const docExpLine = docExp.out.split("\n").find((t) => t.startsWith('{"schemaVersion"'));
@@ -871,6 +896,22 @@ try {
       await joinClosed;
       check("#7541: renewed provisioned credential binds its new inbox and receives a DM",
         joined && dm.code === 0 && received && !/dm-durable-missing/i.test(joinOut), { joinOut, dm });
+
+      const complete = readFileSync(spacedJoinCreds, "utf8");
+      const seedAt = complete.indexOf("-----BEGIN USER NKEY SEED-----");
+      assert.ok(seedAt > 0, "minted credential must contain a user seed block");
+      writeFileSync(spacedJoinCreds, complete.slice(0, seedAt));
+      const truncatedJoin = await runCotal(["join", "--space", "offlinecheck", "--creds", spacedJoinCreds, "--lifecycle-uid", newUid, "--channel", "general"]);
+      check("join refuses the provisioned export with no complete user seed block", truncatedJoin.code === 1 && truncatedJoin.out.includes("no complete user nkey seed block"), truncatedJoin.out);
+      const docTruncated = await runCotal(["doctor", "auth", "--space", "offlinecheck", "--json"]);
+      const docTruncatedLine = docTruncated.out.split("\n").find((line) => line.startsWith('{"schemaVersion"'));
+      assert.ok(docTruncatedLine, docTruncated.out);
+      const diagnostics = JSON.parse(docTruncatedLine) as { outcome: string; result: { findings: number; exported: { path: string; state: string; repair: string | null }[] } };
+      const damaged = diagnostics.result.exported.find((row) => row.path === spacedJoinCreds);
+      check("doctor flags a truncated export without turning it into a local-store finding",
+        docTruncated.code === 0 && diagnostics.outcome === "ok" && diagnostics.result.findings === 0 && damaged?.state === "unreadable", diagnostics);
+      check("doctor names the missing seed and offers restoration or a provisioned replacement with the original grants",
+        damaged?.repair?.includes("no complete user nkey seed block") === true && damaged.repair.includes("Restore the complete credential file") && damaged.repair.includes("auth mint j_exp --provision --allow-subscribe general --allow-publish general") && !docTruncated.out.includes(jwtFromCreds(complete)!), damaged);
 
       const stopped = await down();
       check("offline rig: normal down and foreground up exit successfully", stopped.code === 0 && await exited === 0, stopped.out);
