@@ -129,7 +129,7 @@ function follow(args: string[]) {
     lines.push(...parts.filter(Boolean));
   });
   child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
-  const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+  const exited = new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
   const until = async (pred: (line: string) => boolean, ms = 30_000) => {
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
@@ -720,6 +720,11 @@ try {
       check("nonempty follow ID still deduplicates", await historyFeed.until((line) => line.includes("follow-nonempty")), historyFeed.lines);
       await wait(300);
       check("duplicate nonempty ID is not surfaced", !historyFeed.lines.some((line) => line.includes("duplicate-nonempty")) && !consoleFeed.lines.some((line) => line.includes("duplicate-nonempty")), { history: historyFeed.lines, console: consoleFeed.lines });
+      await killAndAwaitExit(consoleFeed.child, "SIGINT");
+      check("stopping the open mesh console exits 130 without reporting a broker outage",
+        await consoleFeed.exited === 130 && !/was lost|re-establishing/.test(consoleFeed.stderr()), consoleFeed.stderr());
+      const limits = await run(["history", "limit", "--plain", "--space", openSpace]);
+      check("the open broker still answers after the console stops", limits.status === 0 && limits.stdout.includes("History limits"), shown(limits));
     } finally {
       await killAndAwaitExit(consoleFeed.child);
       if (historyFeed) await killAndAwaitExit(historyFeed.child);
