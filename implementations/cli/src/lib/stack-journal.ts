@@ -1007,8 +1007,9 @@ export const processGone = (state: string) => state === "gone" || state === "pre
  *  first signal: another live or unresolved service instance in the space, a legacy pidfile record
  *  under the root that may front a process, or another registration that names the same broker
  *  address. Bare `down` and `down --preserve-state` both run it; `next` is the command to run once
- *  the named dependants are stopped. */
-export function stackScopeRefusals(journal: StackJournal, next: string): void {
+ *  the named dependants are stopped. The updater can skip address sharing only after it proves
+ *  that the broker endpoint has no listener and it will not stop a broker. */
+export function stackScopeRefusals(journal: StackJournal, next: string, { brokerStopped = false } = {}): void {
   const memberIds = new Set(journal.members.flatMap((row) => row.instanceId === null ? [] : [row.instanceId]));
   const others = serviceInstances(journal.space).filter((row) => !memberIds.has(row.name) && (!processGone(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state)));
   if (others.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "other service instances in this space are live or unresolved and depend on its broker; the broker was not stopped under them", { target: { space: journal.space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, remedy: `stop each with ${others.map((row) => `\`cotal svc stop ${row.record.value.definition} --instance ${row.name} --space ${journal.space} --yes\``).join("; ")}, then run ${next}` });
@@ -1018,6 +1019,7 @@ export function stackScopeRefusals(journal: StackJournal, next: string): void {
     const lines = legacy.map(localRecordLine), checks = legacy.map((row) => row.pid === undefined ? row.path : `pid ${row.pid} at ${row.path}`);
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `legacy pidfile-owned processes under this root may depend on the broker (${lines.join("; ")}); they were neither adopted nor stopped`, { target: { root: journal.root, processes: lines }, remedy: `check ${checks.join(", ")}; stop each process where it was started, or remove a record whose process is gone, then run ${next}` });
   }
+  if (brokerStopped) return;
   const sharing = loadMeshes().filter((mesh) => mesh.space !== journal.space && mesh.server === journal.server);
   if (sharing.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registration names this stack's exact broker address; a shared broker is not stopped in this cut", { target: { server: journal.server, spaces: sharing.map((mesh) => mesh.space) } });
 }

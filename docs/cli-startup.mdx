@@ -203,9 +203,11 @@ journal section below describes.
 ### External supervisors
 
 A foreground `up` holds the root's maintenance lock only while it starts the stack. A bare
-`cotal down` from another terminal can then stop the stack; the foreground `up` sees the completed
-stop or preserve, prints `Foreground stack released` and exits 0. On a controller stack, Ctrl-C or
-`SIGTERM` in that terminal runs the same guarded stop as bare `cotal down` and exits 130 or 143. A
+`cotal down` from another terminal can then stop the stack. On a controller stack, the foreground
+`up` sees the completed stop or preserve, prints `Foreground stack released` and exits 0. On a
+retained stack, a clean broker exit after `down` makes `up` exit 0 without a crash diagnostic.
+On a controller stack, Ctrl-C or `SIGTERM` in that terminal runs the same guarded stop as bare
+`cotal down` and exits 130 or 143. A
 signal while the stack is still starting lets the start settle, then runs that stop. When the start
 fails, the stop still runs before the start failure is printed. A hangup, such as a closed terminal,
 runs no stop. The command prints that the stack is still running and names `cotal down`, then exits
@@ -275,11 +277,12 @@ its version on the `Broker executable` line, and `--json` carries them as `resul
 `OPERATION_FAILED`, exit 5, naming that file, its exit code or signal, and its log `.cotal/nats.log`.
 The next step is to read that log, then fix the file or take it off PATH, and run `cotal up` again. A
 broker still running when the wait ends leaves the outcome unconfirmed, `OPERATION_UNKNOWN`, exit 3.
-A foreground `up` whose broker exits on its own stops its members and exits 5, or 0 when the broker
-exited 0, as it does after an external `down`. Its line names the exit code or signal, and says the
-mesh stays recorded only when the registry holds that broker's record. A broker that exits before
-`up` recorded the mesh leaves it unrecorded. The line says so, and its next step is to read the
-output above, then fix the file or take it off PATH, and run `cotal up` again.
+A foreground `up` on the retained launcher stops its members when the broker exits. If the broker
+has answered and exits 0, as it does after an external `down`, `up` exits 0 without reporting a
+crash or claiming the mesh is still registered. An abnormal exit makes `up` exit 5. Its diagnostic
+names the exit code or signal and says the mesh stays recorded only when the registry holds that
+broker's record. If the broker exits before it answers, startup fails and leaves the mesh
+unrecorded. Read the terminal output, then fix the file or take it off PATH and run `cotal up` again.
 
 
 ### File protection
@@ -342,7 +345,8 @@ the default store, and `up` warns `STORE_SHARED`, naming the other space; `--jso
 warning. `clean store`, `clean all`, `reset store` and `reset space` refuse such a folder, as
 [clean](cli-shutdown.mdx#clean) and [reset](cli-shutdown.mdx#reset) describe. A controller stack whose recorded store folder is
 missing, as after it was removed by hand, starts its broker on a new empty store there and warns
-`STORE_MISSING`: the space's history starts empty. A legacy root whose last broker served a missing
+`STORE_MISSING`: the space's history starts empty. `reset store` and `reset space` leave an empty
+store that the journal records, so neither `status` nor the next `up` warns after them. A legacy root whose last broker served a missing
 folder warns the same. A controller stack records its store directory's identity when the broker
 starts. If the path now names another directory, `status`, `down` (including `--dry-run`) and `up`
 warn `STORE_REPLACED`. A running broker can still serve its old open files, but a restart uses the

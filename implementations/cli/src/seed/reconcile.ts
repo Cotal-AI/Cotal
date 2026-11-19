@@ -171,8 +171,10 @@ async function reconcile(mode: Mode, automatic = false): Promise<ReconcileResult
 }
 
 async function reconcileUnderClosure(mode: Mode, automatic: boolean): Promise<ReconcileResult> {
-  inheritConnectorConfig();
   const generation = seedGeneration();
+  const downgrade = seedDowngradeRefusal(generation);
+  if (downgrade) throw downgrade;
+  inheritConnectorConfig();
   // Cheap lock-free pre-check: the steady state (stamp current, authority intact) is the common case
   // on EVERY command and must not pay a lock acquire. Health checks run FIRST so a lost authority or a
   // crashed reconcile is caught before the stamp is trusted.
@@ -624,7 +626,7 @@ export function seedDowngradeRefusal(generation: string = seedGeneration()): Err
     const stampProvenance = describeStampProvenance(readStamp());
     return new Error(
       `the connector seed store ${seedDir()} is at generation ${storeGeneration}${stampProvenance}, and this cotal ${generation} does not move it back to an older one - ` +
-        `to run this cotal, restore that store and the extensions folder ${extensionsDir()} from a backup taken before the store moved to ${storeGeneration}${newer}`,
+        `run \`cotal update --self\` to upgrade the CLI; to run this cotal, restore that store and the extensions folder ${extensionsDir()} from a backup taken before the store moved to ${storeGeneration}${newer}`,
     );
   }
   return undefined;

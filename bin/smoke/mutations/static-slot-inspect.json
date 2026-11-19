@@ -15,7 +15,7 @@
   "mutations": [
     {
       "name": "inspect stops consulting the durable slot store after a live-map miss",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/command-dispatch.ts",
       "find": "              observed = await observeStaticSlot(recordsKv, DEV_OWNER, name, this.managerInstanceId);",
       "replace": "              observed = undefined as Awaited<ReturnType<typeof observeStaticSlot>>;",
       "expectRed": "inspect distinguishes a stranded durable slot from a genuinely unknown name through the real service entry point",
@@ -25,7 +25,7 @@
     },
     {
       "name": "inspect starts reading the live agent's durable slot before returning its local row",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/command-dispatch.ts",
       "find": "        const row = this.list(await this.psOwnerFilter(ctx.subject.caller, false)).find((x) => x.name === name);",
       "replace": "        const row = this.list(await this.psOwnerFilter(ctx.subject.caller, false)).find((x) => x.name === name);\n        if (row && this.auth && !this.userMode && this.goalWriter?.ctx.kv) await observeStaticSlot(this.goalWriter.ctx.kv, DEV_OWNER, name, this.managerInstanceId);",
       "expectRed": "inspect keeps live hits entirely local when the durable slot store is unavailable",

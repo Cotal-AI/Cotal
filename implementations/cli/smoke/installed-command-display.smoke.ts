@@ -148,7 +148,7 @@ try {
   suite.check("on-PATH installed status keeps concise cotal commands", onPath.code === 0 && rosterCommand(onPath.stdout) === "cotal who" && !onPath.stdout.includes("pnpm cotal"), onPath);
   const source = spawnSync(process.execPath, [join(repo, "bin/dist/cotal.js"), "status", "--plain"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   suite.check("off-PATH source checkout retains pnpm cotal guidance", source.status === 0 && source.stdout.includes("pnpm cotal"), { code: source.status, output: source.stdout + source.stderr });
-  const setupCommand = status.stdout.split("\n").find((line) => /\s{2,}Set up an agent application(?: and a space)?$/.test(line))?.trim().split(/\s{2,}Set up an agent application(?: and a space)?$/)[0];
+  const setupCommand = status.stdout.split("\n").find((line) => / setup --help(?:\s|$)/.test(line))?.trim().split(" --help")[0];
   suite.check("status prints a setup next step", Boolean(setupCommand), status);
   const seedEnv: NodeJS.ProcessEnv = { ...env };
   delete seedEnv.COTAL_SKIP_CONNECTOR_SEED;

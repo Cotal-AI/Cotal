@@ -179,7 +179,7 @@
     },
     {
       "name": "a reconnect-disabled teardown drains instead of closing",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "    this.disableLibraryReconnect(nc);\n    await nc.close();\n    if (!nc.isClosed()) throw new Error(\"endpoint connection closure is unproved; consumer custody must be retained\");",
       "replace": "    this.disableLibraryReconnect(nc);\n    await nc.drain();\n    if (!nc.isClosed()) throw new Error(\"endpoint connection closure is unproved; consumer custody must be retained\");",
       "expectRed": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",

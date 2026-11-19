@@ -266,6 +266,10 @@ cotal update
 ```
 
 This reconciles installed extensions and connector integrations with the running CLI's release.
+A self-update inherits the extension state captured by the updating CLI, including added extensions
+and deliberate connector removals, even when that release has an older retained connector set.
+If the connector seed store is newer than the running CLI, reconciliation refuses before creating
+or pruning retained sets. Run `cotal update --self` to upgrade the CLI to match the store.
 If the machine daemon closes a status connection while restarting, reconciliation retries that
 status read for up to two minutes. It reports a failure if the daemon does not answer in time.
 When no Cotal Claude plugin or Desktop integration is installed, reconciliation only reads Claude's
@@ -459,6 +463,11 @@ recorded space, broker address, runtime and supported options. The listed seats 
 restarted. The update command stops nothing itself. `--stop-agents` integrates stopping only for
 daemon-hosted Managers. If standalone ownership or restart settings cannot be proved, the command
 keeps its original-host refusal rather than guessing a shutdown command.
+
+If two stopped local spaces record the same broker address, that address does not block a software
+update once the updater confirms that the selected stack's recorded processes are gone and nothing
+is listening there. The updater leaves both spaces' data and registrations untouched. Startup still
+checks for conflicting registrations.
 
 ## Recover an interrupted update
 

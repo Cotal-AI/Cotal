@@ -230,9 +230,10 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
       const history = must(["history", "general", "--space", selected]);
       suite.check(`${route} repaired restart retains history`, history.text.includes("retained-permission-marker"), history.text);
       must(["down", "--yes"]);
+      // A reset leaves the stack an empty store its journal records; a clean leaves none.
       if (route === "prepared") must(["reset", "store", selected, "--yes"]);
       else must(["clean", "store", "--force", ...(route.startsWith("legacy") ? ["--store-dir", store] : [])]);
-      suite.check(`${route} cleanup succeeds after the exact startup remedy`, !existsSync(store));
+      suite.check(`${route} cleanup succeeds after the exact startup remedy`, route === "prepared" ? existsSync(store) && readdirSync(store).length === 0 : !existsSync(store));
     } finally {
       spawnSync("chmod", ["-R", "u+rwX", project]);
       if (existsSync(store)) spawnSync("chmod", ["-R", "u+rwX", store]);

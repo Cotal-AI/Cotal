@@ -755,9 +755,13 @@ Claude starts each hook in its own process, so a prompt or stop relay can reach 
 `SessionStart` relay. The connector holds those event flushes and the terminal until `SessionStart`
 supplies the source, then enqueues adopt, flush, and close in that order.
 
-`SessionStart` can also run before the connector process has bound its local control socket. The hook
-the `SessionStart` relay retries only transient pre-connect listener errors and a socket directory
-that does not exist yet, with capped backoff inside its existing two-second budget. Later hooks and permanent local faults still fail open
+`SessionStart` can also run before the connector process has bound its local control socket. Claude
+fires it at launch before the session's MCP servers are available, and on a busy host the connector
+can bind several seconds later. The `SessionStart` relay retries only transient pre-connect listener
+errors and a socket directory that does not exist yet, with capped backoff. At launch (`startup`,
+`resume` or `fork`) it keeps dialing for up to 30 seconds, the time Claude gives an MCP server to
+connect, and Claude holds the first prompt until it returns. A `SessionStart` from a clear or a
+compaction keeps the two-second budget. Later hooks and permanent local faults still fail open
 immediately. Once a socket has connected, a broken exchange is not retried: the connector may
 already have handled the frame, so replaying it could apply one lifecycle event twice.
 That retained `SessionStart` can itself arrive before Claude creates the transcript path. A genuinely
