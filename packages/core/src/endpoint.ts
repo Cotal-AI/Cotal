@@ -1,6 +1,5 @@
 import { EndpointHistory } from "./endpoint-history.js";
 export { MULTI_FILTER_BATCH, MULTI_FILTER_READ_CONCURRENCY } from "./endpoint-history.js";
-import { eventPayloadSubject, eventPayloadStream } from "./event-payloads.js";
 import { requestSafeReconnect } from "./request-safe-reconnect.js";
 import { nativeBindingAfter, nativeConnectionBinding, type NativeConnectionBinding } from "./native-connection.js";
 import { EventEmitter } from "node:events";
@@ -9,7 +8,6 @@ import { randomUUID } from "node:crypto";
 import { createConnection, isIP } from "node:net";
 import {
   connect,
-  headers,
   tokenAuthenticator,
   nanos,
   AuthorizationError,
@@ -51,7 +49,7 @@ import { BIND_SPLIT_REISSUES, resolveService, type ResolvedService, type SubmitA
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, EpPrincipal, IssuedCaller, PrincipalAuthority } from "./endpoint-subjects.js";
-import { assertIdToken, assertGeneration, assertRuntimeToken, endpointToken } from "./endpoint-subjects.js";
+import { assertGeneration, assertRuntimeToken, endpointToken } from "./endpoint-subjects.js";
 import { servePrincipalRoute, describeContracts, type EpPrincipalCommandDef, type EpPrincipalServeHandle } from "./endpoint-serve.js";
 import { epPrincipalCall } from "./endpoint-call.js";
 import type { ClusterDocument } from "./endpoint-cluster.js";
@@ -131,6 +129,7 @@ import type { DeliveryLeaseInfo, ManagerLeaseInfo } from "./lease.js";
 import { EndpointDeliveryLease } from "./endpoint-delivery-lease.js";
 import { EndpointDeliveryPlane, type MaybePromise } from "./endpoint-delivery-plane.js";
 import { EndpointControlPlane } from "./endpoint-control-plane.js";
+import { EndpointMessaging, assertPartsSerializable } from "./endpoint-messaging.js";
 import { ackWaitOf, authenticatedChannelMessage, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import {
   openChannelRegistry,
@@ -156,8 +155,6 @@ import {
   type AnycastTakeRequest,
 } from "./anycast-requests.js";
 import {
-  anycastSubject,
-  assertValidOwnerToken,
   assertValidRole,
   CHANNEL_DEFAULTS_KEY,
   chatStream,
@@ -179,7 +176,6 @@ import {
   membershipInAllow,
   isConcreteChannel,
   isChannelFamily,
-  normalizeMentions,
   MENTION_NOTICE_KEY,
   parseSubject,
   isPrincipalOwnerToken,
@@ -2471,38 +2467,29 @@ export class CotalEndpoint extends EventEmitter {
 
   // ---- messaging -----------------------------------------------------------
 
+  /** The messaging verbs of this endpoint: multicast, unicast, anycast and the event-payload
+   *  channel. Every dependency is read when it is used, so a field assigned after construction is seen. */
+  private readonly messaging = new EndpointMessaging({
+    nc: () => this.nc,
+    js: () => this.js,
+    jsm: () => this.jsm,
+    space: () => this.space,
+    owner: () => this.owner,
+    actor: () => this.actor,
+    channels: () => this.channels,
+    notLiveMsg: () => this.notLiveMsg(),
+    ref: () => this.ref(),
+    publishMsg: (subject, msg) => this.publishMsg(subject, msg),
+    streamHistory: (...args) => this.streamHistory(...args),
+    emitRecoverable: (err) => this.emitRecoverable(err),
+  });
+
   /** Multicast: broadcast to everyone on a channel. */
   async multicast(
     text: string,
     opts?: { channel?: string; parts?: Part[]; replyTo?: string; contextId?: string; mentions?: string[] },
   ): Promise<CotalMessage> {
-    // Publish must target a concrete sub-channel — you can't broadcast to a
-    // wildcard. Default to the first concrete channel we're on (channels[0] may
-    // itself be a wildcard subscription like `team.>`). On no channels there is NO default: refuse
-    // rather than pick `general`, which is a destination the caller never chose and, for an agent
-    // whose cred carries no channel row, one the broker would deny anyway.
-    const channel = opts?.channel ?? this.channels.find(isConcreteChannel);
-    if (channel === undefined)
-      throw new Error(
-        "no default channel: this endpoint is not on any concrete channel, so there is nothing to broadcast to - name a channel explicitly, or join one first",
-      );
-    if (!isConcreteChannel(channel))
-      throw new Error(`cannot publish to wildcard channel "${channel}" - pick a concrete sub-channel`);
-    const msg: CotalMessage = {
-      id: randomUUID(),
-      ts: Date.now(),
-      space: this.space,
-      from: this.ref(),
-      channel,
-      // Priority/wake hint, not routing — validation (against the roster) is the connector's
-      // job; core just canonicalizes and omits the field when empty.
-      mentions: normalizeMentions(opts?.mentions),
-      parts: opts?.parts ?? [{ kind: "text", text }],
-      replyTo: opts?.replyTo,
-      contextId: opts?.contextId,
-    };
-    await this.publishMsg(chatSubject(this.space, this.owner, this.actor, channel), msg);
-    return msg;
+    return this.messaging.multicast(text, opts);
   }
 
   /** The broker's live `max_payload` — the CEILING a frame is measured against, not a budget for a
@@ -2517,10 +2504,7 @@ export class CotalEndpoint extends EventEmitter {
    *  the client's own headers, are charged against the same ceiling and the caller never sees them.
    *  Use {@link encodedSize}, which measures what will actually be sent. */
   get maxPayload(): number {
-    const max = this.nc?.info?.max_payload;
-    if (typeof max !== "number" || !Number.isFinite(max) || max <= 0)
-      throw new Error(`${this.notLiveMsg()} - max_payload is only known while connected`);
-    return max;
+    return this.messaging.maxPayload;
   }
 
   /**
@@ -2547,52 +2531,7 @@ export class CotalEndpoint extends EventEmitter {
    *   one replica. Never degrades to a warning: the failure it prevents is silent.
    */
   async assertExpectationSemantics(): Promise<void> {
-    if (!this.jsm) throw new Error(this.notLiveMsg());
-    const stream = chatStream(this.space);
-    let replicas: number | undefined;
-    try {
-      replicas = (await this.jsm.streams.info(stream)).config.num_replicas;
-    } catch (e) {
-      throw new Error(
-        `cannot verify expectation semantics: stream "${stream}" info unavailable (${(e as Error).message}). ` +
-          `Serialized appends are refused rather than run on an unverified stream.`,
-      );
-    }
-    // `undefined` is NOT treated as 1. A server that does not report the field is a server whose
-    // ordering we have not established, which is the case this check exists for.
-    if (replicas !== 1)
-      throw new Error(
-        `stream "${stream}" reports num_replicas=${String(replicas)}; serialized appends on THIS ` +
-          `stream require 1 — a property of this one stream, not of the broker, so a clustered ` +
-          `deployment is fine so long as this stream is R1, which a cluster can host. ` +
-          `On a replicated stream the dedup cache is consulted before the subject expectation, so a ` +
-          `retry returns a duplicate ack instead of a conflict and a lost message reads as success.`,
-      );
-  }
-
-  /** The envelope {@link multicastExpecting} publishes, built in ONE place so that a frame and any
-   *  measurement of that frame cannot describe different messages. The fields this adds — `ts`,
-   *  `space`, `from`, `channel` and the normalized `mentions` — are exactly the ones a caller
-   *  holding only its parts cannot account for. */
-  private casEnvelope(opts: {
-    channel: string;
-    parts: Part[];
-    id: string;
-    mentions?: string[];
-    replyTo?: string;
-    contextId?: string;
-  }): CotalMessage {
-    return {
-      id: opts.id,
-      ts: Date.now(),
-      space: this.space,
-      from: this.ref(),
-      channel: opts.channel,
-      mentions: normalizeMentions(opts.mentions),
-      parts: opts.parts,
-      replyTo: opts.replyTo,
-      contextId: opts.contextId,
-    };
+    return this.messaging.assertExpectationSemantics();
   }
 
   /**
@@ -2625,31 +2564,7 @@ export class CotalEndpoint extends EventEmitter {
     replyTo?: string;
     contextId?: string;
   }): number {
-    // The same argument validation the publish path applies, so a caller cannot size a frame that
-    // would have been refused before it ever reached the wire.
-    if (!isConcreteChannel(opts.channel))
-      throw new Error(`cannot publish to wildcard channel "${opts.channel}" - pick a concrete sub-channel`);
-    assertIdToken(opts.id, "publish id");
-    if (!Number.isSafeInteger(opts.expectedLastSubjectSeq) || opts.expectedLastSubjectSeq < 0)
-      throw new Error(
-        `expectedLastSubjectSeq must be a non-negative safe integer, got ${JSON.stringify(opts.expectedLastSubjectSeq)}`,
-      );
-    if (!Array.isArray(opts.parts) || opts.parts.length === 0)
-      throw new Error("encodedSize requires at least one part");
-
-    const mh = headers();
-    mh.set("Nats-Msg-Id", opts.id);
-    mh.set("Nats-Expected-Last-Subject-Sequence", `${opts.expectedLastSubjectSeq}`);
-    if (opts.expectedLastMsgId !== undefined) {
-      assertIdToken(opts.expectedLastMsgId, "expected last msg id");
-      mh.set("Nats-Expected-Last-Msg-Id", opts.expectedLastMsgId);
-    }
-    // `encode()` is on the client's header implementation but not on the published `MsgHdrs` type,
-    // so it is reached through a cast rather than copied. If a client version drops it, this throws
-    // immediately and loudly — the calibration cell would also fail — instead of returning a number
-    // that is quietly wrong near the ceiling.
-    const headerBytes = (mh as unknown as { encode(): Uint8Array }).encode().length;
-    return headerBytes + Buffer.byteLength(JSON.stringify(this.casEnvelope(opts)), "utf8");
+    return this.messaging.encodedSize(opts);
   }
 
   /**
@@ -2688,77 +2603,24 @@ export class CotalEndpoint extends EventEmitter {
     replyTo?: string;
     contextId?: string;
   }): Promise<{ message: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
-    if (!this.js) throw new Error(this.notLiveMsg());
-    if (!isConcreteChannel(opts.channel))
-      throw new Error(`cannot publish to wildcard channel "${opts.channel}" - pick a concrete sub-channel`);
-    // Reuse the existing id grammar rather than mint a second one: [A-Za-z0-9_-]{1,64} admits a
-    // UUID and rejects every character that could break a wire header (CR, LF, space, colon).
-    assertIdToken(opts.id, "publish id");
-    const expected = opts.expectedLastSubjectSeq;
-    if (!Number.isSafeInteger(expected) || expected < 0)
-      throw new Error(
-        `expectedLastSubjectSeq must be a non-negative safe integer, got ${JSON.stringify(expected)}`,
-      );
-    if (!Array.isArray(opts.parts) || opts.parts.length === 0)
-      throw new Error("multicastExpecting requires at least one part");
-    if (opts.expectedLastMsgId !== undefined) assertIdToken(opts.expectedLastMsgId, "expected last msg id");
-
-    const message = this.casEnvelope(opts);
-    assertPartsSerializable(message.parts);
-    // Publish DIRECTLY rather than through publishMsg: this path must set the expectation and read
-    // the ack, and publishMsg deliberately does neither.
-    const ack = await this.js.publish(
-      chatSubject(this.space, this.owner, this.actor, opts.channel),
-      JSON.stringify(message),
-      { msgID: opts.id, expect: { lastSubjectSequence: expected, ...(opts.expectedLastMsgId !== undefined ? { lastMsgID: opts.expectedLastMsgId } : {}) } },
-    );
-    return { message, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+    return this.messaging.multicastExpecting(opts);
   }
 
   /** Publish a payload frame on this principal's forge-locked sibling event rail. */
   async publishEventPayload(opts: { parts: Part[]; id: string; expectedLastSubjectSeq: number }): Promise<{ ack: { seq: number; duplicate: boolean } }> {
-    if (!this.js) throw new Error(this.notLiveMsg());
-    assertIdToken(opts.id, "publish id");
-    if (!Number.isSafeInteger(opts.expectedLastSubjectSeq) || opts.expectedLastSubjectSeq < 0)
-      throw new Error("payload expectation must be a non-negative safe integer");
-    if (!opts.parts.length) throw new Error("payload frame requires parts");
-    const message = this.casEnvelope({ ...opts, channel: `events.${this.owner}.${this.actor}` });
-    assertPartsSerializable(message.parts);
-    const ack = await this.js.publish(eventPayloadSubject(this.space, this.owner, this.actor), JSON.stringify(message),
-      { msgID: opts.id, expect: { lastSubjectSequence: opts.expectedLastSubjectSeq } });
-    return { ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+    return this.messaging.publishEventPayload(opts);
   }
 
   /** Read payload history through a single native-filtered consumer, never through CHAT. */
   async eventPayloadHistory(owner: string, actor: string, opts?: { limit?: number; signal?: AbortSignal }): Promise<HistoryMessage[]> {
-    return (await this.streamHistory(eventPayloadStream(this.space),
-      [eventPayloadSubject(this.space, assertValidOwnerToken(owner), assertValidOwnerToken(actor))], opts?.limit ?? 100, undefined, opts?.signal))
-      .map(row => row.msg);
+    return this.messaging.eventPayloadHistory(owner, actor, opts);
   }
 
   /** Verify the sibling stream and learn its actual message ceiling. A pre-upgrade space without
    *  the stream or its info-read permission returns null and emits a warning. Other authorization,
    *  transport and config errors throw. */
   async eventPayloadLimit(): Promise<number | null> {
-    if (!this.jsm) throw new Error(this.notLiveMsg());
-    const stream = eventPayloadStream(this.space);
-    const info = await this.jsm.streams.info(stream).catch((err: unknown) => {
-      const denial = err instanceof PermissionViolationError ? err
-        : (err as { cause?: unknown } | null)?.cause;
-      const infoDenied = denial instanceof PermissionViolationError && denial.operation === "publish"
-        && denial.subject === `$JS.API.STREAM.INFO.${stream}`;
-      if (!infoDenied && !isJetStreamMissing(err, JetStreamApiCodes.StreamNotFound)) throw err;
-      const reason = infoDenied ? `missing publish permission on $JS.API.STREAM.INFO.${stream}` : `stream ${stream} is absent`;
-      this.emitRecoverable(new Error(
-        `event payloads unavailable: ${reason}; publishing tool names and times only. Upgrade the space's broker setup and credentials to enable payloads`,
-      ));
-      return null;
-    });
-    if (info === null) return null;
-    const { config } = info;
-    if (config.num_replicas !== 1) throw new Error("event payload stream requires one replica for serialized appends");
-    const limits = [this.maxPayload, config.max_msg_size, config.max_bytes].filter((n): n is number => typeof n === "number" && n > 0);
-    return Math.min(...limits);
+    return this.messaging.eventPayloadLimit();
   }
 
   /** Unicast: direct message to one specific instance. */
@@ -2767,8 +2629,7 @@ export class CotalEndpoint extends EventEmitter {
     text: string,
     opts?: { parts?: Part[]; replyTo?: string; contextId?: string },
   ): Promise<CotalMessage> {
-    const { msg } = await this.unicastAttributed(instanceId, text, opts);
-    return msg;
+    return this.messaging.unicast(instanceId, text, opts);
   }
 
   /** Unicast, returning the JetStream publish ack alongside the message: the only truthful proof
@@ -2778,36 +2639,7 @@ export class CotalEndpoint extends EventEmitter {
     text: string,
     opts?: { parts?: Part[]; replyTo?: string; contextId?: string },
   ): Promise<{ msg: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
-    if (!this.js) throw new Error(this.notLiveMsg());
-    const msg: CotalMessage = {
-      id: randomUUID(),
-      ts: Date.now(),
-      space: this.space,
-      from: this.ref(),
-      to: instanceId,
-      parts: opts?.parts ?? [{ kind: "text", text }],
-      replyTo: opts?.replyTo,
-      contextId: opts?.contextId,
-    };
-    // The recipient id is a principal dot-form `<owner>.<actor>` (owner+actor grammar); the 4-token DM
-    // subject forge-locks recipient AND sender, so both are split into their tokens here.
-    const recip = parsePrincipalKey(instanceId);
-    if (!recip) throw new Error(`unicast: "${instanceId}" is not a valid recipient principal <owner>.<actor>`);
-    assertPartsSerializable(msg.parts);
-    // Publish DIRECTLY rather than through publishMsg, the way multicastExpecting does: this path
-    // must read the ack, and publishMsg deliberately discards it.
-    const subject = unicastSubject(this.space, recip.owner, recip.actor, this.owner, this.actor);
-    try {
-      const ack = await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
-      return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
-    } catch (error) {
-      if (error instanceof TimeoutError)
-        throw new Error(
-          `${error.message} publishing to ${JSON.stringify(subject)}. The send outcome is unknown: the broker may have stored the message. Check before resending.`,
-          { cause: error },
-        );
-      throw error;
-    }
+    return this.messaging.unicastAttributed(instanceId, text, opts);
   }
 
   /** Anycast: deliver to ANY one instance of a service (role) — queue-group load balancing. */
@@ -2816,8 +2648,7 @@ export class CotalEndpoint extends EventEmitter {
     text: string,
     opts?: { parts?: Part[]; replyTo?: string; contextId?: string },
   ): Promise<CotalMessage> {
-    const { msg } = await this.anycastAttributed(service, text, opts);
-    return msg;
+    return this.messaging.anycast(service, text, opts);
   }
 
   /** Anycast, returning the JetStream publish ack alongside the message: the broker stored the
@@ -2827,28 +2658,7 @@ export class CotalEndpoint extends EventEmitter {
     text: string,
     opts?: { parts?: Part[]; replyTo?: string; contextId?: string },
   ): Promise<{ msg: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
-    if (!this.js) throw new Error(this.notLiveMsg());
-    // The subject builder admits `*` for allow rules; a publish needs one concrete role.
-    assertValidRole(service);
-    const msg: CotalMessage = {
-      id: randomUUID(),
-      ts: Date.now(),
-      space: this.space,
-      from: this.ref(),
-      toService: service,
-      parts: opts?.parts ?? [{ kind: "text", text }],
-      replyTo: opts?.replyTo,
-      contextId: opts?.contextId,
-    };
-    assertPartsSerializable(msg.parts);
-    // Publish DIRECTLY rather than through publishMsg, the way unicastAttributed does: this path
-    // must read the ack, and publishMsg deliberately discards it.
-    const ack = await this.js.publish(
-      anycastSubject(this.space, service, this.owner, this.actor),
-      JSON.stringify(msg),
-      { msgID: msg.id },
-    );
-    return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+    return this.messaging.anycastAttributed(service, text, opts);
   }
 
   /** Subscribe to a read-only observer feed. Defaults to the whole space; an observer under
@@ -6663,77 +6473,6 @@ function isReadableMessagePart(value: unknown): boolean {
  */
 function isHistoryDrainEnvelope(value: unknown): value is HistoryDrainEnvelope {
   return isRecord(value) && isUsableMessageId(value.id) && isRecord(value.from);
-}
-
-/** A `data` part value the wire can carry faithfully: a JSON value at EVERY depth (SPEC §5's
- *  `<any JSON value>`). `JSON.stringify` does not reject what it cannot represent — it silently
- *  rewrites: `undefined` (and a function-valued member) drops the key, `NaN`/`Infinity` store as
- *  `null`, a `Date` stores as a string, a sparse array's holes store as `null`, a `Map` stores as
- *  `{}`, a `Buffer` stores as `{"type":"Buffer",...}`. A reader then cannot tell a stored `null`
- *  from a real one (#1404 fix round). So the producer checks structurally, matching the exported
- *  `JsonValue`: null, boolean, finite number, string, an array whose every slot (holes included)
- *  passes, or a plain object (prototype `null` or `Object.prototype`) whose every defined member
- *  passes. A cycle is refused here too, never left for stringify's TypeError.
- *
- *  THE OBJECT/ARRAY ASYMMETRY ON `undefined`: an `undefined`-valued MEMBER of a plain object is
- *  allowed — stringify drops just that key, which is faithful (and the exported type says so) —
- *  while `undefined` at the top level or in an ARRAY SLOT is refused, because there stringify
- *  cannot drop a position: it stores `null`, which is a rewrite a reader cannot distinguish from
- *  a real `null`.
- *
- *  `seen` is the set of ANCESTORS on the current path, not every object visited: it is deleted
- *  from on the way out, so a SHARED subtree (`{a: x, b: x}`) passes — stringify carries it twice,
- *  which is faithful — while an object that contains itself at any depth still reports its path. */
-function jsonPathProblem(path: string, value: unknown, seen: Set<object>): string | undefined {
-  if (value === null) return undefined;
-  const t = typeof value;
-  if (t === "boolean" || t === "string") return undefined;
-  if (t === "number") return Number.isFinite(value) ? undefined : `${path} is not a finite number`;
-  if (t === "undefined" || t === "function" || t === "symbol" || t === "bigint") return `${path} is not a JSON value`;
-  if (typeof value === "object") {
-    if (seen.has(value)) return `${path} is cyclic`;
-    seen.add(value);
-    let problem: string | undefined;
-    if (Array.isArray(value)) {
-      for (let i = 0; i < value.length; i++) {
-        problem = jsonPathProblem(`${path}[${i}]`, value[i], seen);
-        if (problem) return problem;
-      }
-    } else {
-      const proto = Object.getPrototypeOf(value);
-      if (proto !== null && proto !== Object.prototype) {
-        seen.delete(value);
-        return `${path} is not a plain object`;
-      }
-      for (const key of Object.keys(value)) {
-        // A member whose value is undefined is the allowed key-drop, not a defect: stringify omits
-        // the key, the object stays a JSON object, so skip it rather than walk it.
-        if (value[key as keyof typeof value] === undefined) continue;
-        problem = jsonPathProblem(`${path}.${key}`, value[key as keyof typeof value], seen);
-        if (problem) return problem;
-      }
-    }
-    seen.delete(value);
-    return undefined;
-  }
-  return `${path} is not a JSON value`;
-}
-
-/** Refuse, at publish, a `data` part `JSON.stringify` would silently rewrite. The guard is the
- *  runtime half of `Part`'s `data: JsonValue` arm: with it, a non-JSON value at any depth never
- *  reaches the wire, so every reader (live core-sub, Plane-3 durable, history) gives one answer —
- *  the message was never sent — instead of the old split where history returned a rewritten row
- *  while Plane-3 terminated a keyless one as malformed. The error names the path to the offending
- *  value (e.g. `data[2].at`), so a caller learns which member to fix rather than that stringify
- *  would have mangled something. Throws rather than coercing: no fallback. */
-function assertPartsSerializable(parts: readonly Part[]): void {
-  for (const p of parts) {
-    if (p.kind !== "data") continue;
-    const problem = jsonPathProblem("data", (p as { data?: unknown }).data, new Set());
-    if (problem !== undefined) {
-      throw new Error(`cannot publish a data part carrying a non-JSON value (SPEC §5) - ${problem}`);
-    }
-  }
 }
 
 /** Auth subset of connect() options, shared by the endpoint and isReachable. `bearer` may be a
