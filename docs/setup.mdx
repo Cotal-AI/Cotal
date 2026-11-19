@@ -102,7 +102,8 @@ To define your own team, follow [Define a team](define-a-team.mdx).
 ## Update preparation [#update-preparation]
 
 Running setup with the same choices is safe.
-It reports an existing prepared, started, or registered space and preserves your edited default persona.
+It reports an existing prepared, started, stopped, or registered space and preserves your edited default persona.
+If a previously started local space is stopped, setup suggests `cotal up` from the project folder.
 A project root or space name held by a different space is a conflict.
 
 To create another local space, run `cotal space create <name>` in its own project folder.

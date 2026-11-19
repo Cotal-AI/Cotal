@@ -26,9 +26,9 @@ import { drainAndClose } from "@cotal-ai/core";
  * A manager restart takes its runs back: at boot, every run recorded `running` under this
  * endpoint is resumed under a fresh takeover, epoch + 1, from its recorded program. A run whose
  * predecessor died mid-pause is picked up where its journal says it is; nothing about the crash is
- * recorded as the program's outcome. Until that reconcile has returned, `run-start` and
- * `run-resume` are refused `unavailable`: a resume served while the reconcile is still collecting
- * would launch a second attempt of a run the reconcile is about to take back.
+ * recorded as the program's outcome. Until the first reconcile has returned, `run-start` and
+ * `run-resume` are refused `unavailable`. If the scan fails, the gate opens and a bounded
+ * background retry checks that a run is still parked before taking it back.
  *
  * ONE ATTEMPT PER RUN, HELD SYNCHRONOUSLY. A run's slot in the live map is claimed before the
  * first await of a launch and released only by that attempt's own end: its drive's completion, or
@@ -186,6 +186,7 @@ interface HostedRun {
 }
 
 const DEFAULT_CHECKPOINT_TIMEOUT = "1h";
+const TAKE_BACK_RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
 /** How many launches (start or resume) may be in their activation wait at once. Each holds a
  *  standing connection and a minted credential; past this a caller is refused `resource-exhausted`
  *  before anything is written, rather than letting a burst of starts pin unbounded connections for
@@ -210,6 +211,7 @@ export class RunHosting {
   private readonly launching = new Map<symbol, string | undefined>();
   private reconciled = false;
   private stopping = false;
+  private takeBackRetry: ReturnType<typeof setTimeout> | undefined;
 
   private readonly remote: boolean;
 
@@ -879,18 +881,36 @@ export class RunHosting {
    *  its status at `running`; a successor resumes each one under a fresh takeover. A run with no
    *  recorded program is left alone and named: nothing can be resumed without its source. Never
    *  fatal to the manager; a run that cannot be taken back is logged, not lost (its journal
-   *  stands). Opens the boot gate on return, whichever way it went: a reconcile that could not
-   *  read the store leaves the family serving, since a later resume by hand is the remedy. */
+   *  stands). Opens the boot gate after the initial pass, even if the scan failed. */
   async reconcile(): Promise<void> {
     try {
-      await this.takeBack();
+      if (!await this.takeBack()) this.scheduleTakeBackRetry(0);
     } finally {
       this.reconciled = true;
     }
   }
 
-  private async takeBack(): Promise<void> {
-    let inherited: { runId: string; epoch: number; fencingToken: number; source: string; file?: string; admission: RunAdmissionView }[] = [];
+  private scheduleTakeBackRetry(attempt: number): void {
+    if (this.stopping) return;
+    const delay = TAKE_BACK_RETRY_DELAYS_MS[attempt];
+    if (delay === undefined) {
+      this.ctx.log("! workflow-run boot reconcile retries exhausted. Restart the manager or run `cotal run resume <runId>` once the broker is reachable.");
+      return;
+    }
+    this.takeBackRetry = setTimeout(() => {
+      this.takeBackRetry = undefined;
+      if (this.stopping) return;
+      void this.takeBack(true).then((scanned) => {
+        if (!scanned) this.scheduleTakeBackRetry(attempt + 1);
+      }).catch((e) => this.ctx.log(`! workflow-run boot reconcile retry stopped: ${rejectionText(e)}`));
+    }, delay);
+    this.takeBackRetry.unref();
+  }
+
+  /** Retry the inventory read, not individual launch failures. No drive is launched until the
+   *  scan completes, so repeating a failed scan cannot repeat a partial set of launches. */
+  private async takeBack(retrying = false): Promise<boolean> {
+    let inherited: { runId: string; revision: number; epoch: number; fencingToken: number; source: string; file?: string; admission: RunAdmissionView }[] = [];
     try {
       inherited = await this.withOperator({}, async (planes, kv) => {
         const out: typeof inherited = [];
@@ -898,8 +918,9 @@ export class RunHosting {
           const runId = e.key.split(".")[2];
           if (runId === undefined) continue;
           const record = await readRunRecord(kv, this.ctx.endpoint, runId);
-          const status = record?.status?.value;
-          if (status === undefined || status.state !== "running") continue;
+          const note = record?.status;
+          if (note === undefined || note.value.state !== "running" || (retrying && this.runs.has(runId))) continue;
+          const status = note.value;
           const program = await readRunProgram(kv, this.ctx.endpoint, runId);
           if (program === undefined) {
             this.ctx.log(`! run ${runId} is recorded running with no recorded program; it cannot be taken back here - resume it from a terminal with \`cotal run resume ${runId} --local --file <program>\``);
@@ -911,6 +932,7 @@ export class RunHosting {
           try {
             admission = await readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, runId);
           } catch (e) {
+            if (planes.nc.isClosed()) throw e;
             this.ctx.log(`! run ${runId} stays parked: ${rejectionText(e)}`);
             continue;
           }
@@ -920,27 +942,31 @@ export class RunHosting {
           }
           const activation = await this.withOperator({ runId }, async (reader, _kv, takeoverId) =>
             lastActivation((await replayRunJournal(reader.js, reader.jsm, this.ctx.space, runId, takeoverId)).records));
-          out.push({ runId, epoch: Math.max(status.epoch, activation?.epoch ?? 0) + 1, fencingToken: Math.max(status.fencingToken, activation?.fencingToken ?? 0) + 1, source: program.source, ...(program.file !== undefined ? { file: program.file } : {}), admission });
+          out.push({ runId, revision: note.revision, epoch: Math.max(status.epoch, activation?.epoch ?? 0) + 1, fencingToken: Math.max(status.fencingToken, activation?.fencingToken ?? 0) + 1, source: program.source, ...(program.file !== undefined ? { file: program.file } : {}), admission });
         }
         return out;
       });
     } catch (e) {
-      this.ctx.log(`! workflow-run boot reconcile failed: ${rejectionText(e)} - runs a predecessor was driving stay parked until the next restart or a \`cotal run resume <runId>\``);
-      return;
+      this.ctx.log(`! workflow-run boot reconcile failed: ${rejectionText(e)}`);
+      return false;
     }
-    if (inherited.length === 0) return;
+    if (this.stopping || inherited.length === 0) return true;
     const host = this.host();
+    let takenBack = 0;
     for (const r of inherited) {
+      if (this.stopping) break;
       try {
         const verdict = host.validate(r.source, r.file);
         if (!verdict.ok) throw new Error("the recorded program no longer validates on this host");
         if ((verdict.placements?.length ?? 0) > 1) throw new Error("its placed spawns name more than one manager instance");
-        await this.launch(host, { mode: "existing", runId: r.runId, source: r.source, ...(r.file !== undefined ? { file: r.file } : {}), epoch: r.epoch, fencingToken: r.fencingToken, timeout: DEFAULT_CHECKPOINT_TIMEOUT, admission: r.admission, placements: verdict.placements ?? [] });
+        await this.launch(host, { mode: "existing", runId: r.runId, source: r.source, ...(r.file !== undefined ? { file: r.file } : {}), epoch: r.epoch, fencingToken: r.fencingToken, timeout: DEFAULT_CHECKPOINT_TIMEOUT, admission: r.admission, placements: verdict.placements ?? [], ...(retrying ? { inheritedRevision: r.revision } : {}) });
+        takenBack++;
       } catch (e) {
         this.ctx.log(`! run ${r.runId} could not be taken back: ${rejectionText(e)}`);
       }
     }
-    this.ctx.log(`workflow-run boot reconcile: took back ${inherited.length} run(s) recorded running`);
+    this.ctx.log(`workflow-run boot reconcile: took back ${takenBack} run(s) recorded running`);
+    return true;
   }
 
   /** Renewal: re-mint every live drive's `run-driver` credential for the SAME nkey and attempt
@@ -1021,6 +1047,7 @@ export class RunHosting {
    *  launch sees `stopping` and closes its own connection. */
   async stop(): Promise<void> {
     this.stopping = true;
+    clearTimeout(this.takeBackRetry);
     const live = [...this.runs.values()].filter((r): r is HostedRun & { nc: NatsConnection; drive: RunHostDrive } => r.nc !== undefined && r.drive !== undefined);
     this.runs.clear();
     for (const run of live) run.drive.release("the hosting manager is stopping");
@@ -1083,7 +1110,7 @@ export class RunHosting {
    *  including the two before a drive is attempted, frees a slot whose drive never started. */
   private async launch(
     host: RunHost,
-    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string; admission: RunAdmissionView; placements?: readonly { endpoint: string; instanceId: string }[]; served?: string },
+    req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string; admission: RunAdmissionView; placements?: readonly { endpoint: string; instanceId: string }[]; served?: string; inheritedRevision?: number },
     claimed?: HostedRun,
     reserved?: () => void,
   ): Promise<void> {
@@ -1092,6 +1119,14 @@ export class RunHosting {
     try {
       if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
       release ??= this.reserveLaunch(req.runId);
+      if (req.inheritedRevision !== undefined) {
+        // The boot gate is open during retries. The slot excludes a concurrent resume here, and
+        // the revision check excludes a resume that already changed the status and freed its slot.
+        const revision = await this.withOperator({ runId: req.runId }, async (_planes, kv) =>
+          (await readRunRecord(kv, this.ctx.endpoint, req.runId))?.status?.revision);
+        if (revision !== req.inheritedRevision)
+          throw new EpEnvelopeError("conflict", `run ${req.runId}: its recorded status changed during the boot reconcile`);
+      }
       await this.drive(host, req, slot);
     } catch (e) {
       // A slot whose drive never started is freed here; one whose drive exists is freed by that
