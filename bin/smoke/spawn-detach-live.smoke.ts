@@ -25,6 +25,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { assertScratchHeld, makeScratch } from "./_scratch.js";
 
 /** Resolve once the child has actually exited (or immediately if it already has); bounded by ms. */
 const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
@@ -34,6 +35,9 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
     setTimeout(r, ms).unref?.();
   });
 
+// Every temp folder below comes from this scratch, which no `.cotal` above can capture: the CLI
+// finds its folder by walking up to the nearest one, and a home holding `.cotal` would answer.
+const scratch = makeScratch("cotal-detach-");
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
 process.env.COTAL_HOME = home;
 
@@ -708,6 +712,8 @@ try {
     const callerRoot = join(resumeRoot, "caller");
     const transcriptRoot = join(resumeRoot, "claude");
     mkdirSync(callerRoot);
+    // The implicit cases need a caller folder that is no project, so no `.cotal` may sit above it.
+    assertScratchHeld(callerRoot, "resume probe caller");
     mkdirSync(join(resumeRoot, "offline"));
     mkdirSync(join(transcriptRoot, "projects", "synthetic"), { recursive: true });
     const heldId = "11111111-2222-4333-8444-555555555555";
@@ -775,5 +781,6 @@ try {
     return awaitExit(k);
   }));
   releaseBroker?.();
+  rmSync(scratch, { recursive: true, force: true });
   console.log("spawn-detach:live finally-complete");
 }
