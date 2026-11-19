@@ -1165,7 +1165,7 @@ await sleep("1m", { name: "s3" });
     }),
   );
   ok("a RESUMED run reaches the ceiling the RUN was pinned to, not a fresh one", codeOf(e) === "L4009", String(e));
-  ok("the message quotes the pinned ceiling", (e as Error).message.includes("more than 4 effects"), (e as Error).message.slice(0, 70));
+  ok("the message quotes the pinned ceiling", (e as Error).message.includes("ceiling of 4 effects"), (e as Error).message.slice(0, 70));
   // The discriminating half: counted per activation, the resume would have had a full fresh
   // allowance and simply performed the two remaining sleeps, ending green with six entries.
   ok(

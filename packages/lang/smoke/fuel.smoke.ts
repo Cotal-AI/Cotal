@@ -61,7 +61,7 @@ while (true) {
   ok("a loop performing no effect is stopped", caught instanceof RuntimeFault, String(caught));
   const fault = caught as RuntimeFault;
   ok("it is L4013, not the effect ceiling", fault.code === "L4013", fault.code);
-  // Pinned on the distinguishing clause, not on the word "loop": L4009 says "loop" too, so a pin on
+  // Pinned on the distinguishing clause, not on the word "loop": L4009 mentions loops too, so a pin on
   // that word would pass against the wrong error. One site, counted rather than assumed.
   ok(
     "the message says why the effect ceiling could not see it",
@@ -314,7 +314,7 @@ log(votes.a.status);
   ok("and it stops at the pinned number rather than after it",
     dispatched === 4, dispatched);
   ok("the message quotes the pinned ceiling",
-    second instanceof Error && second.message.includes("more than 4 effects"), second?.message);
+    second instanceof Error && second.message.includes("ceiling of 4 effects"), second?.message);
 }
 
 // ---- 5) the step budget is NOT the same, and says so -----------------------------------------

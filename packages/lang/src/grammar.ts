@@ -24,6 +24,7 @@ import {
   PROMISE_NAMES,
   RESERVED_NAMES,
   STEP_NAME_RE,
+  WAIT_UNTIL_MIN_EVERY_MS,
   primitiveDoc,
 } from "./primitives.js";
 import { KEY_RESERVED_RE, scopeTraits } from "./keys.js";
@@ -688,7 +689,11 @@ function checkWaitUntil(args: AnyNode[], given: Map<string, AnyNode>, v: Validat
   // means. Judged only on two literals, because that is when the source actually shows it.
   const literal = (p: AnyNode | undefined): string | undefined => {
     const value = p?.value as AnyNode | undefined;
-    return value?.type === "Literal" && typeof value.value === "string" ? value.value : undefined;
+    if (value?.type === "Literal" && typeof value.value === "string") return value.value;
+    if (value?.type === "TemplateLiteral" && (value.expressions as AnyNode[]).length === 0) {
+      return ((value.quasis as AnyNode[])[0]?.value as { cooked?: string } | undefined)?.cooked;
+    }
+    return undefined;
   };
   const e = literal(every);
   const d = literal(deadline);
@@ -697,13 +702,13 @@ function checkWaitUntil(args: AnyNode[], given: Map<string, AnyNode>, v: Validat
   // pause between looks: a busy loop against somebody else's resource, appending an observation to
   // a durable journal on every turn of it. The whole reason `every` has no default is that the
   // runtime must not guess how expensive a resource is to poll, and accepting zero is that same
-  // guess made by omission.
-  if (e !== undefined && isDuration(e) && parseDuration(e) <= 0) {
+  // guess made by omission. Any cadence under the floor is the same guess at a smaller scale.
+  if (e !== undefined && isDuration(e) && parseDuration(e) < WAIT_UNTIL_MIN_EVERY_MS) {
     v.fail(
       "L3047",
       every as AnyNode,
-      `This observes every ${e}, which is no pause at all: the wait would poll the resource as fast as the run can turn and journal an observation each time.`,
-      "Give `every` a real interval, the slowest one that still notices in time.",
+      `This observes every ${e}, under the ${WAIT_UNTIL_MIN_EVERY_MS / 1000}s floor: every observation is a durable journal append and counts toward the run's effect ceiling.`,
+      `Give \`every\` a real interval of at least ${WAIT_UNTIL_MIN_EVERY_MS / 1000}s, the slowest one that still notices in time.`,
       "waitUntil",
     );
   } else if (e !== undefined && d !== undefined && isDuration(e) && isDuration(d) && parseDuration(e) > parseDuration(d)) {
