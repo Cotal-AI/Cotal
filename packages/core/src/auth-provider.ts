@@ -792,8 +792,8 @@ export interface UserAuthStatus {
   idpUrl: string;
   /** This machine's cached login for that IdP; absent = not signed in. `name` is the account name
    *  the IdP gave at `cotal login`, display only, and absent when the IdP gave none or an older
-   *  build wrote the login. */
-  login?: { sub: string; expiresAt: number; name?: string };
+   *  build wrote the login. `expiresAt` is absent when the provider reports no session expiry. */
+  login?: { sub: string; expiresAt?: number; name?: string };
   /** The login's derived owner token (`u_…`) for this space. */
   owner?: string;
   /** The (owner, actor) interactive ledger row: its lists when granted, `"not-granted"` when the
@@ -827,6 +827,8 @@ export interface AuthPrepareInput {
    *  core — the provider pins/persists it (first call requires one; a later call must match the
    *  persisted pin or omit it; re-pointing an IdP is a migration, never a flag flip). */
   idpUrl?: string;
+  /** Optional provider trust pins for the configured IdP. The provider validates and persists them. */
+  idpPins?: { audience: string; jwksUri: string };
 }
 
 /** The read-only {@link AuthProvider.preflightServer} input: only what the pre-effect checks read.
@@ -837,6 +839,8 @@ export interface AuthPreflightInput {
   dir: string;
   /** The same opaque IdP base URL {@link AuthPrepareInput.idpUrl} carries. */
   idpUrl?: string;
+  /** The same provider trust pins {@link AuthPrepareInput.idpPins} carries. */
+  idpPins?: AuthPrepareInput["idpPins"];
 }
 
 /** The {@link AuthProvider.preflightServer} result. `required`: a first enable needs an input the

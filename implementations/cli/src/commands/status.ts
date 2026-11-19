@@ -1535,7 +1535,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       ? {
           idp: st.idpUrl,
           subject: st.login?.sub ?? null,
-          expiresAt: st.login ? new Date(st.login.expiresAt * 1000).toISOString() : null,
+          expiresAt: st.login?.expiresAt === undefined ? null : new Date(st.login.expiresAt * 1000).toISOString(),
           actor: !st.login ? null : st.grant === "not-granted" ? "not-granted" : st.grant ? "granted" : "not-checkable",
           grant: st.login && st.grant && st.grant !== "not-granted" ? { label: st.grant.label ?? null, read: [...st.grant.allowSubscribe], post: [...st.grant.allowPublish], scope: [...st.grant.scope] } : null,
         }
@@ -2104,7 +2104,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
     if (!s.login) rows.push(["Account", stateCell("could not be read", "failed")]);
     else if (!s.login.subject) rows.push(["Account", stateCell("not signed in", "waiting")]);
     else {
-      rows.push(["Account", `${s.login.subject} · session until ${s.login.expiresAt}`]);
+      rows.push(["Account", `${s.login.subject}${s.login.expiresAt ? ` · session until ${s.login.expiresAt}` : ""}`]);
       rows.push(["Grant", stateCell(s.login.actor === "granted" ? "granted" : s.login.actor === "not-granted" ? "not granted" : "not checkable on this machine", s.login.actor === "granted" ? "ok" : s.login.actor === "not-granted" ? "waiting" : "hint")]);
     }
   }

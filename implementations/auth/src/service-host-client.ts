@@ -13,7 +13,7 @@ import { canonicalJson, mkSecretDir, writeSecretFileCreateOnly, type EpCapabilit
 import { CommandFailure, findMesh, homeCotalDir, probeLiveness } from "@cotal-ai/workspace";
 import { parseServiceHostResult, type ServiceCallerGrant, type ServiceHostInputs, type ServiceHostOperation, type ServiceHostResult } from "./service-host-contract.js";
 import { SERVICE_ENDPOINT_HOST_PATH } from "./service-endpoint-authority.js";
-import { fetchIdpJwt, requireIdpSession } from "./login.js";
+import { fetchSessionIdpJwt } from "./login.js";
 import { loadAuthServiceInfo, loadPinnedIdp } from "./store.js";
 
 /** A host request as the route takes it: the granter is the route's to derive. */
@@ -245,7 +245,7 @@ function serviceHostEndpoint(dir: string, space: string, what: string): ServiceH
 
 /** POST one host request to the resolved host with a fresh IdP proof and return the engine's parsed answer. */
 async function postServiceEndpointHost(target: ServiceHostTarget, request: ServiceHostRouteRequest): Promise<ServiceHostResult> {
-  const idpToken = await fetchIdpJwt(target.idpUrl, requireIdpSession(homeCotalDir(), target.idpUrl).token);
+  const idpToken = await fetchSessionIdpJwt(homeCotalDir(), target.idpUrl);
   const res = await fetch(target.endpoint, {
     method: "POST", redirect: "manual",
     headers: { "content-type": "application/json", ...(target.authorization !== undefined ? { authorization: target.authorization } : {}) },

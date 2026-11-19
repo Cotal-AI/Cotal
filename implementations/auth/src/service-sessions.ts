@@ -59,7 +59,7 @@ function visitServiceSessions(directory: string, idpUrl: string, session: IdpSes
         assertServiceLoginStore(store);
         readLocalRecordSource(join(pinned, "idp-sessions.json"), 256 * 1024, true);
         const previous = loadIdpSession(pinned, idp);
-        if (!previous) return;
+        if (!previous || previous.oidc) return;
         if (!previous.sub || previous.sub !== session.sub) {
           if (clear) return;
           throw new Error("the service sign-in belongs to a different or unproved account");

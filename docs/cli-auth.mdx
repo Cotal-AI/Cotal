@@ -299,7 +299,7 @@ are not cleared. Machine daemons connected with their own service proof keep the
 disconnect behavior described below.
 
 ```bash
-cotal login [--cloud | --idp <auth base URL>] [--client-id <id>] [--no-browser] [--plain]
+cotal login [--cloud | --idp <auth base URL>] [--oidc] [--client-id <id>] [--no-browser] [--plain]
 cotal logout --idp <auth base URL> [--local]
 ```
 
@@ -337,6 +337,8 @@ A provider that cannot be reached, or that stops answering, refuses with
 its cache, and removes only that
 account's discovered registry entries. See
 [identity & auth](identity-and-auth.mdx).
+
+For a compatible [OpenID Connect provider](identity-service-auth.mdx#idp-compatibility), pass `--oidc --idp <issuer> --client-id <id>`. Use the same client ID as the space's audience. Repeat these options when signing in again. The client never switches to OIDC after a failed Better Auth request. OIDC server-side logout requires a revocation endpoint. If the provider does not offer one, revoke the grant there and then use `logout --local` to forget it on this machine.
 
 
 ## actor [#actor]

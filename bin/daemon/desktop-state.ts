@@ -24,7 +24,7 @@ export async function desktopSpaces(sessionDir: string, refresh: boolean): Promi
     unreadable: unusable.length + entries.length - addressable.length,
     collisions,
     failedProviders,
-    signedInProviders: listIdpAccounts(sessionDir).filter((account) => account.expiresAt > Math.floor(Date.now() / 1000)).map((account) => account.idp),
+    signedInProviders: listIdpAccounts(sessionDir).filter((account) => account.expiresAt === undefined || account.expiresAt > Math.floor(Date.now() / 1000)).map((account) => account.idp),
     spaces: addressable.map((entry) => ({
       space: entry.space,
       label: entry.catalogName ?? entry.space,

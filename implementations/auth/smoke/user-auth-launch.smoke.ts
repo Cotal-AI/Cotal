@@ -91,7 +91,8 @@ const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-
 const { jetstreamManager } = await import("@nats-io/jetstream");
 const { channelBucket, chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity, presenceBucket } = await import("@cotal-ai/core");
 const { authDir, loadLaunchPersonaFile, loadSoleSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo, loadIdpSession } = await import("../src/index.js");
+const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo } = await import("../src/index.js");
+const { requireBetterAuthSession } = await import("../src/login.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
 
@@ -811,7 +812,7 @@ try {
     const grant2 = await cotal(["actor", "grant", "cli", "--sub", sub2, "--full"], { cwd: root2, env });
     check("the second root grants its signed-in CLI", grant2.status === 0, grant2.out);
     // A cached sign-in the IdP revoked is refused as no sign-in is, before anything is saved or launched.
-    await revokeSignIn(loadIdpSession(home2, base)!.token);
+    await revokeSignIn(requireBetterAuthSession(home2, base).token);
     const revokedStart = await cotal(["manager", "start"], { cwd: root2, env });
     const revokedText = plain(revokedStart.out);
     check("manager start with a sign-in the IdP revoked exits 2 with AUTH_REQUIRED, and Next signs in at that IdP, then starts it",
@@ -859,7 +860,7 @@ try {
     // A restart over that running manager, with the sign-in revoked, is refused before anything is
     // stopped, and says that manager was left running.
     const revokedRunning = "the IdP rejected this machine's sign-in, which has expired or was revoked; the running manager was left running";
-    await revokeSignIn(loadIdpSession(home2, base)!.token);
+    await revokeSignIn(requireBetterAuthSession(home2, base).token);
     const revokedRestart = await cotal(["manager", "restart", "--yes"], { cwd: root2, env });
     const revokedRestartText = plain(revokedRestart.out);
     check("with the sign-in revoked, manager restart over the running manager exits 2 with AUTH_REQUIRED, says the running manager was left running, and Next signs in at that IdP, then restarts it",
@@ -1033,7 +1034,7 @@ try {
     // The participant's cached sign-in, revoked at the IdP and then removed, is refused before any launch.
     const joinManagerPid = join(joinRoot, ".cotal", `manager.${spaceKey(CA_SPACE)}.pid`);
     const joinManagerRuns = () => { try { process.kill(Number(readFileSync(joinManagerPid, "utf8").trim()), 0); return true; } catch { return false; } };
-    await revokeSignIn(loadIdpSession(joinHome, base)!.token);
+    await revokeSignIn(requireBetterAuthSession(joinHome, base).token);
     const revokedJoin = await cotal(["manager", "start"], { cwd: joinRoot, env: joinEnv });
     const revokedJoinText = plain(revokedJoin.out);
     check("with its sign-in revoked at the IdP, the participant's manager start exits 2 with AUTH_REQUIRED, and Next signs in at that IdP, then starts it",
@@ -1052,7 +1053,7 @@ try {
     const joinRunning = await cotal(["manager", "start"], { cwd: joinRoot, env: joinEnv });
     check("signed in again, the participant's manager start starts it", joinRunning.status === 0 && joinManagerRuns(), joinRunning.out);
     const joinRunningPid = readFileSync(joinManagerPid, "utf8").trim();
-    await revokeSignIn(loadIdpSession(joinHome, base)!.token);
+    await revokeSignIn(requireBetterAuthSession(joinHome, base).token);
     const revokedJoinRestart = await cotal(["manager", "restart", "--yes"], { cwd: joinRoot, env: joinEnv });
     const revokedJoinRestartText = plain(revokedJoinRestart.out);
     check("with that sign-in revoked, the participant's manager restart exits 2 with AUTH_REQUIRED, says the running manager was left running, and Next signs in at that IdP, then restarts it",

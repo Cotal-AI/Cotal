@@ -14,7 +14,7 @@
  *  - The registry entry for a first enable is recorded before the auth service exists, because the
  *    adapter resolves a registered user target. It carries only the prepared trust pins and is
  *    reported as incomplete until the provider's readiness for the exact child process answers. */
-import { resolveAuthProvider, type AuthPrepared } from "@cotal-ai/core";
+import { resolveAuthProvider, type AuthPrepared, type AuthPreflightInput } from "@cotal-ai/core";
 import {
   CommandFailure, assertRecordIdentity, assertUserAuthInfo, CLI_USER_ACTOR, findMesh, hasUserAuthState, userAuthStateDir,
   workspaceSecretStore, type UserAuthInfo,
@@ -23,6 +23,7 @@ import { serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/servi
 
 /** The prepared material a user stack's broker preparation returns. Private to this process. */
 export interface StackUserPrepared { prepared: AuthPrepared; stateDir: string }
+export type StackIdpInput = Pick<AuthPreflightInput, "idpUrl" | "idpPins">;
 
 /** The registered user transport the native auth-service child accepts: plain loopback only. */
 export function assertUserStackTransport(server: string, tlsRequired: boolean): void {
@@ -39,21 +40,21 @@ export function assertUserStackTransport(server: string, tlsRequired: boolean): 
  *  `preflightServer`. A provider without that hook refuses: no check is skipped silently. The
  *  provider's `prepareServer` repeats these checks authoritatively later, so a race is still
  *  caught there and its effects are reported, never rolled back. */
-export async function preflightUserStack(root: string, space: string, idpUrl: string | undefined): Promise<void> {
+export async function preflightUserStack(root: string, space: string, idpUrl: string | undefined, idpPins?: StackIdpInput["idpPins"]): Promise<void> {
   let provider;
   try { provider = resolveAuthProvider(); }
   catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no single auth provider is installed, so a user-auth stack cannot be prepared; no stack was prepared", { target: { root, space }, native: { code: "AUTH_PROVIDER", outcome: "refused", detail: (error as Error).message } }); }
   if (!provider.preflightServer) throw new CommandFailure("refused", "UNSUPPORTED", "the installed auth provider has no read-only server preflight, so a user-auth stack cannot check its inputs before writing trust; no stack was prepared", { target: { root, space, provider: provider.name } });
   const dir = userAuthStateDir(root, space, { readOnly: true });
   let verdict;
-  try { verdict = await provider.preflightServer({ space, dir, ...(idpUrl !== undefined ? { idpUrl } : {}) }); }
+  try { verdict = await provider.preflightServer({ space, dir, ...(idpUrl !== undefined ? { idpUrl } : {}), ...(idpPins ? { idpPins } : {}) }); }
   catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the auth provider's read-only preflight did not answer; no stack was prepared", { target: { root, space }, native: { code: "AUTH_PREFLIGHT", outcome: "refused" } }); }
   if (verdict.ok) return;
   const code = verdict.reason === "required" || verdict.reason === "invalid" ? "USAGE_INVALID" : verdict.reason === "conflict" ? "CONFLICT" : "DEPENDENCY_UNAVAILABLE";
   const remedy = verdict.reason === "required" ? "cotal up --user-auth --idp <auth base URL>"
     : verdict.reason === "conflict" ? "run bare `cotal up` to keep the space's pinned IdP; re-pointing it is a deliberate migration"
       : verdict.reason === "invalid" ? "pass an https IdP auth base URL, or http on a loopback IP, without credentials, a query or a fragment"
-        : "check --idp <auth base URL>; it must serve <base>/jwks";
+        : idpPins ? "check --idp-jwks-uri; it must serve the pinned JWKS" : "check --idp <auth base URL>; it must serve <base>/jwks";
   const message = verdict.reason === "required" ? "a first user-auth stack needs the IdP it trusts; no stack was prepared"
     : verdict.reason === "unavailable" ? "the configured IdP did not serve usable JWKS; no stack was prepared"
       : "the auth provider refused this stack's IdP before preparation; no stack was prepared";

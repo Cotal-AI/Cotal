@@ -152,7 +152,7 @@ export async function whoami(args: ParsedArgs): Promise<void> {
       owner,
       actor: signedIn ? CLI_USER_ACTOR : null,
       subject: st.login?.sub ?? null,
-      loginExpiresAt: st.login ? new Date(st.login.expiresAt * 1000).toISOString() : null,
+      loginExpiresAt: st.login?.expiresAt === undefined ? null : new Date(st.login.expiresAt * 1000).toISOString(),
       grant,
     } as const;
     if (grant === null || grant === "not-granted") result = { ...base, identity, read: [], post: [], dms: false, capabilities: [] };

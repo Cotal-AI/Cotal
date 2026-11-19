@@ -96,7 +96,7 @@ A refused name can identify a live actor, pending retirement, or a live lifecycl
 
 ## The IdP callout contract [#the-idp-callout-contract]
 
-The low-level bridge accepts EdDSA/Ed25519 JWTs against pinned keys, issuer, and audience. The stock login and provider flow expects Better Auth's device-code endpoints and conventions. A different production IdP needs host login and provider wiring. An RS256 or ES256 issuer also needs normalization or re-issuance.
+The bridge accepts EdDSA/Ed25519 JWTs against pinned keys, issuer, and audience. Better Auth is the default login flow. A provider that supports device authorization, refresh, and token exchange can use the [OpenID Connect flow](identity-service-auth.mdx#idp-compatibility). RS256 and ES256 tokens still need normalization or re-issuance.
 
 [Auth service and IdP integration](identity-service-auth.mdx) describes both listeners, the bridge hooks, owner derivation, and proof requirements. Better Auth is a development and test fixture, not a runtime dependency.
 

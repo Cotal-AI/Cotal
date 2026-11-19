@@ -93,6 +93,7 @@ try {
   check("userStatus returns the recorded handle with the login", signedIn.login?.sub === userId && signedIn.login?.name === "human", signedIn);
 
   const cached = loadIdpSession(home, base)!;
+  if (cached.oidc) throw new Error("expected a Better Auth fixture session");
   saveIdpSession(home, base, { token: cached.token, expiresAt: cached.expiresAt, sub: userId });
   const older = await status();
   check("a login an older build cached has no name, and userStatus reports none", older.login?.sub === userId && older.login.name === undefined, older);
