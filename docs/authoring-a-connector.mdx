@@ -37,7 +37,8 @@ This scaffold registers the connector but refuses every launch until you impleme
 For a complete implementation, read the [OpenCode connector](../extensions/connector-opencode/src/extension.ts).
 
 In `buildLaunch(opts)`, return a `LaunchSpec` containing the child command, arguments, and extra environment variables.
-When `opts.validateOnly` is true, run the same argument checks but create no files or session state.
+Set `supportsLaunchValidation: true` if `buildLaunch` can validate arguments without writing files or changing session state.
+When `opts.validateOnly` is true, run the same argument checks but create no launch files or session state.
 Return `{ command: "", args: [] }` after validation. The CLI uses this mode before provisioning
 and when previewing a direct launch. The returned spec is not executed.
 The resulting process must connect to the broker with the supplied identity and expose the mesh integration inside the agent application.

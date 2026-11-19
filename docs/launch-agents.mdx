@@ -45,8 +45,8 @@ A managed launch can also ask for its working folder when its host differs from 
 Use `--on` and `-C` to make those choices explicit in scripts.
 Closing a direct foreground terminal may end its agent.
 Use `--dry-run` to preview a launch without allocating an agent, provisioning credentials, or starting the application.
-For a direct launch, the preview imports the selected connector and checks its launch arguments,
-including resume handles, initial prompts, variants and native options. It creates no launch files.
+For a direct launch, the preview checks launch arguments if the installed connector supports preview
+validation. It creates no launch files.
 A managed preview leaves execution-host checks to the selected manager.
 
 ### Choose the persona

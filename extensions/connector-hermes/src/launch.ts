@@ -297,8 +297,7 @@ function forkHermesSession(opts: { sourceHome: string; source: string; seatHome:
   return JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as HermesFork;
 }
 
-/** The control socket's per-launch directory, once minted. Shutdown removes it after the gateway has
- *  exited, and a launch that fails before then removes it on its way out. */
+/** Files the launcher itself created, rather than those already tracked by `buildLaunch`. */
 const localArtifacts: string[] = [];
 
 async function main(): Promise<void> {
@@ -396,7 +395,7 @@ async function main(): Promise<void> {
   const gatewayExit = new Promise<void>((done) => child.once("exit", () => done()));
 
   // Let the gateway drain after SIGTERM, kill its tree if it is still up, and wait for its exit.
-  // Every stop waits for this before it removes the managed root or the control socket's directory:
+  // Every graceful stop waits for this before it removes the managed root or its local artifacts:
   // removing either earlier would let a draining gateway write into a directory after it was deleted,
   // or dial a socket path whose directory is gone.
   const drainGateway = async (): Promise<void> => {
@@ -442,7 +441,8 @@ async function main(): Promise<void> {
     if (drained.status === "rejected") {
       const left = [dirname(control.path), dirname(material), ...(disposable ? [disposable.root] : [])].join(", ");
       log(`could not prove the gateway exited (${String((drained.reason as Error).message).replace(/\s+/g, " ").trim()}), so ${left} is left on disk; remove it once the gateway has exited`);
-      process.exit(code);
+      if (suppliedControl && inherited) await gatewayExit;
+      else process.exit(code);
     }
     if (disposable) {
       try {

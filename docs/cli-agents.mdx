@@ -241,8 +241,9 @@ there it runs the enrollment consumer above without redeeming anything. See
 
 A direct `--dry-run` refuses an unknown effective harness with `DEPENDENCY_UNAVAILABLE` (exit 2),
 whether it came from `--harness`, the persona or a preference. Harness names are case-sensitive.
-The direct preview imports the installed connector and validates resume, prompt, variant and
-native-option arguments without creating launch files or checking its binary or login.
+If the installed connector supports direct preview validation, it checks resume, prompt, variant and
+native options without creating launch files or checking its binary or login. Otherwise the preview
+reports connector arguments as not checked.
 A managed preview warns about an unknown local harness and reports `not-checked`, since the
 selected manager checks its own connectors at launch.
 Both launch and preview reject a blank `--resume` value with `USAGE_INVALID` (exit 1) before preparing the launch.

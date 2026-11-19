@@ -1461,12 +1461,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     remedy: `Follow ${["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/"} to install ${missing.join(", ")}, then retry: \`${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}\``,
   });
   if (variant && !connector.supportsModelVariant) {
-    stderrLine("✗ ", `${agentType} connector does not support model variants (variant)`, c.red);
-    process.exit(1);
+    throw new CommandFailure("refused", "USAGE_INVALID", `${agentType} connector does not support model variants (variant)`, { target: { space, path } });
   }
   if (values.prompt !== undefined && !connector.supportsPrompt) {
-    stderrLine("✗ ", `${agentType} connector does not support an initial prompt (prompt)`, c.red);
-    process.exit(1);
+    throw new CommandFailure("refused", "USAGE_INVALID", `${agentType} connector does not support an initial prompt (prompt)`, { target: { space, path } });
   }
   // Which of the operator's personal MCP servers to share with this agent: declared in the cotal
   // config (global ~/.config/cotal + the target mesh's .cotal), narrowed by an optional
@@ -1529,17 +1527,18 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       : `✗ connector "${connector.name}" does not publish an AG-UI event plane; omit --events to launch it without one`));
     process.exit(1);
   }
+  const launchOpts: LaunchOpts = {
+    space, name, role, servers: server, configPath: path,
+    model, variant, launchOptions, subscribe, allowSubscribe, allowPublish,
+    endpoints: copyPersonaEndpoints(def.endpoints) ?? [], prompt: values.prompt,
+    resume: values.resume, events: launchEvents, eventPayloads, eventsRequired,
+    mcpServers, mcpServersExclusive: shareTools !== undefined, envAllow,
+    workspaceRoot: target.root,
+  };
   try {
-    if (connector.supportsLaunchValidation) connector.buildLaunch({
-      validateOnly: true, space, name, role, servers: server, configPath: path,
-      model, variant, launchOptions, subscribe, allowSubscribe, allowPublish,
-      endpoints: copyPersonaEndpoints(def.endpoints) ?? [], prompt: values.prompt,
-      resume: values.resume, events: launchEvents, eventPayloads, eventsRequired,
-      mcpServers, mcpServersExclusive: shareTools !== undefined, envAllow,
-      workspaceRoot: target.root,
-    });
+    if (connector.supportsLaunchValidation) connector.buildLaunch({ ...launchOpts, validateOnly: true });
   } catch (error) {
-    throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message, { target: { space, path } });
+    throw new CommandFailure("refused", "USAGE_INVALID", rejectionText(error), { target: { space, path } });
   }
   // A REMOTE user mesh (registered with `meshes add --from`) that advertises a provisioning
   // endpoint: the mesh grants the row and pre-creates the durables inside the owner's envelope,
@@ -1754,42 +1753,17 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       console.error(c.dim(`→ joining mesh ${space} (${server}) as ${name}`));
     try {
       spec = connector.buildLaunch({
-        space,
+        ...launchOpts,
         name,
-        role,
         id,
         creds: credsPath,
         ...(acceptedToken !== undefined ? { acceptedToken } : {}),
         userAuth,
         lifecycleUid,
-        servers: server,
-        configPath: path,
-        model,
-        variant,
-        launchOptions,
-        subscribe,
-        allowSubscribe,
-        allowPublish,
-        // The endpoint commands this launch minted (on a static mesh) or names (on an open one), so the
-        // session reads them from the launch rather than from a persona file that may change.
-        endpoints: copyPersonaEndpoints(def.endpoints) ?? [],
-        prompt: values.prompt,
-        // Fork an existing session into the mesh. `prompt + resume` is a supported combo (claude accepts
-        // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
-        resume: values.resume,
-        events: launchEvents,
-        eventPayloads,
-        eventsRequired,
-        mcpServers,
-        mcpServersExclusive: shareTools !== undefined,
-        envAllow,
-        // Where a connector that keeps per-agent local state roots it. The manager passes its own
-        // workspace root here; the foreground path did not, so an armed session refused at launch
-        // construction because its write-ahead log had nowhere to live that a later start would look.
-        workspaceRoot: target.root,
       });
     } catch (error) {
-      throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message, { target: { space, path } });
+      if (error instanceof CommandFailure) throw error;
+      throw new CommandFailure("refused", "USAGE_INVALID", rejectionText(error), { target: { space, path } });
     }
     applyHandoffManagerInstance(spec, handoffManagerInstanceId);
     artifacts = spec.artifacts;

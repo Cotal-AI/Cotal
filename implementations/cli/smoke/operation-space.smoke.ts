@@ -301,7 +301,7 @@ for (const [modeLabel, flags] of [["foreground", ["--foreground"]], ["dry-run", 
 
 // A managed preview cannot validate the execution host. A direct preview knows its effective
 // harness and refuses an unknown name before reporting success, regardless of its source.
-interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string }
+interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string; connectorArgumentValidation?: string }
 const managed = cotal("spawn", "-d", "nosuch", "--dry-run", "--json");
 const managedResult = (managed.envelope as unknown as { result?: Preview; completeness?: string } | undefined);
 check("a managed spawn --dry-run exits 0, not-checked, with the name's source as argument",
@@ -337,7 +337,7 @@ check("a direct preview refuses a case-mismatched harness without normalizing it
 const knownDirect = cotal("spawn", "--file", "pv.md", "--harness", "opencode", "--dry-run", "--json");
 const knownPreview = knownDirect.envelope as unknown as { result?: Preview; warnings?: unknown[] } | undefined;
 check("an installed harness validates and previews the file's source without warnings",
-  knownDirect.status === 0 && knownPreview?.result?.harness === "opencode" && knownPreview.result.persona?.source === "file" && same(knownPreview.warnings, []), shown(knownDirect));
+  knownDirect.status === 0 && knownPreview?.result?.harness === "opencode" && knownPreview.result.persona?.source === "file" && knownPreview.result.connectorArgumentValidation === "checked" && same(knownPreview.warnings, []), shown(knownDirect));
 
 // The display name in a persona need not be a launch identity. Preview the effective value with
 // the same local rule as foreground launch, including the selected space's actor-token bound.

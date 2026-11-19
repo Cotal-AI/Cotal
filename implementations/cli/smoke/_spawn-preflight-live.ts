@@ -7,7 +7,7 @@ import { repoRoot, wait } from "./_console-pty.js";
 
 /** Real static-auth CLI launches with recording harnesses. No provider or service manager needed. */
 export async function checkSpawnPreflight(check: (name: string, condition: boolean, detail?: unknown) => void): Promise<void> {
-  const home = mkdtempSync(join(tmpdir(), "cotal-preflight-"));
+  const home = mkdtempSync(join(tmpdir(), "spf-"));
   const root = join(home, "project");
   const xdg = join(home, "xdg");
   const cotalHome = join(home, "cotal");
@@ -33,6 +33,7 @@ const socket = require("node:net").connect(process.env.COTAL_BRIDGE_SOCKET, () =
   socket.write(JSON.stringify({ t: "subscribe", token }) + "\\n");
 });
 socket.on("error", () => process.exit(1));
+socket.on("close", () => process.exit(0));
 setInterval(() => {}, 60_000);
 `, { mode: 0o700 });
   const prefix = join(xdg, "cotal", "extensions");
@@ -70,25 +71,27 @@ setInterval(() => {}, 60_000);
       for (const preview of [true, false]) {
         const result = cli("spawn", "-H", harness, ...flags, ...(preview ? ["--dry-run"] : []));
         check(`${harness} ${flags.join(" ")} ${preview ? "preview" : "foreground"} refuses before credentials or a child`,
-          result.status === 1 && !/wrote creds|retired creds|spawning .* on the mesh|OPERATION_UNKNOWN/.test(result.out) && creds() === initialCreds, result.out);
+          result.status === 1 && /USAGE_INVALID/.test(result.out)
+          && !/wrote creds|retired creds|spawning .* on the mesh|OPERATION_UNKNOWN/.test(result.out) && creds() === initialCreds, result.out);
       }
     }
     check("invalid pi resumes never reach its argv", !existsSync(piCalls));
     const preview = cli("spawn", "-H", "pi", "--resume", "session-valid", "--dry-run");
-    check("valid direct preview creates no launch artifacts or session-state directory", preview.status === 0
+    check("valid direct preview checks connector arguments without creating launch artifacts or session state", preview.status === 0
+      && /Connector arguments:\s+checked/.test(preview.out)
       && JSON.stringify(artifacts()) === JSON.stringify(before) && !existsSync(join(root, ".cotal", "pi-sessions")), preview.out);
     const valid = cli("spawn", "-H", "pi", "--resume", "session-valid");
     check("valid pi resume still reaches the native harness as one fork argument", valid.status === 0
       && readFileSync(piCalls, "utf8").includes("--fork\nsession-valid\n"), valid.out);
     if (process.platform !== "win32" && process.getuid?.() !== 0) {
-    const blocked = join(root, "noperm_dir");
-    mkdirSync(blocked, { mode: 0 });
-    try {
-      const refusal = cli("spawn", "-d", "-H", "pi", "--cwd", blocked);
-      check("unsearchable cwd is refused before execution with its path and EACCES", refusal.status === 2
-        && /LIFECYCLE_BLOCKED/.test(refusal.out) && /EACCES/.test(refusal.out) && refusal.out.includes(blocked)
-        && /not-executed/.test(refusal.out) && !/chdir\(2\)|OPERATION_FAILED/.test(refusal.out), refusal.out);
-    } finally { chmodSync(blocked, 0o700); }
+      const blocked = join(root, "noperm_dir");
+      mkdirSync(blocked, { mode: 0 });
+      try {
+        const refusal = cli("spawn", "-d", "-H", "pi", "--cwd", blocked);
+        check("unsearchable cwd is refused before execution with its path and EACCES", refusal.status === 2
+          && /LIFECYCLE_BLOCKED/.test(refusal.out) && /EACCES/.test(refusal.out) && refusal.out.includes(blocked)
+          && /not-executed/.test(refusal.out) && !/chdir\(2\)|OPERATION_FAILED/.test(refusal.out) && creds() === initialCreds, refusal.out);
+      } finally { chmodSync(blocked, 0o700); }
     }
     for (const force of [false, true]) {
       const name = force ? "hermes_force" : "hermes_graceful";
