@@ -2568,7 +2568,8 @@ export class MeshHandler {
   private async expired(ref: CheckpointRef | undefined): Promise<CheckpointSettleFact | undefined> { return this.pauseTimers.expired(ref); }
   private async cancelTimer(ref: CheckpointRef): Promise<void> { return this.pauseTimers.cancelTimer(ref); }
   private async messageAt(seq: number, requestId: string): Promise<unknown> { return this.pauseTimers.messageAt(seq, requestId); }
-  private async settle(ref: CheckpointRef, signal?: CancelSignal, relayed = false): Promise<CheckpointSettleFact> { return this.pauseTimers.settle(ref, signal, relayed); }}
+  private async settle(ref: CheckpointRef, signal?: CancelSignal, relayed = false): Promise<CheckpointSettleFact> { return this.pauseTimers.settle(ref, signal, relayed); }
+}
 
 export { waitConsumerName, waitConsumerConfig } from "@cotal-ai/core";
 
