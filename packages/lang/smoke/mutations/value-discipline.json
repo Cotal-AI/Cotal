@@ -8,7 +8,7 @@
   "mutations": [
     {
       "name": "containers coerce through the host again",
-      "file": "packages/lang/src/interpret.ts",
+      "file": "packages/lang/src/interpret-operators.ts",
       "find": "function refuseCoercion(where: string, v: unknown): void {\n  if (v !== null && (typeof v === \"object\" || typeof v === \"function\")) {",
       "replace": "function refuseCoercion(where: string, v: unknown): void {\n  if (false) {",
       "expectRed": "`+`, comparison, unary minus, and `${...}` refuse a record, an array, or a function with L4018",
@@ -38,7 +38,7 @@
     },
     {
       "name": "an update's operand coerces through the host again",
-      "file": "packages/lang/src/interpret.ts",
+      "file": "packages/lang/src/interpret-operators.ts",
       "find": "  throw new RuntimeFault(\n    \"L4018\",\n    `\\`++\\` and \\`--\\` count, and ${kind} is not a number, so there is nothing to count. Nothing is converted for you here: parse it first (\\`number(value)\\`), or hold the counter in a number.`,\n  );\n",
       "replace": "  void kind;\n",
       "expectRed": "`++` and `--` refuse a record, a numeric string or null with L4018 and keep a number native",
