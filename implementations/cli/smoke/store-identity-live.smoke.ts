@@ -50,6 +50,13 @@ try {
   suite.check("the real broker retains the initial post", history.status === 0 && history.text.includes("retained-before-replacement"), history.text);
   const healthy = run("status", "--space", space, "--json");
   suite.check("unchanged store has no identity warning", !warning(healthy, "STORE_REPLACED") && !warning(healthy, "STORE_MISSING"), healthy.text);
+  const compact = run("status", "--space", space);
+  const verbose = run("status", "--verbose", "--space", space);
+  const brokerExecutable = /^ +NATS: +(?:bundled )?nats-server \S+ (?:on PATH )?at \S/m;
+  suite.check("compact status omits the healthy broker executable",
+    compact.status === 0 && !brokerExecutable.test(compact.text) && !/^ +Broker executable:/m.test(compact.text), compact.text);
+  suite.check("verbose status shows the selected broker executable and its path",
+    verbose.status === 0 && brokerExecutable.test(verbose.text), verbose.text);
   const outsideHealthy = selectedStatus("--json");
   suite.check("outside-project selection reaches the healthy stack without a store warning", outsideHealthy.envelope?.result?.selected?.root === root && !warning(outsideHealthy, "STORE_REPLACED") && !warning(outsideHealthy, "STORE_MISSING"), outsideHealthy.text);
 
