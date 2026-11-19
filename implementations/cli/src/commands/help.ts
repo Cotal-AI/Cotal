@@ -61,7 +61,7 @@ export async function version(args: ParsedArgs): Promise<void> {
   // always carries the state.
   const update = cachedUpdateSummary(cliVersion());
   const pending = readUpdatePending(cliVersion());
-  const lines = [`cotal-ai ${cliVersion()}`, ...(pending.kind === "none" ? [] : [`  ${pending.instruction}`]), ...(update === "update status unknown" || update === "up to date" ? [] : [`  ${update}`])];
+  const lines = [`cotal-ai ${cliVersion()}`, ...(pending.kind === "none" ? [] : [`  ${pending.instruction}`]), ...(update === "update status unknown" || update === "up to date" || (pending.kind !== "none" && update === pending.instruction) ? [] : [`  ${update}`])];
   if (exts.length) {
     const pad = Math.max(...exts.map((e) => e.label.length));
     for (const e of exts) lines.push(`  ${e.label.padEnd(pad)}  ${e.version}`);

@@ -183,19 +183,25 @@ Interactive commands print a one-line update notice on stderr from a daily cache
 The check runs daily with `npm view cotal-ai@latest` against your configured registry, and nothing else is sent.
 A command started during the few seconds an update replaces the installation can fail to load and should be run again.
 The check runs in the background. JSON, plain, CI and redirected output receive no notice.
-Version output reports the cached update state without waiting for the registry.
+Version output reports the cached update state without waiting for the registry. If the recorded
+updater is still running, version output says to wait rather than asking you to restore the update.
 
 Before replacing the global package, the updater verifies both the target and previous release
 archives and fetches the installed first-party extensions with their dependency closures in a
 disposable prefix. The dependency check, package installation and reconciliation use private temporary
-npm caches that are removed afterwards. An unwritable cache configured in `.npmrc` does not block the
-update. Cotal leaves that cache and its permissions unchanged and still applies your registry,
+npm caches that are removed afterwards. After a successful self-update on Linux or macOS, Cotal also
+removes earlier archive caches in its temporary location when it can verify that their owner and
+npm workers have exited. It leaves unrecorded caches and active archive checks alone.
+An unwritable cache configured in `.npmrc` does not block the update. Cotal leaves that cache and
+its permissions unchanged and still applies your registry,
 authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement. A failed replacement
 is followed by another reconcile attempt, then a verified reinstall
 and reconcile of the previous version. A private same-filesystem snapshot restores the previous seed
 stamp, connectors and operator extensions before Managers start. Interrupted restoration resumes on
-the next update or daemon start. A snapshot captured in the original config folder restores that
-folder even if the new release has already selected a retained connector set. The snapshot is removed
+the next update or daemon start. If `cotal update --self` restores an earlier release, it continues
+from the restored CLI so the registry check uses the version now installed. A snapshot captured in
+the original config folder restores that folder even if the new release has already selected a
+retained connector set. The snapshot is removed
 after successful update or restoration.
 Starting in 0.167.1, reconciliation rebuilds an unfinished retained connector copy when neither
 selection record names it and no live or unproven seat holder needs it. Cleanup removes empty

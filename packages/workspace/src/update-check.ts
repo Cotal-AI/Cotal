@@ -75,7 +75,10 @@ export function cachedUpdateSummary(current: string): string {
   try {
     if (process.platform === "win32" && readWindowsUpdatePause()) return WINDOWS_INTERRUPTED_UPDATE;
     const recovery = readUpdateRecovery();
-    if (recovery) return `update needs repair: installed ${recovery.installed}; ${recoveryDisposition(recovery).instruction}`;
+    if (recovery) {
+      const decision = recoveryDisposition(recovery);
+      return decision.action === "active" ? decision.instruction : `update needs repair: installed ${recovery.installed}; ${decision.instruction}`;
+    }
   } catch { return "update state unreadable; automatic updates paused"; }
   const cached = readUpdateCheck();
   return !cached?.latest ? "update status unknown" : newerUpdate(cached.latest, current) ? `newer version ${cached.latest} available` : "up to date";

@@ -12,7 +12,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** Runs real npm and the built public entry against a registry with a listed, initially missing archive. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
-  assert(['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'pending', 'reconcile-killed', 'min-release-age', 'before'].includes(scenario));
+  assert(['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'orphan', 'pending', 'reconcile-killed', 'min-release-age', 'before'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const root = mkdtempSync(join(parent, 'registry-arrival-'));
   const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
@@ -32,13 +32,14 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   }
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('COTAL_') && !['npm_config_before', 'NPM_CONFIG_BEFORE'].includes(name)));
   Object.assign(env, { HOME: home, COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: join(root, 'config'), TMPDIR: join(root, 'tmp'), XDG_RUNTIME_DIR: join(root, 'runtime'), npm_config_prefix: prefix, npm_config_cache: join(root, 'cache'), npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1' });
-  let origin, armed = false, missing = 0;
+  let origin, armed = false, missing = 0, heldArchive;
   const server = createServer((request, response) => {
     requests.push({ at: Date.now(), path: request.url });
     if (request.url?.endsWith('.tgz')) {
       const version = request.url.slice(1, -4);
       if (armed && version === target) {
         missing++;
+        if (scenario === 'archive-interrupted' && missing === 1) { heldArchive = response; return; }
         if (scenario === 'reset' && missing === 1) return request.socket.destroy();
         if (scenario === 'unavailable' || scenario === 'arrives' && missing === 1) return response.writeHead(404).end('archive is propagating');
         if (scenario === 'integrity') return response.end(Buffer.from('corrupt archive'));
@@ -57,7 +58,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   origin = `http://127.0.0.1:${server.address().port}`;
   env.npm_config_registry = origin;
-  let interrupted, orphan, abandoned;
+  let interrupted, orphan, abandoned, pausedArchive;
   const run = async (file, args, timeoutMs) => {
     const child = spawn(file, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
@@ -92,6 +93,49 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const filterConfig = scenario === 'before' ? 'before=2020-01-01\n' : 'min-release-age=365\n';
     if (dateFiltered) writeFileSync(join(home, '.npmrc'), filterConfig);
     const started = Date.now();
+    let abandonedCache, unrecordedCache;
+    if (scenario === 'archive-interrupted') {
+      const scratch = join(root, 'tmp');
+      unrecordedCache = mkdtempSync(join(scratch, 'cotal-release-check-'));
+      abandoned = run(process.execPath, [entry, 'update', '--self'], 60000);
+      const updater = interrupted;
+      const deadline = Date.now() + 30000;
+      while (!heldArchive && updater.exitCode === null && Date.now() < deadline) await new Promise(done => setTimeout(done, 10));
+      assert(heldArchive, 'the archive check reached the real npm download');
+      const outer = readdirSync(scratch).find(name => name.startsWith('cotal-update-'));
+      assert(outer, 'the running updater made private scratch');
+      const cache = readdirSync(join(scratch, outer)).find(name => name.startsWith('cotal-release-check-'));
+      assert(cache, 'the running updater made a release archive cache');
+      abandonedCache = join(scratch, outer, cache);
+      const workers = readdirSync(abandonedCache).filter(name => name.startsWith('.worker-'));
+      assert(workers.length > 0, 'the real npm worker has recorded custody');
+      pausedArchive = Number(workers.find(name => {
+        const pid = name.slice('.worker-'.length);
+        try { return /npm cache add|\0cache\0add\0/.test(readFileSync(`/proc/${pid}/cmdline`, 'utf8')); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; return false; }
+      })?.slice('.worker-'.length));
+      assert(Number.isSafeInteger(pausedArchive), 'found the npm archive downloader');
+      process.kill(pausedArchive, 'SIGSTOP');
+      const exited = new Promise(done => updater.once('exit', (_code, signal) => done(signal)));
+      updater.kill('SIGHUP');
+      assert.equal(await exited, 'SIGHUP');
+      const whileActive = await run(process.execPath, [entry, 'update', '--self'], 60000);
+      assert.equal(whileActive.code, 0, whileActive.output);
+      assert(existsSync(abandonedCache), 'retry leaves the surviving npm worker cache alone');
+      heldArchive.end(archives.get(target));
+      process.kill(pausedArchive, 'SIGCONT');
+      pausedArchive = undefined;
+      const gone = () => workers.every(name => {
+        const pid = name.slice('.worker-'.length);
+        const path = `/proc/${pid}/stat`;
+        if (!existsSync(path)) return true;
+        try { const stat = readFileSync(path, 'utf8'); return /^[ZX] /.test(stat.slice(stat.lastIndexOf(') ') + 2)); }
+        catch (error) { return error.code === 'ENOENT'; }
+      });
+      const settled = Date.now() + 10000;
+      while (!gone() && Date.now() < settled) await new Promise(done => setTimeout(done, 25));
+      assert(gone(), 'the interrupted update archive workers exited');
+    }
     if (scenario === 'orphan') {
       const first = run(process.execPath, [entry, 'update', '--self'], 60000);
       const updater = interrupted;
@@ -173,7 +217,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       assert.doesNotMatch(update.output, /Waiting for cotal-ai|Keeping cotal-ai/);
     } else {
       assert.equal(update.code, 0, update.output);
-      if (!['reset', 'cache', 'orphan', 'pending', 'reconcile-killed'].includes(scenario)) assert.match(update.output, /Waiting for cotal-ai@99\.0\.0 release archives/);
+      if (!['reset', 'cache', 'archive-interrupted', 'orphan', 'pending', 'reconcile-killed'].includes(scenario)) assert.match(update.output, /Waiting for cotal-ai@99\.0\.0 release archives/);
       if (scenario === 'cache') {
         assert.equal(selected, target, update.output);
         assert.match(update.output, /installed globally and reconciled/);
@@ -183,6 +227,10 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
         assert.equal(readFileSync(join(home, '.npmrc'), 'utf8'), `cache=${configuredCache}\n`);
         assert.deepEqual(readdirSync(join(root, 'tmp')).filter(name => name.startsWith('cotal-')), [], 'all private update caches and closure staging are removed');
         assert(requests.some(request => decodeURIComponent(request.path).startsWith(`/${extension}`)), 'the installed extension closure was downloaded');
+      } else if (scenario === 'archive-interrupted') {
+        assert.equal(selected, target, update.output);
+        assert.equal(existsSync(abandonedCache), false, 'retry removes the recorded orphan cache');
+        assert(existsSync(unrecordedCache), 'retry does not infer custody from a directory name');
       } else if (['orphan', 'pending', 'reconcile-killed'].includes(scenario)) {
         assert.equal(selected, target, update.output);
         assert.match(update.output, /installed globally and reconciled/);
@@ -202,7 +250,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
         assert(elapsedMs >= 600000 && elapsedMs < 660000, `real wait bound: ${elapsedMs}`);
       }
     }
-    if (!['arrives', 'reset', 'cache', 'orphan', 'pending', 'reconcile-killed'].includes(scenario)) {
+    if (!['arrives', 'reset', 'cache', 'archive-interrupted', 'orphan', 'pending', 'reconcile-killed'].includes(scenario)) {
       assert.equal(selected, previous);
       assert.deepEqual(readFileSync(join(packageRoot, 'dist/cotal.js')), before);
       assert.equal(readFileSync(join(packageRoot, 'preserve'), 'utf8'), 'unchanged');
@@ -219,6 +267,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     }
     return { scenario, code: update.code, elapsedMs, selected, missing, requests, output: update.output, ...(retry ? { retry } : {}) };
   } finally {
+    heldArchive?.end();
+    if (pausedArchive) { try { process.kill(pausedArchive, 'SIGCONT'); } catch {} }
     if (orphan) { try { process.kill(orphan, 'SIGCONT'); } catch {} }
     if (interrupted?.exitCode === null && interrupted?.signalCode === null) interrupted.kill('SIGKILL');
     if (abandoned) await abandoned.catch(() => {});
@@ -229,7 +279,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'integrity', 'reset', 'min-release-age', 'before', ...(process.platform === 'linux' ? ['pending', 'reconcile-killed'] : [])];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'integrity', 'reset', 'min-release-age', 'before', ...(process.platform === 'linux' ? ['archive-interrupted', 'pending', 'reconcile-killed'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }
