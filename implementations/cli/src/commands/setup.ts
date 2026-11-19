@@ -9,6 +9,7 @@ import {
   isCommandFailure,
   renderReport,
   assertPreferencesFolderProtected,
+  brokerCheck,
   canonicalRoot,
   checkUserBundle,
   isCotalCloudIdp,
@@ -181,7 +182,7 @@ interface SetupResult {
   /** The project folder: the space's root, whose `.cotal/agents` holds its personas. */
   readonly project: string;
   /** How setup found the space: prepared or registered by this run, or already in place. */
-  readonly spaceState: LocalSpaceState | "added" | "bound" | "registered";
+  readonly spaceState: LocalSetupState | "added" | "bound" | "registered";
   readonly harness: {
     readonly name: string;
     /** Host tools the harness needs that are not on PATH; its own setup did not run. */
@@ -566,11 +567,13 @@ function runtimeFlags(names: readonly string[], choices: readonly RuntimeChoice[
   return [...new Set(names)].filter((name) => name !== "pty");
 }
 
+type LocalSetupState = LocalSpaceState | "stopped" | "not-answering";
+
 interface SetupPlan {
   readonly inputs: SetupInputs;
   readonly runtimes: readonly RuntimeChoice[];
   readonly candidate: SetupConnectorCandidate;
-  readonly space: { readonly kind: "local"; readonly state: LocalSpaceState } | SelfHostedSpace;
+  readonly space: { readonly kind: "local"; readonly state: LocalSetupState } | SelfHostedSpace;
 }
 
 /** Every check setup makes before it writes: the space name, the application, the preferences
@@ -588,7 +591,15 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   assertPreferencesFolderProtected();
   if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
-  const state = checkLocalSpace(inputs.space, inputs.project, "--project", true);
+  let state: LocalSetupState = checkLocalSpace(inputs.space, inputs.project, "--project", true);
+  if (state === "started") {
+    const registered = findMesh(inputs.space);
+    const broker = registered?.origin === "up" && canonicalRoot(registered.root) === canonicalRoot(inputs.project)
+      ? await brokerCheck(registered.server, registered.tlsRequired)
+      : undefined;
+    if (broker === "slow-link") state = "not-answering";
+    else if (broker !== "reachable") state = "stopped";
+  }
   if (start) {
     try {
       await resolveNatsServer();
@@ -882,6 +893,8 @@ const SPACE_STATE: Record<SetupResult["spaceState"], string> = {
   created: "prepared by this setup",
   prepared: "already prepared",
   started: "already started here",
+  stopped: "stopped",
+  "not-answering": "broker not answering",
   added: "registered by this setup",
   bound: "project bound by this setup",
   registered: "already registered",
