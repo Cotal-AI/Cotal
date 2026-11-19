@@ -147,9 +147,9 @@ export function isExtensionStub(cmd: Command): boolean {
   return typeof (cmd as Command & { extension?: string }).extension === "string";
 }
 
-/** Overlay the manifest's cached commands onto the registered surface. Returns the combined
- *  command list for help/complete/dispatch. Loud on builtin collisions; never imports. */
-export function overlayExtensions(reg: Registry): Command[] {
+/** Overlay cached commands for help, completion and dispatch without importing packages.
+ *  Callers that emit a JSON refusal can carry collision warnings in the envelope. */
+export function overlayExtensions(reg: Registry, warn = (message: string) => console.error(c.red(`! ${message}`))): Command[] {
   const commands = [...reg.all<Command>("command")];
   const owner = new Map<string, string>(); // command name or alias → "" for a builtin, else the owning ext pkg
   for (const cm of commands) for (const word of [cm.name, ...(cm.aliases ?? [])]) owner.set(word, "");
@@ -162,12 +162,9 @@ export function overlayExtensions(reg: Registry): Command[] {
         // add() refuses fresh collisions, so this install predates the clash: a base upgrade
         // shipped the name (builtin case), or the sibling was added under an older base that
         // allowed it. First holder wins; the loser leaves the surface until the operator resolves.
-        console.error(
-          c.red(
-            holder === ""
-              ? `! command "${clash}" is provided by both this CLI and extension ${ext.pkg}@${ext.version} - the built-in wins; run \`cotal ext remove ${ext.pkg}\` (or update the extension) to clear this`
-              : `! command "${clash}" is provided by both extensions ${holder} and ${ext.pkg}@${ext.version} - ${holder} (installed first) wins; \`cotal ext remove\` one of them to clear this`,
-          ),
+        warn(holder === ""
+          ? `command "${clash}" is provided by both this CLI and extension ${ext.pkg}@${ext.version} - the built-in wins; run \`cotal ext remove ${ext.pkg}\` (or update the extension) to clear this`
+          : `command "${clash}" is provided by both extensions ${holder} and ${ext.pkg}@${ext.version} - ${holder} (installed first) wins; \`cotal ext remove\` one of them to clear this`,
         );
         continue;
       }

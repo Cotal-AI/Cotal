@@ -32,6 +32,7 @@ interface Envelope {
   outcome?: string;
   completeness?: string;
   result?: unknown;
+  warnings?: { code?: string; message?: string }[];
   error?: { code?: string; message?: string };
 }
 
@@ -64,10 +65,11 @@ for (const args of [["--json", "version"], ["-j", "version"], ["--no-input", "--
 }
 
 const duplicateInput = "Option '--no-input' cannot be repeated";
-const jsonRefusal = (r: ReturnType<typeof run>, command: string) => r.status === 1 && r.stderr === "" &&
+const duplicateColor = "Option '--no-color' cannot be repeated";
+const jsonRefusal = (r: ReturnType<typeof run>, command: string, message = duplicateInput) => r.status === 1 && r.stderr === "" &&
   r.envelope?.schemaVersion === 1 && r.envelope.command === command && r.envelope.outcome === "refused" &&
   r.envelope.completeness === "not-checked" && r.envelope.result === null &&
-  r.envelope.error?.code === "USAGE_INVALID" && r.envelope.error.message === duplicateInput;
+  r.envelope.error?.code === "USAGE_INVALID" && r.envelope.error.message === message;
 for (const args of [
   ["--json", "--no-input", "--no-input", "version"],
   ["version", "--no-input", "--no-input", "--json"],
@@ -125,24 +127,60 @@ check("a leading output flag before a command that takes its words raw is a usag
 check("…the same before the raw `start` signpost", rawPlain.status === 1 && /--plain before start is not read/.test(rawPlain.stderr), shown(rawPlain));
 const completed = run(["__complete", "status"]);
 check("control: __complete still completes its own words", completed.status === 0, shown(completed));
+const completedFlags = run(["--no-color", "__complete", "status", "--no-color", "--no-color"]);
+check("trailing duplicates are ordinary words for a raw command", completedFlags.status === 0 && completedFlags.stderr === "", shown(completedFlags));
+const positionalFlag = run(["--no-color", "config", "get", "harness", "--", "--no-color"]);
+check("a global flag after -- is not counted again", positionalFlag.status === 1 && !positionalFlag.stderr.includes(duplicateColor), shown(positionalFlag));
 
 const undeclared = run(["--json", "ext", "root"]), trailing = run(["ext", "root", "--json"]);
 check("a mode without that output refuses the leading flag as it does after the word", undeclared.status === 1 && /has no --json or --plain/.test(undeclared.stderr) && trailing.status === 1 && /has no --json or --plain/.test(trailing.stderr), { before: shown(undeclared), after: shown(trailing) });
 
-// Cached help is enough to report a leading duplicate. Neither a package nor a recoverable
-// installation is needed. The invalid journal would block a path that tried recovery first.
+const colorPlacements = (args: string[]) => [
+  ["--no-color", "--no-color", ...args],
+  ["--no-color", ...args, "--no-color"],
+  [...args, "--no-color", "--no-color"],
+];
+for (const { args, scope } of [
+  { args: ["manager", "--runtime", "pty", "start", "--dry-run"], scope: "--runtime" },
+  { args: ["service", "add", "duplicate-probe", "--preset", "broker"], scope: "--log-file" },
+  { args: ["ext", "seed"], scope: "--repair" },
+]) {
+  const help = run([...args, "--help"]);
+  check(`control: ${args.join(" ")} --help includes ${scope}`, help.status === 0 && help.stderr === "" && help.stdout.includes(scope), shown(help));
+  for (const invocation of colorPlacements(args[0] === "ext" ? [...args, "--help"] : args)) {
+    const refused = run(invocation);
+    check(`cotal ${invocation.join(" ")} refuses with the scoped help`, refused.status === 1 && refused.stdout === "" &&
+      refused.stderr === `✗ ${duplicateColor}\n${help.stdout}`, shown(refused));
+  }
+}
+const managerJson = run(["--no-color", "manager", "--runtime", "pty", "start", "--dry-run", "--json", "--no-color", "--help"]);
+check("manager lifecycle options before the verb do not hide its JSON refusal, even with --help", jsonRefusal(managerJson, "manager", duplicateColor), shown(managerJson));
+
+// Neither a provider package nor a recoverable installation is needed to report a duplicate.
 const config = join(env.XDG_CONFIG_HOME, "cotal");
 const extensions = join(config, "extensions");
 mkdirSync(extensions, { recursive: true });
 writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{
   pkg: "duplicate-probe", spec: "duplicate-probe", version: "1.0.0", commands: [{
-    name: "duplicate-probe", summary: "Report the duplicate without loading a package", outputs: ["json"],
+    name: "duplicate-probe", aliases: ["dup-probe"], summary: "Report the duplicate without loading a package", outputs: ["json"],
     flags: [jsonFlag],
+  }, {
+    name: "config", summary: "An installed command shadowed by a built-in",
   }],
 }] }));
+const normalHelp = run(["dup-probe", "--help"]);
+check("control: normal extension help still warns about collisions on stderr", normalHelp.status === 0 &&
+  normalHelp.stdout.includes("cotal duplicate-probe") && normalHelp.stderr.includes('command "config" is provided by both'), shown(normalHelp));
 writeFileSync(join(config, ".extensions-promotion.json"), "invalid journal\n");
-const extension = run(["--json", "--no-input", "--no-input", "duplicate-probe"]);
-check("a leading duplicate uses installed command metadata without recovery or import", jsonRefusal(extension, "duplicate-probe"), shown(extension));
+for (const command of ["version", "dup-probe"]) {
+  for (const invocation of colorPlacements([command, "--json"])) {
+    const refused = run(invocation);
+    const warning = refused.envelope?.warnings?.some((item) => item.message?.includes('command "config" is provided by both'));
+    check(`cotal ${invocation.join(" ")} refuses before recovery with one envelope`,
+      jsonRefusal(refused, command === "version" ? "version" : "duplicate-probe", duplicateColor) &&
+      (command === "version" || warning === true), shown(refused));
+  }
+}
 
 finish();
 process.exit(process.exitCode ?? 0);
