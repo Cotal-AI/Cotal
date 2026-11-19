@@ -43,8 +43,8 @@ import {
 } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { logicalExecutionEntry, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, InlinePersona, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
+import { agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
+import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, AttachSession, Connector, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, InlinePersona, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -79,6 +79,7 @@ import { CommandDispatch, participantKey } from "./command-dispatch.js";
 import { SpawnGoal } from "./spawn-goal.js";
 import { PersonaCatalog } from "./persona-catalog.js";
 import { TerminalInput } from "./terminal-input.js";
+import { StatusAndModels, MANAGER_VERSION } from "./status-and-models.js";
 export { PASTE_END, PASTE_START, RUNTIME_NO_TERMINAL_DETAIL } from "./terminal-input.js";
 import { CredentialRenewal, credRenewIntervalMs, REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft, sameStrings } from "./credential-renewal.js";
 import { SeatLaunch, foreignEventChannels, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
@@ -103,7 +104,7 @@ import { ManagerSessionPlane } from "./session/index.js";
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
 import { epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, listGoalIndex, MAX_SCHEDULE_MS, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, lifecycleBlocked, lifecycleBlockedFrom, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
-import { MANAGER_ENDPOINT, type ManagerConnectorStatus, type ManagerStaticReconciliationStatus, type ManagerStatus, type ManagerStopImpact } from "./manager-service-contract.js";
+import { MANAGER_ENDPOINT, type ManagerConnectorStatus, type ManagerStaticReconciliationStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 import {
@@ -113,8 +114,6 @@ import {
   ownedBySibling,
 } from "./static-lifecycle.js";
 
-// Capture the loaded package version before an installation can replace its files.
-const MANAGER_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 /** A `once` spawn's task deadline when the caller names none: one hour from the spawn's accept. */
 const ONCE_DEFAULT_DEADLINE_MS = 60 * 60_000;
 /** The bound on one {@link Connector.retireAfterExit} call. An expired bound is not proof: the debt
@@ -172,10 +171,6 @@ function resumeOwner(entry: ManagerResumeAgent): string {
   return entry.identity.mode === "user" ? entry.identity.owner : DEV_OWNER;
 }
 
-/** Sentinel owner-filter value that matches NO agent's `userOwner` (owner tokens never contain a
- *  dash) — what {@link Manager.psOwnerFilter} returns for an unparseable caller so a malformed
- *  principal fail-closes to an empty `ps` instead of an unbounded one. */
-const NO_OWNER_MATCHES = "-no-owner-";
 
 /** Why a frozen manager gate stays frozen on an open mesh. Reconciliation must prove the holder
  *  gone, and an open mesh runs no delivery daemon to prove it, so neither boot self-heal nor
@@ -1345,6 +1340,44 @@ export class Manager {
     sessionPlane: () => this.sessionPlane,
     wsPort: () => this.wsPort,
     runtimeFor: (...args) => this.runtimeFor(...args),
+  });
+
+  /** Status, seat list and model catalog reads. Every dependency reads through at its use. */
+  private readonly statusAndModelsComponent = new StatusAndModels({
+    agents: () => this.agents,
+    auth: () => this.auth,
+    connectorStatuses: () => this.connectorStatuses,
+    ep: () => this.ep,
+    execution: () => this.execution,
+    leaseStopping: () => this.leaseStopping,
+    lifecycleInFlight: () => this.lifecycleInFlight,
+    maintenanceState: () => this.maintenanceState,
+    managerInstanceId: () => this.managerInstanceId,
+    managerLifecycleUid: () => this.managerLifecycleUid,
+    namesCapacity: () => this.namesCapacity,
+    preservationAttemptId: () => this.preservationAttemptId,
+    preservationInventory: () => this.preservationInventory,
+    remoteAuthority: () => this.remoteAuthority,
+    requiredRuntime: () => this.requiredRuntime,
+    resumeRequired: () => this.resumeRequired,
+    retirement: () => this.retirement,
+    runtimeKind: () => this.runtimeKind,
+    space: () => this.space,
+    startedAtMs: () => this.startedAtMs,
+    staticLifecycle: () => this.staticLifecycle,
+    userMode: () => this.userMode,
+    workspaceRoot: () => this.workspaceRoot,
+    classSpawnEnabled: (...args) => this.classSpawnEnabled(...args),
+    connectorNames: (...args) => this.connectorNames(...args),
+    epAdminReach: (...args) => this.epAdminReach(...args),
+    executionRefusal: (...args) => this.executionRefusal(...args),
+    forkProvenance: (...args) => this.forkProvenance(...args),
+    isOwnPresence: (a, p) => this.isOwnPresence(a, p),
+    isProcessBoundSeat: (...args) => this.isProcessBoundSeat(...args),
+    launchHarness: (...args) => this.launchHarness(...args),
+    refreshUnavailableConnectors: (...args) => this.refreshUnavailableConnectors(...args),
+    resolveConnector: (...args) => this.resolveConnector(...args),
+    staticReconciliationStatus: (...args) => this.staticReconciliationStatus(...args),
   });
 
   /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
@@ -3922,76 +3955,11 @@ export class Manager {
     return undefined;
   }
 
-  /** Return connector-provided model catalogs for selector UIs. Optional by connector: a host with no
-   *  local model-list API reports `supported:false` rather than blocking the manager. A connector that
-   *  fails to import shows an `error:` row (from manifest enumeration) and never blocks the others. */
-  private async opModels(args: Record<string, unknown>): Promise<ControlReply> {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
-    const requested = String(args.agent ?? "").trim();
-    const refresh = args.refresh === true;
-    const one = async (connector: Connector): Promise<ConnectorModelCatalog> => {
-      await this.refreshUnavailableConnectors(connector.name, true);
-      const harness = this.launchHarness(connector);
-      if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
-      if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
-      try {
-        const catalog = await connector.listModels({ refresh, resolvedBinaries: harness.binaries });
-        return { agent: connector.name, supported: catalog.unavailable === undefined, ...catalog };
-      } catch (e) {
-        return { agent: connector.name, supported: true, models: [], error: rejectionText(e) };
-      }
-    };
+  /** {@link StatusAndModels.opModels}. */
+  private opModels(...args: Parameters<StatusAndModels["opModels"]>): ReturnType<StatusAndModels["opModels"]> { return this.statusAndModelsComponent.opModels(...args); }
 
-    if (requested) {
-      let connector: Connector;
-      try {
-        connector = await this.resolveConnector(requested);
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
-      }
-      const result = await one(connector);
-      return result.error ? { ok: false, error: result.error } : { ok: true, data: result };
-    }
-
-    // Enumerate from the manifest (published binary) so a connector that fails to import still gets
-    // a row — `registry.all` can't list one that never registered. Each resolves lazily; an import
-    // failure becomes an `error:` catalog row and never blocks the healthy ones.
-    const catalogs = await Promise.all(
-      this.connectorNames().map(async (name): Promise<ConnectorModelCatalog> => {
-        let connector: Connector;
-        try {
-          connector = await this.resolveConnector(name);
-        } catch (e) {
-          return { agent: name, supported: false, models: [], error: rejectionText(e) };
-        }
-        return one(connector);
-      }),
-    );
-    return { ok: true, data: catalogs };
-  }
-
-  /** The owner-domain bound on `ps`/`status` metadata: on a USER mesh, a privileged-tier caller
-   *  sees only agents under its OWN subject-pinned owner. Two ways to see ALL owners: the admin
-   *  TIER (operator), or a fresh ledger `admin` SCOPE on the caller's row — the SAME authority that
-   *  lets `stop`/`attach` reach cross-owner agents ({@link authorizeNamedControl}). Without this the
-   *  two surfaces disagree: an admin operator could cross-owner stop an agent it could not list.
-   *  Read fresh so a revoked admin loses visibility on its next call; a read failure and an
-   *  unparseable caller both fall closed (own-owner / matches-nothing). Static meshes are unbounded. */
-  private async psOwnerFilter(caller: EpCaller, admin: boolean): Promise<string | undefined> {
-    if (!this.userMode || admin) return undefined;
-    if (this.remoteAuthority) return (await this.epAdminReach(caller)) ? undefined : caller.owner;
-    try {
-      const scope = await resolveAuthProvider().actorScope({
-        dir: userAuthStateDir(this.workspaceRoot, this.space),
-        owner: caller.owner,
-        actor: caller.actor,
-      });
-      if (scope?.includes("admin")) return undefined;
-    } catch {
-      /* unreadable ledger authorizes nothing extra: fall through to the own-owner bound */
-    }
-    return caller.owner;
-  }
+  /** {@link StatusAndModels.psOwnerFilter}. */
+  private psOwnerFilter(...args: Parameters<StatusAndModels["psOwnerFilter"]>): ReturnType<StatusAndModels["psOwnerFilter"]> { return this.statusAndModelsComponent.psOwnerFilter(...args); }
 
   /** Boot one resolved agent from a mesh-manifest launch spec, for `cotal spawn -f` onto a RUNNING
    *  manager. The request carries `{ runId, name }` — plus, for a deploy from another checkout or
@@ -5148,68 +5116,14 @@ export class Manager {
     }
   }
 
-  /** Parent-local inventory read. It does not enter maintenance or change admission. */
-  hostedSeatCount(): number { return this.agents.size; }
+  /** {@link StatusAndModels.hostedSeatCount}. */
+  hostedSeatCount(...args: Parameters<StatusAndModels["hostedSeatCount"]>): ReturnType<StatusAndModels["hostedSeatCount"]> { return this.statusAndModelsComponent.hostedSeatCount(...args); }
 
-  /** Public local-seat facts for the owning machine daemon. No mesh or secret reads. */
-  hostedAgents(): { name: string; application: string; model?: string; cwd: string; startedAt: string; state: "running" | "exited" }[] {
-    if (this.agents.size > 50) throw new Error("local agent inventory exceeds its bound");
-    return [...this.agents.values()].map(a => ({
-      name: a.name, application: a.agent, ...(a.launch.model ? { model: a.launch.model } : {}),
-      cwd: a.launch.cwd, startedAt: new Date(a.startedAt).toISOString(), state: a.handle.status(),
-    }));
-  }
+  /** {@link StatusAndModels.hostedAgents}. */
+  hostedAgents(...args: Parameters<StatusAndModels["hostedAgents"]>): ReturnType<StatusAndModels["hostedAgents"]> { return this.statusAndModelsComponent.hostedAgents(...args); }
 
-  /** The served manager-level health summary. Given an owner, `agentCount` counts only that owner's
-   *  seats, as `ps` lists them ({@link psOwnerFilter}), so a person reading a shared Manager does not
-   *  learn how many seats other owners hold on it. */
-  private managerStatusData(ownerFilter: string | undefined, setupClaude = false): ManagerStatus {
-    this.refreshUnavailableConnectors(undefined, setupClaude);
-    return {
-      instanceId: this.managerInstanceId,
-      lifecycleUid: this.managerLifecycleUid,
-      host: hostname(),
-      version: MANAGER_VERSION,
-      execution: this.execution,
-      runtime: this.runtimeKind,
-      custody: this.execution === "none" ? "none" : this.requiredRuntime.kind === "pty" && this.requiredRuntime.supportsRelease === true ? "custodied" : "legacy",
-      runHosting: this.execution !== "none" && (this.remoteAuthority ? this.remoteAuthority.runHosting !== undefined : !this.userMode && this.auth !== undefined),
-      terminalSessions: this.execution !== "none",
-      agentCount: ownerFilter === undefined ? this.agents.size : [...this.agents.values()].filter((a) => a.userOwner === ownerFilter).length,
-      uptimeMs: Date.now() - this.startedAtMs,
-      connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
-      classSpawn: this.classSpawnEnabled(),
-      staticReconciliation: this.staticReconciliationStatus(),
-      stopImpact: {
-        agentScope: ownerFilter === undefined ? "manager" : "owner-filtered",
-        observedAt: new Date().toISOString(),
-        maintenance: this.maintenanceState,
-        resumeRequired: this.resumeRequired,
-        stopping: this.leaseStopping,
-        lifecycleInFlight: this.lifecycleInFlight,
-        reservedLaunches: this.namesCapacity.reservedCount,
-        retirementsPending: this.retirement.pendingCount,
-        deprovisioningInFlight: this.retirement.inFlightCount,
-        staticReconciliationInFlight: this.staticLifecycle.sweepsInFlight,
-        agents: [...this.agents.values()]
-          .filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter)
-          .map((a): ManagerStopImpact["agents"][number] => ({
-            name: a.name,
-            id: a.id,
-            lifecycleUid: a.lifecycleUid,
-            mode: a.handle.kind,
-            defaultAction: this.maintenanceState !== "active" || this.resumeRequired
-              ? "stop-retaining-state" : this.isProcessBoundSeat(a) ? "stop" : "release-custody",
-            withAgentsAction: this.maintenanceState !== "active" || this.resumeRequired ? "stop-retaining-state" : "stop",
-          })),
-        // The same digest form `opResumePreserved` binds, so a preserved-exit stop and the later
-        // resume name one inventory.
-        ...(this.maintenanceState !== "active" && this.preservationAttemptId && this.preservationInventory
-          ? { preservation: { attemptId: this.preservationAttemptId, inventorySha256: createHash("sha256").update(JSON.stringify(this.preservationInventory)).digest("hex") } }
-          : {}),
-      },
-    };
-  }
+  /** {@link StatusAndModels.managerStatusData}. */
+  private managerStatusData(...args: Parameters<StatusAndModels["managerStatusData"]>): ReturnType<StatusAndModels["managerStatusData"]> { return this.statusAndModelsComponent.managerStatusData(...args); }
 
   private staticReconciliationStatus(): ManagerStaticReconciliationStatus {
     return this.staticLifecycle.staticReconciliationStatus();
@@ -5650,103 +5564,6 @@ export class Manager {
   /** {@link TerminalInput.establishConsoleSession}. */
   private establishConsoleSession(...args: Parameters<TerminalInput["establishConsoleSession"]>): ReturnType<TerminalInput["establishConsoleSession"]> { return this.terminalInputComponent.establishConsoleSession(...args); }
 
-  /** Managed agents cross-referenced with live presence (the manager sees the roster).
-   *
-   *  `ownerFilter`: restrict to agents whose spawn-time stored `userOwner` equals it (the ps/status
-   *  owner-domain bound); undefined = unbounded. {@link NO_OWNER_MATCHES} matches nothing. */
-  private list(ownerFilter?: string) {
-    const roster = new Map(this.ep.getRoster().map((p) => [p.card.name, p]));
-    const observedAt = Date.now();
-    // The roster is only evidence while THIS observer's presence watch is fresh. A stale view
-    // (whole-bucket silence past TTL) or an unpopulated one (snapshot not yet replayed) cannot
-    // support "offline" or "absent" for anyone: a live deployment on 2026-09-09 rendered every live seat as
-    // one of those for hours after the presence stream was recreated under a still-open watch.
-    // Carry the view state on the row so the renderer can say "unknown" instead of a verdict.
-    // An endpoint that reports no view (test doubles built on `getRoster` alone) is read as
-    // `current`: that is exactly what every row meant before the field existed.
-    const view = typeof this.ep.presenceView === "function" ? this.ep.presenceView() : { state: "current" as const };
-    return [...this.agents.values()].filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter).map((a) => {
-      // USER MODE: a detached agent's bearer-refresh death is silent everywhere except here — its
-      // bearer command writes each attempt's outcome to the health file, and `ps` renders it
-      // FAIL-CLOSED: a failed record is the failure + repair sentence; a missing/malformed or
-      // stale record on a live agent is auth-unknown/auth-stale, NEVER silently healthy.
-      const health = a.userOwner
-        ? agentAuthState(a.secretPaths?.health ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid).health)
-        : undefined;
-      // The connector-reported provider from presence (#785): the live roster card's `meta.provider`,
-      // when it is a non-empty string. Absent when the connector reported none — never fabricated.
-      const seen = roster.get(a.name);
-      const presenceIdentityVerified = this.isOwnPresence(a, seen);
-      const providerMeta = seen?.card.meta?.provider;
-      const provider = typeof providerMeta === "string" && providerMeta ? providerMeta : undefined;
-      // The harness-reported condition beside the mesh status (#618): a turn that died upstream reads
-      // `waiting` with `rate_limit` here, not a bare `waiting`. Absent when the connector reported none.
-      // Projected field by field like `provider`: a malformed peer row must not fail this reply's schema.
-      const reported = roster.get(a.name)?.condition;
-      const condition =
-        reported && typeof reported.code === "string" && reported.code
-          ? {
-              code: reported.code,
-              ...(typeof reported.source === "string" ? { source: reported.source } : {}),
-              ...(typeof reported.message === "string" ? { message: reported.message } : {}),
-              ...(typeof reported.since === "number" && Number.isFinite(reported.since) ? { since: reported.since } : {}),
-            }
-          : undefined;
-      // The seat's last harness-reported work progress (#618). `ts` is only its heartbeat, so a turn
-      // that stopped advancing reads as an old `activeAt` beside a live process. Absent when none was reported.
-      const activeAtReported = roster.get(a.name)?.activeAt;
-      const activeAt = typeof activeAtReported === "number" && Number.isFinite(activeAtReported) ? activeAtReported : undefined;
-      // How long an offline verdict has stood (#1208): the seat's last heartbeat before it went
-      // offline. Only beside a verdict, since a stale or unpopulated view dates nothing, only from the
-      // seat's own record, since `seen` is matched by name and a same-named foreign peer or an older
-      // incarnation must not date this seat, and only when the seat's unvalidated `ts` fits the row
-      // schema, so one odd record cannot fail the reply.
-      const offlineSince = view.state === "current" && this.isOwnPresence(a, seen) && seen.status === "offline" && Number.isSafeInteger(seen.ts) && seen.ts >= 0
-        ? seen.ts
-        : undefined;
-      return {
-        name: a.name,
-        // The spawned agent's id (nkey, or the user-mode principal) — lets an operator tool (e.g.
-        // `cotal down -f`) match a ledger entry by name AND id before stopping, so it never stops a
-        // same-named foreign agent.
-        id: a.id,
-        role: a.role,
-        agent: a.agent,
-        space: this.space,
-        mode: a.handle.kind,
-        status: a.handle.status(),
-        uptimeMs: Date.now() - a.startedAt,
-        mesh: seen?.status ?? "absent",
-        ...(a.joinIssue ? { joinHealth: { state: "degraded" as const, reason: a.joinIssue } } : {}),
-        ...(condition ? { condition } : {}),
-        ...(a.startupNotice !== undefined ? { startupNotice: a.startupNotice } : {}),
-        ...(activeAt !== undefined ? { activeAt } : {}),
-        // `current` is the only state in which `mesh` is a verdict; the other two are the
-        // observer's own condition and travel on the row (older CLIs ignore the field).
-        meshView: view.state,
-        presenceIdentityVerified,
-        ...(view.state === "current" && presenceIdentityVerified ? { presenceObservedAt: observedAt } : {}),
-        ...(offlineSince !== undefined ? { offlineSince } : {}),
-        // The incarnation coordinate (SPEC 13.1) — with `id`, exactly what a v0.4 caller needs to
-        // build a targeted (`despawn`/`attach`) request against THIS incarnation.
-        lifecycleUid: a.lifecycleUid,
-        // #651 enrichment: per-seat facts the manager ALREADY holds, carried on the row so `ps
-        // --wide`/`--json` can surface them without a new collection path. All optional in the row
-        // schema: a fact this backend did not record serializes absent, never fabricated (the
-        // pid is absent on runtimes that do not own a real process; a launch may pin no model).
-        model: a.launch.model,
-        variant: a.launch.variant,
-        ...(provider ? { provider } : {}),
-        cwd: a.launch.cwd,
-        pid: a.handle.pid,
-        spawner: a.spawner,
-        instanceId: this.managerInstanceId,
-        host: hostname(),
-        // #1500: the session a `--resume` seat forked, with its title and transcript hash once the
-        // seat has recorded them.
-        ...(a.launch.forkSource ? { resume: this.forkProvenance(a) ?? { source: a.launch.forkSource } } : {}),
-        ...(health && health.state !== "ok" ? { authHealth: health.state, authReason: health.reason } : {}),
-      };
-    });
-  }
+  /** {@link StatusAndModels.list}. */
+  private list(...args: Parameters<StatusAndModels["list"]>): ReturnType<StatusAndModels["list"]> { return this.statusAndModelsComponent.list(...args); }
 }
