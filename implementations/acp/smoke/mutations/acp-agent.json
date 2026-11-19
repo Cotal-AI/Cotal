@@ -3,7 +3,7 @@
     "implementations/acp/smoke/agent.smoke.ts",
     "implementations/acp/smoke/frames.smoke.ts"
   ],
-  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, later prompts end when the seat stops working, a cancel interrupts the seat and answers cancelled, and the frame mapping neither repeats nor misreports a seat's events",
+  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, later prompts are typed into the seat, end when it stops working and fail with the manager's reason when it refuses them, a cancel interrupts the seat and answers cancelled, also when the interrupt is refused or the session is deleted, and the frame mapping neither repeats nor misreports a seat's events",
   "command": "pnpm --filter @cotal-ai/acp test",
   "proveWith": "pnpm mutation-proof --config implementations/acp/smoke/mutations/acp-agent.json",
   "why": [
@@ -159,6 +159,34 @@
       "find": "          void send(session, { sessionUpdate: \"agent_message_chunk\", content: { type: \"text\", text: `Could not stop ${seat.name}: ${e.message}. The turn keeps running.` } });",
       "replace": "          void seat;",
       "expectRed": "a refused interrupt is said in the thread"
+    },
+    {
+      "name": "a refused prompt answers as a finished turn",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      }, (e: Error) => turn.fail(e));",
+      "replace": "      }, () => turn.stop(\"end_turn\"));",
+      "expectRed": "a prompt the manager refuses to type fails with its reason"
+    },
+    {
+      "name": "a later prompt's runs are counted from after the input reply",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      const after = until === \"run\" ? 0 : Date.now();",
+      "replace": "      const after = until === \"run\" ? 0 : Date.now() + 1_000;",
+      "expectRed": "a run that ends before the input reply still answers the later prompt"
+    },
+    {
+      "name": "a refused interrupt keeps the cancelled prompt running",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "          turn.cancelled = Date.now();\n          turn.stop(\"cancelled\");",
+      "replace": "          turn.cancelled = undefined;",
+      "expectRed": "a refused interrupt still answers the prompt cancelled"
+    },
+    {
+      "name": "a deleted session leaves its prompt unanswered",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      session.turn.stop(\"cancelled\");",
+      "replace": "      void 0;",
+      "expectRed": "deleting a session answers its running prompt cancelled and leaves the seat running"
     }
   ]
 }

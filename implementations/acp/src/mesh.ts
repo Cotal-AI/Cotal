@@ -114,9 +114,9 @@ export interface Mesh {
   /** Interrupt the seat's live turn: its manager writes the connector's interrupt key into the
    *  seat's terminal. Rejects, naming why, when the manager refuses. */
   interrupt(seat: SeatRef): Promise<void>;
-  /** Send `text` to the seat as a direct message from the operator. Resolves with when the broker
-   *  stored it, epoch ms. */
-  dm(seat: SeatRef, text: string): Promise<{ storedAt: number }>;
+  /** Type `text` into the seat's terminal and press Enter, through its manager's `input` command, so
+   *  it arrives as the operator's own words. Rejects, naming why, when the manager refuses. */
+  input(seat: SeatRef, text: string): Promise<void>;
   /** Follow every seat's event frames. Returns a function that stops following. */
   followFrames(onFrame: (frame: SeatFrame) => void): () => void;
   /** The event frames the space still retains for one seat, oldest first. */
