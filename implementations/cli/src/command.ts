@@ -98,19 +98,14 @@ function takeGlobalFlag(word: string): boolean {
 
 type ArgError = { code: string; message: string };
 
-/** Node's parse diagnostic without its own usage guidance, with the nearest flag for a typo. */
-function parseErrorMessage(error: ArgError, cmd?: Command): string {
+/** Node's parse diagnostic without its own usage guidance. */
+function parseErrorMessage(error: ArgError): string {
   if (error.code === "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL")
     return error.message.replace(/\. This command does not take positional arguments$/u, "");
   if (error.code !== "ERR_PARSE_ARGS_UNKNOWN_OPTION") return error.message.split(".\n", 1)[0]!;
   // Node includes a JSON-quoted example when positionals are allowed. Strip that guidance
   // separately so punctuation inside the option name cannot end the diagnostic.
-  const message = error.message.replace(/\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "");
-  // A nested parser may have a different flag set. Suggest only from the surface we just parsed.
-  if (!cmd) return message;
-  const option = /^Unknown option '(--.+)'$/su.exec(message)?.[1];
-  const hint = option ? didYouMean(option, [...(cmd.flags ?? []).map((flag) => `--${flag.name}`), "--no-color", "--no-input", "--help"]) : "";
-  return hint ? `${message} - ${hint}` : message;
+  return error.message.replace(/\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "");
 }
 
 /** `words` without the global flags before any `--`, each applied. A global flag is given once, as
@@ -382,7 +377,10 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
 function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = []): never {
   // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
   // the remedy names stays out of it.
-  if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` }), true);
+  if (cmd && json) {
+    const path = [cmd.name, ...helpPath(cmd, words).path].join(" ");
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${path}\`` }), true);
+  }
   recordTelemetryFailure("refused", "USAGE_INVALID", message);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
@@ -427,15 +425,26 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
  *  that starts with `-` goes after `--`, a value that starts with `-` is written `--name=value`,
  *  and an option given without a value is named with its placeholder. */
 function parseRefusal(error: ArgError, cmd: Command, rest: readonly string[]): { message: string; remedy?: string } {
-  const message = parseErrorMessage(error, cmd);
-  if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" && cmd.positionals !== undefined)
-    return { message, remedy: "to pass a word that starts with \"-\", put -- before it" };
+  const message = parseErrorMessage(error);
+  const grouped = Boolean(cmd.subcommands?.length);
+  // The group can parse its children's combined flags. Use the displayed mode's declared names
+  // when available, and skip group flag advice if there is no explicit scope.
+  const { selected } = helpPath(cmd, rest);
+  const names = (selected ?? cmd).flagNames;
+  const flags = (cmd.flags ?? []).filter((flag) => names ? names.includes(flag.name) : !grouped);
+  if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
+    const option = /^Unknown option '(--.+)'$/su.exec(message)?.[1];
+    const hint = option ? didYouMean(option, [...flags.map((flag) => `--${flag.name}`), "--no-color", "--no-input", "--help"]) : "";
+    // Allowing a mode word does not tell us whether the mode accepts another positional.
+    const remedy = !grouped && cmd.positionals !== undefined ? "to pass a word that starts with \"-\", put -- before it" : undefined;
+    return { message: hint ? `${message} - ${hint}` : message, remedy };
+  }
   const missingValue = (flag: FlagSpec) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}` });
   const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
-  const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
+  const last = bare === undefined ? undefined : flags.find((item) => item.name === bare);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(last);
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
-  const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
+  const flag = long === undefined ? undefined : flags.find((item) => item.name === long);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag) {
     const at = rest.findIndex((word) => word === `--${flag.name}` || (flag.short !== undefined && word === `-${flag.short}`));
     const value = at < 0 ? undefined : rest[at + 1];
@@ -550,19 +559,20 @@ function canonicalSubcommand(cmd: Command, parsed: ParsedArgs): ParsedArgs {
 
 /** The subcommand path the words in `rest` name under `cmd`, and the first word where a subcommand
  *  belongs that names none. Read from the declared specs, so a stub's help never imports its package. */
-function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unknown?: string } {
+function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; selected?: Subcommand; unknown?: string } {
   const words = metadataPositionals(cmd, rest).positionals.map((item) => item.value);
-  let surface: Pick<Command, "subcommands"> = cmd;
   const path: string[] = [];
+  let selected: Subcommand | undefined;
   for (const word of words) {
+    const surface = selected ?? cmd;
     const sub: Subcommand | undefined = findSubcommand(surface, word);
     // History's own first word may be a channel.
-    if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return { path, unknown: word };
+    if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return { path, selected, unknown: word };
     if (!sub || sub.hidden) break;
-    path.push(sub.name); surface = sub;
+    path.push(sub.name); selected = sub;
     if (!sub.subcommands?.length) break;
   }
-  return { path };
+  return { path, selected };
 }
 
 /** `-h`/`--help` anywhere after a command: that command's help, or its subcommand's when the first

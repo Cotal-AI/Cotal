@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-CLI usage errors keep periods inside rejected options and arguments. Mistyped options still get a suggestion when a valid option is close.
+CLI usage errors keep periods inside rejected options and arguments. Typo suggestions use the selected command or subcommand's options.

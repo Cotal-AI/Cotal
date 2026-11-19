@@ -26,7 +26,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string } }
+interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string; remedy?: string } }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-leading-flags-"));
@@ -94,6 +94,18 @@ for (const [word, message] of [
   check(`manager reconcile ${word} keeps the nested parse diagnostic in JSON`, r.status === 1 && r.stderr === ""
     && r.envelope?.error?.code === "USAGE_INVALID" && r.envelope.error.message === message, shown(r));
 }
+
+const siblingOption = run(["--json", "manager", "seats", "--end.point=review.invalid"]);
+check("manager seats points to its own help instead of suggesting reconcile's --endpoint or a positional", siblingOption.status === 1 && siblingOption.stderr === ""
+  && siblingOption.envelope?.error?.code === "USAGE_INVALID" && siblingOption.envelope.error.message === "Unknown option '--end.point'"
+  && siblingOption.envelope.error.remedy === "run `cotal help manager seats`", shown(siblingOption));
+const siblingPlain = run(["mgr", "reconcile", "--plain", "--dr.ain"]);
+check("manager reconcile does not suggest seats' --drain or a positional remedy", siblingPlain.status === 1 && siblingPlain.stdout === ""
+  && siblingPlain.stderr.includes("Unknown option '--dr.ain'") && /Usage\r?\n +cotal manager reconcile/.test(siblingPlain.stderr)
+  && !/did you mean|put -- before it/.test(siblingPlain.stderr), shown(siblingPlain));
+const ownOption = run(["manager", "seats", "--dr.ain"]);
+check("manager seats still suggests its own --drain", ownOption.status === 1 && ownOption.stdout === ""
+  && ownOption.stderr.includes("Unknown option '--dr.ain' - did you mean --drain?") && !ownOption.stderr.includes("put -- before it"), shown(ownOption));
 
 const dashes = run(["--", "version"]);
 check("cotal -- version runs version", dashes.status === 0 && /\d+\.\d+\.\d+/.test(dashes.stdout), shown(dashes));

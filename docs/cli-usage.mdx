@@ -102,7 +102,8 @@ command's help: `sp` (spawn), `a` (attach), `s` (status), `r` (run), `x` (ext), 
 `cotal ext rm` for `cotal ext remove`. An alias behaves the same as its command. A command or
 subcommand is never selected by a prefix, so `cotal spaw` is an unknown command. The refusal for an
 unknown command, leading flag, subcommand or option names the nearest one when it is one edit away,
-or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. `cotal despawn`
+or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. Option suggestions
+use the selected mode's options when its help lists a specific set. `cotal despawn`
 suggests `stop`, the command Cotal's own text calls a despawn. A command, alias,
 or extension command that would claim a word another one already claims is refused when it
 registers or installs.
@@ -166,8 +167,8 @@ longer than 128 characters, such as an unknown command, a space name or a run id
 still checks and uses the whole value. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
-`--`, which the refusal names, and an option value that starts with one is written `--limit=-1`,
-which the refusal gives. The refusal quotes values that a POSIX shell would split or expand, as in
+`--` when the command accepts positional arguments. An option value that starts with one is written
+`--limit=-1`, which the refusal gives. The refusal quotes values that a POSIX shell would split or expand, as in
 `--search='-help usage'`. An option given with no value, last or just before another option, is
 refused naming the option and its placeholder. A short option takes its value after a space, so `-c=general` is refused
 rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
