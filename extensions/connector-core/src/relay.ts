@@ -25,10 +25,23 @@ const MAX_HOOK_REPLY_BYTES = 1 << 20;
 const MAY_HAVE_BEEN_HANDLED =
   "this session's control endpoint proved it holds the session's key and was sent the event, " +
   "but no proven reply came back, so the event may have been handled. No reply was used.";
-/** A startup hook may run before the MCP process has bound its socket. Stay inside the existing
- * hook budget, but do not turn one early ENOENT into a permanently lost lifecycle event. */
+/** A startup hook may run before the MCP process has bound its socket. Do not turn one early
+ * ENOENT into a permanently lost lifecycle event. */
 const CONNECT_RETRY_INITIAL_MS = 25;
 const CONNECT_RETRY_MAX_MS = 250;
+/**
+ * How long a SessionStart fired at launch keeps dialing a connector that has not bound its socket.
+ * Claude Code fires that hook before the session's MCP servers are available and starts the
+ * connector process alongside it. Measured with six managed seats starting at once, the connector
+ * bound up to four seconds after the hook began, and a relay that stopped at two seconds lost the
+ * only event carrying `source`, so the seat published no events for the whole session. Claude Code
+ * gives its MCP servers 30 seconds to connect; a connector not bound by then has been dropped.
+ * Once connected, the exchange still has {@link TIMEOUT_MS}.
+ */
+const LAUNCH_CONNECT_MS = 30_000;
+/** The SessionStart sources that fire as the session's process launches. A clear or a compaction
+ *  fires with the connector already bound, so it keeps the short budget. */
+const LAUNCH_SOURCES: ReadonlySet<unknown> = new Set(["startup", "resume", "fork"]);
 
 const isRetryableConnectError = (error: unknown): boolean => {
   const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
@@ -161,6 +174,7 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
   if (!control) return done("");
   const endpoint = control;
   const startupCritical = isSessionStart(event);
+  const launch = startupCritical && LAUNCH_SOURCES.has((event as { source?: unknown }).source);
   let sock: ReturnType<typeof connect> | undefined;
   let settled = false;
   let retryDelayMs = CONNECT_RETRY_INITIAL_MS;
@@ -208,7 +222,7 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
     if (requestSent) warnOnce(MAY_HAVE_BEEN_HANDLED);
     finish("");
   };
-  const timer = setTimeout(unanswered, TIMEOUT_MS);
+  let timer = setTimeout(unanswered, launch ? LAUNCH_CONNECT_MS : TIMEOUT_MS);
 
   const retryLater = (): void => {
     const wait = retryDelayMs;
@@ -238,6 +252,10 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
     candidate.on("connect", () => {
       if (settled || sock !== candidate) return;
       connected = true;
+      if (launch) {
+        clearTimeout(timer);
+        timer = setTimeout(unanswered, TIMEOUT_MS);
+      }
       try {
         clientExchange(
           candidate,
