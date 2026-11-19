@@ -30,8 +30,7 @@ import { join, resolve as resolvePath } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
 import { freePort, killAndAwaitExit } from "@cotal-ai/smoke-kit";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
-import { MANAGER_OMITTED } from "../src/lib/delivery-proc.js";
+import { canonicalLocalProcessPath, DELIVERY_LOGFILE, MANAGER_LOGFILE, SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
 
 const scratch = makeScratch("cotal-up-multispace-");
 const home = mkdtempSync(join(scratch, "home-"));
@@ -131,7 +130,8 @@ async function foregroundAfterSlowSeed(): Promise<void> {
   const clock = join(home, "seed-clock.cjs");
   // Start the CLI clock 310 seconds behind and restore it at the real seed commit. NATS keeps
   // wall time, so a provisioner minted before reconciliation is expired when it reaches NATS.
-  writeFileSync(clock, `const fs = require("node:fs");
+  writeFileSync(clock, `if (process.argv[2] === "up") {
+    const fs = require("node:fs");
     const now = Date.now.bind(Date), rename = fs.renameSync;
     Date.now = () => now() - 310_000;
     fs.renameSync = (from, to) => {
@@ -142,21 +142,27 @@ async function foregroundAfterSlowSeed(): Promise<void> {
         require("node:module").syncBuiltinESMExports();
       }
     };
-    require("node:module").syncBuiltinESMExports();`);
+    require("node:module").syncBuiltinESMExports();
+  }`);
   const server = `nats://127.0.0.1:${await freePort()}`;
-  const child = spawn(process.execPath, ["--require", clock, cli, "up", "--server", server, "--space", space, "--foreground", "--no-manager"], {
+  // Broker-only startup skips reconciliation, so it cannot exercise the delayed-mint path.
+  const child = spawn(process.execPath, ["--require", clock, cli, "up", "--server", server, "--space", space, "--foreground"], {
     cwd: root, stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "0", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_TELEMETRY: "off" },
   });
   let log = "";
   for (const output of [child.stdout, child.stderr]) output.setEncoding("utf8").on("data", (chunk: string) => { log += chunk; });
-  const omitted = canonicalLocalProcessPath(MANAGER_OMITTED, { root, space });
-  const delivery = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root, space });
+  const daemonLog = (file: string): string => {
+    const path = canonicalLocalProcessPath(file, { root, space });
+    return existsSync(path) ? readFileSync(path, "utf8") : "";
+  };
   try {
     const deadline = Date.now() + 60_000;
-    while (child.exitCode === null && child.signalCode === null && !existsSync(omitted) && Date.now() < deadline) await sleep(100);
-    ok("foreground boot after slow reconciliation starts authenticated delivery without a manager",
-      child.exitCode === null && existsSync(stamp) && existsSync(omitted) && existsSync(delivery) && !log.includes("Authorization Violation"), log.slice(-4000));
+    while (child.exitCode === null && child.signalCode === null && !daemonLog(MANAGER_LOGFILE).includes("manager up") && Date.now() < deadline) await sleep(100);
+    const delivery = daemonLog(DELIVERY_LOGFILE), manager = daemonLog(MANAGER_LOGFILE);
+    ok("foreground boot after slow reconciliation starts authenticated delivery and its manager",
+      child.exitCode === null && child.signalCode === null && existsSync(stamp) && delivery.includes(`delivery daemon up (space ${space})`) && manager.includes("manager up") && !log.includes("Authorization Violation"),
+      { seedCommitted: existsSync(stamp), exit: child.exitCode, signal: child.signalCode, foreground: log.slice(-4000), delivery: delivery.slice(-1000), manager: manager.slice(-1000) });
   } finally {
     await killAndAwaitExit(child);
   }
