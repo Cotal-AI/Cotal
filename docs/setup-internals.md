@@ -280,8 +280,9 @@ setup, the user-auth service, the mesh record, the transport policy, and the con
 It sends SIGKILL when SIGTERM does not stop the listener. It removes `.cotal/nats.pid` only once the
 listener has exited.
 
-With no explicit `--server`, `cotal up` picks a free local port when another root or an unrecorded
-broker already holds the default broker address. An explicit `--server` still fails loud on a
+A first `cotal up` with no explicit `--server` picks a free, unregistered port when the default
+address is occupied or reserved. The retained launcher also chooses another port on an implicit
+restart when another broker answers at the saved address. An explicit `--server` still refuses a
 collision.
 
 ### The delivery daemon runs in auth mode only

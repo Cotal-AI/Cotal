@@ -8,9 +8,10 @@ audience: operators
 import { Callout } from 'fumadocs-ui/components/callout';
 
 `up` starts or refreshes a local broker and its control plane. Its default mode runs in the
-background. A prepared root uses the stack controller; existing legacy roots keep their launcher.
+background. A prepared root uses the stack controller. Existing legacy roots keep their launcher.
 For a new project, bare `cotal up` chooses a free local broker port that no space has registered.
-A stopped space can still reserve its port.
+A stopped space can still reserve its port. A failed launch that leaves only an empty store directory
+does not pin an address for the next `up`.
 
 
 ## up [#up]
@@ -538,7 +539,9 @@ retained launcher, with its identity, store and history. Its `down` drops the re
 the broker address, unless the space is named after its folder: that registration stays, and it does
 not move the folder to the controller stack. Without a registration, or with only that kept one, and
 with no `--server` or `--host`, it starts at the address in the broker configuration its last start
-rendered there, and says so in one line. The mode is a separate decision, because `--server` and
+rendered there, and says so in one line. If another broker answers there and the launcher does not
+identify it as this project's broker, an implicit start chooses another free, unregistered port and
+says where it starts. The mode is a separate decision, because `--server` and
 `--host` name where the broker listens and not whether it authenticates: a root whose last start was
 open starts open again whatever address this one names, and the receipt says the mode it started
 in. A refresh of the running stack starts nothing, so it prints neither line.

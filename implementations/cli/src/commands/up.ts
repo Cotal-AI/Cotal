@@ -703,6 +703,13 @@ function recordsNameNoSpace(root: string): boolean {
   return entries.length === 0 || rootNamesNoSpace(root);
 }
 
+/** A prelaunch failure can leave the store directory empty. Only its contents or a non-directory
+ *  entry such as a link prevent treating the root as new. */
+function hasLegacyStore(path: string): boolean {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  return stat !== undefined && (!stat.isDirectory() || readdirSync(path).length > 0);
+}
+
 function inheritedMachineHomeRoot(): string | undefined {
   const root = machineHomeRoot();
   return root !== undefined && canonicalRoot(process.cwd()) !== canonicalRoot(root) ? root : undefined;
@@ -1745,13 +1752,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const retained = implicit ? recorded : undefined;
     // An address up chooses for a TLS broker names TLS, as an explicit one must.
     const serving = (url: string) => transport.kind === "tls-required" ? tlsAddress(url) : url;
-    // Printed below, once this up is known to start the stack: a refresh of the running one says nothing.
-    let stoppedStart: string | undefined;
-    if (retained) {
-      stoppedStart = `starting this folder's stopped stack as it last ran: ${serving(retained.server)}${values.open ? ", open" : ""}`;
-    } else if (recorded?.open) {
-      stoppedStart = "starting this folder's stopped stack in the mode it last ran: open";
-    } else if (implicit) {
+    if (implicit && !retained) {
       const cleaned = cleanedManifestStart(cotalRoot(), recordedSpace, values.open === true);
       if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${codeSpan(cleaned.command)}` });
     }
@@ -1767,11 +1768,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const requestedServer = values.host
       ? reconcileHostAndServer(values.host, values.server, "--host", "--server", implicitServer)
       : values.server ?? implicitServer;
-    // Only a first boot gets an automatic port. A legacy store or launch record can survive the
-    // loss of its address records, and a cleaned manifest root can still hold its deployment summary.
+    // Only a first boot skips a stopped registration at the preferred address. A prior store or
+    // launch record can survive the loss of the address, and a cleaned manifest can leave a summary.
     const firstAddress = !resumeAttempt && values.server === undefined && !values["rotate-sys"] && recordsNameNoSpace(cotalRoot())
-      && !["nats", "stack-home.json", "team-summaries"].some((entry) => existsSync(cotalPath(entry)));
-    const server = firstAddress ? await freshStackServer(serving(requestedServer), host) : requestedServer;
+      && !existsSync(cotalPath("stack-home.json")) && !existsSync(cotalPath("team-summaries")) && !hasLegacyStore(cotalPath("nats"));
+    let server = firstAddress ? await freshStackServer(serving(requestedServer), host) : requestedServer;
     // A same-root repair reopens the store the mesh record names, ONCE, before the ordinary-up
     // assertion below reads --store-dir (#2218): an ordinary `up` on a space whose broker died must
     // not silently fall back to the root's default store while the record still names a custom one.
@@ -2218,14 +2219,24 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       );
       process.exit(1);
     }
-    console.error(
-      c.red(
-        `✗ ${server} is already in use by ${who} - to run "${space}" use \`--server nats://${host}:<port>\` with a free port`,
-      ),
-    );
-    process.exit(1);
+    if (values.server === undefined && (!held || held.root !== root)) {
+      const next = await freshStackServer(server, host, { skipPreferred: true });
+      console.log(c.dim(`${server} is already in use by ${who}; starting "${space}" at ${next} instead`));
+      server = next;
+    } else {
+      console.error(
+        c.red(
+          `✗ ${server} is already in use by ${who} - to run "${space}" use \`--server nats://${host}:<port>\` with a free port`,
+        ),
+      );
+      process.exit(1);
+    }
   }
-  if (stoppedStart) console.log(c.dim(stoppedStart));
+  if (retained && server === serving(retained.server)) {
+    console.log(c.dim(`starting this folder's stopped stack as it last ran: ${server}${values.open ? ", open" : ""}`));
+  } else if (recorded?.open) {
+    console.log(c.dim("starting this folder's stopped stack in the mode it last ran: open"));
+  }
 
   if (!resumeAttempt) refuseRegisteredAddress(server, values.space ?? folderSpace(), `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
   await assertBrokerAddressFree(server, "cotal up");
@@ -4987,9 +4998,9 @@ function refuseRegisteredAddress(server: string, space: string, elsewhere: strin
   });
 }
 
-/** Choose only a first implicit address. A saved or explicitly requested address is never moved.
- * The broker still validates and binds its own listener; this inspection cannot reserve the port. */
-async function freshStackServer(server: string, bindHost?: string): Promise<string> {
+/** Choose an unregistered, bindable address. A legacy start that found a foreign broker at its
+ *  preferred address skips that address. The real broker still makes the final bind. */
+async function freshStackServer(server: string, bindHost?: string, options?: { skipPreferred: true }): Promise<string> {
   const url = new URL(server);
   const host = (bindHost ?? url.hostname).replace(/^\[|\]$/g, "");
   const reserved = new Set<string>();
@@ -4998,13 +5009,15 @@ async function freshStackServer(server: string, bindHost?: string): Promise<stri
     const key = brokerAddressKey(mesh.server);
     if (key !== undefined) reserved.add(key);
   }
+  const excluded = options?.skipPreferred ? Number(url.port) || 4222 : undefined;
   let candidate = server;
   for (let attempt = 0; attempt < 16; attempt++) {
     const address = new URL(candidate);
+    const port = Number(address.port) || 4222;
     const key = brokerAddressKey(candidate);
-    if (key === undefined || !reserved.has(key)) {
+    if (port !== excluded && (key === undefined || !reserved.has(key))) {
       try {
-        await freePort(host, Number(address.port) || 4222);
+        await freePort(host, port);
         return candidate;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;

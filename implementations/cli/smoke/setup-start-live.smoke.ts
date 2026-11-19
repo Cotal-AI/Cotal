@@ -31,6 +31,12 @@ const invoke = (cwd: string, ...args: string[]) => {
 };
 const run = (cwd: string, ...args: string[]) => invoke(cwd, ...args, "--json");
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(-2000), stderr: r.stderr.slice(-1000) });
+const stopLegacy = (root: string) => {
+  if (!existsSync(join(root, ".cotal"))) return;
+  anchors.set(root, recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! }));
+  const stopped = invoke(root, "down", "--yes");
+  if (stopped.status !== 0) throw new Error(`cleanup did not confirm the owned stack stopped: ${stopped.stderr}`);
+};
 const project = (name: string) => {
   const path = join(home, name); mkdirSync(path, { mode: 0o700 });
   const r = run(path, "space", "create", name, "--root", path);
@@ -155,24 +161,55 @@ try {
   if (!selected || selected === "unprepared-address") {
     // Stop the root walk at the isolated home, while leaving the new project empty.
     mkdirSync(join(home, ".cotal"), { recursive: true, mode: 0o700 });
-    const root = join(home, "unprepared-address");
-    mkdirSync(root, { mode: 0o700 });
-    const started = invoke(root, "up");
-    try {
-      check("bare up in an unprepared project starts beside a reserved default address", started.status === 0, shown(started));
-      if (started.status === 0) {
+    for (const name of ["unprepared-address", "retry-address"] as const) {
+      const root = join(home, name);
+      mkdirSync(root, { mode: 0o700 });
+      try {
+        if (name === "retry-address") {
+          const badLog = join(root, "log-directory");
+          mkdirSync(badLog, { mode: 0o700 });
+          const failed = invoke(root, "up", "--log-file", badLog);
+          check("the first launch fails opening its log before writing broker configuration", failed.status === 3 && failed.stderr.includes("EISDIR"), shown(failed));
+          const control = join(root, ".cotal");
+          const store = join(control, "nats");
+          const registrations = run(root, "space");
+          check("the failed launch leaves an empty store and no broker configuration or registration",
+            existsSync(store) && readdirSync(store).length === 0 && !existsSync(join(control, "auth", "server.conf"))
+              && registrations.status === 0 && registrations.receipt?.result?.items?.every((row) => row.space !== name) === true, shown(registrations));
+        }
+        const started = invoke(root, "up");
+        check(`${name}: bare up starts beside a reserved default address`, started.status === 0, shown(started));
         const spaces = run(root, "space");
         const rows = spaces.receipt?.result?.items;
-        const own = rows?.find((row) => row.space === "unprepared-address");
+        const own = rows?.find((row) => row.space === name);
         check("the new broker answers on a distinct registered address", own?.check === "reachable" && own.server !== "nats://127.0.0.1:4222", shown(spaces));
         check("the original reservation is unchanged", rows?.some((row) => row.space === "held" && row.server === "nats://127.0.0.1:4222") === true, shown(spaces));
-      }
+      } finally { stopLegacy(root); }
+    }
+  }
+
+  if (!selected || selected === "legacy-collision") {
+    mkdirSync(join(home, ".cotal"), { recursive: true, mode: 0o700 });
+    const legacy = join(home, "legacy-project"), occupant = join(home, "occupant");
+    mkdirSync(legacy, { mode: 0o700 });
+    mkdirSync(occupant, { mode: 0o700 });
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const up = (root: string, ...flags: string[]) => invoke(root, "up", "--open", "--no-manager", ...flags);
+    try {
+      const first = up(legacy, "--space", "legacy-space", "--server", server);
+      check("a legacy project starts with a space named differently from its folder", first.status === 0, shown(first));
+      stopLegacy(legacy);
+      const stopped = run(legacy, "space");
+      check("the stopped project's space registration was removed", stopped.status === 0 && stopped.receipt?.result?.items?.every((row) => row.space !== "legacy-space") === true, shown(stopped));
+      const holds = up(occupant, "--server", server);
+      check("a different project starts a broker on the released address", holds.status === 0, shown(holds));
+      const restarted = invoke(legacy, "up", "--no-manager");
+      const spaces = run(legacy, "space");
+      const own = spaces.receipt?.result?.items?.find((row) => row.space === "legacy-space");
+      check("implicit legacy restart uses another reachable address while the recorded address is live elsewhere", restarted.status === 0 && own?.check === "reachable" && own.server !== server, shown(restarted));
+      check("the other broker is still reachable at its address", spaces.receipt?.result?.items?.some((row) => row.space === "occupant" && row.server === server && row.check === "reachable") === true, shown(spaces));
     } finally {
-      if (existsSync(join(root, ".cotal"))) {
-        anchors.set(root, recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! }));
-        const stopped = invoke(root, "down", "--yes");
-        if (stopped.status !== 0) throw new Error(`cleanup did not confirm the owned stack stopped: ${stopped.stderr}`);
-      }
+      try { stopLegacy(occupant); } finally { stopLegacy(legacy); }
     }
   }
 

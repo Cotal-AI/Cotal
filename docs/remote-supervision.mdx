@@ -14,7 +14,8 @@ For restart policies and monitoring, use [Supervise the stack](supervise-process
 The broker and local services bind to loopback by default.
 Use `--host 0.0.0.0` when the broker must accept connections from other machines.
 Authentication stays enabled unless you explicitly choose another mode.
-Without an explicit `--server`, Cotal chooses a free local port if another project owns the default address.
+On a first start without `--server`, Cotal chooses a free, unregistered local port if the default
+address is occupied or another project has registered it.
 An explicit `--server` refuses a collision.
 
 `--host` changes the next broker boot, not an already-running listener.

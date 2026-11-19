@@ -26,7 +26,8 @@ Services launched by `service start` or `manager start`, and units written by `s
 Authentication is enabled by default.
 The broker authenticates senders and checks each agent's permissions.
 The broker and local services bind to loopback, so other machines cannot connect through that listener.
-If the default broker address is occupied by another project, Cotal chooses a free local port.
+On a first start, Cotal chooses a free, unregistered local port if the default address is occupied
+or another project has registered it.
 An explicit `--server` fails on a collision.
 
 Cotal requires nats-server 2.12 or newer.
