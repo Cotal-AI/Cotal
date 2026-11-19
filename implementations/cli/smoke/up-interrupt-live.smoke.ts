@@ -159,15 +159,20 @@ for (const [name, signal, code, format, noManager] of [
         if (assertRecordIdentity(pinned).kind === "match") process.kill(pinned.pid, "SIGCONT");
       }, name === "early-timeout" ? 20000 : 4000);
       try {
-        stopped = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
-          const down = spawn(process.execPath, ["--import", loader, entry, "down", "--yes", "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
-          let out = "", err = "";
-          down.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
-          down.stderr.on("data", (chunk: Buffer) => { err += chunk.toString(); });
-          const watchdog = setTimeout(() => down.kill("SIGKILL"), 180_000);
-          down.once("error", () => { clearTimeout(watchdog); done({ status: null, stdout: out, stderr: err }); });
-          down.once("close", (status) => { clearTimeout(watchdog); done({ status, stdout: out, stderr: err }); });
-        });
+        const stop = (args: string[]) => {
+          const options = { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+          assertSmokeSandboxDown(sandbox, args, options);
+          const down = spawn(process.execPath, ["--import", loader, entry, ...args], options);
+          return new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
+            let out = "", err = "";
+            down.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+            down.stderr.on("data", (chunk: Buffer) => { err += chunk.toString(); });
+            const watchdog = setTimeout(() => down.kill("SIGKILL"), 180_000);
+            down.once("error", () => { clearTimeout(watchdog); done({ status: null, stdout: out, stderr: err }); });
+            down.once("close", (status) => { clearTimeout(watchdog); done({ status, stdout: out, stderr: err }); });
+          });
+        };
+        stopped = await stop(["down", "--yes", "--json"]);
       } finally {
         clearTimeout(resume);
         if (assertRecordIdentity(pinned).kind === "match") process.kill(pinned.pid, "SIGCONT");

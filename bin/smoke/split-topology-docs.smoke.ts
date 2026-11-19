@@ -102,13 +102,17 @@ check(
     control.includes("A space can run more than one manager") &&
     control.includes("cotal supervise"),
 );
+// The branch can record manager omission before returning the delivery outcome.
+const brokerOnlyBranch = /^  if \(o\.noManager\) \{[\s\S]*?^  \}$/m.exec(deliveryProc);
 check(
   "claim 2: the broker-only refusal and the flag's wiring are pinned",
   /`cotal up --no-manager` will not keep or stop one/.test(up.replace(/\\`/g, "`")) &&
     /args\.values\["no-manager"\] === true && args\.values\.runtime !== undefined\)\s*throw new CommandFailure\("refused", "USAGE_INVALID", "--no-manager cannot be combined with --runtime because no manager starts"/.test(up) &&
     /args\.values\["no-manager"\] === true && args\.values\["max-sessions"\] !== undefined\)\s*throw new CommandFailure\("refused", "USAGE_INVALID", "--no-manager cannot be combined with --max-sessions because no manager starts"/.test(up) &&
     up.includes("broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager") &&
-    /if \(o\.noManager\) return \{\s*running: false\b[^}]*responderBound: delivery\.responderBound[^}]*\}/.test(deliveryProc) &&
+    brokerOnlyBranch !== null &&
+    /^    return \{\s*running: false\b[^}]*responderBound: delivery\.responderBound[^}]*\}/m.test(brokerOnlyBranch[0]) &&
+    deliveryProc.search(/\bensureManager\s*\(/) > brokerOnlyBranch.index + brokerOnlyBranch[0].length &&
     !cli.includes("There is no broker-only mode") &&
     !operationGuideText.includes("There is no broker-only `up`") &&
     !operationGuideText.includes("Broker-only `up` remains a product request"),
