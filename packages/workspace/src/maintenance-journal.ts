@@ -76,6 +76,7 @@ import {
   pathContains,
   sameStoreIdentity,
   writePrivateExclusive,
+  assertStoreIdentity,
 } from "./maintenance-foundation.js";
 
 function validIdentity(value: unknown): value is StoreIdentity {
@@ -1212,4 +1213,15 @@ export function readyFrom(record: CompletedJournalBase): Omit<MaintenanceReadyRe
     state: "ready", space: record.space, mode: record.mode, source: record.source, resume: record.resume,
     cut: record.cut, cutCompletion: record.cutCompletion,
   };
+}
+
+export function requireReady(lock: MaintenanceLock): MaintenanceReadyRecord {
+  const record = currentJournal(lock);
+  if (record.state !== "ready")
+    maintenanceError("invalid-transition", `maintenance journal is ${record.state}, not ready`, {
+      root: lock.root,
+      paths: record.state === "restore-ready" ? [record.restore.targetPath, record.source.path] : [record.source.path],
+    });
+  assertStoreIdentity(record.source);
+  return record as MaintenanceReadyRecord;
 }
