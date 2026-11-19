@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync, readlinkSync, statSync } from "n
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { execFileSync } from "node:child_process";
-import { registry, type Command } from "@cotal-ai/core";
+import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
 import { claimGlobalNpmUpdateLock } from "@cotal-ai/workspace";
 import { submitSystemdUnitControl } from "@cotal-ai/cli";
 import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes } from "@cotal-ai/cli/update";
@@ -126,6 +126,13 @@ async function collectConnectorSets(): Promise<void> {
 const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
+  let piNotice: string | undefined;
+  await runUpdate(args, notice => { piNotice = notice; });
+  if (!process.exitCode && piNotice) console.log(piNotice);
+} };
+registry.register(composed);
+
+async function runUpdate(args: ParsedArgs, standalonePiNotice: (message: string) => void): Promise<void> {
   let hostedSpaces: string[] = [];
   let daemonObserved = false;
   let preparedRestart = false;
@@ -225,7 +232,7 @@ const composed: Command = { ...command, async run(args) {
       }
     }
   }
-  const runtime = { ...updateRuntime, automaticGenerationWait: process.platform === "linux",
+  const runtime = { ...updateRuntime, standalonePiNotice, automaticGenerationWait: process.platform === "linux",
     claimGlobalUpdate: (root: string) => claimGlobalNpmUpdateLock(root, legacyRepair && root === interruptedChildRoot ? { waitMs: 10 * 60_000, repairAmbiguous: () => {
       if (repairService) {
         const plan = planUninstall(repairService, undefined);
@@ -620,5 +627,4 @@ const composed: Command = { ...command, async run(args) {
     }
     if (recoveryFence) await managerViaDaemon({ paths: daemonPaths() }, { op: "managers-abort-restart" });
   }
-} };
-registry.register(composed);
+}

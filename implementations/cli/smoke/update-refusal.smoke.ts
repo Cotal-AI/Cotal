@@ -54,6 +54,29 @@ for (const [self, latest] of [[false, "0.13.2"], [true, "0.13.2"], [true, "0.13.
 }
 console.log("update-refusal.smoke: classified, unclassified, legacy and successful reports passed");
 
+// A plain update can finish local reconciliation before its registry version read fails.
+{
+  const lines: string[] = [];
+  let reconciled = false;
+  const rt: UpdateRuntime = {
+    ...updateRuntime,
+    env: {},
+    version: () => "0.13.1",
+    reportRunningManager: async () => "none",
+    reconcile: async () => { reconciled = true; },
+    refreshConnectors: async () => [],
+    extensions: () => [],
+    claimUpdatePass: () => () => {},
+    npm: () => ({ status: 1, stdout: "", stderr: "ECONNREFUSED" }),
+    out: text => lines.push(text),
+    err: text => lines.push(text),
+  };
+  assert.equal(await executeUpdate(false, rt), 1);
+  assert.equal(reconciled, true);
+  assert.match(lines.join("\n"), /version check failed: ECONNREFUSED/);
+  assert.doesNotMatch(lines.join("\n"), /standalone pi extension/);
+}
+
 // The real bound-child entry must adopt before any reconcile effects, and cannot hide denial.
 for (const denied of [false, true]) {
   const effects: string[] = [], errors: string[] = [];

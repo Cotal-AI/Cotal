@@ -78,6 +78,8 @@ import { assertRecordIdentity, brokerAddressKey } from "@cotal-ai/workspace";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
 const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
+// Only the outer updater can pin the notice to the version that survives activation and rollback.
+const UPDATE_PARENT_REPORTS_PI_ENV = "COTAL_UPDATE_PARENT_REPORTS_PI";
 /** Set by a parent that waits for the installed daemon generation after its reconcile child and prints
  *  the wait line. A child prints the line itself unless its parent set this: a parent from before this
  *  marker never waits there, so the line would be lost. */
@@ -177,6 +179,8 @@ export interface UpdateRuntime {
   ): Promise<CommandResult>;
   verifyGlobalEntry(root: string, expectedVersion: string): string;
   out(message: string): void;
+  /** The binary can hold this notice until its remaining daemon checks succeed. */
+  standalonePiNotice?(message: string): void;
   err(message: string): void;
   stdout(message: string): void;
   stderr(message: string): void;
@@ -394,7 +398,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
           const entry = rt.verifyGlobalEntry(root, version);
           if (realpathSync(entry) !== realpathSync(entryScript())) throw new Error("paused repair must run from the verified installed CLI");
           snapshot.restore();
-          const env = { ...rt.env, [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid), ...(!startup && rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}) };
+          const env = { ...rt.env, [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid), [UPDATE_PARENT_REPORTS_PI_ENV]: "1", ...(!startup && rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}) };
           const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
           if (reconciled.status !== 0) throw new Error(failure(reconciled));
           if (!startup && rt.env.COTAL_AUTO_UPDATE !== "1") {
@@ -424,7 +428,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
           entry = rt.verifyGlobalEntry(root, record.previous);
         }
         snapshot.restore();
-        const env = { ...rt.env, [UPDATE_TARGET_ENV]: record.previous, [UPDATE_PARENT_ENV]: String(rt.pid), ...(!startup && rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}) };
+        const env = { ...rt.env, [UPDATE_TARGET_ENV]: record.previous, [UPDATE_PARENT_ENV]: String(rt.pid), [UPDATE_PARENT_REPORTS_PI_ENV]: "1", ...(!startup && rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}) };
         const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
         if (reconciled.status !== 0) throw new Error(failure(reconciled));
         if (!startup && rt.env.COTAL_AUTO_UPDATE !== "1") {
@@ -515,7 +519,8 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     // A parent that journals its transaction holds the daemon on the old generation until this
     // reconcile is verified. An older parent wrote no journal, and its daemon restarts as soon as
     // the package changes, so continuity is only answerable after that restart has settled.
-    const journaled = readUpdateRecovery() !== undefined;
+    const beforeReconcile = readUpdateRecovery();
+    const journaled = beforeReconcile !== undefined;
     if (journaled) {
       const result = await reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
       if (result !== 0) return result;
@@ -531,7 +536,13 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       rt.err(c.red(`✗ installed daemon generation: ${refusal(error)}`));
       return 1;
     }
-    return journaled ? 0 : reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
+    const result = journaled ? 0 : await reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
+    // An older parent cannot print this notice and can still roll back after this child exits.
+    // Give it no version that could point to a rejected release.
+    if (result === 0 && beforeReconcile?.phase !== "restoring" && rt.env[UPDATE_PARENT_REPORTS_PI_ENV] !== "1") {
+      reportStandalonePiUpdate(rt);
+    }
+    return result;
   }
 
   if (self) {
@@ -663,6 +674,7 @@ async function reconcileCurrent(
     }
     if (!entries.length) {
       rt.out(c.dim("operator extensions: none installed"));
+      return finish(ok);
     }
 
     for (const entry of entries) {
@@ -692,6 +704,7 @@ async function reconcileCurrent(
       };
       delete env[UPDATE_TARGET_ENV];
       delete env[UPDATE_PARENT_ENV];
+      delete env[UPDATE_PARENT_REPORTS_PI_ENV];
       delete env[UPDATE_PARENT_WAITS_ENV];
       const extensionStarted = Date.now();
       const result = rt.spawn(bin, [...argv, "ext", "__update-add", entry.pkg, spec], env);
@@ -708,7 +721,6 @@ async function reconcileCurrent(
       }
       rt.out(c.green(`✓ ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
     }
-    if (ok) rt.out(`If you copied the standalone pi extension, Cotal leaves it unchanged. Run \`npm install @cotal-ai/pi@${current}\` and repeat the copy (https://docs.cotal.ai/docs/connect-pi/#load-the-extension-into-your-own-host).`);
     return finish(ok);
   } finally {
     releaseMutation();
@@ -1431,6 +1443,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     ...(prefix ? { npm_config_prefix: prefix } : {}),
     [UPDATE_TARGET_ENV]: targetVersion,
     [UPDATE_PARENT_ENV]: String(rt.pid),
+    [UPDATE_PARENT_REPORTS_PI_ENV]: "1",
     ...(rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}),
   };
   delete env[EXT_UPDATE_PARENT_ENV];
@@ -1463,11 +1476,12 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   execution?.complete?.();
   if (stagedExecution) rt.out(c.green(`✓ cotal-ai@${targetVersion} in use and reconciled`));
   else rt.out(c.green(`✓ cotal-ai@${targetVersion} installed globally and reconciled`));
+  if (!interrupted) reportStandalonePiUpdate(rt, targetVersion);
   return interrupted;
 
   async function reconcileVersion(version: string): Promise<boolean> {
     const verified = execution ? (execution.verify(version), version === targetVersion ? execution.entry : join(root, "cotal-ai", "dist/cotal.js")) : rt.verifyGlobalEntry(root, version);
-    const repairEnv: NodeJS.ProcessEnv = { ...rt.env, ...(prefix ? { npm_config_prefix: prefix } : {}), [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid), ...(rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}) };
+    const repairEnv: NodeJS.ProcessEnv = { ...rt.env, ...(prefix ? { npm_config_prefix: prefix } : {}), [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid), [UPDATE_PARENT_REPORTS_PI_ENV]: "1", ...(rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}) };
     delete repairEnv[EXT_UPDATE_PARENT_ENV];
     const result = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [verified, "update", ...targetArgv(target)], repairEnv, true);
     if (result.stderr) rt.stderr(result.stderr);
@@ -1492,6 +1506,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
           recordUpdateCompletion(targetVersion, `repaired and updated to ${targetVersion}`, true);
           execution?.complete?.();
           rt.out(c.green(`✓ cotal-ai@${targetVersion} repaired and reconciled`));
+          if (!interrupted) reportStandalonePiUpdate(rt, targetVersion);
           return interrupted;
         }
       } catch (error) { rt.err(`reconcile retry: ${message(error)}`); }
@@ -1556,6 +1571,17 @@ function reportVersion(current: string, latest: string, rt: UpdateRuntime, recon
     { title: "CLI version", blocks: [{ kind: "fields", rows: [["This process", current], ["Registry latest", latest], ["Update", available ? { text: "available", tone: "waiting" } : "no newer latest tag"]] }, { kind: "lines", lines: [{ text: "Running processes keep the generation they loaded. This version report does not prove every live service was upgraded.", tone: "hint" }] }] },
     ...(reconciled ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: available ? "cotal update --self" : "cotal status", description: !available ? "Inspect the machine and selected space" : rt.checkout() ? "Install the validated CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the validated CLI and reconcile its matching extensions" }] }] }] : []),
   ] }, "rich", process.stdout));
+  if (reconciled) reportStandalonePiUpdate(rt, current);
+}
+
+function reportStandalonePiUpdate(rt: UpdateRuntime, version?: string): void {
+  if (rt.env.COTAL_AUTO_UPDATE === "1") return;
+  const install = version === undefined
+    ? "After a successful update, run `cotal --version` and install `@cotal-ai/pi` at the reported CLI version"
+    : `Run \`npm install @cotal-ai/pi@${version}\``;
+  const notice = `If you copied the standalone pi extension, Cotal leaves it unchanged. ${install} and repeat the copy (https://docs.cotal.ai/docs/connect-pi/#load-the-extension-into-your-own-host).`;
+  if (rt.standalonePiNotice) rt.standalonePiNotice(notice);
+  else rt.out(notice);
 }
 
 function childBinding(rt: UpdateRuntime):

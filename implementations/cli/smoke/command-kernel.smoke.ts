@@ -1627,6 +1627,34 @@ for (const [code, summary, deferred] of [
   }
 }
 
+// The bound child can succeed even when the parent later fails activation and restores the old generation.
+for (const [targetReady, firstReconcileFails] of [[true, false], [true, true], [false, false], [false, true]]) {
+  const { rt, events } = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+  let reconcileCalls = 0;
+  rt.spawnGlobal = async (_root, op, _file, _args, env) => {
+    if (op !== "reconcile") return { status: 0, stdout: "", stderr: "" };
+    if (++reconcileCalls === 1 && firstReconcileFails) return { status: 1, stdout: "", stderr: "transient reconcile error" };
+    const status = await executeUpdate(false, {
+      ...rt, env, parentPid: rt.pid, version: () => env.COTAL_UPDATE_TARGET_VERSION!, waitForInstalledGeneration: async () => {},
+    });
+    return { status, stdout: "", stderr: "" };
+  };
+  const waits: string[] = [];
+  const noticesAtWait: number[] = [];
+  rt.waitForInstalledGeneration = async version => {
+    waits.push(version);
+    noticesAtWait.push(events.filter(event => event.includes("standalone pi extension")).length);
+    if (version === "0.13.2" && !targetReady) throw new Error("installed Cotal 0.13.2 did not become ready");
+  };
+  assert.equal(await executeUpdate(true, rt), targetReady ? 0 : 1);
+  assert.deepEqual(waits, targetReady ? ["0.13.2"] : ["0.13.2", "0.13.1"]);
+  assert.deepEqual(noticesAtWait, waits.map(() => 0), "the bound child never gives advice before final activation");
+  assert.equal(events.some(event => event.includes("cotal-ai@0.13.1 was restored and reconciled")), !targetReady);
+  const notices = events.filter(event => event.includes("standalone pi extension"));
+  assert.equal(notices.length, targetReady ? 1 : 0, events.join("\n"));
+  if (targetReady) assert.match(notices[0]!, /npm install @cotal-ai\/pi@0\.13\.2/);
+}
+
 // --- interrupts retain update custody until verification and reconciliation finish --------------
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   for (const phase of ["install", "reconcile"] as const) {
@@ -1646,6 +1674,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
       return spawnGlobal(...args);
     };
     assert.equal(await executeUpdate(true, rt), signal === "SIGINT" ? 130 : 143);
+    assert.ok(!events.some(event => event.includes("standalone pi extension")), "an interrupted update does not advise replacing the standalone copy");
     assert.ok(events.includes("verify:/global/node_modules:0.13.2"), "interruption still verifies the installed package");
     assert.ok(events.some((event) => event.startsWith("global:reconcile:")), "interruption still reconciles matching extensions");
     assert.equal(events.filter((event) => event.includes("Interrupt received;")).length, 1, "repeated interrupts produce one explanation");
@@ -1733,12 +1762,17 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.equal(await executeUpdate(false, child.rt), 0);
   assert.ok(child.events.indexOf("generation-ready") < child.events.indexOf("report-running-manager"), "replacement daemon readiness precedes continuity");
   assert.deepEqual(child.events.filter((event) => event === "reconcile" || event.startsWith("npm:")), ["reconcile"]);
+  const olderParentNotice = child.events.filter(event => event.includes("standalone pi extension"));
+  assert.equal(olderParentNotice.length, 1);
+  assert.match(olderParentNotice[0]!, /After a successful update, run `cotal --version`/);
+  assert.doesNotMatch(olderParentNotice[0]!, /@cotal-ai\/pi@/);
 
   const unavailable = updateRuntime({ env: { COTAL_UPDATE_TARGET_VERSION: "0.13.1", COTAL_UPDATE_PARENT: "99" } });
   unavailable.rt.waitForInstalledGeneration = async () => { throw new Error("daemon did not restore its hosted Managers before the deadline"); };
   assert.equal(await executeUpdate(false, unavailable.rt), 1);
   assert.ok(!unavailable.events.includes("report-running-manager") && !unavailable.events.includes("reconcile"), "failed activation leaves continuity and every connector write untouched");
   assert.ok(unavailable.events.some(event => event.includes("installed daemon generation:")));
+  assert.ok(!unavailable.events.some(event => event.includes("standalone pi extension")));
 
   const journalHome = mkdtempSync(join(tmpdir(), "kernel-update-journal-"));
   const priorJournalHome = process.env.COTAL_HOME;
@@ -1753,6 +1787,13 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     assert.equal(await executeUpdate(false, journaled.rt), 0);
     assert.ok(journaled.events.indexOf("report-running-manager") < journaled.events.indexOf("reconcile"), "journaled child observes continuity before connector writes");
     assert.ok(journaled.events.indexOf("reconcile") < journaled.events.indexOf("generation-ready"), "journaled parent reconciles before releasing the installed generation");
+    assert.ok(journaled.events.indexOf("generation-ready") < journaled.events.findIndex(event => event.includes("After a successful update, run `cotal --version`")), "the older parent's child waits before giving unpinned guidance");
+    clearUpdateRecovery();
+
+    writeUpdateRecovery({ previous: "0.13.1", target: "0.13.2", installed: "0.13.2", phase: "restoring", reason: "older parent rollback" });
+    const restoring = updateRuntime({ env: { COTAL_UPDATE_TARGET_VERSION: "0.13.1", COTAL_UPDATE_PARENT: "99" } });
+    assert.equal(await executeUpdate(false, restoring.rt), 0);
+    assert.ok(!restoring.events.some(event => event.includes("standalone pi extension")), "the restoring child does not repeat the original notice");
     clearUpdateRecovery();
 
     // The daemon's own update shares the daemon's service control group, so it must end before
