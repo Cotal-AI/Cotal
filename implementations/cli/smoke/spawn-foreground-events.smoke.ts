@@ -252,7 +252,7 @@ try {
     mkdirSync(work);
     symlinkSync(work, link, "junction");
     const receipt = join(root, "child-cwd.txt");
-    registry.register({
+    const cwdProbe: Connector = {
       ...liveProbe,
       name: "fg-probe-cwd",
       buildLaunch: (o: LaunchOpts): LaunchSpec => {
@@ -263,7 +263,8 @@ try {
           env: {},
         };
       },
-    });
+    };
+    registry.register(cwdProbe);
     const r = await openRun(["--agent", "fg-probe-cwd", "--cwd", link]);
     const childCwd = existsSync(receipt) ? readFileSync(receipt, "utf8") : undefined;
     check("foreground --cwd runs the child in the canonical directory without a managed connector cwd",
