@@ -73,7 +73,7 @@ const baseCommands: Command[] = [
     flags: setupFlags,
     validate: validateSetupArguments,
     outputs: ["json", "plain"],
-    examples: [{ command: "cotal setup", note: "choose your application and prepare a space" }, { command: "cotal setup --destination local -H claude --project <dir> -s <name> -y", note: "prepare a local space without questions" }, { command: "cotal setup --destination self-hosted --connection-file <bundle.json>", note: "connect to a space that runs elsewhere" }],
+    examples: [{ command: "cotal setup", note: "choose your application and prepare a space" }, { command: "cotal setup --destination local -H claude --project <dir> -s <name> -y", note: "prepare a local space without questions" }, { command: "cotal setup --destination self-hosted -H claude --project <dir> -s <name> --connection-file <bundle.json> -y", note: "register a space that runs elsewhere without questions" }],
     run: setup,
   },
   {

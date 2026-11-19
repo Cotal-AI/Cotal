@@ -60,7 +60,14 @@ scripted form for the destination and not the full command help. The local form,
 cotal setup --destination local --harness claude --project ~/research --space research --no-input
 ```
 
-The `self-hosted` form also takes `--connection-file <bundle.json>`. A space name `cotal up` cannot
+To register a self-hosted space from a connection bundle without questions, name the harness, the
+project folder and the space from the bundle:
+
+```bash
+cotal setup --destination self-hosted --harness claude --project ~/research --space research --connection-file ./research.json --no-input
+```
+
+A space name `cotal up` cannot
 start is refused with the name respelled in letters, digits, `-` and `_` as the remedy, and an
 unknown `--harness` with the known ones and `cotal ext add <npm-package>`.
 

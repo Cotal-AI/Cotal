@@ -387,6 +387,16 @@ const holder = createServer((socket) => socket.on("error", () => {}));
 const held = await new Promise<number>((resolve) => holder.listen(0, "127.0.0.1", () => resolve((holder.address() as AddressInfo).port)));
 const started = (root: string) => existsSync(join(root, ".cotal", "nats.pid"));
 try {
+  const emptyRestore = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-empty-restore-")));
+  roots.push(emptyRestore);
+  const restoreArgs = ["--open", "--no-manager", "--server", `nats://127.0.0.1:${held}`, "--space", "emptyrestore", "--restore", ""];
+  const restore = run(["up", "--foreground", ...restoreArgs], emptyRestore);
+  check("an explicitly empty --restore refuses foreground startup before writing project state",
+    restore.status === 1 && restore.stdout === "" && restore.stderr.includes("--restore is empty") && restore.stderr.includes("pass the backup folder") && readdirSync(emptyRestore).length === 0, shown(restore));
+  const restoreJson = run(["up", "--detach", ...restoreArgs, "--json"], emptyRestore);
+  check("an explicitly empty --restore is USAGE_INVALID in JSON and leaves the project empty",
+    restoreJson.status === 1 && restoreJson.envelope?.outcome === "refused" && restoreJson.envelope.error?.code === "USAGE_INVALID" && readdirSync(emptyRestore).length === 0, shown(restoreJson));
+
   // A refusal that names the address to pass is the whole fix, so no help follows it and scrolls the
   // fix away: a nats:// address where the root's recorded policy or --tls-cert serves TLS, and a
   // tls:// address with no TLS to serve.

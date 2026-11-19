@@ -458,8 +458,14 @@ export function stageArtifact(artifactPath: string, parent: string): StagedArtif
 /** Why a backup path names nothing: the folder that would hold it is not there (`folder`), or only
  *  its last name is missing (`artifact`). `undefined` when the path exists. */
 export function missingBackupPath(path: string): "folder" | "artifact" | undefined {
-  if (statSync(path, { throwIfNoEntry: false })) return undefined;
-  return statSync(dirname(path), { throwIfNoEntry: false })?.isDirectory() ? "artifact" : "folder";
+  const folder = dirname(path);
+  try {
+    if (statSync(path, { throwIfNoEntry: false })) return undefined;
+    return statSync(folder, { throwIfNoEntry: false })?.isDirectory() ? "artifact" : "folder";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ELOOP") throw error;
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup path ${path} contains a symbolic-link loop (ELOOP)`, { target: { directory: path, folder }, native: { code: "ELOOP" }, remedy: "fix the symbolic link or use a path to the backup folder that does not pass through the loop", selfContained: true });
+  }
 }
 
 /** What a {@link missingBackupPath} answer means, naming the missing folder or artifact. */

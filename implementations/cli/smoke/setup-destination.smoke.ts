@@ -439,8 +439,13 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   writeFileSync(file, JSON.stringify(bundle));
   const wrongName = await json(hosted("other", userRoot, ["--connection-file", file]));
   check("a connection file for another space is CONFLICT", refused(wrongName, 2, "CONFLICT") && /"hosted"/.test(wrongName.env?.error?.message ?? "") && findMesh("other") === undefined, shown(wrongName));
-  const added = await json(hosted("hosted", userRoot, ["--connection-file", file]));
-  check("a connection file registers the space with the project as its root",
+  const help = await run(["setup", "--help"]);
+  const example = help.stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => line.startsWith("cotal setup --destination self-hosted ") && line.includes("--connection-file"));
+  check("setup help prints a self-hosted connection-file example", help.status === 0 && example !== undefined, shown(help));
+  const substitutions: Record<string, string> = { claude: "codex", "<dir>": userRoot, "<name>": "hosted", "<bundle.json>": file };
+  const exampleArgs = (example ?? "").split(/\s{2,}/, 1)[0]!.split(" ").slice(1).map((word) => substitutions[word] ?? word);
+  const added = await json(exampleArgs);
+  check("the self-hosted help example runs without a terminal and registers the space with the project as its root",
     added.status === 0 && added.env?.result.spaceState === "added" && findMesh("hosted")?.root === userRoot && findMesh("hosted")?.mode === "user" && added.env.result.written.some((w: { what: string }) => w.what === "space registration"), shown(added));
   check("and its persona lands where spawn reads for that space", existsSync(join(resolveMeshTarget(home, { space: "hosted" }).personaRoot, "default.md")));
   const again = await json(hosted("hosted", userRoot, ["--connection-file", file]));
