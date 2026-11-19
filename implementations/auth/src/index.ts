@@ -1,5 +1,5 @@
-export { observeSpaceQuiescence, type SpaceQuiescenceOptions, type SpaceQuiescenceObservation } from "./space-quiescence.js";
 /** @module index */
+export { observeSpaceQuiescence, type SpaceQuiescenceOptions, type SpaceQuiescenceObservation } from "./space-quiescence.js";
 export { retainManagerAuthorityRoute } from "./provider.js";
 export { signOutIdpSession, type SignOutIdpSessionResult } from "./logout.js";
 export { mintServiceCallerPayloadObserverCreds, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
