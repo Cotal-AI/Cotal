@@ -80,9 +80,17 @@ function scriptOf(file: string | undefined): SimScript {
       throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid simulation script field '${key}'`);
   }
   for (const [name, entry] of Object.entries((script.checkpoints ?? {}) as Record<string, unknown>)) {
-    for (const result of Array.isArray(entry) ? entry : [entry]) {
+    for (const [index, result] of (Array.isArray(entry) ? entry : [entry]).entries()) {
       const problem = checkpointResultProblem(result);
-      if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted checkpoint '${name}': ${problem}`, { target: { file } });
+      if (problem) {
+        const path = `checkpoints.${name}${Array.isArray(entry) ? `[${index}]` : ""}`;
+        const correction = problem.field === "status"
+          ? `set ${path}.status in ${file} to "resolved" or "expired"`
+          : `correct ${path} in ${file}`;
+        throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted checkpoint '${name}' in ${file}: ${problem.message}`, {
+          target: { file }, remedy: `${correction}, then rerun the simulation`,
+        });
+      }
     }
   }
   for (const [name, entry] of Object.entries((script.turns ?? {}) as Record<string, unknown>)) {
@@ -97,16 +105,16 @@ function scriptOf(file: string | undefined): SimScript {
 /** Why a scripted checkpoint result is not one `checkpoint()` can return, or undefined. The
  *  simulator reads only an `expired` status and takes any other entry as an answer, so a malformed
  *  one is refused here rather than simulated as resolved. */
-function checkpointResultProblem(result: unknown): string | undefined {
-  if (!result || typeof result !== "object" || Array.isArray(result)) return "a result must be an object";
+function checkpointResultProblem(result: unknown): { message: string; field?: "status" } | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return { message: "a result must be an object" };
   const fields = result as Record<string, unknown>;
-  if (fields.status !== "resolved" && fields.status !== "expired") return "status must be \"resolved\" or \"expired\"";
-  if ("at" in fields) return "at is stamped from virtual time and cannot be scripted";
+  if (fields.status !== "resolved" && fields.status !== "expired") return { message: 'status must be "resolved" or "expired"', field: "status" };
+  if ("at" in fields) return { message: "at is stamped from virtual time and cannot be scripted" };
   const known = new Set(["status", "value", "by", "artifact"]);
   const unknown = Object.keys(fields).find((key) => !known.has(key));
-  if (unknown !== undefined) return `unknown field '${unknown}'`;
-  if (fields.by !== undefined && typeof fields.by !== "string") return "by must be a string";
-  if (fields.artifact !== undefined && typeof fields.artifact !== "string") return "artifact must be a string";
+  if (unknown !== undefined) return { message: `unknown field '${unknown}'` };
+  if (fields.by !== undefined && typeof fields.by !== "string") return { message: "by must be a string" };
+  if (fields.artifact !== undefined && typeof fields.artifact !== "string") return { message: "artifact must be a string" };
   return undefined;
 }
 
@@ -125,10 +133,10 @@ function turnResultProblem(result: unknown): string | undefined {
   return undefined;
 }
 
-/** A static call-site inventory. It makes no claim about branch choices, effect order or loop counts. */
-function callSites(ast: unknown, source: string): { call: string; line: number }[] {
+/** A static call-site inventory over the validator's AST, which includes parser locations. */
+function callSites(ast: ReturnType<typeof validate>["ast"]): { call: string; line: number }[] {
   const pending: unknown[] = [ast];
-  const sites: { call: string; offset: number }[] = [];
+  const sites: { call: string; offset: number; line: number }[] = [];
   while (pending.length) {
     const value = pending.pop();
     if (!value || typeof value !== "object") continue;
@@ -140,17 +148,13 @@ function callSites(ast: unknown, source: string): { call: string; line: number }
       const object = callee.object as Record<string, unknown> | undefined;
       const property = callee.property as Record<string, unknown> | undefined;
       const call = typeof simple === "string" ? simple : object?.type === "Identifier" && typeof object.name === "string" && property?.type === "Identifier" && typeof property.name === "string" ? `${object.name}.${property.name}` : "derived call";
-      const offset = typeof node.start === "number" ? node.start : 0;
-      sites.push({ call, offset });
+      const { start, loc } = node as typeof ast;
+      if (!loc) throw new Error("validated call is missing its source location");
+      sites.push({ call, offset: start, line: loc.start.line });
     }
     for (const item of Object.values(node)) if (item && typeof item === "object") pending.push(item);
   }
-  let line = 1;
-  let position = 0;
-  return sites.sort((a, b) => a.offset - b.offset).map((site) => {
-    while (position < site.offset) if (source[position++] === "\n") line++;
-    return { call: site.call, line };
-  });
+  return sites.sort((a, b) => a.offset - b.offset).map(({ call, line }) => ({ call, line }));
 }
 
 /** A language error's message as its paragraphs: the first is its code and title, the second its
@@ -227,7 +231,7 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
     return;
   }
   if (mode === "plan") {
-    const calls = callSites(checked.ast, source);
+    const calls = callSites(checked.ast);
     writeResult(presentation, { command: "run", target: { file }, result: { kind: "workflow-plan", scope: "validated static call sites", calls }, warnings }, (result): Report => ({ sections: [
       { title: "Workflow plan", blocks: [{ kind: "fields", rows: [["File", file], ["Scope", result.scope]] }, result.calls.length ? { kind: "table", columns: [{ key: "line", label: "Line" }, { key: "call", label: "Call" }], rows: result.calls.map((item) => ({ line: String(item.line), call: { text: item.call, tone: "command" } })) } : { kind: "lines", lines: ["No call sites in this program."] }, { kind: "lines", lines: [{ text: "Source order, not an execution schedule. Branches, loop counts and runtime outcomes were not evaluated. No broker was contacted.", tone: "hint" }] }] },
     ] }));

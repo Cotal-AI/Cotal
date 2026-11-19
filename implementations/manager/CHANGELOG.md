@@ -1,5 +1,31 @@
 # @cotal-ai/manager
 
+## 0.170.0
+
+### Patch Changes
+
+- 7e7f28a: Daemon-hosted Managers register the Claude Code wake channel before offering Claude Code installed after startup.
+- 4a210ef: Call the manager components directly from the spawn path without changing the manager API.
+- bbf57d4: Move the per-owner seat ceiling into the name and capacity component without changing the manager API.
+- df23df2: Move pure manager helpers out of the manager class without changing the manager API.
+- f797b4c: Move the launch path's spawn-directory, connector inventory, refusal and persona steps into their own component without changing the manager API.
+- b4d4cc1: Move the managed seat types into their own module without changing the manager API.
+- 20ff353: Hosted workflows resume from their journals when JetStream returns after a broker outage interrupts a journal write.
+- Updated dependencies [c701881]
+- Updated dependencies [ad6d984]
+- Updated dependencies [3afefa8]
+- Updated dependencies [0e42b19]
+- Updated dependencies [dd478d4]
+- Updated dependencies [6170fc9]
+- Updated dependencies [8c965ac]
+- Updated dependencies [b73a8de]
+- Updated dependencies [2b1659e]
+- Updated dependencies [07978b3]
+- Updated dependencies [20ff353]
+  - @cotal-ai/workspace@0.170.0
+  - @cotal-ai/core@0.170.0
+  - @cotal-ai/seat@0.170.0
+
 ## 0.169.0
 
 ### Minor Changes

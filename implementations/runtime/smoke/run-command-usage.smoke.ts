@@ -296,6 +296,12 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const at = await simulate({ checkpoints: { go: { status: "resolved", at: 5 } } });
   c("a scripted checkpoint at is refused, since the simulator stamps it from virtual time",
     scriptRefusal(at, "at is stamped from virtual time"), at);
+  const handler = join(dir, "results.json");
+  const invalidList = await simulate({ checkpoints: { go: [{ status: "resolved" }, { status: "done" }] } });
+  c("a wrong checkpoint status in a list names the results file and indexes the result to correct",
+    isCommandFailure(invalidList) && scriptRefusal(invalidList, `in ${handler}: status must be "resolved" or "expired"`)
+    && (invalidList.target as { file?: string })?.file === handler
+    && invalidList.remedy === `set checkpoints.go[1].status in ${handler} to "resolved" or "expired", then rerun the simulation`, invalidList);
   // A scripted turn result goes to the program as written, so a status no live turn yields is
   // refused like a malformed checkpoint, in any entry of a list, and a documented one still runs.
   const fertig = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: { status: "fertig" } } });
@@ -515,6 +521,31 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   try { await runWorkflow({ values: { plain: true }, positionals: ["validate", program], raw: [] }); } finally { console.log = log; }
   c("validate says it checked no broker message limit", out.join("\n").includes("No mesh, authority, runtime, application or broker message limit was checked."), out);
   rmSync(dir, { recursive: true, force: true });
+}
+
+// Plans use the parser's line breaks in both formats, including in a file with mixed endings.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-plan-lines-"));
+  const program = join(dir, "mixed.cotal.js");
+  const text: string[] = [], json: string[] = [];
+  const log = console.log, write = process.stdout.write;
+  try {
+    writeFileSync(program, 'log(1)\rlog(2)\r\nlog(3)\nlog(4)\u2028log(5)\u2029log(6); log(7)');
+    console.log = (...args: unknown[]) => { text.push(args.map(String).join(" ")); };
+    process.stdout.write = ((chunk: string | Uint8Array) => { json.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    await runWorkflow({ values: { plain: true }, positionals: ["plan", program], raw: [] });
+    await runWorkflow({ values: { json: true }, positionals: ["plan", program], raw: [] });
+  } finally {
+    console.log = log;
+    process.stdout.write = write;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const expected = [1, 2, 3, 4, 5, 6, 6];
+  const rows = Array.from(text.join("\n").matchAll(/^[ \t]*(\d+)[ \t]+log[ \t]*$/gm), (match) => Number(match[1]));
+  const envelope = JSON.parse(json.join("")) as { outcome: string; result: { calls: unknown } };
+  c("plan text counts each JavaScript line break once", rows.join() === expected.join(), rows);
+  c("plan JSON counts each JavaScript line break once", envelope.outcome === "ok"
+    && JSON.stringify(envelope.result.calls) === JSON.stringify(expected.map((line) => ({ call: "log", line }))), envelope);
 }
 
 // A workflow source that cannot be read is refused naming its path and the cause, before any plane.

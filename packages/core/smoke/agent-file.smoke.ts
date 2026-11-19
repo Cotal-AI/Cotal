@@ -173,6 +173,12 @@ const throws = (name: string, body: string) => {
 };
 throws("launchOptions as scalar throws", "---\nname: x\nlaunchOptions: nope\n---\n");
 throws("launchOptions as sequence throws", "---\nname: x\nlaunchOptions:\n  - a\n---\n");
+throws("launchOptions with an empty YAML value throws", "---\nname: x\nlaunchOptions:\n---\n");
+const emptyOptions = join(dir, "empty-options.md");
+writeFileSync(emptyOptions, "---\nname: x\nrole: worker_1-a\nlaunchOptions: {}\n---\n");
+const empty = loadAgentFile(emptyOptions);
+ok("an empty launchOptions mapping and a valid role are retained", JSON.stringify(empty.launchOptions) === "{}" && empty.role === "worker_1-a");
+ok("omitting launchOptions leaves it unset", bare.launchOptions === undefined);
 throws("renamed field 'channels' still fails loud", "---\nname: x\nchannels: [general]\n---\n");
 throws("malformed YAML fails loud", "---\nname: x\n  bad: : indent\n\t- weird\n---\n");
 

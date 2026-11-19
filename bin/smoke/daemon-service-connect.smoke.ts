@@ -2881,6 +2881,12 @@ process.stdin.once('data', () => {
           }
           return;
         }
+        if (process.argv.includes("--hosted-refusal-repro")) {
+          const refused = resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 100_000));
+          assert.equal(refused.state, "refused");
+          assert.match(refused.lastRefusal, /no longer registered/);
+          console.log("HOSTED_REFUSAL before setup", JSON.stringify(refused));
+        }
         const setup = explicitHome
           ? { code: 0, doc: { result: { launchReady: true, manager: resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 100_000)) } } as Record<string, any>, err: "" }
           : await cli("setup", "--space", ON, "--idp", idpUrl);
@@ -3020,6 +3026,20 @@ process.stdin.once('data', () => {
         }
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--hosted-refusal-repro")) {
+          assert.equal(manager.lastRefusal, undefined, "a verified answering Manager supersedes its previous refusal");
+          assert.ok(!existsSync(join(home, "daemon", spaceSegment(ON), "manager-refusal.json")));
+          const refreshed = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 25_000));
+          assert.equal(refreshed.state, "answering");
+          assert.equal(refreshed.lastRefusal, undefined);
+          const repeated = resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 25_000));
+          assert.equal(repeated.state, "answering");
+          assert.equal(repeated.lastRefusal, undefined);
+          const human = await plainCommand("status", "--space", ON);
+          assert.equal(human.code, 0);
+          assert.ok(!human.out.includes("Last refusal:"), "human status omits the superseded refusal");
+          return;
+        }
         if (retiredAppRuntime) {
           assert(manager.connectors?.some((connector: { agent: string; state: string }) => connector.agent === "daemon-smoke" && connector.state === "available"));
           const observeCli = async (...args: string[]) => {

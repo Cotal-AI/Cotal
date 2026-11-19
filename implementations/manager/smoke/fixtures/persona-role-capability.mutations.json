@@ -4,7 +4,7 @@
   "mutations": [
     {
       "name": "G1 the role/capability guard is dropped: a wire-defined persona spawned with role manager is accepted again and joins as a manager that silently cannot spawn (issue #966 verbatim)",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "    if (role === \"manager\" && !capabilities?.includes(\"spawn\"))\n      return {\n        ok: false,\n        error:\n          `persona \"${ref}\" would join with role \"manager\" but no spawn capability: it presents as a manager ` +\n          `while being unable to seat workers, and it would discover that only on first use. ` +\n          `An operator adds \\`capabilities: [spawn]\\` to ${configPath}, or the persona's owner redefines it ` +\n          `with \\`capabilities: [spawn]\\` (cotal_persona) if the owner holds spawn.`,\n      };",
       "replace": "",
       "expectRed": "the spawn is refused (the tool result is an error)",
@@ -12,7 +12,7 @@
     },
     {
       "name": "G2 the guard stops keying on the EFFECTIVE role and reads the file's instead: the spawn-time role override — the exact call in the issue, cotal_spawn(name, role: \"manager\") — slips past it and the seat joins mislabelled again",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "    if (role === \"manager\" && !capabilities?.includes(\"spawn\"))",
       "replace": "    if (def?.role === \"manager\" && !capabilities?.includes(\"spawn\"))",
       "expectRed": "the spawn is refused (the tool result is an error)",
@@ -20,7 +20,7 @@
     },
     {
       "name": "G3 the refusal loses its remediation: an operator peer reading the error is told the spawn failed but not that capabilities: [spawn] on the persona file is the fix",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "          `An operator adds \\`capabilities: [spawn]\\` to ${configPath}, or the persona's owner redefines it ` +",
       "replace": "          `An operator can fix this, or the persona's owner redefines it ` +",
       "expectRed": "the refusal tells an operator the file remedy (capabilities: [spawn])",
@@ -28,7 +28,7 @@
     },
     {
       "name": "G4 the refusal drops the owner's condition: it tells the persona's owner to add spawn without saying the owner must hold it, though define-persona refuses a capability its definer does not hold",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "          `with \\`capabilities: [spawn]\\` (cotal_persona) if the owner holds spawn.`,",
       "replace": "          `with \\`capabilities: [spawn]\\` (cotal_persona).`,",
       "expectRed": "the refusal tells the persona's owner it can add the grant only if it holds spawn",

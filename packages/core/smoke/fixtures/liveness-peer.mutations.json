@@ -29,7 +29,7 @@
     },
     {
       "name": "a responder whose readState throws answers bound instead of unknown",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "        let responder: ResponderState;\n        try {\n          responder = await readState();\n        } catch {\n          responder = \"unknown\";\n        }",
       "replace": "        let responder: ResponderState;\n        try {\n          responder = await readState();\n        } catch {\n          responder = \"bound\";\n        }",
       "expectRed": "CELL C1",
@@ -53,7 +53,7 @@
     },
     {
       "name": "the responder answers any reply target, not only one under the sender's own subtree",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "        if (!m.reply || !m.reply.startsWith(`${m.subject}.reply.`)) {\n          this.emitRecoverable(new Error(`rejected liveness probe on ${m.subject}: reply target \"${m.reply ?? \"(none)\"}\" is not under the sender's own reply subtree`));\n          continue;\n        }",
       "replace": "        if (!m.reply) continue;",
       "expectRed": "CELL D4b",
@@ -61,7 +61,7 @@
     },
     {
       "name": "the responder reports a plane it was not asked about, so an answer about delivery can arrive for a question about the manager",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "        const answer: LivenessAnswer = { plane, responder, instance };",
       "replace": "        const answer = { plane: plane === \"manager\" ? \"delivery\" : \"manager\", responder, instance } as LivenessAnswer;",
       "expectRed": "CELL B1",
@@ -101,7 +101,7 @@
     },
     {
       "name": "a plane outside the closed set is answered instead of refused",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "    if (!isLivenessPlane(plane))",
       "replace": "    if (false && !isLivenessPlane(plane))",
       "expectRed": "CELL D9",
@@ -109,15 +109,15 @@
     },
     {
       "name": "the answer carries the lease holder alongside presence, leaking identity to a non-owner peer",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "        const answer: LivenessAnswer = { plane, responder, instance };",
-      "replace": "        const answer = { plane, responder, instance, holder: this.card.id } as LivenessAnswer;",
+      "replace": "        const answer = { plane, responder, instance, holder: this.actor } as LivenessAnswer;",
       "expectRed": "CELL D8",
       "cell": "CELL D8: the wire answer carries EXACTLY {plane, responder, instance} - no holder, pid, root, lease instance id or roster"
     },
     {
       "name": "the rejection notice goes back on the `error` channel, which Node rethrows with no listener attached, so a peer's probe ends the responder process",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "          this.emitRecoverable(new Error(`rejected liveness probe on ${m.subject}: reply target \"${m.reply ?? \"(none)\"}\" is not under the sender's own reply subtree`));",
       "replace": "          this.emit(\"error\", new Error(`rejected liveness probe on ${m.subject}: reply target \"${m.reply ?? \"(none)\"}\" is not under the sender's own reply subtree`));",
       "expectRed": "CELL F1",
@@ -125,7 +125,7 @@
     },
     {
       "name": "the responder mints its token per REPLY rather than per bind, so one responder looks like many and two cannot be told apart",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "        const answer: LivenessAnswer = { plane, responder, instance };",
       "replace": "        const answer: LivenessAnswer = { plane, responder, instance: randomUUID() };",
       "expectRed": "CELL G5",
@@ -133,7 +133,7 @@
     },
     {
       "name": "the answer names no responder at all, so two disagreeing instances are indistinguishable from one that changed state",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "        const answer: LivenessAnswer = { plane, responder, instance };",
       "replace": "        const answer: LivenessAnswer = { plane, responder };",
       "expectRed": "CELL G1",

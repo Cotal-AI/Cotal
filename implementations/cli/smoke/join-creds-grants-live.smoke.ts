@@ -136,14 +136,23 @@ try {
     }
   }
   const unprovisioned = join(dir, "unprovisioned.creds");
-  const mintOnly = cli("auth", "mint", "unprovisioned", "--space", space, "--allow-subscribe", "general", "--allow-publish", "general", "--out", unprovisioned);
+  const mintOnly = cli("auth", "mint", "unprovisioned", "--space", space, "--allow-subscribe", "general,review.>", "--allow-publish", "general", "--out", unprovisioned);
   check("mint without provisioning succeeds", await mintOnly.exited === 0, mintOnly.output());
   const uid = /^\s*Lifecycle:\s+(\S+)/m.exec(mintOnly.output())?.[1];
   assert.ok(uid, "mint did not report its lifecycle UID");
-  const missing = cli("join", "--space", space, "--creds", unprovisioned, "--lifecycle-uid", uid, "--name", "unprovisioned");
+  const missing = cli("join", "--space", space, "--creds", unprovisioned, "--lifecycle-uid", uid, "--name", "unprovisioned", "--channel", "review.code");
   const missingCode = await missing.exited;
   check("unprovisioned join names lifecycle and provisioning remedy", missingCode === 2 && /TARGET_NOT_FOUND/.test(missing.output()) && missing.output().includes(uid) && /auth mint.*--provision/.test(missing.output()), missing.output());
   check("unprovisioned join hides raw durable error", !/dm-durable-missing|DmDurableMissingError/.test(missing.output()), missing.output());
+  const command = /`cotal auth mint (<name> --provision [^`]+)`/.exec(missing.output())?.[1];
+  assert.ok(command?.includes("--allow-subscribe review.code"), missing.output());
+  const replacement = join(dir, "replacement.creds");
+  const repair = cli("auth", "mint", ...command!.split(" ").map((arg) => arg === "<name>" ? "replacement" : arg === "<file>" ? replacement : arg));
+  check("the exact missing-inbox remedy mints a replacement for the chosen channel", await repair.exited === 0, repair.output());
+  const repairedUid = /^\s*Lifecycle:\s+(\S+)/m.exec(repair.output())?.[1];
+  assert.ok(repairedUid, repair.output());
+  await joins("replacement", replacement, repairedUid, "review.code");
+  check("the remedy explains how to preserve additional grants", missing.output().includes("replace `--allow-subscribe review.code` with `--identity <original-file>`"), missing.output());
 
   function terminal(name: string, file: string, uid: string) {
     const terminalEnv = { ...env };
