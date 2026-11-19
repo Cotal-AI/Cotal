@@ -73,7 +73,8 @@ A destination inside the preserved store refuses `USAGE_INVALID` (exit 1). So do
 inside a path `clean all` removes, such as `.cotal/auth` or the space's `.cotal/space.<hex>`
 folder, because that cleanup would remove the backup with them. One in a
 folder this account cannot write refuses `PERMISSION_DENIED` (exit 2) and names that folder.
-The `chmod u+w` remedy quotes the folder path for a POSIX shell when needed.
+The `chmod u+w` remedy quotes the folder path for a POSIX shell when needed. If terminal escaping
+would change the path in the command, the remedy names the options without printing a command.
 A `--store-dir` that is not the cut's preserved store, such as an empty folder, refuses `CONFLICT`
 (exit 2) and names both stores. A process that listens at the cut's recorded
 address refuses `CONFLICT` (exit 2), as `backup restore` and a resuming `up` refuse it, and its Next

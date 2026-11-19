@@ -7,6 +7,7 @@ import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
   downloadStreamSnapshot,
+  oneLine,
   spaceBackupInventory,
   validateCanonicalBackupStreamConfig,
   validateBackupStreamState,
@@ -578,9 +579,12 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   const folder = dirname(destinationPath);
   try { accessSync(folder, constants.W_OK | constants.X_OK); }
   catch {
+    // The terminal escapes invisible characters, even inside code spans. Only offer a command
+    // when the displayed operand would still name the same folder.
+    const withChmod = oneLine(folder) === folder ? ` with ${codeSpan(`chmod u+w ${shellWord(folder)}`)}` : "";
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${folder}, so the backup cannot be created in it; nothing was written`, {
       target: { directory: destinationPath, folder },
-      remedy: `make that folder writable with ${codeSpan(`chmod u+w ${shellWord(folder)}`)}, or name a destination in a folder this account can write`,
+      remedy: `make that folder writable${withChmod}, or name a destination in a folder this account can write`,
     });
   }
   // Verify and restore read the artifact at its real path and refuse one that another local account

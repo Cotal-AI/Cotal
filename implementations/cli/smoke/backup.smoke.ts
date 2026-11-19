@@ -449,6 +449,17 @@ try {
       );
       assert.equal(existsSync(artifact), false, "the permission refusal wrote no artifact");
       assert.equal(readMaintenanceJournal(createRoot)?.state, "cut-intent", "and claimed nothing");
+      const hiddenFolder = join(root, "create family 👩\u200d💻");
+      const hiddenArtifact = join(hiddenFolder, "artifact");
+      mkdirSync(hiddenFolder, { mode: 0o500 });
+      await assert.rejects(
+        backup({ positionals: ["create", hiddenArtifact], values: {}, raw: [] }),
+        (error: unknown) => isCommandFailure(error) && error.code === "PERMISSION_DENIED"
+          && error.remedy === "make that folder writable, or name a destination in a folder this account can write",
+        "a create into a folder whose path must be escaped for display omits the chmod command",
+      );
+      assert.equal(existsSync(hiddenArtifact), false, "the permission refusal wrote no artifact");
+      assert.equal(readMaintenanceJournal(createRoot)?.state, "cut-intent", "and claimed nothing");
     }
     await assert.rejects(
       backup({ positionals: ["create", join(root, "create-artifact")], values: {}, raw: [] }),
