@@ -36,6 +36,9 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 check("built dist/host.js exists (buildLaunch target packaged)", existsSync(HOST_JS), HOST_JS);
+const codex = await import("@cotal-ai/connector-codex");
+check("package exports its setup provider", codex.codexSetupProvider.name === "codex");
+check("package keeps its setup helpers private", !("codexMarketplaceDir" in codex) && !("materializeCodexPlugin" in codex));
 
 // Load the real bundle under plain Node. No COTAL_CODEX_BIN → the codex PATH preflight throws a
 // clean, NAMED error (not a module-load crash and not a raw ENOENT). A missing createRequire

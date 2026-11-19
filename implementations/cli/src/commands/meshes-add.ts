@@ -137,8 +137,7 @@ export function checkDialPolicy(server: string, policy: DialPolicy): Check<JoinT
  *  flag, the nearest genuine project up-tree — and `findCotalRoot` returns its STARTING directory
  *  when it finds none, so the inferred case must prove the `.cotal` is really there. */
 export function checkRoot(flag: string | undefined, cwd: string): Check<string> {
-  if (flag !== undefined) {
-    if (!flag.trim()) return bad("✗ --root cannot be empty", "USAGE_INVALID");
+  if (flag) {
     const dir = resolve(flag);
     return isDir(dir)
       ? good(dir)
@@ -348,6 +347,12 @@ export function candidateTarget(space: string, server: string, root: string, mod
  *  nothing is recorded yet — the operator is being told what to fix in the command they just ran. */
 export function verifyFailureMessage(kind: PreflightFailure, space: string, server: string, root: string, pid?: number): string {
   switch (kind) {
+    case "auth-unsupported":
+      return `✗ the NATS server at ${server} does not enforce the recorded authentication - enable Cotal authentication or check the broker address`;
+    case "jetstream-unsupported":
+      return `✗ the NATS server at ${server} does not have JetStream enabled - enable JetStream or check the broker address`;
+    case "non-nats-listener":
+      return `✗ a non-NATS listener holds ${server} - stop it or choose another broker address`;
     case "unreachable":
       return `✗ no broker answered at ${server} - check the address and that the mesh is up on that machine`;
     case "creds-rejected":

@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { configFromEnv, cotalToolSpecs, type MeshAgent } from "@cotal-ai/connector-core";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { startBridgeServer } from "../src/bridge.js";
+import { bridgeKey, openBridge } from "./bridge-open.js";
 import { hermesToolDescriptors } from "../src/tool-schema.js";
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
@@ -98,7 +99,7 @@ const guarded = new Proxy(agent as unknown as MeshAgent, {
 const dir = mkdtempSync(join(tmpdir(), "cotal-hermes-closed-"));
 const socketPath = join(dir, "bridge.sock");
 const TOKEN = "tool-input-closed-token";
-const bridge = startBridgeServer(guarded, config, socketPath, TOKEN);
+const bridge = startBridgeServer(guarded, config, socketPath, bridgeKey(socketPath, TOKEN));
 
 const IDENTITY_EXTRA = { owner: "u_attacker", actor: "someone-else" };
 try {
@@ -129,7 +130,7 @@ try {
   };
 
   // The first frame must authenticate before any tool frame is honored.
-  sock.write(`${JSON.stringify({ t: "subscribe", token: TOKEN })}\n`);
+  await openBridge(sock, TOKEN);
   await new Promise((res) => setTimeout(res, 50));
 
   const result = await callTool("probe", TOOL, { ...IDENTITY_EXTRA });

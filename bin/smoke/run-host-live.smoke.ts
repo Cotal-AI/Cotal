@@ -34,7 +34,7 @@ const {
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
   issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel, LEASE_TTL_MS,
   instanceOnlyManagerCapabilities, runCallerCapabilities, createRunAdmission, admissionBucket,
-  activateRun, createRunSpec, recordRunProgram, readRunRecord,
+  activateRun, createRunSpec, recordRunProgram, readRunRecord, startTimerWriter,
 } = await import("../../packages/core/dist/index.js");
 const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
@@ -176,6 +176,24 @@ try {
     const wheres = details.map((d) => (d as { where?: { file?: unknown; line?: unknown; frame?: unknown } }).where);
     c("each problem names its file and line and carries no rendered source frame (the caller holds the source)",
       wheres.every((w) => typeof w?.file === "string" && typeof w.line === "number" && !("frame" in (w as object))), wheres);
+    const syntaxFile = "syntax.cotal.js";
+    writeFileSync(join(wsA, syntaxFile), "const answer = 42\nconst broken =\n  )\n");
+    const startSyntax = (mode: "--json" | "--plain") => execFile(process.execPath, [resolve("bin/dist/cotal.js"), "run", "start", "--file", syntaxFile, mode], {
+      cwd: wsA, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, timeout: 30_000,
+    }).then(({ stdout, stderr }) => ({ code: 0, stdout, stderr }), (error: { code: number; stdout: string; stderr: string }) => error);
+    const syntaxJson = await startSyntax("--json");
+    const syntax = (() => { try { return JSON.parse(syntaxJson.stdout); } catch { return undefined; } })();
+    const problem = syntax?.error?.cause?.detail?.[0];
+    c("hosted start JSON carries the syntax diagnostic and writes nothing to stderr",
+      syntaxJson.code === 1 && syntaxJson.stderr === "" && syntax?.outcome === "refused" && syntax.error?.code === "SCHEMA_INVALID"
+        && syntax.error.cause?.code === "bad-request" && syntax.error.cause.detail?.length === 1
+        && problem?.kind === LANG_PROBLEM_DETAIL_KIND && problem.code === "L1008" && problem.title === "Invalid syntax or newline hazard"
+        && problem.where?.file === syntaxFile && problem.where.line === 3 && problem.where.column === 3
+        && problem.cause?.includes("Unexpected token") && problem.fix === "Fix the syntax at the marked position.", syntaxJson);
+    const syntaxPlain = await startSyntax("--plain");
+    c("hosted start still prints the language problem in plain mode", syntaxPlain.code === 1 && syntaxPlain.stdout === ""
+      && syntaxPlain.stderr.includes("L1008 Invalid syntax or newline hazard (syntax.cotal.js:3:3)")
+      && syntaxPlain.stderr.includes("fix: Fix the syntax at the marked position."), syntaxPlain);
     const ps = await call("run-ps");
     c("nothing was recorded for it", ps.ok === true && (ps.data as RunListRowT[]).length === 0, ps.data);
   }
@@ -478,8 +496,13 @@ try {
     c("the checkpoint program starts", r.ok === true && cpId !== "", r);
     const parked = await until(async () => { const v = await status(cpId); return pending(v, "Ship it?") ? v : undefined; }, 15_000);
     c("run-status shows the open pause and what it asks", pending(parked, "Ship it?")?.step === "/checkpoint:approve#0", parked?.journal);
+    const shown = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), "run", "show", cpId, "--space", spaceA],
+      { cwd: wsA, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" } });
+    c("run show lists the checkpoint under Needs an answer without a resume",
+      /Needs an answer[\s\S]*\/checkpoint:approve#0 +Ship it\?/.test(shown.stdout), shown.stdout);
     const busy = await call("run-resume", { runId: cpId });
-    c("run-resume of a run this manager is driving is a conflict", busy.ok === false && busy.error?.code === "conflict", busy.error);
+    c("run-resume of a run this manager is driving is a conflict",
+      busy.ok === false && busy.error?.code === "conflict" && busy.error.message === `run ${cpId} is being driven by this manager already`, busy.error);
     const wrong = await call("run-answer", { runId: cpId, stepKey: "/checkpoint:nope#0" });
     c("run-answer at a key with no open pause is not-found", wrong.ok === false && wrong.error?.code === "not-found", wrong.error);
     const named = await call("run-answer", { runId: cpId, stepKey: "/checkpoint:approve#0", value: "yes", by: "someone-else" }).then((r) => r, (e: unknown) => ({ ok: false as const, error: { code: (e as { code?: string }).code, message: String((e as Error).message) } }));
@@ -930,6 +953,59 @@ try {
   c("RUN_LAUNCH_DEADLINE_MS > RUN_ACTIVATION_WAIT_MS, so the manager's own \"still launching\" refusal is what a slow activation reads as",
     RUN_LAUNCH_DEADLINE_MS > RUN_ACTIVATION_WAIT_MS, { RUN_LAUNCH_DEADLINE_MS, RUN_ACTIVATION_WAIT_MS });
 
+  console.log("A9. the same manager resumes a hosted run after a broker outage");
+  {
+    const file = join(wsA, "outage.cotal.js");
+    writeFileSync(file, 'await sleep("8s", { name: "before" }); await sleep("1s", { name: "after" });');
+    const cli = async (...args: string[]) => (await execFile(process.execPath,
+      [resolve("bin/dist/cotal.js"), "run", ...args, "--space", spaceA, "--server", brokerA.servers, "--json"],
+      { cwd: wsA, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, timeout: 30_000 })).stdout;
+    const creds = await mintCreds(auth, newIdentity(), "delivery");
+    const timerConnection = () => connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: -1 });
+    let timerNc = await timerConnection();
+    try {
+      const timer = await startTimerWriter(timerNc, spaceA);
+      void timer.done.catch(() => {});
+      const start = JSON.parse(await cli("start", "--file", file));
+      const runId: string = start.result.result.runId;
+      const show = async (): Promise<RunStatusViewT> => JSON.parse(await cli("show", runId)).result.view;
+      const parked = await until(async () => {
+        const view = await show();
+        return pendingStep(view, "/sleep:before#0") !== undefined ? view : undefined;
+      }, 15_000);
+      if (!parked) throw new Error("the outage run never parked at its first sleep");
+      const errors: string[] = [];
+      const realError = console.error;
+      console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); realError(...args); };
+      try {
+        await brokerA.interrupt(async () => {
+          const interrupted = await until(async () => errors.find(line => line.includes(runId)
+            && line.includes('"released" status write did not land')), 80_000);
+          if (!interrupted) throw new Error("the outage did not interrupt a journal append");
+        });
+      } finally {
+        console.error = realError;
+        await timerNc.close();
+        await timer.stop();
+      }
+      timerNc = await timerConnection();
+      const restarted = await startTimerWriter(timerNc, spaceA);
+      void restarted.done.catch(() => {});
+      const completed = await until(async () => {
+        const view = await show().catch(() => undefined);
+        return view?.status?.state === "completed" ? view : undefined;
+      }, 45_000);
+      const activations = completed?.journal.flatMap(row => row.kind === "activation" ? [row.epoch] : []);
+      c("the original manager replays and activates exactly one successor without a resume command",
+        JSON.stringify(activations) === "[1,2]" && completed?.status?.holder.split(".")[0] === parked.status?.holder.split(".")[0], activations);
+      c("the recovered run completes both recorded sleeps", ["before", "after"].every(name =>
+        completed?.journal.some(row => row.kind === "step" && row.step === `/sleep:${name}#0` && row.outcome === "ok")), completed?.journal);
+      await restarted.stop();
+    } finally {
+      await timerNc.close();
+    }
+  }
+
   await nc.drain().catch(() => undefined);
   nc = undefined;
   await mgrB.stop({ withAgents: true });
@@ -1046,7 +1122,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 99;
+const EXPECTED_CELLS = 104;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

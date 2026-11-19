@@ -1,5 +1,5 @@
 import { assertLifecycleToken, type ControlReply, type FlagSpec } from "@cotal-ai/core";
-import { c, CommandFailure, staleStoreHint, stderrLine } from "@cotal-ai/workspace";
+import { c, CommandFailure, recordOperationSpace, staleStoreHint, stderrLine } from "@cotal-ai/workspace";
 import type { ControlClient } from "@cotal-ai/workspace/control";
 import { compareSemver } from "../seed/reconcile.js";
 import { cliVersion } from "./version.js";
@@ -72,6 +72,21 @@ export function onInstanceId(on: string | undefined, verb: string): string | und
     throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did): \`${verb} --on <instance>\``, { selfContained: true });
   }
   return value;
+}
+
+export function refuseControlCreds(creds: unknown, space?: unknown): void {
+  if (creds === undefined) return;
+  const named = typeof space === "string" && space.trim() ? space : undefined;
+  if (named !== undefined) recordOperationSpace(named);
+  throw new CommandFailure(
+    "refused",
+    "UNSUPPORTED",
+    "this control call has no endpoint-caller triple (owner, actor, lifecycle uid), and a raw --creds invocation cannot mint one; minting the file again changes nothing, and nothing was sent",
+    {
+      ...(named !== undefined ? { target: { space: named } } : {}),
+      remedy: "run the command again without --creds: in the mesh's project folder, or with --space naming its registry entry, the CLI mints the one-shot caller itself",
+    },
+  );
 }
 
 export function failIfNotOk(reply: ControlReply): void {

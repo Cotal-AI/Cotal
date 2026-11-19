@@ -16,7 +16,7 @@
   "mutations": [
     {
       "name": "the provisioner loses its chat stream update grant",
-      "file": "packages/core/src/provision-permissions.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
       "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, INBOX, DLV, DM]\n",
       "expectRed": "the provisioner may set the chat stream's limit",
@@ -25,7 +25,7 @@
     },
     {
       "name": "the provisioner loses its INBOX update grant",
-      "file": "packages/core/src/provision-permissions.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
       "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, DLV, DM]\n",
       "expectRed": "the provisioner may set the inbox stream's limit",
@@ -33,7 +33,7 @@
     },
     {
       "name": "the provisioner loses its DM update grant",
-      "file": "packages/core/src/provision-permissions.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
       "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV]\n",
       "expectRed": "the provisioner may set the dm stream's limit",
@@ -41,7 +41,7 @@
     },
     {
       "name": "the grant is widened to the TASK stream",
-      "file": "packages/core/src/provision-permissions.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM]\n",
       "replace": "  const streamReconcile = [...ttlStreams, `KV_${membershipBucket(space)}`, OBJ, CHAT, INBOX, DLV, DM, TASK]\n",
       "expectRed": "the provisioner may not update TASK_",
@@ -169,7 +169,7 @@
     },
     {
       "name": "catch-up judges the per-sender count again",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-durable-backstop.ts",
       "find": "    await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);\n",
       "replace": "    await this.catchupCopy(owner, lifecycleUid, channel, joinCursor, fence, generation);\n    { const info = await this.jsm!.streams.info(chatStream(this.space), { subjects_filter: chatSubject(this.space, \"*\", \"*\", channel) }); if (Object.values(info.state.subjects ?? {}).some((n) => n >= info.config.max_msgs_per_subject)) { await tombstoneMember(kv, channel, owner, lifecycleUid, fence, this.card.id, generation); return { durable: false, reason: \"activation catch-up window partially evicted by retention\", generation }; } }\n",
       "expectRed": "a join whose channel is exactly at the per-sender count, behind another channel's post, activates with both posts",

@@ -31,7 +31,7 @@
     },
     {
       "name": "the dedupe id carries the addressing row's generation again",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-durable-backstop.ts",
       "find": "    return entry.msg.id === \"\" ? {} : { msgID: `${entry.msg.id}:${keySuffix}` };",
       "replace": "    return entry.msg.id === \"\" ? {} : { msgID: `${entry.msg.id}:${keySuffix}:${entry.generation}` };",
       "expectRed": "review.a's own row (generation 2) and review.> (generation 1) together store ONE copy",
@@ -94,7 +94,7 @@
     },
     {
       "name": "an agent's join asks for a family row only when the space default is durable",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "    else if (family || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
       "replace": "    else if (effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
       "expectRed": "with a live default, joining team.x.> still asks for and gets its family row",
@@ -103,7 +103,7 @@
     },
     {
       "name": "an agent's leave closes a family row only when the space default is durable",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "    if (this.authed && (isChannelFamily(channel) || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\")) {",
       "replace": "    if (this.authed && effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
       "expectRed": "leaving team.x.> with a live default closes its family row",
@@ -112,16 +112,16 @@
     },
     {
       "name": "boot joins a family only when the space default is durable",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-boot-memberships.ts",
       "find": "      if (!isChannelFamily(channel)) {\n        if (!isConcreteChannel(channel)) continue;",
-      "replace": "      if (true) {\n        if (!isConcreteChannel(channel)) continue;",
+      "replace": "      void isChannelFamily;\n      if (true) {\n        if (!isConcreteChannel(channel)) continue;",
       "expectRed": "an agent booted on team.> with a live default holds its family row",
       "cell": "an agent booted on team.> with a live default holds its family row",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
       "name": "a * pattern join gives no reason it stays live only",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "    if (!family && !isConcreteChannel(channel))\n      reason = \"a pattern with * or the root > has no stored copies; follow a concrete channel or a family such as review.>\";\n    else if",
       "replace": "    if (false)\n      reason = \"\";\n    else if",
       "expectRed": "joining team.* says a * pattern stays live only",

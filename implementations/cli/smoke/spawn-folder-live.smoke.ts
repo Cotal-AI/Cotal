@@ -63,7 +63,7 @@ process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = configDir;
 process.chdir(root);
 const { askManager } = await import("@cotal-ai/workspace/control");
-const { resolveControlTarget, findPreparedSpace } = await import("@cotal-ai/workspace");
+const { resolveControlTarget, findMesh, findPreparedSpace } = await import("@cotal-ai/workspace");
 const { cliControl } = await import("../src/lib/control.js");
 const { askManagerFolder, managerSelection } = await import("../src/lib/manager-choice.js");
 const { launchServedHere } = await import("../src/commands/spawn.js");
@@ -178,20 +178,6 @@ try {
       && badDotEnv.error?.code === "USAGE_INVALID" && (badDotEnv.error.message ?? "").includes('unsafe name "bad.dot"'),
       { status: badDotRaw.status, stdout: badDotRaw.stdout, stderr: badDotRaw.stderr });
 
-    const emptyResumeRaw = cli("spawn", "default", "-d", "--json", "--resume=");
-    const emptyResumeEnv = JSON.parse(emptyResumeRaw.stdout || "null") as { outcome?: string; error?: { code?: string; message?: string } } | null;
-    check("#7617: spawn -d --json --resume=\"\" writes a USAGE_INVALID JSON envelope on stdout and nothing on stderr",
-      emptyResumeRaw.status === 1 && emptyResumeRaw.stderr === "" && emptyResumeEnv?.outcome === "refused"
-      && emptyResumeEnv.error?.code === "USAGE_INVALID" && emptyResumeEnv.error.message === "--resume cannot be empty",
-      { status: emptyResumeRaw.status, stdout: emptyResumeRaw.stdout, stderr: emptyResumeRaw.stderr });
-
-    const bothEventsRaw = cli("spawn", "default", "-d", "--json", "--events", "--no-events");
-    const bothEventsEnv = JSON.parse(bothEventsRaw.stdout || "null") as { outcome?: string; error?: { code?: string } } | null;
-    check("#7617: spawn -d --json --events --no-events writes a USAGE_INVALID JSON envelope on stdout",
-      bothEventsRaw.status === 1 && bothEventsRaw.stderr === "" && bothEventsEnv?.outcome === "refused"
-      && bothEventsEnv.error?.code === "USAGE_INVALID",
-      { status: bothEventsRaw.status, stdout: bothEventsRaw.stdout, stderr: bothEventsRaw.stderr });
-
     const plainName = cli("spawn", "default", "-d", "--plain", "--name=bad.dot");
     check("#7617: plain pre-send refusals include the typed code without color or an ad hoc error mark",
       plainName.status === 1 && plainName.stdout === "" && plainName.stderr.includes("USAGE_INVALID")
@@ -233,17 +219,16 @@ try {
       check(`#7566: spawn ${flag} ${JSON.stringify(badChan)} --dry-run refuses with exit 1 instead of printing preview`,
         dry.status === 1 && !dry.stdout.includes("launch preview") && dry.stderr.includes(`${flag}: invalid channel`),
         { status: dry.status, stdout: dry.stdout, stderr: dry.stderr.slice(0, 300) });
+      const detached = cli("spawn", "default", "-d", "--json", flag, badChan);
+      const envelope = JSON.parse(detached.stdout || "null");
+      check(`#7566: detached spawn refuses ${flag} before dispatch`,
+        detached.status === 1 && detached.stderr === "" && envelope?.outcome === "refused" && envelope.target === null
+        && envelope.error?.code === "USAGE_INVALID", { status: detached.status, stdout: detached.stdout, stderr: detached.stderr });
     }
     const mismatchedAcl = cli("spawn", "--subscribe", "secret", "--allow-subscribe", "general", "--dry-run");
     check("#7566: spawn --subscribe outside --allow-subscribe refuses with exit 1 in argument validation",
-      mismatchedAcl.status === 1 && mismatchedAcl.stderr.includes("every --subscribe channel must be within --allow-subscribe"),
+      mismatchedAcl.status === 1 && mismatchedAcl.stderr.includes('subscribe "secret" is not within allowSubscribe'),
       { status: mismatchedAcl.status, stderr: mismatchedAcl.stderr.slice(0, 300) });
-    const detachedBadChan = cli("spawn", "default", "-d", "--json", "--subscribe", "bad chan");
-    const detachedBadEnv = JSON.parse(detachedBadChan.stdout || "null") as { outcome?: string; error?: { code?: string } } | null;
-    check("#7566: spawn -d --subscribe 'bad chan' refuses locally with USAGE_INVALID exit 1 before contacting manager",
-      detachedBadChan.status === 1 && !detachedBadChan.stderr.includes("Managed launch")
-      && detachedBadEnv?.outcome === "refused" && detachedBadEnv.error?.code === "USAGE_INVALID",
-      { status: detachedBadChan.status, stdout: detachedBadChan.stdout, stderr: detachedBadChan.stderr });
 
     for (const overrides of [
       ["--subscribe", "review.*,general", "--allow-subscribe", "review.>,general", "--allow-publish", "general"],
@@ -263,8 +248,8 @@ try {
         { status: createRes.status, stderr: createRes.stderr.slice(0, 200) });
 
       const addRes = cli("space", "add", "emptyadd7562", "--server", SERVER, "--root", blank, "--force");
-      check(`#7562: space add --root ${JSON.stringify(blank)} refuses with exit 1`,
-        addRes.status === 1 && addRes.stderr.includes("--root cannot be empty"),
+      check(`#7562: space add --root ${JSON.stringify(blank)} refuses with exit 1 without registering a space`,
+        addRes.status === 1 && addRes.stderr.includes("--root cannot be empty") && findMesh("emptyadd7562") === undefined,
         { status: addRes.status, stderr: addRes.stderr.slice(0, 200) });
 
       const svcRes = cli("service", "add", "emptysvc7562", "--exec", "echo hi", "--cwd", blank, "--space", SPACE);

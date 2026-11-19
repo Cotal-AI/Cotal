@@ -183,13 +183,13 @@ export function staleSystemCreds(root: string, sysPub: string, space: string, op
     // refusal propagates, loudly, rather than being swallowed into a healthy-looking answer.
     const path = migrateLegacyCotalMaterial(root, space, file, options);
     if (!existsSync(path)) continue;
-    let iss: string | undefined;
+    let content: Buffer;
     try {
       if (options.readOnly) {
         const bytes = readLocalRecordSource(path, 1024 * 1024, true);
         if (!bytes) continue;
-        iss = credsClaims(new TextDecoder("utf-8", { fatal: true }).decode(bytes)).iss;
-      } else iss = credsClaims(readFileSync(path, "utf8")).iss;
+        content = bytes;
+      } else content = readFileSync(path);
     } catch (error) {
       if (options.readOnly) {
         if (exposedFile(path)) continue;
@@ -198,6 +198,9 @@ export function staleSystemCreds(root: string, sysPub: string, space: string, op
       stale.push({ file }); // unreadable: cannot be shown to match, so it is not assumed to
       continue;
     }
+    let iss: string | undefined;
+    try { iss = credsClaims(new TextDecoder("utf-8", { fatal: true }).decode(content)).iss; }
+    catch { stale.push({ file }); continue; }
     if (iss !== sysPub) stale.push({ file, iss });
   }
   return stale;

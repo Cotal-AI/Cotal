@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { spawnBroker } from "./broker-spawn.js";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, unlinkSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, renameSync, rmSync, rmdirSync, unlinkSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { CommandFailure, assertRecordIdentity, shellPath, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { CommandFailure, assertRecordIdentity, shellPath, canonicalRoot, commandIsCotalSupervisor, homeCotalDir, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { openPrivateAppend } from "@cotal-ai/core";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
@@ -308,6 +308,69 @@ export function removeServiceLogs(space: string, ids: readonly string[]): string
   return removed;
 }
 
+/** Remove a launch's private sidecar files and broker ports directory once a relaunch replaces it or
+ *  the instance itself is retired. Preserves `exec-endpoint` registration receipts while the instance
+ *  stays saved, since its next launch reads them to verify earlier registrations were removed. */
+export function removeInstanceLaunchArtifacts(space: string, instanceId: string, launchRequestId: string, keepEndpointReceipts = false): void {
+  const dir = serviceInstanceStore(space).directory();
+  if (!dir) return;
+  const encodedPrefix = `.${spaceKey(instanceId)}.${spaceKey(launchRequestId)}.`;
+  const rawPrefix = `.${instanceId}.${launchRequestId}.`;
+  const brokerLaunch = `.broker-launch-${launchRequestId}.json`;
+  const brokerPorts = `.broker-ports-${launchRequestId}`;
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    const name = entry.name;
+    if (name === brokerPorts) {
+      if (entry.isDirectory() && !entry.isSymbolicLink()) rmSync(join(dir, name), { recursive: true, force: true });
+      continue;
+    }
+    if (!entry.isFile() || entry.isSymbolicLink()) continue;
+    if (keepEndpointReceipts && name.startsWith(rawPrefix) && name.includes(".endpoint.")) continue;
+    if (name === brokerLaunch || name.startsWith(encodedPrefix) || name.startsWith(rawPrefix)) {
+      try { unlinkSync(join(dir, name)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+  }
+}
+
+/** Remove every launch sidecar of a retired instance, including any launch request older than the
+ *  one its final record named, while leaving instance-wide stores such as `.feedback.jsonl` intact. */
+export function removeInstanceSidecars(space: string, instanceId: string, launchRequestId?: string): void {
+  if (launchRequestId) removeInstanceLaunchArtifacts(space, instanceId, launchRequestId);
+  const dir = serviceInstanceStore(space).directory();
+  if (!dir) return;
+  const encodedInstance = `.${spaceKey(instanceId)}.`;
+  const rawInstance = `.${instanceId}.`;
+  const hexUuid = "[0-9a-f]{72}";
+  const rawUuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+  const encodedLaunch = new RegExp(`^\\.${spaceKey(instanceId)}\\.${hexUuid}\\.`);
+  const rawLaunch = new RegExp(`^\\.${instanceId.replaceAll("-", "\\-")}\\.${rawUuid}\\.`);
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    const name = entry.name;
+    if (!entry.isFile() || entry.isSymbolicLink()) continue;
+    if (name.startsWith(encodedInstance) && encodedLaunch.test(name) || name.startsWith(rawInstance) && rawLaunch.test(name)) {
+      try { unlinkSync(join(dir, name)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+  }
+}
+
+/** Remove empty service subdirectories and `<home>/.cotal/services/<spaceKey>` once no saved
+ *  definition, instance or attempt remains for `space`. Non-empty directories stay as they are. */
+export function pruneEmptyServiceSpace(space: string): void {
+  const spaceDir = join(homeCotalDir(), "services", spaceKey(space));
+  let entries;
+  try { entries = readdirSync(spaceDir, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      try { rmdirSync(join(spaceDir, entry.name)); } catch { /* non-empty family stays */ }
+    }
+  }
+  try { rmdirSync(spaceDir); } catch { /* saved services or attempts remain */ }
+}
+
 /** Both absent, or the same attempt and inventory digest. */
 function samePreserved(a: ServiceAdapterPreservedStop | undefined, b: ServiceAdapterPreservedStop | undefined): boolean {
   return a === undefined ? b === undefined : b !== undefined && a.attemptId === b.attemptId && a.inventorySha256 === b.inventorySha256;
@@ -575,8 +638,9 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     const instance: ServiceInstance = { schemaVersion: 1, instanceId: id, definition: definition.name, definitionRevision: definition.record.revision, space: value.space, host: processServiceHost(), requestId: launchRequestId, launchRequestId, state: "starting", launcher, readiness: "not-checked", supervisor: "none", ...(options.attempt ? { attempt: { attemptId: options.attempt.attemptId } } : {}), ...(declaredAdapter ? { adapter: declaredAdapter.pin, ...(declaredAdapter.declaration.stop === "native" ? { nativeStopRequired: true as const } : declaredAdapter.declaration.stop === "kernel-exit" ? { kernelStopRequired: true as const } : {}) } : {}), foreground: options.foreground === true, createdAt: selected?.record.value.createdAt ?? now, updatedAt: now };
     const store = serviceInstanceStore(value.space);
     store.commit(id, selected, instance);
-    // The replaced incarnation's custodian is gone, so its capability opens nothing.
+    // The replaced incarnation's custodian and launch sidecars are gone once the new launch request is committed.
     removeCustodyCapability(value.space, selected?.record.value.custody);
+    if (selected) removeInstanceLaunchArtifacts(value.space, selected.name, selected.record.value.launchRequestId, true);
     let row = store.read(id)!;
     // Until the child's identity is recorded, an interrupt records this launch on its way out. On
     // Windows that is its custodian, which can still be asked for the job once it is recorded.
@@ -1042,6 +1106,8 @@ export function removeStoppedInstanceRecord(definition: ServiceDefinitionSnapsho
   try {
     const [row] = removableServiceInstances(space, definition.name, instanceId);
     serviceInstanceStore(space).commit(row!.name, row!, undefined);
+    removeCustodyCapability(space, row!.record.value.custody);
+    removeInstanceSidecars(space, row!.name, row!.record.value.launchRequestId);
   } finally { hold.release(); }
 }
 
@@ -1050,7 +1116,12 @@ export function removeStoppedInstanceRecord(definition: ServiceDefinitionSnapsho
 export function removeStoppedInstanceRecords(space: string, name: string): string[] {
   const rows = removableServiceInstances(space, name), removed: string[] = [];
   try {
-    for (const row of rows) { serviceInstanceStore(space).commit(row.name, row, undefined); removeCustodyCapability(space, row.record.value.custody); removed.push(row.name); }
+    for (const row of rows) {
+      serviceInstanceStore(space).commit(row.name, row, undefined);
+      removeCustodyCapability(space, row.record.value.custody);
+      removeInstanceSidecars(space, row.name, row.record.value.launchRequestId);
+      removed.push(row.name);
+    }
   } catch (error) {
     if (!removed.length) throw error;
     throw new CommandFailure("partial", "OPERATION_PARTIAL", "some stopped instance records were removed, but the definition was kept after another record changed", { target: { space, name }, changed: removed.map((instanceId) => ({ kind: "stopped-instance-record", instanceId })), remedy: "inspect the remaining records before another removal; no process was signalled and logs were retained" });

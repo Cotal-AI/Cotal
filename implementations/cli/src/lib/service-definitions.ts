@@ -88,7 +88,6 @@ export function importServiceDefinition(path: string, space: string): ServiceDef
  *  runs in, ready once its process runs. A bare program name is pinned to the file PATH finds now,
  *  as an imported definition's is, and a relative path to the absolute path it names in `cwd`. */
 export function execServiceDefinition(words: readonly string[], cwd: string, space: string): ServiceDefinitionInput {
-  if (!cwd.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--cwd cannot be empty");
   const [program, ...args] = words;
   const executable = bareName(program!) ? program! : resolve(cwd, program!);
   const value: ServiceDefinitionInput = { schemaVersion: 1, space, launch: { type: "process", executable, args, cwd }, readiness: { type: "process", timeoutMs: 10000 } };

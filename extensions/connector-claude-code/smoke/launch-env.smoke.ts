@@ -18,7 +18,7 @@
  *
  * Run: pnpm smoke:claude-launch-env
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeConnector, CLAUDE_PROVIDER_KEYS } from "../src/extension.js";
@@ -180,8 +180,8 @@ check(
 );
 
 // A managed seat has nobody at its terminal to answer a permission prompt, so the launch bypasses
-// prompts unless the operator's launch options name a permission flag themselves. The manager marks
-// a managed launch with its `cwd`; a foreground launch has none and keeps Claude's own mode.
+// prompts unless the operator's launch options name a permission flag themselves. A foreground
+// launch keeps Claude's own mode, even when it selects a working directory.
 const permissionModes = (args: string[]): string[] =>
   args.flatMap((a, i) => (a === "--permission-mode" ? [args[i + 1] ?? ""] : []));
 // A managed launch needs a declared cotal server: this project's .mcp.json names one, so the cells
@@ -195,6 +195,7 @@ const savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
 process.env.CLAUDE_CONFIG_DIR = emptyProfile;
 let refusal = "";
 try { claudeConnector.buildLaunch({ space: "smoke", name: "claude-7", events: false, cwd: bareCwd } as never); } catch (e) { refusal = (e as Error).message; }
+const foreground = claudeConnector.buildLaunch({ space: "smoke", name: "claude-6", events: false, cwd: bareCwd, foreground: true });
 if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
 check("a managed launch with no declared cotal server refuses and names the remedy", /server:cotal/.test(refusal) && /cotal setup/.test(refusal), refusal);
 const defaultArgs = claudeConnector.buildLaunch({ space: "smoke", name: "claude-3", events: false, cwd: managedCwd } as never).args;
@@ -203,11 +204,10 @@ check(
   JSON.stringify(permissionModes(defaultArgs)) === JSON.stringify(["bypassPermissions"]),
   permissionModes(defaultArgs),
 );
-const foregroundArgs = claudeConnector.buildLaunch({ space: "smoke", name: "claude-6", events: false } as never).args;
 check(
-  "a foreground launch with no permission option keeps Claude's own mode",
-  permissionModes(foregroundArgs).length === 0 && !foregroundArgs.includes("--dangerously-skip-permissions"),
-  foregroundArgs.filter((a) => a.includes("permission")),
+  "a foreground launch with an explicit cwd keeps Claude's own permissions and workspace trust prompts",
+  permissionModes(foreground.args).length === 0 && !foreground.args.includes("--dangerously-skip-permissions") && foreground.confirmBefore === undefined,
+  foreground.args.filter((a) => a.includes("permission")),
 );
 const promptedArgs = claudeConnector.buildLaunch({
   space: "smoke",
@@ -232,6 +232,41 @@ check(
   permissionModes(skippedArgs).length === 0 && skippedArgs.includes("--dangerously-skip-permissions"),
   skippedArgs.filter((a) => a.includes("permission")),
 );
+
+// A step after the mint that throws (here the carried transcript is gone when it is placed) leaves
+// none of the launch's artifacts behind: not the control socket's directory, not the launch material.
+// The stand-in `claude` only reports a version, so this runs where a shell script can.
+if (process.platform !== "win32") {
+  const work = mkdtempSync(join(managedRoot, "carried-"));
+  const claude = join(work, "claude");
+  writeFileSync(claude, "#!/bin/sh\necho '2.1.300 (Claude Code)'\n", { mode: 0o755 });
+  mkdirSync(join(work, "home"), { mode: 0o700 });
+  const token = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = "smoke-carried";
+  const before = new Set(readdirSync(tmpdir()));
+  let thrown = "";
+  try {
+    claudeConnector.buildLaunch({
+      space: "smoke",
+      name: "carried-gone",
+      events: false,
+      resolvedBinaries: { claude },
+      resume: "gone-session",
+      carried: { home: join(work, "home"), transcript: join(work, "missing.jsonl"), cwd: work },
+    } as never);
+  } catch (e) {
+    thrown = (e as Error).message;
+  }
+  if (token === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  else process.env.CLAUDE_CODE_OAUTH_TOKEN = token;
+  const left = readdirSync(tmpdir()).filter((n) => n.startsWith("cotal-") && !before.has(n));
+  check(
+    "a carried launch that fails to place its transcript leaves no control directory or launch material behind",
+    /ENOENT/.test(thrown) && left.length === 0,
+    { thrown, left },
+  );
+  for (const n of left) rmSync(join(tmpdir(), n), { recursive: true, force: true });
+}
 
 rmSync(managedRoot, { recursive: true, force: true });
 if (fail) {

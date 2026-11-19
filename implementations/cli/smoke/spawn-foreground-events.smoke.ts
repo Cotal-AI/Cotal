@@ -37,7 +37,7 @@
  * Run: pnpm smoke:spawn-foreground-events
  */
 import { spawn as spawnProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pickFreePort } from "../../manager/smoke/_free-port.js";
@@ -230,31 +230,24 @@ try {
     // this cell an edit that passed it only under `--events` would leave the suite green and move
     // both of those homes back to whatever directory the operator happened to be standing in.
     check("a default-armed foreground launch carries the mesh root", r.opts?.workspaceRoot === root, { got: r.opts?.workspaceRoot, expected: root });
-    check("a foreground launch without --cwd omits LaunchOpts.cwd", r.opts?.cwd === undefined, r.opts?.cwd);
+    check("a foreground launch without --cwd inherits the current directory", r.opts !== undefined && r.opts.cwd === undefined);
   }
 
-  // ── #7607: foreground --cwd validates before Direct application/provisioning and passes resolved cwd ──
   {
-    const missingDir = join(root, "missing-cwd-folder");
-    const regularFile = join(root, "not-a-folder.txt");
-    writeFileSync(regularFile, "x");
-    const validDir = join(root, "valid-cwd-folder");
-    mkdirSync(validDir, { recursive: true });
+    const work = join(root, "work");
+    const link = join(root, "work-link");
+    mkdirSync(work);
+    symlinkSync(work, link, "junction");
+    const r = await openRun(["--agent", "fg-probe-emitter", "--cwd", link]);
+    check("foreground --cwd passes the canonical directory and foreground mode to the connector",
+      r.opts?.cwd === realpathSync(work) && r.opts.foreground === true, r);
+  }
 
-    const onMissing = await openRun(["--agent", "fg-probe-emitter", "--cwd", missingDir]);
-    check("foreground --cwd on a missing folder refuses with exit 2 before Direct application or launch construction (#7607)",
-      onMissing.opts === undefined && onMissing.exited === 2 && !onMissing.stderr.includes("Direct application"),
-      onMissing);
-
-    const onFile = await openRun(["--agent", "fg-probe-emitter", "--cwd", regularFile]);
-    check("foreground --cwd on a regular file refuses with exit 2 before Direct application or launch construction (#7607)",
-      onFile.opts === undefined && onFile.exited === 2 && !onFile.stderr.includes("Direct application"),
-      onFile);
-
-    const onValid = await openRun(["--agent", "fg-probe-emitter", "--cwd", validDir]);
-    check("foreground --cwd on a valid folder passes the resolved directory into connector.buildLaunch (#7607)",
-      onValid.opts?.cwd === realpathSync(validDir) && onValid.opts.foreground === true,
-      { got: onValid.opts?.cwd, expected: realpathSync(validDir) });
+  for (const field of ["role: two words", "launchOptions: null"]) {
+    const invalid = join(root, ".cotal", "agents", "invalid.md");
+    writeFileSync(invalid, `---\nname: invalid\n${field}\n---\nbody\n`);
+    const r = await run(["spawn", "invalid", "--foreground", "--server", server, "--space", "fgevents", "--agent", "fg-probe-live"]);
+    check(`foreground with ${field} refuses before reaching the connector`, r.opts === undefined && r.exited === 1, r);
   }
 
   {

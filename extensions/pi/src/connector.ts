@@ -146,8 +146,9 @@ export const piConnector: Connector = {
 
     const persona = opts.configPath ? loadAgentFile(opts.configPath).persona : undefined;
 
-    // Minted before the env is built: the token goes into the launch material, the path into the env.
-    const control = controlEndpoint(opts.space, opts.name);
+    // The launch's artifact list (core launch-artifacts): the launcher removes every entry once the
+    // child has exited.
+    const artifacts: string[] = [];
     const stateRoot = opts.workspaceRoot ? join(opts.workspaceRoot, ".cotal", "pi-sessions") : undefined;
     const sessionStatePath = stateRoot ? join(stateRoot, `${opts.name}-${opts.lifecycleUid ?? "unmanaged"}.json`) : undefined;
     if (stateRoot) mkSecretDir(stateRoot);
@@ -205,11 +206,13 @@ export const piConnector: Connector = {
     }
     // The persona rides a private file the launcher removes once the child has exited (core
     // launch-artifacts). The extension also removes it at session start, once Pi has read it.
-    const artifacts: string[] = [];
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
     // extension drops even that once it has read it, so a shell this seat runs inherits neither. Its
-    // directory is the first artifact, so a failed persona write below removes it too.
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+    // directory is an artifact, so a failed persona write below removes it too. The control endpoint
+    // is minted here, after every refusal, because minting makes its socket directory.
+    const control = controlEndpoint(opts.space, opts.name, artifacts);
+    env.COTAL_CONTROL_SOCKET = control.path;
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
     if (persona) {
       const file = writeLaunchArtifact(artifacts, "cotal-persona-", "persona.md", persona);
       env.COTAL_PI_PERSONA_FILE = file;
@@ -221,7 +224,6 @@ export const piConnector: Connector = {
     }
     if (prompt !== undefined) args.push(prompt);
 
-    env.COTAL_CONTROL_SOCKET = control.path;
     if (sessionStatePath) env.COTAL_PI_SESSION_STATE = sessionStatePath;
     return {
       command: opts.resolvedBinaries?.pi ?? "pi",

@@ -65,6 +65,10 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   symlink is why managed Codex agents are **POSIX-only** today: on Windows without Developer
   Mode the link fails, and the launch fails loud rather than copying `auth.json` (a copy would
   fork the token and break plan refreshes).
+  The app-server and TUI inherit non-secret seat attribution for `cotal stop --self`:
+  `COTAL_SPACE`, `COTAL_MANAGER_INSTANCE`, `COTAL_NAME`, `COTAL_ID`, `COTAL_LIFECYCLE_UID`,
+  `COTAL_ACCEPTED_TOKEN` and `COTAL_HOME`. Broker credentials and the launch-material pointer
+  remain private to the connector host.
 - **Autonomy defaults.** Spawned agents run `approval_policy=never`,
   `sandbox_mode=workspace-write`, and `sandbox_workspace_write={network_access=true}`.
   See [Sandbox autonomy](#sandbox-options) for what each one means and how to
@@ -129,7 +133,7 @@ Like the `codex` CLI itself, the connector does not validate model ids or effort
 unknown value fails at request time, server-side.
 
 The catalog comes from a short-lived `codex app-server`, the binary a launch runs:
-`COTAL_CODEX_BIN` when you set it, otherwise the absolute path the manager resolved at boot.
+`COTAL_CODEX_BIN` when you set it, otherwise the absolute path the manager resolved when Codex became available.
 If it exits, closes its input, or does
 not answer `model/list` within 10 seconds, `cotal models` reports that as the Codex error and the
 manager keeps serving the other connectors.

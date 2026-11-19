@@ -393,10 +393,11 @@ interface UninstallPlan {
 
 function recoveredLinuxUnit(daemonHome: string | undefined): UnitReceipt | undefined {
   if (process.platform !== "linux") return undefined;
-  const rendered = renderDaemonUnit(systemdUserUnitDirectory(), daemonHome);
-  try { lstatSync(rendered.unitPath); }
+  const unitDirectory = systemdUserUnitDirectory();
+  try { lstatSync(join(unitDirectory, daemonUnitName(daemonHome))); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
   // A name is not authority. Require this installation's exact protected source and loaded fragment.
+  const rendered = renderDaemonUnit(unitDirectory, daemonHome);
   try { assertSystemdSource(rendered.unitPath, rendered.sha256); }
   catch { throw new CommandFailure("refused", "CONFLICT", "the surviving daemon source does not match this installation's protected unit; nothing was changed"); }
   const names = ["Id", "LoadState", "FragmentPath", "DropInPaths", "NeedDaemonReload"];

@@ -258,7 +258,7 @@ check("the CLI calls the shared name door (import present)",
   CORE_IMPORTS.includes("spawnNameError"));
 const DOOR_CALLS: ts.CallExpression[] = [];
 const collectDoorCalls = (node: ts.Node): void => {
-  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "refuseUnmintableNameOrExit")
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "refuseUnmintableName")
     DOOR_CALLS.push(node);
   ts.forEachChild(node, collectDoorCalls);
 };

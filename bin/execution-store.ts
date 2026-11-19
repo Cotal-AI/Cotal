@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { claimGlobalNpmUpdateLock, readUpdateRecovery } from "@cotal-ai/workspace";
+import { claimGlobalNpmUpdateLock, readUpdateRecovery, resolveOnPath } from "@cotal-ai/workspace";
 import { inspectLock, processStartToken } from "@cotal-ai/core";
 import { executionBinding, executionDescriptorPath, executionInventory, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
 
@@ -10,6 +10,15 @@ export interface RetainedExecutionGeneration {
   root: string;
   version: string;
   inventorySha256: string;
+}
+
+export function unwritableInstallation(installedRoot: string): Error {
+  const tool = ["sudo", "doas"].find(name => resolveOnPath(name));
+  const prefix = dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''");
+  const install = `npm install -g --prefix '${prefix}' cotal-ai@latest`;
+  const administrator = tool ? `run: ${tool} ${install}` : `run as root: ${install}`;
+  const normalAccount = tool ? `as your normal account, without ${tool}` : "as your normal account";
+  return new Error(`installation is not writable; have an administrator ${administrator}; then run \`cotal update\` ${normalAccount}`);
 }
 
 /** Remove group and other write from a tree this process just created. Node before 24.22 applies the
@@ -47,7 +56,7 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
       accessSync(path, constants.W_OK);
     } catch {
       if (owned) throw new Error(`installation directory is not writable: ${path}; restore write access to this user-owned directory, then run \`cotal update --self\` again without sudo`);
-      throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run \`cotal update\` as your normal account, without sudo`);
+      throw unwritableInstallation(installedRoot);
     }
   }
   const store = executionStore(installedRoot), shared = executionShared(installedRoot);

@@ -8,7 +8,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { cachedPreferences, CommandFailure, resolvePreference, parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { cachedPreferences, CommandFailure, exitCode, resolvePreference, parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
 import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
@@ -180,6 +180,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
     if (desc && !(verbose && desc.trim() === firstLine(d.persona))) for (const line of wrapWords(oneLine(desc), terminalWidth(process.stdout) - 2)) console.log(c.dim(`  ${line}`));
     if (verbose && d.persona) console.log(d.persona.split(/\r?\n/).map((line) => `    ${oneLine(line)}`).join("\n") + "\n");
   }
+  if (entries.some((entry) => entry.error)) process.exitCode = exitCode("partial", "OPERATION_PARTIAL");
 }
 
 /** Snapshot the names currently present on the mesh — the live overlay behind `personas list

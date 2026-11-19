@@ -12,7 +12,7 @@
       "name": "an elapsed relative sleep propagates its pre-mint expiry",
       "file": "implementations/runtime/src/mesh-handler.ts",
       "find": "      if (!(error instanceof PauseOverdue)) throw error;",
-      "replace": "      throw error;",
+      "replace": "      void PauseOverdue;\n      throw error;",
       "command": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep",
       "afterRestore": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep && pnpm smoke:runtime-run-driver-auth && pnpm smoke:runtime-mesh-checkpoint",
       "completionMarker": "S3775 elapsed-sleep cell: predicate evaluated",

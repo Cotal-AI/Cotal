@@ -107,20 +107,28 @@ interface PreferenceWrite {
   readonly effective: Setting;
 }
 
+export function validateConfigArguments(args: ParsedArgs): void {
+  const v = args.values as FlagValues<typeof configFlags>;
+  presentationOf(v);
+  const [sub] = args.positionals;
+  if (sub !== undefined && v.verbose) throw usage("--verbose belongs to bare `cotal config`");
+  if (v.user && v.space !== undefined) throw usage("--user and --space choose different scopes - pass one");
+  if (v.space !== undefined) {
+    const problem = preferenceSpaceProblem(v.space);
+    if (problem) throw usage(problem);
+  }
+}
+
 /**
  * `cotal config [get <key> | set <key> <value> | unset <key>]`: personal preferences. Bare `config`
  * and `get` show the value each key resolves to, where it came from and what it shadows. `set` and
  * `unset` change the user's defaults, or one space's with `--space`.
  */
 export async function config(args: ParsedArgs): Promise<void> {
+  validateConfigArguments(args);
   const v = args.values as FlagValues<typeof configFlags>;
   const presentation = presentationOf(v);
   const [sub, ...rest] = args.positionals;
-  if (v.user && v.space !== undefined) throw usage("--user and --space choose different scopes - pass one");
-  if (v.space !== undefined) {
-    const problem = preferenceSpaceProblem(v.space);
-    if (problem) throw usage(problem);
-  }
   const prefs = readPreferences();
 
   if (sub === undefined) {

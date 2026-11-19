@@ -68,6 +68,24 @@ suggests:
 - `check-docs-bundle.mjs` proves the generator turns the pages into a bundle that is not hollow.
   It does not prove that the pages agree with the code.
 
+## Local comment history check
+
+`pnpm check:comment-history` is a local script, run by hand. No CI job, gate or `pnpm check`
+runs it. It scans comments in tracked JS/TS under package, implementation and extension `src/`
+trees and `bin/`, excluding declarations, tests, smokes, mutation fixtures, built output, private
+smoke helpers and `bin/scripts/`. Strings, regexes, template text and JSX text do not count. It
+matches `#` plus at least three digits and the case-insensitive phrases `used to`, `previously`,
+`no longer` and `formerly`, with word boundaries and wrapped-doc support, then runs fixture
+controls against an unchanged copy of the checker.
+
+`scripts/comment-history-allowlist.json` stores counts by file and rule, one file per line.
+Per-file and repository rule-total increases fail. Decreases pass. A source move can fail on its
+receiving file even when the total stays unchanged. Review the source changes, run
+`pnpm check:comment-history:update` by hand, then run `pnpm check:comment-history` and commit the
+reviewed counts. Regeneration can accept new violations, and counts cannot detect same-count
+replacements. Diagnostics name the first match for a rule, not necessarily the addition. Stage
+new source files before scanning.
+
 ## Upgrade-section gate
 
 `pnpm upgrade-section-gate --base <ref>` checks `<ref>..HEAD`, and `--range <a>..<b>` checks any

@@ -26,6 +26,7 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { agentFilePath } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { recordMesh } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -35,6 +36,8 @@ if (!existsSync(BIN)) {
 
 interface Envelope {
   outcome: string;
+  completeness?: string;
+  result?: { requestedName?: string };
   target: Record<string, unknown> | null;
   error?: { code: string; message?: string; remedy?: string };
 }
@@ -131,7 +134,13 @@ const roleFile = join(root, "badrole.md");
 writeFileSync(roleFile, "---\nname: badrole\nrole: bad role!\nsubscribe: []\n---\n");
 const roleInFile = cotal("persona", "create", "badrole", "--file", roleFile, "--json");
 check("persona create --file whose role send -r refuses is SCHEMA_INVALID naming the file and the role",
-  roleInFile.status === 1 && roleInFile.envelope?.error?.code === "SCHEMA_INVALID" && (roleInFile.envelope.error.message ?? "").includes(`invalid persona definition ${roleFile}: invalid role "bad role!"`) && !existsSync(agentFilePath(root, "badrole")), shown(roleInFile));
+  roleInFile.status === 1 && roleInFile.envelope?.error?.code === "SCHEMA_INVALID" && (roleInFile.envelope.error.message ?? "").includes(`invalid persona definition ${roleFile}: "role" must be a single token`) && !roleInFile.envelope.error.message?.includes("bad role!") && !existsSync(agentFilePath(root, "badrole")), shown(roleInFile));
+const nullOptions = agentFilePath(root, "null-options");
+writeFileSync(nullOptions, "---\nname: null-options\nlaunchOptions: null\n---\n");
+const badOptions = cotal("persona", "show", "null-options", "--json");
+check("persona show refuses null launchOptions and names the file and mapping rule",
+  badOptions.status === 1 && badOptions.envelope?.error?.code === "SCHEMA_INVALID" && badOptions.envelope.error.message?.includes(`${nullOptions}: "launchOptions" must be a mapping of key: value pairs`) === true, shown(badOptions));
+rmSync(nullOptions);
 const roleOk = cotal("persona", "create", "goodrole", "--prompt", "x", "--role", "reviewer", "--subscribe", "", "--json");
 check("control: a valid role token is created", roleOk.status === 0 && existsSync(agentFilePath(root, "goodrole")), shown(roleOk));
 
@@ -147,6 +156,7 @@ for (const [argv, rerun] of [
   [["stop", "default_agent", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
   [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --space elsewhere --on <instance>"],
+  [["ps", "--slots", "--server", "nats://127.0.0.1:39200", "--on", "bogus"], "cotal ps --slots --server nats://127.0.0.1:39200 --on <instance>"],
   [["models", "--harness", "claude", "--on", "bad"], "cotal models --harness claude --on <instance>"],
   [["spawn", "default", "-d", "--on", "bad"], "cotal spawn default -d --on <instance>"],
 ] as const) {
@@ -241,6 +251,45 @@ const noDefault = cotal("spawn", "--dry-run", "--plain");
 check("spawn --dry-run with no default persona previews the shipped default without writing it",
   noDefault.status === 0 && noDefault.stdout.includes("the launch writes the shipped default persona here; the preview wrote nothing") && !existsSync(agentFilePath(root, "default")), shown(noDefault));
 
+// #7526: spawning or previewing an invalid native persona preserves the field/position error without
+// echoing persona values and without recommending `cotal team deploy`, while a Mesh manifest still
+// names `cotal team deploy <file>`.
+for (const [label, body, reason] of [
+  ["a list where a string is required", "---\nname: badspawn\nmodel: [opus]\n---\nReview.\n", '"model" must be a string; got array'],
+  ["a duplicate YAML key", "---\nname: badspawn\nmodel: secret-one\nmodel: secret-two\n---\nReview.\n", "the frontmatter has a duplicate YAML key at line 4, column 1"],
+  ["an empty file", "", 'missing "---" frontmatter block'],
+  ["a blank model", '---\nname: badspawn\nmodel: "   "\n---\n', '"model" must not be empty'],
+  ["a blank variant", '---\nname: badspawn\nvariant: "   "\n---\n', '"variant" must not be empty'],
+  ["a null options mapping", "---\nname: badspawn\nlaunchOptions: null\n---\n", '"launchOptions" must be a mapping of key: value pairs'],
+  ["an invalid role", "---\nname: badspawn\nrole: secret-role value\n---\n", '"role" must be a single token using letters, digits, underscores or hyphens'],
+  ["an invalid channel declaration", "---\nname: badspawn\nsubscribe: [ops]\nallowSubscribe: [general]\n---\n", 'subscribe "ops" is not within allowSubscribe [general]'],
+  ["malformed YAML with a secret value", "---\nname: badspawn\nrole: [secret-value\n---\n", "the frontmatter is not valid YAML at line 3"],
+] as const) {
+  const badSpawnPath = agentFilePath(root, "badspawn");
+  writeFileSync(badSpawnPath, body);
+  for (const [modeLabel, flags] of [["foreground", ["--foreground"]], ["dry-run", ["--dry-run"]]] as const) {
+    const r = cotal("spawn", "badspawn", ...flags, ...(modeLabel === "dry-run" ? ["--json"] : ["--server", "nats://127.0.0.1:34300"]));
+    const msg = r.envelope?.error?.message ?? r.stderr;
+    const rem = r.envelope?.error?.remedy ?? r.stderr;
+    check(`spawn ${modeLabel} with ${label} reports ${reason} without recommending team deploy (#7526)`,
+      r.status === 1 && (r.envelope?.error?.code === "SCHEMA_INVALID" || /Code:\s+SCHEMA_INVALID/.test(r.stderr))
+        && msg.includes(`invalid persona definition ${badSpawnPath}: ${reason}`)
+        && !msg.includes("secret-")
+        && rem.includes("check the agent-file frontmatter and channel declarations")
+        && !rem.includes("team deploy"), shown(r));
+  }
+  rmSync(badSpawnPath, { force: true });
+}
+const manifestAsPersona = join(root, "team-manifest.yaml");
+writeFileSync(manifestAsPersona, "apiVersion: cotal/v1\nkind: Mesh\nspace: opsp\nagents: {}\nchannels: {}\n");
+for (const [modeLabel, flags] of [["foreground", ["--foreground"]], ["dry-run", ["--dry-run"]]] as const) {
+  const r = cotal("spawn", "--file", manifestAsPersona, ...flags, ...(modeLabel === "dry-run" ? ["--json"] : ["--server", "nats://127.0.0.1:34300"]));
+  check(`spawn ${modeLabel} given a Mesh manifest still recommends cotal team deploy (#7526)`,
+    r.status === 1 && (r.envelope?.error?.code === "SCHEMA_INVALID" || /Code:\s+SCHEMA_INVALID/.test(r.stderr))
+      && (r.envelope?.error?.message ?? r.stderr).includes("--file names a Mesh manifest")
+      && (r.envelope?.error?.remedy ?? r.stderr).includes("`cotal team deploy <file>`"), shown(r));
+}
+
 // A managed preview cannot validate the execution host. A direct preview knows its effective
 // harness and refuses an unknown name before reporting success, regardless of its source.
 interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string }
@@ -248,6 +297,14 @@ const managed = cotal("spawn", "-d", "nosuch", "--dry-run", "--json");
 const managedResult = (managed.envelope as unknown as { result?: Preview; completeness?: string } | undefined);
 check("a managed spawn --dry-run exits 0, not-checked, with the name's source as argument",
   managed.status === 0 && managed.envelope?.outcome === "ok" && managedResult?.completeness === "not-checked" && managedResult.result?.requested?.source === "argument", shown(managed));
+for (const mode of [[], ["--dry-run"]]) {
+  for (const resume of ["--resume=", "--resume=   "]) {
+    const invalid = cotal("spawn", "-d", resume, ...mode, "--json");
+    check(`managed ${mode.length ? "preview" : "launch"} rejects ${JSON.stringify(resume)} with one usage envelope`,
+      invalid.status === 1 && invalid.envelope?.outcome === "refused" && invalid.envelope.error?.code === "USAGE_INVALID"
+        && invalid.envelope.error.message?.includes("--resume needs a session id") === true && invalid.stderr === "", shown(invalid));
+  }
+}
 const managedHarness = cotal("spawn", "-d", "--harness", "nosuch", "--dry-run", "--plain");
 check("a managed preview warns about an unknown harness and labels the default persona in words",
   managedHarness.status === 0 && managedHarness.stderr.includes('! no harness "nosuch"; known harnesses:') && managedHarness.stdout.includes("Persona source:            the default persona") && !managedHarness.stdout.includes("explicit-or-product-default"), shown(managedHarness));
@@ -272,6 +329,55 @@ const knownDirect = cotal("spawn", "--file", "pv.md", "--harness", "opencode", "
 const knownPreview = knownDirect.envelope as unknown as { result?: Preview; warnings?: unknown[] } | undefined;
 check("a known harness still previews the file's source without warnings or importing its connector",
   knownDirect.status === 0 && knownPreview?.result?.harness === "opencode" && knownPreview.result.persona?.source === "file" && same(knownPreview.warnings, []), shown(knownDirect));
+
+// The display name in a persona need not be a launch identity. Preview the effective value with
+// the same local rule as foreground launch, including the selected space's actor-token bound.
+writeFileSync(agentFilePath(root, "invalid-name"), "---\nname: bad name\n---\n");
+for (const args of [
+  ["invalid-name"],
+  ["invalid-name", "--server", "nats://127.0.0.1:34300"],
+  ["--file", "pv.md", "--name", "bad name"],
+]) {
+  for (const format of [[], ["--plain"], ["--json"]]) {
+    const invalid = cotal("spawn", ...args, "--dry-run", ...format);
+    const message = 'unsafe name "bad name" (allowed: letters, digits, _ -)';
+    check(`direct preview refuses the effective name from ${args.join(" ")} in ${format[0] ?? "text"}`,
+      invalid.status === 1 && (format[0] === "--json"
+        ? invalid.envelope?.outcome === "refused" && invalid.envelope.error?.code === "USAGE_INVALID"
+          && invalid.envelope.error.message === message && invalid.envelope.target?.space === "opsp" && invalid.stderr === ""
+        : invalid.stdout === "" && invalid.stderr.includes(message)), shown(invalid));
+  }
+}
+for (const [args, name] of [
+  [["--file", "pv.md", "--name", "good-name"], "good-name"],
+  [["invalid-name", "--name", "good_override"], "good_override"],
+] as const) {
+  const valid = cotal("spawn", ...args, "--dry-run", "--json");
+  check(`direct preview accepts effective name ${name} without validating the overridden display name`,
+    valid.status === 0 && valid.envelope?.outcome === "ok" && valid.envelope.completeness === "complete"
+      && valid.envelope.result?.requestedName === name, shown(valid));
+}
+const userRoot = join(home, "user-project");
+mkdirSync(dirname(agentFilePath(userRoot, "minimal")), { recursive: true });
+writeFileSync(agentFilePath(userRoot, "minimal"), "---\nname: minimal\n---\n");
+const priorHome = process.env.COTAL_HOME;
+try {
+  process.env.COTAL_HOME = env.COTAL_HOME;
+  recordMesh({ space: "preview-user", server: "nats://127.0.0.1:34300", root: userRoot, mode: "user", origin: "manual",
+    userAuth: { provider: "cotal", idp: { url: "https://idp.example/api/auth", issuer: "https://idp.example", audience: "https://idp.example" } }, ts: new Date().toISOString() });
+} finally {
+  if (priorHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = priorHome;
+}
+for (const [name, accepted] of [["good_user_name", true], ["a".repeat(64), true], ["bad-hyphen", false], ["a".repeat(65), false]] as const) {
+  const preview = cotal("spawn", "minimal", "--space", "preview-user", "--name", name, "--dry-run", "--json");
+  check(`user-mode direct preview ${accepted ? "accepts" : "refuses"} ${name}`,
+    accepted
+      ? preview.status === 0 && preview.envelope?.outcome === "ok" && preview.envelope.result?.requestedName === name
+      : preview.status === 1 && preview.envelope?.outcome === "refused" && preview.envelope.error?.code === "USAGE_INVALID"
+        && preview.envelope.error.message?.startsWith(`name "${name}" cannot be a mesh identity in user mode`) === true
+        && preview.envelope.target?.space === "preview-user" && preview.stderr === "", shown(preview));
+}
 writeFileSync(join(root, "pin.md"), "---\nname: pinned\nagent: nosuch\n---\n");
 const pinned = cotal("spawn", "--file", "pin.md", "--dry-run", "--json");
 check("an unknown persona harness pin is refused by a direct preview",

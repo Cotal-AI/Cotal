@@ -1,6 +1,6 @@
 /** A live stack must report a missing or replaced store before a restart loses its history. */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -50,6 +50,13 @@ try {
   suite.check("the real broker retains the initial post", history.status === 0 && history.text.includes("retained-before-replacement"), history.text);
   const healthy = run("status", "--space", space, "--json");
   suite.check("unchanged store has no identity warning", !warning(healthy, "STORE_REPLACED") && !warning(healthy, "STORE_MISSING"), healthy.text);
+  const compact = run("status", "--space", space);
+  const verbose = run("status", "--verbose", "--space", space);
+  const brokerExecutable = /^ +NATS: +(?:bundled )?nats-server \S+ (?:on PATH )?at \S/m;
+  suite.check("compact status omits the healthy broker executable",
+    compact.status === 0 && !brokerExecutable.test(compact.text) && !/^ +Broker executable:/m.test(compact.text), compact.text);
+  suite.check("verbose status shows the selected broker executable and its path",
+    verbose.status === 0 && brokerExecutable.test(verbose.text), verbose.text);
   const outsideHealthy = selectedStatus("--json");
   suite.check("outside-project selection reaches the healthy stack without a store warning", outsideHealthy.envelope?.result?.selected?.root === root && !warning(outsideHealthy, "STORE_REPLACED") && !warning(outsideHealthy, "STORE_MISSING"), outsideHealthy.text);
 
@@ -74,6 +81,31 @@ try {
   suite.check("adopted restart retains the original post", movedHistory.status === 0 && movedHistory.text.includes("retained-before-replacement"), movedHistory.text);
   const movedStatus = run("status", "--space", space, "--json");
   suite.check("adopted restart has clean status", movedStatus.status === 0 && !warning(movedStatus, "STORE_REPLACED"), movedStatus.text);
+
+  if (!custom) {
+    const beforeCopyDown = run("down", "--yes", "--json");
+    if (beforeCopyDown.status !== 0) throw new Error(`pre-copy stop failed: ${beforeCopyDown.text}`);
+    started = false;
+    const forgot = run("space", "forget", space, "--json");
+    if (forgot.status !== 0) throw new Error(`pre-copy forget failed: ${forgot.text}`);
+    const copied = join(sandbox, "copied-project");
+    cpSync(root, copied, { recursive: true });
+    rmSync(root, { recursive: true, force: true });
+    root = copied;
+    journalPath = join(root, ".cotal", "stack-controller.json");
+    anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: xdg });
+    const copyAdopted = run("space", "create", space, "--adopt", "--json");
+    if (copyAdopted.status !== 0) throw new Error(`copied-folder adoption failed: ${copyAdopted.text}`);
+    const copyPlain = run("status", "--plain");
+    suite.check("adopted copy has clean folder status before starting", copyPlain.status === 0 && !/recorded store.*replaced/.test(copyPlain.text), copyPlain.text);
+    const copySelected = run("status", "--space", space, "--json");
+    suite.check("adopted copy has clean selected status before starting", copySelected.status === 0 && !warning(copySelected, "STORE_REPLACED"), copySelected.text);
+    const copyUp = run("up", ...(managed ? [] : ["--no-manager"]), "--json");
+    started = true;
+    if (copyUp.status !== 0) throw new Error(`copied-folder restart failed: ${copyUp.text}`);
+    const copyHistory = run("history", "general", "--space", space, "--json");
+    suite.check("adopted copy restart retains the original post", copyHistory.status === 0 && copyHistory.text.includes("retained-before-replacement"), copyHistory.text);
+  }
 
   const store = journal().broker.storeDir;
   const before = lstatSync(store, { bigint: true });
@@ -107,9 +139,9 @@ try {
   chmodSync(journalPath, 0);
   try {
     const unreadable = run("status", "--space", space, "--json");
-    suite.check("status reports an unreadable stack journal", Boolean(warning(unreadable, "STACK_JOURNAL_UNREADABLE")), unreadable.text);
+    suite.check("status reports an unreadable stack journal", unreadable.status === 4 && Boolean(unreadable.envelope?.result) && warning(unreadable, "STACK_JOURNAL_UNREADABLE")?.target?.root === root, unreadable.text);
     const outsideUnreadable = selectedStatus("--json");
-    suite.check("outside-project status names the selected unreadable journal", outsideUnreadable.status === 4 && Boolean(warning(outsideUnreadable, "STACK_JOURNAL_UNREADABLE")), outsideUnreadable.text);
+    suite.check("outside-project status names the selected unreadable journal", outsideUnreadable.status === 4 && outsideUnreadable.envelope?.result?.selected?.root === root && warning(outsideUnreadable, "STACK_JOURNAL_UNREADABLE")?.target?.root === root, outsideUnreadable.text);
   } finally { chmodSync(journalPath, 0o600); }
 
   const absent = `${store}.absent`;

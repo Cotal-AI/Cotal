@@ -195,6 +195,14 @@ try {
 
   console.log("\n2) `cotal down --preserve-state` leaves a resumable maintenance journal");
   await cutPreserved(space);
+  const cutJournalPath = maintenancePaths(root).journal;
+  const beforeRepeat = readFileSync(cutJournalPath, "utf8");
+  const repeatedDown = run(["down", "--yes"]);
+  await within(once(repeatedDown, "exit"), 30_000);
+  const repeatOutput = logOf(repeatedDown);
+  ok("ordinary down reports a stopped preserved cut with its maintenance next step",
+    repeatedDown.exitCode === 0 && /already stopped/.test(repeatOutput) && /cut is ready/.test(repeatOutput) && /cotal status/.test(repeatOutput), repeatOutput);
+  ok("ordinary down leaves the ready journal byte-for-byte unchanged", readFileSync(cutJournalPath, "utf8") === beforeRepeat);
 
   console.log("\n3) SUBJECT: the RESUMED `cotal up` renders with the root lock free");
   const before = confStamp();

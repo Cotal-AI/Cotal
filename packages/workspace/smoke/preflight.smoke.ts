@@ -270,6 +270,14 @@ check("message: credentials rejected at a --server recorded elsewhere for this f
 check("message: credentials rejected with no other recorded broker keep the meshes-or-up step",
   preflightMessage("creds-rejected", { ...T, source: "flag-server" }, false).endsWith("run `cotal meshes` to check, or `cotal up` here to start yours")
     && preflightMessage("creds-rejected", { ...T, source: "flag-server", recordedServer: DEAD }, false) === preflightMessage("creds-rejected", T, false));
+for (const source of ["flag-server", "flag-space-override"] as const) {
+  const target = { ...T, source, recordedServer: "nats://127.0.0.1:14993" };
+  const message = preflightMessage("open-wants-auth", target, false);
+  check(`message: open space at an overriding ${source} names both brokers without prescribing up`,
+    message === `✗ broker at ${DEAD}, the address --server named, requires auth, but "alpha" is recorded as an open mesh at nats://127.0.0.1:14993 - check that address, or drop --server to reach "alpha" at nats://127.0.0.1:14993, where it is recorded`, message);
+}
+check("message: open space at the recorded broker keeps the original auth guidance",
+  preflightMessage("open-wants-auth", { ...T, source: "flag-server", recordedServer: DEAD }, false) === preflightMessage("open-wants-auth", T, false));
 for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-rejected", "open-wants-auth"] as const)
   check(`message: ${kind} names the server + leads with ✗`, (() => {
     const m = preflightMessage(kind, T, true);
@@ -768,7 +776,7 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
     const srv = createServer((sock) => {
       dials++;
       sock.on("error", () => { /* client tears down after its probe; not a test failure */ });
-      sock.write('INFO {"server_id":"s3872","version":"2.10.0","proto":1,"headers":true,"max_payload":1048576}\r\n');
+      sock.write('INFO {"server_id":"s3872","version":"2.10.0","proto":1,"headers":true,"jetstream":true,"max_payload":1048576}\r\n');
       sock.on("data", (d) => {
         if (d.toString().includes("PING")) sock.write("PONG\r\n");
       });
