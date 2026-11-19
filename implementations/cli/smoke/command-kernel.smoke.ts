@@ -1628,7 +1628,10 @@ for (const [code, summary, deferred] of [
 }
 
 // The bound child can succeed even when the parent later fails activation and restores the old generation.
-for (const [targetReady, firstReconcileFails] of [[true, false], [true, true], [false, false], [false, true]]) {
+for (const [targetReady, firstReconcileFails, releaseSignal] of [
+  [true, false], [true, true], [false, false], [false, true],
+  [true, false, "SIGTERM"], [true, true, "SIGINT"],
+] as const) {
   const { rt, events } = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
   let reconcileCalls = 0;
   rt.spawnGlobal = async (_root, op, _file, _args, env) => {
@@ -1646,13 +1649,31 @@ for (const [targetReady, firstReconcileFails] of [[true, false], [true, true], [
     noticesAtWait.push(events.filter(event => event.includes("standalone pi extension")).length);
     if (version === "0.13.2" && !targetReady) throw new Error("installed Cotal 0.13.2 did not become ready");
   };
-  assert.equal(await executeUpdate(true, rt), targetReady ? 0 : 1);
+  if (targetReady) rt.prepareReplacement = async () => async () => {
+    events.push("release-admission:start");
+    await new Promise<void>(resolve => setImmediate(resolve));
+    if (releaseSignal) process.emit(releaseSignal, releaseSignal);
+    events.push("release-admission:done");
+  };
+  assert.equal(await executeUpdate(true, rt), releaseSignal ? (releaseSignal === "SIGTERM" ? 143 : 130) : targetReady ? 0 : 1);
   assert.deepEqual(waits, targetReady ? ["0.13.2"] : ["0.13.2", "0.13.1"]);
   assert.deepEqual(noticesAtWait, waits.map(() => 0), "the bound child never gives advice before final activation");
   assert.equal(events.some(event => event.includes("cotal-ai@0.13.1 was restored and reconciled")), !targetReady);
   const notices = events.filter(event => event.includes("standalone pi extension"));
-  assert.equal(notices.length, targetReady ? 1 : 0, events.join("\n"));
-  if (targetReady) assert.match(notices[0]!, /npm install @cotal-ai\/pi@0\.13\.2/);
+  assert.equal(notices.length, targetReady && !releaseSignal ? 1 : 0, events.join("\n"));
+  const releaseGlobal = events.indexOf("release-global:/global/node_modules");
+  if (targetReady) {
+    const start = events.indexOf("release-admission:start"), done = events.indexOf("release-admission:done");
+    assert.ok(start >= 0 && start < done && done < releaseGlobal, "admission cleanup completes before the global lock is released");
+  }
+  if (notices.length) {
+    assert.match(notices[0]!, /npm install @cotal-ai\/pi@0\.13\.2/);
+    assert.ok(events.indexOf(notices[0]!) > releaseGlobal, "a successful update gives its advice after cleanup");
+  }
+  if (releaseSignal) {
+    assert.ok(events.some(event => event.includes("Interrupt received;")));
+    assert.ok(!events.some(event => /cotal-ai@0\.13\.2 .*and reconciled/.test(event)), "an interrupted release does not report success");
+  }
 }
 
 // --- interrupts retain update custody until verification and reconciliation finish --------------

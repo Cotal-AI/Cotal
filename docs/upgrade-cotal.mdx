@@ -268,6 +268,7 @@ cotal update
 This reconciles installed extensions and connector integrations with the running CLI's release.
 If you copied the standalone pi extension into your own host, Cotal leaves that copy unchanged.
 After the update succeeds, follow the [standalone pi instructions](connect-pi.mdx#load-the-extension-into-your-own-host) to reinstall and copy the matching version.
+If you interrupt a self-update, wait for cleanup to finish and check `cotal --version` before replacing the standalone copy.
 If the machine daemon closes a status connection while restarting, reconciliation retries that
 status read for up to two minutes. It reports a failure if the daemon does not answer in time.
 When no Cotal Claude plugin or Desktop integration is installed, reconciliation only reads Claude's
