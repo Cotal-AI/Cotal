@@ -719,16 +719,18 @@ try {
     await new Promise<void>((resolve) => tarpit.listen(0, "127.0.0.1", resolve));
     const address = tarpit.address();
     if (!address || typeof address === "string") throw new Error("resume probe listener has no TCP address");
-    const childRun = (args: string[]): Promise<{ status: number | null; out: string }> => new Promise((resolve) => {
+    const childRun = (args: string[]): Promise<{ status: number | null; out: string; stdout: string; stderr: string }> => new Promise((resolve) => {
       const child = spawnProc(TSX, [join(import.meta.dirname, "..", "cotal.ts"), ...args], {
         cwd: callerRoot, env: { ...subEnv, CLAUDE_CONFIG_DIR: transcriptRoot }, stdio: ["ignore", "pipe", "pipe"],
       });
       kids.push(child);
       let out = "";
-      child.stdout.on("data", (data: Buffer) => { out += data.toString(); });
-      child.stderr.on("data", (data: Buffer) => { out += data.toString(); });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (data: Buffer) => { const text = data.toString(); stdout += text; out += text; });
+      child.stderr.on("data", (data: Buffer) => { const text = data.toString(); stderr += text; out += text; });
       const timeout = setTimeout(() => child.kill("SIGKILL"), 60_000);
-      child.once("close", (status) => { clearTimeout(timeout); resolve({ status, out }); });
+      child.once("close", (status) => { clearTimeout(timeout); resolve({ status, out, stdout, stderr }); });
     });
     try {
       const added = await childRun(["space", "add", "resume-offline", "--server", `nats://127.0.0.1:${address.port}`, "--mode", "open", "--root", join(resumeRoot, "offline"), "--force"]);
@@ -736,6 +738,13 @@ try {
       const cleared = await childRun(["use", "--clear"]);
       ok("resume probe leaves the target to registry resolution", cleared.status === 0, cleared.out);
       const on = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
+      for (const [harness, status, code] of [["claude", 1, "USAGE_INVALID"], ["no-such-connector", 2, "DEPENDENCY_UNAVAILABLE"]] as const) {
+        const result = await childRun(["spawn", "--detach", "--harness", harness, "--space", SPACE, "--resume", heldId, "--json"]);
+        const envelope = JSON.parse(result.stdout || "null");
+        ok(`detached ${harness} resume writes a refusal envelope before sending a launch`,
+          result.status === status && result.stderr === "" && envelope?.outcome === "refused" && envelope.error?.code === code
+          && envelope.target?.requestId === undefined && (harness !== "claude" || envelope.error?.remedy === "pass --on <instance>"), result);
+      }
       for (const [label, id, explicit, expected] of [
         ["held implicit", heldId, false, 2],
         ["unheld implicit", unheldId, false, 2],
