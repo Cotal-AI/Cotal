@@ -3,9 +3,9 @@
  * simulated here. Native lifecycle/remint/reconnect coverage is a separate live check. */
 import assert from "node:assert/strict";
 import { credsAuthenticator, type Authenticator } from "@nats-io/transport-node";
-import { createSpaceAuth, mintCreds, newIdentity, type Identity } from "@cotal-ai/core";
+import { createSpaceAuth, mintCreds, newIdentity } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
-import { Manager } from "../src/manager.js";
+import { GoalWriter } from "../src/goal-writer.js";
 import { ServePlane } from "../src/serve-plane.js";
 
 let checks = 0;
@@ -13,9 +13,6 @@ function check(value: unknown, label: string): asserts value {
   assert.ok(value, label);
   checks++;
 }
-type Method = "dialServeConnection" | "dialGoalWriter" | "dialSessionLedgerConnection";
-const methods = Manager.prototype as unknown as Record<Method,
-  (this: unknown, state: Record<string, unknown>, identity?: Identity) => Promise<unknown>>;
 const auth = await createSpaceAuth("standing-authenticator");
 const identity = newIdentity();
 const first = await mintCreds(auth, identity, "observer");
@@ -34,7 +31,12 @@ for (const method of ["dialServeConnection", "dialGoalWriter", "dialSessionLedge
       dial: async (options: Record<string, unknown>) => { observed.push(options); throw boundary; },
     };
     try {
-      if (method === "dialGoalWriter") await methods[method].call(receiver, state, identity);
+      if (method === "dialGoalWriter") {
+        const component = new GoalWriter({
+          auth: () => receiver.auth, remoteAuthority: () => receiver.remoteAuthority, dial: receiver.dial,
+        } as unknown as ConstructorParameters<typeof GoalWriter>[0]);
+        await component.dialGoalWriter(state as never);
+      }
       else {
         const component = new ServePlane({
           auth: () => receiver.auth, remoteAuthority: () => receiver.remoteAuthority, dial: receiver.dial,
