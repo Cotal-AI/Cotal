@@ -357,6 +357,11 @@ export interface Connector extends Extension {
    *  Default-deny, so a prompt on a connector that does not declare it fails before any
    *  provisioning rather than being accepted and never submitted. */
   readonly supportsPrompt?: boolean;
+  /** The bytes a terminal sends for the key that interrupts the harness's live turn, such as
+   *  `"\x1b"` for Escape. The manager's `interrupt` command writes them into a seat's terminal.
+   *  Declare it only after a live check shows the key ending a turn. Absent, the command refuses
+   *  seats on this connector. */
+  readonly interruptKey?: string;
   /** Whether a seat on this connector takes a relayed turn on an idle fresh session, hands it to
    *  the harness at most once, and yields when the turn ends. A `once` spawn needs it. Declare it
    *  only after a live check shows the harness doing all three; serving `turn-pending` is not

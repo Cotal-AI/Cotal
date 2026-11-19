@@ -1,0 +1,37 @@
+{
+  "suite": [
+    "implementations/manager/smoke/seat-input-live.smoke.ts",
+    "packages/core/smoke/endpoint-grants.smoke.ts"
+  ],
+  "guard": "the manager's interrupt command writes the connector-declared key as one keystroke, refuses a connector that declares none without typing, and stays an operator-only grant",
+  "command": "npx tsx implementations/manager/smoke/seat-input-live.smoke.ts",
+  "progressPattern": "✓",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/manager-interrupt.json",
+  "why": [
+    "The live suite reads the bytes the real pty child received, and the grant suite reads the minted rows. Both import source, so no build runs between the mutation and the suite."
+  ],
+  "mutations": [
+    {
+      "name": "the interrupt key is sent as a bracketed paste",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const accepted = await write(key);",
+      "replace": "    const accepted = (await write(`\\x1b[200~${key}\\x1b[201~`)) - 12;",
+      "expectRed": "THE CHILD RECEIVED EXACTLY ONE ESCAPE BYTE: a keypress, not a bracketed paste"
+    },
+    {
+      "name": "a connector without a key falls back to Ctrl-C",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const key = (await this.resolveConnector(a.agent)).interruptKey;",
+      "replace": "    const key = (await this.resolveConnector(a.agent)).interruptKey ?? \"\\x03\";",
+      "expectRed": "a seat whose connector declares no interrupt key is refused as unimplemented, naming the connector, not-executed"
+    },
+    {
+      "name": "interrupt joins the spawn capability's owner lifecycle set",
+      "file": "packages/core/src/endpoint-grants.ts",
+      "command": "npx tsx packages/core/smoke/endpoint-grants.smoke.ts",
+      "find": "export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze([\"despawn\", \"attach\"] as const);",
+      "replace": "export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze([\"despawn\", \"attach\", \"interrupt\"] as const);",
+      "expectRed": "the spawn capability grants NO `interrupt` row: writing a seat's interrupt key is operator-only like input"
+    }
+  ]
+}

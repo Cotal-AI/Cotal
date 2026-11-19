@@ -268,6 +268,7 @@ export const claudeConnector: Connector = {
   resumeTranscript: claudeResumeTranscript,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // a leading positional is auto-submitted as the first turn — see buildLaunch
+  interruptKey: "\x1b", // Escape ends the live turn ("Interrupted · What should Claude do instead?")
   // A session wakes for a relayed task while idle only with channels on, and Claude reports that only
   // on its startup screen: the development-channels gate, then its registration notice for this
   // server (confirmNotice below). A once seat is served its task only when its startup watch saw

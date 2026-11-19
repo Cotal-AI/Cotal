@@ -60,6 +60,8 @@ Declare only the features your connector implements:
 - Set `supportsPrompt`, `supportsModelVariant`, or `supportsResume` only when the application can honor that request.
   Unsupported requests are refused before provisioning.
   Resume creates a new session from the source transcript and leaves the source unchanged.
+- Set `interruptKey` to the bytes of the key that stops the application's live turn, such as `"\x1b"` for Escape.
+  The manager's `interrupt` command writes it into the seat's terminal. Declare it only after a live check shows the key ending a turn.
 - Use `supportsSessionContinuation` for recovery of the same meshed session after a process restart.
   Use `supportsSessionReopen` only when an existing named session can be reopened without creating a replacement.
   Set `supportsFreshStart` when a launch without a session handle creates a new session.

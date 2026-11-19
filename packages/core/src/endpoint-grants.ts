@@ -205,8 +205,9 @@ export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-par
  *  detached resume needs the answer before it carries the session. */
 export const SPAWN_CREATE_COMMANDS = Object.freeze(["spawn", "resolve-agent"] as const);
 export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"] as const);
-/** The two commands that WRITE INTO a seat, granted ONLY into operator-authorized credentials
- *  (see the note above for why `input` is not in the spawn set; `turn` is the same authority
+/** The commands that WRITE INTO a seat, granted ONLY into operator-authorized credentials
+ *  (see the note above for why `input` is not in the spawn set; `interrupt` writes one key into the
+ *  same terminal and rides with it, so it grants no agent new reach; `turn` is the same authority
  *  through a different door: a run's turn is a payload the seat is shown and works on, and the run
  *  driver submits it under its own operator instrument, so it rides the same placement). Both
  *  modes are minted here, unlike `despawn`/`attach`, whose owner-mode rows an operator inherits
@@ -216,7 +217,7 @@ export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"
  *  leave `cotal input`, and every run that turns a seat, broker-denied on exactly the mesh mode
  *  the feature is for. Measured: no profile carried a `turn` row at all until it joined this set,
  *  so a run on an auth mesh had its every turn submit dropped at the broker. */
-export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "turn"] as const);
+export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "interrupt", "turn"] as const);
 /** Untargeted manager endpoint additions for the `spawn` capability: persona writes, persona-catalog
  *  reads, per-agent inspection, and goal outcome reads. Each command's responder enforces its
  *  caller scope. */
