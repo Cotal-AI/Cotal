@@ -29,7 +29,7 @@ const c = (label: string, cond: boolean, detail?: unknown): void => {
 const pending = (what: string): void => console.log(`  ⏳ PENDING (blocked on the spec changes this depends on): ${what}`);
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "manager.ts");
-const src = readFileSync(SRC, "utf8") + "\n" + readFileSync(join(dirname(SRC), "turn-relay.ts"), "utf8") + "\n" + readFileSync(join(dirname(SRC), "goal-writer.ts"), "utf8") + "\n" + readFileSync(join(dirname(SRC), "command-dispatch.ts"), "utf8");
+const src = readFileSync(SRC, "utf8") + "\n" + readFileSync(join(dirname(SRC), "turn-relay.ts"), "utf8") + "\n" + readFileSync(join(dirname(SRC), "goal-writer.ts"), "utf8") + "\n" + readFileSync(join(dirname(SRC), "command-dispatch.ts"), "utf8") + "\n" + readFileSync(join(dirname(SRC), "spawn-goal.ts"), "utf8");
 const count = (needle: string): number => src.split(needle).length - 1;
 
 const coverageDoc = readFileSync(join(dirname(SRC), "..", "..", "..", "docs", "control-discovery.mdx"), "utf8");
@@ -62,7 +62,7 @@ const spawnGoalSites = count("this.serveSpawnGoal(") - count("serveSpawnGoal: (.
 c("WRONG-TODAY: EXACTLY two commands route through it — a third would be a third thing to move",
   spawnGoalSites === 2, { sites: spawnGoalSites });
 c("WRONG-TODAY: the chokepoint itself still exists",
-  count("private async serveSpawnGoal(") === 1);
+  count("\n  async serveSpawnGoal(") === 1);
 pending("both commands accept through the journal rail (submission → decision fact → goal bind) and serveSpawnGoal is DELETED");
 
 console.log("\n── WRONG-TODAY (2/2): the reconcile index is written and filtered by the Model-B accept path ──");
@@ -91,7 +91,7 @@ for (const [name, writer] of [
 }
 c("WRONG-TODAY: spawn accepts the once task through acceptOnceTurn",
   methodBody("serveSpawnGoal").includes("await this.acceptOnceTurn({ spawnRef: ref, fingerprint, command: ctx.subject.command, executor, acceptedAt, ...task })")
-    && count("this.acceptOnceTurn(") === 1);
+    && count("this.acceptOnceTurn(") - count("acceptOnceTurn: (...args) => this.acceptOnceTurn(...args),") === 1);
 c("WRONG-TODAY: only spawn, turn, and once-task acceptance write goalidx",
   count("await recordGoalIndex(") === 3, { sites: count("await recordGoalIndex(") });
 // The sweep's skip reads two in-memory maps now (the turn relay keeps its own twin); both are the
