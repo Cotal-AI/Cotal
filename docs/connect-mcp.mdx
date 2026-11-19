@@ -30,7 +30,8 @@ with the registered local space you want. Without `--space`, the command resolve
 space as `cotal spawn` does. The process writes only MCP messages to stdout and diagnostics
 to stderr. It installs no connectors and connects to no broker until `cotal_connect` runs.
 
-Ask the agent to call `cotal_connect` with its name. Save the returned `connection_id`
+Ask the agent to call `cotal_connect` with its name. Open and static local spaces connect
+directly without an approval step. Save the returned `connection_id`
 and pass it on every later gateway call. One stdio process owns one connection. A second
 connection requires disconnecting the first, or a separate server process. Do not share
 one connection between conversations.

@@ -275,11 +275,11 @@ const inputText = (text: string): string[] => text.startsWith("-") ? ["--text", 
 
 /** Resolve a targeted verb's manager and retain the presence-selected seat for its fresh caller.
  *  `rest` is the positionals after the agent name that a remedy has to repeat. */
-async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string, rest: readonly string[] = []): Promise<ManagerPin> {
+async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string, rest: readonly string[] = [], onRefusal?: "throw"): Promise<ManagerPin> {
   const named = onRemedyVerb(verb, v, rest);
   const on = await managerPin(v, named);
   if (on !== undefined) return { instanceId: on };
-  const loc = await locateSeat(cliControl, v, String(v.name));
+  const loc = await locateSeat(cliControl, v, String(v.name), { onRefusal });
   if (loc.kind === "pin") return { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat };
   if (loc.kind === "unpinned") return {};
   // Refused before anything is sent, as `ps` refuses, rather than after a describe no manager can answer.
@@ -1049,14 +1049,14 @@ export async function input(args: ParsedArgs): Promise<void> {
   const parsed = inputArguments(args);
   const v = { ...args.values, ...parsed } as FlagValues<typeof inputFlags> & { name: string; text: string };
   refuseControlCreds(v.creds, v.space);
-  const pin = await pinForTarget(v as never, "cotal input", inputText(v.text));
+  const pin = await pinForTarget(v as never, "cotal input", inputText(v.text), "throw");
   const on = pin.instanceId;
   // A typed pin the registry does not list is refused at once, as stop refuses it.
   if (v.on !== undefined && on !== undefined) {
-    const reader = await resolveControlTarget(v, "control-caller-privileged", on);
+    const reader = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
     if (!reader.auth.bearer) await refuseUnregisteredManager(reader.space, reader.server, reader.auth, on);
   }
-  const t = await resolveControlTarget(v, "control-caller-admin", on);
+  const t = await resolveControlTarget(v, "control-caller-admin", on, { onRefusal: "throw" });
   recordOperationSpace(t.space);
   const reach = t.auth.bearer ? "owner" : "any";
   const reply = await askManager(cliControl, t.space, t.server, "input", { name: v.name, text: v.text, enter: v["no-enter"] !== true }, t.auth, reach, undefined, pin);

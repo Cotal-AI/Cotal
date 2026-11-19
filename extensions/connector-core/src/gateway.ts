@@ -221,6 +221,8 @@ const APPROVAL_SETTLE_SECONDS = 25;
 
 /** How an embedder tunes the surface for what sits in front of it. */
 export interface GatewayOptions {
+  /** Replace the default approval instructions in the cotal_connect tool description. */
+  connectDescription?: string;
   /** A native embedder binds the connect call to a host-observed conversation. The value is only
    * a routing key, never authentication; the host must validate its own binding before issue. */
   connectContext?: boolean;
@@ -495,7 +497,7 @@ export function registerCotalGatewayTools(
     {
       title: "Cotal: connect this conversation",
       annotations: gatewayAnnotations("cotal_connect"),
-      description:
+      description: options.connectDescription ?? (
         "Request a Cotal connection for THIS conversation. " +
         (options.space ? "On a signed-in mesh, the person must " : "The person must ") +
         "review, edit and approve its permissions in Cotal before it receives a connection_id. When approval is pending, show them the " +
@@ -509,7 +511,7 @@ export function registerCotalGatewayTools(
           ? " Optional space names one mesh registered on this computer, and signed in when it is a signed-in space, overriding the default target without changing configuration. Omit it to use the CLI's default target. " +
             "An open or static mesh this computer runs needs no browser approval: the connection holds the channels, role and capabilities of that mesh's default persona, " +
             "or the part of them it asks for. Connecting shares this native conversation's activity from that point onward, including user and assistant messages and tool inputs and results; earlier history is not shared."
-          : ""),
+          : "")),
       inputSchema: z.strictObject({
         name: z.string().min(1).describe("The agent name to request, for example claude_web."),
         ...(options.connectContext ? { context: z.string().min(1).max(128).optional().describe("Conversation binding supplied by the native host.") } : {}),
@@ -876,6 +878,8 @@ export interface GatewayStdio {
   /** The source tag on messages this server sends. */
   source?: string;
   instructions?: string;
+  /** See {@link GatewayOptions.connectDescription}. */
+  connectDescription?: string;
   /** See {@link GatewayOptions.connectContext}. */
   connectContext?: boolean;
   /** See {@link GatewayOptions.tools}. */
@@ -902,6 +906,7 @@ export interface GatewayStdio {
 export async function serveGatewayStdio(host: GatewayHost, o: GatewayStdio = {}): Promise<{ close(): Promise<void> }> {
   const server = new McpServer({ name: "cotal", version: DOCS_VERSION }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });
   registerCotalGatewayTools(server, host, o.source, {
+    connectDescription: o.connectDescription,
     ...(o.connectContext ? { connectContext: true } : {}),
     ...(o.tools ? { tools: o.tools } : {}),
     ...(o.selection ? { selection: true } : {}),

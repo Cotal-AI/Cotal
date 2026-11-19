@@ -89,6 +89,13 @@ check("control: without a record the refusal has no target and no Mesh line", un
 const unknown = kernel("scoped", "--json", "--record", "s9", "--fail", "plain");
 check("an unclassified failure after the record is OPERATION_UNKNOWN in that space", unknown.status === 3 && unknown.envelope?.error?.code === "OPERATION_UNKNOWN" && same(unknown.envelope.target, { space: "s9" }), shown(unknown));
 
+for (const args of [["reviewer", "Audit text"], ["--name", "reviewer", "--text=--verbose"], ["reviewer", "Audit text", "--on", "aaaaaaaaaaaaaaaaaaaaaaaaaa"]]) {
+  const missing = cotal("input", ...args, "--space", "fifth_missing", "--json");
+  check(`input ${args.join(" ")} reports an unregistered target as JSON, exit 2`,
+    missing.status === 2 && missing.stderr === "" && missing.envelope?.outcome === "refused" &&
+    missing.envelope.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.message?.includes('"fifth_missing"') === true, shown(missing));
+}
+
 const prepared = cotal("space", "create", "opsp", "--root", ".");
 check("fixture: the space is prepared and not started", prepared.status === 0, shown(prepared));
 const persona = agentFilePath(root, "rev");

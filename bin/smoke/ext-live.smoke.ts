@@ -317,7 +317,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   const staleRun = cotal(["hello-ext", "stale-lock"]);
   ok("lazy extension import ignores a dead owner's stale mutation lock", staleRun.status === 0 && /hello stale-lock/.test(staleRun.stdout), staleRun.stdout + staleRun.stderr);
   const staleClaim = cotal(["ext", "remove", "not-installed"]);
-  ok("extension mutation reclaims a dead owner's stale lock", staleClaim.status === 1 && /no installed extension/.test(staleClaim.stderr) && !existsSync(mutationLock), staleClaim.stderr);
+  ok("extension mutation reclaims a dead owner's stale lock", staleClaim.status === 0 && /already absent/.test(staleClaim.stdout) && !existsSync(mutationLock), staleClaim.stdout + staleClaim.stderr);
 
   mkdirSync(mutationLock); // a stray directory where the lock file belongs → unreadable
   const unreadableStarted = Date.now();
