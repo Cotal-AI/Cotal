@@ -288,7 +288,21 @@ function runTurn(frame, socket) {
       orientationTurns++;
       if (process.env.FAKE_JCODE_NEVER_ORIENTATION !== "1" && orientationTurns > readyAfter) {
         log({ ev: "orientation_done", turn: orientationTurns });
-        event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
+        // FAKE_JCODE_ORIENTATION_VIA reaches orientation through Jcode's deferred MCP wrapper, as a
+        // model does when no direct tool is listed: `mcp_call` up to Jcode 0.99.0, `mcp` with action
+        // "call" from 0.99.1. `mcp-search` sends an `mcp` call naming the tool with another action.
+        const via = process.env.FAKE_JCODE_ORIENTATION_VIA;
+        if (via) {
+          const name = via === "mcp_call" ? "mcp_call" : "mcp";
+          const action = via === "mcp" ? { action: "call" } : via === "mcp-search" ? { action: "search" } : {};
+          const input = JSON.stringify({ ...action, server: "cotal", tool: "cotal_orientation", arguments: {}, intent: "readiness" });
+          const call_id = `orientation-${orientationTurns}`;
+          event({ ev: "tool_start", session_id: frame.session_id, call_id, name });
+          event({ ev: "tool_input_delta", session_id: frame.session_id, call_id, delta: input.slice(0, 20) });
+          event({ ev: "tool_input_delta", session_id: frame.session_id, call_id, delta: input.slice(20) });
+          event({ ev: "tool_exec", session_id: frame.session_id, call_id, name });
+          event({ ev: "tool_done", session_id: frame.session_id, call_id, name, output: "ok" });
+        } else event({ ev: "tool_done", session_id: frame.session_id, call_id: "orientation", name: "mcp__cotal__cotal_orientation", output: "ok" });
         if (process.env.FAKE_JCODE_WITHHOLD_TURN_DONE === "1") {
           // #1440: the required orientation call has arrived; keep the turn open so a host
           // that still waits for turn_done times out and kills a functional seat.
