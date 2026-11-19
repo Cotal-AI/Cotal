@@ -204,7 +204,11 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
   };
 
   const offerFor = async (m: Mesh, machine?: string): Promise<Offer> => {
-    const [catalogs, personas, channels, managers] = await Promise.all([m.catalogs(machine), m.personas(), m.channels(), m.managers()]);
+    const managers = await m.managers();
+    // A new session defaults to this machine's manager, so read its lists rather than whichever
+    // manager answers first.
+    const from = machine ?? managers.find((x) => x.local)?.instanceId;
+    const [catalogs, personas, channels] = await Promise.all([m.catalogs(from), m.personas(from), m.channels()]);
     if (personas.length >= MAX_CHOICES) options.log(`the persona catalog holds ${personas.length} personas, more than a client select shows; the persona option is not offered`);
     if (channels.length >= MAX_CHOICES) options.log(`the space holds ${channels.length} channels, more than a client select shows; the channel option is not offered`);
     return { catalogs, personas, channels, managers, defaultAgent: catalogs.find((c) => c.agent === m.defaultAgent)?.agent };

@@ -150,13 +150,15 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
       const ids = await liveManagerIds(t.space, t.server, t.auth);
       const here = hostname();
       return Promise.all(ids.map(async (instanceId): Promise<ManagerChoice> => {
-        const host = await reportedManagerHost(client, t.space, t.server, t.auth, instanceId);
+        // A per-instance call needs an instrument minted for that instance.
+        const pinned = await resolveControlTarget(ctx, "control-caller-privileged", instanceId, { onRefusal: "throw" }).catch((e) => Promise.reject(plain(e)));
+        const host = await reportedManagerHost(client, pinned.space, pinned.server, pinned.auth, instanceId);
         return { instanceId, ...(host ? { host } : {}), local: host === here };
       }));
     },
 
-    async personas() {
-      const reply = await ask("listPersonas");
+    async personas(instanceId) {
+      const reply = await ask("listPersonas", undefined, instanceId);
       if (!reply.ok) throw failure(reply, "the manager did not list its personas");
       const rows = (reply.data as { personas?: { name: string }[] } | undefined)?.personas ?? [];
       return rows.map((p) => p.name).sort();

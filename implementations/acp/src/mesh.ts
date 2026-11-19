@@ -103,8 +103,8 @@ export interface Mesh {
   catalogs(managerInstanceId?: string): Promise<AgentCatalog[]>;
   /** The managers this caller can spawn through. */
   managers(): Promise<ManagerChoice[]>;
-  /** Persona names in the manager's catalog. */
-  personas(): Promise<string[]>;
+  /** Persona names in a manager's catalog. Each manager holds its own. */
+  personas(managerInstanceId?: string): Promise<string[]>;
   /** Launch a seat and wait until the manager confirms it joined. */
   spawn(request: SpawnRequest): Promise<SeatRef>;
   /** Every managed seat the caller can see. */
