@@ -30,6 +30,8 @@ export type WorkspaceError =
 export interface WorkspaceErrorParts {
   readonly message: string;
   readonly remedy?: string;
+  /** The local root named by a stopped stack's restart remedy. */
+  readonly restartRoot?: string;
 }
 
 const parts = (message: string, remedy?: string): WorkspaceErrorParts => (remedy === undefined ? { message } : { message, remedy });
@@ -115,7 +117,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         : d.unsettled !== undefined
           ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)
           : d.stopped !== undefined
-            ? parts(`"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, `start it again with \`cotal up\` in ${d.root}`)
+            ? { message: `"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, remedy: `start it again with \`cotal up\` in ${d.root}`, restartRoot: d.root }
           : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
       const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
       // A legacy root whose space is registered for another folder, as a copy, a folder the name was
@@ -181,7 +183,7 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       // A deleted root cannot be restarted from, so the step is moving it back or forgetting the space (#7318).
       if (!existsSync(t.root))
         return parts(`no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root}, which no longer exists`, `if that folder was moved or renamed, move it back and run \`cotal up\` there; otherwise forget the space with \`cotal space forget ${t.space}\``);
-      return parts(`no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root} but not running`, "run `cotal up` there to restart");
+      return { message: `no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root} but not running`, remedy: "run `cotal up` there to restart", restartRoot: t.root };
     // The registry-mismatch pair, like `unreachable`, must not prescribe `cotal up` for a mesh this
     // machine only registered: the repair there is the credentials under `--root`, or re-registering
     // the entry — `cotal up` would start a DIFFERENT, local mesh under that name.

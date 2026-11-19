@@ -165,7 +165,7 @@ import {
   verifyUserExchange,
   type UserBundle,
 } from "./meshes-add.js";
-import { askManager, describeUnanswered, liveManagerIds, managerRailGone, refuseUnregisteredManager, refuseWithoutLiveManager, START_TIMEOUT_MS, withControlConnection } from "@cotal-ai/workspace/control";
+import { askManager, describeUnanswered, liveManagerIds, managerRailGone, refuseUnregisteredManager, refuseWithoutLiveManager, START_TIMEOUT_MS, startStackManagerRemedy, withControlConnection } from "@cotal-ai/workspace/control";
 
 const ENROLLMENT_URL_ENV = "COTAL_ENROLLMENT_URL";
 const ENROLLMENT_FILE_ENV = "COTAL_ENROLLMENT_FILE";
@@ -510,7 +510,12 @@ export function validateSpawnArguments(args: ParsedArgs): void {
   if (values["enrollment-file"] !== undefined && (internal || values.detach || values.creds !== undefined || values.on !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "choose one foreground enrollment source without a manager pin, credential override or internal handoff");
   if (values.harness !== undefined && values.agent !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "choose --harness/-H or the legacy --agent spelling, not both");
   if (values.detach && direct) throw new CommandFailure("refused", "USAGE_INVALID", "--detach and direct foreground execution are different launch modes");
-  if (direct && ((!values["dry-run"] && (values.json || values.plain)) || values.creds !== undefined || values.on !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "a spawn in this terminal takes no structured receipt, manager credential or manager pin", { remedy: "add -d to launch it through a manager, which returns a receipt once the agent joins", selfContained: true });
+  if (direct && ((!values["dry-run"] && (values.json || values.plain)) || values.creds !== undefined || values.on !== undefined)) {
+    const without = [...(!values["dry-run"] && values.json ? ["--json"] : []), ...(!values["dry-run"] && values.plain ? ["--plain"] : []), ...(values.creds !== undefined ? ["--creds"] : []), ...(values.on !== undefined ? ["--on"] : [])];
+    const foreground = `omit ${without.join(", ")} to launch in this terminal`;
+    const managed = values.foreground ? "replace --foreground with -d" : "add -d";
+    throw new CommandFailure("refused", "USAGE_INVALID", "a spawn in this terminal takes no structured receipt, manager credential or manager pin", { remedy: internal ? foreground : `${foreground}, or ${managed} to launch through a manager and get a receipt once the agent joins`, selfContained: true });
+  }
   if ((values.restarts === undefined) !== (values["restart-window"] === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restarts and --restart-window must be supplied together");
   if (values.restarts !== undefined) {
     if (direct) throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not a spawn in this terminal", { remedy: "add -d, or --on <instance>, to launch it through a manager" });
@@ -966,7 +971,7 @@ async function unservedClassLaunch(flags: ConnectFlags | undefined, t: ControlTa
     recordOperationWarning({ code: "MANAGER_SILENT", target: { space: t.space, managerInstanceId: instanceId }, message: `manager ${instanceId} was skipped: its registration is stale (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)` });
   if (census?.noApplication && census.unavailable.length) {
     return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no manager of yours takes unpinned launches: installed agent applications are unavailable (${census.unavailable.join("; ")}); nothing was launched`, { ...at,
-      remedy: `install or repair the reported applications and dependencies on the named manager hosts, with the required executables on the PATH used to start each manager, then restart those managers; for a stack started with \`cotal up\`, run \`cotal manager stop --yes\` then \`cotal up\` from its project folder${census.empty.length ? `; no connectors are installed on ${census.empty.join(", ")}: add one there, such as ${extAddFor(agent ?? DEFAULT_CONNECTOR)}` : ""}` });
+      remedy: `install or repair the reported applications and dependencies on the named manager hosts. If the PATH used to start each manager needs to change, restart it under its own supervisor. For a saved manager service, use \`cotal service restart <name> --yes\`. For a foreground \`cotal up\` stack, stop it with \`cotal down --yes\` from its project folder or Ctrl-C in its terminal. This stops the broker and hosted workflow runs and can stop agents. Repeat the original foreground start with the updated PATH${census.empty.length ? `. No connectors are installed on ${census.empty.join(", ")}: add one there, such as ${extAddFor(agent ?? DEFAULT_CONNECTOR)}` : ""}.` });
   }
   if (census?.noApplication) {
     return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no manager of yours takes unpinned launches: none ${census.gone.length ? "that answered " : ""}has an agent application installed${census.managers.length ? ` (${census.managers.join(", ")})` : ""}; nothing was launched`, { ...at,
@@ -980,7 +985,7 @@ async function unservedClassLaunch(flags: ConnectFlags | undefined, t: ControlTa
 function unansweredClassLaunch(t: ControlTarget, at: { target: object; native: object }): CommandFailure {
   const refused = (message: string, remedy: string) => new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}, so the launch was not sent and nothing was launched`, { ...at, remedy });
   if (t.root !== undefined && stackManagerStarting(t.root, t.space)) return refused("the stack's manager is starting", "run the spawn again once `cotal up` reports the manager started");
-  if (t.root !== undefined && stackManagerAbsent(t.root, t.space)) return refused("no manager is running for this space", "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none");
+  if (t.root !== undefined && stackManagerAbsent(t.root, t.space)) return refused("no manager is running for this space", startStackManagerRemedy(t.space, t.server));
   const pid = t.root === undefined ? undefined : runningStackManagerPid(t.root, t.space);
   if (pid !== undefined) return refused(`this space's stack manager (pid ${pid}) is running but did not answer`, `if it stays unresponsive, end that process with kill -KILL ${pid}; then bare \`cotal up\` starts the manager again`);
   return refused("no manager answered", "cotal ps shows which managers answer; run the spawn again once one does");

@@ -78,7 +78,7 @@ export function printVersion(exts = extensionVersions()): void {
   const current = cliVersion();
   const update = cachedUpdateSummary(current);
   const pending = readUpdatePending(current);
-  const lines = [`cotal-ai ${current}`, ...(pending.kind === "none" ? [] : [`  ${pending.instruction}`]), ...(update === "update status unknown" || update === "up to date" ? [] : [`  ${update}`])];
+  const lines = [`cotal-ai ${current}`, ...(pending.kind === "none" ? [] : [`  ${pending.instruction}`]), ...(update === "update status unknown" || update === "up to date" || (pending.kind !== "none" && update === pending.instruction) ? [] : [`  ${update}`])];
   if (exts.length) {
     const pad = Math.max(...exts.map((e) => e.label.length));
     for (const e of exts) lines.push(`  ${e.label.padEnd(pad)}  ${e.version}`);

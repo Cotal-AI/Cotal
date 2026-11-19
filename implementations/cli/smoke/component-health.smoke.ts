@@ -114,9 +114,9 @@ function cli(...args: string[]) {
   return cliIn(root, args);
 }
 
-function cliIn(cwd: string, args: string[], timeout = 30_000) {
-  assertSmokeSandboxDown(sandboxes.get(cwd), args, { cwd, env });
-  return spawnSync(TSX, [CLI, ...args], { cwd, env, encoding: "utf8", timeout });
+function cliIn(cwd: string, args: string[], timeout = 30_000, childEnv = env) {
+  assertSmokeSandboxDown(sandboxes.get(cwd), args, { cwd, env: childEnv });
+  return spawnSync(TSX, [CLI, ...args], { cwd, env: childEnv, encoding: "utf8", timeout });
 }
 
 async function cliAsync(...args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
@@ -475,16 +475,19 @@ try {
   check("a healthy default stack exits 0 with the installed dashboard not-started",
     notStarted.status === 0 && /web\s+not-started · optional/.test(notStartedText) &&
       ["manager", "delivery", "broker"].every(name => new RegExp(`${name}\\s+serving`).test(notStartedText)), notStartedText);
-  const managerGuidance = (cwd: string) => {
+  const managerGuidance = (cwd: string, openMesh: boolean) => {
     const roster = cliIn(cwd, ["ps", "--json"]);
     const manager = (JSON.parse(roster.stdout) as { result: { managers: { instanceId: string }[] } }).result.managers[0]!.instanceId;
     for (const name of ["manager", manager]) {
-      const read = cliIn(cwd, ["status", name, "--plain"]);
+      const read = cliIn(cwd, ["status", name, "--json"]);
+      const error = (JSON.parse(read.stdout) as { error?: { code: string; remedy?: string } }).error;
       check(`status ${name === "manager" ? "manager" : "manager instance"} explains the answering manager is not an agent`,
-        read.status === 2 && `${read.stdout}${read.stderr}`.includes(`${name} is this space's manager, which is answering, not an agent it runs`), `${read.stdout}${read.stderr}`);
+        read.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.remedy !== undefined
+          && error.remedy.includes(`${name} is this space's manager, which is answering, not an agent it runs`)
+          && error.remedy.includes("`cotal status`") && error.remedy.includes("`cotal endpoint describe manager`") === !openMesh, `${read.stdout}${read.stderr}`);
     }
   };
-  managerGuidance(webRoot);
+  managerGuidance(webRoot, false);
   if (process.platform !== "win32") {
     const deliveryCreds = join(webRoot, ".cotal", deliveryCredsKey(WEB_SPACE, { injected: false, root: webRoot }));
     chmodSync(deliveryCreds, 0o644);
@@ -515,7 +518,7 @@ try {
   const openHealth = cliIn(openRoot, ["status", "--components"]);
   const openText = `${openHealth.stdout}${openHealth.stderr}`;
   check("a healthy open stack needs no delivery daemon and exits zero", openHealth.status === 0 && /delivery\s+not-started.*not used on an open mesh/.test(openText) && /broker\s+serving/.test(openText) && /manager\s+serving/.test(openText), openText);
-  managerGuidance(openRoot);
+  managerGuidance(openRoot, true);
   const openDown = cliIn(openRoot, ["down", "--yes"], 120_000);
   openStack = openDown.status !== 0;
   check("the open controller stack stops", openDown.status === 0, `${openDown.stdout}${openDown.stderr}`);
@@ -742,17 +745,43 @@ try {
   const controllerSpace = "component-health-controller";
   const prepare = cliIn(controllerRoot, ["space", "create", controllerSpace]);
   check("prepare the controller health stack", prepare.status === 0, `${prepare.stdout}${prepare.stderr}`);
-  const controllerUp = cliIn(controllerRoot, ["up", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
+  const controllerServer = `nats://127.0.0.1:${await freePort()}`;
+  const controllerUp = cliIn(controllerRoot, ["up", "--no-manager", "--server", controllerServer], 120_000);
   controllerStack = controllerUp.status === 0;
   check("start the controller without a manager", controllerStack, `${controllerUp.stdout}${controllerUp.stderr}`);
   const omittedController = cliIn(controllerRoot, ["status", "--components", "--space", controllerSpace]);
   check("an intentionally omitted controller manager is not-started and exits 0",
     omittedController.status === 0 && /manager\s+not-started.*--no-manager/.test(omittedController.stdout), `${omittedController.stdout}${omittedController.stderr}`);
+  const slashController = cliIn(controllerRoot, ["status", "--components", "--space", controllerSpace, "--server", `${controllerServer}/`]);
+  const slashHealth = slashController.stdout.split("Component Health")[1] ?? "";
+  check("a trailing slash keeps the controller broker serving and its manager intentionally omitted",
+    slashController.status === 0 && /manager\s+not-started.*--no-manager/.test(slashHealth) && /broker\s+serving.*reachable/.test(slashHealth), `${slashController.stdout}${slashController.stderr}`);
+  const clientEnv = { ...env, COTAL_HOME: join(home, "manager-client") };
+  const clientAdd = cliIn(openRoot, ["space", "add", controllerSpace, "--server", controllerServer, "--root", controllerRoot], 30_000, clientEnv);
+  check("a second Cotal home can register the broker-only space", clientAdd.status === 0, `${clientAdd.stdout}${clientAdd.stderr}`);
+  for (const args of [["spawn", "-d"], ["stop", "sample"], ["attach", "sample"]]) {
+    const refused = cliIn(openRoot, [...args, "--space", controllerSpace]);
+    const text = `${refused.stdout}${refused.stderr}`;
+    check(`${args[0]} from another project names the project whose manager is missing`,
+      refused.status === 2 && text.includes("no manager is running for this space") && /Code:\s+TARGET_UNAVAILABLE/.test(text)
+        && text.includes(`bare \`cotal up\` in ${controllerRoot}`), text);
+    const remote = cliIn(openRoot, [...args, "--space", controllerSpace], 30_000, clientEnv);
+    const remoteText = `${remote.stdout}${remote.stderr}`;
+    check(`${args[0]} where the space is only registered tells the operator to start its manager there`,
+      remote.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(remoteText)
+        && remoteText.includes("start this space's manager where its stack runs") && !remoteText.includes("cotal up"), remoteText);
+  }
   const selectController = cliIn(controllerRoot, ["use", controllerSpace]);
   check("select the controller stack", selectController.status === 0, `${selectController.stdout}${selectController.stderr}`);
   const controllerDown = cliIn(controllerRoot, ["down", "--yes"], 120_000);
   controllerStack = controllerDown.status !== 0;
   check("stop the controller stack cleanly", !controllerStack, `${controllerDown.stdout}${controllerDown.stderr}`);
+  const pending = cliIn(controllerRoot, ["pending", "nobody", "--json"]);
+  const receipt = JSON.parse(pending.stdout) as { target?: { space?: string; root?: string; requested?: string }; error?: { code?: string; message?: string; remedy?: string } };
+  check("pending keeps the stopped-space diagnosis, the recipient, and the project's restart remedy",
+    pending.status === 2 && receipt.target?.requested === "nobody" && receipt.target.space === controllerSpace && receipt.target.root === controllerRoot
+      && receipt.error?.code === "TARGET_UNAVAILABLE" && receipt.error.message === `"${controllerSpace}" is stopped; its last operation, \`cotal down\`, completed`
+      && receipt.error.remedy === `start it again with \`cotal up\` in ${controllerRoot}`, receipt);
   const stoppedController = cliIn(controllerRoot, ["status", "--components"]);
   check("a cleanly stopped controller target is absent (1), not refused",
     stoppedController.status === 1 && /target\s+absent.*not-started/.test(stoppedController.stdout), `${stoppedController.stdout}${stoppedController.stderr}`);

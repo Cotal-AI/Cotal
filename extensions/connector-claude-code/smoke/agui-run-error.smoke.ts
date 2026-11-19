@@ -100,6 +100,7 @@ function prompt(n: number): string {
     JSON.stringify({
       type: "user",
       uuid: `u-${n}`,
+      promptId: `prompt-${n}`,
       sessionId: THREAD,
       timestamp: new Date(1_700_000_000_000 + n * 1000).toISOString(),
       origin: { kind: "human" },
@@ -223,7 +224,7 @@ try {
   );
 
   // ---- Turn 2: a real turn that ENDS NORMALLY. The control that says the mapping is not blanket.
-  appendFileSync(transcript, turn(2));
+  appendFileSync(transcript, prompt(2));
   await hook({ hook_event_name: "UserPromptSubmit" });
   await sleep(500);
   check(
@@ -246,7 +247,13 @@ try {
     inputCondition?.code === "input" && inputCondition.source === "agent_needs_input",
     inputCondition,
   );
-  await hook({ hook_event_name: "Stop" });
+  // Claude can start Stop with the final text before the transcript writer appends it.
+  const stopping = hook({ hook_event_name: "Stop", last_assistant_message: "answer-2", prompt_id: "prompt-2" });
+  // Let an immediate Stop finish its queued work before appending. A Stop that waits for the
+  // advertised text stays pending while the test releases the writer.
+  await Promise.race([stopping.then(() => events.settled()), sleep(100)]);
+  appendFileSync(transcript, answer(2));
+  await stopping;
   await sleep(2_000);
   await events.settled();
 
@@ -290,6 +297,31 @@ try {
   }
   check("native wakes never stop the emitter", emitterErrors.length === 0, emitterErrors);
 
+  // The same answer on the previous prompt must not release a Stop for the current one.
+  appendFileSync(transcript, turn(5));
+  await hook({ hook_event_name: "UserPromptSubmit" });
+  await hook({ hook_event_name: "Stop", last_assistant_message: "answer-5", prompt_id: "prompt-5" });
+  await events.settled();
+  appendFileSync(transcript, prompt(6));
+  await hook({ hook_event_name: "UserPromptSubmit" });
+  await events.settled();
+  const repeated = hook({ hook_event_name: "Stop", last_assistant_message: "answer-5", prompt_id: "prompt-6" });
+  await Promise.race([repeated.then(() => events.settled()), sleep(100)]);
+  appendFileSync(transcript, answer(5).replace('"a-5"', '"a-6"'));
+  await repeated;
+  await events.settled();
+
+  for (const [n, text] of [[7, ""], [8, "never written"]] as const) {
+    appendFileSync(transcript, prompt(n));
+    await hook({ hook_event_name: "UserPromptSubmit" });
+    const started = performance.now();
+    await hook({ hook_event_name: "Stop", last_assistant_message: text, prompt_id: `prompt-${n}` });
+    const elapsed = performance.now() - started;
+    check(`stop-${n}:${text ? "missing advertised text has a bounded wait" : "no advertised text does not wait"}`,
+      text ? elapsed >= 500 && elapsed < 1_500 : elapsed < 500, elapsed);
+    await events.settled();
+  }
+
   // ---- Read the whole stream back from the broker and grade it as an ORDER.
   const reader = new CotalEndpoint({
     space: SPACE, servers, card: { name: "Reader", kind: "agent", id: "reader" }, channels: [CHANNEL],
@@ -325,7 +357,7 @@ try {
   const idx = (pred: (e: Ev) => boolean): number => seen.findIndex(pred);
   const a1 = idx((e) => e.text.includes("answer-1"));
   const a2 = idx((e) => e.text.includes("answer-2"));
-  check("control:BOTH turns reached the subject, in order — a stream missing one grades nothing below",
+  check("control:both answers reach the subject in order, including the one appended during Stop",
     a1 >= 0 && a2 >= 0 && a1 < a2, { a1, a2 });
 
   const isClose = (e: Ev): boolean => e.type === "RUN_FINISHED" || e.type === "RUN_ERROR";
@@ -353,7 +385,7 @@ try {
   for (const n of [3, 4]) {
     const before = idx((e) => e.text === `answer-${n}`);
     const after = idx((e) => e.text === `answer-${n + 10}`);
-    const next = n === 3 ? idx((e) => e.text === "answer-4") : seen.length;
+    const next = idx((e) => e.text === (n === 3 ? "answer-4" : "prompt 5"));
     const window = seen.slice(before + 1, next);
     check(`wake-${n}:assistant text before and after the wake reaches the broker in order`,
       before >= 0 && after > before);
@@ -368,8 +400,21 @@ try {
   check("native wake and inline prompt bodies stay off the event channel",
     wakeBodies.every((body) => !wire.join("\n").includes(body)));
 
+  const runForPrompt = (n: number): Ev[] => {
+    const prompt = seen.find((e) => e.text === `prompt ${n}`);
+    return prompt ? seen.filter((e) => e.runId === prompt.runId) : [];
+  };
+  for (const n of [5, 6, 7, 8]) {
+    const run = runForPrompt(n);
+    const expected = n <= 6 ? "answer-5" : undefined;
+    const closes = run.filter(isClose);
+    check(`stop-${n}:the correct run closes once after its transcript records`,
+      closes.length === 1 && run.at(-1)?.type === "RUN_FINISHED" &&
+      (expected === undefined || run.some((e) => e.text === expected)), run);
+  }
+
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 29;
+  const EXPECTED = 35;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 

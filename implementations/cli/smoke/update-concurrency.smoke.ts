@@ -64,7 +64,8 @@ if (globalHelperRoot) {
   const releaseFile = process.env.COTAL_UPDATE_GLOBAL_LOCK_RELEASE!;
   const release = claimGlobalNpmUpdateLock(globalHelperRoot);
   writeFileSync(ready, String(process.pid));
-  await waitFor(() => existsSync(releaseFile), "global update lock release");
+  await waitFor(() => existsSync(releaseFile) || process.env.COTAL_UPDATE_GLOBAL_LOCK_TIMED === "1", "global update lock release");
+  if (process.env.COTAL_UPDATE_GLOBAL_LOCK_TIMED === "1") await sleep(1_000);
   release();
   process.exit(0);
 }
@@ -101,6 +102,34 @@ if (globalHelperRoot) {
     assert.equal(holder.exitCode, 0);
     const release = claimGlobalNpmUpdateLock(root);
     release();
+  } finally {
+    if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// The command waits for a running updater, while non-update readers keep their immediate refusal.
+{
+  const { updateRuntime } = await import("../src/commands/update.js");
+  const root = mkdtempSync(join(tmpdir(), "cotal-update-global-wait-"));
+  const ready = join(root, "holder-ready");
+  const holder = spawn(process.execPath, [...process.execArgv, import.meta.filename], {
+    env: { ...process.env, COTAL_UPDATE_GLOBAL_LOCK_HELPER: root, COTAL_UPDATE_GLOBAL_LOCK_READY: ready,
+      COTAL_UPDATE_GLOBAL_LOCK_RELEASE: join(root, "release"), COTAL_UPDATE_GLOBAL_LOCK_TIMED: "1" },
+    stdio: "ignore",
+  });
+  try {
+    await waitFor(() => existsSync(ready), "the competing updater");
+    const started = Date.now();
+    let waits = 0;
+    const release = updateRuntime.claimGlobalUpdate(root, () => { waits++; });
+    release();
+    assert.ok(Date.now() - started >= 500, "plain self-update waits for the competing updater to release its reservation");
+    assert.equal(waits, 1, "contention reports its wait once, not once per poll");
+    await waitForExit(holder);
+    assert.equal(holder.exitCode, 0);
+    updateRuntime.claimGlobalUpdate(root, () => { waits++; })();
+    assert.equal(waits, 1, "an uncontended reservation reports no wait");
   } finally {
     if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
     rmSync(root, { recursive: true, force: true });

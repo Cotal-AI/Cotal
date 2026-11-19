@@ -55,7 +55,8 @@ and installed entry, with paths quoted for a POSIX shell. For the POSIX installe
 also preserve its private Node/npm PATH and npm install prefix, so setup can seed connectors.
 They do not require a source checkout or pnpm. The entry card and status next steps use `cotal`
 when a permanent launcher is on PATH. Otherwise, `npx` runs suggest `npx cotal-ai`, `pnpm dlx`
-runs suggest `pnpm dlx cotal-ai` even with a custom cache directory, and checkouts suggest `pnpm cotal`.
+runs suggest `pnpm dlx cotal-ai` even with a custom cache directory or when pnpm 11 runs the package
+from its global virtual store, and checkouts suggest `pnpm cotal`.
 
 `npx cotal-ai <command>` and `pnpm dlx cotal-ai <command>` run it without a global install. Bare `cotal` starts nothing: it names
 the explicit `cotal use` selection first, else the space this folder has registered, else an

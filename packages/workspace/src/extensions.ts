@@ -120,16 +120,17 @@ export function extensionMutationLockState(): ExtensionMutationLockState {
  *  silently vanish from help). */
 export function loadExtensionsManifest(): ExtensionsManifest {
   const p = extensionsManifestPath();
+  const repair = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(p, "utf8"));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return { extensions: [] };
     if ((e as NodeJS.ErrnoException).code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
-    throw new Error(`corrupt extensions manifest ${p}: ${(e as Error).message} - fix or delete it, then \`cotal ext add\` again`);
+    throw new Error(`corrupt extensions manifest ${p}: ${(e as Error).message}. ${repair}`);
   }
-  const m = parsed as ExtensionsManifest;
-  if (!Array.isArray(m.extensions)) throw new Error(`corrupt extensions manifest ${p}: no "extensions" array`);
+  const m = parsed as ExtensionsManifest | null;
+  if (!Array.isArray(m?.extensions)) throw new Error(`corrupt extensions manifest ${p}: no "extensions" array. ${repair}`);
   return m;
 }
 

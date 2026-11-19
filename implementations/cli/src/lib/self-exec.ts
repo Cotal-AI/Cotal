@@ -93,7 +93,18 @@ export function isNpx(): boolean {
 
 /** True when launched from pnpm's default or configured dlx cache. */
 export function isPnpmDlx(): boolean {
-  return inPnpmDlxCache(process.argv[1] ?? "", process.env);
+  const entry = process.argv[1] ?? "";
+  return inPnpmDlxCache(entry, process.env) || linkedFromPnpmDlx(entry, process.env);
+}
+
+/** pnpm 11 runs a dlx package from its global virtual store, so the entry's path names the store
+ *  rather than the dlx cache. The cache's bin directory, which pnpm puts first on PATH, still links
+ *  the package the entry belongs to. */
+function linkedFromPnpmDlx(entry: string, env: NodeJS.ProcessEnv): boolean {
+  const bin = (env.PATH ?? "").split(delimiter)[0];
+  if (!entry || !bin || !env.npm_config_user_agent?.startsWith("pnpm/") || !bin.endsWith(`${sep}node_modules${sep}.bin`) || !inPnpmDlxCache(bin, env)) return false;
+  try { return realpathSync(entry).startsWith(realpathSync(join(bin, "..", "cotal-ai")) + sep); }
+  catch { return false; }
 }
 
 function inPnpmDlxCache(path: string, env: NodeJS.ProcessEnv): boolean {

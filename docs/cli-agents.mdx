@@ -56,7 +56,9 @@ may end the agent. On `SIGTERM` or `SIGHUP`, a spawn in this terminal forwards t
 child process, waits for it to stop, retires the seat's provisioned credentials and launch files,
 and exits with the signal's status. A manager runs the launch only when you
 ask for one. `--detach` (`-d`) hands it to a manager, waits until the agent joins, and returns
-without attaching. `--on <instance>` hands it to that manager and attaches this terminal to the
+without attaching. If no manager is running, the launch starts nothing and names the local project
+where `cotal up` starts the manager. For a space that runs elsewhere, start its manager there.
+`--on <instance>` hands it to that manager and attaches this terminal to the
 agent (see [Managed launch view](cli-agent-views.mdx#managed-launch-view)), when that manager's runtime streams a
 terminal. The built-in `pty` runtime streams one. The `tmux`, `cmux`, `orca` and `herdr` runtimes
 start the agent in a surface they do not own and stream none, so a launch on one of those managers
@@ -64,7 +66,9 @@ is not attached: it returns once the agent joins, with a receipt that names the 
 reaches the agent instead. Attaching needs usable input and output
 terminals and refuses `--json` and `--plain`, before an identity is allocated. A spawn in this
 terminal writes no structured receipt, so `--json` and `--plain` need `-d`, except with
-`--dry-run`. `--foreground` names the default and is kept for scripts. A spawn in this terminal
+`--dry-run`. If you passed `--foreground`, replace it with `-d` to get a managed receipt. Omit
+`--json` or `--plain` to keep the launch in this terminal. `--foreground` names the default and is
+kept for scripts. A spawn in this terminal
 checks its persona and connector before it starts the application: a missing persona is refused
 with `TARGET_NOT_FOUND` and a missing connector with `DEPENDENCY_UNAVAILABLE`, both with exit 2,
 and the connector refusal names the `cotal ext add` that installs it. `--file` (`-f`) names a

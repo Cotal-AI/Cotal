@@ -1,5 +1,33 @@
 # @cotal-ai/delivery
 
+## 0.171.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.171.1
+  - @cotal-ai/workspace@0.171.1
+
+## 0.171.0
+
+### Patch Changes
+
+- 00fcd05: Keep the right project in CLI recovery steps for unreachable brokers, stopped spaces, and missing managers, and keep component health consistent when a broker URL has a trailing slash.
+- Updated dependencies [edd19cc]
+- Updated dependencies [7ff146c]
+- Updated dependencies [725bd24]
+- Updated dependencies [bbea1c9]
+- Updated dependencies [3a01e61]
+- Updated dependencies [00fcd05]
+- Updated dependencies [11555a1]
+- Updated dependencies [67a59e9]
+- Updated dependencies [1a51b71]
+- Updated dependencies [f2f8058]
+- Updated dependencies [f976f2f]
+- Updated dependencies [58dcdc6]
+- Updated dependencies [3cae462]
+  - @cotal-ai/core@0.171.0
+  - @cotal-ai/workspace@0.171.0
+
 ## 0.170.0
 
 ### Patch Changes

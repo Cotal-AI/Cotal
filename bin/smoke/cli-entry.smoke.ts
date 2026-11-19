@@ -524,13 +524,18 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     [["ps", "--on", ""], /^✗ --on requires a manager instance id/],
     [["ps", "--on", "local.UABCDEFG"], /^✗ "local\.UABCDEFG" is a principal id/],
     [["spawn", "dev", "--on", "a".repeat(30)], /^✗ attaching to a manager's launch needs usable input and output terminals.*\n {2}add -d to wait for readiness/],
-    [["spawn", "dev", "--foreground", "--on", "a".repeat(30)], /^✗ a spawn in this terminal takes no structured receipt, manager credential or manager pin\n {2}add -d to launch it through a manager/],
+    [["spawn", "dev", "--foreground", "--on", "a".repeat(30)], /^✗ a spawn in this terminal takes no structured receipt, manager credential or manager pin\n {2}omit --on to launch in this terminal, or replace --foreground with -d/],
     [["attach"], /^✗ name the agent to attach without an interactive terminal\n {2}run `cotal ps`, then `cotal attach <name>`/],
     [["run", "show"], /^✗ run show takes one identifier\n {2}`cotal run` lists the runs; run `cotal run show <run-id>`/],
   ] as const) {
     const r = cotal([...argv], undefined, noSeed);
     check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && said.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
   }
+  const foregroundJson = cotal(["spawn", "--foreground", "--json"], undefined, noSeed);
+  const foregroundReceipt = JSON.parse(foregroundJson.stdout);
+  check("foreground spawn keeps its mode and offers two compatible ways past --json",
+    foregroundJson.status === 1 && foregroundReceipt.error?.code === "USAGE_INVALID" &&
+    foregroundReceipt.error.remedy.includes("omit --json to launch in this terminal, or replace --foreground with -d"), shown(foregroundJson));
   const missingTurn = cotal(["run", "yield"], undefined, noSeed);
   const yieldForm = /^✗ run yield takes one identifier\n {2}`cotal run turns` lists your turns\. Run `(cotal run yield <turn-id> --status <done\|blocked\|handoff>)`\. For a handoff, add `(--to <agent>)`\./.exec(missingTurn.stderr);
   check("run yield without an id names the required status and handoff destination without printing help",
