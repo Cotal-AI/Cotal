@@ -10,7 +10,6 @@
 import { strict as nodeAssert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -392,7 +391,6 @@ console.log(
 // ---- the launcher's stop: the control socket's directory goes only once the gateway is gone -----
 // Drives the real launcher (src/launch.ts) with an adopted profile and a stand-in `uv` whose
 // gateway ignores SIGTERM, so the stop has to kill its process tree, which needs `ps`.
-const tsxCli = createRequire(import.meta.url).resolve("tsx/cli");
 const launcher = fileURLToPath(new URL("../src/launch.ts", import.meta.url));
 const stopRoot = mkdtempSync(join(tmpdir(), "cotal-hermes-stop-"));
 const bin = join(stopRoot, "bin");
@@ -428,7 +426,7 @@ const stopRun = async (label: string, opts: { psFails: boolean; holdBridge: bool
   const material = writeLaunchMaterial({ servers: "nats://127.0.0.1:9" });
   if (outer === undefined) delete process.env.TMPDIR;
   else process.env.TMPDIR = outer;
-  const child = spawn(process.execPath, [tsxCli, launcher], {
+  const child = spawn(process.execPath, ["--import", "tsx", launcher], {
     env: {
       PATH: opts.psFails ? `${noPs}:${process.env.PATH}` : (process.env.PATH ?? ""),
       HOME: process.env.HOME ?? "",
