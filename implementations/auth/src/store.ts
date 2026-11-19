@@ -35,7 +35,6 @@ import {
   credsFromJwt,
   identityFromCreds,
   isAccountNkey,
-  isCredentialTransportUrl,
   jwtFromCreds,
   mkSecretDir,
   writeSecretFileCreateOnly,
@@ -47,7 +46,7 @@ import { decode, encodeUser, Types, type Account, type ClaimsData, type User } f
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { identityOf, loadAuthInstanceIdentity, removeAuthInstanceIdentity, spaceSegment, type AuthInstanceIdentity } from "@cotal-ai/workspace";
 import { createCalloutAuth, type CalloutAuth, type CalloutProvisionInput } from "./callout.js";
-import { normalizeIdpUrl, normalizeOidcIssuer } from "./login.js";
+import { normalizeIdpUrl, normalizeOidcIssuer, oidcEndpoint, validOidcClientId } from "./login.js";
 import {
   createUserTokenIssuer,
   exportSigningKey,
@@ -408,12 +407,9 @@ function derivePinnedIdp(idpUrl: string | undefined, trust?: AuthIdpInput["idpTr
   // query/hash/userinfo) — the pin and the login cache must key on the SAME canonical URL.
   if (trust !== undefined) {
     if (!trust || typeof trust !== "object") throw new Error("explicit IdP trust requires an audience and a JWKS URL");
-    const jwks = typeof trust.jwksUri === "string" && URL.parse(trust.jwksUri);
-    if (!jwks || !isCredentialTransportUrl(jwks) || jwks.username || jwks.password || jwks.hash)
-      throw new Error("the pinned JWKS must be an absolute HTTPS URL without credentials or a fragment (HTTP loopback IPs are allowed for local development)");
-    if (typeof trust.audience !== "string" || !trust.audience.trim() || trust.audience !== trust.audience.trim())
-      throw new Error("the pinned IdP audience must be a non-empty string without surrounding whitespace");
-    return { url: normalizeOidcIssuer(idpUrl), issuer: idpUrl, audience: trust.audience, jwksUri: jwks.href };
+    if (!validOidcClientId(trust.audience))
+      throw new Error("the pinned IdP audience must be a non-empty OIDC client ID without whitespace or control characters");
+    return { url: normalizeOidcIssuer(idpUrl), issuer: idpUrl, audience: trust.audience, jwksUri: oidcEndpoint(trust.jwksUri, "--idp-jwks-uri") };
   }
   const url = normalizeIdpUrl(idpUrl);
   const origin = new URL(url).origin;

@@ -7,7 +7,7 @@ import { idpSessionDir } from "./session-context.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { decodeJwt } from "jose";
+import { createLocalJWKSet, decodeJwt, type JWK } from "jose";
 import { acquireLockAsync, isCredentialTransportUrl, liveLockOwnerPid, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
 import { loginRecoveryCommand, serviceLoginRecovery, CommandFailure, acquireLock, chatNameProblem, credentialFailure, checkIdpUrl, shellPath } from "@cotal-ai/workspace";
 import { pinnedJwksResolver } from "./issuer.js";
@@ -155,7 +155,7 @@ export function idpTimeoutMs(): number {
   return n;
 }
 
-/** An IdP request that got no answer: the transport failed or the per-request timeout fired. */
+/** The client could not complete an IdP request because of transport failure, timeout, or session cache contention. */
 export class IdpUnreachableError extends Error {}
 
 /** The provider refused the initial device-code request, before approval or persistence. */
@@ -256,9 +256,9 @@ export function betterAuthSessionToken(session: IdpSession): string {
   return session.token;
 }
 
-function oidcEndpoint(value: unknown, name: string): string {
+export function oidcEndpoint(value: unknown, name: string): string {
   const url = text(value) ? URL.parse(value) : null;
-  if (!url || !isCredentialTransportUrl(url) || url.username || url.password || url.hash)
+  if (!url || !isCredentialTransportUrl(url) || url.username || url.password || url.href.includes("#"))
     throw new IdpConfigurationError(`OIDC ${name} must be an absolute HTTPS URL without credentials or a fragment (HTTP loopback IPs are allowed for local development)`);
   return url.href;
 }
@@ -314,7 +314,7 @@ function opaqueRefreshToken(value: unknown): value is string {
   return text(value) && value === value.trim() && !looksLikeJwt(value);
 }
 
-function validOidcClientId(value: unknown): value is string {
+export function validOidcClientId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && !/[\s\x00-\x1f\x7f]/.test(value);
 }
 
@@ -340,9 +340,9 @@ async function exchangeOidcProof(session: Pick<OidcSession, "issuer" | "clientId
   return { jwt: body.access_token, sub: proof.sub };
 }
 
-/** Probe the pinned JWKS at first enable, before provisioning a space around it. The default
- * path is Better Auth's `<base>/jwks`. An unreachable host, redirect, or invalid reply fails. */
-export async function probeIdpJwks(idpUrl: string, jwksUri = `${normalizeIdpUrl(idpUrl)}/jwks`): Promise<void> {
+/** Probe the pinned JWKS at first enable. Explicit OIDC trust requires a key the proof verifier
+ * can resolve. Better Auth retains its existing key-set check at `<base>/jwks`. */
+export async function probeIdpJwks(idpUrl: string, jwksUri = `${normalizeIdpUrl(idpUrl)}/jwks`, opts: { requireEd25519?: boolean } = {}): Promise<void> {
   const res = await idpFetch(jwksUri, { redirect: "manual" });
   if (res.status >= 300 && res.status < 400)
     throw new Error(`the IdP at ${idpUrl} answered ${jwksUri} with HTTP ${res.status}, a redirect; redirects are refused, so its target was not fetched.`);
@@ -351,6 +351,19 @@ export async function probeIdpJwks(idpUrl: string, jwksUri = `${normalizeIdpUrl(
   const body = await idpJson<{ keys?: unknown }>(jwksUri, res);
   if (!Array.isArray(body?.keys))
     throw new Error(`the IdP at ${idpUrl} did not return a JWKS key set at ${jwksUri}.`);
+  if (!opts.requireEd25519) return;
+  if (body.keys.every((key: unknown): key is JWK => key !== null && typeof key === "object" && !Array.isArray(key))) {
+    // Use the same resolver as the pinned remote set, including key IDs, use and key_ops.
+    const getKey = createLocalJWKSet({ keys: body.keys });
+    const kids = new Set(body.keys.map(key => typeof key.kid === "string" ? key.kid : undefined));
+    for (const kid of kids) {
+      try {
+        const key = await getKey({ alg: "EdDSA", kid });
+        if (key.algorithm.name === "Ed25519" && key.usages.includes("verify")) return;
+      } catch { /* Try the remaining key IDs. */ }
+    }
+  }
+  throw new Error("the pinned JWKS has no usable Ed25519 verification key");
 }
 
 /** True if `s` parses as a JWT — used to REJECT a JWT where an opaque session token is required.
@@ -617,11 +630,11 @@ function currentOidcSession(dir: string, session: OidcSession): OidcSession {
 }
 
 async function refreshOidcProof(dir: string, session: OidcSession, signal?: AbortSignal) {
-  return withAsyncSessionLock(dir, async () => {
+  const grant = await withAsyncSessionLock(dir, async () => {
     const current = currentOidcSession(dir, session);
     throwIfCancelled(signal);
     const cached = oidcJwtCache.cached(oidcCacheKey(dir, current));
-    if (cached) return cached;
+    if (cached) return { cached };
     // Once sent, let the rotation finish and commit even if the caller cancels. An aborted
     // response could lose the replacement while the provider has already invalidated the old one.
     let res: Response;
@@ -647,10 +660,14 @@ async function refreshOidcProof(dir: string, session: OidcSession, signal?: Abor
       saveIdpSessionLocked(dir, current.issuer, { ...current, refreshToken: body.refresh_token });
     if (!text(body?.access_token) || typeof body.token_type !== "string" || body.token_type.toLowerCase() !== "bearer")
       throw new Error("OIDC refresh did not return a bearer access token");
-    const proof = await exchangeOidcProof(current, body.access_token, signal);
-    if (proof.sub !== current.sub) throw new Error("OIDC token exchange returned a different subject than the cached sign-in");
-    return proof;
-  });
+    return { current, accessToken: body.access_token };
+  }, signal);
+  if (grant.cached) return grant.cached;
+  // Exchange and JWKS lookup do not touch the rotating credential. Other processes can refresh
+  // while this proof is checked. The caller rechecks the session ID before returning the proof.
+  const proof = await exchangeOidcProof(grant.current, grant.accessToken, signal);
+  if (proof.sub !== grant.current.sub) throw new Error("OIDC token exchange returned a different subject than the cached sign-in");
+  return proof;
 }
 
 export async function fetchIdpJwt(idpUrl: string, session: string | IdpSession, signal?: AbortSignal, dir = idpSessionDir()): Promise<string> {
@@ -1269,10 +1286,16 @@ export function hasIdpSessions(dir: string): boolean {
 
 const sessionLocks = new Set<string>();
 
-async function withAsyncSessionLock<T>(dir: string, run: () => T | Promise<T>): Promise<T> {
+async function withAsyncSessionLock<T>(dir: string, run: () => T | Promise<T>, signal?: AbortSignal): Promise<T> {
+  throwIfCancelled(signal);
   const path = resolve(dir, "idp-sessions.lock");
   mkSecretDir(dir);
-  const lock = await acquireLockAsync(path, { label: "IdP session cache", waitMs: 5000 });
+  // The holder runs at most one timed provider request. Match that budget instead of rejecting
+  // normal contention early, but leave a stalled or sustained queue before it can wait forever.
+  const lock = await acquireLockAsync(path, {
+    label: "IdP session cache", waitMs: idpTimeoutMs(), signal,
+    onTimeout: () => new IdpUnreachableError("the OIDC session cache is busy; retry after the current provider request finishes"),
+  }).catch((error: unknown) => { throwIfCancelled(signal); throw error; });
   try { return await run(); }
   finally { lock.release(); }
 }

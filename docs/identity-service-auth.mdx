@@ -265,9 +265,13 @@ cotal up --user-auth --idp <issuer> --idp-audience <client-id> --idp-jwks-uri <j
 cotal login --oidc --idp <issuer> --client-id <client-id>
 ```
 
-`--oidc` is explicit. Discovery and credential requests refuse redirects. Login saves the refresh
-token and writes replacements atomically when the provider rotates it. Access tokens and mesh
-proofs stay in memory. `cotal logout --idp <issuer>` revokes the refresh token if discovery supplied
+`--idp-audience` and `--client-id` take the same client ID, without whitespace or control characters.
+First enable checks that the pinned JWKS has a usable public Ed25519 verification key. OIDC URLs
+must not contain a fragment, and discovery and credential requests refuse redirects.
+
+Login saves the refresh token. Concurrent commands serialize rotation and atomically save the
+replacement before exchanging proofs. Access tokens and mesh proofs stay in memory.
+`cotal logout --idp <issuer>` revokes the refresh token if discovery supplied
 a revocation endpoint. Use `--local` to forget the local sign-in without contacting the provider.
 OIDC mode covers CLI sign-in and ordinary mesh access. It does not supply Better Auth's Cloud account
 APIs, space catalog or automatic sign-in copying to other stores. A proof without signed password

@@ -71,7 +71,7 @@ async function preflightServerInput({ space, dir, idpUrl, idpTrust }: AuthPrefli
   // it. Skip on re-up: an already-pinned IdP was validated at first enable, and re-probing every
   // boot would couple mesh liveness to IdP liveness.
   if (checked.fresh) {
-    try { await probeIdpJwks(idpUrl ?? checked.pin.url, checked.pin.jwksUri); } catch (error) { return refuse("unavailable", error); }
+    try { await probeIdpJwks(idpUrl ?? checked.pin.url, checked.pin.jwksUri, { requireEd25519: idpTrust !== undefined }); } catch (error) { return refuse("unavailable", error); }
   }
   return { ok: true };
 }

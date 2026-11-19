@@ -5,11 +5,12 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpaceAuth } from "@cotal-ai/core";
+import { setTimeout as delay } from "node:timers/promises";
+import { acquireLock, createSpaceAuth } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { recordMesh, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
-import { cotalAuthProvider, deriveOwnerForIdpSubject, establishIdpSession, fetchIdpJwt, IdpLoginCancelled, loadIdpSession, loadPinnedIdp, pinnedJwksResolver, verifyIdpToken, verifyToolResultHumanProof } from "../src/index.js";
+import { cotalAuthProvider, deriveOwnerForIdpSubject, establishIdpSession, fetchIdpJwt, IdpLoginCancelled, IdpUnreachableError, loadIdpSession, loadPinnedIdp, pinnedJwksResolver, verifyIdpToken, verifyToolResultHumanProof } from "../src/index.js";
 
 const { check, finish } = createSuite();
 const here = join(import.meta.dirname, "..", "..", "..");
@@ -35,6 +36,10 @@ let approvalPending = false, discoveryRedirect = false, tokenRedirect = false, k
 let missingRefresh = false, omitRotation = false, rejectExchange = false, changeSubject = false, noRevocation = false;
 let refreshGeneration = 0, newestRefresh = 0, accessGeneration = 0, allowedAccess = new Set<number>();
 let onRotation: (() => Promise<void>) | undefined;
+let tokenLatency = 0;
+let exchanging = 0, refreshWhileExchanging = false;
+let jwks: object[] = [jwk];
+let deviceFragment = false;
 
 const server = createServer(async (req, res) => {
   const route = `${req.method} ${req.url}`;
@@ -44,9 +49,9 @@ const server = createServer(async (req, res) => {
   try {
     if (route === "GET /issuer/.well-known/openid-configuration") {
       if (discoveryRedirect) return redirect();
-      return send(200, { issuer: wrongIssuer ? `${issuer}wrong` : issuer, device_authorization_endpoint: `${origin}/oauth/device`, token_endpoint: `${origin}/oauth/token`, jwks_uri: keysUrl, ...(noRevocation ? {} : { revocation_endpoint: `${origin}/oauth/revoke` }) });
+      return send(200, { issuer: wrongIssuer ? `${issuer}wrong` : issuer, device_authorization_endpoint: `${origin}/oauth/device${deviceFragment ? "#" : ""}`, token_endpoint: `${origin}/oauth/token`, jwks_uri: keysUrl, ...(noRevocation ? {} : { revocation_endpoint: `${origin}/oauth/revoke` }) });
     }
-    if (route === "GET /oauth/keys") return keysRedirect ? redirect() : send(200, { keys: [jwk] });
+    if (route === "GET /oauth/keys") return keysRedirect ? redirect() : send(200, { keys: jwks });
     if (route === "POST /mesh/exchange") {
       let body = "";
       for await (const chunk of req) body += chunk;
@@ -76,11 +81,18 @@ const server = createServer(async (req, res) => {
     }
     if (route !== "POST /oauth/token") return send(404, {});
     if (tokenRedirect) return redirect();
+    const grantType = form.get("grant_type");
+    if (tokenLatency) {
+      if (grantType === "refresh_token" && exchanging) refreshWhileExchanging = true;
+      if (grantType === exchangeGrant) exchanging++;
+      try { await delay(tokenLatency); }
+      finally { if (grantType === exchangeGrant) exchanging--; }
+    }
     const access = () => {
       allowedAccess.add(++accessGeneration);
       return `${accessPrefix}${accessGeneration}`;
     };
-    switch (form.get("grant_type")) {
+    switch (grantType) {
       case deviceGrant:
         assert.equal(form.get("device_code"), "device-fixture");
         if (approvalPending) { approvalPending = false; return send(400, { error: "authorization_pending" }); }
@@ -174,8 +186,13 @@ try {
 
   const project = registerRemote(home);
   const whoami = () => cliAt(home, project, "whoami", "--space", "oidc-remote", "--plain");
-  const concurrent = await Promise.all([whoami(), whoami()]);
-  check("two shipped whoami processes use successive rotations and present verified mesh proofs", concurrent.every(r => r.code === 0 && r.output.includes(`${owner}.cli`)) && meshProofs === 2 && refreshed.join() === `${first},${first + 1}` && newestRefresh === first + 2, concurrent.map(r => ({ code: r.code, gotPrincipal: r.output.includes(`${owner}.cli`) })));
+  tokenLatency = 900;
+  const countParallel = 6;
+  const concurrent = await Promise.all(Array.from({ length: countParallel }, whoami));
+  tokenLatency = 0;
+  const expectedRotations = Array.from({ length: countParallel }, (_, i) => first + i);
+  check("six shipped whoami processes use successive rotations at 900 ms provider latency", concurrent.every(r => r.code === 0 && r.output.includes(`${owner}.cli`)) && meshProofs === countParallel && refreshed.join() === expectedRotations.join() && newestRefresh === first + countParallel, { codes: concurrent.map(r => r.code), successes: meshProofs, rotations: refreshed.length });
+  check("another process can refresh before proof exchange finishes", refreshWhileExchanging);
   concurrent.forEach(r => assertNoTokens(r.output));
 
   const jwt = await refreshLocal(home);
@@ -187,9 +204,10 @@ try {
 
   meshRedirect = true;
   requests.length = 0;
+  const beforeRedirect = meshProofs;
   const redirectedMesh = await whoami();
   meshRedirect = false;
-  check("a mesh exchange redirect sends no proof to its target", !redirectedMesh.output.includes(`${owner}.cli`) && meshProofs === 2 && requests.includes("POST /mesh/exchange") && !requests.some(path => path.endsWith("/redirect-target")));
+  check("a mesh exchange redirect sends no proof to its target", !redirectedMesh.output.includes(`${owner}.cli`) && meshProofs === beforeRedirect && requests.includes("POST /mesh/exchange") && !requests.some(path => path.endsWith("/redirect-target")));
   assertNoTokens(redirectedMesh.output);
 
   const beforeLogout = newestRefresh;
@@ -203,6 +221,7 @@ try {
   for (const [name, toggle, expected, hits] of [
     ["discovery issuer mismatch", (v: boolean) => { wrongIssuer = v; }, /issuer does not match/, 1],
     ["discovery redirect", (v: boolean) => { discoveryRedirect = v; }, /redirects are refused/, 1],
+    ["empty device endpoint fragment", (v: boolean) => { deviceFragment = v; }, /device_authorization_endpoint.*without.*a fragment/, 1],
     ["token redirect", (v: boolean) => { tokenRedirect = v; }, /redirects are refused/, 3],
     ["missing refresh token", (v: boolean) => { missingRefresh = v; }, /opaque refresh token/, 3],
     ["multi-audience proof", (v: boolean) => { multiAudience = v; }, /multi-audience session proof is rejected/, 5],
@@ -218,6 +237,22 @@ try {
 
   const recover = newHome();
   await establishIdpSession({ dir: recover, idpUrl: issuer, clientId, oidc: true, onPrompt() {} });
+  // Hold the real cache lock while proof readers try to enter. No provider request may start.
+  const lock = acquireLock(join(recover, "idp-sessions.lock"));
+  try {
+    requests.length = 0;
+    const cancelledWait = await refreshLocal(recover, AbortSignal.timeout(100)).catch((error: unknown) => error);
+    check("a cancelled waiter leaves without acquiring the cache lock or refreshing", cancelledWait instanceof IdpLoginCancelled && requests.length === 0, { error: cancelledWait instanceof Error ? cancelledWait.constructor.name : typeof cancelledWait });
+    const previousTimeout = process.env.COTAL_IDP_TIMEOUT_MS;
+    process.env.COTAL_IDP_TIMEOUT_MS = "1";
+    try {
+      const timedOut = await refreshLocal(recover).catch((error: unknown) => error);
+      check("lock contention times out with a typed retry and no lock path or provider request", timedOut instanceof IdpUnreachableError && /busy.*retry/i.test(timedOut.message) && !timedOut.message.includes(recover) && requests.length === 0, { error: timedOut instanceof Error ? timedOut.constructor.name : typeof timedOut });
+    } finally {
+      if (previousTimeout === undefined) delete process.env.COTAL_IDP_TIMEOUT_MS;
+      else process.env.COTAL_IDP_TIMEOUT_MS = previousTimeout;
+    }
+  } finally { lock.release(); }
   rejectExchange = true;
   await assert.rejects(() => refreshLocal(recover), /^Error: OIDC token exchange failed \(HTTP 400\)$/);
   rejectExchange = false;
@@ -251,15 +286,30 @@ try {
   const workspace = mkdtempSync(join(root, "workspace-"));
   const manifest = join(workspace, "cotal.yaml");
   writeFileSync(manifest, "apiVersion: cotal/v1\nkind: Mesh\nspace: oidc-smoke\nbroker:\n  auth: user\nchannels: {}\n");
-  const up = (...flags: string[]) => cliAt(local, workspace, "up", "-f", manifest, "--dry-run", "--idp", issuer, "--idp-audience", clientId, ...flags);
-  const incomplete = await up();
+  const up = (audience: string, ...flags: string[]) => cliAt(local, workspace, "up", "-f", manifest, "--dry-run", "--idp", issuer, "--idp-audience", audience, ...flags);
+  const incomplete = await up(clientId);
   check("first-enable CLI refuses an incomplete explicit pin before contacting the provider", incomplete.code !== 0 && /--idp-jwks-uri/.test(incomplete.output) && !requests.length);
+  const invalidId = `${clientId} invalid`;
+  const badLogin = await cli(local, "login", "--oidc", "--idp", issuer, "--client-id", invalidId, "--no-browser");
+  const refusedAudience = await up(invalidId, "--idp-jwks-uri", keysUrl);
+  const audiencePaths = requests.splice(0);
+  check("login and first enable refuse the same invalid client ID before any provider request", badLogin.code === 1 && refusedAudience.code === 1 && !audiencePaths.length, { login: badLogin.code, up: refusedAudience.code, paths: audiencePaths });
+  const refusedFragment = await up(clientId, "--idp-jwks-uri", `${keysUrl}#`);
+  const fragmentPaths = requests.splice(0);
+  check("first enable refuses an empty explicit JWKS fragment before any provider request", refusedFragment.code === 1 && !fragmentPaths.length, { code: refusedFragment.code, paths: fragmentPaths });
+  for (const [description, keys] of [["an empty set", []], ["only an encryption key", [{ ...jwk, use: "enc" }]], ["only a malformed Ed25519 key", [{ ...jwk, x: "AA" }]]] as const) {
+    jwks = [...keys];
+    const refused = await up(clientId, "--idp-jwks-uri", keysUrl);
+    const paths = requests.splice(0);
+    check(`first enable refuses ${description}`, refused.code === 2 && /no usable Ed25519 verification key/.test(refused.output) && paths.join() === "GET /oauth/keys", { code: refused.code, paths });
+  }
+  jwks = [jwk];
   keysRedirect = true;
-  const redirect = await up("--idp-jwks-uri", keysUrl);
+  const redirect = await up(clientId, "--idp-jwks-uri", keysUrl);
   const redirectPaths = requests.splice(0);
   check("first-enable CLI probes the explicit JWKS and refuses its redirect", redirect.code !== 0 && /redirects are refused/.test(redirect.output) && redirectPaths.join() === "GET /oauth/keys", { ...redirect, paths: redirectPaths });
   keysRedirect = false;
-  const preview = await up("--idp-jwks-uri", keysUrl);
+  const preview = await up(clientId, "--idp-jwks-uri", keysUrl);
   const previewPaths = requests.splice(0);
   check("first-enable CLI accepts the explicit JWKS without assuming a Better Auth path", preview.code === 0 && previewPaths.join() === "GET /oauth/keys", { ...preview, paths: previewPaths });
 
