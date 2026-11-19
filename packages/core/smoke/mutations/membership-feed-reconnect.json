@@ -24,7 +24,7 @@
     },
     {
       "name": "public stop/close race forgets consumer identity before fresh cleanup",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "    watch.consumerStream = info.stream_name;\n    watch.consumerName = info.name;\n",
       "replace": "",
       "expectRed": "public stop concurrent with terminal close resolves after fresh cleanup",
@@ -34,7 +34,7 @@
     },
     {
       "name": "closed epoch delete rejects public stop instead of deferring cleanup",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "          if (timeout || closedEpoch) {\n            this.emit(\"error\", err as Error);\n          } else {\n            throw err;\n          }\n",
       "replace": "          throw err;\n",
       "expectRed": "public stop concurrent with terminal close resolves after fresh cleanup",
@@ -94,7 +94,7 @@
     },
     {
       "name": "watch iterator close drops the caller's onClosed notification",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "      watch.onClosed?.(err);\n",
       "replace": "",
       "expectRed": "a watch iterator closed under a live connection reaches the caller's closed callback",

@@ -327,7 +327,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         // This includes caller issuance, broker admission and contract resolution, not only status.
         const reply = await Promise.race([probe(l, selected), new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("the pinned Manager status observation did not complete within 15000ms")), 15_000); })]);
         if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager did not answer status");
-        if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+        if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, lastRefusal: undefined, next: undefined, observedAt: new Date().toISOString() };
       } catch (error) {
         if (l.child === child && !l.stopping && !closed && !generationPending) {
           const reason = safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500);
@@ -606,7 +606,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
             writeManagerCleanup(home, { ...cleanup, phase: "hosted" });
             writeSecretFileAtomic(path, JSON.stringify({ v: 1, space }));
             rmSync(refusalFile(space), { force: true });
-            l.view = { ...l.view, state: "answering", registrationCleanup: undefined, connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+            l.view = { ...l.view, state: "answering", registrationCleanup: undefined, connectors: connectors(reply.data), reason: undefined, lastRefusal: undefined, next: undefined, observedAt: new Date().toISOString() };
             l.failures = 0;
             observe(l);
             return { ...l.view };
@@ -657,7 +657,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         if (closed || l.stopping || !l.child) throw new Error("the hosted Manager is stopping");
         writeSecretFileAtomic(daemonManagerIntentFile(space, home), JSON.stringify({ v: 1, space }));
         rmSync(refusalFile(space), { force: true });
-        l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+        l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, lastRefusal: undefined, next: undefined, observedAt: new Date().toISOString() };
         const retryClaudeSetup = l.view.connectors?.some(connector => connector.agent === "claude" && connector.state === "unavailable" && connector.reason?.startsWith("Claude wake channel setup failed:"));
         if (retryClaudeSetup || !l.view.connectors?.some(connector => connector.state === "available")) {
           const child = l.child;

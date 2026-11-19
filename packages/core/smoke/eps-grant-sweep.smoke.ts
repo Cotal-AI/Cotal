@@ -111,6 +111,7 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   restore: via("restore", { restore: { operation: "initiate", stream: `CHAT_${SPACE}` } }),
   delivery: via("delivery"),
   "membership-rw": via("membership-rw"),
+  "space-quiescence-reader": via("space-quiescence-reader"),
   probe: via("probe"),
   "channel-writer": via("channel-writer"),
   "channel-purger": via("channel-purger"),

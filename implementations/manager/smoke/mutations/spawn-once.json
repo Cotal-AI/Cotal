@@ -50,7 +50,7 @@
     },
     {
       "name": "S4 a connector without the relay is admitted",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "    if (!connector.supportsTurnRelay)\n",
       "replace": "    if (false)\n",
       "expectRed": "a connector without the turn relay is refused, with its own reason"
@@ -65,7 +65,7 @@
     {
       "name": "S6 a seat that never joined is left running",
       "file": "implementations/manager/src/manager.ts",
-      "find": "          this.stopOnceSeat(managed, \"readiness-timeout\");\n",
+      "find": "          this.endOnceBeforeServe(managed, \"readiness-timeout\");\n",
       "replace": "",
       "expectRed": "...and the seat is stopped, never left running with nothing to do"
     },
@@ -79,8 +79,8 @@
     {
       "name": "S8 the readiness stop waits for the spawn's terminal",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        if (managed.once) {\n          this.agentGoals.delete(managed.name);\n          this.stopOnceSeat(managed, \"readiness-timeout\");\n        }\n        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n",
-      "replace": "        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n        if (managed.once) {\n          this.agentGoals.delete(managed.name);\n          this.stopOnceSeat(managed, \"readiness-timeout\");\n        }\n",
+      "find": "        if (managed.once) {\n          this.endOnceBeforeServe(managed, \"readiness-timeout\");\n        }\n        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n",
+      "replace": "        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n        if (managed.once) {\n          this.endOnceBeforeServe(managed, \"readiness-timeout\");\n        }\n",
       "expectRed": "a seat that never joins is stopped while its spawn's terminal cannot be published"
     },
     {
@@ -106,28 +106,28 @@
     },
     {
       "name": "S12 a connector that needs a confirmed startup is admitted on a runtime that cannot report it",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "    if (connector.onceNeedsConfirmed !== undefined && !runtime.reportsStartupOutcome)\n      return `once: runtime \"${runtime.kind}\" does not report how a seat's startup ended, which a once seat on the ${connector.name} connector needs`;\n",
       "replace": "",
       "expectRed": "a Claude seat on a runtime that does not report how its startup ended is refused, naming the runtime"
     },
     {
       "name": "S13 a task that fits the turn frame exactly is refused",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      if (text.length > connector.turnFrameLimit)\n",
       "replace": "      if (text.length >= connector.turnFrameLimit)\n",
       "expectRed": "a task that renders to the connector's turn frame exactly is admitted, with and without a deadline"
     },
     {
       "name": "S14 a task one character over the turn frame is admitted",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      if (text.length > connector.turnFrameLimit)\n",
       "replace": "      if (text.length > connector.turnFrameLimit + 1)\n",
       "expectRed": "...and one character over it is refused, naming both sizes"
     },
     {
       "name": "S15 the turn frame is measured without the deadline line",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "payload, spawner: this.spawnerName(spawner), ...(launch.once!.deadlineMs !== undefined ? { deadlineAt: MAX_SCHEDULE_MS } : {}) });",
       "replace": "payload, spawner: this.spawnerName(spawner) });",
       "expectRed": "a task that renders to the connector's turn frame exactly is admitted, with and without a deadline"

@@ -45,6 +45,7 @@ import {
   canonicalRoot,
   CLI_USER_ACTOR,
   codeSpan,
+  credentialFileExposure,
   CommandFailure,
   deliveryCredsKey,
   DELIVERY_PIDFILE,
@@ -159,8 +160,8 @@ import {
   type StackRole,
 } from "../lib/stack-journal.js";
 import { cotalLinkHere, homeHoldsStack, linkedCotalRemedy } from "../lib/paths.js";
-import { storeWriteProblem } from "../lib/store-dir.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
+import { rootStoreProblem } from "../lib/store-dir.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 import { askManager } from "@cotal-ai/workspace/control";
@@ -487,7 +488,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
   const preflight = selected.ok && selected.target.mode !== "user" ? await preflightTarget(selected.target) : undefined;
-  const responder = await readResponderAxis(selected, preflight);
+  const responder = await readResponderAxis(selected, preflight, gaps);
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
   if (selected.ok) {
     try {
@@ -507,8 +508,8 @@ export async function status(args: ParsedArgs): Promise<void> {
   const selectedHints: string[] = [];
   const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight);
   // Do not offer the conditional store reset when this folder needs a channel seed repair first,
-  // or while a maintenance journal holds the store.
-  if (folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root)) {
+  // while a maintenance journal holds the store, or if the store is unwritable.
+  if (folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
     const cmd = displayCmd();
     const resetSpace = storeResetSpace(root, folder.processSpace);
     hints.push(resetSpace !== undefined
@@ -561,7 +562,7 @@ export async function status(args: ParsedArgs): Promise<void> {
     },
     (result) => statusView(result, Boolean(values.verbose), Boolean(values.all) || Boolean(values.wide)),
   );
-  if (values.components) await printComponentHealth(selected);
+  if (values.components) await printComponentHealth(selected, store);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -785,21 +786,20 @@ function readExtensions(gaps: Gaps): StatusResult["extensions"] {
  *
  *  READ-ONLY AND BEST EFFORT. A workspace that never launched a daemon locally (an adopted or remote
  *  one) has no creds file, and that is not an error: the caller then does not check the holder, the
- *  same concession `waitForDeliveryLease` makes for an adopted daemon. Any failure yields `undefined`
- *  rather than a wrong id, because a WRONG expected holder is worse than an unchecked one. */
+ *  same concession `waitForDeliveryLease` makes for an adopted daemon. An existing credential that
+ *  cannot be read privately refuses the check rather than silently disabling holder attribution. */
 async function expectedDeliveryHolder(target: MeshTarget): Promise<string | undefined> {
-  try {
-    const creds = await workspaceSecretStore(target.root).get(
-      deliveryCredsKey(target.space, { injected: false, root: target.root }),
-    );
-    if (!creds) return undefined;
-    // The daemon declares no owner/actor, so the endpoint falls back to DEV_OWNER for the owner and
-    // to the connection id for the actor: `local.<idFromCreds>`. Built through `principalKey` rather
-    // than string concatenation so this tracks the one definition of the dot-form.
-    return principalKey(DEV_OWNER, idFromCreds(creds)).key;
-  } catch {
-    return undefined;
-  }
+  const key = deliveryCredsKey(target.space, { injected: false, root: target.root });
+  const path = join(target.root, ".cotal", key);
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  const exposure = stat?.isFile() ? credentialFileExposure(path, stat) : undefined;
+  if (exposure) throw new CommandFailure("refused", "PERMISSION_DENIED", `${path}: ${exposure.reason}`, { remedy: exposure.remedy, target: { path, space: target.space } });
+  const creds = await workspaceSecretStore(target.root).get(key);
+  if (!creds) return undefined;
+  // The daemon declares no owner/actor, so the endpoint falls back to DEV_OWNER for the owner and
+  // to the connection id for the actor: `local.<idFromCreds>`. Built through `principalKey` rather
+  // than string concatenation so this tracks the one definition of the dot-form.
+  return principalKey(DEV_OWNER, idFromCreds(creds)).key;
 }
 
 /** Read the delivery responder axis for the bare-status rows (#1576).
@@ -817,11 +817,18 @@ async function expectedDeliveryHolder(target: MeshTarget): Promise<string | unde
  *
  *  `leased` says whether the read found a delivery lease record. An open mesh runs no delivery
  *  daemon, so there a missing lease is the normal state rather than an unbound responder. */
-async function readResponderAxis(selected: Selected, preflight: SelectedPreflight): Promise<{ state: DeliveryResponderState; leased: boolean }> {
+async function readResponderAxis(selected: Selected, preflight: SelectedPreflight, gaps: Gaps): Promise<{ state: DeliveryResponderState; leased: boolean }> {
   let leased = false;
   if (!selected.ok) return { state: "unknown", leased };
   const target = selected.target;
   if (target.mode === "user") return { state: "unknown", leased };
+  let holder: string | undefined;
+  try { holder = await expectedDeliveryHolder(target); }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    gaps.add("DELIVERY_CREDENTIAL_UNREADABLE", isCommandFailure(error) && error.remedy ? `${message}; ${error.remedy}` : message, { root: target.root, space: target.space });
+    return { state: "unknown", leased };
+  }
   try {
     if (!preflight?.ok) return { state: "unknown", leased };
     const id = newIdentity();
@@ -857,7 +864,6 @@ async function readResponderAxis(selected: Selected, preflight: SelectedPrefligh
       // `--components` surface deliberately does NOT use it: that surface must tell a missing lease
       // stream apart from a refused read, and flattening both to `unknown` would erase a
       // distinction it reports.
-      const holder = await expectedDeliveryHolder(target);
       const state = await deliveryResponderState(
         async () => { const lease = await ep.readDeliveryLease(0); leased = lease !== undefined; return lease; },
         holder,
@@ -1411,14 +1417,6 @@ function unusableServiceInstances(space: string): CommandFailure | undefined {
   catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
 }
 
-/** Why the broker of the stack at `root` cannot start on its store: the one its stack journal recorded,
- *  or `.cotal/nats`. */
-function rootStoreProblem(root: string): ReturnType<typeof storeWriteProblem> {
-  let recorded: string | undefined;
-  try { recorded = readStackJournal(root)?.journal.broker?.storeDir; } catch { recorded = undefined; }
-  try { return storeWriteProblem(recorded ?? join(root, ".cotal", "nats")); } catch { return undefined; }
-}
-
 async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
@@ -1478,8 +1476,10 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
         result.channelSeedBlocksRestart = true;
         hints.push(`Restart blocked: ${block.message}. ${block.remedy}`);
       } else hints.push(remedy ?? message);
-    } else if (!d.unsettled || !servedStack(folder, result)) hints.push(remedy ?? message);
-    else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with \`cotal up\` in ${d.root}`);
+    } else if (!d.unsettled || !servedStack(folder, result)) {
+      const step = remedy ?? message;
+      hints.push(e.code === "no-meshes" && d.root === undefined ? step.replaceAll("`cotal ", () => `\`${cmd} `) : step);
+    } else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with \`cotal up\` in ${d.root}`);
     return result;
   }
   const target = selected.target;
@@ -1549,12 +1549,14 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // starts it again rather than a registration to repair.
     const flagged = (target.source === "flag-server" || target.source === "flag-space-override") && target.recordedServer !== target.server;
     const offline = preflight.kind === "unreachable" && !flagged && target.origin === "up";
+    const store = offline ? rootStoreProblem(target.root) : undefined;
     let seedBlock: CommandFailure | undefined;
     // A blocked stack refuses that `up`, and Next names the step that clears the block instead.
     if (preflight.kind === "unreachable" && (flagged || offline) && !(servedStack(folder, base) && folder.stackBlock)) {
       const { message, remedy, restartRoot } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
-      seedBlock = restartRoot === undefined ? undefined : channelSeedRestartBlock(restartRoot);
-      if (seedBlock) hints.push(`${message}. Restart blocked: ${seedBlock.message}. ${seedBlock.remedy}`);
+      seedBlock = store || restartRoot === undefined ? undefined : channelSeedRestartBlock(restartRoot);
+      if (store) hints.push(`${store.message}; ${store.remedy}`);
+      else if (seedBlock) hints.push(`${message}. Restart blocked: ${seedBlock.message}. ${seedBlock.remedy}`);
       else hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
     }
     if (preflight.kind === "non-nats-listener" || preflight.kind === "auth-unsupported" || preflight.kind === "jetstream-unsupported") {
@@ -2028,7 +2030,7 @@ function spacesOverview(r: StatusResult, wide: boolean): Section {
     detail: cell(signsInText(entry, wide), "hint"),
   });
   const columns = [{ key: "space", label: "Space" }, { key: "state", label: "Connection" }, { key: "detail", label: "Signs in" }];
-  if (!r.meshes.items.length && !r.meshes.unreadable.length) blocks.push({ kind: "lines", lines: [cell("No spaces registered", "hint"), cell("Sign in to Cotal Cloud with `cotal login`.", "hint")] });
+  if (!r.meshes.items.length && !r.meshes.unreadable.length) blocks.push({ kind: "lines", lines: [cell("No spaces registered", "hint"), cell(`Sign in to Cotal Cloud with \`${displayCmd()} login\`.`, "hint")] });
   else if (wide) {
     const groups = new Map<string, StatusResult["meshes"]["items"]>();
     for (const entry of r.meshes.items) {
@@ -2209,6 +2211,7 @@ function nextActions(r: StatusResult): Section {
   const local = r.selected.resolved && r.selected.mode === "auth" && !r.folder.controllerStack && r.folder.root === r.selected.root && r.folder.processSpace === r.selected.space
     && !["manual", "catalog"].includes(r.meshes.items.find((m) => m.space === r.selected.space)?.origin ?? "up");
   const exited = local ? (r.folder.processes ?? []).filter((row) => (row.name === "nats" || row.name === "manager") && row.state === "stopped" && (row.pid !== null || row.detail === "stopped")).map((row) => row.name) : [];
+  const storeBlocked = !elsewhere && r.selected.resolved && r.selected.connection === "unreachable" && rootStoreProblem(r.selected.root) !== undefined;
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
   else if (block && blocked) {
     const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${blocked.space}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
@@ -2235,17 +2238,17 @@ function nextActions(r: StatusResult): Section {
       const absent = spaceStreamsAbsent(r.selected.space, r.selected.spaceStreams.root ?? undefined, stack ?? undefined);
       extra.push(`${absent.message}; ${absent.remedy}`);
     }
-  } else if (!seedBlocksRestart && own && r.selected.resolved && r.store?.state !== "full" && (memberGone || !elsewhere && r.selected.connection !== "ok" && r.selected.connection !== "reachable")) {
+  } else if (!storeBlocked && !seedBlocksRestart && own && r.selected.resolved && r.store?.state !== "full" && (memberGone || !elsewhere && r.selected.connection !== "ok" && r.selected.connection !== "reachable")) {
     // `up` neither adopts nor replaces a service outside the stack that runs one of this root's
     // records, so each is stopped first, with the stop `up` names.
     const held = r.folder.heldServices ?? [], space = r.selected.space;
     items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
       { command: `${cmd} up --root ${shellWord(r.selected.root)}${r.folder.noManager ? " --no-manager" : ""}`, description: held.length ? "Then restart this stack's stopped members from its recorded inputs" : "Restart this stack's stopped members from its recorded inputs" });
-  } else if (!seedBlocksRestart && exited.length) {
+  } else if (!storeBlocked && !seedBlocksRestart && exited.length) {
     const broker = exited.includes("nats"), manager = exited.includes("manager");
     const notes = [...(broker ? ["up reopens the recorded store"] : []), ...(manager ? ["pass --runtime again if the manager ran on one"] : [])];
     items.unshift({ command: `${cmd} up`, description: `Restart this folder's ${broker && manager ? "broker and manager" : broker ? "broker" : "manager"}, which exited; ${notes.join("; ")}` });
-  } else if (!seedBlocksRestart && local && r.selected.resolved && r.selected.connection === "unreachable" && (r.folder.processes ?? []).every((row) => row.state === "stopped")) {
+  } else if (!storeBlocked && !seedBlocksRestart && local && r.selected.resolved && r.selected.connection === "unreachable" && (r.folder.processes ?? []).every((row) => row.state === "stopped")) {
     // A clean down leaves every member stopped with no pidfile. Spawn and ps need the stack, so the
     // bare `up` that starts it again on its recorded address and store comes first.
     items.unshift({ command: `${cmd} up`, description: "Start this folder's stopped stack again; pass --runtime again if the manager ran on one" });
@@ -2735,6 +2738,18 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
   if (renewal?.adoption === undefined) facts.push("renewal adoption not reported");
   else facts.push(renewal.adoption.ok ? "renewal adoption accepted" : `renewal adoption refused${renewal.adoption.error ? `: ${renewal.adoption.error}` : ""}`);
   const renewalRefused = renewal?.adoption?.ok === false;
+  if (target.mode === "open" && record.kind === "absent" && !renewalRefused) {
+    if (credential.kind === "unavailable") return { name: "delivery", verdict: "refused", facts: [credential.reason] };
+    try {
+      const component = await componentEp(target, credential);
+      try {
+        if (!await component.ep.readDeliveryLease(0)) return { name: "delivery", verdict: "not-started", facts: ["not used on an open mesh"] };
+      } finally { await component.close(); }
+    } catch (error) {
+      if (deliveryLeaseAbsent(error)) return { name: "delivery", verdict: "not-started", facts: ["not used on an open mesh"] };
+      return { name: "delivery", verdict: "refused", facts: [`lease probe refused: ${error instanceof Error ? error.message : String(error)}`] };
+    }
+  }
   if (stopped) {
     if (record.kind === "dead") facts.push("stale pidfile");
     if (record.kind === "unattributable") facts.push("unattributable pidfile");
@@ -2785,6 +2800,7 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
     const noLeaseSurface = deliveryLeaseAbsent(e);
     const msg = e instanceof Error ? e.message : String(e);
     facts.push(noLeaseSurface ? "ready lease absent" : `lease probe refused: ${msg}`);
+    if (isCommandFailure(e) && e.remedy) facts.push(e.remedy);
     return { name: "delivery", verdict: renewalRefused || !noLeaseSurface ? "refused" : "not-serving", facts };
   } finally {
     await close?.();
@@ -2848,7 +2864,7 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
   return { name: "web", verdict: "not-serving", facts: [...facts, `host ${bound.host}`, `port ${bound.port}`, "http not answered"] };
 }
 
-async function brokerHealth(target: MeshTarget): Promise<ComponentHealth> {
+async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | undefined): Promise<ComponentHealth> {
   const address = brokerAddressForDisplay(target.server);
   if (address === undefined)
     return { name: "broker", verdict: "refused", facts: ["registered address unavailable", "invalid broker address"] };
@@ -2867,12 +2883,16 @@ async function brokerHealth(target: MeshTarget): Promise<ComponentHealth> {
       const verdict = processVerdict(record);
       if (verdict) return { name: "broker", verdict, facts: [`registered ${address}`, ...pidFacts(record), ...(record.kind === "dead" ? ["stale pidfile"] : [])] };
     }
+    const storeFailure = store?.state === "write-failed" ? `store write failed: ${store.cause}`
+      : store?.state === "full" ? `store full: ${store.used} bytes exceeds ${store.cap} bytes at ${store.path}` : undefined;
     if (target.mode !== "user") {
       const preflight = await preflightTarget(target);
       if (!preflight.ok) return { name: "broker", verdict: "not-serving", facts: [`registered ${address}`, workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false }).message] };
-      return { name: "broker", verdict: "serving", facts: [`registered ${address}`, "reachable"] };
+      return { name: "broker", verdict: storeFailure ? "not-serving" : "serving", facts: [`registered ${address}`, "reachable", ...(storeFailure ? [storeFailure] : [])] };
     }
     const reachable = await isReachable(target.server, target.tlsRequired ? { tls: true } : {});
+    if (storeFailure)
+      return { name: "broker", verdict: "not-serving", facts: [`registered ${address}`, reachable ? "reachable" : "unreachable", storeFailure] };
     return reachable
       ? { name: "broker", verdict: "serving", facts: [`registered ${address}`, "reachable"] }
       : { name: "broker", verdict: "not-serving", facts: [`registered ${address}`, "unreachable"] };
@@ -2881,7 +2901,7 @@ async function brokerHealth(target: MeshTarget): Promise<ComponentHealth> {
   }
 }
 
-async function printComponentHealth(selected: Selected): Promise<void> {
+async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined): Promise<void> {
   section("Component Health");
   if (!selected.ok) {
     const e = selected.error;
@@ -2909,7 +2929,7 @@ async function printComponentHealth(selected: Selected): Promise<void> {
   // static shape is just the target's own auth material), shared by the manager and delivery
   // probes so the two rows cannot disagree about whose credential they probed with.
   const credential = await componentCredential(target);
-  const broker = await brokerHealth(target);
+  const broker = await brokerHealth(target, store);
   const components = await Promise.all([
     managerHealth(target, context, credential, broker),
     deliveryHealth(target, context, credential),

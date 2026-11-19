@@ -267,7 +267,7 @@ import {
   currentControllerAttempt, managerResumeAttempt, relaunchCommittedManager, settleControllerResume, startControllerMember, startControllerMembers,
 } from "../lib/controller-resume.js";
 import { removeRetiredBrokerInstance } from "../lib/controller-restore.js";
-import { acquireStackOperationLock, stackRecoveryHost, admittedStackRestore, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
+import { acquireStackOperationLock, knownStackRecoveryHost, admittedStackRestore, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import { serviceDefinitionStore } from "../lib/service-definitions.js";
 import { MissingFlags } from "../lib/missing-flags.js";
@@ -1711,7 +1711,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // that journals, give it `heldLock` and hand it down from here; do not audit by call-site shape.
   // The one caller that does NOT pass it is the prepare-failure path above, where the lock has
   // genuinely not been taken yet in this frame and the helper is meant to take its own.
-  let startupLock: MaintenanceLock | undefined = inheritedLock ?? acquireStackOperationLock(cotalRoot());
+  let startupLock: MaintenanceLock | undefined = inheritedLock ?? acquireStackOperationLock(cotalRoot(), values.detach ? undefined : "foreground up");
   onAdopt?.(); // from here the release below owns it, inherited or not
   const releaseStartupLock = () => {
     if (!startupLock) return;
@@ -2395,7 +2395,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
   let activationFinished = !resumeAttempt;
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
-  releaseStartupLock();
   child.on("error", (err) => {
     console.error(c.red(`Failed to start nats-server: ${err.message}`));
     if (!resumeAttempt) process.exit(1);
@@ -2580,6 +2579,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     );
     activationFinished = true;
   }
+  releaseStartupLock();
   await new Promise<void>(() => {});
   } finally {
     releaseStartupLock();
@@ -4732,7 +4732,8 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
     const pin = verifyIdentityPin(role === "broker" ? join(m.root, ".cotal", template) : localProcessPath(template, { root: m.root, space: m.space }));
     if (pin.kind === "match") nativeMembers.push({ role, process: pin.record });
   }
-  const recorded: MeshEntry = { ...m, origin, ...(nativeMembers.length ? { nativeMembers, nativeHost: stackRecoveryHost() } : {}) };
+  const nativeHost = nativeMembers.length ? knownStackRecoveryHost() : undefined;
+  const recorded: MeshEntry = { ...m, origin, ...(nativeHost !== undefined ? { nativeMembers, nativeHost } : {}) };
   recordMesh(provenance === "refresh" ? { ...prior, ...recorded } : recorded);
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
