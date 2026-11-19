@@ -174,9 +174,9 @@ function Read-ExplorerRunningApps($taskbarHandle) {
     }
     $reply = ConvertFrom-Json -InputObject $stdout.Result -AsHashtable
     if ($reply.toolbar -le 0 -or $reply.buttons -isnot [array]) { throw 'Explorer legacy reader returned invalid geometry or button evidence.' }
-    return @{ toolbar = $reply.toolbar; buttons = @($reply.buttons); error = $null }
+    return @{ status = 'observed'; toolbar = $reply.toolbar; buttons = @($reply.buttons); error = $null }
   } catch {
-    return @{ toolbar = $null; buttons = @(); error = $_.Exception.GetBaseException().Message }
+    return @{ status = 'reader unavailable'; toolbar = $null; buttons = $null; error = $_.Exception.GetBaseException().Message }
   } finally {
     if ($null -ne $probe) {
       try { if (!$probe.HasExited) { $probe.Kill($true); $null = $probe.WaitForExit(1000) } }

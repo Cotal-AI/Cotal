@@ -60,6 +60,8 @@ test("only the legacy reader uses the framework-matched Windows PowerShell", () 
   assert.match(probe, /read-windows-taskbar-accessibility\.ps1/);
   assert.match(probe, /WaitForExit\(8000\)/);
   assert.match(probe, /\$probe\.Kill\(\$true\)/);
+  assert.match(probe, /status = 'reader unavailable'; toolbar = \$null; buttons = \$null; error =/);
+  assert.match(probe, /status = 'observed'; toolbar = \$reply\.toolbar; buttons = @\(\$reply\.buttons\)/);
   assert.doesNotMatch(probe, /Add-Type|IgnoreWarnings/);
   const child = read("../scripts/read-windows-taskbar-accessibility.ps1");
   assert.match(child, /PSEdition -ne 'Desktop'/);
