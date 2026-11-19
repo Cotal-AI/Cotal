@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 
 export const otherHomeNotice = e => `Manager pid ${e.before.pid}, instance unavailable in space ${JSON.stringify(e.space)} at ${JSON.stringify(e.project)} keeps running the version it loaded until it is restarted from its own home; its root is not registered in this home.`;
 const clean = row => row?.exit === 0 && row.signal === null && row.timeout === false;
-export function verifyOtherHomeAuthEvidence({ report, cell, requireCleanup = true }) {
+export function verifyOtherHomeAuthEvidence({ report, cell, requireCleanup = true, expectedNodePath }) {
   const e = report.otherHomeAuth;
   assert.equal(cell.otherHomeAuth, true);
   assert.equal(cell.platform, 'linux');
@@ -16,7 +16,9 @@ export function verifyOtherHomeAuthEvidence({ report, cell, requireCleanup = tru
   assert.equal(typeof e.before.instanceId, 'string'); assert(e.before.instanceId);
   assert.equal(e.before.argv.slice(1).find(arg => !arg.startsWith('-')), e.installedRoot + '/dist/cotal.js');
   assert.equal(e.before.reportedVersion, cell.sourceVersion);
-  assert.equal(e.before.argv[0], process.execPath);
+  assert(typeof e.nodePath === 'string' && e.nodePath.length > 0, 'recorded Node path missing');
+  if (expectedNodePath !== undefined) assert.equal(e.nodePath, expectedNodePath);
+  assert.equal(e.before.argv[0], e.nodePath);
   assert(e.before.argv.includes('__service-manager'));
   assert.equal(e.before.cwd, e.project);
   assert(e.before.graph.length > 0);

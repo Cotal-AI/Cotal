@@ -13,6 +13,7 @@ import { homeCotalDir } from "./cotal-home.js";
 import { MANAGER_PIDFILE, localProcessPathCandidates, recordedLocalProcessPaths } from "./local-process.js";
 import { commandIsCotalSupervisor, readProcessRecord } from "./pid.js";
 import { probeLiveness } from "./liveness.js";
+import { protectedResolvedDirectory } from "./protected-records.js";
 
 interface ConnectorHolder {
   v: 1;
@@ -164,6 +165,7 @@ function ownedDirectory(path: string): void {
 }
 function ownedAncestors(path: string): void {
   const config = resolve(globalConfigDir());
+  protectedResolvedDirectory(config, "the connector config folder");
   for (let parent = path; parent !== config; parent = dirname(parent)) {
     if (parent === dirname(parent)) throw new Error("connector retention escaped its config directory");
     ownedDirectory(parent);
@@ -245,6 +247,9 @@ export function retainConnectorConfig(): string {
   if (selected !== undefined) return selected;
   const snapshot = updateSnapshot(id);
   const current = snapshot ?? previousConfig(id) ?? globalConfigDir();
+  let ancestor = current;
+  while (!lstatSync(ancestor, { throwIfNoEntry: false })) ancestor = dirname(ancestor);
+  protectedResolvedDirectory(ancestor, "the connector config folder");
   const releaseClosure = claimUpdateClosureAccess();
   let releaseWriter = () => {};
   let releaseSeed = () => {};
@@ -298,7 +303,7 @@ export function retainConnectorConfig(): string {
       }
       renameSync(staging, root);
     } finally { if (existsSync(staging)) rmSync(staging, { recursive: true }); }
-    if (realpathSync(root) !== root) throw new Error("retained connector state resolved through a link");
+    if (realpathSync(root) !== join(realpathSync(id.path), basename(root))) throw new Error("retained connector state resolved through a link");
     mkdirSync(join(id.path, "holders"), { mode: 0o700, recursive: true });
     if (!existsSync(join(id.path, "holders-v1.json"))) writeFileSync(join(id.path, "holders-v1.json"), '{"v":1}\n', { flag: "wx", mode: 0o600 });
     const record: Selection = { v: 1, entry: id.entry, version: id.version, root, ...(snapshot ? { snapshot } : {}) };

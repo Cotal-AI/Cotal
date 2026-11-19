@@ -17,6 +17,7 @@
 import { execFile as execFileProc, spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { connect as connectSocket, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -705,6 +706,100 @@ try {
     c("run-ps on the successor shows all three runs completed",
       ps.ok === true && [pureId, cpId, runId].every((x) => (ps.data as RunListRowT[]).find((row) => row.runId === x)?.state === "completed"), ps.data);
   }
+  console.log("A5a. a dropped inventory connection does not strand inherited runs");
+  {
+    const startPaused = async (file: string) => {
+      const r = await callB("run-start", { source: CHECKPOINT, file });
+      const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
+      const view = await until(async () => { const v = await statusB(runId); return pending(v, "Ship it?") ? v : undefined; }, 15_000);
+      if (view?.status?.epoch !== 1 || stateOf(view) !== "running") throw new Error(`checkpoint did not park: ${JSON.stringify(r)}`);
+      return runId;
+    };
+    const runId = await startPaused("retry.cotal.js");
+    const revokedId = await startPaused("revoked-on-retry.cotal.js");
+    await mgrB.stop({ withAgents: true });
+    mgrB = undefined;
+    const logs: string[] = [];
+    const sockets = new Set<Socket>();
+    let droppedJwt: string | undefined;
+    let heldScan: (() => void) | undefined;
+    const port = Number(new URL(brokerA.servers).port);
+    const relay = createServer((client) => {
+      const upstream = connectSocket(port, "127.0.0.1");
+      let tail = "";
+      let jwt: string | undefined;
+      for (const s of [client, upstream]) {
+        sockets.add(s);
+        s.on("error", () => s.destroy());
+        s.on("close", () => { sockets.delete(s); client.destroy(); upstream.destroy(); });
+      }
+      upstream.pipe(client);
+      client.on("data", (bytes: Buffer) => {
+        const data = tail + bytes.toString("latin1");
+        jwt ??= /(?:^|\r\n)CONNECT [^\r\n]*"jwt":"([^"]+)"/.exec(data)?.[1];
+        tail = data.slice(jwt ? -512 : -16_384);
+        if (droppedJwt !== undefined && jwt === droppedJwt) {
+          // The client can redial despite its zero-attempt setting. Refuse that same connection
+          // promptly so its in-flight scan rejects as closed rather than waiting for a timeout.
+          upstream.unpipe(client);
+          client.end("-ERR 'Authorization Violation'\r\n");
+          return;
+        }
+        if (heldScan === undefined && jwt !== undefined && /(?:H?PUB) \$JS\.API\.STREAM\.MSG\.GET\.[^\r\n]+\r\n[^\r\n]*"next_by_subj":"[^"]*\.run\.manager\.\*\.spec"/.test(data)) {
+          if (droppedJwt === undefined) {
+            droppedJwt = jwt;
+            client.resetAndDestroy();
+            return;
+          }
+          // Hold the retry's first inventory read until the gate and unchanged run are observed.
+          client.pause();
+          heldScan = () => { upstream.write(bytes); client.resume(); };
+          return;
+        }
+        upstream.write(bytes);
+      });
+    });
+    let hosting: InstanceType<typeof RunHosting> | undefined;
+    try {
+      await new Promise<void>((ready, reject) => { relay.once("error", reject); relay.listen(0, "127.0.0.1", ready); });
+      const address = relay.address();
+      if (!address || typeof address === "string") throw new Error("relay has no TCP address");
+      const successor = hosting = new RunHosting({
+        space: spaceA, servers: `nats://127.0.0.1:${address.port}`, endpoint: "manager", instanceId: mintLifecycleUid(),
+        holder: { id: principalKey(DEV_OWNER, newIdentity().id).key, lifecycleUid: mintLifecycleUid() }, auth, log: (line) => void logs.push(line),
+      });
+      await successor.revoke(revokedId, "operator", "withdrawn before takeover");
+      await successor.reconcile();
+      c("the initial reconcile loses its inventory connection", droppedJwt !== undefined && logs.some((line) => line.includes("boot reconcile failed: connection closed")), logs);
+      const releaseScan = await until(async () => heldScan, 5_000);
+      const parked = await successor.status({ runId });
+      const missing = await successor.resume({ runId: `run-${"0".repeat(32)}` }).then(() => undefined, (e: unknown) => e as { code?: string });
+      c("the run gate is open and the inherited run is still parked before retry completes", missing?.code === "not-found" && parked.status?.epoch === 1 && pending(parked, "Ship it?") !== undefined, { missing, status: parked.status });
+      releaseScan?.();
+      const recovered = releaseScan && await until(async () => { const v = await successor.status({ runId }); return v.status?.epoch === 2 ? v : undefined; }, 10_000);
+      c("a fresh scan takes back the admitted run once without another reconcile call",
+        recovered?.status?.epoch === 2 && pending(recovered, "Ship it?") !== undefined && recovered.journal.filter((r) => r.kind === "activation").length === 2, { status: recovered?.status, logs });
+      const revoked = await successor.status({ runId: revokedId });
+      c("the retry still leaves the revoked run parked", revoked.status?.epoch === 1 && revoked.revoked?.by === "operator"
+        && revoked.journal.filter((r) => r.kind === "activation").length === 1, { status: revoked.status, logs });
+      // Clean up the inherited run after the assertions, even on the pre-fix build.
+      if (!recovered) await successor.resume({ runId });
+      await successor.answer({ runId, stepKey: "/checkpoint:approve#0", value: "go" }, "operator");
+      if (!await until(async () => stateOf(await successor.status({ runId })) === "completed" || undefined, 10_000))
+        throw new Error("the recovered run did not complete");
+    } finally {
+      await hosting?.stop();
+      for (const socket of sockets) socket.destroy();
+      if (relay.listening) await new Promise<void>((done) => relay.close(() => done()));
+    }
+    mgrB = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsA });
+    await mgrB.start();
+    const serviceB = await resolveService(nc, spaceA, "manager", caller, { deadlineMs: 10_000 });
+    callB = async (command, args) => (await invokeCommand(nc!, spaceA, serviceB, command, args, {
+      deadlineMs: 30_000, currentEpoch: async () => serviceB.responder.epoch,
+      ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
+    })).reply;
+  }
   console.log("A6. the boot gate: no start or resume is served until the reconcile has taken back the predecessor's runs");
   {
     // A third checkpoint program parked under the successor, then the successor stopped: the run
@@ -1122,7 +1217,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 104;
+const EXPECTED_CELLS = 108;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

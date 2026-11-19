@@ -1,5 +1,26 @@
 # @cotal-ai/connector-core
 
+## 0.171.1
+
+### Patch Changes
+
+- 0eed499: When an update replaces the connector's docs files under a running session, `cotal_docs` still refuses to serve another release's docs, and the refusal now names the release the session loaded and says to restart the session to read the docs of the installed version.
+- a9ac959: A message that waits in a connector's queue past its acknowledgement wait is no longer shown as a broker redelivery with an unknown prior handoff. The connector records the first copy it received and the first copy it handed to its host. A message it never handed over carries no redelivery label. One it handed over without an acknowledgement says that an earlier handoff in this session was not confirmed. A first copy that was already a redelivery, as after a restart, still labels the prior model handoff unknown.
+- 1a98542: User-mode manager calls now report a refused bearer exchange as permission denied and confirm that the request did not run.
+
+## 0.171.0
+
+### Minor Changes
+
+- edd19cc: An agent owner's interactive session can now list an OpenCode 2.x agent's own commands and skills and run one, such as `/review`, which waits for the agent's next idle turn and can be cancelled until it starts, and the broker refuses every other caller.
+  
+  `@cotal-ai/core` advances the `agent` endpoint's cluster to revision 2 with four commands. `commands` lists `{ name, target, description?, inputHint? }` entries or answers `{ supported: false }`. `command` queues one by `{ target, name, args? }` and answers its `{ id }` at once. `command-cancel` cancels a queued command by id, and `command-state` reads whether it is `queued`, `taken` or `started`, was `cancelled`, was `refused` with `not-found`, `failed-precondition` or `unavailable`, or ended `unknown`. The four declare the `owner` authority word only, so an interactive ledger row gets their caller rows, and no grant row can name them. `@cotal-ai/connector-core` adds `openAgentEndpoint`, the one owner of the agent serve, which replaces `openPromptDesk` and serves the prompt desk beside a command lane. Every `MeshAgent` with a user-auth credential opens it, with the connector's `commands` dispatcher or none. A command starts only while no turn runs. At most 8 are queued, with no time bound, stopping the agent refuses every queued one, and the agent remembers the last 32 to end. A connector takes each queued command with `dispatchNextCommand()` when `MeshAgent` emits `command`. An open or static mesh serves nothing yet. `@cotal-ai/connector-opencode` lists `GET /api/command` by name and `GET /api/skill` by id and runs a command through `/command` and a skill through `/prompt`. A first-turn command carries the persona's `system` field as a first message does, though OpenCode 2.2.5 passes it to the model for neither, and right after a command turn, waiting messages go first.
+
+### Patch Changes
+
+- 7e9479a: Clarify how to identify the broker executable, answer or resume a workflow, preview a team without its applications, and interpret the dashboard credential in `doctor auth`.
+- 3b8a019: Internal refactor: the inbox item types, limits and helpers now live in their own module. Inbox behaviour is unchanged.
+
 ## 0.170.0
 
 ### Patch Changes

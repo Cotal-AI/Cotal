@@ -327,8 +327,8 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const startedRoot = project("started-here");
   recordMesh({ space: "startedspace", server: "nats://127.0.0.1:4997", root: startedRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const started = await json(FULL("startedspace", startedRoot));
-  check("a space started here before is reported as started, and its next command is spawn",
-    started.status === 0 && started.env?.result.spaceState === "started" && started.env.result.next.command === `${commandPrefix} spawn --space startedspace` && findPreparedSpace("startedspace") === undefined, shown(started));
+  check("a past local registration with an offline broker is reported as stopped and kept",
+    started.status === 0 && started.env?.result.spaceState === "stopped" && started.env.result.next.command === `${commandPrefix} up` && started.env.result.next.cwd === startedRoot && findPreparedSpace("startedspace") === undefined, shown(started));
 
   const other = await json(FULL("research2", dir));
   check("a second space in the same project is CONFLICT", refused(other, 2, "CONFLICT") && /already the root of "research"/.test(other.env?.error?.message ?? ""), shown(other));

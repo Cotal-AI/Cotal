@@ -1,7 +1,7 @@
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ensureDirNoSymlink, globalConfigDir } from "@cotal-ai/core";
-import { connectorConfigDir, protectedLocalDirectory, readUpdateRecovery, writeUpdateRecovery } from "@cotal-ai/workspace";
+import { connectorConfigDir, protectedResolvedDirectory, readUpdateRecovery, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { acquireReconcileLock } from "../seed/lock.js";
 
@@ -22,10 +22,10 @@ export function snapshotUpdateClosure(existing?: string): UpdateSnapshot {
     ancestor = dirname(ancestor);
   }
   if (missing.length) {
-    protectedLocalDirectory(ancestor, "the Cotal config folder");
+    ancestor = protectedResolvedDirectory(ancestor, "the Cotal config folder");
     ensureDirNoSymlink(ancestor, ...missing);
   }
-  protectedLocalDirectory(config, "the Cotal config folder");
+  protectedResolvedDirectory(config, "the Cotal config folder");
   const lock = acquireReconcileLock();
   let release = () => {};
   let path: string;

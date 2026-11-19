@@ -226,7 +226,7 @@ const composed: Command = { ...command, async run(args) {
     }
   }
   const runtime = { ...updateRuntime, automaticGenerationWait: process.platform === "linux",
-    claimGlobalUpdate: (root: string) => claimGlobalNpmUpdateLock(root, legacyRepair && root === interruptedChildRoot ? { waitMs: 10 * 60_000, repairAmbiguous: () => {
+    claimGlobalUpdate: (root: string, onWait?: () => void) => claimGlobalNpmUpdateLock(root, legacyRepair && root === interruptedChildRoot ? { waitMs: 10 * 60_000, onWait, repairAmbiguous: () => {
       if (repairService) {
         const plan = planUninstall(repairService, undefined);
         if (!installedDaemonIdentity(repairService).same || plan.mechanism !== "systemd-user") throw new Error("daemon installation changed before repair");
@@ -264,7 +264,7 @@ const composed: Command = { ...command, async run(args) {
         }
       }
       console.log("Retaining the interrupted update marker after confirming this account has no other application process.");
-    } } : { waitMs: 10 * 60_000 }),
+    } } : { waitMs: 10 * 60_000, onWait }),
     ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {
       preflightExecution: preflightExecutionUpdate,
       repairInstallModes: (root: string) => repairExecutionInstallModes(executionInstallRoot(), () => repairInstallModes(root)),
@@ -321,6 +321,9 @@ const composed: Command = { ...command, async run(args) {
       if (reply.result.update.automatic && typeof reply.result.update.nextAttempt === "string") return undefined;
       return "The daemon is not scheduling automatic installation. Run `cotal daemon status` to inspect it. If no daemon service is installed, run `cotal daemon install`.";
     } catch (error) {
+      if (error instanceof EndpointRefusal && error.code === "PEER_NOT_LOCK_OWNER") {
+        return `Could not check the automatic update schedule: ${error.message}.`;
+      }
       if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
         return "No daemon service is running the automatic update schedule. Run `cotal daemon install`, then inspect `cotal daemon status`.";
       }

@@ -155,6 +155,9 @@ Daily checks, update notices and their settings remain available on every platfo
 Bare `cotal update --auto` reports the saved setting and the platform limit.
 On Linux, macOS and Windows, enabling or reading an enabled setting also checks the daemon's
 schedule. If no daemon answers, it names `cotal daemon install` and `cotal daemon status`.
+If a daemon answers at the socket but does not own the lock for this Cotal home, the command
+reports the saved preference and says the schedule could not be checked. It sends no request to
+that daemon.
 An answering daemon without an active automatic schedule is reported separately, including one
 paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
 the command installs and starts nothing.
@@ -188,26 +191,34 @@ Interactive commands print a one-line update notice on stderr from a daily cache
 The check runs daily with `npm view cotal-ai@latest` against your configured registry, and nothing else is sent.
 A command started during the few seconds an update replaces the installation can fail to load and should be run again.
 The check runs in the background. JSON, plain, CI and redirected output receive no notice.
-Version output reports the cached update state without waiting for the registry.
+Version output reports the cached update state without waiting for the registry. If the recorded
+updater is still running, version output says to wait rather than asking you to restore the update.
 
 Before replacing the global package, the updater verifies both the target and previous release
 archives and fetches the installed first-party extensions with their dependency closures in a
 disposable prefix. The dependency check, package installation and reconciliation use private temporary
-npm caches that are removed afterwards. An unwritable cache configured in `.npmrc` does not block the
-update. Cotal leaves that cache and its permissions unchanged and still applies your registry,
-authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement. A failed replacement
-is followed by another reconcile attempt, then a verified reinstall
+npm caches that are removed afterwards. After a successful self-update on Linux or macOS, Cotal also
+removes earlier archive caches in its temporary location when it can verify that their owner and
+npm workers have exited. It leaves unrecorded caches and active archive checks alone.
+An unwritable cache configured in `.npmrc` does not block the update. Cotal leaves that cache and
+its permissions unchanged and still applies your registry,
+authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement.
+If a signal terminates the npm dependency check, the command names the signal and leaves installed
+packages unchanged. Run `cotal update --self` again.
+A failed replacement is followed by another reconcile attempt, then a verified reinstall
 and reconcile of the previous version. A private same-filesystem snapshot restores the previous seed
 stamp, connectors and operator extensions before Managers start. Interrupted restoration resumes on
-the next update or daemon start. A snapshot captured in the original config folder restores that
-folder even if the new release has already selected a retained connector set. The snapshot is removed
+the next update or daemon start. If `cotal update --self` restores an earlier release, it continues
+from the restored CLI so the registry check uses the version now installed. A snapshot captured in
+the original config folder restores that folder even if the new release has already selected a
+retained connector set. The snapshot is removed
 after successful update or restoration.
 Starting in 0.167.1, reconciliation rebuilds an unfinished retained connector copy when neither
 selection record names it and no live or unproven seat holder needs it. Cleanup removes empty
 unpublished update journals and abandoned installation staging, including owned read-only folders,
 under the installation update lock. Selected connector sets and unfinished recorded transactions
 remain protected.
-If the computer has never run setup, update creates the missing config folders with private permissions before taking the snapshot. Existing unsafe folders or symbolic links still refuse the update. Automatic config and snapshot preflight refusals appear in the daemon status update result as one line with paths redacted.
+If the computer has never run setup, update creates the missing config folders with private permissions before taking the snapshot. A home or configuration folder reached through a symbolic link is accepted only when the physical folder and every link's parent chain are protected against other local writers. Unsafe physical folders and links inside retained connector state still refuse the update. If a snapshot cannot be saved, update discards the unpublished staged build. Automatic config and snapshot preflight refusals appear in the daemon status update result as one line with paths redacted.
 If reconciliation still fails after retry, the command preserves the original child's exit status
 through restoration. An interrupt takes precedence over that status.
 If restoration also fails, the error names the installed version
@@ -363,7 +374,9 @@ comes only from a manager this machine read. A stopped mesh that this machine ru
 inside its project, has no running manager either when no `cotal supervise` process that loaded this
 install may be serving its space and nothing listens at its recorded broker address, so the read is skipped
 there too. A controller stack that completed ordinary `cotal down` is eligible after its retained
-service records prove every process gone. Missing instance records, live or unresolved processes,
+service records prove every process gone. An explicit `--server` still permits this check when it
+matches the recorded broker URL. A different URL cannot use the stopped stack's records.
+Missing instance records, live or unresolved processes,
 and an unfinished down still refuse. That is the cold path past a `legacy` verdict: `cotal down`,
 then `cotal update`, and the verdict's `Next` line names it with that mesh's space. A space prepared on this machine that never started, whether this folder's,
 selected or named, has no broker and no manager, so it is named and skipped the same way.
@@ -420,9 +433,12 @@ When a newer release exists, Cotal first downloads and integrity-checks its `cot
 of its first-party runtime dependency closure through npm, using a temporary cache and no install
 scripts. Each registry request has a 15-second timeout. Package installs and archive checks retry
 transient network failures twice, waiting one second and then two seconds. The latest-version read
-keeps a single attempt. Missing archives or invalid
-metadata refuse before global installation or connector reconciliation, with a registry propagation
-hint and a request to check registry access and try again in a few minutes. This preflight does not
+keeps a single attempt. Missing release archives wait up to ten minutes before keeping the installed
+version. Invalid metadata, integrity failures and scoped registry access errors refuse before global
+installation or connector reconciliation. Since 0.167.1, registry access refusals report npm's error
+code rather than asking you to wait for publication. For a refused scoped connection, check the
+`@cotal-ai:registry` line in `.npmrc` and restore that registry's connectivity or correct the setting
+before retrying. The updater does not bypass your configured registry. This preflight does not
 guarantee later registry requests or third-party dependency downloads will succeed.
 From 0.167.1, an npm `ETARGET` that names a date bound stops the update immediately with
 exit code 1. The diagnostic names `min-release-age` and `before`: adjust the setting that
@@ -464,6 +480,13 @@ that wait. The command then restores the interrupted transaction and continues t
 self-update. An expired wait, an unpublished child PID or ambiguous descendant state still refuses
 without starting a competing replacement.
 
+When two `cotal update --self` commands target the same npm installation, one waits up to ten
+minutes for the other update to finish. Only a command that has to wait prints a waiting line, once.
+It then reads the installed version again. If the other
+command installed the requested release or a newer one, it continues through that verified CLI
+instead of replacing the package again. A timeout or unresolved child state still
+refuses without starting a competing replacement.
+
 Once global replacement starts, Ctrl-C waits for installation, verification and reconciliation to
 finish before returning exit code 130. SIGTERM waits the same way and returns 143. The command
 explains the wait, keeps its update lock and does not send terminal interrupts into the child
@@ -492,8 +515,12 @@ Third-party extensions are listed with their installed version and recorded spec
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
 a future follow-up. When `update --self` cannot reach the registry before selecting a release,
 it reports that nothing changed and exits 0 without reconciling packages or inspecting Manager
-custody. The version read has no retries and a 15-second network timeout. Unknown availability
-is not a claim that the installed version is current. A failed connector/extension install, npm metadata check after reconciliation, or requested global
+custody. It does not create an update recovery record. From 0.167.1, losing registry connectivity during release checks, extension-dependency
+checks or target staging also reports that nothing changed and exits 0 before replacement.
+A failed first-party scoped metadata read still names the `@cotal-ai:registry` setting and exits 1.
+Authentication, permission, integrity and target pre-install refusals still exit nonzero.
+Retry `cotal update --self` when connectivity returns. The version read has no retries and a
+15-second network timeout. Unknown availability is not a claim that the installed version is current. A failed connector/extension install, npm metadata check after reconciliation, or requested global
 install is reported and makes the command exit nonzero. Independent extension attempts continue so
 the output includes every failure; an unavailable npm registry does not undo a completed local
 reconcile, but the command still exits nonzero because it could not establish that the install is
