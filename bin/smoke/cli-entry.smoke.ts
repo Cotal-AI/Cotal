@@ -99,6 +99,7 @@ function cotal(args: string[], prepare?: (cotalHome: string) => void, extraEnv: 
 
 const shown = (r: Run) => ({ status: r.status, stdout: r.stdout.slice(0, 300), stderr: r.stderr.slice(0, 300), wrote: r.wrote });
 const same = (a: Run, b: Run) => a.status === b.status && a.stdout === b.stdout && a.stderr === b.stderr;
+const selectionActions = /^  ((?:pnpm )?cotal) space +List the spaces on this machine\n  \1 use <name> +Select the default space$/m;
 
 /** A run that printed to stdout, exited 0 and wrote nothing. */
 function local(name: string, r: Run): void {
@@ -123,9 +124,16 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   local("bare cotal prints the entry screen and writes nothing", fresh);
   check("a fresh machine is pointed to sign-in and setup", /^No space is selected\.$/m.test(fresh.stdout) && /^Start here\n  (?:pnpm )?cotal login  [^\n]*\n  (?:pnpm )?cotal setup  /m.test(fresh.stdout), shown(fresh));
   check("the entry screen names common commands and where the rest are", /^Everyday\n  (?:pnpm )?cotal ps  /m.test(fresh.stdout) && /^More\n  (?:pnpm )?cotal help  /m.test(fresh.stdout), shown(fresh));
-  const ghost = cotal([], (home) => writeFileSync(join(home, "current-mesh"), "ghost\n"));
+  const selectGhost = (home: string): void => writeFileSync(join(home, "current-mesh"), "ghost\n");
+  const ghost = cotal([], selectGhost);
   local("bare cotal with a selected space writes nothing", ghost);
   check("the entry screen names the selected space, and says when it is not recorded here", ghost.stdout.startsWith("ghost · not recorded · "), shown(ghost));
+  const selectedHelp = cotal(["help"], selectGhost);
+  for (const [entry, run] of [["bare cotal", ghost], ["cotal help", selectedHelp]] as const) {
+    const start = run.stdout.split("\nStart here\n")[1]?.split("\n\n")[0] ?? "";
+    check(`${entry} lists spaces before named selection and does not offer bare use`,
+      run.status === 0 && selectionActions.test(start) && !/^  (?:pnpm )?cotal use(?: {2,}|$)/m.test(start), start);
+  }
   // A prepared space starts with `up`; spawn refuses on it until then.
   const prepare = (cotalHome: string, space: string, root: string): void => {
     mkdirSync(join(cotalHome, "prepared"), { recursive: true });
@@ -159,8 +167,8 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     running.stdout.startsWith("live · local · ") && /^Start here\n  (?:pnpm )?cotal spawn +Open your default agent$/m.test(running.stdout) && !running.stdout.includes("No space is selected"), shown(running));
   const away = cotal([], (home) => register(home, "live", join(dirname(home), "project")));
   local("bare cotal outside any space's folder writes nothing", away);
-  check("with spaces on the machine but none selected or here, it names use and space instead of setup",
-    /^No space is selected\.$/m.test(away.stdout) && /^Start here\n  (?:pnpm )?cotal use <name> +Choose the space commands use\n  (?:pnpm )?cotal space +List the spaces on this machine$/m.test(away.stdout) && !away.stdout.includes("cotal setup  Choose"), shown(away));
+  check("with spaces on the machine but none selected or here, it lists spaces before named selection instead of setup",
+    /^No space is selected\.$/m.test(away.stdout) && selectionActions.test(away.stdout.split("\nStart here\n")[1]?.split("\n\n")[0] ?? "") && !away.stdout.includes("cotal setup  Choose"), shown(away));
 }
 
 // ── Help ───────────────────────────────────────────────────────────────────────────────────────────

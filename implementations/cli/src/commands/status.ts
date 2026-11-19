@@ -125,6 +125,7 @@ import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker, managerLogPath } from "../lib/manager-proc.js";
 import { MANAGER_OMITTED } from "../lib/delivery-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
+import { spaceSelectionActions } from "../lib/space-selection-actions.js";
 import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_STALE_TEXT, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { brokerStoreWrite, storeFull, storeWriteRepair, type StoreWriteObservation } from "../lib/broker-store-health.js";
@@ -2178,7 +2179,7 @@ function nextActions(r: StatusResult): Section {
     items.push({ command: `${cmd} ps`, description: "See the agent roster" });
   } else if (noApplication) items.push({ command: `${cmd} setup`, description: r.selected.code === "not-started" ? "Set up an agent application" : "Set up an agent application and a space" });
   if (r.selected.resolved || !noApplication) {
-    items.push({ command: `${cmd} use`, description: "Choose another space" });
+    for (const [, command, description] of spaceSelectionActions) items.push({ command: `${cmd} ${command}`, description });
     if (r.meshes.items.length > 1) items.push({ command: `${cmd} status --all`, description: "Check every registered space" });
   }
   // A stopped broker is resumed, not restarted. A local controller stack that does not answer,

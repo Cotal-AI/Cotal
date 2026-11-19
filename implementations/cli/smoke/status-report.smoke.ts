@@ -278,7 +278,12 @@ if (!brokerDisplayOnly) {
     check(`control: ${label} gets no bare up`, !/(^|\s)cotal up(\s{2}|$)/m.test(next), next);
   check("control: a controller stack is not read from legacy pidfiles", !/(^|\s)cotal up(\s{2}|$)/m.test(legacyNext(["manager"], { controllerStack: true })), legacyNext(["manager"], { controllerStack: true }));
   const plain = run(["status", "--space", "alpha", "--plain"]);
-  const NOT_DIALED = `Unselected spaces are not dialed - \`${displayCmd()} status --all\` dials each`;
+  const cmd = displayCmd();
+  const next = plain.stdout.split("\nNext\n")[1]?.split("\n").map((line) => line.trim().split(/ {2,}/)[0]) ?? [];
+  const list = next.indexOf(`${cmd} space`);
+  check("status lists the spaces before suggesting named selection and does not offer bare use",
+    plain.status === 0 && list >= 0 && next[list + 1] === `${cmd} use <name>` && !next.includes(`${cmd} use`), next);
+  const NOT_DIALED = `Unselected spaces are not dialed - \`${cmd} status --all\` dials each`;
   check("the other registration carries no connection state, and one note says why, once",
     /^ {2}beta +open$/m.test(plain.stdout) && !/^ {2}\S+ +not checked/m.test(plain.stdout) &&
       (plain.stdout.match(/are not dialed/g) ?? []).length === 1 && plain.stdout.includes(NOT_DIALED), plain.stdout);

@@ -9,6 +9,7 @@ import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { displayCmd } from "./lib/self-exec.js";
+import { spaceSelectionActions } from "./lib/space-selection-actions.js";
 import { c, hang } from "./ui.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
@@ -246,16 +247,13 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     ...(start ? [["up", start, "Start this space"] as [string, string, string]] : folderStart ? [["up", folderStart, "Start this folder's space"] as [string, string, string]] : []),
     ...(start ? [] : [["spawn", "spawn", "Open your default agent"] as [string, string, string]]),
     ["setup", "setup", "Review setup and defaults"],
-    ["use", "use", "Choose another space"],
+    ...spaceSelectionActions,
   ] : manifest ? [
     ["team", `team check ${shellWord(manifest.path)}`, `Check the team file, which declares ${shellWord(manifest.space)}`],
     ["space", `space create ${shellWord(manifest.space)}`, "Prepare the space that file declares"],
     ["team", `team boot ${shellWord(manifest.path)}`, "Boot that team"],
     ["up", `up -f ${shellWord(manifest.path)}`, "Start the space from that file"],
-  ] : anySpace ? [
-    ["use", "use <name>", "Choose the space commands use"],
-    ["space", "space", "List the spaces on this machine"],
-  ] : [["login", "login", "Sign in to Cotal Cloud"], ["setup", "setup", "Choose your application and prepare a space"]]));
+  ] : anySpace ? spaceSelectionActions : [["login", "login", "Sign in to Cotal Cloud"], ["setup", "setup", "Choose your application and prepare a space"]]));
   sections.push(actions("Everyday", [
     ["ps", "ps", "List agents"],
     ["attach", "attach <name>", "Return to an agent"],
