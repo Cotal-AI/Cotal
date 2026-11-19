@@ -1,6 +1,6 @@
 import { rmSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
-import { registry, writeSecretFileCreateOnly, type Command, type ParsedArgs } from "@cotal-ai/core";
+import { registry, writeSecretFileAtomic, writeSecretFileCreateOnly, type Command, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, WEB_CREDS_KIND, WEB_PIDFILE, WEB_SERVICE_ADAPTER, claimServicePid, colorEnabled, identityRecord, isCommandFailure, observeServiceStartup,
   oneLine, publishServiceStartup, readLocalRecordSource, readPinnedStaticCredential,
@@ -92,29 +92,43 @@ const nativeWebServiceCommand: Command = {
     const posting = args.values["posting-creds"] ? await readDashboardPostingCredential(selected, String(args.values["posting-creds"]), credsPath) : undefined;
     const releasePid = claimServicePid({ root: selected.root, space: selected.space }, WEB_PIDFILE);
     const sessionPath = serviceWebSessionPath({ space: selected.space, instanceId, launchRequestId, stateDirectory: dirname(readyPath) });
-    let sessionBytes: string | undefined, pidReleased = false;
+    let sessionRecord: (WebSession & { schemaVersion: number; space: string; instanceId: string; launchRequestId: string; process: ReturnType<typeof identityRecord> }) | undefined;
+    let pidReleased = false;
+    const sessionBytes = (record: NonNullable<typeof sessionRecord>) => JSON.stringify(record) + "\n";
+    const unchangedSession = () => {
+      const current = readLocalRecordSource(sessionPath, 16384, true);
+      if (!current) return false;
+      if (!sessionRecord || current.toString("utf8") !== sessionBytes(sessionRecord)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the private dashboard session record changed; no successor file or PID custody was removed");
+      return true;
+    };
     try {
       await web({ positionals: [], raw: [], values: { space: selected.space, server: selected.server, host: args.values.host, port: args.values.port, "no-open": true } }, {
         posting,
         connection: { root: selected.root, space: selected.space, server: selected.server, tls: selected.tlsRequired, mode: selected.mode, creds },
         onSession(session: WebSession) {
-          sessionBytes = JSON.stringify({ schemaVersion: 1, space: selected.space, instanceId, launchRequestId, process: identityRecord(process.pid), ...session }) + "\n";
-          writeSecretFileCreateOnly(sessionPath, sessionBytes);
+          sessionRecord = { schemaVersion: 1, space: selected.space, instanceId, launchRequestId, process: identityRecord(process.pid), ...session };
+          writeSecretFileCreateOnly(sessionPath, sessionBytes(sessionRecord));
           process.stdout.write(`${posting ? "Posting-enabled" : "Read-only"} dashboard. Private browser bootstrap file: ${oneLine(sessionPath)}\n`);
+        },
+        onLaunchUrl(launchUrl) {
+          try {
+            if (!sessionRecord || !unchangedSession()) throw new Error("missing session record");
+            const next = { ...sessionRecord, launchUrl };
+            writeSecretFileAtomic(sessionPath, sessionBytes(next));
+            sessionRecord = next;
+          } catch {
+            throw new Error("the private dashboard session record could not be refreshed");
+          }
         },
         onReady() { publishServiceStartup(readyPath, { phase: "web-listening", space: selected.space, instanceId, launchRequestId }); },
         onClosed() {
-          if (sessionBytes !== undefined) {
-            const current = readLocalRecordSource(sessionPath, 16384, true);
-            if (current && current.toString("utf8") !== sessionBytes) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the private dashboard session record changed; no successor file or PID custody was removed");
-            if (current) rmSync(sessionPath);
-          }
+          if (sessionRecord && unchangedSession()) rmSync(sessionPath);
           releasePid();
           pidReleased = true;
         },
       });
     } catch {
-      if (sessionBytes === undefined && !pidReleased) {
+      if (!sessionRecord && !pidReleased) {
         try { releasePid(); }
         catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original native dashboard startup or close was not confirmed; process/session custody was retained and no credential, callback or launch was retried"); }
         throw new CommandFailure("failed", "OPERATION_FAILED", "the native dashboard startup failed before its listener was ready; PID custody was released and no launch was retried");

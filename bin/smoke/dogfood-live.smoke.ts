@@ -16,7 +16,8 @@
  *       link (read from the private bootstrap file its log names) for a session, serves / and
  *       the page's script under /assets/, reads the sent message back through its broker-backed history and activity
  *       routes, and refuses channel delete as read-only;
- *     - a second start is a no-op, `ext remove` refuses while it runs, and `service stop` ends it;
+ *     - a second start keeps the process and refreshes the single-use link, including without a
+ *       browser opener; `ext remove` refuses while it runs, and `service stop` ends it;
  *     - the private bootstrap record preserves the listener's bound host and port;
  *     - started again, it blocks bare `down` until explicitly stopped; the broker stays alive.
  *  D. `ext remove @cotal-ai/web`; the `web` preset refuses again.
@@ -44,9 +45,10 @@ const REPO = resolve(import.meta.dirname, "..", "..");
 const sandbox = mkdtempSync(join(tmpdir(), "cotal-dogfood-"));
 const configDir = join(sandbox, "xdg");
 const home = join(sandbox, "home");
+const runtimeDir = join(sandbox, "runtime");
 const root = join(sandbox, "proj");
 const otherRoot = join(sandbox, "other");
-for (const d of [configDir, home, root, otherRoot]) mkdirSync(d, { recursive: true });
+for (const d of [configDir, home, runtimeDir, root, otherRoot]) mkdirSync(d, { recursive: true, mode: 0o700 });
 const sandboxAnchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
 
 let pass = 0;
@@ -60,7 +62,7 @@ const openerDir = join(sandbox, "openers");
 mkdirSync(openerDir);
 const openedPath = join(sandbox, "opened-url");
 writeFileSync(join(openerDir, "xdg-open"), `#!/bin/sh\nprintf '%s' "$1" > '${openedPath}'\n`, { mode: 0o700 });
-const env = { ...process.env, DISPLAY: ":smoke", WAYLAND_DISPLAY: "", PATH: `${openerDir}:${process.env.PATH}`, XDG_CONFIG_HOME: configDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, USERPROFILE: home, DISPLAY: ":smoke", WAYLAND_DISPLAY: "", PATH: `${openerDir}:${process.env.PATH}`, XDG_CONFIG_HOME: configDir, XDG_RUNTIME_DIR: runtimeDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
 const tsxCli = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = join(REPO, "bin", "cotal.ts");
@@ -184,19 +186,6 @@ try {
     const cookie = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange.headers.get("set-cookie") ?? "")?.[1];
     ok("the launch link is accepted once and mints a session", exchange.status === 302 && cookie !== undefined, exchange.status);
     const authed = { cookie: `cotal_web_session=${cookie}` };
-    const absentDir = join(sandbox, "no-opener");
-    mkdirSync(absentDir);
-    const savedPath = env.PATH;
-    env.PATH = absentDir;
-    const absent = cotal(["service", "start", "web", "--space", SPACE, "--json"]);
-    env.PATH = savedPath;
-    const absentResult = JSON.parse(absent.stdout);
-    ok("missing opener leaves a successful running dashboard with a warning", absent.status === 0 && absentResult.outcome === "ok" && absentResult.warnings.some((warning: { message: string }) => /No browser was opened/.test(warning.message)) && alive(webPid), out(absent));
-    env.DISPLAY = "";
-    const headless = cotal(["service", "start", "web", "--space", SPACE, "--json"]);
-    env.DISPLAY = ":smoke";
-    const headlessResult = JSON.parse(headless.stdout);
-    ok("no graphical session leaves a successful dashboard with a warning and no opener", headless.status === 0 && headlessResult.outcome === "ok" && headlessResult.warnings.length > 0 && !existsSync(openedPath), out(headless));
     const originalSessionBytes = readFileSync(sessionPath, "utf8");
     const corruptedSession = JSON.parse(originalSessionBytes);
     corruptedSession.launchRequestId = "mismatched";
@@ -212,6 +201,45 @@ try {
     const reopened = await fetch(reopenedUrl, { redirect: "manual", headers: { connection: "close" } });
     ok("the reopened link authenticates after the original link was spent", reopened.status === 302 && reopened.headers.has("set-cookie"), reopened.status);
     ok("the reopened link is single-use", (await fetch(reopenedUrl, { redirect: "manual" })).status === 401);
+    ok("the graphical repeat preserves the original browser session", (await web("/", { headers: authed })).status === 200);
+
+    rmSync(openedPath);
+    const absentDir = join(sandbox, "no-opener");
+    mkdirSync(absentDir);
+    const savedPath = env.PATH;
+    const manualRepeat = async (label: string, flags: string[], warn: boolean) => {
+      const repeat = cotal(["service", "start", "web", "--space", SPACE, "--json", ...flags]);
+      const { outcome, result, warnings } = JSON.parse(repeat.stdout) as { outcome: string; result: { pid: number }; warnings?: { code: string; message: string }[] };
+      const warned = warnings?.some((w) => w.code === "BROWSER_NOT_OPENED" && w.message.includes(`cotal service logs web --space ${SPACE}`)) ?? false;
+      ok(`${label} keeps the same dashboard and does not invoke the opener`, repeat.status === 0 && outcome === "ok" && result.pid === webPid && alive(webPid) && !existsSync(openedPath) && warned === warn, { exit: repeat.status, outcome, warned });
+      const latest = await bootstrapAfter([]);
+      if (!latest || typeof latest.session.launchUrl !== "string") throw new Error(`${label} did not leave a link in the session file`);
+      const url = latest.session.launchUrl;
+      const fresh = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
+      ok(`${label} leaves a fresh link at the same private path`, latest.path === sessionPath && (statSync(sessionPath).mode & 0o077) === 0 && fresh.status === 302 && fresh.headers.has("set-cookie"), { status: fresh.status, response: fresh.status === 401 ? await fresh.json() : undefined });
+      ok(`${label} leaves the new link single-use`, (await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(15_000) })).status === 401);
+      ok(`${label} keeps the link out of logs and command output`, !out(repeat).includes(new URL(url).searchParams.get("k")!) && !latest.log.lines.some((line) => line.includes(url)));
+    };
+    env.DISPLAY = "";
+    await manualRepeat("a repeat on headless Linux", [], true);
+    env.DISPLAY = ":smoke";
+    await manualRepeat("a repeat with --no-open", ["--no-open"], false);
+    env.PATH = absentDir;
+    try { await manualRepeat("a repeat with a missing opener", [], true); }
+    finally { env.PATH = savedPath; }
+
+    const manual = cotal(["service", "start", "web", "--space", SPACE, "--no-open"]);
+    const refreshedBytes = readFileSync(sessionPath, "utf8");
+    const refreshed = JSON.parse(refreshedBytes) as { launchUrl: string; launchNonce: string };
+    try {
+      // A change that keeps the process and launch IDs still is not the child's record to replace.
+      writeFileSync(sessionPath, refreshedBytes + "\n");
+      const refused = cotal(["service", "start", "web", "--space", SPACE, "--no-open", "--json"]);
+      ok("the running dashboard refuses to refresh a changed private record without replacing it", manual.status === 0 && refused.status === 4 && JSON.parse(refused.stdout).outcome === "partial" && readFileSync(sessionPath, "utf8") === refreshedBytes + "\n" && alive(webPid), { exit: refused.status });
+      ok("a refused refresh gives no stale-link warning and leaks no credential", !out(refused).includes("BROWSER_NOT_OPENED") && !out(refused).includes(refreshed.launchNonce) && !out(refused).includes(new URL(refreshed.launchUrl).searchParams.get("k")!));
+    } finally { writeFileSync(sessionPath, refreshedBytes); }
+    ok("a refused refresh leaves the last issued link usable", (await fetch(refreshed.launchUrl, { redirect: "manual", signal: AbortSignal.timeout(15_000) })).status === 302);
+
     ok("unauthenticated callers cannot mint browser links", (await web("/api/browser-launch", { method: "POST" })).status === 401);
     ok("readiness authority cannot mint browser links", (await web("/api/browser-launch", { method: "POST", headers: { "x-cotal-readiness": (session as Bootstrap & { readiness: string }).readiness } })).status === 401);
     const launchNonce = (JSON.parse(readFileSync(sessionPath, "utf8")) as { launchNonce: string }).launchNonce;
@@ -258,8 +286,8 @@ try {
     const served = serviceLog("web").lines;
     ok("the dashboard's endpoint reported no error while serving", !served.some((l) => /endpoint reported an error/.test(l)), served);
 
-    const again = cotal(["service", "start", "web", "--space", SPACE]);
-    ok("a second start is a no-op on the running instance", again.status === 0 && /Already running; nothing was started/.test(again.stdout) && pidOf(again) === webPid, out(again).slice(-500));
+    const again = cotal(["service", "start", "web", "--space", SPACE, "--no-open"]);
+    ok("a repeat start reports the refresh and launches no replacement process", again.status === 0 && /Already running; browser link refreshed/.test(again.stdout) && pidOf(again) === webPid, { exit: again.status, pid: pidOf(again) });
     const removeLive = cotal(["ext", "remove", "@cotal-ai/web"]);
     ok("ext remove refuses to orphan the running dashboard", removeLive.status === 2 && /LIFECYCLE_BLOCKED/.test(out(removeLive)) && alive(webPid), out(removeLive).slice(-500));
     const stop = cotal(["service", "stop", "web", "--space", SPACE, "--yes"]);
@@ -268,7 +296,7 @@ try {
     ok("a confirmed stop removes the private bootstrap file", !existsSync(sessionPath), sessionPath);
 
     // A running saved service blocks bare down; stop that exact instance before its broker.
-    const restart = cotal(["service", "start", "web", "--space", SPACE]);
+    const restart = cotal(["service", "start", "web", "--space", SPACE, "--no-open"]);
     const livePid = pidOf(restart);
     if (Number.isFinite(livePid)) ownPids.push(livePid);
     ok("the stopped dashboard starts again", restart.status === 0 && /Owned service process running/.test(restart.stdout) && alive(livePid) && livePid !== webPid, out(restart).slice(-600));

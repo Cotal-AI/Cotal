@@ -230,7 +230,7 @@ function cookieValue(header: string | undefined, name: string): string | undefin
  *  such request as `unauthenticated` and the operator would never learn that something cross-origin
  *  was talking to their console. The more specific condition wins.
  */
-export function makeAuthGate(port: number, host: string = WEB_HOST, launchNonce?: string) {
+export function makeAuthGate(port: number, host: string = WEB_HOST, launchNonce?: string, publishLaunchUrl?: (url: string) => void) {
   // Single-use, minted per process. 32 bytes: this is the only secret standing between a local
   // process and the mesh view until the cookie exists.
   let launchToken: string | undefined = randomBytes(32).toString("base64url");
@@ -266,8 +266,12 @@ export function makeAuthGate(port: number, host: string = WEB_HOST, launchNonce?
       if (launchNonce && pathOf(req) === "/api/browser-launch" && req.method === "POST" &&
           typeof req.headers["x-cotal-browser-launch"] === "string" && secretEquals(req.headers["x-cotal-browser-launch"], launchNonce) &&
           req.headers.origin === undefined && req.headers["transfer-encoding"] === undefined && Number(req.headers["content-length"] ?? 0) === 0) {
-        launchToken = randomBytes(32).toString("base64url");
-        return { launchUrl: `${webUrl(host, port)}?k=${launchToken}` };
+        const nextToken = randomBytes(32).toString("base64url");
+        const launchUrl = `${webUrl(host, port)}?k=${nextToken}`;
+        // The new link becomes usable only after the private handoff succeeds.
+        publishLaunchUrl?.(launchUrl);
+        launchToken = nextToken;
+        return { launchUrl };
       }
       const origin = req.headers.origin;
       if (origin !== undefined) {
@@ -424,6 +428,7 @@ interface WebServiceLifecycle {
   readonly posting?: { creds: string; expiresAt: number };
   readonly connection: Omit<Connection, "auth">;
   readonly onSession: (session: WebSession) => void | Promise<void>;
+  readonly onLaunchUrl?: (url: string) => void;
   readonly onReady: () => void | Promise<void>;
   readonly onClosed: () => void | Promise<void>;
 }
@@ -566,7 +571,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   const client = clientAssets(join(here, basename(here) === "src" ? "../dist/web" : "web"));
 
   const launchNonce = lifecycle ? randomBytes(32).toString("base64url") : undefined;
-  const gate = makeAuthGate(port, host, launchNonce);
+  const gate = makeAuthGate(port, host, launchNonce, lifecycle?.onLaunchUrl);
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const path = (req.url ?? "/").split("?")[0];
