@@ -95,9 +95,10 @@ Carried session resumes have [stricter authentication requirements](#resume-a-se
 ### Install the plugin
 
 On a computer connected through the machine daemon, the hosted Manager installs the plugin and
-registers the user-scope `cotal` MCP entry when it starts and finds `claude` on its `PATH`. You do
-not need to prepare a local space. If registration fails, correct the reported cause, let any
-seats on that Manager stop, and rerun `cotal daemon setup --space <space>` on that computer.
+registers the user-scope `cotal` MCP entry when it finds `claude` on its `PATH`, including after
+the Manager starts. You do not need to prepare a local space. If registration fails, correct the
+reported cause and retry the launch. If you installed `claude` in a directory not on the daemon's
+`PATH`, let any seats on that Manager stop and run `cotal daemon setup --space <space>` on that computer.
 
 For a computer where you prepare the space yourself, run:
 

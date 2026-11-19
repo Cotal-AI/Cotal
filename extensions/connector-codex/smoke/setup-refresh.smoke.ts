@@ -97,7 +97,7 @@ try {
     mkdirSync(cache(f.codex), { recursive: true });
     writeFileSync(join(f.codex, "config.toml"), '[plugins."cotal@cotal-mesh"]\nenabled = false\n');
     writeFileSync(join(bin, "codex"), `#!${process.execPath}
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2).join(" ");
 appendFileSync(${JSON.stringify(calls)}, args + "\\n");
 if (args === "plugin list") {
@@ -105,17 +105,16 @@ if (args === "plugin list") {
 } else if (args === "plugin marketplace list") {
   console.log("cotal-mesh");
 } else if (args === "plugin add cotal@cotal-mesh") {
-  writeFileSync(${JSON.stringify(join(cache(f.codex), "new-install"))}, "install");
   const plugin = JSON.parse(readFileSync(${JSON.stringify(join(process.env.COTAL_HOME!, "codex-plugin/plugins/cotal/.codex-plugin/plugin.json"))}, "utf8"));
+  mkdirSync(${JSON.stringify(cache(f.codex))} + "/" + plugin.version);
   writeFileSync(${JSON.stringify(installed)}, plugin.version);
 } else process.exit(1);
 `, { mode: 0o755 });
     try {
-      const { materializeCodexPlugin } = await import("../src/setup.js");
       const cotal = [process.execPath, join(ROOT, "cotal.js")];
-      const version = materializeCodexPlugin(cotal);
-      mkdirSync(join(cache(f.codex), version));
-      writeFileSync(installed, version);
+      await codexSetupProvider.connector!.run({ cotal });
+      const version = readFileSync(installed, "utf8");
+      writeFileSync(calls, "");
       for (const dir of [join(cache(f.codex), version), cache(f.codex), f.codex]) chmodSync(dir, 0o500);
       for (let attempt = 0; attempt < 2; attempt++) assert.equal(await refresh(), `cotal@cotal-mesh ${version}; new Codex conversations load it`);
       assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), ["plugin list", "plugin list"]);

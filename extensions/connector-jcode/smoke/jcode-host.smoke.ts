@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { once } from "node:events";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -115,11 +115,15 @@ function managedHome(space: string, name: string): string {
   return join(root, ".cotal", "jcode", `${slug || "agent"}-${key}`);
 }
 
-function connectorLog(home: string): string {
+function connectorLogPath(home: string): string {
   const logs = join(home, "logs");
   const files = readdirSync(logs).filter((file) => /^connector-.*\.log$/.test(file));
   assert.equal(files.length, 1, `expected one connector log in ${logs}, found ${files.join(", ")}`);
-  return readFileSync(join(logs, files[0]!), "utf8");
+  return join(logs, files[0]!);
+}
+
+function connectorLog(home: string): string {
+  return readFileSync(connectorLogPath(home), "utf8");
 }
 
 type JcodeMcpEntry = { command: string; args: string[]; env: Record<string, string> };
@@ -1428,9 +1432,10 @@ try {
     await Promise.race([once(failed, "exit"), sleep(20_000)]);
     const failedCode = failed.exitCode;
     await stopHostTree(failed, "SIGKILL");
-    const expected = `Jcode startup failed (${modelCase.code}); details: `;
-    const persisted = connectorLog(managedHome("jcodehost", modelCase.name));
-    check(`${modelCase.code} names the connector-owned refusal and its private log`, failedCode === 1 && failedErr.includes(expected) && failedErr.includes(join(managedHome("jcodehost", modelCase.name), "logs", "connector-")), { failedCode, failedErr });
+    const logPath = connectorLogPath(managedHome("jcodehost", modelCase.name));
+    const expected = `[cotal-jcode] fatal: Jcode startup failed (${modelCase.code}); workspace log: ${relative(root, logPath)}\n`;
+    const persisted = readFileSync(logPath, "utf8");
+    check(`${modelCase.code} names the connector-owned refusal and its private log`, failedCode === 1 && failedErr.includes(expected), { failedCode, failedErr });
     check(`${modelCase.code} fatal is persisted in the seat connector log`, persisted.includes(expected), persisted);
     check(`${modelCase.code} keeps downstream model text scrubbed`, !failedErr.includes(modelCanary) && !persisted.includes(modelCanary), { failedErr, persisted });
     const caseEntries = readFileSync(caseLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev?: string; frame?: { req?: string } }>;

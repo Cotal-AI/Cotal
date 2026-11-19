@@ -25,6 +25,7 @@ export * from "./endpoint-journal.js";
 export * from "./endpoint-binding.js";
 export * from "./endpoint-schema-diff.js";
 export * from "./space-resource-definitions.js";
+export * from "./space-quiescence-resources.js";
 export * from "./space-deletion-targets.js";
 export * from "./authority-store-config.js";
 export * from "./broker-identity.js";

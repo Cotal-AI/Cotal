@@ -77,7 +77,7 @@
     },
     {
       "name": "the endpoint restores the general fallback, so a channel-less send publishes instead of refusing",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-messaging.ts",
       "find": "    const channel = opts?.channel ?? this.channels.find(isConcreteChannel);",
       "replace": "    const channel = opts?.channel ?? this.channels.find(isConcreteChannel) ?? \"general\";",
       "expectRed": "multicast with no channel and no subscription REFUSES",
