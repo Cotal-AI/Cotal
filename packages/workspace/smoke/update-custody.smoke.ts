@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beginGlobalUpdateChild, claimGlobalNpmUpdateLock, inspectGlobalUpdateChild, updateCustodyPrivateGroup, type UpdateCustodyAccounts } from "../src/extension-mutation.js";
-import { acquireLock } from "../src/advisory-lock.js";
+import { acquireLock, processStartToken } from "../src/advisory-lock.js";
 
 const uid = process.getuid!(), gid = process.getgid!();
 const accounts: UpdateCustodyAccounts = {
@@ -69,5 +70,24 @@ try {
     assert.equal(readdirSync(root).filter(name => name.startsWith(".cotal-update-child.retained-")).length, 1);
     assert.throws(() => claimGlobalNpmUpdateLock(root), /another cotal-ai update/);
   } finally { release(); }
+  if (process.platform === "linux") {
+    // The recorded leader is gone, but the process-group probe must still block repair.
+    const group = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+    const exited = new Promise(resolve => group.once("exit", resolve));
+    try {
+      assert(group.pid);
+      const evidence = JSON.stringify({ ...marker, owner: 2147483647, custody: { ownerStart: "1", pid: group.pid, start: `${processStartToken(group.pid)}-different` } });
+      writeFileSync(markerPath, evidence);
+      assert.throws(() => claimGlobalNpmUpdateLock(root), /child has surviving processes/);
+      assert.equal(readFileSync(markerPath, "utf8"), evidence);
+      group.kill("SIGTERM");
+      await exited;
+      claimGlobalNpmUpdateLock(root)();
+      assert.equal(readdirSync(root).includes(".cotal-update-child"), false);
+    } finally {
+      if (group.exitCode === null && group.signalCode === null) group.kill("SIGKILL");
+      await exited;
+    }
+  }
 } finally { rmSync(scratch, { recursive: true, force: true }); }
 console.log("update-custody.smoke: local primary-group proof and real-path marker inspection passed");
