@@ -235,6 +235,7 @@ one JSON document on stdout. Most commands have one, among them `cotal status`, 
 If the extension manifest cannot be read or an extension promotion is pending, `cotal version --json`
 still reports the running CLI version. The report is partial, includes an `EXTENSIONS_UNREADABLE`
 warning, and exits 4. The command leaves the manifest and any promotion journal unchanged.
+If the Cotal config folder is a file, the version report has a complete, empty extension list.
 When the plain version command cannot list recorded extension versions after startup, it keeps
 the CLI version on stdout and warns on stderr.
 

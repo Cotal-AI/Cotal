@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
+import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, globalConfigDirProblem, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { repairInstallModes } from "./install-umask.js";
 
@@ -15,11 +15,23 @@ interface Promotion {
 }
 const journalPath = (): string => join(connectorConfigDir(), ".extensions-promotion.json");
 
+function hasPromotionJournal(path: string): boolean {
+  try {
+    // A dangling link has no record to recover. checkedRecord still rejects a symlink to a file.
+    statSync(path);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || (code === "ENOTDIR" && globalConfigDirProblem())) return false;
+    throw error;
+  }
+}
+
 /** Report a journal's presence without reading or acting on the paths it records. */
 export function extensionPromotionProblem(): string | undefined {
   try {
     const path = journalPath();
-    if (lstatSync(path, { throwIfNoEntry: false })) return `an extension promotion is pending at ${path}`;
+    if (hasPromotionJournal(path)) return `an extension promotion is pending at ${path}`;
   } catch (error) {
     return `could not check for a pending extension promotion: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -33,8 +45,8 @@ function save(record: Promotion): void {
 }
 function checkedRecord(): Promotion | undefined {
   const path = journalPath();
-  if (!existsSync(path)) return undefined;
-  if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) throw new Error("extension promotion journal is not a regular file");
+  if (!hasPromotionJournal(path)) return undefined;
+  if (!lstatSync(path).isFile()) throw new Error("extension promotion journal is not a regular file");
   assertProtectedFileAccess();
   const source = readLocalRecordSource(path, 64 * 1024);
   if (!source) throw new Error("extension promotion journal disappeared");

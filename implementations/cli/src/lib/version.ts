@@ -46,8 +46,10 @@ export interface ExtensionVersion {
   pkg: string;
 }
 
+export type ExtensionVersionInventory = { versions: ExtensionVersion[]; unreadable?: string };
+
 /** Read pinned versions without importing or seeding extensions, and report unreadable inventory. */
-export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string } {
+export function readExtensionVersions(): ExtensionVersionInventory {
   try {
     const versions = loadExtensionsManifest().extensions.map((e, index) => {
       if (!e || typeof e.pkg !== "string" || !e.pkg || typeof e.version !== "string" || !e.version) {

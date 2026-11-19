@@ -37,15 +37,19 @@ export const versionFlags = [jsonFlag] as const;
  *  envelope with no target, since it reads only local metadata. */
 export async function version(args: ParsedArgs): Promise<void> {
   const current = cliVersion();
-  if ((args.values as FlagValues<typeof versionFlags>).json) {
-    const promotion = extensionPromotionProblem();
-    const { versions, unreadable } = promotion === undefined ? readExtensionVersions() : { versions: [], unreadable: promotion };
+  const json = (args.values as FlagValues<typeof versionFlags>).json;
+  const promotion = json ? extensionPromotionProblem() : undefined;
+  const inventory = promotion === undefined ? readExtensionVersions() : { versions: [], unreadable: promotion };
+  const { versions: exts, unreadable } = inventory;
+  const pending = readUpdatePending(current, promotion === undefined ? inventory : { promotionProblem: promotion });
+  const update = cachedUpdateSummary(current);
+  if (json) {
     writeResult(
       "json",
       {
         command: "version",
         target: null,
-        result: { version: current, update: cachedUpdateSummary(current), reconciliation: readUpdatePending(current, promotion), extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
+        result: { version: current, update, reconciliation: pending, extensions: exts.map((e) => ({ package: e.pkg, version: e.version })) },
         ...(unreadable === undefined
           ? {}
           : {
@@ -58,13 +62,10 @@ export async function version(args: ParsedArgs): Promise<void> {
     );
     return;
   }
-  const { versions: exts, unreadable } = readExtensionVersions();
   if (unreadable !== undefined) stderrLine("! ", `the extensions manifest could not be read: ${unreadable}`, c.yellow);
   // The human form adds an update line only when there is something to act on. The JSON form
   // always carries the state.
-  const update = cachedUpdateSummary(current);
-  const pending = readUpdatePending(current);
-  const lines = [`cotal-ai ${current}`, ...(pending.kind === "none" ? [] : [`  ${pending.instruction}`]), ...(update === "update status unknown" || update === "up to date" ? [] : [`  ${update}`])];
+  const lines = [`cotal-ai ${current}`, ...(pending.kind === "none" || (pending.kind === "unreadable" && pending.source === "manifest") ? [] : [`  ${pending.instruction}`]), ...(update === "update status unknown" || update === "up to date" ? [] : [`  ${update}`])];
   if (exts.length) {
     const pad = Math.max(...exts.map((e) => e.label.length));
     for (const e of exts) lines.push(`  ${e.label.padEnd(pad)}  ${e.version}`);
