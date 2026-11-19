@@ -144,7 +144,7 @@ function lockHeld(root: string, retry: string): CommandFailure {
     : "another maintenance operation holds this root's maintenance lock";
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup create is refused: ${who}; nothing was changed`, {
     target: { root, ...(holder ? { holderPid: holder.owner.pid, holderStartedAt: holder.owner.startedAt, ...(holder.operation ? { holderOperation: holder.operation } : {}) } : {}) },
-    remedy: `wait for ${holder ? `process ${holder.owner.pid}` : "that operation"} to finish, then run \`${retry}\` again; \`cotal status\` shows this root's maintenance state`,
+    remedy: `wait for ${holder ? `process ${holder.owner.pid}` : "that operation"} to finish, then ${retry}; \`cotal status\` shows this root's maintenance state`,
   });
 }
 
@@ -465,13 +465,22 @@ function noSpaceFailure(error: unknown, observed: BackupObservation, args: Parse
   const destination = resolve(args.positionals[1]!);
   const { what, directory } = observed.writing;
   const written = what === "backup" ? "it removed the partial backup and published none" : `it removed the partial copy and wrote nothing to ${destination}`;
-  return new CommandFailure("failed", "OPERATION_FAILED", `backup create ran out of disk space (${code}) writing the ${what} in ${directory}; ${written}, and the preserved cut is still ready`, { target, native: { detail: error instanceof Error ? error.message : String(error) }, remedy: `free space on the disk that holds ${directory}, then run \`${retryCreate(args)}\` again` });
+  return new CommandFailure("failed", "OPERATION_FAILED", `backup create ran out of disk space (${code}) writing the ${what} in ${directory}; ${written}, and the preserved cut is still ready`, { target, native: { detail: error instanceof Error ? error.message : String(error) }, remedy: `free space on the disk that holds ${directory}, then ${retryCreate(args)}` });
 }
 
-/** The same `backup create`, for a failure that left the preserved cut ready to try again. */
+/** The terminal escapes invisible characters even in code spans. Do not offer a changed command. */
+function displayCommand(command: string): string | undefined {
+  return oneLine(command) === command ? codeSpan(command) : undefined;
+}
+
+/** Retry advice for the same `backup create`, with a command when it can be pasted unchanged. */
 function retryCreate(args: ParsedArgs): string {
-  const flags = [args.values.only === undefined ? "" : ` --only ${args.values.only}`, args.values["store-dir"] === undefined ? "" : ` --store-dir ${args.values["store-dir"]}`].join("");
-  return `cotal backup create ${resolve(args.positionals[1]!)}${flags}`;
+  const values = args.values as BackupValues;
+  const words = ["cotal", "backup", "create", resolve(args.positionals[1]!)];
+  if (values.only !== undefined) words.push("--only", values.only);
+  if (values["store-dir"] !== undefined) words.push("--store-dir", resolve(values["store-dir"]));
+  const command = displayCommand(words.map(shellWord).join(" "));
+  return command === undefined ? "retry the original backup command from the same folder" : `run ${command} again`;
 }
 
 export function validateBackupArguments(args: ParsedArgs): void {
@@ -519,7 +528,7 @@ export async function backup(args: ParsedArgs): Promise<void> {
     // The guard's own sentence is the operator's evidence, as on restore: it names the cause, such as
     // a broker still answering at the cut's endpoint. Snapshot bytes and credentials never reach it.
     const detail = error instanceof Error ? error.message : String(error);
-    throw new CommandFailure(outcome, outcome === "refused" ? "LIFECYCLE_BLOCKED" : outcome === "failed" ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", outcome === "refused" ? "backup preparation did not establish an eligible stopped preserved cut; no published artifact was established" : outcome === "failed" ? "backup creation failed and its native attempt cleanup completed; no published artifact was established" : "the backup attempt did not confirm publication and cleanup; its original attempt is retained without a retry", { target, native: { ...(isMaintenanceError(error) ? { code: error.code } : {}), detail }, remedy: outcome === "failed" ? `the preserved cut is still ready; fix the cause in the native detail, then run \`${retryCreate(args)}\` again` : "inspect the preserved-cut maintenance state and original attempt before recovery; snapshot bytes and credentials were not printed" });
+    throw new CommandFailure(outcome, outcome === "refused" ? "LIFECYCLE_BLOCKED" : outcome === "failed" ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", outcome === "refused" ? "backup preparation did not establish an eligible stopped preserved cut; no published artifact was established" : outcome === "failed" ? "backup creation failed and its native attempt cleanup completed; no published artifact was established" : "the backup attempt did not confirm publication and cleanup; its original attempt is retained without a retry", { target, native: { ...(isMaintenanceError(error) ? { code: error.code } : {}), detail }, remedy: outcome === "failed" ? `the preserved cut is still ready; fix the cause in the native detail, then ${retryCreate(args)}` : "inspect the preserved-cut maintenance state and original attempt before recovery; snapshot bytes and credentials were not printed" });
   }
   writeResult(presentationOf(args.values), { command: "backup create", target: { space: observed.published!.space, directory: observed.published!.directory }, result: { ...observed.published!, cleanupConfirmed: observed.cleanupConfirmed } }, backupCreateView);
 }
@@ -579,12 +588,10 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   const folder = dirname(destinationPath);
   try { accessSync(folder, constants.W_OK | constants.X_OK); }
   catch {
-    // The terminal escapes invisible characters, even inside code spans. Only offer a command
-    // when the displayed operand would still name the same folder.
-    const withChmod = oneLine(folder) === folder ? ` with ${codeSpan(`chmod u+w ${shellWord(folder)}`)}` : "";
+    const chmod = displayCommand(`chmod u+w ${shellWord(folder)}`);
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${folder}, so the backup cannot be created in it; nothing was written`, {
       target: { directory: destinationPath, folder },
-      remedy: `make that folder writable${withChmod}, or name a destination in a folder this account can write`,
+      remedy: `make that folder writable${chmod === undefined ? "" : ` with ${chmod}`}, or name a destination in a folder this account can write`,
     });
   }
   // Verify and restore read the artifact at its real path and refuse one that another local account
@@ -645,7 +652,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     // is refused naming that listener, as restore and resume refuse it.
     const space = ready.space;
     await assertEndpointUnreachable(recordedServer).catch((error: Error) => {
-      throw new CommandFailure("refused", "CONFLICT", `${error.message}; a process there may still be changing the preserved store, so nothing was copied`, { target: { root, space, server: recordedServer }, remedy: `stop the process that listens on ${recordedServer}, then run \`${retryCreate(args)}\` again` });
+      throw new CommandFailure("refused", "CONFLICT", `${error.message}; a process there may still be changing the preserved store, so nothing was copied`, { target: { root, space, server: recordedServer }, remedy: `stop the process that listens on ${recordedServer}, then ${retryCreate(args)}` });
     });
     // Ownership precedes existence: the claim is journaled with pending slots for every path this
     // attempt may create, so a crash at any later instant leaves a journal owner to recover from.

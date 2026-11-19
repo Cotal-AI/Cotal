@@ -461,6 +461,27 @@ try {
       assert.equal(existsSync(hiddenArtifact), false, "the permission refusal wrote no artifact");
       assert.equal(readMaintenanceJournal(createRoot)?.state, "cut-intent", "and claimed nothing");
     }
+    const contender = acquireMaintenanceLock(createRoot, { operation: "backup create" });
+    try {
+      const artifact = join(root, "retry archive");
+      const store = join(createRoot, "retry store");
+      const quote = (path: string) => `'${path.replaceAll("'", "'\\''")}'`;
+      const retry = `run \`cotal backup create ${quote(artifact)} --only registry --store-dir ${quote(store)}\` again`;
+      for (const [destination, storeDir, next] of [
+        [artifact, "retry store", retry],
+        [join(root, "retry\u2028archive"), "retry store", "retry the original backup command from the same folder"],
+        [artifact, "retry\u200dstore", "retry the original backup command from the same folder"],
+      ] as const) {
+        await assert.rejects(
+          backup({ positionals: ["create", destination], values: { only: "registry", "store-dir": storeDir }, raw: [] }),
+          (error: unknown) => isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED"
+            && error.remedy === `wait for process ${contender.owner.pid} to finish, then ${next}; \`cotal status\` shows this root's maintenance state`,
+          "a contended create only offers a copyable retry when all arguments can be displayed unchanged",
+        );
+        assert.equal(existsSync(destination), false, "the lock refusal wrote no artifact");
+      }
+      assert.equal(readMaintenanceJournal(createRoot)?.state, "cut-intent", "the lock refusals claimed nothing");
+    } finally { releaseMaintenanceLock(contender); }
     await assert.rejects(
       backup({ positionals: ["create", join(root, "create-artifact")], values: {}, raw: [] }),
       (error: unknown) => isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED" && error.message.endsWith("maintenance state is cut-intent") && (error.target as { space?: string }).space === "create",

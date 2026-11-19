@@ -88,6 +88,9 @@ writing: the store copy under `.cotal/maintenance/attempts`, or the backup in it
 also says that no backup was published and that the preserved cut is still ready. Its Next frees
 space on that disk and runs the same `backup create` again.
 
+Retry hints quote the destination and any `--store-dir` path for a POSIX shell. If terminal escaping
+would change either path, the hint says to retry the original command from the same folder.
+
 A `backup create` interrupted by SIGINT, SIGTERM or SIGHUP after it claims the cut exits 130, 143
 or 129 and names its attempt, the partial artifact it left and `cotal backup recover <attempt> --yes`.
 That claim follows the restore claim's rule below: it holds the cut until its backup process and
