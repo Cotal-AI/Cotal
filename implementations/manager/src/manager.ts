@@ -30,12 +30,11 @@ import {
   parsePrincipalKey,
   principalKey,
   probeConnect,
-  registry,
   resolveAuthProvider,
 } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
-import { logicalExecutionEntry, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
-import { agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, DEFAULT_SEAT_CAP, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
+import { logicalExecutionEntry } from "@cotal-ai/workspace";
+import { agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, DEFAULT_SEAT_CAP, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
 import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -73,6 +72,7 @@ import { ReadinessWait } from "./readiness-wait.js";
 import { BrokerTransport } from "./broker-transport.js";
 import { StartDoors } from "./start-doors.js";
 import { HarnessResolution, resolveHarness } from "./harness-resolution.js";
+import { ConnectorInventory } from "./connector-inventory.js";
 export { PASTE_END, PASTE_START, RUNTIME_NO_TERMINAL_DETAIL } from "./terminal-input.js";
 import { CredentialRenewal, credRenewIntervalMs, REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft, sameStrings } from "./credential-renewal.js";
 import { SeatLaunch, foreignEventChannels, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
@@ -1371,6 +1371,21 @@ export class Manager {
     servers: () => this.servers,
     space: () => this.space,
     workspaceRoot: () => this.workspaceRoot,
+  });
+
+  /** The boot connector inventory. Every dependency reads through at its use. */
+  private readonly connectorInventoryComponent = new ConnectorInventory({
+    bootNotes: () => this.bootNotes,
+    setBootNotes: (value) => { this.bootNotes = value; },
+    connectorRequirements: () => this.connectorRequirements,
+    setConnectorRequirements: (value) => { this.connectorRequirements = value; },
+    connectorStatuses: () => this.connectorStatuses,
+    setConnectorStatuses: (value) => { this.connectorStatuses = value; },
+    execution: () => this.execution,
+    installedExtensions: () => this.installedExtensions,
+    machineSetupCommand: () => this.machineSetupCommand,
+    classSpawnEnabled: (...args) => this.classSpawnEnabled(...args),
+    prepareClaudeWake: (...args) => this.prepareClaudeWake(...args),
   });
 
   /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
@@ -3648,48 +3663,8 @@ export class Manager {
   /** {@link SeatLaunch.connectorNames}. */
   private connectorNames(): string[] { return this.seatLaunch.connectorNames(); }
 
-  /** Resolve every installed/registered connector's declared harness binaries before the manager
-   * reports ready. A missing harness degrades only that connector, never unrelated lifecycle work:
-   * boot continues, names it once start completes and records it on both manager status surfaces. */
-  private async inspectConnectorsAtBoot(): Promise<void> {
-    this.bootNotes = [];
-    if (this.execution === "none") { this.connectorStatuses = []; return; }
-    const rows: ManagerConnectorStatus[] = [];
-    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; pkg?: string }>;
-    if (this.installedExtensions) {
-      try {
-        declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext).map((connector) => ({ ...connector, pkg: ext.pkg })));
-      } catch (error) {
-        const reason = rejectionText(error);
-        this.bootNotes.push(`! manager boot: connector inventory unavailable - ${reason}`);
-        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, reason }];
-        this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
-        return;
-      }
-    } else {
-      declared = registry.all<Connector>("connector").map((connector) => ({
-        name: connector.name,
-        requires: connector.requires ?? [],
-        eventPlane: connector.eventChannel !== undefined,
-      }));
-    }
-    this.connectorRequirements = new Map(declared.map(({ name, requires, pkg }) => [name, {
-      requires, needsClaudeWake: !!this.machineSetupCommand && name === "claude" && pkg === OFFICIAL_CONNECTORS.claude,
-    }]));
-    for (const { name, requires, eventPlane } of declared) {
-      const { binaries, reason: missing } = resolveHarness(name, requires);
-      const reason = missing ?? (this.connectorRequirements.get(name)?.needsClaudeWake ? await this.prepareClaudeWake() : undefined);
-      if (reason) {
-        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, reason });
-        this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
-      } else {
-        rows.push({ agent: name, state: "available", binaries, eventPlane });
-      }
-    }
-    this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
-    if (!this.classSpawnEnabled())
-      this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
-  }
+  /** {@link ConnectorInventory.inspectConnectorsAtBoot}. */
+  private inspectConnectorsAtBoot(...args: Parameters<ConnectorInventory["inspectConnectorsAtBoot"]>): ReturnType<ConnectorInventory["inspectConnectorsAtBoot"]> { return this.connectorInventoryComponent.inspectConnectorsAtBoot(...args); }
 
   /** Install and verify the hosted Claude wake channel, or report the cause and remedy. */
   private async prepareClaudeWake(): Promise<string | undefined> {
