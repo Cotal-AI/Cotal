@@ -16,7 +16,7 @@
   "mutations": [
     {
       "name": "R1 the inventory reply check takes concrete channels only",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-stop.ts",
       "find": "(isConcreteChannel(c) || isChannelFamily(c))",
       "replace": "isConcreteChannel(c)",
       "expectRed": "FAMILY: the retirement listed the family row and the channel row, and the deprovisioner purged both",
