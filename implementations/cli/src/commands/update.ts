@@ -74,7 +74,7 @@ import { managerPin } from "../lib/manager-choice.js";
 import { localUpdateManagers, recordedUpdateManagers, type UpdateManager } from "../lib/update-managers.js";
 export { localUpdateManagers } from "../lib/update-managers.js";
 export { managerPin as updateManagerPin } from "../lib/manager-choice.js";
-import { assertRecordIdentity, brokerAddressKey } from "@cotal-ai/workspace";
+import { assertRecordIdentity, brokerAddressKey, brokerUrlKey } from "@cotal-ai/workspace";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
 const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
@@ -96,6 +96,7 @@ export const updateFlags: readonly FlagSpec[] = [
 
 interface CommandResult {
   readonly status: number | null;
+  readonly signal?: NodeJS.Signals | null;
   readonly stdout: string;
   readonly stderr: string;
   readonly error?: string;
@@ -757,11 +758,12 @@ export async function isStoppedLocalMesh(target: MeshTarget): Promise<boolean> {
 /** A prepared controller that completed ordinary down is cold only while its own instance records
  *  prove every process gone, no supervisor may serve it, and its recorded broker has no listener.
  *  The target resolver refuses before returning a MeshTarget for this lifecycle. */
-async function stoppedController(d: MeshTargetErrorDetails): Promise<boolean> {
+async function stoppedController(d: MeshTargetErrorDetails, server: string | undefined): Promise<boolean> {
   if (typeof d.space !== "string" || typeof d.root !== "string" || !d.stopped ||
       d.rootMissing === true || d.unsettled !== undefined || d.home !== undefined || d.stackSpace !== undefined) return false;
   const journal = readStackJournal(d.root)?.journal;
   if (!journal || journal.space !== d.space || journal.operation.kind !== "down" || journal.operation.phase !== "completed") return false;
+  if (server !== undefined && brokerUrlKey(server) !== brokerUrlKey(journal.server)) return false;
   const instances = serviceInstances(d.space);
   if (journal.members.some((member) => member.instanceId !== null &&
       !instances.some((row) => row.name === member.instanceId && row.record.value.definition === member.definition))) return false;
@@ -959,7 +961,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
         console.log(c.dim(`  ${e.details.space}: prepared in ${e.details.root}, not started; no manager running`));
         return "none";
       }
-      if (e.code === "not-started" && server === undefined && await stoppedController(e.details)) {
+      if (e.code === "not-started" && await stoppedController(e.details, server)) {
         console.log(c.dim(`  ${e.details.space}: stopped; no manager running`));
         return "none";
       }
@@ -1106,6 +1108,7 @@ function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
   try {
     const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
+    if (result.signal) throw new DependencyCheckInterrupted(`npm dependency check was terminated by ${result.signal}`);
     if (result.status !== 0) throw new Error(`installed extension dependency closure is unavailable: ${failure(result)}`);
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
@@ -1171,6 +1174,7 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
 
 class ReleaseNotAvailable extends Error {}
 class ReleaseDateExcluded extends Error {}
+class DependencyCheckInterrupted extends Error {}
 
 function releaseReadError(result: CommandResult, detail: string): Error {
   if (result.status !== null && !result.error) {
@@ -1254,6 +1258,11 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     }
     rt.out(`✓ release archives checked (${((Date.now() - releaseChecksStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
+    if (e instanceof DependencyCheckInterrupted) {
+      recordUpdateDeferral(targetVersion, message(e));
+      rt.err(c.red(`✗ ${message(e)}. No installed packages were replaced. Run \`cotal update --self\` again.`));
+      return 1;
+    }
     if (e instanceof ReleaseDateExcluded) {
       recordUpdateDeferral(targetVersion, "npm date filter excludes the release");
       rt.err(c.red(`✗ ${message(e)}. No global install was attempted.`));
@@ -1649,6 +1658,7 @@ function runNpm(args: string[], inherit = false): CommandResult {
       : { encoding: "utf8", windowsVerbatimArguments });
     return {
       status: result.status,
+      signal: result.signal,
       stdout: `${result.stdout ?? ""}`,
       stderr: `${result.stderr ?? ""}`,
       error: result.error?.message,

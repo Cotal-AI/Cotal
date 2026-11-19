@@ -190,8 +190,10 @@ archives and fetches the installed first-party extensions with their dependency 
 disposable prefix. The dependency check, package installation and reconciliation use private temporary
 npm caches that are removed afterwards. An unwritable cache configured in `.npmrc` does not block the
 update. Cotal leaves that cache and its permissions unchanged and still applies your registry,
-authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement. A failed replacement
-is followed by another reconcile attempt, then a verified reinstall
+authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement.
+If a signal terminates the npm dependency check, the command names the signal and leaves installed
+packages unchanged. Run `cotal update --self` again.
+A failed replacement is followed by another reconcile attempt, then a verified reinstall
 and reconcile of the previous version. A private same-filesystem snapshot restores the previous seed
 stamp, connectors and operator extensions before Managers start. Interrupted restoration resumes on
 the next update or daemon start. A snapshot captured in the original config folder restores that
@@ -356,7 +358,9 @@ comes only from a manager this machine read. A stopped mesh that this machine ru
 inside its project, has no running manager either when no `cotal supervise` process that loaded this
 install may be serving its space and nothing listens at its recorded broker address, so the read is skipped
 there too. A controller stack that completed ordinary `cotal down` is eligible after its retained
-service records prove every process gone. Missing instance records, live or unresolved processes,
+service records prove every process gone. An explicit `--server` still permits this check when it
+matches the recorded broker URL. A different URL cannot use the stopped stack's records.
+Missing instance records, live or unresolved processes,
 and an unfinished down still refuse. That is the cold path past a `legacy` verdict: `cotal down`,
 then `cotal update`, and the verdict's `Next` line names it with that mesh's space. A space prepared on this machine that never started, whether this folder's,
 selected or named, has no broker and no manager, so it is named and skipped the same way.
