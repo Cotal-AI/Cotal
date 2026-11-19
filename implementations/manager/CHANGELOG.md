@@ -1,5 +1,25 @@
 # @cotal-ai/manager
 
+## 0.171.3
+
+### Patch Changes
+
+- 0d30c48: Explain the platform requirements before starting the built-in PTY manager on musl or installing the Linux daemon service without systemd.
+- 6a68aab: Move the manager's typed command table and the control admission it shares with the control door into their own component without changing the manager API.
+- 072f467: Move the persona catalog doors (define, remove, list and show) into their own component without changing the manager API.
+- 9aca8fe: Move serving `spawn` and `launch` as goals, with the cached acceptance a retry reads, into its own component without changing the manager API.
+- bc32f2b: Move typing into a seat's terminal and opening its attach and console sessions into their own component without changing the manager API.
+- 7da2bcd: Correct the manager restart smoke test to verify that repeating a detached spawn leaves the running worker unchanged even when its mesh presence is offline.
+- Updated dependencies [d4b3949]
+- Updated dependencies [f900d77]
+- Updated dependencies [fdac103]
+- Updated dependencies [342d8af]
+- Updated dependencies [b647c12]
+- Updated dependencies [eb7fd6a]
+  - @cotal-ai/core@0.171.3
+  - @cotal-ai/workspace@0.171.3
+  - @cotal-ai/seat@0.171.3
+
 ## 0.171.2
 
 ### Patch Changes

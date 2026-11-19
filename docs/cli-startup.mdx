@@ -412,8 +412,11 @@ The journal records the absolute root it was written in, and the stack runs only
 In a copy of a controller project, or after the folder is moved, commands that read the journal
 refuse `TARGET_UNAVAILABLE`, exit 2, and name the recorded folder, with another space selected too,
 while `up` and `down` there
-refuse `CONFLICT`: a copy is told to use the stack from the original, and a moved folder to move
-back there first. A folder is moved when its recorded folder no longer holds the journal. A second Cotal home that reaches the original over a shared filesystem is
+refuse `CONFLICT`. A copy is told to use the stack from the original folder. A moved folder is
+normally told to move back. If the original path is gone and the retained stack is confirmed
+stopped, the refusal also gives the commands to forget the old registration and adopt the stack
+in the renamed folder. No command adopts the folder automatically. A folder is moved when its
+recorded folder no longer holds the journal. A second Cotal home that reaches the original over a shared filesystem is
 told the same, and it can adopt the copy only after the original's stack is stopped there and that
 folder no longer holds its journal. When this machine records neither the space nor an instance of
 its stack, as on another machine, moving back would not start it, so a moved folder is told only to
@@ -423,8 +426,8 @@ says the folder holds a copy of that space or its records moved from the recorde
 `cotal` says the same, with that step. `clean store` and `clean all` there refuse `TARGET_UNAVAILABLE`, exit 2, naming the
 recorded folder, and remove nothing, so `status` there does not offer `clean store`.
 Commands that reach a static-auth space from a moved folder, such as `send`, `history`, `ps` and
-`service stop`, refuse the same way. `status` there says the folder was moved and names the way back
-as its next step. The broker names a store inside the project folder relative to that folder and
+`service stop`, refuse the same way. `status` there says the folder was moved and reports the same
+recovery options. The broker names a store inside the project folder relative to that folder and
 runs from it, so a broker still running when its folder is renamed keeps writing into the renamed
 folder and does not create the old path again. A broker an earlier release
 started does, so when something is found at the recorded path, the refusal says to move it aside

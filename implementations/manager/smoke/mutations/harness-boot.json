@@ -24,7 +24,7 @@
     },
     {
       "name": "boot availability loses the resolved executable path",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/harness-resolution.ts",
       "find": "    if (path) binaries[bin] = path;",
       "replace": "    if (path) binaries[bin] = bin;",
       "expectRed": "boot records the resolved absolute harness path from a relative PATH entry",
@@ -32,7 +32,7 @@
     },
     {
       "name": "managed launches discard the boot-resolved binary map",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/harness-resolution.ts",
       "find": "      resolvedBinaries: harness.binaries,",
       "replace": "      resolvedBinaries: undefined,",
       "expectRed": "managed spawn uses the exact path resolved at boot",

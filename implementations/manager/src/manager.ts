@@ -5,7 +5,6 @@ import { drainAndClose } from "@cotal-ai/core";
 import { hostname } from "node:os";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import Headless from "@xterm/headless";
 import {
   CotalEndpoint,
   copyPersonaEndpoints,
@@ -17,20 +16,13 @@ import {
   STANDING_RENEWABLE_TTL_SEC,
   discardLaunchArtifacts,
   injectedSecretStoreIdentity,
-  dialerFor,
-  connectorServers,
-  spawnEnvAllow,
   type DeprovisionResourceAccounting,
   idFromCreds,
   identityFromCreds,
-  inspectCredHealth,
   loadAgentFile,
   loadCotalConfig,
-  type CotalConfig,
   mintCreds,
   type IssuedBinding,
-  bindIssuedStores,
-  type IssuanceSeam,
   type IssuedStore,
   mintLifecycleUid,
   newIdentity,
@@ -38,21 +30,17 @@ import {
   parsePrincipalKey,
   principalKey,
   probeConnect,
-  registry,
   resolveAuthProvider,
 } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
-import { logicalExecutionEntry, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, InlinePersona, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
+import { logicalExecutionEntry } from "@cotal-ai/workspace";
+import { agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, DEFAULT_SEAT_CAP, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
+import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
-  exitProof,
   isCustodialRuntime,
-  pollProvedExit,
   requireRuntimeAdopt,
   requireRuntimeReap,
-  watchProvedExit,
   type AgentHandle,
   type CustodialRuntime,
   type Runtime,
@@ -63,8 +51,8 @@ import type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "
 export type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import { ServePlane } from "./serve-plane.js";
 import { NamesCapacity, type Occupancy } from "./names-capacity.js";
-import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
-import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor, withScopedEndpoint } from "./endpoint-evict.js";
+import { AttachEndpoint } from "./attach-endpoint.js";
+import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { ManagedStaticLifecycle, STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
 export { STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
@@ -78,12 +66,20 @@ import { DEPROVISION_TIMEOUT_MS, SeatStop } from "./seat-stop.js";
 import { CommandDispatch, participantKey } from "./command-dispatch.js";
 import { SpawnGoal } from "./spawn-goal.js";
 import { PersonaCatalog } from "./persona-catalog.js";
+import { TerminalInput } from "./terminal-input.js";
+import { StatusAndModels, MANAGER_VERSION } from "./status-and-models.js";
+import { ReadinessWait } from "./readiness-wait.js";
+import { BrokerTransport } from "./broker-transport.js";
+import { StartDoors } from "./start-doors.js";
+import { HarnessResolution, resolveHarness } from "./harness-resolution.js";
+import { ConnectorInventory } from "./connector-inventory.js";
+export { PASTE_END, PASTE_START, RUNTIME_NO_TERMINAL_DETAIL } from "./terminal-input.js";
 import { CredentialRenewal, credRenewIntervalMs, REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft, sameStrings } from "./credential-renewal.js";
 import { SeatLaunch, foreignEventChannels, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
 import { withTimeout } from "./manager-timeout.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
-import { inlineSnapshotPath, launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
-import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
+import { inlineSnapshotPath, launchSpecForRun } from "./launch.js";
+import { authorizeNamedControl } from "./authorize.js";
 import { RunHosting } from "./run-hosting.js";
 import { rejectionText, attemptCleanup, type CleanupFailure } from "@cotal-ai/core";
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readReleasedSeatReference, readSeatRecord, writeReleasedSeatReference, writeSeatRecord, type SeatRecord } from "./resume.js";
@@ -92,7 +88,7 @@ import { TranscriptReceiver } from "./transcript-receive.js";
 // manager-side adapter (transport + slot orchestration + the terminal) — see static-lifecycle.ts.
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { recordsBucket, epAuthBucket, ensureAuthorityStores, standaloneConnectOpts, type LifecycleStateTransport, type StaticManagedSlotRow } from "@cotal-ai/core";
+import { recordsBucket, ensureAuthorityStores, standaloneConnectOpts, type LifecycleStateTransport, type StaticManagedSlotRow } from "@cotal-ai/core";
 // The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
 // per-session credentials on their own short-lived connections).
@@ -100,21 +96,14 @@ import { ManagerSessionPlane } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
-import { epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, listGoalIndex, MAX_SCHEDULE_MS, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, lifecycleBlocked, lifecycleBlockedFrom, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
-import { MANAGER_ENDPOINT, type ManagerConnectorStatus, type ManagerStaticReconciliationStatus, type ManagerStatus, type ManagerStopImpact } from "./manager-service-contract.js";
+import { epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, listGoalIndex, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, lifecycleBlocked, lifecycleBlockedFrom, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
+import { MANAGER_ENDPOINT, type ManagerConnectorStatus, type ManagerStaticReconciliationStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 import {
-  staticLifecycleTransport,
-  recordSlotCredential,
-  appendStaticCredentialRow,
   ownedBySibling,
 } from "./static-lifecycle.js";
 
-// Capture the loaded package version before an installation can replace its files.
-const MANAGER_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
-/** A `once` spawn's task deadline when the caller names none: one hour from the spawn's accept. */
-const ONCE_DEFAULT_DEADLINE_MS = 60 * 60_000;
 /** The bound on one {@link Connector.retireAfterExit} call. An expired bound is not proof: the debt
  *  stays and the turn sweep asks again. */
 const ONCE_RETIRE_MS = 60_000;
@@ -131,18 +120,10 @@ export const READINESS_TIMEOUT_MS = 30_000;
  *  from its launch: the watch's 15s for the confirm prompt and 15s for its notice, plus 5s for the
  *  last read. The readiness window applies when it is longer. */
 const STARTUP_OUTCOME_MS = 35_000;
-/** How often the readiness race asks a runtime that streams no exit whether its child has exited, and
- *  how long it waits past the window for the proof of its last read. An operator waits on this reply,
- *  so it asks more often than the exit watch that outlives readiness. */
-const READINESS_EXIT_POLL_MS = 1_000;
 /** How often a resumed seat whose readiness was uncertain is checked for a join its predecessor's
  *  presence row hides (see {@link Manager.watchResumeAdoption}). The wait has no end of its own, so
  *  it asks less often than the readiness fence's 50 ms poll. */
 const LATE_JOIN_POLL_MS = 1_000;
-/** How long the process of a launch that waits for the operator ({@link Connector.waitsForOperator})
- *  must run without exiting before it is ready: long enough that a harness refusing its arguments
- *  exits first and is reported as failed. */
-const OPERATOR_READINESS_MS = 3_000;
 /** At most this many retirements run at once (#4965). A retirement dials up to four fresh broker
  *  connections in turn and queues an eviction and an inventory on the delivery daemon's admin rail,
  *  each against a fixed deadline. A stop that started all 50 seats' retirements together lost most of
@@ -158,23 +139,6 @@ const PRESERVE_STOP_TIMEOUT_MS = 10_000;
 /** How long a resume waits for a reaped orphan's principal to leave presence. Presence rows age
  * out after their 6s TTL, so three TTLs covers a killed seat that never published its leave. */
 const ORPHAN_PRESENCE_CLEAR_MS = 20_000;
-/** How much of an `input` text is written to a seat's pty at a time. Comfortably under the 4096-byte
- * kernel input buffer, so a slice is never re-split at a boundary the manager did not choose: the
- * tail of an oversized write stays queued and swallows the submit key that follows it (issue #1649).
- * Sized in CHARS against a byte buffer on purpose — a multi-byte character can only make a slice
- * shorter in characters than in bytes, never longer, so the margin cannot be eaten from below. */
-const INPUT_SLICE_CHARS = 2048;
-/** Bracketed-paste delimiters (DECSET 2004). `input` wraps a seat's text in these so the return it
- * writes afterwards is a KEYSTROKE rather than the newline trailing a pasted block: a TUI that
- * classifies a fast burst as a paste consumes that trailing newline and the text sits unsubmitted
- * in the composer until the next call's return (issue #1649). Framing, never content - these bytes
- * are not counted into the receipt, so `bytes` still reports what the caller asked to deliver. */
-export const PASTE_START = "\x1b[200~";
-export const PASTE_END = "\x1b[201~";
-/** `details[].kind` on an `attach` refusal raised because the seat's runtime opens no terminal
- * stream. The message carries that runtime's own guidance, which is operator copy and changes; this
- * marker is the contract a caller keys on so it can act without reading the wording. */
-export const RUNTIME_NO_TERMINAL_DETAIL = "ai.cotal.manager.runtime-no-terminal";
 /** Startup reconciliation overlaps control-service registration. A spawn or attach for one of
  * these aliases must wait until THAT alias's exact-op terminal attempt returns rather than racing
  * a reuse. */
@@ -187,10 +151,6 @@ function resumeOwner(entry: ManagerResumeAgent): string {
   return entry.identity.mode === "user" ? entry.identity.owner : DEV_OWNER;
 }
 
-/** Sentinel owner-filter value that matches NO agent's `userOwner` (owner tokens never contain a
- *  dash) — what {@link Manager.psOwnerFilter} returns for an unparseable caller so a malformed
- *  principal fail-closes to an empty `ps` instead of an unbounded one. */
-const NO_OWNER_MATCHES = "-no-owner-";
 
 /** Why a frozen manager gate stays frozen on an open mesh. Reconciliation must prove the holder
  *  gone, and an open mesh runs no delivery daemon to prove it, so neither boot self-heal nor
@@ -629,18 +589,6 @@ interface PersonalTurnParticipant {
 }
 
 
-/** One connector's declared harness binaries resolved on PATH now. The refusal sentence is built only
- *  here, so the boot row and the check for a connector registered after boot can never word it apart. */
-function resolveHarness(name: string, requires: readonly string[]): { binaries: Record<string, string>; reason?: string } {
-  const binaries: Record<string, string> = {};
-  const missing: string[] = [];
-  for (const bin of requires) {
-    const path = resolveOnPath(bin);
-    if (path) binaries[bin] = path;
-    else missing.push(bin);
-  }
-  return missing.length ? { binaries, reason: `${name} harness needs ${missing.join(", ")} on PATH - not found` } : { binaries };
-}
 
 /** The refusal a control instance with `execution: none` gives every launch, hosting, model and write door. */
 const EXECUTION_NONE_REFUSAL = "execution: none forbids seat launch, workflow hosting, model inspection and caller-driven writes on this control instance; select the participant Manager with an instance-pinned manager-caller view";
@@ -1053,35 +1001,11 @@ export class Manager {
    * family stays live and this records what the host may have signed but the manager never adopted. */
   private remoteRenewalDebt?: { at: number; processEpoch: number; reason: string; unadoptedSubjects: string[] };
 
-  /** Every broker dial this manager makes, through ONE transport decision.
-   *
-   *  `this.servers` is whatever the mesh record held (`cotal supervise` reads it from there), so it
-   *  can be a `ws://`/`wss://` broker published through an HTTPS edge. The raw node transport
-   *  refuses such a URL instead of dialing it, so the scheme picks the dialer here rather than at
-   *  thirteen call sites. `dialerFor` also owns the websocket transport's options, which is why
-   *  callers below still pass their own auth options unchanged. */
-  private dial(opts: Parameters<ReturnType<typeof dialerFor>>[0]): Promise<NatsConnection> {
-    const servers = this.servers ?? DEFAULT_SERVER;
-    return dialerFor(servers)({ ...opts, servers });
-  }
+  /** {@link BrokerTransport.dial}. */
+  private dial(...args: Parameters<BrokerTransport["dial"]>): ReturnType<BrokerTransport["dial"]> { return this.brokerTransportComponent.dial(...args); }
 
-  /** Initial NATS timeout is per dial, not per server list. Keep the aggregate deadline too, and
-   * close a late result rather than letting an abandoned preflight or recovery install a transport. */
-  private async dialRemoteStanding(opts: Parameters<ReturnType<typeof dialerFor>>[0], deadline: number): Promise<NatsConnection> {
-    const ms = remoteStandingTimeLeft(deadline);
-    const pending = this.dial({ ...opts, timeout: ms });
-    try {
-      const nc = await withTimeout(pending, ms, "remote manager standing dial exceeded its 10000ms aggregate budget");
-      remoteStandingTimeLeft(deadline);
-      if (this.leaseStopping) throw new Error("manager stopped while a remote standing dial was in flight");
-      return nc;
-    } catch (e) {
-      // Timing out our wait does not cancel connect(). It still owns its socket until it rejects
-      // or returns a connection, which must close without serving or changing a current holder.
-      void pending.then((nc) => nc.close(), () => {}).catch((error) => console.error(`! remote manager abandoned standing dial cleanup: ${rejectionText(error)}`));
-      throw e;
-    }
-  }
+  /** {@link BrokerTransport.dialRemoteStanding}. */
+  private dialRemoteStanding(...args: Parameters<BrokerTransport["dialRemoteStanding"]>): ReturnType<BrokerTransport["dialRemoteStanding"]> { return this.brokerTransportComponent.dialRemoteStanding(...args); }
 
   private readonly seatCustody = new SeatCustody({
     staticAuth: () => !!this.auth && !this.userMode,
@@ -1350,6 +1274,118 @@ export class Manager {
     spawnBoundRefusal: (...args) => this.spawnBoundRefusal(...args),
     spawnRun: (...args) => this.spawnRun(...args),
     staticSpawnBound: (...args) => this.staticSpawnBound(...args),
+  });
+
+  /** Seat terminal input and attach sessions. Every dependency reads through at its use. */
+  private readonly terminalInputComponent = new TerminalInput({
+    agents: () => this.agents,
+    auth: () => this.auth,
+    managerLifecycleUid: () => this.managerLifecycleUid,
+    sessionPlane: () => this.sessionPlane,
+    wsPort: () => this.wsPort,
+    runtimeFor: (...args) => this.runtimeFor(...args),
+  });
+
+  /** Status, seat list and model catalog reads. Every dependency reads through at its use. */
+  private readonly statusAndModelsComponent = new StatusAndModels({
+    agents: () => this.agents,
+    auth: () => this.auth,
+    connectorStatuses: () => this.connectorStatuses,
+    ep: () => this.ep,
+    execution: () => this.execution,
+    leaseStopping: () => this.leaseStopping,
+    lifecycleInFlight: () => this.lifecycleInFlight,
+    maintenanceState: () => this.maintenanceState,
+    managerInstanceId: () => this.managerInstanceId,
+    managerLifecycleUid: () => this.managerLifecycleUid,
+    namesCapacity: () => this.namesCapacity,
+    preservationAttemptId: () => this.preservationAttemptId,
+    preservationInventory: () => this.preservationInventory,
+    remoteAuthority: () => this.remoteAuthority,
+    requiredRuntime: () => this.requiredRuntime,
+    resumeRequired: () => this.resumeRequired,
+    retirement: () => this.retirement,
+    runtimeKind: () => this.runtimeKind,
+    space: () => this.space,
+    startedAtMs: () => this.startedAtMs,
+    staticLifecycle: () => this.staticLifecycle,
+    userMode: () => this.userMode,
+    workspaceRoot: () => this.workspaceRoot,
+    classSpawnEnabled: (...args) => this.classSpawnEnabled(...args),
+    connectorNames: (...args) => this.connectorNames(...args),
+    epAdminReach: (...args) => this.epAdminReach(...args),
+    executionRefusal: (...args) => this.executionRefusal(...args),
+    forkProvenance: (...args) => this.forkProvenance(...args),
+    isOwnPresence: (a, p) => this.isOwnPresence(a, p),
+    isProcessBoundSeat: (...args) => this.isProcessBoundSeat(...args),
+    launchHarness: (...args) => this.launchHarness(...args),
+    refreshUnavailableConnectors: (...args) => this.refreshUnavailableConnectors(...args),
+    resolveConnector: (...args) => this.resolveConnector(...args),
+    staticReconciliationStatus: (...args) => this.staticReconciliationStatus(...args),
+  });
+
+  /** The launch readiness race and exit watch. Every dependency reads through at its use. */
+  private readonly readinessWaitComponent = new ReadinessWait({
+    agents: () => this.agents,
+    ep: () => this.ep,
+    shutdownReadiness: () => this.shutdownReadiness,
+    managedPrincipal: (...args) => this.managedPrincipal(...args),
+    onAgentExit: (...args) => this.onAgentExit(...args),
+  });
+
+  /** Broker dials and scoped executor connections. Every dependency reads through at its use. */
+  private readonly brokerTransportComponent = new BrokerTransport({
+    auth: () => this.auth,
+    endpointServeExecutorExpiresInSeconds: () => this.endpointServeExecutorExpiresInSeconds,
+    leaseStopping: () => this.leaseStopping,
+    managerInstanceId: () => this.managerInstanceId,
+    remoteAuthority: () => this.remoteAuthority,
+    remoteBundleAdoption: () => this.remoteBundleAdoption,
+    remoteExecutorCreds: () => this.remoteExecutorCreds,
+    servers: () => this.servers,
+    space: () => this.space,
+    transportDown: () => this.transportDown,
+    renewRemoteExecutor: (...args) => this.renewRemoteExecutor(...args),
+    renewRemoteStandingBundle: (...args) => this.renewRemoteStandingBundle(...args),
+  });
+
+  /** The start and launch control doors. Every dependency reads through at its use. */
+  private readonly startDoorsComponent = new StartDoors({
+    eventsRequired: () => this.eventsRequired,
+    execution: () => this.execution,
+    remoteAuthority: () => this.remoteAuthority,
+    space: () => this.space,
+    userMode: () => this.userMode,
+    workspaceRoot: () => this.workspaceRoot,
+    executionRefusal: (...args) => this.executionRefusal(...args),
+    startAgent: (...args) => this.startAgent(...args),
+  });
+
+  /** Connector and harness resolution for a launch. Every dependency reads through at its use. */
+  private readonly harnessResolutionComponent = new HarnessResolution({
+    connectorStatuses: () => this.connectorStatuses,
+    eventPayloadsWithheld: () => this.eventPayloadsWithheld,
+    eventsRequired: () => this.eventsRequired,
+    expectedConnectorGeneration: () => this.expectedConnectorGeneration,
+    installedExtensions: () => this.installedExtensions,
+    servers: () => this.servers,
+    space: () => this.space,
+    workspaceRoot: () => this.workspaceRoot,
+  });
+
+  /** The boot connector inventory. Every dependency reads through at its use. */
+  private readonly connectorInventoryComponent = new ConnectorInventory({
+    bootNotes: () => this.bootNotes,
+    setBootNotes: (value) => { this.bootNotes = value; },
+    connectorRequirements: () => this.connectorRequirements,
+    setConnectorRequirements: (value) => { this.connectorRequirements = value; },
+    connectorStatuses: () => this.connectorStatuses,
+    setConnectorStatuses: (value) => { this.connectorStatuses = value; },
+    execution: () => this.execution,
+    installedExtensions: () => this.installedExtensions,
+    machineSetupCommand: () => this.machineSetupCommand,
+    classSpawnEnabled: (...args) => this.classSpawnEnabled(...args),
+    prepareClaudeWake: (...args) => this.prepareClaudeWake(...args),
   });
 
   /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
@@ -3016,40 +3052,14 @@ export class Manager {
     await this.retireConnection(s.nc, () => s.handle.stop());
   }
 
-  /** Retire a dedicated connection on stop: drain it while its transport is up, close it while the
-   *  client is reconnecting it. A drain on a reconnecting connection does not fail, it waits for the
-   *  reconnect, so the stop would last as long as the outage; a broker this connection cannot reach
-   *  has nothing left to flush. `flush` (the serve loop's own drain) runs only while the transport is
-   *  up. Best-effort, so a graceful stop completes its remaining teardown even when the broker is gone. */
-  private async retireConnection(nc: NatsConnection, flush?: () => Promise<unknown>): Promise<void> {
-    if (this.transportDown.has(nc)) {
-      try { await nc.close(); } catch { /* best effort */ }
-      return;
-    }
-    if (flush) try { await flush(); } catch { /* best effort */ }
-    try { await drainAndClose(nc); } catch { /* best effort */ }
-  }
+  /** {@link BrokerTransport.retireConnection}. */
+  private retireConnection(...args: Parameters<BrokerTransport["retireConnection"]>): ReturnType<BrokerTransport["retireConnection"]> { return this.brokerTransportComponent.retireConnection(...args); }
 
-  /** A failed candidate must not extend preparation by draining subscriptions on a stalled socket.
-   * Close only that candidate first. Native stop still owns any already-dispatched handlers, whose
-   * outcomes remain unknown to callers and must not be replayed; they do not hold family adoption. */
-  private async discardServeCandidate(nc: NatsConnection, handle?: EpServeHandle): Promise<void> {
-    await nc.close();
-    if (handle) void handle.stop().catch((e) => console.error(`! remote manager discarded serve candidate cleanup: ${rejectionText(e)}`));
-  }
+  /** {@link BrokerTransport.discardServeCandidate}. */
+  private discardServeCandidate(...args: Parameters<BrokerTransport["discardServeCandidate"]>): ReturnType<BrokerTransport["discardServeCandidate"]> { return this.brokerTransportComponent.discardServeCandidate(...args); }
 
-  /** Track a dedicated connection's transport into {@link transportDown} from the first moment:
-   *  nats.js reports `disconnect` when the socket drops and `reconnect` only after it has re-sent the
-   *  connection's subscriptions. If the status stream itself fails, the transport can no longer be
-   *  observed, so it counts as down. */
-  private trackTransport(nc: NatsConnection): void {
-    void (async () => {
-      for await (const st of nc.status()) {
-        if (st.type === "disconnect") this.transportDown.add(nc);
-        else if (st.type === "reconnect") this.transportDown.delete(nc);
-      }
-    })().catch(() => this.transportDown.add(nc));
-  }
+  /** {@link BrokerTransport.trackTransport}. */
+  private trackTransport(...args: Parameters<BrokerTransport["trackTransport"]>): ReturnType<BrokerTransport["trackTransport"]> { return this.brokerTransportComponent.trackTransport(...args); }
 
   private async opFinalizeResume(rawArgs: unknown): Promise<ControlReply> {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
@@ -3642,162 +3652,19 @@ export class Manager {
     return this.seatLaunch.waitForPresence(name, timeoutMs);
   }
 
-  /** Parse a served `spawn` request into {@link StartAgentOpts}. The compiled spawn input contract
-   *  is the shape check: it already refused a non-mapping `launchOptions`, a `supervise` that is not
-   *  the closed `{ restarts, windowMs }` pair, and a list on `subscribe`, `allowSubscribe`,
-   *  `allowPublish`, `shareTools`, `join` or `callerAcl` that is not an array of strings. This reads
-   *  those fields as admitted, the way it reads the string fields. The connector still validates the
-   *  launch-option keys, and `startAgent` still refuses a supervise budget the seat record would not
-   *  take. `once` is shape-checked by that same contract. Its omitted `deadlineMs` takes the default
-   *  here, and a deadline past the scheduler's last instant is refused here, which the schema does
-   *  not express. */
-  private opStart(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst", authenticatedCaller?: EpCaller, served?: string): Promise<ControlReply> {
-    const supervise = args.supervise as { restarts: number; windowMs: number } | undefined;
-    let once: StartAgentOpts["once"];
-    if (args.once !== undefined) {
-      const rec = args.once as { deadlineMs?: number };
-      // The default is applied here, so every caller of the wire gets the same one.
-      const d = rec.deadlineMs ?? ONCE_DEFAULT_DEADLINE_MS;
-      if (d !== -1 && (typeof d !== "number" || !Number.isSafeInteger(d) || d < 1 || Date.now() + d > MAX_SCHEDULE_MS))
-        return Promise.resolve({ ok: false, error: "once.deadlineMs: expected -1 (no deadline) or a positive whole number of milliseconds that ends by the deadline scheduler's last instant (the end of year 9999)" });
-      once = { deadlineMs: d === -1 ? undefined : d };
-    }
-    const callerAcl = args.callerAcl as StartAgentOpts["callerAcl"];
-    // #373: the event-plane admission gate. `startAgent` resolves `eventsRequired || opts.events
-    // !== false`, so omission ARMS the plane — a gate on the explicit bit alone is bypassed by
-    // omitting it. The gate is on the DECISION, and it runs before connector resolution and
-    // before `startAgent` (which mints credentials), so a refusal provisions nothing.
-    if (args.eventPayloads !== undefined && typeof args.eventPayloads !== "boolean")
-      return Promise.resolve({ ok: false, error: "eventPayloads must be a boolean" });
-    const requestedEvents = typeof args.events === "boolean" ? args.events : undefined;
-    let eventsNotice: string | undefined;
-    let events: boolean | undefined = requestedEvents;
-    // Imperative spawns have no payload-selected owner. Local provisioning derives it from
-    // the authenticated u_-owner caller; hosted enrollment fixes it to the manager's owner.
-    // Match the same owner-domain boundary as authorizeNamed, without treating the spawn's
-    // spawner relation as authority over a different owner's session.
-    const callerOwner = parsePrincipalKey(caller)?.owner;
-    const childOwner = this.remoteAuthority?.owner ?? (callerOwner?.startsWith("u_") ? callerOwner : undefined);
-    const ownsChild = this.userMode && callerOwner !== undefined && callerOwner === childOwner;
-    if (!admin && !ownsChild) {
-      if (requestedEvents === true)
-        return Promise.resolve({
-          ok: false,
-          error: `spawn is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2): events: arming the event plane needs the admin tier`,
-        });
-      if (this.eventsRequired)
-        return Promise.resolve({
-          ok: false,
-          error: `spawn is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2): space "${this.space}" requires the event plane by registration policy, which cannot be met without the admin tier`,
-        });
-      // Omission arms by default in startAgent; serve it DISARMED and say so (never a silent
-      // downgrade). An explicit `false` is already the opt-out — served as-is, no notice.
-      if (requestedEvents === undefined) {
-        events = false;
-        eventsNotice = `event plane not armed: arming it on spawn needs the admin tier; the spawn was served with events: false`;
-      }
-    }
-    return this.startAgent(
-      {
-        name: String(args.name ?? "").trim(),
-        agent: args.agent as string | undefined,
-        defaultAgent: args.defaultAgent as string | undefined,
-        role: args.role as string | undefined,
-        config: args.config as string | undefined,
-        identity: args.identity as string | undefined,
-        // Passed as sent: spawnPersona validates the record, the one place every door reads it.
-        persona: args.persona as InlinePersona | undefined,
-        ...(typeof args.runId === "string" ? { runId: args.runId } : {}),
-        model: args.model as string | undefined,
-        variant: args.variant as string | undefined,
-        launchOptions: args.launchOptions as Record<string, unknown> | undefined,
-        resume: args.resume as string | undefined,
-        resumeClaim: args.resumeClaim as string | undefined,
-        resumeAgent: args.resumeAgent as string | undefined,
-        events,
-        eventPayloads: args.eventPayloads as boolean | undefined,
-        eventsNotice,
-        cwd: args.cwd as string | undefined,
-        prompt: args.prompt as string | undefined,
-        subscribe: args.subscribe as string[] | undefined,
-        allowSubscribe: args.allowSubscribe as string[] | undefined,
-        allowPublish: args.allowPublish as string[] | undefined,
-        join: args.join as string[] | undefined,
-        callerAcl,
-        shareTools: args.shareTools as string[] | undefined,
-        ...(supervise !== undefined ? { supervise } : {}),
-        ...(once !== undefined ? { once } : {}),
-        ...(typeof args.runtime === "string" ? { runtime: args.runtime.trim() } : {}),
-        route,
-        ...(served !== undefined ? { served } : {}),
-      },
-      caller,
-      hooks,
-      authenticatedCaller,
-    );
-  }
+  /** {@link StartDoors.opStart}. */
+  private opStart(...args: Parameters<StartDoors["opStart"]>): ReturnType<StartDoors["opStart"]> { return this.startDoorsComponent.opStart(...args); }
   private listSpawnDirectory(args: Record<string, unknown>) { return this.seatLaunch.listSpawnDirectory(args); }
   /** {@link SeatLaunch.resolveSpawnCwd}. */
   private resolveSpawnCwd(value: unknown): { cwd: string; host: string } { return this.seatLaunch.resolveSpawnCwd(value); }
 
-  /** Resolve a connector by agent type. Library composition (installedExtensions off) → a registry
-   *  hit, exactly as before (the composition root imported what it wants). The published binary gates
-   *  on MANIFEST membership FIRST — so a live `cotal ext remove` is honored even though the registry
-   *  still holds a connector imported earlier this session — then returns the registry hit or lazily
-   *  imports the providing package (transactional + single-flight, via the workspace primitive).
-   *  The captured Manager generation is checked for first-party providers under that lock,
-   *  including providers already present in the registry.
-   *  Fail-loud with an install hint; no fallback. */
-  private async resolveConnector(name: string): Promise<Connector> {
-    if (!this.installedExtensions) return registry.resolve<Connector>("connector", name);
-    if (!manifestExtensionNames("connector").includes(name)) throw new Error(connectorInstallHint(name));
-    return materializeFromManifest<Connector>({ kind: "connector", name }, { hint: (ref) => connectorInstallHint(ref.name), expectedGeneration: this.expectedConnectorGeneration });
-  }
+  /** {@link HarnessResolution.resolveConnector}. */
+  private resolveConnector(...args: Parameters<HarnessResolution["resolveConnector"]>): ReturnType<HarnessResolution["resolveConnector"]> { return this.harnessResolutionComponent.resolveConnector(...args); }
   /** {@link SeatLaunch.connectorNames}. */
   private connectorNames(): string[] { return this.seatLaunch.connectorNames(); }
 
-  /** Resolve every installed/registered connector's declared harness binaries before the manager
-   * reports ready. A missing harness degrades only that connector, never unrelated lifecycle work:
-   * boot continues, names it once start completes and records it on both manager status surfaces. */
-  private async inspectConnectorsAtBoot(): Promise<void> {
-    this.bootNotes = [];
-    if (this.execution === "none") { this.connectorStatuses = []; return; }
-    const rows: ManagerConnectorStatus[] = [];
-    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; pkg?: string }>;
-    if (this.installedExtensions) {
-      try {
-        declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext).map((connector) => ({ ...connector, pkg: ext.pkg })));
-      } catch (error) {
-        const reason = rejectionText(error);
-        this.bootNotes.push(`! manager boot: connector inventory unavailable - ${reason}`);
-        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, reason }];
-        this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
-        return;
-      }
-    } else {
-      declared = registry.all<Connector>("connector").map((connector) => ({
-        name: connector.name,
-        requires: connector.requires ?? [],
-        eventPlane: connector.eventChannel !== undefined,
-      }));
-    }
-    this.connectorRequirements = new Map(declared.map(({ name, requires, pkg }) => [name, {
-      requires, needsClaudeWake: !!this.machineSetupCommand && name === "claude" && pkg === OFFICIAL_CONNECTORS.claude,
-    }]));
-    for (const { name, requires, eventPlane } of declared) {
-      const { binaries, reason: missing } = resolveHarness(name, requires);
-      const reason = missing ?? (this.connectorRequirements.get(name)?.needsClaudeWake ? await this.prepareClaudeWake() : undefined);
-      if (reason) {
-        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, reason });
-        this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
-      } else {
-        rows.push({ agent: name, state: "available", binaries, eventPlane });
-      }
-    }
-    this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
-    if (!this.classSpawnEnabled())
-      this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
-  }
+  /** {@link ConnectorInventory.inspectConnectorsAtBoot}. */
+  private inspectConnectorsAtBoot(...args: Parameters<ConnectorInventory["inspectConnectorsAtBoot"]>): ReturnType<ConnectorInventory["inspectConnectorsAtBoot"]> { return this.connectorInventoryComponent.inspectConnectorsAtBoot(...args); }
 
   /** Install and verify the hosted Claude wake channel, or report the cause and remedy. */
   private async prepareClaudeWake(): Promise<string | undefined> {
@@ -3857,213 +3724,28 @@ export class Manager {
   private classSpawnEnabled(): boolean { return this.seatLaunch.classSpawnEnabled(); }
   private omitClassCommands(): readonly string[] | undefined { return this.seatLaunch.omitClassCommands(); }
 
-  /** The harness binaries a managed launch runs, as boot resolved them, or the refusal naming what is
-   *  missing. Spawn, resume and the model catalog all take it, so a seat launches from the same files
-   *  whichever path starts it and the catalog never disagrees with a launch about whether the harness
-   *  is there. Callers recheck unavailable rows first; available rows retain their resolved files.
-   *  A connector registered after boot has no inventory row and is checked on PATH now. */
-  private launchHarness(connector: Connector): { binaries?: Readonly<Record<string, string>> } | { refusal: string } {
-    const row = this.connectorStatuses.find((status) => status.agent === connector.name);
-    if (row?.state === "unavailable") return { refusal: row.reason ?? `${connector.name} harness is unavailable` };
-    if (row) return { binaries: row.binaries };
-    const { reason } = resolveHarness(connector.name, connector.requires ?? []);
-    return reason ? { refusal: reason } : {};
-  }
+  /** {@link HarnessResolution.launchHarness}. */
+  private launchHarness(...args: Parameters<HarnessResolution["launchHarness"]>): ReturnType<HarnessResolution["launchHarness"]> { return this.harnessResolutionComponent.launchHarness(...args); }
 
-  /** The launch fields the host supplies rather than the seat. Spawn and resume both take them from
-   *  here, so a resumed seat launches under the same host policy, `eventsRequired` included, as the
-   *  same seat spawned fresh. The caller passes the cotal config it judged the launch by, so the
-   *  servers and env allowlist come from the contents its checks read. */
-  private hostLaunchFields(
-    cotalConfig: CotalConfig,
-    agent: string,
-    shareTools: readonly string[] | undefined,
-    harness: { binaries?: Readonly<Record<string, string>> },
-  ): Pick<LaunchOpts, "space" | "servers" | "mcpServers" | "mcpServersExclusive" | "envAllow" | "resolvedBinaries" | "eventsRequired" | "eventPayloads" | "workspaceRoot"> {
-    return {
-      space: this.space,
-      servers: this.servers,
-      // Declared overrides plus the connector's native default, unless this spawn explicitly
-      // restricts sharing. An empty selection is deliberate isolation, not the default.
-      mcpServers: connectorServers(cotalConfig, agent, shareTools),
-      mcpServersExclusive: shareTools !== undefined,
-      // The operator's spawn-env policy travels the same route: absent means no extras (the OS
-      // allow-list + operator knobs + connector-declared inputs), present means those names too.
-      // A connector never reads the config itself.
-      envAllow: spawnEnvAllow(cotalConfig),
-      resolvedBinaries: harness.binaries,
-      eventsRequired: this.eventsRequired,
-      ...(this.eventPayloadsWithheld ? { eventPayloads: false } : {}),
-      // So a connector that keeps per-agent local state can root it at the workspace, not the
-      // (possibly per-agent) launch cwd.
-      workspaceRoot: this.workspaceRoot,
-    };
-  }
+  /** {@link HarnessResolution.hostLaunchFields}. */
+  private hostLaunchFields(...args: Parameters<HarnessResolution["hostLaunchFields"]>): ReturnType<HarnessResolution["hostLaunchFields"]> { return this.harnessResolutionComponent.hostLaunchFields(...args); }
 
-  /** The refusal for a launch choice the connector cannot honour. Spawn and resume both ask before
-   *  a seat's launch is built, so a rule changed here holds on both paths. */
-  private capabilityRefusal(connector: Connector, launch: { variant?: string; prompt?: string; exact: boolean }): string | undefined {
-    if (launch.variant && !connector.supportsModelVariant)
-      return `${connector.name} connector does not support model variants (variant)`;
-    if (launch.prompt !== undefined && !connector.supportsPrompt)
-      return `${connector.name} connector does not support an initial prompt (prompt)`;
-    if (launch.exact && (!connector.supportsSessionReopen || !connector.supportsSessionContinuation))
-      return `${connector.name} connector does not support exact session continuity (continuity: exact)`;
-    return undefined;
-  }
+  /** {@link HarnessResolution.capabilityRefusal}. */
+  private capabilityRefusal(...args: Parameters<HarnessResolution["capabilityRefusal"]>): ReturnType<HarnessResolution["capabilityRefusal"]> { return this.harnessResolutionComponent.capabilityRefusal(...args); }
   /** {@link SeatLaunch.onceRefusal}. */
   onceRefusal(connector: Connector, runtime: Runtime, launch: Pick<StartAgentOpts, "once" | "supervise" | "launchOptions" | "prompt">, spawner: string | undefined, hooks: SpawnHooks | undefined): string | undefined { return this.seatLaunch.onceRefusal(connector, runtime, launch, spawner, hooks); }
 
-  /** The refusal for an event-plane choice the registration policy or the connector cannot meet.
-   *  Spawn and resume both ask before a seat's launch is built, so a seat retained without the
-   *  plane cannot come back on a space that now requires it. An absent choice arms supported planes. */
-  private eventsRefusal(connector: Connector, events: boolean | undefined): string | undefined {
-    if (this.eventsRequired && events === false)
-      return `space "${this.space}" requires the event plane by registration policy; --no-events (events: false on the start op) is not allowed`;
-    if ((this.eventsRequired || events === true) && !connector.eventChannel)
-      return this.eventsRequired
-        ? `space "${this.space}" requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
-        : `connector "${connector.name}" does not publish an AG-UI event plane; omit --events to launch it without one`;
-    return undefined;
-  }
+  /** {@link HarnessResolution.eventsRefusal}. */
+  private eventsRefusal(...args: Parameters<HarnessResolution["eventsRefusal"]>): ReturnType<HarnessResolution["eventsRefusal"]> { return this.harnessResolutionComponent.eventsRefusal(...args); }
 
-  /** Return connector-provided model catalogs for selector UIs. Optional by connector: a host with no
-   *  local model-list API reports `supported:false` rather than blocking the manager. A connector that
-   *  fails to import shows an `error:` row (from manifest enumeration) and never blocks the others. */
-  private async opModels(args: Record<string, unknown>): Promise<ControlReply> {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
-    const requested = String(args.agent ?? "").trim();
-    const refresh = args.refresh === true;
-    const one = async (connector: Connector): Promise<ConnectorModelCatalog> => {
-      await this.refreshUnavailableConnectors(connector.name, true);
-      const harness = this.launchHarness(connector);
-      if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
-      if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
-      try {
-        const catalog = await connector.listModels({ refresh, resolvedBinaries: harness.binaries });
-        return { agent: connector.name, supported: catalog.unavailable === undefined, ...catalog };
-      } catch (e) {
-        return { agent: connector.name, supported: true, models: [], error: rejectionText(e) };
-      }
-    };
+  /** {@link StatusAndModels.opModels}. */
+  private opModels(...args: Parameters<StatusAndModels["opModels"]>): ReturnType<StatusAndModels["opModels"]> { return this.statusAndModelsComponent.opModels(...args); }
 
-    if (requested) {
-      let connector: Connector;
-      try {
-        connector = await this.resolveConnector(requested);
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
-      }
-      const result = await one(connector);
-      return result.error ? { ok: false, error: result.error } : { ok: true, data: result };
-    }
+  /** {@link StatusAndModels.psOwnerFilter}. */
+  private psOwnerFilter(...args: Parameters<StatusAndModels["psOwnerFilter"]>): ReturnType<StatusAndModels["psOwnerFilter"]> { return this.statusAndModelsComponent.psOwnerFilter(...args); }
 
-    // Enumerate from the manifest (published binary) so a connector that fails to import still gets
-    // a row — `registry.all` can't list one that never registered. Each resolves lazily; an import
-    // failure becomes an `error:` catalog row and never blocks the healthy ones.
-    const catalogs = await Promise.all(
-      this.connectorNames().map(async (name): Promise<ConnectorModelCatalog> => {
-        let connector: Connector;
-        try {
-          connector = await this.resolveConnector(name);
-        } catch (e) {
-          return { agent: name, supported: false, models: [], error: rejectionText(e) };
-        }
-        return one(connector);
-      }),
-    );
-    return { ok: true, data: catalogs };
-  }
-
-  /** The owner-domain bound on `ps`/`status` metadata: on a USER mesh, a privileged-tier caller
-   *  sees only agents under its OWN subject-pinned owner. Two ways to see ALL owners: the admin
-   *  TIER (operator), or a fresh ledger `admin` SCOPE on the caller's row — the SAME authority that
-   *  lets `stop`/`attach` reach cross-owner agents ({@link authorizeNamedControl}). Without this the
-   *  two surfaces disagree: an admin operator could cross-owner stop an agent it could not list.
-   *  Read fresh so a revoked admin loses visibility on its next call; a read failure and an
-   *  unparseable caller both fall closed (own-owner / matches-nothing). Static meshes are unbounded. */
-  private async psOwnerFilter(caller: EpCaller, admin: boolean): Promise<string | undefined> {
-    if (!this.userMode || admin) return undefined;
-    if (this.remoteAuthority) return (await this.epAdminReach(caller)) ? undefined : caller.owner;
-    try {
-      const scope = await resolveAuthProvider().actorScope({
-        dir: userAuthStateDir(this.workspaceRoot, this.space),
-        owner: caller.owner,
-        actor: caller.actor,
-      });
-      if (scope?.includes("admin")) return undefined;
-    } catch {
-      /* unreadable ledger authorizes nothing extra: fall through to the own-owner bound */
-    }
-    return caller.owner;
-  }
-
-  /** Boot one resolved agent from a mesh-manifest launch spec, for `cotal spawn -f` onto a RUNNING
-   *  manager. The request carries `{ runId, name }` — plus, for a deploy from another checkout or
-   *  host, the resolved `spec` itself inline (validated as untrusted input and persisted under THIS
-   *  manager's `.cotal/run/` first) — NEVER a path: the manager derives + validates
-   *  `.cotal/run/<runId>.json` itself ({@link launchSpecForRun} — token-safe id, no-follow,
-   *  `loadLaunchSpec`'s untrusted-input + `validateLaunchPolicy` contract), materializes the named
-   *  agent's transient persona, and spawns via the same `startAgent({ resolved })` path as
-   *  `supervise --launch`. The reply is enriched for the ownership ledger: the SPAWNED
-   *  (collision-numbered) name + nkey id creds are filed under, plus the manifest `requested` name,
-   *  `runId`, and resolved `hash`. USER mesh: a privileged-tier launch is owner-equality-authorized
-   *  (spec owner === caller owner) before any side effect; the admin tier keeps operator behavior. */
-  private async opLaunch(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst"): Promise<ControlReply> {
-    if (this.execution === "none") return { ok: false, error: this.executionRefusal() };
-    const runId = String(args.runId ?? "").trim();
-    const name = String(args.name ?? "").trim();
-    if (!runId || !name) return { ok: false, error: "launch requires runId + name" };
-    let spec;
-    if (args.spec !== undefined) {
-      // REMOTE deploy: the caller pushes the resolved spec inline over the control plane instead of
-      // sharing this checkout's disk. Same untrusted-input contract as the file path (strict schema,
-      // safe names, policy re-validation), then persisted under OUR `.cotal/run/<runId>.json` so
-      // stale-restart and retained resume read the same on-disk source either way. Still never a
-      // path: the payload is the spec itself, and where it lands is derived here.
-      try {
-        spec = parseLaunchSpec(args.spec, `inline launch spec (run ${runId})`);
-        if (spec.runId !== runId)
-          return { ok: false, error: `inline launch spec runId "${spec.runId}" does not match requested "${runId}"` };
-        hooks?.onEffect?.();
-        persistLaunchSpec(this.workspaceRoot, spec);
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
-      }
-    } else {
-      try {
-        spec = launchSpecForRun(this.workspaceRoot, runId);
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
-      }
-    }
-    const la = spec.agents.find((a) => a.name === name);
-    if (!la) return { ok: false, error: `no agent "${name}" in launch spec for run ${runId}` };
-    // USER mesh: a manifest launch runs under the spec's apply-time owner, never the ctl caller —
-    // fail loud on a spec without one rather than guess (core `MeshLaunchSpec.owner`).
-    if (this.userMode && !spec.owner)
-      return { ok: false, error: `user-auth space "${this.space}": launch spec for run ${runId} carries no owner - re-apply the manifest as a logged-in operator` };
-    if (this.userMode) {
-      // Privileged-tier user-mode launch: owner-equality (spec owner === caller owner), decided by
-      // the pure policy BEFORE materializePersona or any other side effect, so a denied
-      // cross-owner launch writes nothing. Admin tier passes through it unchanged.
-      const denied = authorizeLaunch({ specOwner: spec.owner, caller, admin, runId });
-      if (denied) return { ok: false, error: denied };
-    }
-    let configPath: string;
-    try {
-      hooks?.onEffect?.();
-      configPath = materializePersona(this.workspaceRoot, runId, la);
-    } catch (e) {
-      return { ok: false, error: rejectionText(e) };
-    }
-    const reply = await this.startAgent({ ...launchAgentToStartOpts(la, configPath, spec.owner, runId), route }, caller, hooks);
-    if (reply.ok)
-      // `data.name` stays the spawned (numbered) identity — what creds are filed under and the ledger
-      // keys on; `requested`/`runId`/`hash` give the CLI the manifest name + drift hash for the ledger.
-      reply.data = { ...(reply.data as object), requested: la.name, runId, hash: la.hash, newlyStarted: true };
-    return reply;
-  }
+  /** {@link StartDoors.opLaunch}. */
+  private opLaunch(...args: Parameters<StartDoors["opLaunch"]>): ReturnType<StartDoors["opLaunch"]> { return this.startDoorsComponent.opLaunch(...args); }
 
   /** Spawn and supervise one agent. The single spawn path: both the control-plane
    *  `start` op and declarative roster boot call this. Mints scoped creds in auth mode,
@@ -4803,209 +4485,14 @@ export class Manager {
     onPresence();
   }
 
-  /** #159 B1: wait for a detached launch to reach a REAL outcome before replying — never a liveness-
-   *  inferring timer. Races three:
-   *   • the assigned id joins presence (live) → **started** — the honest signal (the manager owns mesh
-   *     lifecycle, not app health, so `ok:true` means "it joined the mesh", not "fully healthy");
-   *   • the child process exits → **failed** — surface its last output and reap the slot;
-   *   • neither within {@link readinessTimeoutMs} → **uncertain** — a non-success diagnostic that does NOT
-   *     deprovision (it may still be booting; the caller keeps {@link watchExit} wired so a later death is
-   *     still reaped).
-   *  Presence is keyed on the EXACT freshly-minted id, never the name — a fresh id has no prior record, so
-   *  any live presence for it is from THIS launch (stale/same-name records can't false-start it). The
-   *  `"presence"` event is only a wake; the roster is re-read as the source of truth (subscribe-then-check
-   *  catches a join/exit that landed before we subscribed). A runtime whose `attach()` throws (an external
-   *  surface) streams no output or exit, so its exit leg polls the runtime's exit proof ({@link pollProvedExit}),
-   *  reads it once more when the window closes, and its failure carries no last output; one that cannot prove an
-   *  exit either races presence-vs-backstop only.
-   *  A launch that waits for the operator at `opts.operator`, a screen its connector names, is ready once a
-   *  process this runtime owns has run for {@link OPERATOR_READINESS_MS} without exiting. An uncertain verdict
-   *  says whether a process this runtime owns is still running. */
-  private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number, opts: { reapOnExit?: boolean; joinedAfter?: number; operator?: string } = {}): Promise<{ ok: true; operator?: string } | { ok: false; uncertain?: boolean; running?: boolean; deliberate?: boolean; detail: string }> {
-    let session: AttachSession | undefined;
-    try {
-      session = a.handle.attach();
-    } catch {
-      /* external surfaces stream no output or exit; their exit is polled below */
-    }
-    const s = session;
-    // Presence cards carry the wire PRINCIPAL dot-form (`<owner>.<actor>`), never a raw nkey — match
-    // through managedPrincipal or a static launch can never be seen joining (every static spawn would
-    // resolve "uncertain"; caught by the lifecycle e2e).
-    const wanted = this.managedPrincipal(a);
-    // READINESS LIFECYCLE FENCE (SPEC 13.1): match the exact principal AND the exact lifecycle uid
-    // the manager minted for THIS spawn (presence carries it, §6). The endpoint's own
-    // register-only broker proof is gated on the CLIENT-authored `card.kind`, which a managed child
-    // holding a valid agent credential could set to "endpoint" to skip - so it is defense-in-depth,
-    // NOT the authority boundary. This equality is: the manager (not the child) owns the expected
-    // uid, so a ghost that advertises a wrong/absent uid never reports STARTED, whatever kind it
-    // claims. The manager threads the uid into EVERY mode's launch (open included), so the child
-    // adopts it over a self-mint and publishes it in presence; the uid is absent only from a peer
-    // the manager never launched (a pure operator/daemon connection that never registers).
-    // A supervised restart keeps the same principal+uid, so a SIGKILL'd child's still-live
-    // presence row would otherwise satisfy this equality. `joinedAfter` is one millisecond
-    // past that row's last heartbeat: only a later heartbeat counts as THIS replacement joining.
-    const joined = (): boolean =>
-      this.ep.getRoster().some((p) =>
-        p.card.id === wanted
-        && p.status !== "offline"
-        && p.lifecycleUid === a.lifecycleUid
-        && (opts.joinedAfter === undefined || p.ts >= opts.joinedAfter));
+  /** {@link ReadinessWait.awaitReadiness}. */
+  private awaitReadiness(...args: Parameters<ReadinessWait["awaitReadiness"]>): ReturnType<ReadinessWait["awaitReadiness"]> { return this.readinessWaitComponent.awaitReadiness(...args); }
 
-    return await new Promise((resolve) => {
-      let done = false;
-      let timer: ReturnType<typeof setTimeout>;
-      let unsubExit = (): void => {};
-      let joinedPoll: ReturnType<typeof setInterval> | undefined;
-      let operatorTimer: ReturnType<typeof setTimeout> | undefined;
-      const finish = (r: { ok: true; operator?: string } | { ok: false; uncertain?: boolean; running?: boolean; deliberate?: boolean; detail: string }): void => {
-        if (done) return;
-        done = true;
-        if (!r.ok && r.uncertain) {
-          a.joinIssue = r.detail;
-          console.error(`seat join degraded: ${r.detail}`);
-        } else if (r.ok) {
-          a.joinIssue = undefined;
-        }
-        clearTimeout(timer);
-        clearTimeout(operatorTimer);
-        if (joinedPoll !== undefined) clearInterval(joinedPoll);
-        this.ep.off("presence", onPresence);
-        this.shutdownReadiness.signal.removeEventListener("abort", onShutdown);
-        unsubExit();
-        resolve(r);
-      };
-      const onPresence = (): void => {
-        if (joined()) finish({ ok: true });
-      };
-      // Shutdown owns the seat's stop and retirement after the lifecycle ticket drains. Do not
-      // keep that ticket waiting on a connector's readiness window while shutdown waits on it.
-      const onShutdown = (): void => finish({ ok: false, deliberate: true, detail: `${a.name} was stopped before it reported ready` });
-      if (opts.joinedAfter !== undefined) {
-        // Heartbeats bump roster.ts without emitting "presence" (same status/uid/activity).
-        // A supervised restart needs that bump, so poll joined() rather than waiting on the event.
-        joinedPoll = setInterval(onPresence, 50);
-      }
-      // Process exit → failed. Clear the backstop FIRST (synchronously) so it can't resolve UNCERTAIN while
-      // the backlog reads async — the process is known dead, that's a failure, not an unknown. Reap through
-      // onAgentExit so a child the launcher spawned in the window is reaped too.
-      const onExit = (): void => {
-        if (done) return;
-        clearTimeout(timer);
-        clearTimeout(operatorTimer);
-        // `stopHandle` sets `terminalizing` synchronously before it kills, and `onAgentExit` sets it
-        // through `freeSlot` when it retires the seat, so only a read before the await and the reap
-        // tells a deliberate stop from a launch failure.
-        const deliberate = a.terminalizing === true;
-        void (async () => {
-          // A closed stream or a reader failure must not prevent settlement, or read as empty output.
-          let tail = "";
-          try {
-            if (s) tail = await this.tail(s);
-          } catch (error) {
-            console.error(`! ${a.name}: last output unavailable: ${rejectionText(error)}`);
-          }
-          if (opts.reapOnExit !== false) this.onAgentExit(a);
-          // The despawn path owns this goal's terminal (`cancel`), and this promise still settles
-          // as the `deliberate` variant so the caller commits none: the readiness timer is already
-          // cleared, and the spawn's lifecycle ticket is released only on settle.
-          if (deliberate) {
-            finish({ ok: false, deliberate: true, detail: `${a.name} was stopped before it reported ready` });
-            return;
-          }
-          // The screen's last row can be a dialog footer, so the exit's diagnostic is named beside it:
-          // it carries the runtime's own reason when it stopped the seat. A connector that ends on its
-          // diagnostic already shows it as the last row, and it is not repeated.
-          let exitDetail = "";
-          try {
-            const diagnostic = a.handle.exitInfo?.()?.diagnostic;
-            if (diagnostic && diagnostic !== tail) exitDetail = `; diagnostic: ${diagnostic}`;
-          } catch (e) {
-            // The backstop is already cleared, so a reader that throws must still let this settle.
-            exitDetail = `; exit detail unreadable from runtime "${a.handle.kind}": ${rejectionText(e)}`;
-          }
-          // A runtime's text can carry a lone surrogate, which is not I-JSON, and the failed terminal
-          // this detail becomes is refused with it.
-          exitDetail = exitDetail.replace(/\p{Cs}/gu, "\uFFFD");
-          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}${exitDetail}` });
-        })();
-      };
-      // A process this runtime owns reports its own exit, so one still running here is running.
-      const uncertain = (): void => {
-        const running = s !== undefined && a.handle.status() === "running";
-        finish({
-          ok: false,
-          uncertain: true,
-          running,
-          detail: running
-            ? `${a.name} (${a.id}): launch status uncertain - its process is running but did not join the mesh within ${readinessTimeoutMs}ms; it may still be starting or waiting at a prompt. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`; do not stop it solely because this bounded wait elapsed.`
-            : `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${readinessTimeoutMs}ms; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`; do not stop it solely because this bounded wait elapsed.`,
-        });
-      };
-      if (opts.operator !== undefined && s)
-        operatorTimer = setTimeout(() => { if (a.handle.status() === "running") finish({ ok: true, operator: opts.operator }); }, OPERATOR_READINESS_MS);
-      // The exit poll read the runtime up to a poll ago, and a window can be shorter than a poll, so
-      // the window closes on a fresh read: a child that exited by then is reported as exited. Nothing
-      // bounds how long a runtime's proof takes, so it gets one more poll before the launch is uncertain.
-      timer = setTimeout(() => {
-        const proof = s ? undefined : exitProof(a.handle);
-        if (!proof) {
-          uncertain();
-          return;
-        }
-        timer = setTimeout(uncertain, READINESS_EXIT_POLL_MS);
-        proof.then(onExit, uncertain);
-      }, readinessTimeoutMs);
-      // The poll stops once the race is done, so it needs no unsubscribe.
-      if (s) unsubExit = s.onExit(onExit);
-      else pollProvedExit(a.handle, onExit, () => !done, READINESS_EXIT_POLL_MS);
-      this.ep.on("presence", onPresence);
-      this.shutdownReadiness.signal.addEventListener("abort", onShutdown, { once: true });
-      // Subscribe-then-check (TOCTOU): a join or an exit that already landed before we subscribed.
-      if (this.shutdownReadiness.signal.aborted) onShutdown();
-      else if (s && a.handle.status() === "exited") onExit();
-      else onPresence();
-    });
-  }
+  /** {@link ReadinessWait.tail}. */
+  private tail(...args: Parameters<ReadinessWait["tail"]>): ReturnType<ReadinessWait["tail"]> { return this.readinessWaitComponent.tail(...args); }
 
-  /** Last non-empty line of the session's rendered backlog as a single trimmed snippet (≤160 chars)
-   *  — a readable one-line cause for an early-exit diagnostic. The backlog repaints cells a TUI
-   *  skipped with cursor moves, so it is rendered and the line is read off the terminal; stripping
-   *  its escapes would glue the words those moves separate. */
-  private async tail(session: AttachSession): Promise<string> {
-    const backlog = await session.backlog();
-    // Sized after the snapshot: a custodial seat's snapshot carries the geometry it was taken at.
-    // The headless build exposes `buffer` only as proposed API.
-    const term = new Headless.Terminal({ cols: session.cols, rows: session.rows, allowProposedApi: true });
-    await new Promise<void>((done) => term.write(backlog, done));
-    const screen = term.buffer.active;
-    let text = "";
-    for (let y = screen.length - 1; y >= 0; y--) {
-      const row = screen.getLine(y)!;
-      // A line wider than the screen continues across wrapped rows, so it is read whole.
-      text = row.translateToString(text === "") + text;
-      if (row.isWrapped) continue;
-      // Blanks a program painted survive the right trim, so a line of only blanks is skipped.
-      if (text.trim()) break;
-      text = "";
-    }
-    term.dispose();
-    text = text.trim();
-    // Cut on code points: half a surrogate pair is not I-JSON, and a launch terminal carrying it is refused.
-    const chars = [...text];
-    return chars.length > 160 ? `…${chars.slice(-160).join("")}` : text;
-  }
-
-  /** Subscribe to a managed agent's process-exit so a self-driven exit frees its slot and reaps
-   *  its children (P4b/P4c). The watch is bound to the current handle: a restart swaps in a new one
-   *  and watches it, so a late exit proved for the old handle must not retire the row. */
-  private watchExit(a: ManagedAgent): void {
-    const handle = a.handle;
-    const current = (): boolean => this.agents.get(a.name) === a && a.handle === handle;
-    const watched = watchProvedExit(handle, () => this.onAgentExit(a), current);
-    if (!watched)
-      console.error(`! ${a.name}: runtime "${handle.kind}" cannot prove a child exit (AgentHandle.waitForExit is not implemented) - it stays managed after it exits, until it is stopped`);
-  }
+  /** {@link ReadinessWait.watchExit}. */
+  private watchExit(...args: Parameters<ReadinessWait["watchExit"]>): ReturnType<ReadinessWait["watchExit"]> { return this.readinessWaitComponent.watchExit(...args); }
   private occupancy(): Occupancy { return this.namesCapacity.occupancy(); }
   private occupancyText(o: Occupancy): string { return this.namesCapacity.occupancyText(o); }
   private capacityRefusal(o: Occupancy): string { return this.namesCapacity.capacityRefusal(o); }
@@ -5031,190 +4518,29 @@ export class Manager {
   /** {@link SeatStop.findManagedByTarget}. */
   private findManagedByTarget(...args: Parameters<SeatStop["findManagedByTarget"]>): ReturnType<SeatStop["findManagedByTarget"]> { return this.seatStopComponent.findManagedByTarget(...args); }
 
-  /** Run one static §13.1 lifecycle OPERATION over an ephemeral, key-pinned `lifecycle-executor`
-   *  connection: the credential's grants name exactly ONE incarnation's head/uid/gate/
-   *  cred-family/slot keys, so the write authority exists only for this operation's window and
-   *  can move nothing else. The transport is the direct-KV binding the shared core saga drives. */
-  private async withLifecycleExecutor<T>(
-    pin: { owner: string; actor: string; lifecycleUid: string; alias: string },
-    fn: (t: LifecycleStateTransport) => Promise<T>,
-  ): Promise<T> {
-    if (!this.auth) throw new Error("withLifecycleExecutor: no space auth (an open mesh has no lifecycle registry)");
-    const identity = newIdentity();
-    const creds = await mintCreds(this.auth, identity, "lifecycle-executor", {
-      lifecycleExecutor: { owner: pin.owner, actor: pin.actor, lifecycleUid: pin.lifecycleUid, alias: pin.alias },
-    });
-    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
-    try {
-      const kvm = new Kvm(nc);
-      const recordsKv = await kvm.open(recordsBucket(this.space));
-      const authKv = await kvm.open(epAuthBucket(this.space));
-      return await fn(staticLifecycleTransport(recordsKv, authKv));
-    } finally {
-      await drainAndClose(nc);
-    }
-  }
+  /** {@link BrokerTransport.withLifecycleExecutor}. */
+  private withLifecycleExecutor<T>(pin: { owner: string; actor: string; lifecycleUid: string; alias: string }, fn: (t: LifecycleStateTransport) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withLifecycleExecutor(pin, fn); }
 
-  /** Run one SPEC 13.15 issuance operation over an ephemeral `issuer` connection: the evidence
-   *  stage/release of one mint, or the retirement walk of one lifecycle's issuances. The store
-   *  handle and the accepted-row KV live only for this window; the standing supervisor holds no
-   *  grant on either bucket. */
-  private async withIssuer<T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>): Promise<T> {
-    if (!this.auth) throw new Error("withIssuer: no space auth (an open mesh issues nothing)");
-    const creds = await mintCreds(this.auth, newIdentity(), "issuer");
-    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
-    try {
-      const kvm = new Kvm(nc);
-      return await fn(await bindIssuedStores(kvm, await jetstreamManager(nc), this.space));
-    } finally {
-      await drainAndClose(nc);
-    }
-  }
+  /** {@link BrokerTransport.withIssuer}. */
+  private withIssuer<T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withIssuer(fn); }
 
-  /** The issuance seam of ONE static credential mint (SPEC 13.15): the evidence is bound to the
-   *  incarnation's own `cred.<uid>` ledger family, so the family's revocation (the static
-   *  terminal) retires every issuance that named it. The finalizer is the §13.1 ledger append
-   *  (slot credentialId + `cred.<uid>.<credId>` row); release runs it, then activates. */
-  private issuanceSeam(i: { store: IssuedStore; accepted: KV }, mode: "issue" | "renew", a: { name: string; id: string; lifecycleUid: string }, exp: number): IssuanceSeam {
-    return {
-      mode,
-      store: i.store,
-      accepted: i.accepted,
-      sources: mode === "issue" ? [{ space: this.space, bucket: epAuthBucket(this.space), key: `cred.${a.lifecycleUid}` }] : [],
-      finalize: async (credentialId) => {
-        await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {
-          await recordSlotCredential(t, DEV_OWNER, a.name, a.lifecycleUid, credentialId);
-          await appendStaticCredentialRow(t, { lifecycleUid: a.lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, a.id).key, exp });
-        });
-      },
-    };
-  }
+  /** {@link BrokerTransport.issuanceSeam}. */
+  private issuanceSeam(...args: Parameters<BrokerTransport["issuanceSeam"]>): ReturnType<BrokerTransport["issuanceSeam"]> { return this.brokerTransportComponent.issuanceSeam(...args); }
 
-  /** Run one §13.1 endpoint-instance maintenance operation over an ephemeral,
-   *  key-pinned `endpoint-serve-executor` connection: the credential's grants name exactly the
-   *  manager instance's `epgate`/`epcred` keys plus its registration's two records keys, so the
-   *  gate CAS, mint fence, spec/governance writes, and clean deregistration ride a one-shot scoped
-   *  authority. The remote boot goal-index sweep instead uses the authenticated host-owned scan.
-   *  This is NEVER the manager's standing seed/supervisor connection. */
-  private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
-    const identity = this.remoteAuthority?.identities.executor ?? newIdentity();
-    if (this.remoteAuthority && (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy")) {
-      // Shutdown has drained and discarded the standing serve context. Renew only its scoped
-      // maintenance executor through the existing host operation; never resurrect standing duties.
-      if (this.leaseStopping) await this.renewRemoteExecutor(true);
-      else if (this.remoteAuthority.renewStandingBundle) {
-        // The renewal drains old handlers after adopting. A handler waiting here must be
-        // released at adoption, not after its own completion is required by that drain.
-        const renewal = this.renewRemoteStandingBundle(true);
-        void renewal.catch((error) => console.error(`! remote manager standing renewal completion: ${rejectionText(error)}`));
-        await this.remoteBundleAdoption;
-        if (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy") {
-          await renewal;
-          throw new Error("standing renewal did not adopt a healthy scoped executor");
-        }
-      } else await this.renewRemoteExecutor(true);
-    }
-    const creds = this.remoteExecutorCreds ?? (this.auth
-      ? await mintCreds(this.auth, identity, "endpoint-serve-executor", {
-          endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },
-          ...(this.endpointServeExecutorExpiresInSeconds !== undefined
-            ? { expiresInSeconds: this.endpointServeExecutorExpiresInSeconds }
-            : {}),
-        })
-      : undefined);
-    if (!creds) throw new Error("withEndpointServeExecutor: no scoped executor authority (an open mesh must use the bare path)");
-    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
-    try {
-      const kvm = new Kvm(nc);
-      return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
-    } finally {
-      await drainAndClose(nc);
-    }
-  }
+  /** {@link BrokerTransport.withEndpointServeExecutor}. */
+  private withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withEndpointServeExecutor(fn); }
 
-  /** The open-mesh counterpart of {@link withEndpointServeExecutor}: an OPEN mesh has no
-   *  credential system, so there is no scoped executor to mint - the same §13.1 gate/records
-   *  writes ride a bare one-shot connection (the broker enforces nothing on an open mesh; the
-   *  ceremony still produces the real gate, epoch, and registration the serve rails run on). */
-  private async withOpenServeConnection<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
-    if (this.auth || this.remoteAuthority)
-      throw new Error("withOpenServeConnection: an authenticated mesh must use the scoped endpoint-serve executor");
-    const nc = await this.dial({ maxReconnectAttempts: 0 });
-    try {
-      const kvm = new Kvm(nc);
-      // An open mesh may be a RAW broker (no `cotal up` provisioning ran), and `Kvm.open` binds
-      // lazily without checking the stream exists — create-or-verify the §13.12 authority stores
-      // first (the same mode-neutral treatment {@link registerManagerService} gives the contract
-      // store), or the first gate write dies "stream not found".
-      await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
-      return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
-    } finally {
-      await drainAndClose(nc);
-    }
-  }
+  /** {@link BrokerTransport.withOpenServeConnection}. */
+  private withOpenServeConnection<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withOpenServeConnection(fn); }
 
-  /** Parent-local inventory read. It does not enter maintenance or change admission. */
-  hostedSeatCount(): number { return this.agents.size; }
+  /** {@link StatusAndModels.hostedSeatCount}. */
+  hostedSeatCount(...args: Parameters<StatusAndModels["hostedSeatCount"]>): ReturnType<StatusAndModels["hostedSeatCount"]> { return this.statusAndModelsComponent.hostedSeatCount(...args); }
 
-  /** Public local-seat facts for the owning machine daemon. No mesh or secret reads. */
-  hostedAgents(): { name: string; application: string; model?: string; cwd: string; startedAt: string; state: "running" | "exited" }[] {
-    if (this.agents.size > 50) throw new Error("local agent inventory exceeds its bound");
-    return [...this.agents.values()].map(a => ({
-      name: a.name, application: a.agent, ...(a.launch.model ? { model: a.launch.model } : {}),
-      cwd: a.launch.cwd, startedAt: new Date(a.startedAt).toISOString(), state: a.handle.status(),
-    }));
-  }
+  /** {@link StatusAndModels.hostedAgents}. */
+  hostedAgents(...args: Parameters<StatusAndModels["hostedAgents"]>): ReturnType<StatusAndModels["hostedAgents"]> { return this.statusAndModelsComponent.hostedAgents(...args); }
 
-  /** The served manager-level health summary. Given an owner, `agentCount` counts only that owner's
-   *  seats, as `ps` lists them ({@link psOwnerFilter}), so a person reading a shared Manager does not
-   *  learn how many seats other owners hold on it. */
-  private managerStatusData(ownerFilter: string | undefined, setupClaude = false): ManagerStatus {
-    this.refreshUnavailableConnectors(undefined, setupClaude);
-    return {
-      instanceId: this.managerInstanceId,
-      lifecycleUid: this.managerLifecycleUid,
-      host: hostname(),
-      version: MANAGER_VERSION,
-      execution: this.execution,
-      runtime: this.runtimeKind,
-      custody: this.execution === "none" ? "none" : this.requiredRuntime.kind === "pty" && this.requiredRuntime.supportsRelease === true ? "custodied" : "legacy",
-      runHosting: this.execution !== "none" && (this.remoteAuthority ? this.remoteAuthority.runHosting !== undefined : !this.userMode && this.auth !== undefined),
-      terminalSessions: this.execution !== "none",
-      agentCount: ownerFilter === undefined ? this.agents.size : [...this.agents.values()].filter((a) => a.userOwner === ownerFilter).length,
-      uptimeMs: Date.now() - this.startedAtMs,
-      connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
-      classSpawn: this.classSpawnEnabled(),
-      staticReconciliation: this.staticReconciliationStatus(),
-      stopImpact: {
-        agentScope: ownerFilter === undefined ? "manager" : "owner-filtered",
-        observedAt: new Date().toISOString(),
-        maintenance: this.maintenanceState,
-        resumeRequired: this.resumeRequired,
-        stopping: this.leaseStopping,
-        lifecycleInFlight: this.lifecycleInFlight,
-        reservedLaunches: this.namesCapacity.reservedCount,
-        retirementsPending: this.retirement.pendingCount,
-        deprovisioningInFlight: this.retirement.inFlightCount,
-        staticReconciliationInFlight: this.staticLifecycle.sweepsInFlight,
-        agents: [...this.agents.values()]
-          .filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter)
-          .map((a): ManagerStopImpact["agents"][number] => ({
-            name: a.name,
-            id: a.id,
-            lifecycleUid: a.lifecycleUid,
-            mode: a.handle.kind,
-            defaultAction: this.maintenanceState !== "active" || this.resumeRequired
-              ? "stop-retaining-state" : this.isProcessBoundSeat(a) ? "stop" : "release-custody",
-            withAgentsAction: this.maintenanceState !== "active" || this.resumeRequired ? "stop-retaining-state" : "stop",
-          })),
-        // The same digest form `opResumePreserved` binds, so a preserved-exit stop and the later
-        // resume name one inventory.
-        ...(this.maintenanceState !== "active" && this.preservationAttemptId && this.preservationInventory
-          ? { preservation: { attemptId: this.preservationAttemptId, inventorySha256: createHash("sha256").update(JSON.stringify(this.preservationInventory)).digest("hex") } }
-          : {}),
-      },
-    };
-  }
+  /** {@link StatusAndModels.managerStatusData}. */
+  private managerStatusData(...args: Parameters<StatusAndModels["managerStatusData"]>): ReturnType<StatusAndModels["managerStatusData"]> { return this.statusAndModelsComponent.managerStatusData(...args); }
 
   private staticReconciliationStatus(): ManagerStaticReconciliationStatus {
     return this.staticLifecycle.staticReconciliationStatus();
@@ -5592,37 +4918,11 @@ export class Manager {
   /** {@link SeatStop.lifecycleMembershipRefusal}. */
   private lifecycleMembershipRefusal(...args: Parameters<SeatStop["lifecycleMembershipRefusal"]>): ReturnType<SeatStop["lifecycleMembershipRefusal"]> { return this.seatStopComponent.lifecycleMembershipRefusal(...args); }
 
-  /** Open a short-lived PROVISIONER connection, run the onboarding ops on it, and drain it (closure (ii),
-   *  residual 2). The DM/DLV consumer-create surface — the irreducible onboarding power — lives only for
-   *  this window, never as a standing grant on the long-lived supervisor. A provision-only endpoint
-   *  (no presence/consume/channel-watch) connected with memory-only `provisioner` creds; it sets its own
-   *  `inboxPrefix` so JS-API replies land on the `_INBOX_<id>.>` the provisioner cred subscribes. */
-  private async withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> {
-    if (!this.auth) throw new Error("withProvisioner: no space auth (an open mesh has no scoped creds)");
-    // Onboarding runs several provisioning ops, so it keeps the provisioner profile's five-minute window.
-    return withScopedEndpoint({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth: this.auth }, "provisioner", "provisioner", fn, 5 * 60);
-  }
+  /** {@link BrokerTransport.withProvisioner}. */
+  private withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withProvisioner(fn); }
 
-  /** A connection holding this instance's transfer reader grants (docs/design/resume-transfer.md
-   *  section 6) for this one receive or sweep: minted from the space's signing seed, or issued by the
-   *  host to a remote manager. An open mesh enforces no grants, so a bare one-shot connection is that
-   *  reader there. */
-  private async withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
-    const issue = this.remoteAuthority?.mintTransferReader;
-    if (this.remoteAuthority && !issue) throw new Error("withTransferReader: this manager's remote authority issues no transfer reader");
-    const identity = newIdentity();
-    const creds = issue
-      ? await issue(identity)
-      : this.auth && await mintCreds(this.auth, identity, "transfer-reader", { transferReader: { instanceId: this.managerInstanceId } });
-    const nc = await this.dial(creds
-      ? { ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 }
-      : { maxReconnectAttempts: 0 });
-    try {
-      return await fn(nc);
-    } finally {
-      await drainAndClose(nc);
-    }
-  }
+  /** {@link BrokerTransport.withTransferReader}. */
+  private withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withTransferReader(fn); }
 
   /** {@link SeatStop.opPurge}. */
   private opPurge(...args: Parameters<SeatStop["opPurge"]>): ReturnType<SeatStop["opPurge"]> { return this.seatStopComponent.opPurge(...args); }
@@ -5646,323 +4946,15 @@ export class Manager {
   /** {@link PersonaCatalog.opShowPersona}. */
   private opShowPersona(...args: Parameters<PersonaCatalog["opShowPersona"]>): ReturnType<PersonaCatalog["opShowPersona"]> { return this.personaCatalogComponent.opShowPersona(...args); }
 
-  /** The post-authorization `input` effect (C3): type `text` into the seat's terminal as if a human
-   *  had. The single call an external UI needs to deliver a harness command (`/compact`, `/clear`,
-   *  `/model`) without holding a terminal open on the caller's side.
-   *
-   *  Why the runtime HANDLE and not an attach session: a session is a stream (backlog, subscriber
-   *  set, a lifetime the session plane accounts for and caps). Opening and discarding one per
-   *  keystroke line would burn a session slot for a write, and would put a capacity refusal in the
-   *  path of an operation that has no capacity cost. {@link AgentHandle.write} is the one-shot
-   *  sibling of `interrupt()`, which already writes into the same pty.
-   *
-   *  Three refusals, each for a different reason and each with its own code, so a caller can tell
-   *  "never going to work" from "not right now":
-   *   - the name was refilled while authorization awaited: act on the incarnation the caller was
-   *     authorized for or on nothing at all (the same guard {@link attachAuthorized} carries, for
-   *     the same reason: a name is a reusable slot and `authorizeNamed` can await a ledger read);
-   *   - the agent is not running: there is no terminal to type into;
-   *   - the runtime cannot write (tmux/cmux/orca/herdr attach to an externally-owned process, so
-   *     they own no input stream for it): `unimplemented`, named by runtime kind. NOT a fallback
-   *     to an attach session and NOT a silent success - a dropped keystroke would leave the caller
-   *     believing a command was delivered that never was.
-   *
-   *  `enter` defaults to true: a harness command typed but not submitted has not been delivered.
-   *  Nothing is echoed back; the caller reads the resulting turns from the event plane. */
-  private async inputAuthorized(a: ManagedAgent, args: Record<string, unknown>): Promise<{ name: string; bytes: number }> {
-    // These three refuse before the first write, so nothing was typed (SPEC 13.3). A write the
-    // runtime rejects below states no outcome: the runtime contract does not say a rejected write
-    // delivered nothing, and an earlier slice may already have reached the seat.
-    if (this.agents.get(a.name) !== a)
-      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" was replaced during authorization - retry`, undefined, "not-executed");
-    if (a.handle.status() !== "running")
-      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" is not running (${a.handle.status()}); nothing to type into`, undefined, "not-executed");
-    const write = a.handle.write?.bind(a.handle);
-    if (!write)
-      throw new EpEnvelopeError("unimplemented", `input is not supported by runtime ${a.handle.kind}`, undefined, "not-executed");
-    if (a.agent === "claude") {
-      // AskUserQuestion ignores bracketed text at its choice menu, but the following Enter
-      // confirms the highlighted option. Refuse rather than answer a different question choice.
-      const handle = a.handle;
-      let selection = false;
-      try {
-        const session = handle.attach();
-        const backlog = await session.backlog();
-        const term = new Headless.Terminal({ cols: session.cols, rows: session.rows, allowProposedApi: true });
-        try {
-          await new Promise<void>((done) => term.write(backlog, done));
-          const screen = term.buffer.active;
-          const lines = Array.from({ length: term.rows }, (_, y) =>
-            screen.getLine(screen.baseY + y)?.translateToString(true).trim() ?? "");
-          selection = lines.some((line) => /^❯\s+\d+\./u.test(line))
-            && lines.some((line) => line.includes("Enter to select") && line.includes("↑/↓ to navigate") && line.includes("Esc to cancel"));
-        } finally {
-          term.dispose();
-        }
-      } catch {
-        throw new EpEnvelopeError("failed-precondition", `cannot inspect Claude input for seat "${a.name}"; use \`cotal attach --name ${a.name}\` to inspect and type directly`, undefined, "not-executed");
-      }
-      if (selection)
-        throw new EpEnvelopeError("failed-precondition", `Claude is showing a selection menu for seat "${a.name}"; input text cannot safely select an option. Use \`cotal attach --name ${a.name}\`, then arrow keys and Enter; nothing was typed`, undefined, "not-executed");
-      // Snapshot parsing awaits I/O. Keep this write bound to the authorized incarnation and handle.
-      if (this.agents.get(a.name) !== a || a.handle !== handle || handle.status() !== "running")
-        throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" changed while inspecting its terminal; nothing was typed`, undefined, "not-executed");
-    }
-    // The contract validated `text` (non-empty, <= 64KiB) and `enter` (boolean) before this ran, so
-    // the only decision left is the carriage return. `!== false` and not `?? true`: an ABSENT enter
-    // and an explicit `true` must behave identically, and only `false` may suppress the return.
-    //
-    // THE TEXT IS DELIVERED AS A BRACKETED PASTE AND THE RETURN FOLLOWS IT AS ITS OWN WRITE, and
-    // that is the whole of issue #1649. A TUI harness reads keystrokes, so a return fused onto the
-    // tail of the text (`${text}\r`) is the text's last character rather than the submit key: the
-    // line waits in the composer and the NEXT call's return submits the PREVIOUS call's text, so
-    // every delivery runs one call behind while the op still reports the full byte count.
-    //
-    // Separating the return is necessary and NOT sufficient, which is the part that cost a second
-    // round of measurement. A TUI classifies a fast burst of input as a PASTE and eats the newline
-    // that trails it (Jcode spells this `paste_guard::consume_paste_trailing_enter`), so a text big
-    // enough to need more than one write is still one call behind even when the return is written
-    // alone. Measured on a real seat, delivering in 2048-char slices with a yield before the return:
-    // 120 and 700 bytes submitted on their own call, 2500 and 3100 bytes did not - each appeared
-    // only when the NEXT call's return arrived. That is the reported symptom exactly.
-    //
-    // Bracketed paste states the boundary instead of guessing at it. `ESC[200~ text ESC[201~`
-    // delimits the pasted block, so the return after it is unambiguously a keystroke and the guard
-    // has no trailing newline to consume. This is a CLASSIFIER, not a race, so a sleep would be the
-    // wrong instrument: measured on a real seat, a 250ms pause before the return still lost the
-    // submission while 1000ms carried it, and any margin chosen from those numbers is a guess a
-    // loaded host breaks. Bracketed delivery submitted 120, 2600 and 5912 bytes (the issue's own
-    // size) each on its own call. The terminal advertises support by enabling DECSET 2004, which
-    // Jcode's TUI does.
-    //
-    // The bytes the SEAT receives as text are unchanged, and the receipt still counts the text plus
-    // the return: the paste markers are framing this op adds, never content the caller asked to
-    // deliver, so counting them would make `bytes` disagree with what the caller sent.
-    const text = String(args.text);
-    const submit = args.enter !== false;
-    const intendedBytes = Buffer.byteLength(text, "utf8") + (submit ? 1 : 0);
-    const parts: Array<{ data: string; counted: boolean }> = [{ data: PASTE_START, counted: false }];
-    for (let i = 0; i < text.length; i += INPUT_SLICE_CHARS)
-      parts.push({ data: text.slice(i, i + INPUT_SLICE_CHARS), counted: true });
-    parts.push({ data: PASTE_END, counted: false });
-    // `enter:false` still presses nothing: the text is delivered into the composer and left there.
-    if (submit) parts.push({ data: "\r", counted: true });
-    let bytes = 0;
-    for (const [i, part] of parts.entries()) {
-      // Yield BEFORE each write but the first, so the child drains the previous slice rather than
-      // the pty buffer merging them. `setImmediate` runs after I/O, which a microtask would not.
-      if (i > 0) await new Promise<void>((resolve) => setImmediate(resolve));
-      let accepted: number;
-      try {
-        accepted = await write(part.data);
-      } catch (error) {
-        throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: ${rejectionText(error)}`);
-      }
-      if (!Number.isSafeInteger(accepted)) {
-        throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${String(accepted)} of ${intendedBytes} bytes`);
-      }
-      // A short write on ANY part is a failed delivery, including a marker: a paste block that was
-      // opened but not closed would leave the seat's composer in paste mode.
-      if (accepted !== Buffer.byteLength(part.data, "utf8"))
-        throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${accepted} of ${Buffer.byteLength(part.data, "utf8")} bytes of one write`);
-      if (part.counted) bytes += accepted;
-    }
-    if (bytes !== intendedBytes)
-      throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${String(bytes)} of ${intendedBytes} bytes`);
-    return { name: a.name, bytes };
-  }
+  /** {@link TerminalInput.inputAuthorized}. */
+  private inputAuthorized(...args: Parameters<TerminalInput["inputAuthorized"]>): ReturnType<TerminalInput["inputAuthorized"]> { return this.terminalInputComponent.inputAuthorized(...args); }
 
-  /** The post-authorization attach effect: mint the holder-bound §13.6 offer, redeem it
-   *  through the ONE session plane (one-use CAS + presenter-equality), and stand up the PTY bridge —
-   *  atomically. The reply is the SIGNED grant (no ws:// URL, non-bearer, never logged); the caller
-   *  redeems it over the mesh with a per-session rails-only cred it mints itself. Only streamable
-   *  backends (pty/host) attach; an external runtime's attach() throws with per-runtime guidance. */
-  private async attachAuthorized(a: ManagedAgent, caller: { owner: string; actor: string; uid: string }): Promise<ControlReply> {
-    // Every refusal before establishAttach below has opened no session, so it states that (SPEC 13.3).
-    if (!this.sessionPlane) throw new EpEnvelopeError("failed-precondition", "the manager session plane is not available (the manager is not fully started)", undefined, "not-executed");
-    // A name is a reusable slot and the authorization above can await (user mode reads the ledger).
-    // The ep target is incarnation-pinned, so `a` cannot BE a successor — but the slot it names can
-    // have been stopped and refilled while we waited, and everything below must act on the
-    // incarnation this caller was actually authorized for, never on whoever holds the name now.
-    if (this.agents.get(a.name) !== a)
-      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" was replaced during authorization - retry`, undefined, "not-executed");
-    // Never establish a session over a dead agent — a doomed session (the caller would get an
-    // immediate process-exit at best, a confusing empty terminal at worst). Refuse honestly.
-    if (a.handle.status() !== "running") throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" is not running (${a.handle.status()}); nothing to attach`, undefined, "not-executed");
-    // CLAIM the session slot BEFORE attaching the target's PTY, matching the console door: this door
-    // used to attach first and check capacity inside establishAttach, so a `resource-exhausted`
-    // refusal landed AFTER the attach. The claim is carried INTO establishAttach, so one reservation
-    // spans the attach and the establishment, and it is released on every refusal below.
-    //
-    // RESIDUAL, NAMED: no shipped runtime acquires anything at attach time — pty's `attach()` returns
-    // a pure view (it registers a data subscriber only when `onData` is called) and tmux/cmux/orca
-    // throw — so an attach nobody bridges is a garbage-collectible object, not a held resource, and
-    // ordering alone suffices. A future runtime that DOES acquire something in `attach()` reopens
-    // this: it would need a release on the failure paths, and `AttachSession` has no close today.
-    const slot = this.sessionPlane.claimSlot();
-    let session;
-    try {
-      session = a.handle.attach();
-    } catch (e) {
-      slot.release();
-      // The external runtimes refuse attach() before acquiring anything (see the residual above).
-      //
-      // A runtime that streams NO terminal is `unimplemented` and not a precondition: asking again
-      // cannot change it, and a caller that reads this as transient retries a refusal forever. The
-      // runtime's own throw is the guidance for watching the agent where it really runs, so it is
-      // carried through verbatim, and the namespaced detail lets a caller act on the one fact
-      // without reading the wording. This is the same answer `input` gives a runtime that cannot
-      // write, for the same reason.
-      if (!this.runtimeFor(a.handle.kind).streamsTerminal)
-        throw new EpEnvelopeError("unimplemented", `the ${a.handle.kind} runtime streams no terminal, so agent "${a.name}" has none to attach: ${rejectionText(e)}`,
-          [{ kind: RUNTIME_NO_TERMINAL_DETAIL, runtime: a.handle.kind }], "not-executed");
-      throw new EpEnvelopeError("failed-precondition", rejectionText(e), undefined, "not-executed");
-    }
-    // establishAttach releases the claim it was handed on every exit; nothing to unwind here.
-    const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
-    const carried = a.launch.resumed?.host;
-    return { ok: true, data: { grant, ...(carried ? { resumedFrom: { host: carried, source: a.launch.resumed!.source } } : {}) } };
-  }
+  /** {@link TerminalInput.attachAuthorized}. */
+  private attachAuthorized(...args: Parameters<TerminalInput["attachAuthorized"]>): ReturnType<TerminalInput["attachAuthorized"]> { return this.terminalInputComponent.attachAuthorized(...args); }
 
-  /** The console's mesh §13.6 session establisher (backing `POST /session/<name>` on the
-   *  loopback face). Drives THE ONE plane — same establishAttach as the ep `attach` command — with
-   *  the loopback OPERATOR as holder (same-host trust boundary), then hands the browser everything it
-   *  needs to open the caller rail over the broker ws listener: the holder-bound grant, a per-session
-   *  RAILS-ONLY caller cred (static mints from the seed, TTL-bound to the session; an open mesh has no
-   *  credential system so the browser connects bare), and the ws URL. NO 127.0.0.1 terminal transport
-   *  — the terminal rides the mesh session. Injected only when a wsPort exists (see the constructor). */
-  private async establishConsoleSession(name: string): Promise<SessionEstablishment> {
-    if (!this.sessionPlane) throw new Error("the manager session plane is not available (the manager is not fully started)");
-    if (this.wsPort === undefined) throw new Error("the broker websocket port is not configured; the console cannot open a mesh session");
-    // CLAIM the session slot here, before the PTY attach and before this establisher goes on to
-    // mint a seed-signed `session-caller` credential: a capacity refusal must land before anything
-    // with a side effect or a cost. The claim is carried INTO establishAttach, so the reservation
-    // spans the whole establishment rather than being a check that a concurrent caller can race.
-    // (See attachAuthorized for why the attach itself needs no unwind on any shipped runtime.)
-    const slot = this.sessionPlane.claimSlot();
-    try {
-      const a = this.agents.get(name);
-      if (!a) throw new Error(`no managed agent "${name}"`);
-      if (a.handle.status() !== "running") throw new Error(`agent "${name}" is not running (${a.handle.status()}); nothing to attach`);
-      const session = a.handle.attach(); // throws for non-streamable runtimes — surfaced to the browser as a 500
-      // The loopback operator is the console's holder (same-host trust boundary).
-      const caller = { owner: DEV_OWNER, actor: "console", uid: this.managerLifecycleUid };
-      const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
-      // The caller credential is minted ONLY after a session is really live, so a refused or failed
-      // establishment never yields a seed-signed JWT. (A failure HERE would leave a live session the
-      // browser never reaches, holding its slot until the grant expires — unreachable in practice,
-      // because the SERVING mint above signs from this same `this.auth` first and would have failed
-      // before any session existed.)
-      const creds = this.auth
-        ? await mintCreds(this.auth, newIdentity(), "session-caller", {
-            sessionCaller: { endpoint: MANAGER_ENDPOINT, sessionId: grant.sessionId, epoch: grant.serving.epoch },
-            expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
-          })
-        : "";
-      return { grant, wsUrl: `ws://127.0.0.1:${this.wsPort}`, creds };
-    } catch (e) {
-      slot.release(); // idempotent with establishAttach's own release
-      throw e;
-    }
-  }
+  /** {@link TerminalInput.establishConsoleSession}. */
+  private establishConsoleSession(...args: Parameters<TerminalInput["establishConsoleSession"]>): ReturnType<TerminalInput["establishConsoleSession"]> { return this.terminalInputComponent.establishConsoleSession(...args); }
 
-  /** Managed agents cross-referenced with live presence (the manager sees the roster).
-   *
-   *  `ownerFilter`: restrict to agents whose spawn-time stored `userOwner` equals it (the ps/status
-   *  owner-domain bound); undefined = unbounded. {@link NO_OWNER_MATCHES} matches nothing. */
-  private list(ownerFilter?: string) {
-    const roster = new Map(this.ep.getRoster().map((p) => [p.card.name, p]));
-    const observedAt = Date.now();
-    // The roster is only evidence while THIS observer's presence watch is fresh. A stale view
-    // (whole-bucket silence past TTL) or an unpopulated one (snapshot not yet replayed) cannot
-    // support "offline" or "absent" for anyone: a live deployment on 2026-09-09 rendered every live seat as
-    // one of those for hours after the presence stream was recreated under a still-open watch.
-    // Carry the view state on the row so the renderer can say "unknown" instead of a verdict.
-    // An endpoint that reports no view (test doubles built on `getRoster` alone) is read as
-    // `current`: that is exactly what every row meant before the field existed.
-    const view = typeof this.ep.presenceView === "function" ? this.ep.presenceView() : { state: "current" as const };
-    return [...this.agents.values()].filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter).map((a) => {
-      // USER MODE: a detached agent's bearer-refresh death is silent everywhere except here — its
-      // bearer command writes each attempt's outcome to the health file, and `ps` renders it
-      // FAIL-CLOSED: a failed record is the failure + repair sentence; a missing/malformed or
-      // stale record on a live agent is auth-unknown/auth-stale, NEVER silently healthy.
-      const health = a.userOwner
-        ? agentAuthState(a.secretPaths?.health ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid).health)
-        : undefined;
-      // The connector-reported provider from presence (#785): the live roster card's `meta.provider`,
-      // when it is a non-empty string. Absent when the connector reported none — never fabricated.
-      const seen = roster.get(a.name);
-      const presenceIdentityVerified = this.isOwnPresence(a, seen);
-      const providerMeta = seen?.card.meta?.provider;
-      const provider = typeof providerMeta === "string" && providerMeta ? providerMeta : undefined;
-      // The harness-reported condition beside the mesh status (#618): a turn that died upstream reads
-      // `waiting` with `rate_limit` here, not a bare `waiting`. Absent when the connector reported none.
-      // Projected field by field like `provider`: a malformed peer row must not fail this reply's schema.
-      const reported = roster.get(a.name)?.condition;
-      const condition =
-        reported && typeof reported.code === "string" && reported.code
-          ? {
-              code: reported.code,
-              ...(typeof reported.source === "string" ? { source: reported.source } : {}),
-              ...(typeof reported.message === "string" ? { message: reported.message } : {}),
-              ...(typeof reported.since === "number" && Number.isFinite(reported.since) ? { since: reported.since } : {}),
-            }
-          : undefined;
-      // The seat's last harness-reported work progress (#618). `ts` is only its heartbeat, so a turn
-      // that stopped advancing reads as an old `activeAt` beside a live process. Absent when none was reported.
-      const activeAtReported = roster.get(a.name)?.activeAt;
-      const activeAt = typeof activeAtReported === "number" && Number.isFinite(activeAtReported) ? activeAtReported : undefined;
-      // How long an offline verdict has stood (#1208): the seat's last heartbeat before it went
-      // offline. Only beside a verdict, since a stale or unpopulated view dates nothing, only from the
-      // seat's own record, since `seen` is matched by name and a same-named foreign peer or an older
-      // incarnation must not date this seat, and only when the seat's unvalidated `ts` fits the row
-      // schema, so one odd record cannot fail the reply.
-      const offlineSince = view.state === "current" && this.isOwnPresence(a, seen) && seen.status === "offline" && Number.isSafeInteger(seen.ts) && seen.ts >= 0
-        ? seen.ts
-        : undefined;
-      return {
-        name: a.name,
-        // The spawned agent's id (nkey, or the user-mode principal) — lets an operator tool (e.g.
-        // `cotal down -f`) match a ledger entry by name AND id before stopping, so it never stops a
-        // same-named foreign agent.
-        id: a.id,
-        role: a.role,
-        agent: a.agent,
-        space: this.space,
-        mode: a.handle.kind,
-        status: a.handle.status(),
-        uptimeMs: Date.now() - a.startedAt,
-        mesh: seen?.status ?? "absent",
-        ...(a.joinIssue ? { joinHealth: { state: "degraded" as const, reason: a.joinIssue } } : {}),
-        ...(condition ? { condition } : {}),
-        ...(a.startupNotice !== undefined ? { startupNotice: a.startupNotice } : {}),
-        ...(activeAt !== undefined ? { activeAt } : {}),
-        // `current` is the only state in which `mesh` is a verdict; the other two are the
-        // observer's own condition and travel on the row (older CLIs ignore the field).
-        meshView: view.state,
-        presenceIdentityVerified,
-        ...(view.state === "current" && presenceIdentityVerified ? { presenceObservedAt: observedAt } : {}),
-        ...(offlineSince !== undefined ? { offlineSince } : {}),
-        // The incarnation coordinate (SPEC 13.1) — with `id`, exactly what a v0.4 caller needs to
-        // build a targeted (`despawn`/`attach`) request against THIS incarnation.
-        lifecycleUid: a.lifecycleUid,
-        // #651 enrichment: per-seat facts the manager ALREADY holds, carried on the row so `ps
-        // --wide`/`--json` can surface them without a new collection path. All optional in the row
-        // schema: a fact this backend did not record serializes absent, never fabricated (the
-        // pid is absent on runtimes that do not own a real process; a launch may pin no model).
-        model: a.launch.model,
-        variant: a.launch.variant,
-        ...(provider ? { provider } : {}),
-        cwd: a.launch.cwd,
-        pid: a.handle.pid,
-        spawner: a.spawner,
-        instanceId: this.managerInstanceId,
-        host: hostname(),
-        // #1500: the session a `--resume` seat forked, with its title and transcript hash once the
-        // seat has recorded them.
-        ...(a.launch.forkSource ? { resume: this.forkProvenance(a) ?? { source: a.launch.forkSource } } : {}),
-        ...(health && health.state !== "ok" ? { authHealth: health.state, authReason: health.reason } : {}),
-      };
-    });
-  }
+  /** {@link StatusAndModels.list}. */
+  private list(...args: Parameters<StatusAndModels["list"]>): ReturnType<StatusAndModels["list"]> { return this.statusAndModelsComponent.list(...args); }
 }

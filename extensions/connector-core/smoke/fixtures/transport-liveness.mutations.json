@@ -143,9 +143,9 @@
     },
     {
       "name": "manual rebuild keeps transport true through its no-connection window",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-reconnect.ts",
       "find": "      this.emit(\"transport\", { connected: false } satisfies TransportState);\n      this.emit(\"connection\", { connected: false });",
-      "replace": "      this.emit(\"connection\", { connected: false });",
+      "replace": "      void (undefined as TransportState | undefined);\n      this.emit(\"connection\", { connected: false });",
       "expectRed": "cotal_reconnect lowers transport during the rebuild null window",
       "cell": "cotal_reconnect lowers transport during the rebuild null window",
       "afterRestore": "pnpm --filter @cotal-ai/core build"

@@ -17,7 +17,7 @@
     },
     {
       "name": "stopped rebuild dial retains its connection failure",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-reconnect.ts",
       "find": "      try {\n        await this.connectAndBind();\n      } catch (error) {\n        if (!this.stopped) throw error;\n      }",
       "replace": "      await this.connectAndBind();",
       "expectRed": "hosted_rebuild-stop_lifecycle",

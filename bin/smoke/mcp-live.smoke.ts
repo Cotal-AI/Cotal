@@ -36,7 +36,7 @@ async function until(test: () => boolean | Promise<boolean>, message: string): P
 }
 
 interface Reply {
-  result?: { isError?: boolean; content?: Array<{ type: string; text?: string }>; tools?: Array<{ name: string }> };
+  result?: { isError?: boolean; instructions?: string; content?: Array<{ type: string; text?: string }>; tools?: Array<{ name: string; description?: string }> };
   error?: unknown;
 }
 const text = (reply: Reply): string => reply.result?.content?.map((c) => c.text ?? "").join("\n") ?? "";
@@ -85,11 +85,12 @@ class Rpc {
   call(name: string, args: Record<string, unknown> = {}): Promise<Reply> {
     return this.request("tools/call", { name, arguments: args });
   }
-  async initialize(): Promise<void> {
+  async initialize(): Promise<string | undefined> {
     const reply = await this.request("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "mcp-smoke", version: "1" } });
     assert.ok(reply.result);
     assert.equal(reply.error, undefined);
     this.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+    return reply.result.instructions;
   }
   async end(signal?: "SIGINT" | "SIGTERM"): Promise<void> {
     if (signal) this.child.kill(signal);
@@ -174,8 +175,13 @@ try {
   await sender.start();
 
   const rpc = new Rpc(staticSpace, "static");
-  await rpc.initialize();
-  const tools = (await rpc.request("tools/list", {})).result?.tools?.map((t) => t.name) ?? [];
+  const instructions = await rpc.initialize();
+  const advertised = (await rpc.request("tools/list", {})).result?.tools ?? [];
+  const tools = advertised.map((t) => t.name);
+  for (const [surface, copy] of [["initialize", instructions], ["tools/list cotal_connect", advertised.find((t) => t.name === "cotal_connect")?.description]]) {
+    check(`${surface} describes direct local connections and persona narrowing, not approval`,
+      Boolean(copy?.includes("Open and static local spaces connect directly") && copy.includes("default persona") && copy.includes("narrow") && !/approv/i.test(copy)), copy);
+  }
   check("the stock gateway advertises connect, wait, inbox and docs, not managed-seat authority", ["cotal_connect", "cotal_wait", "cotal_inbox", "cotal_docs"].every((t) => tools.includes(t)) && !tools.includes("cotal_spawn") && !tools.includes("cotal_yield"));
   check("initialize and tools/list create no identity", identities().length === 0);
   check("initialization never seeds connector packages", !existsSync(join(env.XDG_CONFIG_HOME!, "cotal", "seed")) && !existsSync(join(env.XDG_CONFIG_HOME!, "cotal", "extensions")));

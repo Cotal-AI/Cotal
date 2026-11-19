@@ -654,8 +654,14 @@ try {
     const preview = cli(root, "down", "--dry-run", "--json");
     check("down --dry-run predicts the full-store refusal of the manager's stop", preview.status === 0 && (preview.env?.result?.blockedBy as { code?: string; message?: string } | null)?.code === "DEPENDENCY_UNAVAILABLE" && (preview.env?.result?.blockedBy as { message?: string }).message === stopRefused && Boolean(preview.env?.warnings?.some((w) => w.code === "DEPENDENCY_UNAVAILABLE")), shown(preview));
     const manager = pidOf(space, "stack-manager");
+    // Down stops the manager first, and a stop records its own operation in the stack journal, so a
+    // refusal that leaves the manager running and the journal on the up stopped nothing. The delivery
+    // daemon says nothing here: it exits on its own once its lease lapses on the full store (3i),
+    // and a loaded host reaches that before this line.
+    const operation = readStackJournal(root)?.journal.operation.id;
     const down = cli(root, "down", "--yes", "--json");
-    check("down --yes on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, before any stop, naming history clear and what it purges, then the SIGTERM route that keeps the history", down.status === 2 && down.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && down.env.error.message === stopRefused && down.env.error.cause?.code === "10023" && down.env.error.remedy === `make room with \`cotal history clear --yes\`, which purges all of this space's channel history, then run \`cotal down\`; to keep that history, end the manager on this host with kill -TERM ${manager}, which stops its agents by its default policy, then run \`cotal down\`, and \`cotal up --max-file-store <bytes>\` with a larger cap` && manager !== null && alive(manager) && !gone(space, "stack-delivery"), shown(down));
+    const after = { manager, managerAlive: manager !== null && alive(manager), operationBefore: operation, operationAfter: readStackJournal(root)?.journal.operation.id, delivery: gone(space, "stack-delivery") ? "gone" : "running" };
+    check("down --yes on a full store refuses DEPENDENCY_UNAVAILABLE, exit 2, before any stop, naming history clear and what it purges, then the SIGTERM route that keeps the history", down.status === 2 && down.env?.error?.code === "DEPENDENCY_UNAVAILABLE" && down.env.error.message === stopRefused && down.env.error.cause?.code === "10023" && down.env.error.remedy === `make room with \`cotal history clear --yes\`, which purges all of this space's channel history, then run \`cotal down\`; to keep that history, end the manager on this host with kill -TERM ${manager}, which stops its agents by its default policy, then run \`cotal down\`, and \`cotal up --max-file-store <bytes>\` with a larger cap` && after.managerAlive && operation !== undefined && after.operationAfter === operation, { ...shown(down), ...after });
     check("history clear --yes makes room", cli(root, "history", "clear", "--yes", "--json").status === 0);
     check("down --dry-run then names no refusal", cli(root, "down", "--dry-run", "--json").env?.result?.blockedBy === null);
     const again = cli(root, "send", "-c", "general", "after the clear", "--json");
@@ -902,10 +908,9 @@ try {
     check("the running broker did not create the old path again", !existsSync(root), existsSync(root) ? readdirSync(root, { recursive: true }) : []);
     renameSync(moved, root);
     check("after the move back, down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
-    // Stopped and moved again: this machine records the stack's instances, so every command from the
-    // moved folder names the one way back.
+    // Stopped and moved again: every command offers moving back or adopting the new location.
     renameSync(root, moved);
-    const way = `move this folder back to ${root}, then run the command again there`;
+    const way = `move this folder back to ${root}, then run the command again there; or, to run it from this folder, forget it with \`cotal space forget ${space}\`, then run \`cotal space create ${space} --adopt --root ${moved}\``;
     const routes = [cli(moved, "up", "--json"), cli(moved, "send", "--space", space, "-c", "general", "after the stop", "--json"), cli(moved, "history", "general", "--space", space, "--json")];
     const status = cli(moved, "status", "--space", space, "--json");
     renameSync(moved, root);
@@ -914,7 +919,7 @@ try {
     spawnSync("cp", ["-a", root, copy]);
     const copyStatus = cli(copy, "status", "--space", space, "--json");
     rmSync(copy, { recursive: true, force: true });
-    check("stopped and moved, up, send and history there all name moving the folder back", routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
+    check("stopped and moved, up, send and history offer moving back or adoption", routes.every((r) => r.status === 2 && r.env?.error?.remedy === way), routes.map(shown));
     check("status --space there names the same step", ((status.env?.result?.hints as string[] | undefined) ?? []).includes(way), shown(status));
     const offersNoReset = (r: Run) => {
       const result = r.env?.result as { folder?: { storedState?: boolean }; hints?: string[] } | undefined;

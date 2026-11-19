@@ -394,6 +394,9 @@ try {
     dead = pids.every((p) => !alive(p)) && !(await portOpen());
   }
   ok("all pid files removed by down", [join(root, ".cotal", "nats.pid"), record(DELIVERY_PIDFILE), record(MANAGER_PIDFILE)].every((f) => !existsSync(f)));
+  const retireAfterPlain = cli("down", "--yes", "--with-agents");
+  ok("down --with-agents still refuses after a plain legacy stop",
+    retireAfterPlain.status === 2 && /LIFECYCLE_BLOCKED/.test(retireAfterPlain.stdout + retireAfterPlain.stderr), plain(retireAfterPlain.stdout + retireAfterPlain.stderr));
   ok("all three processes are dead + broker port closed", dead, pids.filter(alive));
 
   // A space named after its folder keeps its registration after down, so another folder of the same
@@ -447,7 +450,11 @@ try {
       plain(heldRead.stderr).includes(`cotal space forget ${SPACE}`) && existsSync(heldFile), heldRead.stdout + heldRead.stderr);
   rmSync(heldFile, { force: true });
   rmSync(heldRoot, { recursive: true, force: true });
-  ok("its down exits 0", cli("down", "--yes").status === 0);
+  const retired = cli("down", "--yes", "--with-agents");
+  ok("down --with-agents stops the restarted legacy stack", retired.status === 0, plain(retired.stdout + retired.stderr));
+  const retiredRetry = cli("down", "--yes", "--with-agents");
+  ok("repeating down --with-agents on the stopped legacy stack is a no-op",
+    retiredRetry.status === 0 && /Nothing was stopped/.test(retiredRetry.stdout), plain(retiredRetry.stdout + retiredRetry.stderr));
   // The kept registration does not make the stopped stack look like one to stop.
   const again = cli("down");
   ok("a second down reports the stack not running, names cotal up, and exits 0",
@@ -996,7 +1003,7 @@ process.report.getReport = () => {
     const noAppStatus = plain(cliInEnv(recRoot, noAppEnv, "status", "--plain").stdout);
     const noAppStatusNext = noAppStatus.split("\nNext\n")[1] ?? "";
     ok("with seeded connectors and no agent binary on PATH, status recommends setup instead of spawn",
-      /Agent applications:\s+not set up/.test(noAppStatus) && /setup\s+Set up an agent application/.test(noAppStatusNext) && !/\bspawn\s+Open your default agent/.test(noAppStatusNext), noAppStatus);
+      /Agent applications:\s+not set up/.test(noAppStatus) && /setup --help\s+See setup flags for scripts/.test(noAppStatusNext) && !/\bspawn\s+Open your default agent/.test(noAppStatusNext), noAppStatus);
     const noAppPs = plain(cliInEnv(recRoot, noAppEnv, "ps", "--plain").stdout);
     const noAppPsNext = noAppPs.split("\nNext\n")[1] ?? "";
     ok("with seeded connectors and no agent binary on PATH, empty ps recommends setup instead of spawn",

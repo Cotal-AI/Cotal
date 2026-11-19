@@ -19,6 +19,7 @@ import {
   statSync,
   unlinkSync,
   writeFileSync,
+  rmSync,
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -1115,4 +1116,89 @@ export function withMaintenanceLock<T>(
   } finally {
     releaseMaintenanceLock(lock);
   }
+}
+
+/** Residue a crashed attempt may leave in a pending (pre-inode) destination slot. */
+const DESTINATION_RESIDUE = /^(stream-[0-9a-f]{24}\.snap|checkpoints\.json|manifest\.json\.[A-Za-z0-9.-]+\.tmp)$/;
+
+/** Remove exactly the journaled attempt-owned paths, or fail closed WITHOUT surrendering ownership.
+ *  Every branch must prove what it deletes: a proven slot deletes only its exact inode; a pending
+ *  destination slot deletes only recognizable attempt residue; anything else is preserved, and any
+ *  removal failure keeps the claim so a retry (not silence) finishes the cleanup. */
+export function removeOwnedPathsOrFail(
+  lock: MaintenanceLock,
+  attemptId: string,
+  ownedPaths: readonly AttemptOwnedPath[] | undefined,
+): void {
+  const failures: string[] = [];
+  for (const owned of ownedPaths ?? []) {
+    try {
+      let stat;
+      try {
+        stat = lstatSync(owned.path, { bigint: true });
+      } catch (error) {
+        if (errno(error) === "ENOENT") continue;
+        throw error;
+      }
+      // A destination with a published manifest is a COMPLETE artifact, never recovery residue.
+      if (owned.label === "destination" && stat.isDirectory() && pathExistsStrict(join(owned.path, "manifest.json"))) continue;
+      if (owned.dev === undefined) {
+        // Pending slot: the path was journaled before creation, so no inode proof exists.
+        if (owned.label !== "destination") {
+          // Non-destination slots live only inside Cotal's private attempts tree, where a live
+          // journal record + claim exclusivity make any plain directory ours by construction.
+          if (stat.isDirectory() && !stat.isSymbolicLink()) {
+            rmSync(owned.path, { recursive: true });
+            fsyncDirectory(dirname(owned.path));
+          } else {
+            failures.push(`${owned.path} (pending slot is not a plain directory)`);
+          }
+          continue;
+        }
+        // A destination is operator-named: delete only recognizable attempt residue.
+        if (!stat.isDirectory() || stat.isSymbolicLink()) {
+          failures.push(`${owned.path} (pending destination is not a plain directory)`);
+          continue;
+        }
+        const entries = readdirSync(owned.path);
+        const residueOnly = entries.every((name) => {
+          if (!DESTINATION_RESIDUE.test(name)) return false;
+          const child = lstatSync(join(owned.path, name));
+          return child.isFile() && !child.isSymbolicLink();
+        });
+        if (!residueOnly) {
+          failures.push(`${owned.path} (pending destination holds unrecognized content)`);
+          continue;
+        }
+        rmSync(owned.path, { recursive: true });
+        fsyncDirectory(dirname(owned.path));
+        continue;
+      }
+      if (stat.isSymbolicLink() || stat.dev.toString() !== owned.dev || stat.ino.toString() !== owned.ino)
+        continue; // replaced by something that is not ours — preserve
+      if (stat.isDirectory()) rmSync(owned.path, { recursive: true });
+      else rmSync(owned.path);
+      fsyncDirectory(dirname(owned.path));
+    } catch (error) {
+      failures.push(`${owned.path} (${(error as Error).message})`);
+    }
+  }
+  if (failures.length)
+    maintenanceError("cleanup-incomplete", "attempt-owned cleanup could not be proven complete", {
+      root: lock.root, attemptId,
+      paths: (ownedPaths ?? []).map((owned) => owned.path),
+      recourse: [{ action: "retry", description: `Resolve and retry: ${failures.join("; ")}` }],
+    });
+}
+
+/** Every transition that rebuilds a resume or committed-restore record keeps its handoff record,
+ *  so a later run can still sweep or settle the exact recorded file. */
+export function carriedTokenHandoff(record: { readonly tokenHandoff?: TokenHandoff }): { tokenHandoff?: TokenHandoff } {
+  return record.tokenHandoff ? { tokenHandoff: record.tokenHandoff } : {};
+}
+
+/** Step 7: retirement or restore activation requires a settled handoff when one was made. */
+export function requireSettledTokenHandoff(record: { readonly tokenHandoff?: TokenHandoff }, root: string): void {
+  if (record.tokenHandoff && record.tokenHandoff.state !== "consumed" && record.tokenHandoff.state !== "swept")
+    maintenanceError("invalid-transition", "the commit-token handoff is not settled; activation cannot retire it", { root, paths: [record.tokenHandoff.path] });
 }

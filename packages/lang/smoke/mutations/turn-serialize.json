@@ -8,7 +8,7 @@
   "mutations": [
     {
       "name": "turn dispatches bypass the queue entirely",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "  const prev = queues.get(agent) ?? Promise.resolve();\n  const next = prev.then(dispatch, dispatch);",
       "replace": "  const prev = queues.get(agent) ?? Promise.resolve();\n  void prev;\n  const next = dispatch();",
       "expectRed": "two concurrent turns on ONE handle never overlap: the dispatch serializes them",
@@ -18,7 +18,7 @@
     },
     {
       "name": "the queue is one global line rather than per agent",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "  const prev = queues.get(agent) ?? Promise.resolve();\n  const next = prev.then(dispatch, dispatch);\n  queues.set(\n    agent,",
       "replace": "  const prev = queues.get(\"one-line\") ?? Promise.resolve();\n  const next = prev.then(dispatch, dispatch);\n  queues.set(\n    \"one-line\",",
       "expectRed": "while turns on two DIFFERENT handles still overlap: the queue is per agent, not global",
@@ -28,7 +28,7 @@
     },
     {
       "name": "an ask is dispatched outside the agent's turn queue",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "          serializeTurn(host, agent.agent, () =>\n            handler.ask(",
       "replace": "          ((_h: unknown, _a: unknown, d: () => Promise<unknown>) => d())(host, agent.agent, () =>\n            handler.ask(",
       "expectRed": "an ask and a turn on ONE handle never overlap either: one queue covers both dispatch sites",

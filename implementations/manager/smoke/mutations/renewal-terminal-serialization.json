@@ -70,7 +70,7 @@
     },
     {
       "name": "renewal no longer records its credential id or active ledger row",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/broker-transport.ts",
       "find": "      finalize: async (credentialId) => {\n        await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {\n          await recordSlotCredential(t, DEV_OWNER, a.name, a.lifecycleUid, credentialId);\n          await appendStaticCredentialRow(t, { lifecycleUid: a.lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, a.id).key, exp });\n        });\n      },",
       "replace": "      finalize: async (credentialId) => {\n        void credentialId;\n      },",
       "expectRed": "renewal records exactly one new credential id",

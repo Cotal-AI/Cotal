@@ -1,5 +1,61 @@
 # cotal-ai
 
+## 0.171.3
+
+### Patch Changes
+
+- 0d30c48: Explain the platform requirements before starting the built-in PTY manager on musl or installing the Linux daemon service without systemd.
+- 19b5bce: Report missing Hermes models alongside missing `uv` in foreground spawn, and explain how to choose Cloud in interactive setup.
+- 9cfba61: Fix npm reinstall after a Cotal self-update so the reinstalled CLI starts normally.
+- e514d98: Print `cotal --version` and `cotal -V` without loading the command runtime or installed extensions.
+- 0c4b5c0: Fix `cotal mcp` shutdown so closing a stdio client retires its local identity without waiting for another CLI process or expired shutdown timers.
+- 01f280f: Fix CLI smoke coverage for signed-out login guidance, private stack cleanup, and broker-only startup.
+- 03af687: The uninstall instructions now show where Cotal keeps settings and connectors and when it is safe to remove them.
+- b647c12: Make legacy shutdown retries succeed after confirmed agent retirement and show runnable setup guidance in headless status.
+- 1a76a35: Keep complete option names, requested JSON, and subcommand help in argument refusals, show seed usage for invalid `ext seed` arguments, and list only supported persona inputs in public `spawn` help.
+- eb7fd6a: Validate spawn agent names, channel flags, foreground working directories, structured detached pre-send refusals, and empty `--cwd` and `--root` flags before provisioning or writing records.
+- 25a644e: Refuse daemon setup for local static-auth or open spaces before turning them on, and point operators to `cotal up` instead of daemon setup or registration.
+- 4a26cd5: Self-update no longer refuses a shared address when the selected stack and its broker are stopped, and `cotal status` asks you to wait for an active update before reconciling extension versions.
+- Updated dependencies [0d30c48]
+- Updated dependencies [291b1a3]
+- Updated dependencies [d4b3949]
+- Updated dependencies [632460f]
+- Updated dependencies [cb72a76]
+- Updated dependencies [19b5bce]
+- Updated dependencies [f900d77]
+- Updated dependencies [fdac103]
+- Updated dependencies [5f67adc]
+- Updated dependencies [6a68aab]
+- Updated dependencies [072f467]
+- Updated dependencies [9aca8fe]
+- Updated dependencies [bc32f2b]
+- Updated dependencies [342d8af]
+- Updated dependencies [e514d98]
+- Updated dependencies [0c4b5c0]
+- Updated dependencies [01f280f]
+- Updated dependencies [a5db381]
+- Updated dependencies [504cbb3]
+- Updated dependencies [03af687]
+- Updated dependencies [f11c18c]
+- Updated dependencies [b647c12]
+- Updated dependencies [1a76a35]
+- Updated dependencies [14ee1ad]
+- Updated dependencies [eb7fd6a]
+- Updated dependencies [3d6f145]
+- Updated dependencies [2463109]
+- Updated dependencies [7da2bcd]
+- Updated dependencies [4a26cd5]
+  - @cotal-ai/manager@0.171.3
+  - @cotal-ai/cli@0.171.3
+  - @cotal-ai/core@0.171.3
+  - @cotal-ai/workspace@0.171.3
+  - @cotal-ai/connector-core@0.171.3
+  - @cotal-ai/auth@0.171.3
+  - @cotal-ai/delivery@0.171.3
+  - @cotal-ai/registry@0.171.3
+  - @cotal-ai/runtime@0.171.3
+  - @cotal-ai/seat@0.171.3
+
 ## 0.171.2
 
 ### Patch Changes

@@ -360,7 +360,7 @@ change.
   - `performEffect`: the `pending` case under a `once` frame calls the new `performHold` instead of
     `perform`. `performHold` does §4.3 and nothing else. Its catch is `performEffect`'s minus the
     `refused` settle (§4.3, 5).
-  - The L4028 refusal (§4.2): `dispatchPrimitive` makes one test before its `switch`, refusing a
+  - The L4028 refusal (§4.2): `dispatchPrimitive` (in `packages/lang/src/perform-dispatch.ts`) makes one test before its `switch`, refusing a
     primitive whose `kind` is neither null nor in `HOLDABLE_KINDS` when the frame's path
     (`frame.keys.path`) has a `once` frame, so no arm reaches `performEffect` or `performWaitUntil`
     for a refused kind; `performScope` refuses kind `conclave`, testing `scopeKey.scope` before its

@@ -49,7 +49,7 @@
     },
     {
       "name": "doRebuild skips tearDownIfStopped, so a stop mid-rebuild-bind leaves the fresh nc live",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-reconnect.ts",
       "find": "      if (await this.tearDownIfStopped()) return;\n      this.superviseConnection();\n    } finally {\n      this.reconnecting = false;",
       "replace": "      this.superviseConnection();\n    } finally {\n      this.reconnecting = false;",
       "expectRed": "stop during a REAL rebuild bind tears the just-bound connection rather than leaving nc live",
