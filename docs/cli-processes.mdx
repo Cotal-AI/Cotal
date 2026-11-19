@@ -1078,7 +1078,8 @@ the job loads and at each login, and starts it again whenever it exits. Its outp
 GUI domain that does not answer refuses `TARGET_UNAVAILABLE`, and so does running it as root.
 `uninstall` boots the job out and removes the plist.
 
-On Windows it is a scheduled task. It writes the task definition to `service-task.xml` in the
+On Windows it is a scheduled task. Installation waits up to 60 seconds for Task Scheduler to
+confirm that the task name is unused. It writes the task definition to `service-task.xml` in the
 daemon's state directory and registers it with `schtasks /Create /XML`, then runs it. The stock CLI
 task starts the packaged `daemon-native.js` entry, which marks the native launch before loading
 the CLI. The task starts at this user's logon and runs with the user's own token at least privilege, so no password is
