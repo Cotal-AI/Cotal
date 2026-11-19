@@ -1555,6 +1555,7 @@ try {
       PATH: `${shimDir}:${env.PATH ?? ""}`,
       FAKE_JCODE_LOG: tuiLog,
       FAKE_JCODE_TURN_DELAY_MS: "1000",
+      FAKE_JCODE_TUI_RESPAWN: "1",
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "tuipeer",
@@ -1573,12 +1574,59 @@ try {
   let foregroundErr = "";
   foreground.stderr?.on("data", (chunk: Buffer) => (foregroundErr += chunk.toString()));
   await waitFor("foreground readiness proof", () => existsSync(tuiLog) && readFileSync(tuiLog, "utf8").includes('"ev":"orientation_done"') ? true : undefined);
-  const tuiEntries = readJsonLines<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(tuiLog);
+  const tuiEntries = readJsonLines<{ ev: string; companionAutostart?: string | null; frame?: { req?: string; content?: string; no_reply?: boolean } }>(tuiLog);
   const tuiAt = tuiEntries.findIndex((entry) => entry.ev === "tui");
   const readinessDoneAt = tuiEntries.findIndex((entry) => entry.ev === "orientation_done");
   check("foreground TUI starts before its readiness turn finishes", tuiAt >= 0 && tuiAt < readinessDoneAt, { tuiAt, readinessDoneAt, entries: tuiEntries });
   await stopHostTree(foreground, "SIGTERM");
   check("the early foreground TUI launch exits cleanly", foreground.exitCode === 0, { code: foreground.exitCode, stderr: foregroundErr });
+  check("the foreground TUI starts with Jcode's companion autostart off", tuiEntries.find((entry) => entry.ev === "tui")?.companionAutostart === "0", tuiEntries.filter((entry) => entry.ev === "tui"));
+
+  // #7950: from Jcode 0.99.1 a TUI that outlives its server starts a new one on the seat's socket,
+  // which blocks the next launch of the same name. A stop, and a failed launch, must end the TUI
+  // before the server it is watching.
+  const respawnedServers = (log: string): number[] => {
+    const pids = readJsonLines<{ ev: string; pid?: number }>(log).filter((entry) => entry.ev === "respawned_server").map((entry) => entry.pid!);
+    for (const pid of pids) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+    return pids;
+  };
+  await sleep(500);
+  const stoppedTui = readJsonLines<{ ev: string }>(tuiLog).filter((entry) => ["tui", "tui_watching", "respawned_server"].includes(entry.ev));
+  check("a stopped seat's TUI was watching its server and starts no replacement", stoppedTui.some((entry) => entry.ev === "tui_watching") && respawnedServers(tuiLog).length === 0, stoppedTui);
+  const tuiFailLog = join(root, "tui-failed-launch.jsonl");
+  const tuiFail = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: tuiFailLog,
+      // Slow turns give the TUI time to start and connect before the launch fails.
+      FAKE_JCODE_TURN_DELAY_MS: "1000",
+      FAKE_JCODE_NEVER_ORIENTATION: "1",
+      FAKE_JCODE_TUI_RESPAWN: "1",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "tuifailpeer",
+      COTAL_ID: "tuifailpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "1",
+      COTAL_CONTROL_SOCKET: controlSock("tuifail-control.sock"),
+      COTAL_CONTROL_KEY: "tuifail-control-token", COTAL_CONTROL_VERSION: "1",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let tuiFailErr = "";
+  tuiFail.stderr?.on("data", (chunk: Buffer) => (tuiFailErr += chunk.toString()));
+  await Promise.race([once(tuiFail, "exit"), sleep(20_000)]);
+  const tuiFailCode = tuiFail.exitCode;
+  await stopHostTree(tuiFail, "SIGKILL");
+  await sleep(500);
+  const tuiFailEntries = readJsonLines<{ ev: string }>(tuiFailLog);
+  check("a failed launch's TUI was watching its server and starts no replacement", tuiFailCode !== null && tuiFailCode !== 0 && tuiFailEntries.some((entry) => entry.ev === "tui_watching") && respawnedServers(tuiFailLog).length === 0, { code: tuiFailCode, entries: tuiFailEntries.filter((entry) => ["tui", "tui_watching", "respawned_server"].includes(entry.ev)), stderr: tuiFailErr });
 
   // Deliberate failing case: project MCP files would override Jcode's private cotal config, so the
   // host must refuse before it starts an API bridge rather than silently loading another server.

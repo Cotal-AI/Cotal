@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
-import { boundedValue, clearCurrent, CommandFailure, findMesh, findPreparedSpace, folderSpace, getCurrent, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, presentationOf, readCurrent, setCurrent, SHOWN_VALUE_MAX, writeResult, type Cell, type OutputWarning, type PreparedSpace, type Report } from "@cotal-ai/workspace";
+import { boundedValue, clearCurrent, CommandFailure, findMesh, findPreparedSpace, folderSpace, getCurrent, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, presentationOf, readCurrent, setCurrent, SHOWN_VALUE_MAX, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedSpace, type Report } from "@cotal-ai/workspace";
 
 export const useFlags = [
   { name: "clear", type: "boolean", description: "clear the selection, so a command targets its folder's space again" },
@@ -22,10 +22,10 @@ interface Selection {
   /** Whether `current` names a registration on this machine, as `cotal status --json` reports it. */
   readonly currentRecorded: boolean;
   readonly server: string | null;
-  /** The root `cotal up` starts `current` in, when it names a space `cotal space create` prepared. */
+  /** The root `cotal up` starts `current` in, when the space is prepared or recorded as stopped. */
   readonly preparedRoot: string | null;
   /** What that root's stack records, as `status` reports it: never started, stopped, or a last `up`
-   *  or `down` with no recorded outcome. Null when `current` is not a prepared space. */
+   *  or `down` with no recorded outcome. Null when there is no lifecycle state to report. */
   readonly preparedState: "prepared" | "stopped" | "unsettled" | null;
   /** That last operation and how it ended, such as `` `cotal down`, completed ``, or null. */
   readonly lastOperation: string | null;
@@ -50,7 +50,7 @@ export async function use(args: ParsedArgs): Promise<void> {
   if (name === undefined) {
     const m = previous === null ? undefined : findMesh(previous);
     const p = previous === null || m ? undefined : findPreparedSpace(previous);
-    const result: Selection = { kind: "selection", current: previous, previous, currentRecorded: previous === null || m !== undefined, server: m?.server ?? null, ...prepared(p), folder: folderSpace(process.cwd()) ?? null };
+    const result: Selection = { kind: "selection", current: previous, previous, currentRecorded: previous === null || m !== undefined, server: m?.server ?? null, ...prepared(p, m), folder: folderSpace(process.cwd()) ?? null };
     const warnings: OutputWarning[] = previous !== null && !m && !p
       ? [{ code: "SELECTION_NOT_REGISTERED", target: { space: previous }, message: `the selected space "${previous}" is not registered here - select another with \`cotal use <name>\`` }]
       : [];
@@ -69,12 +69,14 @@ export async function use(args: ParsedArgs): Promise<void> {
   }
   const changed = previous !== name || readCurrentSelection()?.source !== "explicit";
   if (changed) setCurrent(name);
-  const result: Selection = { kind: "selection", current: name, previous, currentRecorded: m !== undefined, server: m?.server ?? null, ...prepared(p), folder: folderSpace(process.cwd()) ?? null };
+  const result: Selection = { kind: "selection", current: name, previous, currentRecorded: m !== undefined, server: m?.server ?? null, ...prepared(p, m), folder: folderSpace(process.cwd()) ?? null };
   writeResult(presentation, { command: "use", target: { space: name }, result, noOp: !changed }, selectionView);
 }
 
-/** The selection's fields for a prepared space `p`, or nulls without one. */
-function prepared(p: PreparedSpace | undefined): Pick<Selection, "preparedRoot" | "preparedState" | "lastOperation"> {
+/** The selection's local lifecycle fields, without a broker probe. */
+function prepared(p: PreparedSpace | undefined, m: MeshEntry | undefined): Pick<Selection, "preparedRoot" | "preparedState" | "lastOperation"> {
+  if (m?.stoppedByDown === true && m.origin !== "manual" && m.origin !== "catalog")
+    return { preparedRoot: m.root, preparedState: "stopped", lastOperation: "`cotal down`, completed" };
   if (!p) return { preparedRoot: null, preparedState: null, lastOperation: null };
   const lifecycle = existsSync(p.root) ? preparedLifecycle(p.root, p.space) : undefined;
   return { preparedRoot: p.root, preparedState: lifecycle?.state ?? "prepared", lastOperation: lifecycle?.lastOperation ?? null };
@@ -103,7 +105,7 @@ function selectionView(s: Selection): Report {
     : { text: `selected ${s.current}${s.previous ? ` (was ${s.previous})` : ""}`, tone: "ok", mark: "✓" };
   const lines: Cell[] = [head];
   if (s.server) lines.push({ text: `  ${s.server}`, tone: "hint" });
-  if (s.preparedRoot) lines.push(!existsSync(s.preparedRoot) ? { text: `  prepared in ${s.preparedRoot}, which no longer exists - forget it with \`cotal space forget ${s.current}\``, tone: "waiting" }
+  if (s.preparedRoot) lines.push(!existsSync(s.preparedRoot) ? { text: `  ${s.currentRecorded ? "recorded" : "prepared"} in ${s.preparedRoot}, which no longer exists - forget it with \`cotal space forget ${s.current}\``, tone: "waiting" }
     : s.preparedState === "stopped" ? { text: `  stopped; its last operation, ${s.lastOperation} - start it again with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" }
     : s.preparedState === "unsettled" ? { text: `  its last operation, ${s.lastOperation} - run \`cotal status\` in ${s.preparedRoot}, which names the step that finishes or settles it`, tone: "waiting" }
     : { text: `  prepared, not started - start it with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" });

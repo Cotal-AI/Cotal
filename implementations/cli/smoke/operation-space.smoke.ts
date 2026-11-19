@@ -163,6 +163,7 @@ for (const [argv, rerun] of [
   [["stop", "default_agent", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
   [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --space elsewhere --on <instance>"],
+  [["ps", "--slots", "--server", "nats://127.0.0.1:39200", "--on", "bogus"], "cotal ps --slots --server nats://127.0.0.1:39200 --on <instance>"],
   [["models", "--harness", "claude", "--on", "bad"], "cotal models --harness claude --on <instance>"],
   [["spawn", "default", "-d", "--on", "bad"], "cotal spawn default -d --on <instance>"],
 ] as const) {
@@ -303,6 +304,14 @@ const managed = cotal("spawn", "-d", "nosuch", "--dry-run", "--json");
 const managedResult = (managed.envelope as unknown as { result?: Preview; completeness?: string } | undefined);
 check("a managed spawn --dry-run exits 0, not-checked, with the name's source as argument",
   managed.status === 0 && managed.envelope?.outcome === "ok" && managedResult?.completeness === "not-checked" && managedResult.result?.requested?.source === "argument", shown(managed));
+for (const mode of [[], ["--dry-run"]]) {
+  for (const resume of ["--resume=", "--resume=   "]) {
+    const invalid = cotal("spawn", "-d", resume, ...mode, "--json");
+    check(`managed ${mode.length ? "preview" : "launch"} rejects ${JSON.stringify(resume)} with one usage envelope`,
+      invalid.status === 1 && invalid.envelope?.outcome === "refused" && invalid.envelope.error?.code === "USAGE_INVALID"
+        && invalid.envelope.error.message?.includes("--resume needs a session id") === true && invalid.stderr === "", shown(invalid));
+  }
+}
 const managedHarness = cotal("spawn", "-d", "--harness", "nosuch", "--dry-run", "--plain");
 check("a managed preview warns about an unknown harness and labels the default persona in words",
   managedHarness.status === 0 && managedHarness.stderr.includes('! no harness "nosuch"; known harnesses:') && managedHarness.stdout.includes("Persona source:            the default persona") && !managedHarness.stdout.includes("explicit-or-product-default"), shown(managedHarness));

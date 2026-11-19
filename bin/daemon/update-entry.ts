@@ -383,10 +383,18 @@ const composed: Command = { ...command, async run(args) {
     }
     // A current parent waits after this child and prints the line. An older parent prints nothing,
     // so this child keeps the line. The wait itself runs either way.
-    const currentParent = currentParentWaits(process.env, process.ppid, readUpdateRecovery() !== undefined);
+    const recovery = readUpdateRecovery();
+    const currentParent = currentParentWaits(process.env, process.ppid, recovery !== undefined);
+    const restartPrepared = process.platform === "linux" && process.env.COTAL_AUTO_UPDATE !== "1" &&
+      process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === version &&
+      recovery?.phase === "verified-ready" && recovery.installed === version && recovery.preparedRestart === true &&
+      recovery.owner?.pid === process.ppid && recovery.owner.nonce === process.env.COTAL_UPDATE_CLOSURE_NONCE &&
+      recovery.owner.start === process.env.COTAL_UPDATE_CLOSURE_START;
+    if (restartPrepared) { const release = claimUpdateClosureAccess(); release(); }
     await waitForInstalledDaemonGeneration(version, {
       lifecycle: (paths: DaemonPaths, deadline: number) => process.platform === "win32" ? windowsGenerationLifecycle(paths, deadline, currentParent) : posixGenerationLifecycle(paths, currentParent),
       quiet: currentParent,
+      restartPrepared,
     });
   }, reportRunningManager: (flags: Record<string, unknown>) => withRemoteExchangeRetry(async () => {
     if (admission) {

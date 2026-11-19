@@ -221,6 +221,7 @@ export function validateSetupArguments(args: ParsedArgs): void {
     return;
   }
   if (values.destination !== undefined) destinationOf(values.destination);
+  if (values.project === "") throw usage("--project cannot be empty", "pass a project directory, or use --project . for the current directory");
   if (values.start && values["configure-only"]) throw usage("choose --start or --configure-only, not both");
   if (values.detach && !values.start) throw usage("--detach requires an explicit --start");
   const interactive = presentationOf(values) === "rich" && !values.yes && canPrompt();

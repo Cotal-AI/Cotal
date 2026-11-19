@@ -87,6 +87,24 @@ manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, { head
 
 let up = false, bUp = false;
 try {
+  const noApplications = join(base, "no-applications");
+  mkdirSync(noApplications);
+  manifest("claude.yaml", OTHER, { general: "    subscribe: [planner]\n" }, {
+    dir: c, server: SERVER_OTHER, head: "agent: claude\nagents:\n  planner:\n    instructions: Make a plan.\n",
+  });
+  const extension = cotal(c, "ext", "add", join(WT, "extensions", "connector-claude-code"));
+  check("the workspace Claude connector installs into the sandbox", extension.status === 0, extension.out);
+  const withoutApplications = (...args: string[]) => spawnSync(process.execPath, [join(WT, "bin", "dist", "cotal.js"), ...args],
+    { cwd: c, env: { ...env, PATH: noApplications }, encoding: "utf8", timeout: 180_000 });
+  const graph = withoutApplications("team", "check", "claude.yaml", "--graph");
+  check("team check renders the graph with Claude absent from PATH", graph.status === 0 && graph.stdout.includes("planner"), graph);
+  const preview = withoutApplications("team", "boot", "claude.yaml", "--dry-run");
+  check("team boot previews the declared agents with Claude absent from PATH",
+    preview.status === 0 && preview.stdout.includes("Requested agents") && preview.stdout.includes("planner"), preview);
+  const refusedUp = withoutApplications("up", "-f", "claude.yaml", "--dry-run", "--server", SERVER_OTHER);
+  check("up -f --dry-run refuses before printing a plan with Claude absent from PATH",
+    refusedUp.status === 1 && refusedUp.stdout === "" && refusedUp.stderr.includes("connector preflight failed: claude needs claude on PATH"), refusedUp);
+
   check("space create prepares the folder", cotal(s, "space", "create", SPACE).status === 0);
   up = true;
   const started = cotal(s, "up", "--server", SERVER);

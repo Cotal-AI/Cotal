@@ -284,7 +284,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   writeFileSync(manifestPath, "{ not json");
   const r = cotal(["--help"]);
   ok("corrupt manifest fails every invocation", r.status === 1, r.status);
-  ok("...as one red line naming the manifest + the fix", /corrupt extensions manifest/.test(r.stderr) && /ext add/.test(r.stderr), r.stderr.slice(0, 300));
+  ok("...as one red line naming the manifest and the repair command", /corrupt extensions manifest/.test(r.stderr) && /cotal ext seed --repair/.test(r.stderr), r.stderr.slice(0, 300));
   ok("...not an unhandled-rejection stack dump", !/ModuleJob|at async/.test(r.stderr), r.stderr.slice(0, 300));
   writeFileSync(manifestPath, good);
 }
