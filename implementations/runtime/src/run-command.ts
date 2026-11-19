@@ -741,7 +741,13 @@ export function managerRefusal(command: string, space: string, args: Record<stri
   const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; \`cotal run\` lists a run once it has` }
     : resumeBlocked ? { remedy: `read the run's recorded state with \`cotal run show ${args.runId}${selection}\`` }
     : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" && !missingRun ? `read the run's ${args.amend === true ? "answers" : "open requests"} with \`cotal run show ${args.runId}${selection}\`` : `list the recorded runs with \`cotal run${selection}\`` };
-  if (code) return new CommandFailure("refused", err!.details?.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND) ? "SCHEMA_INVALID" : code, message, { ...options, ...remedy });
+  if (code) {
+    const problems = err?.details?.filter((d) => d.kind === LANG_PROBLEM_DETAIL_KIND);
+    if (problems?.length) return new CommandFailure("refused", "SCHEMA_INVALID", message, {
+      ...options, ...remedy, native: { ...options.native, detail: problems },
+    });
+    return new CommandFailure("refused", code, message, { ...options, ...remedy });
+  }
   // A reply too large for the broker changed nothing; the local read takes no reply.
   if (command === "run-status" && err?.code === "resource-exhausted")
     return new CommandFailure("refused", "UNSUPPORTED", message, { ...options, remedy: `read the run from its project folder with ${localJournal(args)}` });
@@ -831,7 +837,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       const err = r.reply.error;
       // A validation refusal carries every problem as the language's own records; print them the
       // way the validator would, so the fix is the same edit either way.
-      for (const d of err?.details ?? []) if (d.kind === LANG_PROBLEM_DETAIL_KIND) console.error(renderLangProblem(d));
+      if (!values.json) for (const d of err?.details ?? []) if (d.kind === LANG_PROBLEM_DETAIL_KIND) console.error(renderLangProblem(d));
       throw managerRefusal(command, t.space, args, err, values.on);
     }
     return r.reply.data;
