@@ -1,26 +1,13 @@
 
 import { goalKey } from "./turn-relay.js";
-import { drainAndClose } from "@cotal-ai/core";
-import { DEV_OWNER, inspectCredHealth, mintCreds, newIdentity, actionContext, principalKey } from "@cotal-ai/core";
-import type { ActionContext } from "@cotal-ai/core";
-export type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "./seat-types.js";
-export { STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
-export { credRenewIntervalMs } from "./credential-renewal.js";
-export { ManagerInstanceLeaseHeld } from "./lease-keeper.js";
-import { rejectionText } from "@cotal-ai/core";
-// The static §13.1 lifecycle executor: the shared grammar/stores from core plus the
-// manager-side adapter (transport + slot orchestration + the terminal) — see static-lifecycle.ts.
+import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
+import type { Manager } from "./manager.js";
+import { DEV_OWNER, EpEnvelopeError, GOAL_TERMINAL_STATES, actionContext, clearGoalIndex, commitSiblingIssuance, credentialIdOf, drainAndClose, ensureAuthorityStores, epAuthBucket, epeSubject, goalProgressTopic, inspectCredHealth, listGoalIndex, mintCreds, newIdentity, principalKey, readGoalSpec, readGoalStatus, recordsBucket, rejectionText, serveIssuanceGateKv, settleGoalUncertain, standaloneConnectOpts } from "@cotal-ai/core";
+import type { ActionContext, EpIssuanceGate, GoalIndexEntry, GoalRef, Identity } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { recordsBucket, epAuthBucket, ensureAuthorityStores, standaloneConnectOpts, credentialIdOf } from "@cotal-ai/core";
-// The manager as an ordinary v0.4 `service` endpoint — the §13.1
-// endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
-// the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
-import { serveIssuanceGateKv, commitSiblingIssuance, type EpIssuanceGate, settleGoalUncertain, readGoalStatus, readGoalSpec, clearGoalIndex, listGoalIndex, type GoalIndexEntry, GOAL_TERMINAL_STATES, goalProgressTopic, epeSubject, EpEnvelopeError, type GoalRef, type Identity } from "@cotal-ai/core";
-import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
-import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
-import type { Manager } from "./manager.js";
+import type { NatsConnection } from "@nats-io/transport-node";
 
 /** What {@link GoalWriter} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
