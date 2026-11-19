@@ -322,12 +322,55 @@ try {
     await events.settled();
   }
 
+  // ---- Turns 9 and 10 are interrupted. Claude Code fires no hook when its user interrupts a turn
+  // and writes a `user` entry instead, in this shape (read off real sessions), so after their opening
+  // hooks these turns get no hook at all. Turn 10 is interrupted at a permission prompt.
+  const record = (n: number, offset: number, fields: Record<string, unknown>): string =>
+    JSON.stringify({ sessionId: THREAD, timestamp: new Date(1_700_000_000_000 + n * 1000 + offset).toISOString(), ...fields }) + "\n";
+  const interrupt = (n: number, text: string): string =>
+    record(n, 3, { type: "user", uuid: `interrupt-${n}`, message: { content: [{ type: "text", text }] } });
+  const presence = async () => (await agent.readRoster()).roster.find((p) => p.card.id === agent.ep.card.id);
+
+  appendFileSync(transcript, prompt(9));
+  await hook({ hook_event_name: "UserPromptSubmit" });
+  await sleep(300);
+  check("interrupt-9:the prompt opens a working turn", (await presence())?.status === "working", await presence());
+  appendFileSync(transcript, answer(9) + interrupt(9, "[Request interrupted by user]"));
+  await sleep(2_500);
+  await events.settled();
+  check("interrupt-9:the interrupt record alone returns the seat to idle", (await presence())?.status === "idle", await presence());
+
+  appendFileSync(transcript, prompt(10) + record(10, 1, { type: "assistant", uuid: "a-10", message: { content: [
+    { type: "tool_use", id: "interrupt-tool-10", name: "Bash", input: { command: "sleep 120" } },
+  ] } }));
+  await hook({ hook_event_name: "UserPromptSubmit" });
+  await hook({ hook_event_name: "PreToolUse", tool_name: "Bash" });
+  await hook({ hook_event_name: "Notification", notification_type: "permission_prompt", message: "Approve Bash" });
+  await sleep(300);
+  check("interrupt-10:the permission prompt leaves the seat waiting on approval",
+    (await presence())?.condition?.code === "approval", await presence());
+  appendFileSync(transcript, record(10, 2, { type: "user", uuid: "result-10", message: { content: [{
+    type: "tool_result", tool_use_id: "interrupt-tool-10", is_error: true,
+    content: "The user doesn't want to proceed with this tool use. The tool use was rejected.",
+  }] } }) + interrupt(10, "[Request interrupted by user for tool use]"));
+  await sleep(2_500);
+  await events.settled();
+  const afterPrompt = await presence();
+  check("interrupt-10:an interrupt at a permission prompt returns the seat to idle and clears the condition",
+    afterPrompt?.status === "idle" && afterPrompt.condition === undefined, afterPrompt);
+
+  // The turn after the interrupts ends normally, and its Stop closes its own run.
+  appendFileSync(transcript, turn(11));
+  await hook({ hook_event_name: "UserPromptSubmit" });
+  await hook({ hook_event_name: "Stop" });
+  await events.settled();
+
   // ---- Read the whole stream back from the broker and grade it as an ORDER.
   const reader = new CotalEndpoint({
     space: SPACE, servers, card: { name: "Reader", kind: "agent", id: "reader" }, channels: [CHANNEL],
   });
   reader.on("error", () => {});
-  type Ev = { type: string; text: string; message: string; code: string; toolCallId: string; runId: string; turnSource: unknown };
+  type Ev = { type: string; text: string; message: string; code: string; toolCallId: string; runId: string; turnSource: unknown; outcome: unknown };
   const seen: Ev[] = [];
   const wire: string[] = [];
   reader.on("message", (m: { channel?: string; parts?: { data?: unknown }[] }) => {
@@ -344,6 +387,7 @@ try {
           toolCallId: String(e.toolCallId ?? (e.value as { toolCallId?: string } | undefined)?.toolCallId ?? ""),
           runId: String((d as { runId?: string }).runId ?? ""),
           turnSource: (e.cotal as { turnSource?: string } | undefined)?.turnSource,
+          outcome: e.outcome,
         });
     }
   });
@@ -413,8 +457,22 @@ try {
       (expected === undefined || run.some((e) => e.text === expected)), run);
   }
 
+  for (const [n, reason] of [[9, "Request interrupted by user"], [10, "Request interrupted by user for tool use"]] as const) {
+    const run = runForPrompt(n);
+    check(`interrupt-${n}:the run closes once, last, as RUN_FINISHED with an interrupt outcome`,
+      run.filter(isClose).length === 1 && run.at(-1)?.type === "RUN_FINISHED" &&
+      JSON.stringify(run.at(-1)?.outcome) === JSON.stringify({ type: "interrupt", interrupts: [{ id: `interrupt-${n}`, reason }] }), run);
+  }
+  check("interrupt-10:the rejected tool call starts and ends inside its run before the run closes",
+    ["TOOL_CALL_START", "TOOL_CALL_END"].every((type) => runForPrompt(10).slice(0, -1)
+      .some((e) => e.type === type && e.toolCallId === "interrupt-tool-10")), runForPrompt(10));
+  const afterInterrupts = runForPrompt(11);
+  check("interrupt:the next turn closes once with a plain RUN_FINISHED",
+    afterInterrupts.filter(isClose).length === 1 && afterInterrupts.at(-1)?.type === "RUN_FINISHED" &&
+    afterInterrupts.at(-1)?.outcome === undefined, afterInterrupts);
+
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 35;
+  const EXPECTED = 43;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 

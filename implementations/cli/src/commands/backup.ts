@@ -7,6 +7,7 @@ import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
   downloadStreamSnapshot,
+  oneLine,
   spaceBackupInventory,
   validateCanonicalBackupStreamConfig,
   validateBackupStreamState,
@@ -21,7 +22,7 @@ import {
   type BackupStreamState,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, isCommandFailure, isMaintenanceError, jsonFlag, plainFlag, presentationOf, writeResult, type Report,
+  CommandFailure, codeSpan, isCommandFailure, isMaintenanceError, jsonFlag, plainFlag, presentationOf, writeResult, type Report,
   acquireMaintenanceLock,
   assertSingleSpaceBroker,
   assessRestoreClaim,
@@ -61,6 +62,7 @@ import { backupRead } from "./backup-read.js";
 import { backupRestore } from "./backup-restore.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 
 const OPERATION_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -574,13 +576,19 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     .find((path) => overlaps(canonicalFuturePath(destinationPath), path));
   if (cleaned)
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside ${cleaned}, which \`cotal clean all\` removes; nothing was written`, { target: { directory: destinationPath, removedBy: cleaned }, remedy: `name a destination outside ${cleaned}`, selfContained: true });
-  try { accessSync(dirname(destinationPath), constants.W_OK | constants.X_OK); }
+  const folder = dirname(destinationPath);
+  try { accessSync(folder, constants.W_OK | constants.X_OK); }
   catch {
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dirname(destinationPath)}, so the backup cannot be created in it; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath) }, remedy: `make that folder writable with chmod u+w ${dirname(destinationPath)}, or name a destination in a folder this account can write` });
+    // Do not offer a command whose operand the terminal would change by escaping invisibles.
+    const withChmod = oneLine(folder) === folder ? ` with ${codeSpan(`chmod u+w ${shellWord(folder)}`)}` : "";
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${folder}, so the backup cannot be created in it; nothing was written`, {
+      target: { directory: destinationPath, folder },
+      remedy: `make that folder writable${withChmod}, or name a destination in a folder this account can write`,
+    });
   }
   // Verify and restore read the artifact at its real path and refuse one that another local account
   // could change there, so create refuses a destination whose folders break that rule.
-  protectedLocalDirectory(realpathSync.native(dirname(destinationPath)), "the backup destination");
+  protectedLocalDirectory(realpathSync.native(folder), "the backup destination");
   if (values["store-dir"] !== undefined && journal.state === "ready") assertNamedStore(root, journal, resolve(values["store-dir"]));
   // Omitted, the store is the cut's own source, which a restore into --store-dir put outside
   // .cotal/nats. An interrupted create's claim keeps that source, and this create recovers the claim

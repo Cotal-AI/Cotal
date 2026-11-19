@@ -16,11 +16,14 @@ These commands report launch previews, current manager observations, and retaine
 with a positional persona or the persisted internal `--config` spelling. A bare filename is
 still a file, including when it has no extension. Managed paths remain relative to the manager's
 workspace and are read on that execution host. No file upload is implied. Direct foreground
-execution reads its local file. A supported Mesh-manifest shape returns a schema refusal with
+execution and its preview resolve relative `--file` paths from the invoking folder, even if `--cwd`
+sets a different working directory for the agent. Named personas still come from the selected space.
+A supported Mesh-manifest shape returns a schema refusal with
 the literal `cotal team deploy <file>` remedy, before agent allocation.
 
-`spawn --dry-run` never refreshes the catalog, repairs stale registrations, imports connector code,
-signs in to the broker, redeems enrollment, provisions or allocates an agent. Where the launch reads
+`spawn --dry-run` never refreshes the catalog, repairs stale registrations,
+signs in to the broker, redeems enrollment, provisions or allocates an agent. A direct preview checks
+launch arguments if the installed connector supports validation without creating launch files. Where the launch reads
 whether the recorded brokers answer to choose its space, as in a folder whose registered space may
 be stopped, the preview reads the same without signing in, so it names the space the launch uses. The managed preview
 shows the request and exits 0 with `completeness` `not-checked`, because the manager resolves the

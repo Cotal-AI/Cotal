@@ -2086,6 +2086,8 @@ try {
     const blocked = cli(root, "down", "--with-agents", "--yes", "--json");
     check("a broker-only stop with an agent policy refuses without resuming the broker",
       blocked.status === 2 && blocked.env?.error?.code === "LIFECYCLE_BLOCKED" && broker !== null && processStopped(broker), shown(blocked));
+    check("the refusal explains that no manager was started and names the stop without agent retirement",
+      blocked.env?.error?.message.includes("started without a manager") === true && blocked.env.error.remedy?.includes("cotal down --yes") === true, shown(blocked));
     const stopped = cli(root, "down", "--yes", "--json");
     const members = stopped.env?.result?.members as { role: string; state: string }[] | undefined;
     check("confirmed down resumes and stops its open broker with an exact-exit receipt",

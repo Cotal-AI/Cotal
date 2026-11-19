@@ -51,7 +51,7 @@ import { basename, join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
 import { shellWord } from "../../implementations/cli/src/lib/endpoint-errors.js";
 import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
-import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, freePort, killAndAwaitExit, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, displayWidth, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, resolveOnPath, workspaceSecretStore } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned port: no fixed-port collision across back-to-back / concurrent runs.
@@ -483,6 +483,56 @@ try {
   const openBrokerOnly = openRefresh("--no-manager");
   ok("a --no-manager open refresh stays broker-only and exits 0",
     openBrokerOnly.status === 0 && !existsSync(openRecord(MANAGER_PIDFILE)) && !/restored in the background/.test(openBrokerOnly.stdout), plain(openBrokerOnly.stdout + openBrokerOnly.stderr));
+  if (process.platform === "linux") {
+    // Only the Node libc evidence is simulated. The built CLI and broker are real.
+    const preload = join(fakeBin, "libc.cjs");
+    writeFileSync(preload, `
+const getReport = process.report.getReport.bind(process.report);
+process.report.getReport = () => {
+  const report = getReport();
+  report.header.glibcVersionRuntime = process.env.SMOKE_LIBC === 'musl' ? undefined : '2.44.9000';
+  report.header.glibcVersionCompiler = process.env.SMOKE_LIBC === 'musl' ? undefined : '2.39';
+  return report;
+};
+`);
+    const preparedRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-musl-"));
+    const preparedSpace = basename(preparedRoot);
+    anchors.set(preparedRoot, recordSmokeSandbox({ root: preparedRoot, cotalHome: home, xdgConfigHome: configDir }));
+    try {
+      const prepare = cliIn(preparedRoot, "space", "create", preparedSpace, "--root", preparedRoot);
+      ok("the isolated musl space is prepared", prepare.status === 0, prepare.stdout + prepare.stderr);
+      const controller = spawnSync(process.execPath, ["--require", preload, join(WT, "bin/dist/cotal.js"), "up", "--detach", "--open", "--space", preparedSpace, "--server", `nats://127.0.0.1:${await freePort()}`], {
+        cwd: preparedRoot, env: { ...env, SMOKE_LIBC: "musl" }, encoding: "utf8", timeout: 120_000,
+      });
+      const refusedOutput = plain(controller.stdout + controller.stderr);
+      ok("up names glibc without launching a manager child on musl",
+        controller.status === 4 && /before a child launch: Cotal's built-in PTY runtime requires glibc/.test(refusedOutput) && !/OPERATION_UNKNOWN/.test(refusedOutput)
+        && !existsSync(canonicalLocalProcessPath(MANAGER_PIDFILE, { root: preparedRoot, space: preparedSpace })), refusedOutput);
+    } finally {
+      cliIn(preparedRoot, "down", "--yes", "--space", preparedSpace);
+      rmSync(preparedRoot, { recursive: true, force: true });
+    }
+    const run = (libc: string) => spawnSync(process.execPath, ["--require", preload, join(WT, "bin/dist/cotal.js"), "supervise", "--space", basename(openRoot), "--server", openServer], {
+      cwd: openRoot, env: { ...env, SMOKE_LIBC: libc }, encoding: "utf8", timeout: 15_000,
+    });
+    const refused = run("musl");
+    ok("the built PTY manager refuses musl before starting",
+      refused.status === 1 && refused.signal === null && /built-in PTY runtime requires glibc/.test(refused.stderr) && !existsSync(openRecord(MANAGER_PIDFILE)), refused.stderr);
+    const supported = spawnProc(process.execPath, ["--require", preload, join(WT, "bin/dist/cotal.js"), "supervise", "--space", basename(openRoot), "--server", openServer], {
+      cwd: openRoot, env: { ...env, SMOKE_LIBC: "glibc" }, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    supported.stdout.on("data", chunk => { output += chunk; });
+    supported.stderr.on("data", chunk => { output += chunk; });
+    const running = () => supported.exitCode === null && supported.signalCode === null;
+    try {
+      const deadline = Date.now() + 15_000;
+      while (!/manager up/.test(output) && running() && Date.now() < deadline) await sleep(50);
+      ok("a multi-component glibc version starts the built PTY manager", /manager up/.test(output) && running(), plain(output));
+    } finally {
+      await killAndAwaitExit(supported, "SIGTERM");
+    }
+  }
   writeFileSync(openRecord(MANAGER_PIDFILE), "not-a-pid");
   // `down` refuses that record as well, so the Next names the steps that work in this state: the
   // check only the operator can make, then removing the file and refreshing. Its report uses no

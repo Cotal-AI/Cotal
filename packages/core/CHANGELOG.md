@@ -1,5 +1,16 @@
 # @cotal-ai/core
 
+## 0.171.2
+
+### Patch Changes
+
+- 08ac896: Move the endpoint's dialing, auth options, bearer lifetimes and reachability probes out of `endpoint.ts` into their own module. The package's exports are unchanged.
+- 87b8626: Move the endpoint's message authentication against the delivery subject and its history-row checks out of `endpoint.ts` into their own module. The package's exports are unchanged.
+- d388cfe: Move the endpoint's options, its public types and errors, and the history page fitter out of `endpoint.ts` into their own module. The package's exports are unchanged.
+- 576ce19: Show usable next steps for manager status and credential minting, and retire durable memberships when leaving a channel that switched to live delivery.
+- 7a433a6: Wait for a simultaneous self-update of the same npm installation and recheck its installed CLI before replacing packages again.
+- a55bdb0: Refuse invalid spawn arguments and inaccessible working directories before provisioning credentials, reject pi resume flags, and remove Hermes launch credentials, sockets and disposable profiles after stopping.
+
 ## 0.171.1
 
 No changes in this release.

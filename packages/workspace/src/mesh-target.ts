@@ -1,8 +1,10 @@
 import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
+import { isLoopbackLiteral } from "@cotal-ai/core/loopback";
 import { parse as parseYaml } from "yaml";
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
+import { brokerAddressForDisplay } from "./broker-display.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { isCommandFailure, recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
 import { assertRecordIdentity, parsePid, probeLiveness, readPidfile, type ProcessIdentityRecord } from "./pid.js";
@@ -114,6 +116,7 @@ export interface ResolveFlags {
 export type MeshTargetErrorCode =
   | "no-meshes"
   | "unknown-space"
+  | "server-host-mismatch"
   | "ambiguous-target"
   | "default-occupied"
   | "stale-auth-root"
@@ -130,7 +133,7 @@ export interface MeshTargetErrorDetails {
   server?: string;
   /** A checkout root involved. */
   root?: string;
-  /** Running meshes, for the ambiguous case — each formatted `"<space> (<root>)"`. */
+  /** Candidates formatted as `"<space> (<root>)"` for ambiguity or `"<space> (<server>)"` for a host mismatch. */
   available?: string[];
   /** The same meshes by SPACE NAME, in `available`'s order — set where the ambiguity is a set of
    *  RECORDED meshes a caller can select by name: the running meshes of the bare fallback, or the
@@ -1064,7 +1067,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // hand back whichever sorted first, connecting the caller to an arbitrary tenant; refuse and
     // name them instead (`--space` picks one explicitly, handled above).
     const requestedServer = brokerUrlKey(flags.server);
-    const onServer = loadMeshes().filter((e) => brokerUrlKey(e.server) === requestedServer);
+    const meshes = loadMeshes();
+    const onServer = meshes.filter((e) => brokerUrlKey(e.server) === requestedServer);
     if (onServer.length > 1)
       throw new MeshTargetError(
         "ambiguous-target",
@@ -1084,7 +1088,29 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // space a folder with no records resolves to.
     const local = localTarget(findCotalRoot(cwd), flags.server, "flag-server", flags.readOnly);
     const recorded = findMesh(local.space);
-    return recorded && canonicalRoot(recorded.root) === canonicalRoot(local.root) ? { ...local, recordedServer: recorded.server } : local;
+    if (recorded && canonicalRoot(recorded.root) === canonicalRoot(local.root)) return { ...local, recordedServer: recorded.server };
+
+    // A local-looking host does not prove listener identity. Use it only to explain a missing
+    // target, never to choose credentials or replace a project that already names a space.
+    const loopbackHintKey = (server: string): string | undefined => {
+      try {
+        const url = new URL(server);
+        if (url.hostname.toLowerCase() !== "localhost" && !isLoopbackLiteral(url.hostname)) return undefined;
+        url.hostname = "127.0.0.1";
+        return brokerUrlKey(url.href);
+      } catch {
+        return undefined;
+      }
+    };
+    const hint = loopbackHintKey(flags.server);
+    if (hint !== undefined && rootHidesNoManifest(local.root)) {
+      const nearby = meshes.filter((e) => loopbackHintKey(e.server) === hint);
+      if (nearby.length) throw new MeshTargetError("server-host-mismatch", "the requested loopback host spelling matches no registration", {
+        server: brokerAddressForDisplay(flags.server),
+        available: nearby.map((e) => `${e.space} (${brokerAddressForDisplay(e.server) ?? "an invalid broker address"})`),
+      });
+    }
+    return local;
   }
 
   const meshes = loadMeshes();

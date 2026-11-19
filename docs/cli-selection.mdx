@@ -291,6 +291,11 @@ registered space, including when its broker does not answer. The refusal gives t
 as `--space` for that registration, including where to restart a stopped local space. Matching
 preserves the URL's transport scheme and TLS intent. If equivalent addresses name several
 registered spaces, pass `--space` to choose one.
+When no space is named or found for the current folder, an unmatched loopback host spelling
+can give a `TARGET_NOT_FOUND` refusal, exit 2, listing registrations with another loopback host
+at the same port and transport. `localhost`, `127.0.0.1` and `[::1]` can reach different listeners.
+The command does not connect on the strength of the hint. Use a listed address, or verify the
+requested broker and name its space with `--space <name>`.
 When an overriding `--server` requires auth but the selected space is recorded as open at another
 address, the refusal names both brokers. Its Next says to check the address or drop `--server`
 to reach the space at its recorded broker, not to start a new space in the current folder.
@@ -568,6 +573,10 @@ registered at here, the Next says to use `--space <owner>` without `--server`, n
 Keeping `--server` with `--space <owner>` refuses again, saying the space is registered at another
 address, and the Next is to drop `--server` or point it at that broker.
 
+`join --creds` gives the same diagnoses. It also identifies a credential issued before a local
+space reset when the registered broker uses the new local identity. The replacement mint for
+`join` includes `--provision`. Pass the lifecycle UID reported by the new mint to `join`.
+
 A manifest's `space:` is the target of native `up -f` and the new team
 check/boot/deploy routes. A `--space` that names another space is refused before
 anything is written. The old `spawn -f` manifest spelling no longer deploys;
@@ -613,6 +622,9 @@ selected space, this folder's maintenance journal under Maintenance when it hold
 attempt and next step; `maintenance` in JSON), unsettled fresh and additive attempts in this folder
 when present, owned service records and useful commands under Next. Connection state, local process
 state and service replies remain separate observations.
+
+When Next offers a change of space, it lists `cotal space` to see the choices and `cotal use <name>`
+to select one. Bare `cotal use` reports the current selection without changing it.
 
 For the selected space, `Default agent` reports the harness a bare `cotal spawn` selects.
 The default persona's `agent:` pin overrides environment and saved harness preferences.
@@ -1074,6 +1086,13 @@ then `cotal down --yes`, which kills a member that does not exit, and `cotal up`
 
 
 ### Partial reads
+
+A recorded connector seed failure makes setup incomplete, even when the installed extension
+versions match. The `Connector setup` row names the package and phase. Next shows the recorded
+cause before `cotal ext seed --repair` instead of suggesting startup or sign-in. The same guidance
+appears in `hints` in JSON. Reading a recorded seed failure does not change the report's exit
+status, and status neither repairs nor clears the record. If the seed cursor cannot be read,
+status names the file in an `EXTENSIONS_UNREADABLE` warning and reports a partial read.
 
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its

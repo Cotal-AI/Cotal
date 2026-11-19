@@ -610,7 +610,13 @@ cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plai
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
-On Linux, daemon installation reads its unit directory from the systemd user manager.
+On Linux, daemon installation and setup require a systemd host and `systemctl` on PATH.
+On Linux without systemd, run `cotal daemon serve` under your own supervisor, such as OpenRC,
+runit or s6. Use `cotal update --self` for manual updates.
+If your login does not provide `XDG_RUNTIME_DIR`, use a runtime directory owned by your user
+with mode 0700 and set `XDG_RUNTIME_DIR` to its path.
+
+Daemon installation reads its unit directory from the systemd user manager.
 An owned group-writable unit directory can be used when an ancestor owned by you or root denies
 search permission to group and other accounts, such as an owned `.config` directory with mode 0700.
 Shell-quoted home and config paths, including spaces, are decoded without running a shell.
@@ -664,7 +670,10 @@ Hosted Managers pick up newly installed applications after the guarded service r
 Active seats block that restart until they stop. When a desired space has no available
 application, `daemon status` shows this recovery under Next.
 
-To connect directly to a space, use `cotal daemon setup --space <s> [--idp <url>]`.
+To connect directly to a user-auth participant space, use `cotal daemon setup --space <s> [--idp <url>]`.
+For a local static-auth or open space, run `cotal up` in the folder that hosts it. The local stack
+runs its Manager. Daemon setup refuses with `UNSUPPORTED` (`NOT_USER_AUTH`) before turning the
+space on or recording a hosted Manager refusal.
 `--no-manager` and `--wait` require `--space`; `--wait` also requires `--no-manager`.
 Space-specific daemon commands require an explicit `--space <s>` even when `cotal use`
 has selected a space. `daemon status` can omit it to read the daemon and all hosted Managers.
@@ -1479,7 +1488,10 @@ retries. Disconnect and shutdown cancel them. An ended connection is remembered 
 daemon stops.
 `service-status` reads the daemon's current answer without contacting the space. With no current
 answer, it reports `NOT_REQUESTED` (`TARGET_NOT_FOUND`) when this daemon has no saved register
-request for the space, including after a restart. A saved request alone reports `disconnected`;
+request for the space, including after a restart. A registered static-auth or open space instead
+reports `UNSUPPORTED` and points to `cotal up`. `service-disconnect` clears any old daemon hosting
+refusal for that space without stopping its local stack or recommending setup again.
+A saved request alone reports `disconnected`;
 it does not prove approval or a connection. A registration
 awaiting approval reports `approval-pending` for the rest of that daemon process, until another
 registration or connection attempt updates it or an explicit disconnect clears it. Registration
