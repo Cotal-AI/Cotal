@@ -786,12 +786,16 @@ function targetExtensions() {
     try {
       const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
         import { realpathSync } from 'node:fs';
+        const loadedEntry = realpathSync.native('dist/cotal.js');
+        const workspace = import.meta.resolve('@cotal-ai/workspace');
+        // Resolve package imports from the stage, but relative config paths as at launch.
+        process.chdir(process.argv[2]);
         Object.defineProperty(globalThis, Symbol.for('cotal.execution.identity'), {
-          value: Object.freeze({ logicalEntry: process.argv[1], loadedEntry: realpathSync.native('dist/cotal.js') }),
+          value: Object.freeze({ logicalEntry: process.argv[1], loadedEntry }),
         });
-        const { extensionsDir } = await import('@cotal-ai/workspace');
+        const { extensionsDir } = await import(workspace);
         process.stdout.write(extensionsDir());
-      `, logicalEntry], { cwd: candidate, encoding: 'utf8', timeout: 30000, killSignal: 'SIGKILL' });
+      `, logicalEntry, process.cwd()], { cwd: candidate, encoding: 'utf8', timeout: 30000, killSignal: 'SIGKILL' });
       if (result.error || result.status !== 0)
         throw new Error(`could not resolve the requested release's extension prefix: ${result.error?.message ?? (result.stderr.trim() || `exit ${result.status}`)}`);
       if (!result.stdout || path.basename(result.stdout) !== 'extensions')
