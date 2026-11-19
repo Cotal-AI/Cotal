@@ -1262,6 +1262,51 @@ try {
   check("a permanently absent cotal tool ends the launch", absentCode !== null && absentCode !== 0, { code: absentCode, stderr: absentErr });
   check("a permanently absent cotal tool never reaches the roster", !announced.has("absentpeer"), [...announced]);
 
+  // A model on Jcode's deferred MCP surface calls orientation through a wrapper: `mcp_call` up to
+  // Jcode 0.99.0, `mcp` with action "call" from 0.99.1. Either proves readiness on its first turn.
+  // An `mcp` call with another action names the tool without calling it, so it proves nothing.
+  const deferredLaunch = (name: string, via: string) => {
+    const log = join(root, `readiness-${name}.jsonl`);
+    const proc = spawnHost({
+      cwd: root,
+      env: {
+        ...env,
+        PATH: `${shimDir}:${env.PATH ?? ""}`,
+        FAKE_JCODE_LOG: log,
+        FAKE_JCODE_ORIENTATION_VIA: via,
+        JCODE_HOME: inheritedJcodeHome,
+        COTAL_SPACE: "jcodehost",
+        COTAL_NAME: name,
+        COTAL_ID: name,
+        COTAL_SERVERS: servers,
+        COTAL_SUBSCRIBE: "team",
+        COTAL_ALLOW_SUBSCRIBE: "team",
+        COTAL_ALLOW_PUBLISH: "team",
+        COTAL_JCODE_HOME: root,
+        COTAL_JCODE_TUI: "0",
+        COTAL_CONTROL_SOCKET: controlSock(`${name}-control.sock`),
+        COTAL_CONTROL_KEY: `${name}-control-token`, COTAL_CONTROL_VERSION: "1",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    proc.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+    const turns = () => readJsonLines<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(log)
+      .filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("Call the cotal_orientation tool exactly once"));
+    return { proc, turns, stderr: () => stderr };
+  };
+  for (const [name, via] of [["mcpcallpeer", "mcp_call"], ["mcppeer", "mcp"]] as const) {
+    const launch = deferredLaunch(name, via);
+    await Promise.race([waitFor(`${via} readiness join`, () => (announced.has(name) ? true : undefined)), once(launch.proc, "exit")]).catch(() => {});
+    check(`a cotal_orientation call through Jcode's ${via} wrapper proves readiness on the first turn`, announced.has(name) && launch.turns().length === 1, { code: launch.proc.exitCode, turns: launch.turns(), stderr: launch.stderr() });
+    await stopHostTree(launch.proc, "SIGTERM");
+  }
+  const searchLaunch = deferredLaunch("mcpsearchpeer", "mcp-search");
+  await Promise.race([once(searchLaunch.proc, "exit"), sleep(20_000)]);
+  const searchCode = searchLaunch.proc.exitCode;
+  await stopHostTree(searchLaunch.proc, "SIGKILL");
+  check("an mcp call with an action other than call never proves readiness", searchCode !== null && searchCode !== 0 && searchLaunch.turns().length === 2 && !announced.has("mcpsearchpeer"), { code: searchCode, turns: searchLaunch.turns(), stderr: searchLaunch.stderr() });
+
   // A structured downstream effort rejection is untrusted. Before the repair, this exact canary
   // reached the external observer/UI because host-main rendered the host-composed refusal verbatim.
   const effortCanary = "JCODE-REFUSAL-CANARY-3c5e9d77-DO-NOT-PRINT";
