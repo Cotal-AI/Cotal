@@ -34,7 +34,7 @@
   "mutations": [
     {
       "name": "N1 the pre-dial expiry guard is gone, so the endpoint dials with the dead bearer again",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "    if (bearer !== undefined && bearerExpiryMs(bearer) > Date.now()) return bearer;",
       "replace": "    if (bearer !== undefined) return bearer;",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
