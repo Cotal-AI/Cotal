@@ -1,5 +1,11 @@
 # @cotal-ai/lang
 
+## 0.170.0
+
+### Patch Changes
+
+- 3e748e8: Workflow syntax errors now report a single position with a one-based line and column.
+
 ## 0.169.0
 
 No changes in this release.

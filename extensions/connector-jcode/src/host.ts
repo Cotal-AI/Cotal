@@ -79,6 +79,9 @@ import { initializeJcodeEventBoundary, JcodeJournalSource, jcodeJournalPath, pos
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 /** How often the relay checks that its socket path still exists. See the re-bind in `startRelay`. */
 const RELAY_REBIND_POLL_MS = 1_000;
+/** How long a stop waits for the TUI to exit after SIGTERM, and again after SIGKILL. A TUI exits in
+ *  milliseconds; the bound keeps a wedged one from eating the grace the private tree needs. */
+const TUI_STOP_GRACE_MS = 1_000;
 /** How long a run may hold the dispatch gate waiting for its own acknowledgement (#1233).
  *
  *  Matches the SDK's `acceptTimeoutMs` default, because that is the point past which `sendMessage`
@@ -916,23 +919,49 @@ export async function runJcodeHost(): Promise<void> {
     return connectSteerClient(instance.socketPath, perRequestMs);
   };
 
+  const onTuiExit = (code: number | null): void => void shutdown(code ?? 0);
   const launchTui = (): void => {
     const runtime = join(socketHome.jcodeHome, "run");
     tui = spawn(binary, ["--socket", join(runtime, "jcode.sock"), "--resume", sessionId!], {
       cwd,
-      env: { ...noCotalEnv(), ...seatEnv, JCODE_HOME: socketHome.jcodeHome, JCODE_RUNTIME_DIR: runtime, JCODE_SOCKET: join(runtime, "jcode.sock") },
+      // From Jcode 1.0 a TUI starts a detached desktop companion that opens URLs and terminals and
+      // listens for global push-to-talk. It outlives the seat, and a managed seat has no use for it.
+      env: {
+        ...noCotalEnv(),
+        ...seatEnv,
+        JCODE_HOME: socketHome.jcodeHome,
+        JCODE_RUNTIME_DIR: runtime,
+        JCODE_SOCKET: join(runtime, "jcode.sock"),
+        JCODE_COMPANION_AUTOSTART: "0",
+      },
       stdio: "inherit",
     });
-    tui.once("exit", (code) => void shutdown(code ?? 0));
+    tui.once("exit", onTuiExit);
+  };
+
+  /** Stop the TUI and wait for it to exit. It goes before the private tree: from Jcode 0.99.1 a TUI
+   *  that loses its server starts a new one on the seat's socket, which outlives the seat and makes
+   *  the next launch of the same name fail until Jcode's idle timeout ends it (#7950). */
+  const stopTui = async (): Promise<void> => {
+    const viewer = tui;
+    if (!viewer || viewer.exitCode !== null || viewer.signalCode !== null) return;
+    viewer.off("exit", onTuiExit);
+    const exited = new Promise<boolean>((resolve) => viewer.once("exit", () => resolve(true)));
+    const grace = (): Promise<boolean> => new Promise((resolve) => setTimeout(() => resolve(false), TUI_STOP_GRACE_MS).unref());
+    viewer.kill("SIGTERM");
+    if (await Promise.race([exited, grace()])) return;
+    viewer.kill("SIGKILL");
+    await Promise.race([exited, grace()]);
   };
 
   const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> => {
     if (stopping) return;
     stopping = true;
-    // The private tree goes first for every seat. A runtime stop SIGTERMs the seat and SIGKILLs it
-    // after a short grace, and the event drain or the broker close can use that whole grace. What
-    // this misses, its manager's retireAfterExit finds.
+    // The private tree goes first for every seat, right after the TUI that would restart it. A
+    // runtime stop SIGTERMs the seat and SIGKILLs it after a short grace, and the event drain or the
+    // broker close can use that whole grace. What this misses, its manager's retireAfterExit finds.
     let exit = code;
+    await stopTui();
     try {
       await stopPrivateJcode({ skipClientClose: true });
     } catch (error) {
@@ -947,11 +976,6 @@ export async function runJcodeHost(): Promise<void> {
     if (fallbackTimer !== undefined) {
       clearTimeout(fallbackTimer);
       fallbackTimer = undefined;
-    }
-    try {
-      tui?.kill("SIGTERM");
-    } catch {
-      /* already gone */
     }
     await retireRelay(relayServer, relay);
     try {
@@ -2154,15 +2178,19 @@ export async function runJcodeHost(): Promise<void> {
     // seat that already called the tool and then kept working (#1440).
     const readinessPrompt = "Call the cotal_orientation tool exactly once now. Do not perform any other work and do not write a response.";
     type ToolCall = Awaited<ReturnType<JcodeClient["run"]>>["toolCalls"][number];
-    // Jcode's deferred MCP surface reaches orientation through `mcp_call`, whose tool_done names
-    // only the wrapper. Its arguments are the call's streamed input, which the Harness API sends
-    // with no call id between that call's tool_start and tool_exec.
+    // Jcode's deferred MCP surface reaches orientation through a wrapper whose tool_done names only
+    // the wrapper: `mcp_call` up to Jcode 0.99.0, and `mcp` with action "call" from 0.99.1, where
+    // `mcp_call` no longer exists. Its arguments are the call's streamed input, which the Harness
+    // API sends with no call id between that call's tool_start and tool_exec.
     const deferredOrientationCalls = new Set<string>();
     let streamingCall: { callId: string; input: string } | undefined;
-    const isDeferredOrientation = (input: string): boolean => {
+    const isDeferredWrapper = (name: string): boolean => name === "mcp_call" || name === "mcp";
+    const isDeferredOrientation = (wrapper: string, input: string): boolean => {
       try {
         const args: unknown = JSON.parse(input);
-        return typeof args === "object" && args !== null && "server" in args && args.server === "cotal" && "tool" in args && args.tool === "cotal_orientation";
+        return typeof args === "object" && args !== null &&
+          (wrapper === "mcp_call" || ("action" in args && args.action === "call")) &&
+          "server" in args && args.server === "cotal" && "tool" in args && args.tool === "cotal_orientation";
       } catch {
         return false;
       }
@@ -2171,7 +2199,7 @@ export async function runJcodeHost(): Promise<void> {
     const isOrientationCall = (call: ToolCall) =>
       call.error === undefined &&
       !call.output.startsWith("Error: ") &&
-      (/(?:^|__)cotal_orientation$/.test(call.name) || (call.name === "mcp_call" && deferredOrientationCalls.has(call.callId)));
+      (/(?:^|__)cotal_orientation$/.test(call.name) || (isDeferredWrapper(call.name) && deferredOrientationCalls.has(call.callId)));
     const hasOrientation = (run: Awaited<ReturnType<JcodeClient["run"]>>) => run.toolCalls.some(isOrientationCall);
     writeJcodeDiagnostic(
       `[cotal-jcode] pre-join readiness: waiting for one cotal_orientation call (bound ${readinessBudgetMs}ms; not on the roster yet)\n`,
@@ -2196,7 +2224,7 @@ export async function runJcodeHost(): Promise<void> {
       }
       if (event.ev === "tool_input_delta" && streamingCall) streamingCall.input += event.delta;
       if (event.ev === "tool_exec") {
-        if (event.name === "mcp_call" && streamingCall?.callId === event.call_id && isDeferredOrientation(streamingCall.input))
+        if (isDeferredWrapper(event.name) && streamingCall?.callId === event.call_id && isDeferredOrientation(event.name, streamingCall.input))
           deferredOrientationCalls.add(event.call_id);
         streamingCall = undefined;
       }
@@ -2358,7 +2386,9 @@ export async function runJcodeHost(): Promise<void> {
     startControl?.close();
     await retireRelay(relayServer, relay);
     // The refusal is only safe once the launch it abandons is provably dead: returning non-zero
-    // hands the manager a retired seat while an unverified daemon would keep running (#839).
+    // hands the manager a retired seat while an unverified daemon would keep running (#839). The
+    // TUI started before readiness goes first, so it cannot start a replacement server (#7950).
+    await stopTui();
     try {
       await stopPrivateJcode({ skipClientClose: error instanceof JcodeConnectorError && error.code === "readiness_timeout" });
       removeCredentials();
