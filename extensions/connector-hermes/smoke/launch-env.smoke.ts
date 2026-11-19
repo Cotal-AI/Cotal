@@ -19,7 +19,8 @@ import { writeLaunchMaterial } from "@cotal-ai/core";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
-import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
+import { assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
+import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome } from "../src/profile-inputs.js";
 import { briefing } from "@cotal-ai/connector-core";
 
 /**
@@ -52,7 +53,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 174;
+const EXPECTED_CELLS = 181;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -351,7 +352,20 @@ rmSync(mgdSet, { recursive: true, force: true });
 process.env.COTAL_HERMES_ADOPT_HOME = "/srv/op/.hermes";
 const adoptEnv = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-adopt" }).env ?? {};
 assert.equal(adoptEnv.COTAL_HERMES_ADOPT_HOME, "/srv/op/.hermes", "the adopt-home opt-in reaches the launcher");
+process.env.COTAL_HERMES_ADOPT_HOME = opAdopt;
+assert.equal(hermesConnector.foregroundLaunchRefusal!({}), undefined, "an existing adopted profile needs no explicit model");
+process.env.COTAL_HERMES_ADOPT_HOME = join(opAdopt, "no-such-profile");
+assert.match(hermesConnector.foregroundLaunchRefusal!({})?.message ?? "", /does not exist/, "a missing adopted profile does not satisfy preflight");
+process.env.COTAL_HERMES_ADOPT_HOME = join(opAdopt, "config.yaml");
+assert.match(hermesConnector.foregroundLaunchRefusal!({})?.message ?? "", /is not a directory/, "a file cannot be adopted as a profile");
+process.env.COTAL_HERMES_ADOPT_HOME = "relative-profile";
+const relativeAdopt = hermesConnector.foregroundLaunchRefusal!({ model: "vendor/model" });
+assert.match(relativeAdopt?.message ?? "", /is not an absolute path/, "a model cannot mask an invalid adopt-home path");
+assert.equal(relativeAdopt?.spawnExampleArgs, undefined, "a model flag cannot fix the adopt-home path");
+process.env.COTAL_HERMES_ADOPT_HOME = "   ";
+assert.equal(hermesConnector.foregroundLaunchRefusal!({})?.spawnExampleArgs, "--harness hermes --no-events --model <model>", "a blank opt-in still needs a model");
 delete process.env.COTAL_HERMES_ADOPT_HOME;
+assert.equal(hermesConnector.foregroundLaunchRefusal!({ model: "vendor/model" }), undefined, "a managed profile accepts a resolved model");
 const plainEnv = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-plain" }).env ?? {};
 assert.ok(!("COTAL_HERMES_ADOPT_HOME" in plainEnv), "without the opt-in the child gets the managed default");
 

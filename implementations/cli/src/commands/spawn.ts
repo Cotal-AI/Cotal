@@ -1454,11 +1454,35 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
+  // A required event plane makes this connector unusable in the space, regardless of its local
+  // prerequisites. Refuse before suggesting a different invocation that cannot run here either.
+  if (eventsRequired && !connector.eventChannel) {
+    console.error(c.red(`✗ ${policySpace} requires the event plane by registration policy, but connector "${connector.name}" does not publish one`));
+    process.exit(1);
+  }
   const binaryPins: Record<string, string | undefined> = { opencode: process.env.COTAL_OPENCODE_BIN, codex: process.env.COTAL_CODEX_BIN };
   const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(binaryPins[bin]?.trim() || bin));
-  if (missing.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${agentType} needs ${missing.join(", ")} on PATH; nothing was launched`, {
+  const inputRefusal = connector.foregroundLaunchRefusal?.({ model });
+  const example = inputRefusal?.spawnExampleArgs
+    ? `Example: ${codeSpan(`${displayCmd()} spawn ${inputRefusal.spawnExampleArgs}`)}`
+    : undefined;
+  if (missing.length) {
+    const binaries = missing.join(", ");
+    const guide = ["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/";
+    const install = `Follow ${guide} to install ${binaries}`;
+    const message = `${agentType} needs ${binaries} on PATH; nothing was launched`;
+    const remedy = inputRefusal
+      ? `${install}.${example ? ` ${example}` : ""}`
+      : `${install}, then retry: ${codeSpan(`${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}`)}`;
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", inputRefusal ? `${message}. ${inputRefusal.message}` : message, {
+      target: { space, path },
+      remedy,
+    });
+  }
+  if (inputRefusal) throw new CommandFailure("refused", "USAGE_INVALID", inputRefusal.message, {
     target: { space, path },
-    remedy: `Follow ${["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/"} to install ${missing.join(", ")}, then retry: \`${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}\``,
+    remedy: example,
+    selfContained: true,
   });
   if (variant && !connector.supportsModelVariant) {
     stderrLine("✗ ", `${agentType} connector does not support model variants (variant)`, c.red);
@@ -1524,9 +1548,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const launchEvents = eventsRequired || events === true || (events !== false && !!connector.eventChannel);
   const eventPayloads = policy?.eventPayloads !== "withheld" && !values["no-event-payloads"] && def.eventPayloads !== false;
   if (launchEvents && !connector.eventChannel) {
-    console.error(c.red(eventsRequired
-      ? `✗ ${policySpace} requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
-      : `✗ connector "${connector.name}" does not publish an AG-UI event plane; omit --events to launch it without one`));
+    console.error(c.red(`✗ connector "${connector.name}" does not publish an AG-UI event plane; omit --events to launch it without one`));
     process.exit(1);
   }
   // A REMOTE user mesh (registered with `meshes add --from`) that advertises a provisioning

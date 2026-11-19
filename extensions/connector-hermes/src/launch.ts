@@ -15,13 +15,14 @@
  * The manager runs this in a PTY; stdio is inherited so the gateway's output is what you attach to.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, discardLaunchArtifacts, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
+import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, requireAdoptedDirectory, requireManagedModel } from "./profile-inputs.js";
 import { startSidecar } from "./sidecar.js";
 import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
 
@@ -91,11 +92,6 @@ function log(msg: string): void {
   process.stderr.write(`[cotal-hermes] ${msg}\n`);
 }
 
-/** A launch this connector refuses on what it was given. The message is the whole diagnosis, so
- *  it is printed without a stack: a stack names lines in a bundle and points the operator at
- *  this code, when what they need to change is their own invocation. */
-export class LaunchRefused extends Error {}
-
 /** A double-quoted YAML basic-string literal (escaped). */
 const yamlStr = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
@@ -115,11 +111,7 @@ export function setupProfile(
   // turn, and the first sign is a provider refusal mid-turn whose advice points at the operator's
   // credentials. Refuse before anything is written, so a refused launch leaves no directory a
   // later spawn could take for a working profile.
-  if (!opts.model)
-    throw new LaunchRefused(
-      "a managed Hermes profile does not read ~/.hermes, and no model was resolved for it — " +
-        `set one with --model or the agent file's model:, or run the gateway on your own profile with ${ADOPT_HOME_ENV}=$HOME/.hermes`,
-    );
+  requireManagedModel(opts.model);
   mkdirSync(home, { recursive: true });
   const pluginDst = join(home, "plugins", "cotal");
   rmSync(pluginDst, { recursive: true, force: true });
@@ -160,23 +152,6 @@ function parseLine(raw: string): [number, number] | null {
 
 const cmp = (a: [number, number], b: [number, number]): number => a[0] - b[0] || a[1] - b[1];
 
-/** Opt-in: run the gateway in the operator's OWN Hermes profile instead of a disposable one.
- *  Set to the absolute path of the profile directory (`$HOME/.hermes`, or any HERMES_HOME). Unset
- *  means the managed default, which is what a spawned seat should almost always use. */
-export const ADOPT_HOME_ENV = "COTAL_HERMES_ADOPT_HOME";
-
-/** Resolve the adopt-home opt-in, or undefined for the managed default. A relative value is
- *  refused: it would resolve against whatever directory the launcher runs in, and a `~` no shell
- *  expanded would name a directory called `~` there, so the profile written to would depend on
- *  where the seat started. */
-export function adoptedHome(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const raw = env[ADOPT_HOME_ENV]?.trim();
-  if (!raw) return undefined;
-  if (!isAbsolute(raw))
-    throw new LaunchRefused(`${ADOPT_HOME_ENV}=${raw} is not an absolute path — set it to the full path of your Hermes profile directory, e.g. ${ADOPT_HOME_ENV}=$HOME/.hermes`);
-  return raw;
-}
-
 /**
  * Install the cotal plugin into an EXISTING Hermes profile, and change nothing else about it.
  *
@@ -200,10 +175,7 @@ export function adoptedHome(env: NodeJS.ProcessEnv = process.env): string | unde
  * silent enable would be a write to a human's configuration that they never asked for.
  */
 export function setupAdoptedProfile(home: string, opts: { persona?: string }): void {
-  if (!existsSync(home))
-    throw new Error(`${ADOPT_HOME_ENV}=${home} does not exist — point it at an existing Hermes profile directory (usually ~/.hermes)`);
-  if (!statSync(home).isDirectory())
-    throw new Error(`${ADOPT_HOME_ENV}=${home} is not a directory`);
+  requireAdoptedDirectory(home);
 
   // A persona is applied by overwriting SOUL.md, which this mode must not touch. Accepting one and
   // never applying it would leave the operator waiting on an identity that never took effect, so

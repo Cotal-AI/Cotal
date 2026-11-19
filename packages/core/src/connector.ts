@@ -309,6 +309,10 @@ export interface Connector extends Extension {
    *  and fails with a clear error naming a missing one. Optional — omit for connectors
    *  whose harness runs in-process. */
   readonly requires?: readonly string[];
+  /** Side-effect-free check of resolved foreground launch inputs on the execution host, even if a
+   *  required executable is missing. A refusal may give example arguments for `spawn` in place of
+   *  retrying the original invocation. The launcher still validates its own inputs. */
+  foregroundLaunchRefusal?(opts: Pick<LaunchOpts, "model">): { message: string; spawnExampleArgs?: string } | undefined;
   /** Directory of installable editor-plugin assets shipped with the connector
    *  (e.g. a Claude Code plugin dir), when the agent type needs a one-time
    *  plugin install. Consumers (like `cotal setup`) resolve it via the registry

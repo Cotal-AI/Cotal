@@ -37,7 +37,8 @@
  * Run: pnpm smoke:spawn-foreground-events
  */
 import { spawn as spawnProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import fs, { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pickFreePort } from "../../manager/smoke/_free-port.js";
@@ -98,6 +99,16 @@ const liveProbe: Connector = {
 registry.register(liveProbe);
 const binaryProbe: Connector = { ...liveProbe, name: "fg-probe-binary", requires: ["opencode"] };
 registry.register(binaryProbe);
+const inputProbe: Connector = {
+  ...binaryProbe,
+  name: "fg-probe-inputs",
+  eventChannel: undefined,
+  foregroundLaunchRefusal: ({ model }) => model ? undefined : {
+    message: "the probe needs a resolved model",
+    spawnExampleArgs: "--harness fg-probe-inputs --model <model>",
+  },
+};
+registry.register(inputProbe);
 // A probe whose child ends the way `--opt` says: `exit <code>`, or killed by `<signal>` (#7043).
 const exitProbe: Connector = {
   kind: "connector",
@@ -166,19 +177,27 @@ async function run(argv: string[]): Promise<{ opts?: LaunchOpts; exited?: number
   const before = captured.length;
   const realExit = process.exit;
   const realErr = console.error;
-  const realWrite = process.stderr.write.bind(process.stderr);
+  const realWrite = process.stderr.write;
+  const realWriteSync = fs.writeSync;
   let exited: number | undefined;
   let stderr = "";
   // `c.dim` lines and provenance both land on process.stderr.write, not console.error; the
   // departure sentence is one of them, so both taps are needed to see it.
   const tap = (chunk: unknown): boolean => { stderr += typeof chunk === "string" ? chunk : String(chunk); return true; };
   process.stderr.write = tap as typeof process.stderr.write;
+  // The kernel writes structured refusal reports synchronously to fd 2, bypassing the stream.
+  fs.writeSync = ((fd: number, ...args: [string, number?, BufferEncoding?]) => {
+    if (fd !== 2 || typeof args[0] !== "string") return realWriteSync(fd, ...args);
+    tap(args[0]);
+    return Buffer.byteLength(args[0]);
+  }) as typeof fs.writeSync;
+  syncBuiltinESMExports();
   console.error = (...a: unknown[]) => { stderr += a.map(String).join(" ") + "\n"; };
   // The refusal ends the process. A suite cannot let it, and turning it into a throw is what makes
-  // "it refused" an observable outcome rather than a dead run.
+  // "it refused" observable. Keep the first exit if the kernel catches this test-only throw.
   (process as unknown as { exit: (c?: number) => never }).exit = ((code?: number) => {
-    exited = code ?? 0;
-    throw new Error(`__exit__${exited}`);
+    exited ??= code ?? 0;
+    throw new Error(`__exit__${code ?? 0}`);
   }) as never;
   try {
     await runCli(registry, argv);
@@ -187,13 +206,15 @@ async function run(argv: string[]): Promise<{ opts?: LaunchOpts; exited?: number
     (process as unknown as { exit: typeof realExit }).exit = realExit;
     console.error = realErr;
     process.stderr.write = realWrite;
+    fs.writeSync = realWriteSync;
+    syncBuiltinESMExports();
   }
   return { opts: captured.length > before ? captured[captured.length - 1] : undefined, exited, stderr };
 }
 
 /** The open-mesh runs of this suite's original cells: one target, one persona, extra flags. */
 // Public --config is now reserved and a bare spawn is a managed attach, so the foreground path is --foreground --file.
-const openRun = (extra: string[]): Promise<{ opts?: LaunchOpts; exited?: number; stderr: string }> =>
+const openRun = (extra: string[]): ReturnType<typeof run> =>
   run(["spawn", "--foreground", "--file", persona, "--server", server, "--space", "fgevents", ...extra]);
 
 console.log("cotal spawn (foreground): the launch bag an armed session needs");
@@ -207,7 +228,26 @@ try {
     try {
       const missing = await openRun(["--agent", "fg-probe-binary"]);
       check("a missing harness refuses before launch construction", missing.opts === undefined && missing.exited === 2, missing.stderr);
+      const bothMissing = await openRun(["--harness", "fg-probe-inputs"]);
+      check("missing binary and input are both reported with a corrected example before launching",
+        bothMissing.opts === undefined && bothMissing.exited === 2 && bothMissing.stderr.includes("DEPENDENCY_UNAVAILABLE")
+          && bothMissing.stderr.includes("needs opencode on PATH") && bothMissing.stderr.includes("the probe needs a resolved model")
+          && bothMissing.stderr.includes("spawn --harness fg-probe-inputs --model <model>")
+          && !bothMissing.stderr.includes("then retry:"), bothMissing.stderr);
+      const incompatible = await run(["spawn", "--foreground", "--file", persona, "--space", "fgremote", "--harness", "fg-probe-inputs"]);
+      check("required event policy refuses without suggesting a launch that cannot run in the space",
+        incompatible.opts === undefined && incompatible.exited === 1 && incompatible.stderr.includes("requires the event plane by registration policy")
+          && !incompatible.stderr.includes("then retry:") && !incompatible.stderr.includes("--model <model>"), incompatible.stderr);
+      const configured = await openRun(["--harness", "fg-probe-inputs", "--model", "test-model"]);
+      check("an already configured launch still gets the original retry for a missing binary",
+        configured.exited === 2 && configured.stderr.includes("DEPENDENCY_UNAVAILABLE")
+          && configured.stderr.includes("then retry:") && configured.stderr.includes("--harness fg-probe-inputs --model test-model")
+          && !configured.stderr.includes("the probe needs a resolved model"), configured.stderr);
       process.env.COTAL_OPENCODE_BIN = process.execPath;
+      const onlyInputMissing = await openRun(["--harness", "fg-probe-inputs"]);
+      check("a missing input alone is a usage refusal before launching",
+        onlyInputMissing.opts === undefined && onlyInputMissing.exited === 1 && onlyInputMissing.stderr.includes("the probe needs a resolved model")
+          && !onlyInputMissing.stderr.includes("needs opencode on PATH"), onlyInputMissing.stderr);
       const pinned = await openRun(["--agent", "fg-probe-binary"]);
       check("a valid executable pin outside PATH still launches", pinned.opts !== undefined && pinned.exited === undefined, pinned.stderr);
       process.env.COTAL_OPENCODE_BIN = join(root, "missing-opencode");
@@ -376,7 +416,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 26;
+const EXPECTED = 30;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
