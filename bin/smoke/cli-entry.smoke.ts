@@ -553,6 +553,24 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     shown16.status === 1 && shown16.stdout.includes(`w16.md: ${saved}`) && /"remedy":"save \S+w16\.md as UTF-8"/.test(shown16.stdout), shown(shown16));
   const old16 = cotal(["personas", "list"], utf16, noSeed);
   check("personas list names it by its encoding too", old16.stdout.includes(`w16.md: ${saved}; save it as UTF-8`), shown(old16));
+  const wrongModel = (home: string) => {
+    seeded(home);
+    writeFileSync(join(home, "..", ".cotal", "agents", "wrong-model.md"), "---\nname: wrong-model\nmodel: 42\n---\n");
+    writeFileSync(join(home, "..", ".cotal", "agents", "wrong-yaml.md"), "---\nname: wrong-yaml\nmodel: [private-value\n---\n");
+  };
+  const modelReason = /wrong-model\.md: "model" must be a string; got number/;
+  const yamlReason = /wrong-yaml\.md: the frontmatter is not valid YAML at line 3/;
+  const invalidPlain = cotal(["persona", "--plain"], wrongModel, noSeed);
+  const invalidJson = cotal(["persona", "--json"], wrongModel, noSeed);
+  const report = JSON.parse(invalidJson.stdout) as { outcome: string; result: { items: { name: string; valid: boolean }[] }; warnings: { code: string; message: string }[] };
+  check("persona --plain lists the parser rules without quoting the YAML excerpt",
+    invalidPlain.status === 4 && /default +.*readable/m.test(invalidPlain.stdout) && modelReason.test(invalidPlain.stderr) && yamlReason.test(invalidPlain.stderr) && !invalidPlain.stderr.includes("private-value"), shown(invalidPlain));
+  check("persona --json keeps readable definitions and returns only the safe parser reasons for invalid definitions",
+    invalidJson.status === 4 && report.outcome === "partial" && report.result.items.some((item) => item.name === "default" && item.valid) &&
+      report.warnings.some((w) => w.code === "SCHEMA_INVALID" && modelReason.test(w.message)) && report.warnings.some((w) => w.code === "SCHEMA_INVALID" && yamlReason.test(w.message)) && !invalidJson.stdout.includes("private-value"), shown(invalidJson));
+  const partialLegacy = cotal(["personas", "list"], wrongModel, noSeed);
+  check("personas list exits 4 but still prints readable entries and the parser reason",
+    partialLegacy.status === 4 && /^default\s/m.test(partialLegacy.stdout) && modelReason.test(partialLegacy.stdout), shown(partialLegacy));
   // A catalog file that is a FIFO would block a read, so the list marks it unreadable and names it
   // rather than waiting on it.
   if (process.platform !== "win32") {
@@ -645,12 +663,13 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const raw = /[\x07\x1b]/;
   const hostile = (home: string) => {
     mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
-    writeFileSync(join(home, "..", ".cotal", "agents", "h.md"), `---\nname: h\nrole: "r\\e]0;PWN\\aR"\ndescription: "d\\e[2JD"\n---\nbody ${E}B\n`);
+    writeFileSync(join(home, "..", ".cotal", "agents", "h.md"), card);
   };
+  const card = `---\nname: h\nrole: reviewer\ndescription: "d\\e]0;PWN\\aR\\e[2JD"\n---\nbody ${E}B\n`;
   for (const argv of [["personas", "list"], ["personas", "list", "-v"]]) {
     const r = cotal(argv, hostile, noSeed);
     check(`cotal ${argv.join(" ")} escapes the catalog's control characters`,
-      r.status === 0 && !raw.test(r.stdout + r.stderr) && r.stdout.includes("r\\u001b]0;PWN\\u0007R") && r.stdout.includes("d\\u001b[2JD") &&
+      r.status === 0 && !raw.test(r.stdout + r.stderr) && r.stdout.includes("d\\u001b]0;PWN\\u0007R\\u001b[2JD") &&
         (argv.length === 2 || r.stdout.includes("    body \\u001b]0;PWN\\u0007\\u001b[2JB")), shown(r));
   }
   // A parser diagnostic spans lines, and each is printed on its own rather than as escaped breaks.
@@ -658,8 +677,8 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
     writeFileSync(join(home, "..", ".cotal", "agents", "broken.md"), "---\nname: broken\nmodel: [unclosed\n---\nbody\n");
   }, noSeed);
-  check("personas list prints a YAML diagnostic as lines, with no escaped line breaks",
-    unparseable.status === 0 && /⨯ unparseable .*at line 2, column 17:$/m.test(unparseable.stdout) && /^ {4}model: \[unclosed$/m.test(unparseable.stdout) && /^ {20}\^$/m.test(unparseable.stdout) && !unparseable.stdout.includes("\\u000a"), shown(unparseable));
+  check("personas list exits 4 and prints a YAML diagnostic as lines, with no escaped line breaks",
+    unparseable.status === 4 && /⨯ unparseable .*at line 2, column 17:$/m.test(unparseable.stdout) && /^ {4}model: \[unclosed$/m.test(unparseable.stdout) && /^ {20}\^$/m.test(unparseable.stdout) && !unparseable.stdout.includes("\\u000a"), shown(unparseable));
   // Only a catalog folder that does not exist lists as empty. One that cannot be read is refused, as
   // `persona` refuses it, under the space it read. A folder this account owns whose mode denies it is
   // given the chmod that lets it read, and the run leaves the mode as it was. Any other read error
@@ -709,7 +728,6 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   }, noSeed);
   check("personas list prints a long first prompt line whole when nothing limits the width",
     wide.status === 0 && wide.stdout.includes(`  ${longLine}\n`) && !wide.stdout.includes("…"), shown(wide));
-  const card = `---\nname: h\nrole: "r\\e]0;PWN\\aR"\ndescription: "d\\e[2JD"\n---\nbody ${E}B\n`;
   const piped = cotal(["personas", "show", "h"], hostile, noSeed);
   check("personas show piped writes the file byte for byte and nothing else", piped.status === 0 && piped.stdout === card, shown(piped));
   // Legacy `personas show` refuses as `persona show` does: a missing persona, an invalid definition and

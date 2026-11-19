@@ -113,12 +113,13 @@ const names = (root: string) => listPersonas(root).map((p) => p.name).sort();
  *  command's, and would pass against the unfixed tree — measured, not hypothesised. */
 async function captureList(values: { space?: string; server?: string }): Promise<string> {
   const lines: string[] = [];
-  const realLog = console.log;
+  const realLog = console.log, exitCode = process.exitCode;
   console.log = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
   try {
     await personas({ values, positionals: ["list"], raw: [] });
   } finally {
     console.log = realLog;
+    process.exitCode = exitCode;
   }
   // Strip ANSI: the listing bolds names, so a flush-left name test would match nothing and every
   // "the cwd's personas are absent" check would pass for the wrong reason.
@@ -515,7 +516,7 @@ try {
       ["spawn", name, "--foreground", "--dry-run", "--json"],
     ]) {
       const result = native(args);
-      const diagnostic = args[0] === "spawn" ? "local launch persona could not be read and validated" : expected.replaceAll('"', '\\"');
+      const diagnostic = expected.replaceAll('"', '\\"');
       check(`${args[0]} ${args[1]} refuses wrong YAML ${field} type`, result.status !== 0 && result.stdout.includes("SCHEMA_INVALID") && result.stdout.includes(path) && result.stdout.includes(diagnostic), result.stdout + result.stderr);
     }
     unlinkSync(path);

@@ -554,7 +554,8 @@ refuse it with `PERMISSION_DENIED`, and the list marks it unreadable and names i
 
 List, show and mutation receipts support one-document `--json` and line-oriented `--plain`.
 Show explicitly returns the full definition and source. List does not return the body or launch
-options. A malformed entry produces a partial inventory (exit 4); an unreadable catalog refuses
+options. A malformed entry produces a partial inventory (exit 4) and a warning with the file and
+the validation reason. An unreadable catalog refuses
 with `PERMISSION_DENIED` (exit 2) rather than reporting it empty. A catalog folder that lists its
 file names but cannot be searched, such as one set to mode 0600, is refused the same way, empty or
 not, and its personas are not reported as malformed. Its next step is
@@ -577,7 +578,8 @@ Its `new` requires `--subscribe`, reads `--from -` from
 stdin, and overwrites an existing persona only with `--force`. Its local writes share the same
 draft validation and commit fence. Its `list` refuses a catalog folder it cannot read with
 `PERMISSION_DENIED` (exit 2), naming the space and giving the next step `persona` gives, rather
-than reporting it empty, and still lists a persona file that does not parse as unparseable. It
+than reporting it empty. It lists malformed files alongside readable definitions and exits 4 if any
+definition could not be read. It
 escapes control characters in the names, fields and bodies it prints, as `persona show` does, and
 shows each persona's description or first prompt line whole, wrapped to the terminal's width. Its
 `show` does the same on a terminal, under the file's path, and writes only the file, byte for byte,
