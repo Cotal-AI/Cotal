@@ -48,6 +48,7 @@ import {
   type MaintenanceLock,
   type OutputWarning,
   type Report,
+  type SeatCap,
   type ServiceDefinitionInput,
   type UserAuthInfo,
   unparsableDaemonCreds,
@@ -167,6 +168,7 @@ export interface StackUpRequest {
   /** How the broker resolves space accounts (`--account-resolver`). Absent: the recorded one. */
   accountResolver?: "memory" | "full";
   maxSessions?: number;
+  managerSeatCap?: SeatCap;
   channels?: string;
   foreground: boolean;
   presentation: ReturnType<typeof presentationOf>;
@@ -890,7 +892,10 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     if (request.presentation !== "json" && !(current[0] && observeServiceProcess(current[0].record.value) === "running"))
       process.stderr.write(`Starting ${definition.name}; waiting up to ${Math.round(definition.record.value.readiness.timeoutMs / 1000)}s for its readiness check\n`);
     // A redefined member starts its replacement under the IDs the journal already names.
-    const started = await startProcessService(definition, replacement ? { replacement: { instanceId: replacement.instanceId, launchRequestId: replacement.launchRequestId } } : current[0] ? { instance: current[0].name } : {});
+    const started = await startProcessService(definition, {
+      ...(replacement ? { replacement: { instanceId: replacement.instanceId, launchRequestId: replacement.launchRequestId } } : current[0] ? { instance: current[0].name } : {}),
+      ...(role === "manager" && request.managerSeatCap !== undefined ? { managerSeatCap: request.managerSeatCap } : {}),
+    });
     mark(role, { instanceId: started.instance.name, state: started.noOp ? "reused" : "started", replacement: undefined, process: started.instance.record.value.process });
     if (!started.noOp) changed.push(instanceProjection(started.instance));
     return started.instance;

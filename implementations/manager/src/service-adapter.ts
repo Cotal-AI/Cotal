@@ -9,7 +9,7 @@ import {
   readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts, removePidPair, readServiceStopRequest, releaseRetainedServiceStop, clearRetainedRefusedServiceStopRequest,
   clearAbandonedServiceStopRequest, connectUserControlOrThrow, credentialRefusalMessage, disarmManagerShutdownIntent, isCommandFailure, managerShutdownIntentArmedBy, protectedLocalDirectory,
   releaseExitedServiceStopReservation, requestLocalStop, reserveNativeServiceStop, resolveNativeServiceTarget, serviceAdapterAttempt, serviceMetadataDigest,
-  stopReservationPath, userViewAuth, type LocalProcess, type NativeServiceStopRequest, type ProcessIdentityRecord, type ServiceAdapterAttempt, type ServiceAdapterContext,
+  seatCapText, stopReservationPath, userViewAuth, type LocalProcess, type NativeServiceStopRequest, type ProcessIdentityRecord, type ServiceAdapterAttempt, type ServiceAdapterContext,
   type ServiceAdapterStopAbandonment, type ServiceAdapterStopContext, type ServiceAdapterStopPlan, type ServiceAdapterStopRefusal, type ServiceAdapterStopResult,
   type ServicePreset,
 } from "@cotal-ai/workspace";
@@ -229,6 +229,7 @@ export const managerService: LocalProcess = {
     if (typeof context.options["console-host"] === "string" && /[\u0000- \u007f]/u.test(context.options["console-host"])) throw new CommandFailure("refused", "USAGE_INVALID", "the declared console host contains whitespace or controls; no native child was launched");
     const extra: string[] = [];
     for (const name of ["console-port", "console-host", "ws-port", "max-sessions"] as const) if (context.options[name] !== undefined) extra.push(`--${name}`, String(context.options[name]));
+    if (context.managerSeatCap !== undefined) extra.push("--seat-cap", seatCapText(context.managerSeatCap));
     // A controller resume passes only its attempt and, when present, the protected token handoff
     // path and digest. Never the token, and never with a launch spec.
     const attempt = context.attempt === undefined ? undefined : serviceAdapterAttempt(context.attempt, ["resumeCommit"]);
