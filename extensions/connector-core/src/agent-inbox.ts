@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { channelInAllow, isConcreteChannel, partsToText, type AnycastTakeOutcome, type AttentionMode, type ChannelMode, type CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
-import { CHANNEL_CATCHUP_AGE_MS, afterRecallMark, MAX_INBOX, TAKE_WAIT_MS, TAKE_RETRY_MS, MAX_IN_FLIGHT, MAX_AHEAD, CLASSIFICATION_CAP, FOCUS_EXCLUSION_CAP, IDLESS_READS, PROTECTED_DISPOSITION_CAP, idlessDigest, ingestDedupKey } from "./agent-inbox-model.js";
+import { CHANNEL_CATCHUP_AGE_MS, afterRecallMark, MAX_INBOX, TAKE_WAIT_MS, TAKE_RETRY_MS, MAX_IN_FLIGHT, MAX_AHEAD, CLASSIFICATION_CAP, FOCUS_EXCLUSION_CAP, IDLESS_READS, PROTECTED_DISPOSITION_CAP, handOver, idlessDigest, ingestDedupKey } from "./agent-inbox-model.js";
 import type { AgentInboxDeps, InboxItem, InboxSnapshot, Pending, IdlessTally, IdlessCopy, RecallMark, InboxScope, ExactDrainResult, DeliveryNotice } from "./agent-inbox-model.js";
 export { deliveryNoticeOf, afterRecallMark, MAX_INBOX } from "./agent-inbox-model.js";
 export type { InboxItem, InboxSnapshot, InboxScope, ExactDrainResult, RecallMark, DeliveryNotice } from "./agent-inbox-model.js";
@@ -664,7 +664,9 @@ export class AgentInbox {
     }
     for (const p of asked) p.awaited = (p.awaited ?? 1) - 1;
     const showable = new Map(this.peekInbox(scope).map((i) => [i.recvKey, i]));
-    return chosen.flatMap((i) => showable.get(i.recvKey) ?? []);
+    const shown = chosen.flatMap((i) => showable.get(i.recvKey) ?? []);
+    for (const i of shown) handOver(i);
+    return shown;
   }
 
   /** How many role requests are held because their take is pending or could not be decided, and why. */
@@ -806,6 +808,8 @@ export class AgentInbox {
       this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1);
       this.keepOwned(id);
     }
+    const held = new Set(ids);
+    for (const p of this.inbox) if (held.has(p.item.recvKey)) handOver(p.item);
     return true;
   }
 
@@ -841,6 +845,7 @@ export class AgentInbox {
     p.redelivery = redelivery;
     p.ownedUntil = redelivery && Date.now() + redelivery.ackWaitMs;
     p.item.deliveryCount = redelivery?.deliveryCount;
+    p.item.firstDeliveryCount ??= redelivery?.deliveryCount ?? 1;
   }
 
   /** Keep a held durable delivery with this reader for as long as the hold lasts, by restarting its

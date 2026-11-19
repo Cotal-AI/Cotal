@@ -61,6 +61,9 @@ The install root defaults to `${XDG_DATA_HOME:-~/.local/share}/cotal`.
 If the launcher directory is not already on PATH, the installer updates your shell configuration.
 On Linux with Bash, it updates `~/.bashrc` and the first readable login file: `~/.bash_profile`, `~/.bash_login`, or `~/.profile`.
 If none exists, it creates `~/.profile`.
+The installer preserves existing lines and leaves matching PATH blocks in place.
+It does not run startup files to check their effect. If it finds matching lines or cannot update
+a startup file, it prints the export command to use if your shell cannot find `cotal`.
 The installer's files are not writable by other users.
 
 To install and open guided setup in one command instead, omit `--no-setup`:
