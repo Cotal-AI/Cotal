@@ -574,7 +574,8 @@ cotal status --components [--space <s>] [--server <url>]
 ```
 
 `cotal meshes` is a legacy command. It still runs, and `cotal help meshes` still prints its help,
-but `cotal help` no longer lists it and completion does not offer it. `cotal space` lists the
+but `cotal help` no longer lists it and completion does not offer it. Both bare `cotal meshes`
+and `cotal meshes list` show the registry without installing or refreshing connectors. `cotal space` lists the
 spaces, `space add <name>` registers one that runs elsewhere, including a user-auth space with
 `--file` or `--from`, and `space forget <name>` drops a registration.
 
