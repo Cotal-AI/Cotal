@@ -289,7 +289,8 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   serve.stdout?.on("data", scanner());
   serve.stderr?.on("data", scanner());
   // Set once the boot has failed, so the serve's own clean exit on our SIGTERM cannot turn that
-  // failure into exit 0: this handler runs before the abort's own `process.exit(1)` (#3878).
+  // failure into exit 0: this handler runs before the abort's own `process.exit(1)` (#3878). A serve
+  // that ends on its own before the handshake is a failed launch too, even when it exits 0.
   let bootFailed = false;
   serve.on("close", (code, signal) => {
     if (!attached) {
@@ -298,7 +299,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
           (connectorLine ? `Last connector message: ${connectorLine}. ` : "") +
           (lastOutput.trim() ? `Last output: ${lastOutput.trim().split(/\r?\n/).slice(-2).join(" | ")}\n` : "\n"),
       );
-      process.exit(bootFailed ? 1 : (code ?? (signal ? 1 : 0)));
+      process.exit(bootFailed ? 1 : code || (signal || (!sessionId && !stopping) ? 1 : 0));
     }
   });
 

@@ -33,7 +33,7 @@
     },
     {
       "name": "stop suppresses a genuine connection-close rejection",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "    this.disableLibraryReconnect(nc);\n    await nc.close();\n    if (!nc.isClosed()) throw new Error(\"endpoint connection closure is unproved; consumer custody must be retained\");",
       "replace": "    this.disableLibraryReconnect(nc);\n    await nc.close().catch(() => {});\n    if (!nc.isClosed()) throw new Error(\"endpoint connection closure is unproved; consumer custody must be retained\");",
       "expectRed": "a genuine connection-close rejection remains a stop failure",
@@ -41,7 +41,7 @@
     },
     {
       "name": "stop accepts a resolved close without proof",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "    if (!nc.isClosed()) throw new Error(\"endpoint connection closure is unproved; consumer custody must be retained\");",
       "replace": "    // Mutation: trust a resolved close without checking its outcome.",
       "expectRed": "a resolved close without closure proof remains a stop failure",

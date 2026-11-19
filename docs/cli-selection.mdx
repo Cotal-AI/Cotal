@@ -218,6 +218,10 @@ folder with `cotal space create <name>`, then run `cotal up`. Until then, `space
 says its recorded folder no longer exists.
 
 
+An explicit empty or whitespace-only `--root` on `space create` or `space add` refuses
+`USAGE_INVALID` (exit 1) before any files or registrations are written.
+
+
 ### Forgetting a local record
 
 When a broker registered by hand does not answer, commands such as `send` and the delivery daemon

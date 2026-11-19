@@ -33,7 +33,7 @@
   "mutations": [
     {
       "name": "an expired candidate is adopted when it advances the held one",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "        if (expiryMs <= Date.now())",
       "replace": "        if (expiryMs <= Date.now() && expiryMs <= bearerExpiryMs(held))",
       "expectRed": "an expired candidate is refused even though it ADVANCES the held one",
@@ -42,7 +42,7 @@
     },
     {
       "name": "the re-serve test goes back to an advancement comparison",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
       "replace": "        if (expiryMs <= bearerExpiryMs(held) && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
       "expectRed": "a re-signed token carrying the same exp past its renewal window IS adopted, with no warning",
@@ -51,8 +51,8 @@
     },
     {
       "name": "a short-lived token's renewal is backed off to the old 15s failure cadence",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "() => void this.renewBearerOnTimer(), CotalEndpoint.BEARER_MIN_RENEWAL_MS));",
+      "file": "packages/core/src/endpoint-credentials.ts",
+      "find": "() => void this.renewBearerOnTimer(), EndpointCredentials.BEARER_MIN_RENEWAL_MS));",
       "replace": "() => void this.renewBearerOnTimer(), 15_000));",
       "expectRed": "a healthy short-TTL source still renews at the floor (>= 2 reads in 12s)",
       "cell": "a healthy short-TTL source still renews at the floor (>= 2 reads in 12s)",
@@ -60,7 +60,7 @@
     },
     {
       "name": "both refusals are applied with no token held",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "      if (held !== undefined) {",
       "replace": "      if (held !== undefined || true) {",
       "expectRed": "the initial fetch is adopted even when it is already expired",
@@ -69,7 +69,7 @@
     },
     {
       "name": "the window edge goes exclusive, so the same token at its renewal deadline is adopted",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
       "replace": "        if (bearer === held && Date.now() > bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
       "expectRed": "the SAME token back past its renewal window is refused (the edge is inclusive)",
@@ -78,7 +78,7 @@
     },
     {
       "name": "the re-serve refusal starts one millisecond inside the renewal window",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
       "replace": "        if (bearer === held && Date.now() + 1 >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
       "expectRed": "the same token 1ms inside its window is adopted, with no warning, and re-armed at the 5s floor",
@@ -87,7 +87,7 @@
     },
     {
       "name": "the re-serve refusal no longer asks how much life the token has left",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
       "replace": "        if (bearer === held)",
       "expectRed": "a re-served token with most of its life left is adopted, with no warning",
@@ -96,8 +96,8 @@
     },
     {
       "name": "a failed refresh retries after ten minutes instead of 2.5s to 5s",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "      const delay = named > 0 ? named : jitteredBackoffMs(this.bearerRenewalFailures, CotalEndpoint.BEARER_RETRY_MS, CotalEndpoint.BEARER_RETRY_CAP_MS);",
+      "file": "packages/core/src/endpoint-credentials.ts",
+      "find": "      const delay = named > 0 ? named : jitteredBackoffMs(this.bearerRenewalFailures, EndpointCredentials.BEARER_RETRY_MS, EndpointCredentials.BEARER_RETRY_CAP_MS);",
       "replace": "      const delay = named > 0 ? named : 600_000;",
       "expectRed": "that refusal arms the first jittered retry, 2.5s to 5s, not the renewal window",
       "cell": "that refusal arms the first jittered retry, 2.5s to 5s, not the renewal window",

@@ -39,6 +39,9 @@ cotal version             # cotal-ai version + each installed extension's, and a
 cotal version --json      # the same as one JSON document (also `-j`)
 ```
 
+Run `cotal --version` or `cotal -V` without other arguments for a quick version check.
+These forms read the CLI version and recorded extension versions without loading the command runtime or installed extensions.
+
 The shell installer prints its absolute launcher path. Use it when an older installation still
 wins plain `cotal`. Having `~/.local/bin` somewhere on PATH does not establish precedence, and a
 child installer cannot change the parent shell's command cache, aliases or functions. Inspect

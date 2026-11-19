@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { logicalExecutionEntry, extensionProvides, loadExtensionsManifest, type InstalledExtension } from "@cotal-ai/workspace";
+import { cachedUpdateSummary, logicalExecutionEntry, extensionProvides, loadExtensionsManifest, type InstalledExtension } from "@cotal-ai/workspace";
 import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
+import { readUpdatePending } from "./update-pending.js";
 
 /** This binary's own published version. Re-exported here so the version surfaces (`cotal version` and
  *  `cotal status`) have a single import for all version reporting. */
@@ -70,4 +71,17 @@ export function readExtensionVersions(): { versions: ExtensionVersion[]; unreada
       pkg: e.pkg,
     })),
   };
+}
+
+/** Print the same metadata for the version command and the standalone flags. */
+export function printVersion(exts = extensionVersions()): void {
+  const current = cliVersion();
+  const update = cachedUpdateSummary(current);
+  const pending = readUpdatePending(current);
+  const lines = [`cotal-ai ${current}`, ...(pending.kind === "none" ? [] : [`  ${pending.instruction}`]), ...(update === "update status unknown" || update === "up to date" || (pending.kind !== "none" && update === pending.instruction) ? [] : [`  ${update}`])];
+  if (exts.length) {
+    const pad = Math.max(...exts.map((e) => e.label.length));
+    for (const e of exts) lines.push(`  ${e.label.padEnd(pad)}  ${e.version}`);
+  }
+  console.log(lines.join("\n"));
 }

@@ -861,6 +861,11 @@ runs as of the last down, and `--json` carries them as `storeContents.runsAtLast
 `removedRuns`. When that down could not read them, or no down recorded them, the preview says so.
 To see the runs then, run `cotal up` and `cotal run`, then `cotal down --yes`.
 
+On a controller stack, both resets leave an empty private store directory in place of the one they
+removed and record it in the stack journal, as `up` records a store it prepares. `status`, `down`
+and the next `up` then report no `STORE_MISSING`, and `up` starts the broker on that empty store. A
+store removed by hand still warns `STORE_MISSING`.
+
 
 ### Store preview
 

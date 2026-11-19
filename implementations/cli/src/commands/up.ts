@@ -2395,6 +2395,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // before signalling the broker. Keep the child referenced and its output in this terminal.
   // The configuration names a store inside the root relative to it, so the broker runs from the root.
   const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
+  let listenerReady = false;
   let activationFinished = !resumeAttempt;
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
   child.on("error", (err) => {
@@ -2459,9 +2460,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     await stopDelivery(space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
     await stopManager(space).then(() => clearManagerArtifacts(space)).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
     await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
-    // Unrecording (and the exit code below) both depend on WHY the broker is gone. `stopping` is
-    // true only for the intended shutdown `stop()` drives (Ctrl-C, SIGTERM) — everything else here
-    // (a crash, an OOM kill, a signal from outside `up`) leaves the record and its store in place.
+    // Only the shutdown that `stop()` drives (Ctrl-C, SIGTERM) can unrecord here.
+    // External `down` owns its own registry cleanup.
     if (stopping) {
       // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
       // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
@@ -2476,6 +2476,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (getCurrent() === space) clearCurrent();
       }
       if (activationFinished) process.exit(stopSignal === "SIGTERM" ? 143 : 130);
+    } else if (code === 0) {
+      // Before readiness, the startup check reports that the listener never answered.
+      // After readiness, do not race external `down` with a claim about its registry cleanup.
+      if (listenerReady && activationFinished) process.exit(0);
     } else {
       // The record is kept ON PURPOSE: it still names the store this broker opened, so a repair
       // `up` reopens that SAME store instead of falling back to the root's default, and a
@@ -2500,14 +2504,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       stderrLine("✗ ", `nats-server exited unexpectedly (${detail})${outcome}`, c.red);
       // A foreground broker under `Restart=on-failure` must exit non-zero on a crash so the unit
       // restarts it; exiting 0 here (as an unconditional `code ?? 0` used to) looked like a clean
-      // stop and left the unit sitting dead. A broker that exited 0, as after an external `down`,
-      // still exits 0. Any other exit is a failed run, 5, not the broker's own code, which the exit
-      // table would read as a usage error (1) or a refusal (2).
-      if (activationFinished) process.exit(code === 0 ? 0 : exitCode("failed", "OPERATION_FAILED"));
+      // stop and left the unit sitting dead. An abnormal exit is a failed run, 5, not the broker's
+      // own code, which the exit table would read as a usage error (1) or a refusal (2).
+      if (activationFinished) process.exit(exitCode("failed", "OPERATION_FAILED"));
     }
   });
 
   await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: "the terminal output above", boundListener });
+  listenerReady = true;
   {
     // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once
     // it cannot reach the broker, and a starved host makes a running broker look unreachable, so it can

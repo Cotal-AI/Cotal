@@ -1,4 +1,5 @@
 /** Updates skip retained legacy configurations without claiming continuity and prove stopped controllers cold. */
+import "./update-isolation.js";
 import nodeAssert from "node:assert/strict";
 import { assertSmokeSandboxDown, countedAssert, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { spawnSync } from "node:child_process";
@@ -10,7 +11,7 @@ import { join, resolve } from "node:path";
 import { createSpaceAuth } from "@cotal-ai/core";
 import type { MeshTarget } from "@cotal-ai/workspace";
 import { isStoppedLocalMesh, readManagerContinuity } from "../src/commands/update.js";
-import { authDir, clearCurrent, findPreparedSpace, readCurrent, recordPreparedSpace, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
+import { authDir, clearCurrent, findPreparedSpace, meshFile, readCurrent, recordMesh, recordPreparedSpace, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { writeStackJournal, STACK_ROLES, type StackJournal } from "../src/lib/stack-journal.js";
 import { serviceInstanceStore, processServiceHost, requireProcessIdentity } from "../src/lib/service-instances.js";
 
@@ -258,6 +259,27 @@ try {
     expectSuccess(["use", "--clear"]);
     const journalPath = join(".cotal", "stack-controller.json");
     const journalBefore = readFileSync(join(controllerProject, journalPath));
+    // Older releases could leave another stopped space registered at this address. Current up
+    // guards against creating the duplicate, so record the historical entry after stopping.
+    const sharingSpace = `sharing-${randomUUID()}`;
+    recordMesh({ space: sharingSpace, root: join(root, "renamed-away"), server: target.server, mode: "open", origin: "up", ts: new Date().toISOString() });
+    try {
+      const registration = readFileSync(meshFile(sharingSpace));
+      const result = expectSuccess(["update", "--self", "--space", controllerSpace]);
+      assert.match(result.stdout, /stopped; no manager running/);
+      assert.deepEqual(readFileSync(meshFile(sharingSpace)), registration, "update preserves the other registration");
+      assert.deepEqual(readFileSync(join(controllerProject, journalPath)), journalBefore, "update preserves the stopped controller journal");
+      await new Promise<void>((resolve, reject) => { listener.once("error", reject); listener.listen(address.port, "127.0.0.1", resolve); });
+      try {
+        const cwd = process.cwd();
+        try {
+          process.chdir(controllerProject);
+          await assert.rejects(readManagerContinuity({ space: controllerSpace }), /another registration names this stack's exact broker address/);
+        } finally { process.chdir(cwd); }
+      } finally {
+        await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+      }
+    } finally { removeMesh(sharingSpace); }
     for (const kind of ["copy", "move", "forgotten"] as const) {
       if (kind === "copy") {
         controllerProject = join(root, "controller-copy");
