@@ -30,6 +30,7 @@ const VIEWS: View[] = [
 export interface Places {
   channel: string | null;
   dm: { peer: string; with: string } | null;
+  dmUnavailable?: string;
 }
 
 /** Why an item that leads nowhere yet is disabled: the empty state the reader would find there. */
@@ -131,7 +132,7 @@ export function Rail({ route, places }: { route: Route; places: Places }) {
               {VIEWS.map(({ label, icon, view }) => {
                 const to = leadsTo(view, route, places);
                 const here = route.view === view || (view === "agents" && route.view === "agent");
-                const why = EMPTY_TITLE[view];
+                const why = (view === "dm" ? places.dmUnavailable : undefined) ?? EMPTY_TITLE[view];
                 return (
                   <SidebarMenuItem key={view}>
                     {to ? (

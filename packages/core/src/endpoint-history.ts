@@ -392,26 +392,19 @@ export class EndpointHistory {
 
 
   /** Fetch recent DMs (any sender→any recipient) from the space's DM backlog. `signal` cancels the
-   *  active pull and reclaims its ephemeral consumer. God-view only:
-   *  a normal agent/observer's ACL denies CONSUMER.CREATE on DM_<space>, so this throws-and-
-   *  skips for them — only an `admin`-profile cred can read it. Returns `HistoryMessage[]`
+   *  active pull and reclaims its ephemeral consumer. The read rejects if the broker denies access
+   *  to the DM backlog. Returns `HistoryMessage[]`
    *  (#1413): every field present on a row was checked by the drain before the row was
    *  returned — a stored row missing `ts` / `space` / `parts` / `from.name` is dropped, never
    *  returned with that member silently `undefined`. */
   async dmHistory(opts?: { limit?: number; signal?: AbortSignal }): Promise<HistoryMessage[]> {
-    try {
-      // every inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor> DM — the whole DM subtree (god-view)
-      return (await this.streamHistory(
-        dmStream(this.space),
-        [`${spacePrefix(this.space)}.inst.>`],
-        opts?.limit ?? 100,
-        undefined,
-        opts?.signal,
-      )).map((r) => r.msg);
-    } catch (e) {
-      if (isPermissionDenied(e)) return [];
-      throw e;
-    }
+    return (await this.streamHistory(
+      dmStream(this.space),
+      [`${spacePrefix(this.space)}.inst.>`],
+      opts?.limit ?? 100,
+      undefined,
+      opts?.signal,
+    )).map((r) => r.msg);
   }
 
 
@@ -545,7 +538,6 @@ export class EndpointHistory {
       // with no history yet). Anything else — a denial, a timeout, a 503, a protocol or
       // consumer-create failure — is raised, because "no history" and "I could not read the history"
       // are different answers and only one of them is safe to render as an empty conversation.
-      // `dmHistory` alone turns a denial into its documented empty god-view result.
       const msg = String((e as { message?: unknown } | null)?.message ?? "");
       if (/stream not found/i.test(msg) || (e as { code?: number } | null)?.code === 404) return [];
       throw e;

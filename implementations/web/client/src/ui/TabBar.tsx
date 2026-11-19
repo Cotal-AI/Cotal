@@ -27,7 +27,7 @@ export function TabBar({ route, places, waiting, working }: { route: Route; plac
         const to = leadsTo(view, route, places);
         const here = route.view === view || (view === "agents" && route.view === "needs") || (view === "agents" && route.view === "agent");
         const Item = to ? "a" : "button";
-        const why = to ? undefined : EMPTY_TITLE[view];
+        const why = to ? undefined : (view === "dm" ? places.dmUnavailable : undefined) ?? EMPTY_TITLE[view];
         const item = (
           <Item
             key={view}
