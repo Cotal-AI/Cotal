@@ -81,6 +81,10 @@ try {
     otherSelection.result.selected.space !== "status-broker" && nats(otherSelection)?.state === "running" && nats(otherSelection)?.pid === brokerPid, otherSelection);
   const plain = run("status", "--plain");
   check("plain status keeps controller members under Owned services", plain.status === 0 && plain.stdout.includes("Controller stack") && plain.stdout.includes("stack-broker") && !plain.stdout.includes("Legacy local process records"), plain.stdout);
+  const next = plain.stdout.split("\nNext\n")[1]?.split("\n\n")[0] ?? "";
+  check("status lists spaces before named selection and does not offer bare use",
+    plain.status === 0 && /^  ((?:pnpm )?cotal) space +List the spaces on this machine\n  \1 use <name> +Select the default space$/m.test(next) &&
+    !/^  (?:pnpm )?cotal use(?: {2,}|$)/m.test(next), next);
   const journalPath = join(root, ".cotal", "stack-controller.json");
   const journalBytes = readFileSync(journalPath);
   try {
