@@ -789,9 +789,10 @@ async function stoppedController(d: MeshTargetErrorDetails, server: string | und
   if (journal.members.some((member) => member.instanceId !== null &&
       !instances.some((row) => row.name === member.instanceId && row.record.value.definition === member.definition))) return false;
   if (instances.some((row) => !["stopped", "failed"].includes(row.record.value.state) || !processGone(observeServiceProcess(row.record.value)))) return false;
-  stackScopeRefusals(journal, `\`cotal update --space ${d.space}\``);
   if (supervisorMayServe(d.space)) return false;
-  return assertEndpointUnreachable(journal.server).then(() => true, () => false);
+  const brokerStopped = await assertEndpointUnreachable(journal.server).then(() => true, () => false);
+  stackScopeRefusals(journal, `\`cotal update --space ${d.space}\``, { brokerStopped });
+  return brokerStopped;
 }
 
 /** The refusal sentence this command prints. A {@link MeshTargetError} arrives RAW here — the

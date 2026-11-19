@@ -460,6 +460,11 @@ restarted. The update command stops nothing itself. `--stop-agents` integrates s
 daemon-hosted Managers. If standalone ownership or restart settings cannot be proved, the command
 keeps its original-host refusal rather than guessing a shutdown command.
 
+If two stopped local spaces record the same broker address, that address does not block a software
+update once the updater confirms that the selected stack's recorded processes are gone and nothing
+is listening there. The updater leaves both spaces' data and registrations untouched. Startup still
+checks for conflicting registrations.
+
 ## Recover an interrupted update
 
 `cotal update --self` restores an interrupted update when its snapshot is a valid directory of

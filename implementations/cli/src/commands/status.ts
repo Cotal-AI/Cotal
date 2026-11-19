@@ -477,14 +477,17 @@ export async function status(args: ParsedArgs): Promise<void> {
   const preferencesFolder = preferencesFolderWarning();
   if (preferencesFolder) hints.push(`protect the preferences folder: ${preferencesFolder.remedy}`);
   const machine = await readMachine(selected, gaps, hints);
+  const installationChanging = gaps.warnings.some((warning) => warning.code === "INSTALLATION_CHANGING");
   const extensions = readExtensions(gaps);
   const skewedExtensions = extensions.items?.filter((item) => item.package.startsWith("@cotal-ai/") && item.version !== machine.version) ?? [];
   const extensionWarnings: OutputWarning[] = skewedExtensions.length ? [{
     code: "EXTENSION_VERSION_SKEW",
     target: { version: machine.version, packages: skewedExtensions.map((item) => item.package) },
-    message: `extension version skew: ${skewedExtensions.map((item) => `${item.package} is ${item.version}`).join(", ")}; this cotal is ${machine.version}. Run \`${displayCmd()} update --self\` to reconcile this installation.`,
+    message: `extension version skew: ${skewedExtensions.map((item) => `${item.package} is ${item.version}`).join(", ")}; this cotal is ${machine.version}. ${installationChanging
+      ? "These versions may change. Check again when that command finishes."
+      : `Run \`${displayCmd()} update --self\` to reconcile this installation.`}`,
   }] : [];
-  if (extensionWarnings.length) hints.push(`reconcile extension versions with \`${displayCmd()} update --self\``);
+  if (extensionWarnings.length && !installationChanging) hints.push(`reconcile extension versions with \`${displayCmd()} update --self\``);
   // THE RESPONDER AXIS (#1576), read ONCE and threaded into the rows that would otherwise claim
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
@@ -698,7 +701,7 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
   }
   // Loading a connector's provider waits for a command that is changing the installation. Status is
   // a read: it reports that command and leaves the rows unread.
-  const writer = connectors ? installationWriter() : undefined;
+  const writer = installationWriter();
   if (writer) {
     gaps.add("INSTALLATION_CHANGING", `another cotal command (pid ${writer.pid}) is changing this installation, so the application rows were not read`, { pid: writer.pid });
     hints.push("run `cotal status` again when that command finishes");
