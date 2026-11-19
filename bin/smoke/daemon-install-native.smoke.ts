@@ -47,6 +47,7 @@ import { CommandFailure, spaceSegment } from "@cotal-ai/workspace";
 import { mkSecretDir } from "@cotal-ai/core";
 import type { DaemonPaths } from "../daemon/endpoint.js";
 import { assertScheduledEntry, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
+import { nativeRun } from "../daemon/install-native-run.js";
 import { launchAgentLabel, launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
 import { assertServiceRepairPair, sourceDigest, type ServiceRepairIntent } from "../daemon/service-repair.js";
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
@@ -84,12 +85,12 @@ const code = (fn: () => unknown): string => {
 };
 const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 
-interface Call { file: string; args: readonly string[]; env?: NodeJS.ProcessEnv }
+interface Call { file: string; args: readonly string[]; env?: NodeJS.ProcessEnv; timeoutMs?: number }
 /** A native runner that records every call and answers from `answer`. */
 function recorder(answer: (call: Call) => Partial<NativeResult>): { run: NativeRun; calls: Call[] } {
   const calls: Call[] = [];
-  return { calls, run: (file, args, env) => {
-    const call = { file, args: [...args], ...(env ? { env } : {}) };
+  return { calls, run: (file, args, env, timeoutMs) => {
+    const call = { file, args: [...args], ...(env ? { env } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}) };
     calls.push(call);
     return { status: 0, stdout: "", detail: "", ...answer(call) };
   } };
@@ -425,6 +426,16 @@ try {
     const service = scheduledTaskService(r.run);
     const plan = service.plan(paths, undefined, posixArgv, () => { throw new Error("a task pins no PATH"); });
     const ps = r.calls.find((c) => c.file.endsWith("powershell.exe"))!;
+    check("only the install preflight gets a 60-second native timeout", ps.timeoutMs === 60_000 && r.calls[0]!.timeoutMs === undefined);
+    const delayed = (ms: number) => recorder((c) => c.file.endsWith("whoami.exe")
+      ? { stdout: `"host\\user","${sid}"\r\n` }
+      // Exercise the real native runner with a safe child and a shorter time scale.
+      : nativeRun(process.execPath, ["-e", `setTimeout(() => console.log('{"present":false}'), ${ms})`], undefined, c.timeoutMs! / 30));
+    const planWith = (run: NativeRun) => scheduledTaskService(run).plan(paths, undefined, posixArgv, () => "");
+    check("a task read beyond the old budget can finish and plan the install", planWith(delayed(1100).run).unit === name);
+    const stalled = delayed(60_000);
+    check("a task read beyond the new budget still refuses without publishing", code(() => planWith(stalled.run)) === "DEPENDENCY_UNAVAILABLE"
+      && stalled.calls.length === 2 && !existsSync(plan.unitPath));
     const script = Buffer.from(ps.args.at(-1)!, "base64").toString("utf16le");
     // Windows PowerShell 5.1 module manifests. Inspect the actual EncodedCommand from plan,
     // including the conditional instance query, without executing PowerShell on this host.
