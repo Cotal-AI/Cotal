@@ -527,10 +527,12 @@ BIN_DIR=$(absolutize "$BIN_DIR")
 # about to write through, because `>>` follows a symlink and lands wherever it points:
 # ~/.zshrc can be a link out of $HOME, and containment has to see the real destination.
 # The opposite of canonical_file below, which is for paths we only need to name.
+# When checking a new link target, stop if the chain reaches the link being replaced.
 resolved_target() {
   _rt="$1"
   _rt_hops=0
   while [ -L "$_rt" ]; do
+    [ -z "${2:-}" ] || [ "$(canonical_file "$_rt")" != "$2" ] || return 1
     # Linux follows 40 links. Stopping short and then treating the still-unresolved link as
     # canonical is how a long chain walks straight past a containment check, so running out
     # of hops is a refusal, not an answer.
@@ -542,7 +544,9 @@ resolved_target() {
     esac
     _rt_hops=$((_rt_hops + 1))
   done
-  canonical_file "$_rt"
+  _rt=$(canonical_file "$_rt")
+  [ -z "${2:-}" ] || [ "$_rt" != "$2" ] || return 1
+  printf '%s\n' "$_rt"
 }
 
 # Resolve a file's DIRECTORY physically (killing `..` and symlinks) while keeping its
@@ -687,7 +691,11 @@ repair_install_modes() {
 link_node_bin() {
   _nb="$INSTALL_DIR/nodebin"
   mkdir -p "$_nb"
-  ln -sf "$(resolved_target "$NODE_BIN")" "$_nb/node"
+  # Keep the selected Node entry, not the current version behind a distro's `node` symlink.
+  # Leave the link in place if the selected entry already points through it.
+  if resolved_target "$NODE_BIN" "$(canonical_file "$_nb/node")" >/dev/null; then
+    ln -sf "$NODE_BIN" "$_nb/node"
+  fi
   ln -sf "$(resolved_target "$NPM_BIN")" "$_nb/npm"
   _npx=$(dirname "$NPM_BIN")/npx
   [ -e "$_npx" ] && ln -sf "$(resolved_target "$_npx")" "$_nb/npx"
@@ -785,8 +793,7 @@ show_log_tail() {
   return 0
 }
 
-# The launcher is the whole reason a Cotal installed today still works after you change
-# your system Node tomorrow. It pins the runtime, and it points npm at Cotal's own prefix
+# The launcher selects the installed runtime link and points npm at Cotal's own prefix
 # so `cotal update` and `cotal ext add` keep writing where this installer wrote.
 write_launcher() {
   mkdir -p "$BIN_DIR"
@@ -795,8 +802,7 @@ write_launcher() {
   cat >"$_tmp" <<EOF
 #!/bin/sh
 # Cotal launcher, written by https://get.cotal.ai
-# Pins the Node this install was verified against, so a change to the system Node can never
-# leave Cotal running on a runtime it was not installed for.
+# Uses the Node executable selected by the installer. The CLI checks its version on launch.
 COTAL_ROOT=${_root_lit}
 
 # When the pin was a Node this installer did not own, the user can still remove it later.
