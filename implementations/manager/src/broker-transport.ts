@@ -26,6 +26,9 @@ export interface BrokerTransportDeps {
   transportDown: () => Manager["transportDown"];
   renewRemoteExecutor: (...args: Parameters<Manager["renewRemoteExecutor"]>) => ReturnType<Manager["renewRemoteExecutor"]>;
   renewRemoteStandingBundle: (...args: Parameters<Manager["renewRemoteStandingBundle"]>) => ReturnType<Manager["renewRemoteStandingBundle"]>;
+  /** `Manager.dial`, for the dials this component makes itself, so a test that replaces the Manager's
+   *  `dial` still intercepts them (as it did before these bodies left manager.ts). */
+  dialViaManager: (opts: Parameters<ReturnType<typeof dialerFor>>[0]) => Promise<NatsConnection>;
 }
 
 /** Dialing the broker, tracking and retiring connections, and the scoped one-shot executor connections the manager's writes ride. */
@@ -64,7 +67,7 @@ export class BrokerTransport {
    * close a late result rather than letting an abandoned preflight or recovery install a transport. */
   async dialRemoteStanding(opts: Parameters<ReturnType<typeof dialerFor>>[0], deadline: number): Promise<NatsConnection> {
     const ms = remoteStandingTimeLeft(deadline);
-    const pending = this.dial({ ...opts, timeout: ms });
+    const pending = this.deps.dialViaManager({ ...opts, timeout: ms });
     try {
       const nc = await withTimeout(pending, ms, "remote manager standing dial exceeded its 10000ms aggregate budget");
       remoteStandingTimeLeft(deadline);
@@ -126,7 +129,7 @@ export class BrokerTransport {
     const creds = await mintCreds(this.auth, identity, "lifecycle-executor", {
       lifecycleExecutor: { owner: pin.owner, actor: pin.actor, lifecycleUid: pin.lifecycleUid, alias: pin.alias },
     });
-    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+    const nc = await this.deps.dialViaManager({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       const recordsKv = await kvm.open(recordsBucket(this.space));
@@ -144,7 +147,7 @@ export class BrokerTransport {
   async withIssuer<T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>): Promise<T> {
     if (!this.auth) throw new Error("withIssuer: no space auth (an open mesh issues nothing)");
     const creds = await mintCreds(this.auth, newIdentity(), "issuer");
-    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+    const nc = await this.deps.dialViaManager({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       return await fn(await bindIssuedStores(kvm, await jetstreamManager(nc), this.space));
@@ -205,7 +208,7 @@ export class BrokerTransport {
         })
       : undefined);
     if (!creds) throw new Error("withEndpointServeExecutor: no scoped executor authority (an open mesh must use the bare path)");
-    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+    const nc = await this.deps.dialViaManager({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
@@ -221,7 +224,7 @@ export class BrokerTransport {
   async withOpenServeConnection<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
     if (this.auth || this.remoteAuthority)
       throw new Error("withOpenServeConnection: an authenticated mesh must use the scoped endpoint-serve executor");
-    const nc = await this.dial({ maxReconnectAttempts: 0 });
+    const nc = await this.deps.dialViaManager({ maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
       // An open mesh may be a RAW broker (no `cotal up` provisioning ran), and `Kvm.open` binds
@@ -257,7 +260,7 @@ export class BrokerTransport {
     const creds = issue
       ? await issue(identity)
       : this.auth && await mintCreds(this.auth, identity, "transfer-reader", { transferReader: { instanceId: this.managerInstanceId } });
-    const nc = await this.dial(creds
+    const nc = await this.deps.dialViaManager(creds
       ? { ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 }
       : { maxReconnectAttempts: 0 });
     try {
