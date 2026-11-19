@@ -497,6 +497,8 @@ Each value with no per-channel override is marked `inherited`, whether it comes 
 defaults or the built-in policy. The inventory uses the same mark for replay and delivery.
 Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the
 mark identifies values supplied by the built-in policy.
+`channel set` and `channel defaults` trim surrounding whitespace from `--window` before saving
+the duration. For example, `--window ' 24h '` saves `24h`.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. A roster name that is only whitespace is shown as
 the id. A member the roster has not named says `name not reported`. JSON keeps the roster name,
