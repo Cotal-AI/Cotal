@@ -53,7 +53,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 184;
+const EXPECTED_CELLS = 189;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -374,6 +374,16 @@ process.env.COTAL_HERMES_ADOPT_HOME = "   ";
 assert.equal(checkInputs()?.modelRequired, true, "a blank opt-in still needs a model");
 delete process.env.COTAL_HERMES_ADOPT_HOME;
 assert.equal(checkInputs("vendor/model"), undefined, "a managed profile accepts a resolved model");
+for (const [inputs, diagnosis] of [
+  [{ resume: "not a session" }, /not a Hermes session id/],
+  [{ launchOptions: { k: "v" } }, /does not support launch options/],
+] as const) {
+  const refusal = hermesConnector.foregroundLaunchRefusal!({ ...inputs, hasPersona: false });
+  assert.match(refusal?.message ?? "", diagnosis, "an incompatible input is diagnosed before the missing model");
+  assert.throws(() => hermesConnector.buildLaunch({ ...inputs, space: "smoke", name: "hermes-invalid" }), diagnosis, "buildLaunch still refuses the same input");
+}
+assert.equal(hermesConnector.foregroundLaunchRefusal!({ resume: "20261003_010101_ab12cd", hasPersona: false })?.modelRequired,
+  true, "a valid resume id still gets model guidance");
 const plainEnv = hermesConnector.buildLaunch({ space: "smoke", name: "hermes-plain" }).env ?? {};
 assert.ok(!("COTAL_HERMES_ADOPT_HOME" in plainEnv), "without the opt-in the child gets the managed default");
 

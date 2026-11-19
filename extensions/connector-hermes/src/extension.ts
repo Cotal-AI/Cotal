@@ -20,6 +20,21 @@ const LAUNCH_COMMAND = FROM_BUILD
  *  shapes. It reaches a SQL parameter only, but a path or a flag is never a session. */
 const HERMES_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 
+function validateLaunchInputs({ resume, launchOptions }: Pick<LaunchOpts, "resume" | "launchOptions">, adoptHome: string | undefined): void {
+  // The gateway uses Unix sockets. A resume forks a session into a managed profile, not into the
+  // operator's own profile. The launcher has no generic option carrier.
+  if (process.platform === "win32")
+    throw new LaunchRefused("the Hermes connector is Unix-only (AF_UNIX bridge + Python sidecar), so it cannot run on Windows");
+  if (resume !== undefined) {
+    if (!HERMES_SESSION_ID.test(resume))
+      throw new LaunchRefused(`cannot resume Hermes session ${JSON.stringify(resume)}: not a Hermes session id`);
+    if (adoptHome)
+      throw new LaunchRefused(`the Hermes connector cannot resume into ${ADOPT_HOME_ENV}: continue the session in that profile with Hermes' own /resume`);
+  }
+  if (launchOptions && Object.keys(launchOptions).length)
+    throw new LaunchRefused("the Hermes connector does not support launch options. Remove --opt or the persona's launchOptions.");
+}
+
 export const HERMES_PROVIDER_KEYS: readonly string[] = [
   ...MODEL_PROVIDER_KEYS,
   "OPENCODE_GO_API_KEY", "OPENCODE_ZEN_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY",
@@ -48,11 +63,12 @@ export const hermesConnector: Connector = {
   // `uv` is the external harness. It provisions the project-pinned `hermes` command below, so a
   // separately installed `hermes` on PATH is neither required nor sufficient to launch this seat.
   requires: ["uv"],
-  foregroundLaunchRefusal({ model, hasPersona }) {
+  foregroundLaunchRefusal(opts) {
     try {
       const home = adoptedHome();
-      if (home) validateAdoptedProfile(home, hasPersona);
-      else requireManagedModel(model);
+      validateLaunchInputs(opts, home);
+      if (home) validateAdoptedProfile(home, opts.hasPersona);
+      else requireManagedModel(opts.model);
     } catch (error) {
       if (!(error instanceof LaunchRefused)) throw error;
       return { message: error.message, modelRequired: error instanceof ManagedModelRequired };
@@ -60,31 +76,13 @@ export const hermesConnector: Connector = {
   },
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("the Hermes connector does not support exact-session continuation");
-    // Hermes is Unix-only: its sidecar bridge + hook relay use AF_UNIX `.sock` paths and a Python
-    // sidecar, none of which are ported to Windows. Fail loud rather than launch a half-wired agent
-    // the manager can't drive (no Windows named-pipe bridge, no cooperative shutdown). No fallback.
-    if (process.platform === "win32")
-      throw new Error("the Hermes connector is Unix-only (AF_UNIX bridge + Python sidecar) — not supported on Windows");
     const adoptHome = process.env[ADOPT_HOME_ENV]?.trim();
-    // Resume forks: the launcher copies the named session out of the operator's Hermes profile into
-    // the seat's own before the seat joins the mesh, and refuses there, by name, a session it cannot
-    // find (see plugin/cotal/resume.py). The adopted profile already holds the session, so it is
-    // refused rather than forked into the operator's own state.db.
-    if (opts.resume !== undefined) {
-      if (!HERMES_SESSION_ID.test(opts.resume))
-        throw new Error(`cannot resume Hermes session ${JSON.stringify(opts.resume)}: not a Hermes session id`);
-      if (adoptHome)
-        throw new Error("the Hermes connector cannot resume into COTAL_HERMES_ADOPT_HOME: that profile already holds the session, so continue it there with Hermes' own /resume");
-    }
+    validateLaunchInputs(opts, adoptHome);
     if (opts.variant) throw new Error("the Hermes connector does not support model variants (variant)");
     // Same rule for the initial prompt: the gateway has no first-turn carrier wired, and a prompt
     // that is accepted and never submitted leaves the operator waiting on a turn that never starts.
     if (opts.prompt !== undefined)
       throw new Error("the Hermes connector does not support an initial prompt (prompt): its first turn is not wired yet");
-    // The Hermes launcher reads a FIXED set of env vars, so it has no generic launch-option surface —
-    // rendering arbitrary options to env would silently drop them. Fail loud rather than pretend.
-    if (opts.launchOptions && Object.keys(opts.launchOptions).length)
-      throw new Error("the Hermes connector does not support launch options (--opt / launchOptions)");
     // Hermes supports the named provider keys below. Other ambient authority stays outside the child
     // unless the operator deliberately declares it in spawn.env.
     const env: Record<string, string> = {

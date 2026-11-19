@@ -312,7 +312,7 @@ export interface Connector extends Extension {
   /** Side-effect-free check of resolved foreground launch inputs on the execution host, even if a
    *  required executable is missing. Mark a missing model to let the caller keep its arguments and
    *  show where to add the model. The launcher still validates its own inputs. */
-  foregroundLaunchRefusal?(opts: Pick<LaunchOpts, "model"> & { hasPersona: boolean }): { message: string; modelRequired?: boolean } | undefined;
+  foregroundLaunchRefusal?(opts: Pick<LaunchOpts, "model" | "resume" | "launchOptions"> & { hasPersona: boolean }): { message: string; modelRequired?: boolean } | undefined;
   /** Directory of installable editor-plugin assets shipped with the connector
    *  (e.g. a Claude Code plugin dir), when the agent type needs a one-time
    *  plugin install. Consumers (like `cotal setup`) resolve it via the registry

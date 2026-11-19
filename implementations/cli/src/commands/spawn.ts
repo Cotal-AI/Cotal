@@ -1454,7 +1454,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
-  // Resolve the event plane before offering a dependency retry for an invocation that cannot run.
+  // Refuse incompatible launch inputs before offering any dependency retry.
   const supportsEvents = !!connector.eventChannel;
   const launchEvents = eventsRequired || events === true || (events !== false && supportsEvents);
   if (launchEvents && !supportsEvents) {
@@ -1463,36 +1463,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       : `✗ connector "${connector.name}" does not publish an AG-UI event plane; omit --events to launch it without one`));
     process.exit(1);
   }
-  const binaryPins: Record<string, string | undefined> = { opencode: process.env.COTAL_OPENCODE_BIN, codex: process.env.COTAL_CODEX_BIN };
-  const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(binaryPins[bin]?.trim() || bin));
-  const inputRefusal = connector.foregroundLaunchRefusal?.({ model, hasPersona: Boolean(def.persona) });
-  let example: string | undefined;
-  if (inputRefusal?.modelRequired && handoffText === undefined && enrollmentUrl === undefined) {
-    const terminator = args.raw.indexOf("--");
-    const before = terminator < 0 ? args.raw : args.raw.slice(0, terminator);
-    const after = terminator < 0 ? [] : args.raw.slice(terminator);
-    const optOut = !supportsEvents && events !== false ? ["--no-events"] : [];
-    const words = [...before.map(shellWord), ...optOut, "--model", "<model>", ...after.map(shellWord)];
-    example = `Example: ${codeSpan(`${displayCmd()} spawn ${words.join(" ")}`)}`;
-  }
-  if (missing.length) {
-    const binaries = missing.join(", ");
-    const guide = ["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/";
-    const install = `Follow ${guide} to install ${binaries}`;
-    const message = `${agentType} needs ${binaries} on PATH; nothing was launched`;
-    const remedy = inputRefusal
-      ? `${install}.${example ? ` ${example}` : ""}`
-      : `${install}, then retry: ${codeSpan(`${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}`)}`;
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", inputRefusal ? `${message}. ${inputRefusal.message}` : message, {
-      target: { space, path },
-      remedy,
-    });
-  }
-  if (inputRefusal) throw new CommandFailure("refused", "USAGE_INVALID", inputRefusal.message, {
-    target: { space, path },
-    remedy: example,
-    selfContained: true,
-  });
   if (variant && !connector.supportsModelVariant) {
     stderrLine("✗ ", `${agentType} connector does not support model variants (variant)`, c.red);
     process.exit(1);
@@ -1571,6 +1541,36 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   if (target.mode === "user" && def.endpoints !== undefined)
     throw new CommandFailure("refused", "UNSUPPORTED", `persona ${path} names \`endpoints\`, and on a per-user auth mesh endpoint access comes from the service owner's grants, which a persona cannot hand on (SPEC 13.15)`, { target: { space, path }, remedy: "drop `endpoints` from the persona, and grant the agent with `cotal service-endpoint grant` once it runs" });
   const endpointCapabilities = lowerPersonaEndpoints(def.endpoints);
+  const binaryPins: Record<string, string | undefined> = { opencode: process.env.COTAL_OPENCODE_BIN, codex: process.env.COTAL_CODEX_BIN };
+  const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(binaryPins[bin]?.trim() || bin));
+  const inputRefusal = connector.foregroundLaunchRefusal?.({ model, resume: values.resume, launchOptions, hasPersona: Boolean(def.persona) });
+  let example: string | undefined;
+  if (inputRefusal?.modelRequired && handoffText === undefined && enrollmentUrl === undefined) {
+    const terminator = args.raw.indexOf("--");
+    const before = terminator < 0 ? args.raw : args.raw.slice(0, terminator);
+    const after = terminator < 0 ? [] : args.raw.slice(terminator);
+    const optOut = !supportsEvents && events !== false ? ["--no-events"] : [];
+    const words = [...before.map(shellWord), ...optOut, "--model", "<model>", ...after.map(shellWord)];
+    example = `Example: ${codeSpan(`${displayCmd()} spawn ${words.join(" ")}`)}`;
+  }
+  if (missing.length) {
+    const binaries = missing.join(", ");
+    const guide = ["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/";
+    const install = `Follow ${guide} to install ${binaries}`;
+    const message = `${agentType} needs ${binaries} on PATH; nothing was launched`;
+    const remedy = inputRefusal
+      ? `${install}.${example ? ` ${example}` : ""}`
+      : `${install}, then retry: ${codeSpan(`${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}`)}`;
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", inputRefusal ? `${message}. ${inputRefusal.message}` : message, {
+      target: { space, path },
+      remedy,
+    });
+  }
+  if (inputRefusal) throw new CommandFailure("refused", "USAGE_INVALID", inputRefusal.message, {
+    target: { space, path },
+    remedy: example,
+    selfContained: true,
+  });
   // Said once every check above has passed, so a refusal is never read as a launch that started.
   console.error(renderReport({ space, sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", process.stderr));
   // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the

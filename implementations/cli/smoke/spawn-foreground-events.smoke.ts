@@ -243,6 +243,12 @@ try {
       check("explicit unsupported events are refused before giving a missing-binary retry",
         explicitEvents.opts === undefined && explicitEvents.exited === 1 && explicitEvents.stderr.includes("omit --events")
           && !explicitEvents.stderr.includes("then retry:"), explicitEvents.stderr);
+      for (const [flag, detail] of [["--prompt", "an initial prompt"], ["--variant", "model variants"]] as const) {
+        const refused = await openRun(["--harness", "fg-probe-inputs", flag, "test-value"]);
+        check(`${flag} is refused before giving dependency or model guidance`,
+          refused.opts === undefined && refused.exited === 1 && refused.stderr.includes(`does not support ${detail}`)
+            && !/then retry:|Example:/.test(refused.stderr), refused.stderr);
+      }
       const configured = await openRun(["--harness", "fg-probe-inputs", "--model", "test-model"]);
       check("an already configured launch still gets the original retry for a missing binary",
         configured.exited === 2 && configured.stderr.includes("DEPENDENCY_UNAVAILABLE")
@@ -421,7 +427,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 31;
+const EXPECTED = 33;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
