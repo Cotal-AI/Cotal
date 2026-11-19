@@ -4,12 +4,21 @@ import {
   type CotalEndpoint, type LaunchSpec, type LifecycleStateTransport, type SecretStore, type StaticManagedSlotRow,
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, retainConnectorSeat } from "@cotal-ai/workspace";
-import { isCustodialRuntime, requireRuntimeReap, RuntimeReapUnproven, type AgentHandle, type Runtime } from "./runtime/index.js";
+import { isCustodialRuntime, requireRuntimeReap, RuntimeReapUnproven, watchProvedExit, type AgentHandle, type Runtime } from "./runtime/index.js";
 import type { RuntimeReference } from "@cotal-ai/core";
 import type { ManagedAgent, ManagerResumeAgent, SupervisedRestart } from "./manager.js";
 import { readSeatRecord, removeReleasedSeatReference, removeSeatRecord, writeSeatRecord, type SeatRecord } from "./resume.js";
 import { casStaticSlot, readStaticSlot } from "./static-lifecycle.js";
 import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
+
+/** Keep launch provenance independent of status and runtime wire contracts. */
+export function watchConnectorHolder(handle: AgentHandle, holder: ReturnType<typeof retainConnectorSeat>): void {
+  if (!holder.active) return;
+  holder.launched(handle.pid);
+  // A released handle may outlive its Manager. Only an authoritative exit removes
+  // identity-less holders, never a release or a failed stop request.
+  watchProvedExit(handle, () => holder.ended(), () => true);
+}
 
 /** Manager-owned authority and lifecycle operations used while recording and recovering seats. */
 export interface SeatCustodyDeps {

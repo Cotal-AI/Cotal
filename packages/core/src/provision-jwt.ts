@@ -99,6 +99,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   purger: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "history purge command" },
   backup: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "offline snapshot phase; exact stream and delivery subject, memory-only" },
   restore: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "offline restore initiation or exact-ID upload phase, memory-only" },
+  "space-quiescence-reader": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "host-only idle-work observation; no writes, ACKs, consumer creation or renewal" },
   probe: { class: "one-shot", defaultTtlSeconds: 60, note: "connect-only preflight" },
   "channel-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "channel registry mutation command" },
   "channel-purger": { class: "mixed", note: "one-shot for CLI, standing inside web; split or renewal required before default exp" },

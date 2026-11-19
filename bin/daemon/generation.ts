@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { connectorConfigDir, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
+import { connectorConfigDir, deferredUpdateActivation, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 import { fileURLToPath } from "node:url";
 
@@ -53,12 +53,19 @@ async function reconcileInstalledGeneration(): Promise<void> {
     let error = "";
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => { error = (error + chunk).slice(-1500); });
-    const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
+    // A cold home reconciles every built-in before Manager readiness is bounded.
+    const timeoutMs = 10 * 60_000;
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
     child.once("error", (cause) => { clearTimeout(timer); reject(cause); });
-    child.once("close", (code) => {
+    child.once("close", (code, signal) => {
       clearTimeout(timer);
       if (code === 0) resolve();
-      else reject(new Error(`replacement connector reconciliation failed (exit ${code}): ${error.trim()}; run \`cotal ext seed --repair\` with the installed CLI`));
+      else {
+        const cause = timedOut ? `timed out after ${timeoutMs}ms, signal ${signal ?? "unknown"}` : signal ? `signal ${signal}` : `exit ${code}`;
+        const detail = error.trim().split(/\r?\n/).at(-1)?.replace(/\s+/g, " ").trim();
+        reject(new Error(`replacement connector reconciliation failed (${cause})${detail ? `: ${detail}` : ""}; run \`cotal ext seed --repair\` with the installed CLI`));
+      }
     });
   });
 }
@@ -84,6 +91,10 @@ export function watchDaemonGeneration(version: string, changed: (version: string
       next = observeExecutionVersion(dirname(file));
     } catch { return; }
     if (next === version) { candidate = undefined; retryAt = 0; delay = 5000; pending(undefined); return; }
+    try {
+      const deferred = deferredUpdateActivation(join(dirname(file), "dist", "cotal.js"), next);
+      if (deferred) { pending(next, deferred); announce(`daemon: installed CLI ${next} activation deferred: ${deferred}; current generation remains loaded`); return; }
+    } catch { pending(next, "activation authority is unreadable; current generation remains loaded"); return; }
     if (candidate !== next) {
       candidate = next; retryAt = 0; delay = 5000;
       const reason = activate ? "verifying the installed entry" : "no verified native launch marker; automatic activation is unavailable; use the installed CLI to restart this daemon";
@@ -104,6 +115,7 @@ export function watchDaemonGeneration(version: string, changed: (version: string
       if (settled || closed) return;
       if (code !== 0 || output.split(/\r?\n/, 1)[0] !== `cotal-ai ${next}`) { failed(next, `entry verification did not confirm its version (exit ${code})`); return; }
       try { if (updateActivationBlocked()) { busy = false; return; } } catch { busy = false; return; }
+      try { if (deferredUpdateActivation(join(dirname(file), "dist", "cotal.js"), next)) { busy = false; return; } } catch { busy = false; return; }
       void changed(next).catch((error: unknown) => { if (!closed) failed(next, error instanceof Error ? error.message : "the replacement could not be activated"); });
     });
   }, 1000);

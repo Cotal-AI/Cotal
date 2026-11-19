@@ -227,9 +227,13 @@ if (!brokerDisplayOnly) {
   // A legacy static-auth stack started here whose broker or manager exited is restarted by a bare
   // `up` in this folder, so Next names it first, ahead of the conditional store reset.
   const cleanHint = "if the stored JetStream state is stale: `cotal clean store --force`, then `up` with your usual flags (`clean all` also resets identity)";
-  const legacyNext = (exited: string[], opts: { mode?: string; pid?: number | null; origin?: string; root?: string; controllerStack?: boolean } = {}) => {
+  const legacyNext = (exited: string[], opts: { mode?: string; pid?: number | null; detail?: string; origin?: string; root?: string; controllerStack?: boolean } = {}) => {
     const base = selected.envelope!.result!;
-    const processes = ["manager", "delivery", "nats"].map((name) => exited.includes(name) ? { name, state: "stopped", pid: opts.pid === undefined ? 4242 : opts.pid, detail: opts.pid === null ? "no pidfile" : "stale pidfile" } : { name, state: "running", pid: 4343, detail: null });
+    const processes = ["manager", "delivery", "nats"].map((name) => exited.includes(name) ? {
+      name, state: name === "nats" && opts.pid === null ? "not-recorded" : "stopped",
+      pid: opts.pid === undefined ? 4242 : opts.pid,
+      detail: opts.detail ?? (opts.pid === null ? "no pidfile" : "stale pidfile"),
+    } : { name, state: "running", pid: 4343, detail: null });
     const legacy = { ...base, folder: { ...base.folder, root: opts.root ?? home, controllerStack: opts.controllerStack ?? false, processSpace: "alpha", processes, storedState: exited.includes("nats"), stackBlock: null, stackUnfinished: null },
       meshes: { ...base.meshes, items: base.meshes.items.map((m) => m.space === "alpha" ? { ...m, mode: opts.mode ?? "auth", origin: opts.origin ?? "up" } : m) },
       selected: { ...base.selected, resolved: true, space: "alpha", root: home, mode: opts.mode ?? "auth", connection: exited.includes("nats") ? "unreachable" : "reachable" },
@@ -242,6 +246,10 @@ if (!brokerDisplayOnly) {
     check("an exited legacy manager puts a bare up first under Next", /(^|\s)cotal up$/.test(command ?? "") && description === "Restart this folder's manager, which exited; pass --runtime again if the manager ran on one", { command, description });
   }
   {
+    const [command, description] = firstCommand(legacyNext(["manager"], { pid: null, detail: "stopped" }));
+    check("a SIGTERM-stopped legacy manager with retained identity puts a bare up first under Next", /(^|\s)cotal up$/.test(command ?? "") && description === "Restart this folder's manager, which exited; pass --runtime again if the manager ran on one", { command, description });
+  }
+  {
     const next = legacyNext(["nats"]);
     const [command, description] = firstCommand(next);
     check("an exited legacy broker puts a bare up first under Next", /(^|\s)cotal up$/.test(command ?? "") && description === "Restart this folder's broker, which exited; up reopens the recorded store", { command, description });
@@ -251,7 +259,17 @@ if (!brokerDisplayOnly) {
     const [command, description] = firstCommand(legacyNext(["nats", "manager"]));
     check("an exited legacy broker and manager are named together", /(^|\s)cotal up$/.test(command ?? "") && description === "Restart this folder's broker and manager, which exited; up reopens the recorded store; pass --runtime again if the manager ran on one", { command, description });
   }
+  {
+    // A clean down leaves every member stopped with no pidfile; spawn fails until up starts it (#7516).
+    const next = legacyNext(["manager", "delivery", "nats"], { pid: null });
+    const [command, description] = firstCommand(next);
+    check("a cleanly stopped legacy stack puts a bare up first under Next, ahead of ps and the store reset",
+      /(^|\s)cotal up$/.test(command ?? "") && description === "Start this folder's stopped stack again; pass --runtime again if the manager ran on one"
+        && next.includes("cotal ps") && next.indexOf("cotal up") < next.indexOf("cotal ps") && next.indexOf("cotal up") < next.indexOf("clean store --force"), next);
+  }
   for (const [label, next] of [
+    ["a cleanly stopped open stack", legacyNext(["manager", "delivery", "nats"], { pid: null, mode: "open" })],
+    ["a cleanly stopped stack seen from another folder", legacyNext(["manager", "delivery", "nats"], { pid: null, root: join(home, "elsewhere") })],
     ["an open stack", legacyNext(["manager"], { mode: "open" })],
     ["a member with no pidfile", legacyNext(["manager"], { pid: null })],
     ["a registration added by hand", legacyNext(["manager"], { origin: "manual" })],
@@ -487,6 +505,14 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("status --components --plain is refused before any probe, exit 1", plainOnly.status === 1 && plainOnly.stdout === "" && /--components checks the selected mesh/.test(plainOnly.stderr), shown(plainOnly));
   const all = run(["status", "--components", "--all"]);
   check("status --components --all is refused before any probe, exit 1", all.status === 1 && all.stdout === "" && /--components checks the selected mesh/.test(all.stderr), shown(all));
+  for (const args of [["myagent", "--json", "--plain"], ["myagent", "--wide", "--json"], ["myagent", "--verbose", "--json"], ["myagent", "-v", "--json"]]) {
+    const r = run(["status", ...args]);
+    check(`status ${args.join(" ")} is refused as USAGE_INVALID before any target lookup, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
+  }
+  for (const flag of ["--wide", "--verbose", "-v"]) {
+    const r = run(["status", "myagent", flag]);
+    check(`status myagent ${flag} is refused as USAGE_INVALID, exit 1`, r.status === 1 && /a named agent status takes no --all, --components, --wide or --verbose/.test(r.stderr), shown(r));
+  }
 }
 
 // ── a store write failure the running local broker logged is shown with its cause and file ───────
@@ -641,6 +667,19 @@ if (process.platform !== "win32") {
   const skewed = run(["status", "--space", "nosuch", "--plain"], onPath);
   check("an extension at another version is the only one named",
     new RegExp(`^ {2}Extensions: +3 extensions at ${VERSION.replaceAll(".", "\\.")} - old v0\\.0\\.1$`, "m").test(skewed.stdout), shown(skewed));
+  writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [
+    connector("bb", ["bb-bin"]),
+  ] }));
+  const greeter = spawn(process.execPath, ["-e", `const s = require("node:net").createServer((c) => { c.on("error", () => {}); c.end('INFO {"server_id":"app","version":"2.12.12","proto":1,"max_payload":1048576}\\r\\n'); }); s.listen(0, "127.0.0.1", () => console.log(s.address().port));`], { stdio: ["ignore", "pipe", "inherit"] });
+  try {
+    const [port] = (await once(greeter.stdout!, "data")) as [Buffer];
+    const noApp = run(["status", "--server", `nats://127.0.0.1:${port.toString().trim()}`, "--plain"], onPath);
+    const next = noApp.stdout.split("\nNext\n")[1] ?? "";
+    check("when every seeded connector is missing its executable, Next offers setup instead of spawn",
+      noApp.status === 0 && /Agent applications: +not set up/.test(noApp.stdout) && /\bcotal setup +Set up an agent application\b/.test(next) && !/\bcotal spawn\b/.test(next), shown(noApp));
+  } finally {
+    greeter.kill("SIGKILL");
+  }
 }
 
 // ── a folder's space is the target here only while it runs ───────────────────────────────────────

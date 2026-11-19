@@ -8,8 +8,8 @@
  *  here, outside any adapter plan. A failure after the first effect is reported as partial or
  *  unknown with the members it changed; nothing already started is rolled back. */
 import { randomUUID } from "node:crypto";
+import { closeSync, existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { displayCmd } from "../lib/self-exec.js";
-import { closeSync, existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
@@ -66,7 +66,7 @@ import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js"
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
 import { definitionRootMatch, serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstance, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
-import { prepareKernelServiceStop, prepareProcessService, readOwnedLogTail, readServiceLog, removeStoppedInstanceRecords, settleExitedInstances, startProcessService, stopProcessService } from "../lib/service-process.js";
+import { prepareKernelServiceStop, prepareProcessService, readOwnedLogTail, readServiceLog, removeServiceLogs, removeStoppedInstanceRecords, settleExitedInstances, startProcessService, stopProcessService } from "../lib/service-process.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
@@ -341,7 +341,7 @@ export function controllerStackApplies(root: string, space: string, values: Pars
 /** Returns a settled active restore of the recorded stack that was admitted, for the result to name. */
 function stackPreflight(root: string, space: string, recorded: StackJournal | undefined, ownAttempt?: string): string | undefined {
   // Its members' own pidfiles would read as legacy processes under a Cotal home with no record of them.
-  if (recorded && stackRunsUnderOtherHome(root, recorded)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this root's controller stack has missing member records in this Cotal home; nothing was started, adopted or replaced", { target: { root, space, cotalHome: homeCotalDir() }, remedy: stackHomeRemedy() });
+  if (recorded && stackRunsUnderOtherHome(root, recorded)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this root's controller stack has missing member records in this Cotal home; nothing was started, adopted or replaced", { target: { root, space, cotalHome: homeCotalDir() }, remedy: stackHomeRemedy(recorded.recovery?.home) });
   const maintenance: { fenced: boolean; admittedRestore?: string } = recorded ? stackMaintenanceFence(root, recorded) : { fenced: readMaintenanceJournal(root) !== undefined };
   if (maintenance.fenced) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; the controller stack did not substitute an ordinary startup", { target: { root, space } });
   const legacy = foreignLocalProcesses(root, space);
@@ -407,7 +407,9 @@ function ensureDefinition(space: string, role: StackRole, input: ServiceDefiniti
     // A member that crashed is recorded as such first, so its record can go with the definition.
     settleExitedInstances(existing);
     replace();
-    store.commit(name, existing, undefined, () => removeStoppedInstanceRecords(space, name));
+    let retired: string[] = [];
+    store.commit(name, existing, undefined, () => { retired = removeStoppedInstanceRecords(space, name); });
+    removeServiceLogs(space, retired);
   }
   store.commit(name, undefined, validateServiceDefinition(input, space));
   const saved = store.read(name)!;
@@ -712,7 +714,12 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // an empty store at a mistyped path and start the stack on it. Its identity is pinned here and
   // checked again by preparation, which never creates a pinned store, and just before the broker starts.
   const storePin = legacyStopped ? pinExistingStore(resolve(request.storeDir!), { root, space }) : undefined;
-  const brokerStore = recordedBroker?.storeDir ?? request.storeDir ?? unstarted?.broker?.storeDir;
+  const savedBroker = !previous ? serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch : undefined;
+  const savedConfig = savedBroker?.type === "adapter" && savedBroker.adapter === STACK_ADAPTER.broker && savedBroker.options.root === root && typeof savedBroker.options.config === "string" ? savedBroker.options.config : undefined;
+  const savedText = savedConfig === undefined ? undefined : readFileSync(savedConfig, "utf8");
+  const savedStore = savedText === undefined ? undefined : /jetstream \{ store_dir: ("(?:[^"\\]|\\.)*")/.exec(savedText)?.[1];
+  const recoveredStore = savedStore === undefined ? undefined : resolve(root, JSON.parse(savedStore) as string);
+  const brokerStore = recordedBroker?.storeDir ?? request.storeDir ?? unstarted?.broker?.storeDir ?? recoveredStore;
   const brokerCap = recordedBroker ? recordedBroker.maxFileStore : request.maxFileStore ?? unstarted?.broker?.maxFileStore;
   const brokerHost = recordedBroker ? recordedBroker.host : request.host ?? unstarted?.broker?.host;
   const brokerLogFile = recordedBroker ? recordedBroker.logFile : request.logFile ?? unstarted?.broker?.logFile;
@@ -741,7 +748,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // before any preflight write, preparation or launch.
   if (previous && request.mode !== undefined && request.mode !== previous.journal.mode)
     throw new CommandFailure("refused", "CONFLICT", "this root's controller stack is pinned to another auth mode; a running or stopped stack is not converted", { target: { root, space, recorded: previous.journal.mode, requested: request.mode }, remedy: pinnedModeRemedy(previous.journal.mode, request.mode) });
-  const mode: StackMode = previous?.journal.mode ?? request.mode ?? "auth";
+  const mode: StackMode = previous?.journal.mode ?? request.mode ?? (savedConfig === join(root, ".cotal", "server-open.conf") ? "open" : "auth");
   if (mode === "open" && holdsBrokerAccount(root))
     throw new CommandFailure("refused", "CONFLICT", "this root holds a broker account; an open stack does not bypass its recorded authorization", { target: { root, space } });
   if (mode === "user") assertUserStackTransport(previous?.journal.server ?? request.server, request.transport.kind === "tls-required");
@@ -937,7 +944,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
         target: { root, space, server, bindError: bindError.code },
         remedy: previous === undefined
-          ? `start this stack at another address with \`${displayCmd()} up --server ${address.protocol}//${address.hostname}:<port>\` from ${root}, or ${frees} and run \`${displayCmd()} up\` again`
+          ? `start this stack at another address with \`${displayCmd()} up${brokerHost === undefined ? "" : ` --host ${shellWord(brokerHost)}`} --server ${address.protocol}//${address.hostname}:<port>\` from ${root}, or ${frees} and retry this start`
           : `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
       });
     }

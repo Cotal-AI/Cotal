@@ -102,7 +102,7 @@
     },
     {
       "name": "last duty bypasses native broker preflight",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/credential-renewal.ts",
       "find": "      for (const name of REMOTE_MANAGER_IDENTITY_NAMES) {\n",
       "replace": "      for (const name of REMOTE_MANAGER_IDENTITY_NAMES) {\n        if (name === \"sessionLedger\") continue;\n",
       "expectRed": "native broker refuses invalid last-duty signature before family adoption",

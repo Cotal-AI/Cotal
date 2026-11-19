@@ -149,7 +149,7 @@ check("status reports the selection as not started at the recorded broker", stat
 check("status names no default broker address", noDefault(status), shown(status));
 
 const components = run(["status", "--components"]);
-check("status --components refuses the target and probes no default broker", /target\s+refused · not-started/.test(components.stdout) && noDefault(components), shown(components));
+check("status --components reports the target absent and probes no default broker", components.status === 1 && /target\s+absent · not-started/.test(components.stdout) && components.stdout.includes(RECORDED) && components.stdout.includes("cotal space create") && noDefault(components), shown(components));
 
 // ── with a space selected, this folder's stopped stack does not take its place ───────────────────
 // A folder's space captures the commands run there only while it runs. This root's stack is stopped,

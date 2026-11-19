@@ -58,6 +58,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     backup: () => one("backup", { backup: { operation: "inspect", selection: "full" } }),
     restore: () => one("restore", { restore: { operation: "initiate", stream: `CHAT_${space}` } }),
     delivery: () => one("delivery"), "membership-rw": () => one("membership-rw"),
+    "space-quiescence-reader": () => one("space-quiescence-reader"),
     probe: () => one("probe"), "channel-writer": () => one("channel-writer"), "channel-purger": () => one("channel-purger"),
     teardown: () => one("teardown"), "issued-store-recreate": () => one("issued-store-recreate"),
     "membership-store-recreate": () => one("membership-store-recreate"),
@@ -263,7 +264,7 @@ export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "control-caller-admin", "backup", "restore", "endpoint-evictor", "retirement-requester",
   "issuer", "run-admitter", "transfer-writer", "transfer-reader",
   // The registry's reads: the evidence store stream-wide, so never a peer's.
-  "registry-reader",
+  "registry-reader", "space-quiescence-reader",
   // The operator/embedding host holds this one-shot credential only for a stopped-space
   // derived-store conversion. Its exact stream DELETE authority never belongs to a peer.
   "membership-store-recreate",

@@ -68,7 +68,7 @@ symlinkSync(natsServer, join(bin, process.platform === "win32" ? "nats-server.ex
 // Do not expose ambient POSIX tools: `/usr/bin/orca` can be the GNOME screen reader.
 if (process.platform !== "win32") {
   symlinkSync(process.execPath, join(bin, "node"));
-  for (const name of ["npm", "sh", "ps"]) {
+  for (const name of ["npm", "sh", "ps", ...(process.platform === "linux" ? ["getent", "python3"] : [])]) {
     const executable = resolveOnPath(name);
     if (!executable) throw new Error(`setup fixture requires ${name} on the host PATH`);
     symlinkSync(executable, join(bin, name));
@@ -256,6 +256,9 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const missing = await json(["setup", "--destination", "local"]);
   check("a script missing inputs is USAGE_INVALID, exit 1, naming each missing flag",
     refused(missing, 1, "USAGE_INVALID") && /--harness, --project, --space/.test(missing.env?.error?.message ?? "") && /--destination local --harness <connector> --project <dir> --space <name>/.test(missing.env?.error?.remedy ?? ""), shown(missing));
+  const emptyProject = await json([...FULL("empty-project", ""), "--configure-only", "--yes"], dirs.name);
+  check("an empty --project refuses before preparing the current directory",
+    refused(emptyProject, 1, "USAGE_INVALID") && /--project \./.test(emptyProject.env?.error?.remedy ?? "") && !existsSync(join(dirs.name, ".cotal")) && findPreparedSpace("empty-project") === undefined, shown(emptyProject));
   const missingHosted = await json(["setup", "--destination", "self-hosted", "--harness", "codex", "--space", "ok1"]);
   check("a self-hosted script missing --project gets the self-hosted form, with --connection-file",
     refused(missingHosted, 1, "USAGE_INVALID") && /pass --project$/.test(missingHosted.env?.error?.message ?? "")
@@ -364,6 +367,13 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("its report does not call the space set up", human.status === 4 && /saved claudespace; claude is not set up yet/.test(human.stdout) && !/already set up/.test(human.stdout), shown(human));
   check("missing application setup points to dependency repair before startup",
     partial.env?.result.next.command === "install or repair claude, then run the same setup again" && /Next\s+install or repair claude/.test(human.stdout), shown(human));
+  writeFileSync(join(more, "claude"), "#!/bin/sh\necho claude-banner\nexit 1\n", { mode: 0o755 });
+  writeFileSync(join(more, "claude.cmd"), "@echo claude-banner\r\n@exit /b 1\r\n");
+  const unhealthy = await run(FULL("claudespace", dir, "claude"), home, { PATH: [more, env.PATH].join(delimiter) });
+  check("a present but unhealthy application is unavailable, not missing from PATH",
+    unhealthy.status === 4 && /application:\s+claude · unavailable/.test(unhealthy.stdout) && !/claude not on PATH/.test(unhealthy.stdout), shown(unhealthy));
+  rmSync(join(more, "claude"));
+  rmSync(join(more, "claude.cmd"));
 }
 
 // ── A self-hosted space ───────────────────────────────────────────────────────────────────────────

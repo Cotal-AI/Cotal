@@ -614,7 +614,7 @@ try {
     const psE = await A.call("ps");
     check("a whitespace-only persona model is refused at load, not launched without a pin",
       parserRefusal.includes('"model" must not be empty')
-      && rE.reply.ok === false && refusal.includes(`persona file ${emodelPath} has invalid native frontmatter`) && refusal.includes("selectors")
+      && rE.reply.ok === false && refusal.includes(`invalid persona definition ${emodelPath}: "model" must not be empty`)
       && psE.reply.ok === true && !((psE.reply.data as Array<{ name: string }>) ?? []).some((x) => x.name === "emodel"),
       { parserRefusal, reply: rE.reply });
   }

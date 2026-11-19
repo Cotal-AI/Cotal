@@ -35,6 +35,7 @@ export function nativeStub(scenario) {
       if (command !== "daemon_request") throw new Error(`Unexpected native command: ${command}`);
       const request = args.request; let index = 0;
       const send = message => callbacks.get(args.onEvent.id)({ message, index: index++ });
+      if (request.op === "log") { state.logReads = (state.logReads ?? 0) + 1; if (state.logError) return fail("LOG_UNAVAILABLE", "The background service log could not be read."); return ok({ text: state.logText ?? "", truncated: state.logTruncated === true }); }
       if (request.op === "about") {
         if (state.loading) await new Promise(() => {});
         return ok({ version: "0.156.0", machine: "Davids-MacBook-Pro", platform: state.platform ?? "darwin", arch: state.arch ?? "arm64", memoryBytes: 36 * 1024 ** 3 });
@@ -49,8 +50,28 @@ export function nativeStub(scenario) {
         state.installed = true; return ok({ installed: true });
       }
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      if (request.op === "status" && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
-      if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) }); }
+      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
+      if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok(statusPayload()); }
+      if (request.op === "status-watch") {
+        state.statusWatchRequests = (state.statusWatchRequests ?? 0) + 1;
+        if (state.version && state.version !== "0.156.0") {
+          return {
+            v: 1,
+            event: "result",
+            ok: false,
+            error: {
+              code: "VERSION_MISMATCH",
+              message: "The running daemon and this app have different versions. Update them together before making changes.",
+              native: { code: "UNKNOWN_OP", detail: { watchMode: "refused-unknown-op", appVersion: "0.156.0", daemonVersion: state.version } },
+            },
+            result: { status: statusPayload() },
+          };
+        }
+        window.__pushStatus = () => send({ v: 1, event: "status", ok: true, watchMode: "push", result: statusPayload() });
+        window.__pushStatus();
+        return await new Promise(resolve => { window.__closeStatusWatch = resolve; });
+      }
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
       if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? ["https://cloud.cotal.ai/api/auth"] : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
       if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? "Davids-MacBook-Pro" }); }
@@ -330,6 +351,7 @@ export const scenarios = [
     await page.evaluate(spaces => {
       window.__renderState.catalogSpaces = spaces;
       window.__renderState.account.spaces = spaces.map(({ space }) => ({ space, desired: true, observed: "connected" }));
+      window.__pushStatus();
     }, longAccountSpaces);
     await page.waitForFunction(() => document.querySelectorAll('[data-testid="connected-space-row"]').length === 12, null, { timeout: 6000 });
     await page.click("#settings-disconnect");
@@ -471,9 +493,9 @@ export const scenarios = [
   } },
   { name: "account-live-list", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {
     assert.equal(await page.locator("#another-space").textContent(), "Add to another space");
-    await page.evaluate(() => window.__renderState.account.spaces.push({ space: "research", desired: true, observed: "connecting" }));
+    await page.evaluate(() => { window.__renderState.account.spaces.push({ space: "research", desired: true, observed: "connecting" }); window.__pushStatus(); });
     await page.locator('[data-space="research"]').waitFor({ timeout: 6000 });
-    await page.evaluate(() => window.__renderState.account.spaces.pop());
+    await page.evaluate(() => { window.__renderState.account.spaces.pop(); window.__pushStatus(); });
     await page.locator('[data-space="research"]').waitFor({ state: "detached", timeout: 6000 });
   } },
   { name: "account-first-sign-in", state: { accountAfterLogin: { mode: "account", hostSupport: "supported", spaces: [] } }, act: async page => { await page.click("#login"); await page.locator("#connected-panel:not([hidden])").waitFor(); }, expect: async page => {
@@ -537,7 +559,7 @@ export const scenarios = [
     assert.equal(await page.locator("#connection-title").textContent(), "The background service has not started");
     assert.equal(await page.locator("#connection-description").textContent(), "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.");
     assert.equal(await page.locator("#recover").textContent(), "Check status");
-    assert.equal(await page.locator("#refusal-detail").textContent(), "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused\nNext: choose Check status.");
+    assert.equal(await page.locator("#refusal-detail").textContent(), "DEPENDENCY_UNAVAILABLE (NOT_ANSWERING)\nCotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused\nNext: choose Check status.");
   } },
   { name: "no-spaces", state: { empty: true }, act: signIn },
   { name: "connected-and-pending", state: { installed: true, signedIn: true, connected: true, multiple: true, serviceState: "approval-pending" }, expect: async page => {
@@ -575,15 +597,14 @@ export const scenarios = [
   { name: "audit-settings-unavailable", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-update-summary").textContent(), "Update information is unavailable."); } },
   { name: "audit-app-found-later", state: { noApp: true }, prepare: connect, act: async page => { await page.evaluate(() => { window.__renderState.noApp = false; }); await page.click("#recover"); }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected"); assert.equal(await page.locator("#recovery-panel").isVisible(), false); } },
   { name: "hidden-status-cadence", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.watchMode), "push");
+    assert.equal(await page.evaluate(() => window.__renderState.statusWatchRequests), 1);
+    const afterStart = await page.evaluate(() => window.__renderState.statusRequests);
     await page.evaluate(() => window.__emitTauri("desktop-hidden", null));
-    const afterHide = await page.evaluate(() => window.__renderState.statusRequests);
     await page.waitForTimeout(1500);
-    assert.equal(await page.evaluate(() => window.__renderState.statusRequests), afterHide, "hidden window does not run the 1 s status poll");
     await page.evaluate(() => window.__emitTauri("desktop-tray-open", null));
-    await page.waitForFunction(prev => window.__renderState.statusRequests === prev + 1, afterHide);
-    const afterTray = await page.evaluate(() => window.__renderState.statusRequests);
     await page.evaluate(() => window.__emitTauri("desktop-shown", null));
-    await page.waitForFunction(prev => window.__renderState.statusRequests === prev + 1, afterTray);
+    assert.equal(await page.evaluate(() => window.__renderState.statusRequests), afterStart, "status-watch stays open across hide, tray open, and show without polling status");
   } },
 ];
 

@@ -51,7 +51,7 @@
     },
     {
       "name": "the settle race has no cancel contender, so a cancelled sleep parks to its deadline",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "        ...(signal === undefined ? [] : [this.settleCancelled(ref, signal)]),",
       "replace": "        ...([] as Promise<never>[]),",
       "command": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep",

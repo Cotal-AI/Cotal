@@ -21,7 +21,7 @@
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,7 +69,7 @@ const SPACE = "detach-e2e";
 
 // Workspace: a persona with a file ACL (so the override test proves flags WIN), plus config.json
 // declaring shareable MCP servers for the e2e connector.
-const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-detach-ws-"));
+const workspaceRoot = mkdtempSync(join(tmpdir(), `cotal-detach-ws-${"long-workspace-".repeat(14)}`));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 writeFileSync(
   join(workspaceRoot, ".cotal", "agents", "poet.md"),
@@ -225,6 +225,66 @@ try {
 
   mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   await mgr.start();
+
+  // Exercise the real wrapper connectors through the CLI, manager and PTY, without provider calls.
+  const fakeBin = join(workspaceRoot, "fake-bin");
+  mkdirSync(fakeBin);
+  const previousPath = process.env.PATH;
+  const previousUv = process.env.COTAL_HERMES_UV_BIN;
+  try {
+    const fixture = (name: string, body: string): void => writeFileSync(join(fakeBin, name), `#!${process.execPath}\n${body}\n`, { mode: 0o755 });
+    const errorLines = "console.error('harness error line 1: invalid provider key');console.error('harness error line 2: run auth login to reauthenticate');process.exit(1);";
+    for (const name of ["codex", "opencode", "jcode", "hermes"]) fixture(name, errorLines);
+    fixture("uv", "if(process.argv.includes('python')){console.log('0.19.0');process.exit(0)}const {spawnSync}=await import('node:child_process');const r=spawnSync('hermes',[],{stdio:'inherit'});process.exit(r.status??1);");
+    process.env.PATH = `${fakeBin}:${previousPath ?? ""}`;
+    process.env.COTAL_HERMES_UV_BIN = join(fakeBin, "uv");
+    await import("../../extensions/connector-codex/dist/index.js");
+    await import("../../extensions/connector-opencode/dist/index.js");
+    await import("../../extensions/connector-jcode/dist/index.js");
+    await import("../../extensions/connector-hermes/dist/index.js");
+    const failedLaunch = async (harness: string, name: string, extra: string[] = []): Promise<unknown> => {
+      try {
+        await capture(() => run("spawn", ["poet", "--detach", "--agent", harness, "--space", SPACE, "--name", name, ...extra]));
+      } catch (error) { return error; }
+      return undefined;
+    };
+    for (const harness of ["codex", "opencode"]) {
+      const error = await failedLaunch(harness, `failed_${harness}`);
+      ok(`${harness} immediate failure returns its own stderr`, isCommandFailure(error) && error.message.includes("run auth login to reauthenticate"), String(error));
+    }
+    fixture("opencode", "if(process.argv[2]==='--version'){console.log('1.2.0');process.exit(0)}" + errorLines);
+    const serveFailure = await failedLaunch("opencode", "failed_serve");
+    ok("OpenCode serve failure returns child stderr rather than wrapper prose", isCommandFailure(serveFailure) && serveFailure.message.includes("run auth login to reauthenticate"), String(serveFailure));
+    const jcodeFailure = await failedLaunch("jcode", "failed_jcode", ["--cwd", fakeBin]);
+    const jcodeMessage = isCommandFailure(jcodeFailure) ? jcodeFailure.message : "";
+    const jcodeLog = /workspace log: (\.cotal\/jcode\/[^/]+\/logs\/connector-[\w-]+\.log)/.exec(jcodeMessage)?.[1];
+    ok("Jcode startup failure reports the complete workspace-relative diagnostic path", !!jcodeLog && jcodeMessage.includes("startup_failed"), String(jcodeFailure));
+    const logPath = join(workspaceRoot, jcodeLog!);
+    const jcodeErrors = ["invalid provider key", "run auth login to reauthenticate"];
+    const privateOutput = readFileSync(logPath, "utf8");
+    ok("Jcode retains both child errors in its owner-only log and not in the refusal",
+      (statSync(logPath).mode & 0o777) === 0o600 && jcodeErrors.every((line) => privateOutput.includes(line) && !jcodeMessage.includes(line)), jcodeMessage);
+    const hermesFailure = await failedLaunch("hermes", "failed_hermes", ["--model", "test-model"]);
+    ok("Hermes gateway exit fails instead of reporting joined", isCommandFailure(hermesFailure) && hermesFailure.message.includes("run auth login to reauthenticate"), String(hermesFailure));
+    // The stand-in gateway subscribes as the plugin does: with the bridge token derived from the
+    // launch material's control key, HMAC-SHA256 over `cotal-hermes-bridge/<version>`.
+    fixture("hermes", "const fs=await import('node:fs');const net=await import('node:net');const {createHmac}=await import('node:crypto');const m=JSON.parse(fs.readFileSync(process.env.COTAL_LAUNCH_MATERIAL,'utf8'));const token=createHmac('sha256',Buffer.from(m.controlKey,'utf8')).update('cotal-hermes-bridge/'+m.controlVersion,'utf8').digest('base64url');const s=net.connect(process.env.COTAL_BRIDGE_SOCKET,()=>s.write(JSON.stringify({t:'subscribe',token})+'\\n'));setInterval(()=>{},60000);");
+    const hermesJoined = await capture(() => run("spawn", ["poet", "--detach", "--agent", "hermes", "--space", SPACE, "--name", "ready_hermes", "--model", "test-model"]));
+    ok("Hermes joins after its authenticated bridge subscribes without --no-events", joinedAs(hermesJoined, "ready_hermes"), hermesJoined);
+    await capture(() => run("stop", ["--name", "ready_hermes", "--space", SPACE]));
+    const missingBinary = { ...e2eCon, name: "missing-binary", requires: ["missing-application-binary"] };
+    registry.register(missingBinary);
+    let dependency: unknown;
+    try { await run("spawn", ["poet", "--foreground", "--agent", "missing-binary", "--space", SPACE]); }
+    catch (error) { dependency = error; }
+    ok("foreground missing dependency names installation and exact retry", isCommandFailure(dependency) && dependency.remedy?.includes("https://docs.cotal.ai/") === true && dependency.remedy.includes("spawn poet --foreground --agent missing-binary --space detach-e2e"), String(dependency));
+    fixture("codex", "console.log('codex stub v1.0 banner: ready');setInterval(()=>{},60000);");
+    const timeout = await failedLaunch("codex", "failed_listen");
+    ok("Codex listen timeout fails before the manager reports starting", isCommandFailure(timeout) && timeout.message.includes("did not report a listen address"), String(timeout));
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+    if (previousUv === undefined) delete process.env.COTAL_HERMES_UV_BIN; else process.env.COTAL_HERMES_UV_BIN = previousUv;
+  }
 
   // A — detached spawn with the FULL override set (incl. identity: `--name bard` beside the
   // positional ref — the review-1 fix), through the real kernel parse + control plane.

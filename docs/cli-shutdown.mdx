@@ -95,7 +95,9 @@ interactive terminal it shows the member set and the live manager's native agent
 confirm, then stops manager, delivery and broker in that order. `--yes` acknowledges that scope in
 scripts and prints no plan. The receipt names the mesh once, lists each member with its result in
 stop order, and names `cotal up` as the next step. `--with-agents`
-requests the manager's native retirement policy. Another live service instance in the space
+requests the manager's native retirement policy. Pending native lifecycle work refuses before any
+stop. The refusal lists each blocker and its count and names `cotal ps` to inspect the agents before
+retrying. Another live service instance in the space
 refuses `LIFECYCLE_BLOCKED` before the first stop; the Next names the
 `cotal svc stop <name> --instance <id> --space <space> --yes` command for each one. So does a
 process record under the root that may front a process, such as a daemon an earlier release
@@ -230,6 +232,22 @@ A command that connects to a static-auth
 space, such as `send` or `history`, is refused with `DEPENDENCY_UNAVAILABLE`, because the seed went
 with the folder, and its Next names the same `down`.
 
+A default `cotal up` stack also keeps its members' process creation pins in its local registration.
+When its project folder is gone, `status` and `space show` report that root as gone, and
+`cotal down --space <space> --yes` stops those exact members without needing the missing folder.
+A registration from an older start with no creation pins requires restoring the folder first.
+
+A controller stack reached from another Cotal home names its recorded launching `COTAL_HOME`.
+Run the command with that home rather than repeating a recovery stop under the wrong home.
+
+
+On Linux, a default stack started without `space create` also accepts `down --space <space> --yes`
+after its project folder is deleted. It finds this account's retained manager and delivery children
+by their exact space, server and working folder, and its broker by that folder's configuration
+argument. It pins each process's creation identity before stopping it, manager first and broker
+last. The stop never targets a listener by address alone. `--dry-run` lists the processes, and an
+unconfirmed exit keeps the registration and leaves later components running. `space forget` names
+this whole-stack stop while any of those children still runs, even after the broker has exited.
 
 ### Missing home records
 
@@ -291,6 +309,11 @@ preview, `cotal down --dry-run --with-agents`, shows the no-op and warns with th
 stack's last completed `down` took `--with-agents`, or the root never started a stack, no agent of
 it can remain, and `--with-agents` reports the same no-op.
 
+When a legacy preserved cut is `ready`, bare `down` checks that the recorded processes are stopped
+and that the recorded broker address has no listener. It leaves the cut unchanged, exits 0, and
+names `cotal status` for the next maintenance step instead of suggesting a start. If a process or
+listener may still be running, or maintenance is in progress, it refuses without stopping anything.
+
 
 ### Legacy stacks
 
@@ -322,8 +345,8 @@ until the TTL and a five-second grace have passed, was left by a daemon that exi
 releasing it, such as one whose broker stalled past its broker-gone window, and `down` goes on.
 A delivery daemon gets two seconds to release shard 0 of its lease after the signal and then exits
 anyway. A signal that lands while its connection redials first waits up to five seconds from the
-drop for the redial. So after it stops, the bare stop reads the lease while the broker still runs.
-When the row
+drop for the redial. So after it stops, the bare stop reads the lease while the broker still runs, even when the daemon
+already exited and removed its pidfile. When the row
 still names the credential this folder gave that daemon, or the lease cannot be read, the credential
 stays and `down` prints a `!` line saying so. The next `up` uses it to wait the row out, as after a
 crash, and then starts the new daemon. These are known-blocker
@@ -336,6 +359,11 @@ maintenance lock, without adopting its effects into the preserved set.
 A validated completed restore in `active` for the registered space does not block ordinary
 bare `down`. The other root, ownership, sharing and native process guards still apply, and
 stopping leaves the restore journal and fallback store unchanged.
+When a legacy foreground `up` is still starting, `down --yes` refuses before the broker starts
+instead of reporting a stopped stack. Press Ctrl-C in the first terminal, or wait for startup and
+retry `cotal down --yes`. Once the broker is registered, `down` waits up to 20 seconds for startup
+to finish before stopping the stack. If it cannot finish waiting, it gives the same next step and
+stops nothing. A refused manager stop leaves delivery and the broker running.
 The machine home is not an isolated project root, so bare `down` refuses the home stack. Stop it
 with `cotal down --preserve-state`, which keeps its state for the next `cotal up`. The refusal names
 that command. `--preserve-state` takes its agent inventory from the manager that serves the space.
@@ -486,6 +514,10 @@ An extension-removal reservation in a component's pidfile refuses the stop: it r
 progress while the owner is live, calls the reservation stale only when the owner is proven gone or is
 not a pid, and otherwise refuses without advising deletion because the owner's liveness could not be
 confirmed.
+When a manager starts shutdown, it cancels outstanding readiness waits before draining admitted
+launches. Its default stop then stops its in-process PTY seats, waits for their exit, including
+runtime escalation for a seat that ignores SIGTERM, and deprovisions them before the manager exits.
+
 Whole-stack shutdown keeps delivery credentials until every required component has stopped.
 A refused stop preserves both the space-scoped credential and its legacy copy. Credential removal
 errors remain failures. `down` removes the manager's delivery-aware marker, shutdown intent and
@@ -499,8 +531,10 @@ so a recorded pid alone is not a durable target identity. `up` and the dashboard
 process's creation identity in a sibling `<pidfile>.identity` pin, which holds the pid and the
 process start reported by the OS. Every stop path, including `down` for the broker, web and
 extension components, and the manager, delivery and auth-service stops, applies the same rule. A pin
-that names a different start means the pid was reused, so teardown refuses and preserves it. A
-controller stack's bare `down` signals no such record, so it removes it, as described above. A torn
+that names a different start means the pid was reused. The local stop removes that stale pidfile
+and pin without signalling the unrelated process, and continues stopping later components. A
+controller stack's bare `down` clears the same stale records, as described above. If a replacement
+with the same PID publishes a new creation pin during cleanup, `down` keeps the replacement record. A torn
 or unreadable pin also refuses. On macOS, the reader calls `sysctl` through a bundled Node-API
 binding for x64 or arm64 and records the process start in microseconds. A macOS pin that an earlier
 release wrote holds the `ps -o lstart` start date instead and is verified with that same reader. That
@@ -529,11 +563,13 @@ publish leaves the new record whole. A directory at the pin path is refused by n
 is kept, because no publish writes one and removing it could delete files Cotal did not write.
 
 The web dashboard service claims `web.pid` with an exclusive create, so a second dashboard for the
-same mesh is refused, and writes its pin right after the claim. A stop that runs between the two
-reads a legacy record. A `web.pid` whose process has exited (ESRCH) is stale: the start removes it
-and claims the slot, so a dashboard that crashed, was killed or could not connect does not block the
-next start. Any other existing `web.pid` refuses the start with its path, and the start never adopts
-it, including a pid now used by another process.
+same mesh is refused, and writes its pin right after the claim. When startup fails before the
+dashboard binds its listener, it releases that claim before exiting. A stop that runs between the
+claim and its pin reads a legacy record. A `web.pid` whose process has exited (ESRCH) or whose
+identity pin proves the PID was reused by a later process is stale: the start removes it and claims
+the slot, so a dashboard that crashed, was killed or could not connect does not block the next
+start even after OS PID reuse. Any other existing `web.pid` refuses the start with its path, and
+the start never adopts it.
 
 The pidfile pid and the pin pid are two coordinates. Automatic cleanup follows **proven death of
 the pidfile target** (ESRCH on that pid): a torn or unreadable sibling pin does not wedge a dead
@@ -672,10 +708,14 @@ cotal clean restore-fallback --attempt <id> --force [--discard-history]
 One configurable cleanup verb; every target requires `--force`, except a `--dry-run` of `store` or `all`.
 It takes one target and no extra positional arguments. A channel name after `history` refuses
 `USAGE_INVALID` (exit 1); it does not narrow the purge. The dry run quotes an explicit `--store-dir`
-value in its printed force command so it stays one shell argument.
-Only `history` takes `--space`, `--server` or `--creds`. Every other target acts on the root of the
-folder it runs in, so it refuses them `USAGE_INVALID` (exit 1) before local cleanup inspects or removes
-root state.
+value in its printed force command so it stays one shell argument. A run without `--force` refuses
+`USAGE_INVALID` (exit 1) and prints the command to run, keeping `--store-dir` for `store` and `all`
+and `--space`, `--server`, `--creds` and `--dms` for `history`, so that command acts on the same target.
+Only `history` takes `--space` (or `-s`), `--server` or `--creds`. Local cleanup uses the project found
+from the working directory. When local cleanup refuses these flags, it reports `USAGE_INVALID`
+(exit 1) and names the flags to remove. If you ran the command from the project you intend to clean,
+retry from the same working directory and remove only the named flags and their values. A relative
+`--store-dir` is resolved from the working directory, which can be a subdirectory of the project.
 
 - `history` purges the retained message backlog on the **running** broker (channels, plus DMs
   with `--dms`). A stream that is not on the broker is already clear: the command purges the streams
@@ -686,7 +726,11 @@ root state.
   store's `jetstream` directory, its `.cotal-store-id` marker and the broker's `ocsp` folder, then
   the empty store directory. A
   store directory that holds anything else refuses `CONFLICT` (exit 2), names those entries and
-  removes nothing; move them out and run it again.
+  removes nothing; move them out and run it again. Cleanup and reset check that the store root and
+  each directory inside it are readable, writable and searchable before moving or removing the store.
+  A permission failure refuses `PERMISSION_DENIED` (exit 2), keeps the store in place and names
+  `chmod -R u+rwX` on its root. A stopped named open space is identified by its retained broker
+  configuration, so its own streams do not count as another space's data.
 - `all` is `store` plus the space identity (`.cotal/auth`), the local creds and markers tied to
   it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
   registry entry; the next `cotal up` mints a fresh identity. On a root deployed with `up -f`, plain
@@ -893,7 +937,10 @@ credentials exported with `auth mint --out` stop working on this space after the
 The warning is also in the JSON envelope as `EXPORTED_CREDENTIALS_INVALIDATED`. Exported files
 stay where they are. Mint replacements after `up`; no remote credential is revoked by this reset.
 
-Its `--dry-run` validates the existing local trust chain and inventories the
+An isolated open space whose registration stays after `down` can use this reset too.
+The reset checks the space name recorded by its open broker configuration and verifies that no
+signing trust remains. For an authenticated space, `--dry-run` validates the existing local trust chain.
+For either mode, `--dry-run` inventories the
 native identity paths, including provider-declared secret keys, without running
 deprovisioning hooks. The inventory is bounded to 10,000 paths. Foreign space
 segments, symlinks, hard-linked files, foreign ownership, group/world-writable

@@ -58,8 +58,8 @@
     {
       "name": "ps validates --on by exiting",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "  const on = await managerPin(v, \"cotal ps\");",
-      "replace": "  const on = await managerPin(v, \"cotal ps\").catch(() => process.exit(1));",
+      "find": "  const on = await managerPin(v, onRerun(`cotal ${command}`, v));",
+      "replace": "  const on = await managerPin(v, onRerun(`cotal ${command}`, v)).catch(() => process.exit(1));",
       "expectRed": "ps an empty --on is one USAGE_INVALID envelope, exit 1, before any mesh is resolved",
       "cell": "ps an empty --on is one USAGE_INVALID envelope, exit 1, before any mesh is resolved",
       "afterRestore": "pnpm --filter cotal-ai... build"

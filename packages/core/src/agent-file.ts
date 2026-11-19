@@ -32,7 +32,7 @@ import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
 import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
 import { utf16Problem } from "./text-encoding.js";
-import { assertValidChannel, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
+import { assertValidChannel, assertValidRole, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 import { assertBoundedOwner } from "./endpoint-subjects.js";
 import { parsePersonaEndpoints, type PersonaEndpoint } from "./persona-endpoints.js";
 
@@ -157,15 +157,16 @@ export function assertValidKind(kind: unknown, where?: string): EndpointKind {
   );
 }
 
-/** Load and parse an agent definition file (Markdown + `---` frontmatter). */
-export function loadAgentFile(path: string): AgentDef {
-  return parseAgentFileSource(readFileSync(path, "utf8"), path);
+/** Load and parse an agent definition file (Markdown + `---` frontmatter). A consumer that
+ *  validates the effective role after applying its own overrides can defer role syntax checking. */
+export function loadAgentFile(path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
+  return parseAgentFileSource(readFileSync(path, "utf8"), path, options);
 }
 
 /** Parse an agent-file document already in memory. `path` is only for error text. A leading UTF-8
  *  BOM and CRLF line endings, as Windows editors and git's `core.autocrlf` write them, read as LF. A
  *  file saved as UTF-16 is refused by its encoding (see {@link utf16Problem}). */
-export function parseAgentFileSource(src: string, path: string): AgentDef {
+export function parseAgentFileSource(src: string, path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
   const encoding = utf16Problem(src);
   if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
   const m = AGENT_FILE_FENCE.exec(src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n"));
@@ -173,18 +174,20 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
   const fm = parseFrontmatter(m[1], path);
   const persona = m[2].trim();
 
+  const yamlType = (v: unknown): string => v === null ? "null" : Array.isArray(v) ? "array" : typeof v === "object" ? "mapping" : typeof v;
   const str = (k: string): string | undefined => {
     const v = fm[k];
-    if (v === undefined || v === null) return undefined;
-    if (typeof v === "object") throw new Error(`agent file ${path}: "${k}" must be a scalar`);
-    return String(v);
+    if (v === undefined) return undefined;
+    if (typeof v !== "string") throw new Error(`agent file ${path}: "${k}" must be a string; got ${yamlType(v)}`);
+    return v;
   };
   const list = (k: string): string[] | undefined => {
     const v = fm[k];
-    if (v === undefined || v === null) return undefined;
-    return (Array.isArray(v) ? v : [v]).map((x) => {
-      if (x === null || typeof x === "object") throw new Error(`agent file ${path}: "${k}" list items must be scalars`);
-      return String(x);
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v)) throw new Error(`agent file ${path}: "${k}" must be an array of strings; got ${yamlType(v)}`);
+    return v.map((x, index) => {
+      if (typeof x !== "string") throw new Error(`agent file ${path}: "${k}" must be an array of strings; item ${index} got ${yamlType(x)}`);
+      return x;
     });
   };
 
@@ -263,10 +266,15 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
     throw new Error(`agent file ${path}: "eventPayloads" must be a boolean`);
   const launchOptionsRaw = fm["launchOptions"];
   let launchOptions: Record<string, unknown> | undefined;
-  if (launchOptionsRaw !== undefined && launchOptionsRaw !== null) {
-    if (typeof launchOptionsRaw !== "object" || Array.isArray(launchOptionsRaw))
+  if (launchOptionsRaw !== undefined) {
+    if (launchOptionsRaw === null || typeof launchOptionsRaw !== "object" || Array.isArray(launchOptionsRaw))
       throw new Error(`agent file ${path}: "launchOptions" must be a mapping of key: value pairs`);
     launchOptions = launchOptionsRaw as Record<string, unknown>;
+  }
+  const role = str("role");
+  if (role !== undefined && !options?.deferRoleValidation) {
+    try { assertValidRole(role); }
+    catch { throw new Error(`agent file ${path}: "role" must be a single token using letters, digits, underscores or hyphens`); }
   }
 
   // Sweep every scalar frontmatter key we don't model into meta, verbatim — connector launcher
@@ -276,7 +284,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 
   return {
     name,
-    role: str("role"),
+    role,
     kind,
     description: str("description"),
     tags: list("tags"),
@@ -517,8 +525,7 @@ export interface PersonaCatalogEntry {
   def?: AgentDef;
   /** Parse error message, if the file is malformed — surfaced rather than crashing the list. */
   error?: string;
-  /** Why the file cannot be read when it was saved as UTF-16: the one parse reason that quotes nothing
-   *  from the file, so a list that keeps `error` private can still name it. */
+  /** The encoding problem when the file was saved as UTF-16. */
   encoding?: string;
   /** Set when the file is not a regular file, such as a FIFO, so it was not opened (see `error`). */
   notRegular?: true;

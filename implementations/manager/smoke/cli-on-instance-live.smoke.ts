@@ -346,6 +346,24 @@ try {
       r.status === 0 && new RegExp(`^ +Answering instance: +${iid}$`, "m").test(out),
       { status: r.status, tail: out.slice(-300) });
   }
+  {
+    const missingAttach = await cotal(["attach", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", IID1, "--space", space], root1);
+    mustHaveRun(missingAttach, "`attach <missing> --on IID1`");
+    const out = strip(missingAttach.out);
+    check("attach <missing> --on <live-instance> refuses as TARGET_NOT_FOUND (exit 2), not OPERATION_UNKNOWN (#7612)",
+      missingAttach.status === 2 && /Outcome:\s+refused/.test(out) && /Code:\s+TARGET_NOT_FOUND/.test(out) && out.includes(`Manager:     ${IID1}`) && out.includes("run `cotal ps`"),
+      { status: missingAttach.status, tail: out.slice(-400) });
+  }
+  {
+    const refreshDescribe = await cotal(["endpoint", "describe", "manager", "--refresh", "--on", IID1, "--json", "--space", space], root1);
+    mustHaveRun(refreshDescribe, "`endpoint describe manager --refresh --on IID1 --json`");
+    let parsed: { outcome?: string; result?: { kind?: string; contractSource?: string; responder?: { instanceId?: string } } } | undefined;
+    try { parsed = JSON.parse(refreshDescribe.stdout); } catch { parsed = undefined; }
+    check("endpoint describe manager --refresh exits 0 and returns fresh-native-resolution (#7600)",
+      refreshDescribe.status === 0 && parsed?.outcome === "ok" && parsed.result?.kind === "endpoint-contract" &&
+        parsed.result.contractSource === "fresh-native-resolution" && parsed.result.responder?.instanceId === IID1,
+      { status: refreshDescribe.status, stdout: refreshDescribe.stdout.slice(0, 400) });
+  }
 
   // ---- 4. THE PIN ROUTES: IT DOES NOT FALL THROUGH TO THE CLASS QUEUE -------------------------
   // THE DISCRIMINATOR, and the reason cell 3's two green exits are not vacuous. A `--on` that were

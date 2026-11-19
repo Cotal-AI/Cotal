@@ -963,11 +963,11 @@ export async function runCodexHost(): Promise<void> {
     // retiring the UI and interrupting the live turn. A tail resuming inside that window would
     // still see a live, current driver and carry on into a mesh that is already leaving.
     if (shuttingDown) {
-      log(`app-server incarnation ${gen} stood down — a shutdown owns the rest of this process`);
+      log(`app-server incarnation ${gen} stood down - a shutdown owns the rest of this process`);
       return true;
     }
     if (driver.isCurrent(gen)) return false;
-    log(`app-server incarnation ${gen} was superseded — leaving the rest to the current one`);
+    log(`app-server incarnation ${gen} was superseded - leaving the rest to the current one`);
     return true;
   };
 
@@ -1021,6 +1021,7 @@ export async function runCodexHost(): Promise<void> {
     } catch {
       /* leaving anyway */
     }
+    if (driver.lastOutput.trim()) log(`last app-server output: ${driver.lastOutput.trim().split(/\r?\n/).slice(-2).join(" | ")}`);
     process.exit(1);
   }
 
@@ -1285,7 +1286,7 @@ export async function runCodexHost(): Promise<void> {
     }
   };
   let controlServer: ReturnType<typeof startControlServer> | undefined;
-  // Socket path from the env, first-frame token from the launch material (see controlFromEnv).
+  // Socket path from the env, control key and version from the launch material (see controlFromEnv).
   const control = controlFromEnv();
   if (control) {
     controlServer = startControlServer(
@@ -1301,6 +1302,7 @@ export async function runCodexHost(): Promise<void> {
   scrubLaunchMaterial();
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+  process.on("SIGHUP", () => void shutdown());
 
   // PATH preflight (parity with the manager's `requires` check, for a foreground `--live-only`
   // launch that bypasses it): fail with a clear message naming the binary rather than a raw
@@ -1365,7 +1367,7 @@ export async function runCodexHost(): Promise<void> {
     // A crash mid-launch is the crash rail's to recover, and it has already started a
     // replacement. Tearing down here would kill it and close the MCP endpoint out from under it.
     if (gen >= 0 && superseded(gen)) {
-      log(`initial launch did not finish (${(e as Error).message}) — the restart is completing it`);
+      log(`initial launch did not finish (${(e as Error).message}) - the restart is completing it`);
       return;
     }
     stopTui();

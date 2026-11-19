@@ -543,7 +543,7 @@ try {
     check("a port an open connection holds with no listener refuses CONFLICT on both routes, saying so and naming no process to stop",
       open.status === 2 && open.envelope?.error?.code === "CONFLICT"
         && (open.envelope.error.message ?? "").includes(`nothing listens at the stack's broker address 127.0.0.1:${port}, but an open connection's local end holds its port (bind failed: address already in use)`)
-        && (open.envelope.error.remedy ?? "").includes(`close the connection that holds 127.0.0.1:${port} and run \`cotal up\` again`) && !(open.envelope.error.remedy ?? "").includes("stop the process")
+        && (open.envelope.error.remedy ?? "").includes(`close the connection that holds 127.0.0.1:${port} and retry this start`) && !(open.envelope.error.remedy ?? "").includes("stop the process")
         && openLegacy.status === 2 && openLegacy.stderr.includes(`nothing listens at the broker address 127.0.0.1:${port}, but an open connection's local end holds its port`) && !started(unprepared), { open: shown(open), legacy: shown(openLegacy) });
     client.end();
     await once(client, "close");
@@ -555,7 +555,7 @@ try {
     check("a port in TIME-WAIT with no listener refuses CONFLICT on both routes, saying so, with waiting as the next step",
       timeWait.status === 2 && timeWait.envelope?.error?.code === "CONFLICT"
         && (timeWait.envelope.error.message ?? "").includes(`nothing listens at the stack's broker address 127.0.0.1:${port}, but a closed connection in TIME-WAIT still holds its port (bind failed: address already in use)`)
-        && (timeWait.envelope.error.remedy ?? "").includes("wait up to a minute for the TIME-WAIT to clear and run `cotal up` again") && !(timeWait.envelope.error.remedy ?? "").includes("stop the process")
+        && (timeWait.envelope.error.remedy ?? "").includes("wait up to a minute for the TIME-WAIT to clear and retry this start") && !(timeWait.envelope.error.remedy ?? "").includes("stop the process")
         && timeWaitLegacy.status === 2 && timeWaitLegacy.stderr.includes(`nothing listens at the broker address 127.0.0.1:${port}, but a closed connection in TIME-WAIT still holds its port`) && !started(unprepared), { timeWait: shown(timeWait), legacy: shown(timeWaitLegacy) });
   }
 

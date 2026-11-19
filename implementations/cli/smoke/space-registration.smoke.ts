@@ -318,6 +318,15 @@ setCurrent("keep");
   const whoUnchecked = await json(["whoami", "--space", "dead1"]);
   check("whoami does not state an unchecked mode as fact: partial, exit 4, MODE_NOT_CHECKED",
     whoUnchecked.status === 4 && whoUnchecked.env?.outcome === "partial" && whoUnchecked.env.result.modeChecked === false && whoUnchecked.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(whoUnchecked));
+  const legacyForced = await run(["meshes", "add", "legacy-unchecked", "--server", DEAD, "--root", root, "--mode", "open", "--force"]);
+  check("legacy meshes add also records the mode as unchecked when forced",
+    legacyForced.status === 0 && legacyForced.stdout.includes("recorded without verifying") && findMesh("legacy-unchecked")?.unchecked === true, shown(legacyForced));
+  const legacyWho = await json(["whoami", "--space", "legacy-unchecked"]);
+  check("whoami reports partial access for a legacy forced registration",
+    legacyWho.status === 4 && legacyWho.env?.outcome === "partial" && legacyWho.env.result.modeChecked === false && legacyWho.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(legacyWho));
+  const legacyShow = await run(["space", "show", "legacy-unchecked", "--plain"]);
+  check("space show marks a legacy forced registration as unchecked",
+    legacyShow.status === 0 && /mode:\s+open, not checked: added with --force/.test(legacyShow.stdout), shown(legacyShow));
 
   clearCurrent();
   const unselected = await json(["space", "add", "open3", "--server", LIVE, "--root", root]);
@@ -497,6 +506,27 @@ setCurrent("keep");
     check("...and the stack definitions saved for its root are removed, so another folder can start the name",
       JSON.stringify(settled.env?.result.releasedDefinitions) === JSON.stringify(["stack-broker"]) && serviceDefinitionStore("stackdone").read("stack-broker") === undefined, shown(settled));
     check("...and the stack journal, whose delivery instance forget did not remove, is left as it was", readFileSync(stackJournalPath(doneRoot), "utf8") === doneJournal, shown(settled));
+
+    // A damaged registration must not hide the instances or prepared root that still name its stack.
+    for (const active of [true, false]) {
+      const name = active ? "damagedrunning" : "damagedstopped";
+      const at = stack(name, "auth", { delivery: member(name, "stack-delivery", active ? requireProcessIdentity(process.pid) : gonePid, !active) }, active ? "started" : "stopped");
+      brokerDefinition(name, at);
+      recordPreparedSpace({ space: name, root: at, ts });
+      const file = join(meshesDir(), `${spaceSegment(name)}.json`);
+      const good = readFileSync(file, "utf8");
+      writeFileSync(file, `{"space":"${name}",`);
+      const result = await json(["space", "forget", name]);
+      if (active) {
+        check("a damaged registration with a running stack refuses before either record or definitions are removed",
+          refused(result, 2, "LIFECYCLE_BLOCKED") && existsSync(file) && findPreparedSpace(name)?.root === at && serviceDefinitionStore(name).read("stack-broker") !== undefined, shown(result));
+        writeFileSync(file, good);
+        removePreparedSpace(name);
+      } else {
+        check("forget of a damaged registration releases stopped stack definitions and prepared state in one call",
+          result.status === 0 && !existsSync(file) && findPreparedSpace(name) === undefined && serviceDefinitionStore(name).read("stack-broker") === undefined && result.env?.result.releasedDefinitions.includes("stack-broker"), shown(result));
+      }
+    }
 
     // A prepared space releases the definitions saved for its own root, and only those.
     const prepRoot = realpathSync.native(projectRoot("prepdone")), otherRoot = realpathSync.native(projectRoot("prepother"));
@@ -1642,6 +1672,23 @@ if (process.platform === "linux") {
   const text = await run(["space", "forget", "pold"], {}, folder);
   check("  and a second forget finds nothing to forget, exit 2", text.status === 2 && /no space named "pold" is registered here/.test(text.stderr), shown(text));
   check("space lists again once it is gone", (await json(["space"], folder)).status === 0);
+  for (const legacy of [false, true]) {
+    const name = legacy ? "damagedlegacy" : "damagedprepared";
+    const at = projectRoot(name), elsewhere = projectRoot(`${name}-new`);
+    const prepared = await json(["space", "create", name, "--root", at]);
+    check(`rig: ${name} is prepared`, prepared.status === 0, shown(prepared));
+    const file = join(meshesDir(), `${legacy ? encodeURIComponent(name) : spaceSegment(name)}.json`);
+    writeFileSync(file, `{"space":"${name}",`, { mode: 0o600 });
+    const rm = await run(["meshes", "rm", name, "--force"], {}, folder);
+    check("meshes rm of a damaged registration names its safe forget route and keeps both records",
+      rm.status === 1 && rm.stderr.includes(`cotal space forget ${name}`) && existsSync(file) && findPreparedSpace(name)?.root === at, shown(rm));
+    const forgotten = await json(["space", "forget", name], folder);
+    check("one forget clears both the damaged registration and its prepared record",
+      forgotten.status === 0 && forgotten.env?.result.root === at && !existsSync(file) && findPreparedSpace(name) === undefined, shown(forgotten));
+    const reused = await json(["space", "create", name, "--root", elsewhere]);
+    check("the forgotten name can immediately be prepared in a different folder", reused.status === 0, shown(reused));
+    removePreparedSpace(name);
+  }
 }
 
 finish();

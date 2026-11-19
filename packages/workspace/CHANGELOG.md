@@ -1,5 +1,55 @@
 # @cotal-ai/workspace
 
+## 0.170.0
+
+### Patch Changes
+
+- c701881: Report damaged local stack, process, trust, credential and renewal records without inferring stopped or healthy components, and retain file-specific recovery guidance.
+- 07978b3: On Linux, retrying `cotal update --self` recovers from an interrupted install or reconcile child once its recorded processes are gone.
+- Updated dependencies [ad6d984]
+- Updated dependencies [3afefa8]
+- Updated dependencies [0e42b19]
+- Updated dependencies [dd478d4]
+- Updated dependencies [6170fc9]
+- Updated dependencies [8c965ac]
+- Updated dependencies [b73a8de]
+- Updated dependencies [2b1659e]
+- Updated dependencies [20ff353]
+  - @cotal-ai/core@0.170.0
+
+## 0.169.0
+
+### Patch Changes
+
+- f5aee20: Report foreign listeners and missing broker features accurately, give usable broker selection guidance, and retain identity for equivalent registered broker URLs.
+- a9cb553: Support `--json` and `--plain` on `cotal update --auto` and `--notify`, allow `cotal persona edit --json` and `cotal endpoint describe --refresh`, reject impossible calendar dates in `cotal history --since`, refuse `cotal ps --slots` cleanly on open and user-auth spaces, and report `TARGET_NOT_FOUND` when `cotal attach <name> --on <instance>` names an absent agent.
+- e9bee41: Recognize stopped open stacks in credential diagnosis and name missing project folders or mismatched broker addresses in authentication remedies.
+- 58c16f7: Preserve pnpm dlx command hints and connector state across dlx cache refreshes, quote shell installer lock and PATH remedies, document npm generation store removal, and eliminate the Node 22.10 JSON module experimental warning.
+- 55e3e40: Retire timed bare `join` sessions cleanly at expiry, refuse unsupported `--creds` profiles and control invocations with clear next steps, validate mint channel patterns before creating folders, and preserve provisioning and registered open mode in credential diagnostics.
+- 37a700f: Keep local stack ownership and recovery settings intact across renamed project folders, different Cotal homes, refused starts, and damaged controller journals.
+- e7fa3bf: Keep replacement process records intact when shutdown overlaps a PID reuse or record update.
+- eee44d8: Keep completion remedies safe for paths with spaces, leave clean uninstalls untouched, report the installed extension root before seeding, and preserve a working shell installation when a requested release cannot start.
+- 1360657: Stop child harnesses and retire provisioned credentials when foreground `cotal spawn` receives `SIGTERM` or `SIGHUP`, forward non-secret seat attribution into managed Codex and Jcode sessions so `cotal stop --self` works there, and report the specific field or YAML position when `cotal spawn` rejects an invalid persona file.
+- f5aee20: Preserve the recorded local broker's store write failure and history-preserving repair when it disables JetStream.
+- 3e4862f: Keep update smoke tests reliable on busy machines by timing lock holds from child readiness and allowing daemon startup and recovery up to a minute.
+- f5aee20: Keep status reports available with an unreadable stack journal and report its permission repair as a warning.
+- 1a968ba: Recover unpublished connector copies and abandoned update staging directories so interrupted updates do not block later reconciliation or cleanup.
+- 339d6ee: Verify Linux automatic daemon activation before completing updates and repair abandoned global update markers during manual self-update.
+- a6496a5: Let a verified staged update target decide its pre-install checks, retaining running work when daemon activation cannot be authorized.
+- de57e89: Wait for a killed updater's surviving install child and finish the requested self-update on the first retry.
+- 2a71cc3: Release `web.pid` when a dashboard service fails before publishing its session record, reclaim PID custody slots whose recorded process exited and had its PID reused by a process with a different start token, and remove retired service instance logs, launch scratch files, sidecar receipts, and empty per-space service folders during stack restarts, instance removal, and `space forget`.
+- Updated dependencies [ec01e0a]
+- Updated dependencies [a59864f]
+- Updated dependencies [a3d78c7]
+- Updated dependencies [c2f9729]
+- Updated dependencies [c4ca691]
+- Updated dependencies [71088a6]
+- Updated dependencies [67d9a30]
+- Updated dependencies [4362eb1]
+- Updated dependencies [963db93]
+- Updated dependencies [4050457]
+  - @cotal-ai/core@0.169.0
+
 ## 0.168.0
 
 ### Patch Changes

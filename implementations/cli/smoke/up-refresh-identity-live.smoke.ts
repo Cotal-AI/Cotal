@@ -271,7 +271,7 @@ async function storeRecordRepair(): Promise<void> {
     const repairLines = repair.stdout.replace(/\x1b\[[0-9;]*m/g, "").split("\n");
     check("(4) off a terminal its reopening, Started and summary lines are each one line on stdout",
       repairLines.includes(`reopening the recorded store ${resolve(storeA)}`) && repairLines.some((l) => /^Started (bundled )?nats-server \S+ (on PATH )?at .+\.$/.test(l)) &&
-        repairLines.some((l) => /^✓ running in the background: nats-server \(pid \d+\)(, [a-z -]+)* - stop with: `cotal down`$/.test(l)) && !/reopening|Started|running in the background/.test(repair.stderr),
+        repairLines.some((l) => /^✓ running in the background: nats-server \(pid \d+\)(, [a-z -]+)* - stop with: `(?:pnpm )?cotal down`$/.test(l)) && !/reopening|Started|running in the background/.test(repair.stderr),
       { stdout: repair.stdout, stderr: repair.stderr });
     const log = readFileSync(join(fixture.root, ".cotal", "nats.log"), "utf8");
     const lastStoreLine = log.split("\n").filter((l) => l.includes("Store Directory:")).pop() ?? "";
@@ -607,9 +607,8 @@ async function suspendedLegacyBroker(): Promise<void> {
     pid = Number(readFileSync(join(fixture.root, ".cotal/nats.pid"), "utf8"));
     const pin = readFileSync(join(fixture.root, ".cotal/nats.pid.identity"), "utf8");
     for (const flag of ["--file", "--run"]) {
-      const refused = cotal(fixture, ["down", flag, "", "--yes", "--json"]);
-      const receipt = JSON.parse(refused.stdout) as { error?: { code?: string } };
-      check("a blank stop selector leaves the live stack and its pidfile intact", refused.status === 1 && receipt.error?.code === "USAGE_INVALID" && Number(readFileSync(join(fixture.root, ".cotal/nats.pid"), "utf8")) === pid, `${refused.stdout}${refused.stderr}`);
+      const refused = cotal(fixture, ["down", flag, "", "--yes"]);
+      check(`${flag} with a blank value leaves the live stack and its pidfile intact`, refused.status === 1 && refused.stderr.includes(`${flag} is empty`) && readFileSync(join(fixture.root, ".cotal/nats.pid.identity"), "utf8") === pin, `${refused.stdout}${refused.stderr}`);
       process.kill(pid, 0);
     }
     process.kill(pid, "SIGSTOP");
@@ -645,7 +644,7 @@ async function wildcardBindRefusals(): Promise<void> {
       try {
         const refused = cotal(fixture, ["up", "--host", "0.0.0.0", "--server", `nats://127.0.0.1:${held}`]);
         const output = `${refused.stdout}${refused.stderr}`;
-        check("a non-dial-IP listener refuses a wildcard bind with CONFLICT", refused.status === 2 && output.includes("CONFLICT") && output.includes(`0.0.0.0:${held}`), output);
+        check("a non-dial-IP listener refuses a wildcard bind with CONFLICT and keeps --host in the retry", refused.status === 2 && output.includes("CONFLICT") && output.includes(`0.0.0.0:${held}`) && output.includes("up --host 0.0.0.0 --server nats://127.0.0.1:<port>"), output);
         check("wildcard preflight writes no broker config or pidfile", !existsSync(join(fixture.root, ".cotal/auth/server.conf")) && !existsSync(join(fixture.root, ".cotal/nats.pid")));
         const started = cotal(fixture, ["up", "--host", "0.0.0.0", "--server", fixture.server, "--no-manager"]);
         check("the unstarted stack immediately accepts a free port", started.status === 0, `${started.stdout}${started.stderr}`);

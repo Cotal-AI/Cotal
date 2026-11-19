@@ -19,7 +19,7 @@
  * Run: pnpm smoke:service-commands:live
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -122,6 +122,11 @@ try {
     check("  and a preset that runs many instances with the add that names one", endpoint?.next.startsWith("cotal service add <name> --preset exec-endpoint") === true, endpoint);
     check("  and nothing is saved by listing", before.definitions.length === 0, before.definitions);
 
+    const preview = ["manager", "start", "--dry-run", "--new-instance"];
+    const freshPreview = cotal(preview);
+    check("a fresh manager preview refuses a new instance without saving a definition",
+      freshPreview.status === 2 && out(freshPreview).includes("UNSUPPORTED") && !inventory().definitions.includes("manager"), out(freshPreview));
+
     // ---- The manager: start, start again, status, logs, a conflicting start, stop ---------------
     const dry = cotal(["manager", "start", "--dry-run"]);
     check("cotal manager start --dry-run previews and saves nothing", dry.status === 0 && inventory().definitions.length === 0, out(dry));
@@ -134,6 +139,10 @@ try {
       row(started.services, "manager")?.state === "running" && row(started.services, "manager")?.next === "cotal manager status" && started.definitions.includes("manager"), started.services);
     const again = cotal(["manager", "start"]);
     check("a second cotal manager start starts nothing", again.status === 0 && out(again).includes("Already running; nothing was started") && inventory().running.filter((name) => name === "manager").length === 1, out(again));
+    // #7642: a start that named its space suggests the logs and stop in that space.
+    const named = cotal(["manager", "start", "--space", SPACE]);
+    check("a cotal manager start with --space suggests cotal manager logs and stop with the same --space",
+      named.status === 0 && new RegExp(`cotal manager logs --space ${SPACE}\\s+Read`).test(out(named)) && new RegExp(`cotal manager stop --space ${SPACE}\\s+Stop it`).test(out(named)), out(named));
     const status = cotal(["manager", "status"]);
     check("cotal manager status reads it", status.status === 0 && /Recorded state:\s+running/.test(out(status)), out(status));
     const logs = cotal(["manager", "logs", "--tail", "20"]);
@@ -148,6 +157,18 @@ try {
     chmodSync(script, 0o700);
     const add = cotal(["service", "add", "hello", "--exec", `${script} 'big world'`]);
     check("service add hello --exec saves your program in one command", add.status === 0 && inventory().definitions.includes("hello"), out(add));
+    const notStartedJson = cotal(["service", "status", "hello", "--json"]);
+    const notStartedReceipt = JSON.parse(notStartedJson.stdout) as { outcome: string; completeness: string; result: { definition: string; instanceId: string | null; recordedState: string } | null };
+    check("service status reports a saved service with no instance as not started in JSON",
+      notStartedJson.status === 0 && notStartedReceipt.outcome === "ok" && notStartedReceipt.completeness === "complete" && notStartedReceipt.result?.definition === "hello" && notStartedReceipt.result.instanceId === null && notStartedReceipt.result.recordedState === "not started", out(notStartedJson));
+    const notStartedText = cotal(["service", "status", "hello"]);
+    const afterStatus = cotal(["service", "--json"]);
+    const { instances } = (JSON.parse(afterStatus.stdout) as { result: { instances: { definition: string }[] } }).result;
+    check("service status shows not started in text and leaves the service without an instance",
+      notStartedText.status === 0 && /Recorded state:\s+not started/.test(notStartedText.stdout) && !instances.some((instance) => instance.definition === "hello"), { text: out(notStartedText), instances });
+    const missingInstance = cotal(["service", "status", "hello", "--instance", "00000000-0000-4000-8000-000000000000", "--json"]);
+    check("service status still refuses an explicitly named instance that does not exist",
+      missingInstance.status === 2 && (JSON.parse(missingInstance.stdout) as { error?: { code: string } }).error?.code === "TARGET_NOT_FOUND", out(missingInstance));
     const helloStart = cotal(["service", "start", "hello"]);
     helloUp = helloStart.status === 0;
     check("service start hello starts it", helloUp && /Recorded state:\s+running/.test(out(helloStart)), out(helloStart));
@@ -167,11 +188,49 @@ try {
     check("  and a plain service logs hello --follow ends with a sentence, not a raw end record",
       helloCode === 0 && lastLine(helloFollow.text) === "hello is no longer running, so the follow ended." && !/^end: /m.test(helloFollow.text), { helloCode, text: helloFollow.text });
 
+    const helloLog = JSON.parse(cotal(["service", "logs", "hello", "--json"]).stdout) as { result: { path: string } };
+    const helloPath = helloLog.result.path;
+    const foregroundScript = join(root, "foreground.mjs");
+    writeFileSync(foregroundScript, "process.on('SIGTERM', () => process.exit(0));\nsetInterval(() => {}, 1_000);\n");
+    const foregroundAdd = cotal(["service", "add", "foreground", "--exec", `${process.execPath} ${foregroundScript}`]);
+    check("the graceful foreground service is saved", foregroundAdd.status === 0, out(foregroundAdd));
+    const foreground = spawn(process.execPath, ["--import", TSX_LOADER, BIN, "service", "start", "foreground", "--foreground"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+    let foregroundOutput = "";
+    foreground.stdout.on("data", (chunk: Buffer) => { foregroundOutput += chunk.toString(); });
+    foreground.stderr.on("data", (chunk: Buffer) => { foregroundOutput += chunk.toString(); });
+    const foregroundExit = new Promise<number | null>((resolve, reject) => {
+      foreground.once("error", reject);
+      foreground.once("close", resolve);
+    });
+    try {
+      for (const deadline = Date.now() + 60_000; !foregroundOutput.includes("Owned service process running") && foreground.exitCode === null && Date.now() < deadline;) await sleep(100);
+      check("the direct service is running in the foreground", foregroundOutput.includes("Owned service process running"), foregroundOutput);
+      const stopped = cotal(["service", "stop", "foreground", "--yes", "--json"]);
+      const code = await Promise.race([foregroundExit, sleep(15_000).then(() => "timeout" as const)]);
+      const status = cotal(["service", "status", "foreground", "--json"]);
+      const result = JSON.parse(status.stdout).result;
+      check("external stop and the foreground CLI both finish and keep the stop receipt and exit status",
+        stopped.status === 0 && code === 0 && result?.recordedState === "stopped" && result.observedProcess === "gone" && result.exit?.code === 0 && result.processStop?.requestId === result.requestId && result.processStop?.signal === "SIGTERM", { stop: out(stopped), status: out(status), code, foregroundOutput });
+    } finally {
+      if (foreground.exitCode === null && foreground.signalCode === null) {
+        foreground.kill("SIGTERM");
+        await foregroundExit;
+      }
+    }
+    writeFileSync(`${helloPath}.1`, "previous output\n");
+    check("stopping a service keeps its current log and rotation", existsSync(helloPath) && existsSync(`${helloPath}.1`));
+    const removedHello = cotal(["service", "remove", "hello", "--yes"]);
+    check("removing the definition deletes its stopped instance's log and rotation",
+      removedHello.status === 0 && !existsSync(helloPath) && !existsSync(`${helloPath}.1`) &&
+        out(removedHello).includes("Deleted logs:") && out(removedHello).includes(helloPath), out(removedHello));
+
     const stop = cotal(["manager", "stop", "--yes"]);
     managerUp = stop.status !== 0;
     check("cotal manager stop stops it", stop.status === 0 && !inventory().running.includes("manager"), out(stop));
     const after = row(inventory().services, "manager");
     check("  and the listing shows it stopped, with cotal manager start next", after?.state === "stopped" && after.next === "cotal manager start", after);
+    const savedPreview = cotal(preview);
+    check("a saved manager preview refuses the same unsupported new instance", savedPreview.status === 2 && out(savedPreview).includes("UNSUPPORTED"), out(savedPreview));
 
     // ---- The manager a plain cotal up starts: logs reads it, stop and install still refuse -------
     const plainUp = upCotal(["up", "--detach", "--open", "--space", UP_SPACE, "--server", UP_SERVER]);
@@ -253,9 +312,12 @@ try {
     check("space create prepares a space for a preset broker", presetSpace.status === 0, out(presetSpace));
     const custom = cotal(["service", "add", "stack-broker", "--exec", "/bin/sleep 600", "--space", PRESET_SPACE]);
     check("a never-started space accepts a process service named stack-broker", custom.status === 0, out(custom));
+    // #7642: an add that named its space suggests the start and show in that space.
+    check("  and its Next starts and shows it with the same --space",
+      new RegExp(`cotal svc start stack-broker --space ${PRESET_SPACE}\\s+Start it`).test(out(custom)) && new RegExp(`cotal svc show stack-broker --space ${PRESET_SPACE}\\s+Read`).test(out(custom)), out(custom));
     const customList = cotal(["service", "--space", PRESET_SPACE, "--json"]);
     const customRows = (JSON.parse(customList.stdout) as { result: { services: Row[] } }).result.services;
-    check("that custom service's Next starts the service rather than a controller stack", row(customRows, "stack-broker")?.next === "cotal service start stack-broker", customRows);
+    check("that custom service's Next starts the service rather than a controller stack, in the space the list named", row(customRows, "stack-broker")?.next === `cotal service start stack-broker --space ${PRESET_SPACE}`, customRows);
     customBrokerUp = true;
     const customStart = cotal(["service", "start", "stack-broker", "--space", PRESET_SPACE]);
     check("a matching stack name does not refuse a direct-process start", customStart.status === 0 && /Recorded state:\s+running/.test(out(customStart)), out(customStart));

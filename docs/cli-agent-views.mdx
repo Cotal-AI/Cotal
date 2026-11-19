@@ -30,7 +30,10 @@ uses: `result.requested.runtime` names it, and `result.runtimeCheck` gives the `
 on, whether it is `available` there, and the `error` when it is not. A runtime this machine cannot
 run is a `RUNTIME_UNAVAILABLE` warning, because a manager on another host checks its own.
 `--runtime auto` is refused as the launch refuses it. A direct preview resolves the local persona,
-harness precedence and physical working directory. An unknown effective harness is refused with
+harness precedence and physical working directory. It checks the effective name from `--name` or
+persona frontmatter with the launch's local name rule, including the actor-token rule for a selected
+user-auth space. An invalid effective name is refused with `USAGE_INVALID` (exit 1).
+An unknown effective harness is refused with
 `DEPENDENCY_UNAVAILABLE` (exit 2), whether it came from a flag, the persona or a preference.
 Harness names are case-sensitive. Binary, login, model-policy and live authority checks are labeled
 not performed. Both previews say where the persona came from: `--file`, the command line, a
@@ -138,10 +141,13 @@ unregistered `--space` retain the raw open-broker connection, with or without `-
 JSON has `identity`, `execution`, `mesh` and `activity` fields; missing optional observations
 are null with source annotations. The Identity Agent field shows the id when the name is missing or only whitespace. JSON `identity.name` stays the name the manager returned.
 `--on <manager-instance>` restricts the read and never redirects to a different owner.
-It takes no `--all` or `--components`.
+Its Next names the agent it read, with the `--space` and `--server` you gave and the manager's
+`--on`, so the `attach` and `stop` it suggests run as printed.
+It takes no `--all`, `--components`, `--wide` or `--verbose`.
 `cotal status manager` keeps its manager diagnostic census. When a manager answers but runs
 no agent named `manager`, the refusal names the manager and points to `cotal status` and
 `cotal endpoint describe manager`.
+Passing an answering manager's own instance ID gives the same guidance on static and open spaces.
 A requested model is not provider-confirmed. Connector-reported provider
 information is labeled exact or name-matched under the same proof. A new manager
 row marks a roster observation exact only when its principal and lifecycle UID
@@ -194,8 +200,11 @@ or refused summary after boot is not a reason to boot again. A summary records t
 `up -f` ran in. After that folder is moved or copied, the summary still reads but names the old
 path. It settles nothing in the new folder and blocks no `up` or `down` there, and `team show <id>`
 refuses it with CONFLICT, naming the folder it was recorded at.
-The inventory's `completeness` stays `partial` because older fresh boots may have no summary. The
-terminal lists up to 100 records; JSON retains all readable records. Its Next column
+The inventory's `completeness` stays `partial` because older fresh boots may have no summary.
+That historical caveat does not change the exit status. If a local deployment record cannot be
+read or validated, `team` keeps the readable records, warns, and exits 4. Its JSON reports
+`outcome: partial` and includes a `DEPLOYMENT_RECORD_UNREADABLE` warning with the path.
+The terminal lists up to 100 records; JSON retains all readable records. Its Next column
 says inspect the stack for a fresh record or review the native scoped teardown plan for an
 additive ledger; neither row grants permission to stop anything. A fresh summary is
 not an additive ownership ledger or evidence that an agent joined, and it does not establish

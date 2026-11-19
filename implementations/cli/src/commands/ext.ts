@@ -48,6 +48,16 @@ function atThisVersion(spec: string): string {
   return /^@cotal-ai\/[^/@]+$/.test(spec) ? `${spec}@${cliVersion()}` : spec;
 }
 
+export function validateExtArguments(args: ParsedArgs): void {
+  const [sub] = args.positionals;
+  const v = args.values as FlagValues<typeof extFlags>;
+  presentationOf(v);
+  if (sub !== "seed" && (v.repair || v.reset || v.force)) {
+    const flag = v.repair ? "--repair" : v.reset ? "--reset" : "--force";
+    throw usage(`${flag} belongs to \`cotal ext seed\``);
+  }
+}
+
 /**
  * `cotal ext` — operator-installed extensions. `add` installs an npm package into the
  * cotal-owned prefix (never the user's project), imports it ONCE so it self-registers into the
@@ -65,6 +75,7 @@ function atThisVersion(spec: string): string {
  */
 
 export async function ext(args: ParsedArgs): Promise<void> {
+  validateExtArguments(args);
   const [sub, ...rest] = args.positionals;
   const v = args.values as FlagValues<typeof extFlags>;
   // Bare `cotal ext` lists the inventory: it is the most natural probe for "what's installed / where",
@@ -235,12 +246,28 @@ export async function installExtensionSet(
   const interrupt = (): void => { interrupted = true; };
   process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
   try {
+    // Keep missing local extensions in the inventory for explicit repair/removal, but do not ask npm
+    // to reinstall them while reconciling other packages. Their original download directory may be gone.
+    const absent = manifestBefore.extensions.filter(entry =>
+      !requests.some(request => request.pkg === entry.pkg) &&
+      lstatSync(join(stage.prefix, "node_modules", entry.pkg), { throwIfNoEntry: false }) === undefined);
     // Make all local dependency specs independent of the stage directory's later promotion.
     for (const name of ["package.json", "package-lock.json"]) {
       const path = join(stage.prefix, name);
       if (!existsSync(path)) continue;
       const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) =>
-        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(extensionsDir(), item.slice(5))}` : item);
+        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(extensionsDir(), item.slice(5))}` : item) as {
+          dependencies?: Record<string, string>;
+          packages?: Record<string, { dependencies?: Record<string, string> }>;
+        };
+      const dependencies = name === "package.json" ? value.dependencies : value.packages?.[""]?.dependencies;
+      for (const entry of absent) {
+        if (!dependencies?.[entry.pkg]?.startsWith("file:")) continue;
+        delete dependencies[entry.pkg];
+        for (const key of Object.keys(value.packages ?? {})) {
+          if (key === `node_modules/${entry.pkg}` || key.startsWith(`node_modules/${entry.pkg}/node_modules/`)) delete value.packages![key];
+        }
+      }
       writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
     }
     for (const request of requests) {

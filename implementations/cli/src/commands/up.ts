@@ -84,7 +84,6 @@ import { Kvm } from "@nats-io/kv";
 import {
   assertManagerName,
   processStopped,
-  verifyIdentityPin,
   readManagerName,
   readManagerSeatCap,
   recordManagerName,
@@ -121,6 +120,8 @@ import {
   findMesh,
   findPreparedSpace,
   homeCotalDir,
+  legacyStackOtherHome,
+  stackHomeRemedy,
   getCurrent,
   loadMeshes,
   preparedSpaceAt,
@@ -193,6 +194,7 @@ import {
   brokerAccountResolver,
   removePidPair,
   writePidPair,
+  verifyIdentityPin,
   processesNaming,
   isLoopbackHost,
   connectUserControlOrThrow,
@@ -205,6 +207,10 @@ import {
   SPACE_NAME_MAX,
   spaceNameTooLong,
   NATS_PIDFILE,
+  MANAGER_PIDFILE,
+  DELIVERY_PIDFILE,
+  AUTH_PIDFILE,
+  localProcessPath,
   UNTRUSTED_CERTIFICATE,
   exitCode,
   canonicalLocalProcessPath,
@@ -269,7 +275,7 @@ import {
   currentControllerAttempt, managerResumeAttempt, relaunchCommittedManager, settleControllerResume, startControllerMember, startControllerMembers,
 } from "../lib/controller-resume.js";
 import { removeRetiredBrokerInstance } from "../lib/controller-restore.js";
-import { acquireStackOperationLock, admittedStackRestore, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
+import { acquireStackOperationLock, knownStackRecoveryHost, admittedStackRestore, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import { serviceDefinitionStore } from "../lib/service-definitions.js";
 import { MissingFlags } from "../lib/missing-flags.js";
@@ -554,8 +560,8 @@ export function validateUpArguments(args: ParsedArgs): void {
       ? "prepare a project folder with `cotal space create <space> --root <dir>`, then run `cotal up` there"
       : `run \`cotal up\` from the project folder ${shellWord(control.project)}` });
     assertUpRootWritable(root);
-    // A restore and a manifest name their own store.
-    if (args.values.restore === undefined && args.values.file === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : undefined);
+    // A restore creates its own store. A manifest uses the explicit or default store, not a legacy one.
+    if (args.values.restore === undefined) assertUpStoreWritable(root, typeof args.values["store-dir"] === "string" ? args.values["store-dir"] : args.values.file === undefined ? undefined : join(root, ".cotal", "nats"));
   }
 }
 
@@ -574,12 +580,21 @@ function assertUpRootWritable(root: string): void {
 }
 
 /** The broker exits when it cannot write its store, naming the cause only in its own log. The store
- *  a start here opens, as `--store-dir` names it, as the stack journal recorded it, or `.cotal/nats`,
+ *  a start here opens, as `--store-dir` names it, as the stack or legacy records name it, or `.cotal/nats`,
  *  is refused here, by name, when this account cannot write it. */
 function assertUpStoreWritable(root: string, storeDir: string | undefined): void {
   let recorded: string | undefined;
   try { recorded = readStackJournal(root)?.journal.broker?.storeDir; } catch { recorded = undefined; }
-  const problem = storeWriteProblem(storeDir !== undefined ? resolve(storeDir) : recorded ?? join(root, ".cotal", "nats"));
+  const defaultStore = join(root, ".cotal", "nats");
+  if (storeDir === undefined && recorded === undefined) {
+    const local = localMeshesForRoot(root);
+    recorded = local.length === 1 ? local[0]!.storeDir : undefined;
+    if (recorded === undefined && !existsSync(join(defaultStore, "jetstream"))) {
+      const served = lastServedStores(root, defaultStore);
+      if (served.length === 1) recorded = served[0];
+    }
+  }
+  const problem = storeWriteProblem(storeDir !== undefined ? resolve(storeDir) : recorded ?? defaultStore);
   if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `${problem.message}; nothing was started or written`, { target: { root, path: problem.path }, remedy: problem.remedy });
 }
 
@@ -1530,6 +1545,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // require its own project root, while dry-run must write nothing to create one.
   const previewRoot = values.file && values["dry-run"] && !values.root && inheritedMachineHomeRoot() ? process.cwd() : undefined;
   const meshRoot = previewRoot ?? cotalRoot();
+  const ownerHome = legacyStackOtherHome(meshRoot);
+  if (ownerHome !== undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this folder's running stack belongs to another Cotal home; nothing was started", { target: { root: meshRoot, home: ownerHome }, remedy: stackHomeRemedy(ownerHome) });
   // A bare start seeds the root's default channels file, so one it would refuse is named here,
   // before anything starts; an explicit --channels file was checked with the other flags.
   if (!values.file && !values.restore && values.channels === undefined) loadChannelsFile();
@@ -1704,7 +1721,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // that journals, give it `heldLock` and hand it down from here; do not audit by call-site shape.
   // The one caller that does NOT pass it is the prepare-failure path above, where the lock has
   // genuinely not been taken yet in this frame and the helper is meant to take its own.
-  let startupLock: MaintenanceLock | undefined = inheritedLock ?? acquireStackOperationLock(cotalRoot());
+  let startupLock: MaintenanceLock | undefined = inheritedLock ?? acquireStackOperationLock(cotalRoot(), values.detach ? undefined : "foreground up");
   onAdopt?.(); // from here the release below owns it, inherited or not
   const releaseStartupLock = () => {
     if (!startupLock) return;
@@ -1712,6 +1729,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     startupLock = undefined;
   };
   try {
+    // A suspended pinned broker still holds this root's store, even at a different requested port.
+    const brokerPin = verifyIdentityPin(cotalPath(NATS_PIDFILE));
+    if (brokerPin.kind === "match" && processStopped(brokerPin.record.pid))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker, pid ${brokerPin.record.pid}, is suspended and cannot answer; no broker was launched`, { target: { root: cotalRoot(), pid: brokerPin.record.pid }, remedy: `resume it with ${codeSpan(`kill -CONT ${brokerPin.record.pid}`)} and run ${codeSpan(`${displayCmd()} up`)} again` });
     // Gated on the ATTEMPT, not on holding the lock. The lock is now always held, and this refuses
     // whenever a journal exists — which is precisely the state a resume re-entry is in, so gating
     // it on the lock would refuse the very resume the lock is here to protect.
@@ -1762,11 +1783,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Derive the URL from `--host` when no explicit `--server` pins it, and refuse a contradicting
     // pair rather than starting a broker nothing can reach.
     if (values.host) server = reconcileHostAndServer(values.host, values.server, "--host", "--server", implicitServer);
-    // A suspended pinned broker still holds this root's store, even when another port was asked
-    // for. Refuse before the repair probe can mistake its silence for a stopped broker.
-    const brokerPin = verifyIdentityPin(cotalPath(NATS_PIDFILE));
-    if (brokerPin.kind === "match" && processStopped(brokerPin.record.pid))
-      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker, pid ${brokerPin.record.pid}, is stopped, so it never answers; nothing was started or written`, { target: { root: cotalRoot(), pid: brokerPin.record.pid }, remedy: `resume it with kill -CONT ${brokerPin.record.pid} and run ${codeSpan(`${displayCmd()} up`)} again` });
     // A same-root repair reopens the store the mesh record names, ONCE, before the ordinary-up
     // assertion below reads --store-dir (#2218): an ordinary `up` on a space whose broker died must
     // not silently fall back to the root's default store while the record still names a custom one.
@@ -2231,7 +2247,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (stoppedStart) console.log(c.dim(stoppedStart));
 
   if (!resumeAttempt) refuseRegisteredAddress(server, values.space ?? folderSpace(), `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
-  await assertBrokerAddressFree(server, `${displayCmd()} up`, host);
+  await assertBrokerAddressFree(server, `${displayCmd()} up${values.host === undefined ? "" : ` --host ${shellWord(host)}`}`, host);
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
     if (values["store-dir"] === undefined) values["store-dir"] = reopenLastStore(cotalPath("nats"));
@@ -2393,7 +2409,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
   let activationFinished = !resumeAttempt;
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
-  releaseStartupLock();
   child.on("error", (err) => {
     console.error(c.red(`Failed to start nats-server: ${err.message}`));
     if (!resumeAttempt) process.exit(1);
@@ -2578,6 +2593,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     );
     activationFinished = true;
   }
+  releaseStartupLock();
   await new Promise<void>(() => {});
   } finally {
     releaseStartupLock();
@@ -3726,7 +3742,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     stderrLine("✗ ", `${brokerAddressForDisplay(server) ?? "selected address"} already has a broker - a fresh boot will not adopt it. Stop the owned stack or select another address; team deploy supports only all-new channel cards, not agent apply.`, c.red);
     process.exit(1);
   }
-  await assertBrokerAddressFree(server, `${displayCmd()} up -f ${file}`, host);
+  await assertBrokerAddressFree(server, `${displayCmd()} up -f ${shellWord(file)}`, host);
   // Connectors + their required binaries must exist before any mutation (no fallback).
   const conn = await preflightConnectors(prepared);
   if (conn) {
@@ -4026,6 +4042,7 @@ function reportDegradedControlPlane(why: string): void {
 async function recordSpawnedListener(child: ChildProcess, startedAt: string, bound?: DetachOpts["boundListener"]): Promise<void> {
   if (!child.pid) throw new Error("nats-server spawned with no pid");
   try {
+    writeSecretFile(cotalPath("stack-home.json"), JSON.stringify({ home: canonicalRoot(homeCotalDir()) }));
     writePidPair(cotalPath(NATS_PIDFILE), child.pid); // #969/#1238: publish the pair by rename, never torn
   } catch (error) {
     // The entry at `nats.pid` may be the one that refused the publish (a directory there fails the
@@ -4210,6 +4227,8 @@ async function serveReadyListener(l: {
     svc = await startUserAuthService(space, server, setup, [...(l.publicExchange ?? []), ...authTimeoutArgs(setup?.authTimeout)], l.quietBoot);
     if (svc.userAuth) recordOurMesh({ space, server, root: cotalRoot(), mode: "user", userAuth: svc.userAuth, ts: new Date().toISOString() }, "refresh", true);
   }, l.isStopping);
+  const registered = findMesh(space);
+  if (registered) recordOurMesh(registered, "refresh", true);
   seedPersonaAfterUp(cotalRoot(), l.quietBoot);
   return { authService: svc.ok, controlPlane };
 }
@@ -4723,7 +4742,14 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   // (that launch really is the mesh now).
   if (provenance === "refresh" && !prior)
     throw new Error(`mesh "${m.space}" was removed from the registry while \`cotal up\` refreshed it - not re-recording it from an earlier read`);
-  recordMesh(provenance === "refresh" ? { ...prior, ...m, origin } : { ...m, origin });
+  const nativeMembers: NonNullable<MeshEntry["nativeMembers"]> = [];
+  for (const [role, template] of [["manager", MANAGER_PIDFILE], ["delivery", DELIVERY_PIDFILE], ["auth", AUTH_PIDFILE], ["broker", NATS_PIDFILE]] as const) {
+    const pin = verifyIdentityPin(role === "broker" ? join(m.root, ".cotal", template) : localProcessPath(template, { root: m.root, space: m.space }));
+    if (pin.kind === "match") nativeMembers.push({ role, process: pin.record });
+  }
+  const nativeHost = nativeMembers.length ? knownStackRecoveryHost() : undefined;
+  const recorded: MeshEntry = { ...m, origin, ...(nativeHost !== undefined ? { nativeMembers, nativeHost } : {}) };
+  recordMesh(provenance === "refresh" ? { ...prior, ...recorded, stoppedByDown: undefined } : recorded);
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
     setAdoptedCurrent(m.space);

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { cmdSpawnSpec, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -91,6 +91,21 @@ export function isNpx(): boolean {
   return /[/\\]_npx[/\\]/.test(process.argv[1] ?? "");
 }
 
+/** True when launched from pnpm's default or configured dlx cache. */
+export function isPnpmDlx(): boolean {
+  return inPnpmDlxCache(process.argv[1] ?? "", process.env);
+}
+
+function inPnpmDlxCache(path: string, env: NodeJS.ProcessEnv): boolean {
+  if (/[/\\]pnpm[/\\]dlx[/\\]/.test(path)) return true;
+  const cache = env.npm_config_cache_dir;
+  if (!cache || !path) return false;
+  // pnpm uses <cache>/dlx/<hash>/<id>/node_modules for both the entry and its PATH shim.
+  const withinCache = relative(join(cache, "dlx"), path);
+  const [hash, id, modules, child] = withinCache.split(sep);
+  return !isAbsolute(withinCache) && Boolean(hash && hash !== ".." && id && modules === "node_modules" && child);
+}
+
 /** Is a *durable* `cotal` executable resolvable on PATH? A pure PATH scan (no exec):
  *  {@link displayCmd} calls it for every user-facing hint, so it only resolves files, and the
  *  `--version` exec probe stays in {@link verifiedCotalExecutables} for the recovery path.
@@ -157,26 +172,20 @@ export function verifiedCotalExecutables(env: NodeJS.ProcessEnv = process.env): 
 
 /** Every durable `cotal` executable on `env`'s PATH, in PATH order. Each entry is probed as an
  *  absolute path because `join(".", "cotal")` is the bare name `cotal`, which {@link resolveOnPath}
- *  would scan the whole PATH for, npx's transient bins included. */
+ *  would scan the whole PATH for, npx and pnpm dlx transient bins included. */
 function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
   return (env.PATH ?? "")
     .split(delimiter)
-    .filter((dir) => dir && !isEphemeralNpxBin(dir))
+    .filter((dir) => dir && !/[/\\]_npx[/\\]/.test(dir) && !inPnpmDlxCache(dir, env))
     .flatMap((dir) => resolveOnPath(resolve(dir, "cotal"), env) ?? []);
 }
 
-/** A PATH entry npx (`npm exec`) injected for the current run only — its `_npx` cache
- *  `node_modules/.bin`. A `cotal` shim there disappears when npx exits, so it must not count as
- *  `cotal` being installed. Matches the `_npx` cache segment on POSIX and Windows. */
-function isEphemeralNpxBin(dir: string): boolean {
-  return /[/\\]_npx[/\\]/.test(dir);
-}
-
-/** The copy-paste command prefix for user-facing hints: prefer PATH or npx, then the installed
- *  entry under this Node runtime. A dev clone uses pnpm. Re-execs use {@link selfArgv}. */
+/** The copy-paste command prefix for user-facing hints: prefer PATH, npx, or pnpm dlx, then the
+ *  installed entry under this Node runtime. A dev clone uses pnpm. Re-execs use {@link selfArgv}. */
 export function displayCmd(): string {
   if (cotalOnPath()) return "cotal";
   if (isNpx()) return "npx cotal-ai";
+  if (isPnpmDlx()) return "pnpm dlx cotal-ai";
   if (runsCliEntry() && seedWriterKind() === "released") {
     const command = [process.execPath, entryScript()].map(shellWord).join(" ");
     if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
