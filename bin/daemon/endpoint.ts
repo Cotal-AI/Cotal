@@ -30,7 +30,7 @@ import { Socket } from "node:net";
 import { join } from "node:path";
 import { mkSecretDir } from "@cotal-ai/core";
 import { darwinUserCacheDir, localPeerCredentials, windowsDirSecurity, windowsUserSid } from "@cotal-ai/seat";
-import { homeCotalDir } from "@cotal-ai/workspace";
+import { CommandFailure, homeCotalDir } from "@cotal-ai/workspace";
 
 /** Wire protocol version. A request naming any other version is refused before any effect. */
 export const DAEMON_PROTOCOL_VERSION = 1;
@@ -112,13 +112,17 @@ function linuxDaemonRuntime(env: NodeJS.ProcessEnv): string {
   return runtime;
 }
 
-/** Give native tools and child updaters the same Linux runtime the daemon endpoint uses. */
-export function inheritDaemonRuntime(): void {
-  if (process.platform !== "linux" || process.env.XDG_RUNTIME_DIR) return;
-  try { process.env.XDG_RUNTIME_DIR = linuxDaemonRuntime(process.env); }
+/** Resolve the current Linux runtime for one native command, leaving the caller's env unchanged. */
+export function daemonUserServiceEnv(): NodeJS.ProcessEnv {
+  if (process.platform !== "linux" || process.env.XDG_RUNTIME_DIR) return process.env;
+  try { return { ...process.env, XDG_RUNTIME_DIR: linuxDaemonRuntime(process.env) }; }
   catch (error) {
-    if (!(error instanceof EndpointRefusal) || error.code !== "NO_RUNTIME_DIR") throw error;
-    // Commands that need neither the daemon nor its native service may still proceed.
+    if (!(error instanceof EndpointRefusal)) throw error;
+    // The native tool may already have a bus address. Do not supply an absent directory.
+    if (error.code === "NO_RUNTIME_DIR") return process.env;
+    throw new CommandFailure("refused", error.code === "UNSUPPORTED_PLATFORM" ? "UNSUPPORTED" : "PERMISSION_DENIED", error.message, {
+      native: { code: error.code, outcome: "not-executed" }, remedy: "inspect the intended user's runtime directory; its ownership and permissions were not changed",
+    });
   }
 }
 

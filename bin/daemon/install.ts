@@ -43,7 +43,7 @@ import { randomUUID } from "node:crypto";
 import { acquireLock, acquireLockAsync, inspectLock, mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, executionIdentity, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
-import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
+import { checkDir, daemonUserServiceEnv, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
 import { ClosedPeerRefusal, isStoppingLifetime, openVerified, queryDaemon, readLine } from "./client.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { darwinLaunchdJob, lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
@@ -224,9 +224,21 @@ function nativeService(run: NativeRun = nativeRun): NativeService | undefined {
   throw new CommandFailure("refused", "UNSUPPORTED", `cotal daemon install supports Linux, macOS and Windows; this is ${process.platform}, and no other supervisor was substituted`);
 }
 
+function daemonUserUnitDirectory(): string {
+  return systemdUserUnitDirectory(daemonUserServiceEnv());
+}
+
+function submitDaemonUnitRegistration(step: Parameters<typeof submitSystemdUnitRegistration>[0], unit: string): void {
+  submitSystemdUnitRegistration(step, unit, daemonUserServiceEnv());
+}
+
+export function submitDaemonUnitControl(operation: Parameters<typeof submitSystemdUnitControl>[0], unit: string): void {
+  submitSystemdUnitControl(operation, unit, daemonUserServiceEnv());
+}
+
 /** One bounded `loginctl` read or mutation for the invoking user. */
 function loginctl(args: readonly string[]): { status: number | null; stdout: string } {
-  const result = spawnSync("loginctl", [...args, "--no-ask-password", "--no-pager"], { encoding: "utf8", timeout: 15_000, maxBuffer: 32 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  const result = spawnSync("loginctl", [...args, "--no-ask-password", "--no-pager"], { env: daemonUserServiceEnv(), encoding: "utf8", timeout: 15_000, maxBuffer: 32 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   if (result.error || result.signal) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "loginctl did not answer; linger could not be established", { remedy: "make loginctl available on PATH and run from a logged-in session where it can reach systemd-logind, then retry" });
   return { status: result.status, stdout: typeof result.stdout === "string" ? result.stdout : "" };
 }
@@ -295,7 +307,7 @@ export function planInstall(paths: DaemonPaths, daemonHome: string | undefined):
     return { mechanism, unit, unitPath, sha256, user, restart, wantedBy, ...(daemonHome !== undefined ? { daemonHome } : {}) };
   }
   const user = invokingUser();
-  const rendered = renderDaemonUnit(systemdUserUnitDirectory(), daemonHome);
+  const rendered = renderDaemonUnit(daemonUserUnitDirectory(), daemonHome);
   const existing = readReceipt(paths);
   if (existing) {
     const recorded = recordedUnit(paths, daemonHome);
@@ -356,12 +368,12 @@ function applyInstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined
   const plan = planInstall(paths, daemonHome);
   if (plan.alreadyInstalled) return { ...plan, lingerEnabled: plan.lingerAlready, ...omitted, state: "installed" };
   if (plan.recovered) {
-    submitSystemdUnitControl("stop", plan.unit);
+    submitDaemonUnitControl("stop", plan.unit);
     const stopped = recoveredLinuxUnit(daemonHome);
     if (!stopped || stopped.unitSha256 !== plan.sha256) throw new CommandFailure("refused", "CONFLICT", "the surviving daemon source changed during its native stop; no receipt was restored and it was not started");
     mkSecretDir(paths.state);
     writeReceipt(paths, { v: 1, mechanism: "systemd-user", unit: plan.unit, unitPath: plan.unitPath, unitSha256: plan.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted });
-    submitSystemdUnitControl("start", plan.unit);
+    submitDaemonUnitControl("start", plan.unit);
     return { ...plan, lingerEnabled: plan.lingerAlready, ...omitted, state: "installed" };
   }
   const rendered = renderDaemonUnit(dirname(plan.unitPath), daemonHome);
@@ -378,9 +390,9 @@ function applyInstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined
     if (enabled.status !== 0 || !lingerEnabled(plan.user)) throw new CommandFailure("refused", "PERMISSION_DENIED", `linger could not be enabled for ${plan.user}, so the recorded unit was not enabled or started. Remove it with \`cotal daemon uninstall\`, enable linger with loginctl enable-linger ${plan.user} and run this again`);
   }
   assertSystemdSource(rendered.unitPath, rendered.sha256);
-  submitSystemdUnitRegistration("reload", rendered.unit);
-  submitSystemdUnitRegistration("enable", rendered.unit);
-  submitSystemdUnitControl("start", rendered.unit);
+  submitDaemonUnitRegistration("reload", rendered.unit);
+  submitDaemonUnitRegistration("enable", rendered.unit);
+  submitDaemonUnitControl("start", rendered.unit);
   return { ...plan, lingerEnabled: true, ...omitted, state: "installed" };
 }
 
@@ -393,7 +405,7 @@ interface UninstallPlan {
 
 function recoveredLinuxUnit(daemonHome: string | undefined): UnitReceipt | undefined {
   if (process.platform !== "linux") return undefined;
-  const unitDirectory = systemdUserUnitDirectory();
+  const unitDirectory = daemonUserUnitDirectory();
   try { lstatSync(join(unitDirectory, daemonUnitName(daemonHome))); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
   // A name is not authority. Require this installation's exact protected source and loaded fragment.
@@ -401,7 +413,7 @@ function recoveredLinuxUnit(daemonHome: string | undefined): UnitReceipt | undef
   try { assertSystemdSource(rendered.unitPath, rendered.sha256); }
   catch { throw new CommandFailure("refused", "CONFLICT", "the surviving daemon source does not match this installation's protected unit; nothing was changed"); }
   const names = ["Id", "LoadState", "FragmentPath", "DropInPaths", "NeedDaemonReload"];
-  const read = nativeRun("systemctl", ["--user", "show", rendered.unit, "--all", "--no-pager", ...names.map(name => `--property=${name}`)]);
+  const read = nativeRun("systemctl", ["--user", "show", rendered.unit, "--all", "--no-pager", ...names.map(name => `--property=${name}`)], daemonUserServiceEnv());
   const values = new Map<string, string>();
   for (const line of read.stdout.split("\n").filter(Boolean)) {
     const at = line.indexOf("="), key = line.slice(0, at);
@@ -431,7 +443,7 @@ function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | un
   if (service) service.check(receipt);
   else {
     const unit = daemonUnitName(daemonHome);
-    if (receipt.daemonHome !== daemonHome || receipt.unit !== unit || receipt.unitPath !== join(systemdUserUnitDirectory(), unit))
+    if (receipt.daemonHome !== daemonHome || receipt.unit !== unit || receipt.unitPath !== join(daemonUserUnitDirectory(), unit))
       throw new CommandFailure("refused", "CONFLICT", "the systemd receipt does not name this daemon home's unit in the user manager's unit directory; nothing was changed", {
         remedy: `inspect ${codeSpan(unitReceiptFile(paths))} and ${codeSpan(receipt.unitPath)}. If this receipt is stale, remove only ${codeSpan(unitReceiptFile(paths))} to forget it, then run ${codeSpan(daemonCommandCopy("install", daemonHome))}. For an owned installation, run ${codeSpan(daemonCommandCopy("uninstall", daemonHome))} before reinstalling`,
       });
@@ -477,7 +489,7 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
     try { writeSecretFileAtomic(unitReceiptFile(paths), `${JSON.stringify({ ...receipt, unitSha256: sha256 })}\n`); }
     catch (error) { writeSecretFileAtomic(receipt.unitPath, source); throw error; }
     assertSystemdSource(receipt.unitPath, sha256);
-    if (plan.mechanism === "systemd-user") submitSystemdUnitRegistration("reload", receipt.unit);
+    if (plan.mechanism === "systemd-user") submitDaemonUnitRegistration("reload", receipt.unit);
     } finally { lock?.release(); }
   };
 }
@@ -490,7 +502,7 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
   if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report, true);
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) service.start(receipt);
-  else submitSystemdUnitControl("start", plan.unit);
+  else submitDaemonUnitControl("start", plan.unit);
   return plan;
   } finally { lock?.release(); }
 }
@@ -509,12 +521,12 @@ export async function startEnabledInstalled(paths: DaemonPaths, daemonHome: stri
     service.start(receipt);
     return { started: true, unit: plan.unit, state: "enabled" };
   }
-  const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", plan.unit, "--property=UnitFileState", "--value"]);
+  const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", plan.unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv());
   if (read.status !== 0) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `systemctl --user show ${plan.unit} did not confirm UnitFileState (${read.detail}); nothing was started`);
   const state = read.stdout.trim();
   if (!state) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `systemctl --user show ${plan.unit} reported an empty UnitFileState; nothing was started`);
   if (state !== "enabled") return { started: false, unit: plan.unit, state };
-  submitSystemdUnitControl("start", plan.unit);
+  submitDaemonUnitControl("start", plan.unit);
   return { started: true, unit: plan.unit, state: "enabled" };
   } finally { lock?.release(); }
 }
@@ -553,7 +565,7 @@ export function reconcileMissingShellRuntime(paths: Pick<DaemonPaths, "state">):
   try { writeSecretFileAtomic(unitReceiptFile(paths), `${JSON.stringify({ ...receipt, unitSha256: sha256 })}\n`); }
   catch (error) { writeSecretFileAtomic(receipt.unitPath, source); throw error; }
   assertSystemdSource(receipt.unitPath, sha256);
-  submitSystemdUnitRegistration("reload", plan.unit);
+  submitDaemonUnitRegistration("reload", plan.unit);
 }
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
@@ -972,8 +984,8 @@ export async function restartInstalled(paths: DaemonPaths, daemonHome?: string, 
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) service.restart(receipt, reload);
   else {
-    submitSystemdUnitControl("stop", plan.unit);
-    const result = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "start", plan.unit]);
+    submitDaemonUnitControl("stop", plan.unit);
+    const result = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "start", plan.unit], daemonUserServiceEnv());
     if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the native daemon start did not confirm completion (${result.detail}); it was not retried`, { target: { unit: plan.unit }, remedy: "correct the native service error, then run \`cotal daemon start\`" });
   }
   return plan;
@@ -996,7 +1008,7 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
 async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | undefined): Promise<UninstallResult> {
   const { receipt, plan, service, recovered } = recordedUnit(paths, daemonHome, nativeRun, true);
   if (recovered) {
-    submitSystemdUnitControl("stop", plan.unit);
+    submitDaemonUnitControl("stop", plan.unit);
     mkSecretDir(paths.state);
   }
   checkDir(paths.state);
@@ -1032,8 +1044,8 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
     }
     if (service) service.remove(receipt, true);
     else {
-      submitSystemdUnitControl("stop", plan.unit);
-      submitSystemdUnitRegistration("disable", plan.unit);
+      submitDaemonUnitControl("stop", plan.unit);
+      submitDaemonUnitRegistration("disable", plan.unit);
     }
     if (socket && owner?.start && processBirth(owner.pid) === owner.start) {
       const id = randomUUID().replaceAll("-", "");
@@ -1081,7 +1093,7 @@ async function applyUninstallUnlocked(paths: DaemonPaths, daemonHome: string | u
     try { removedServiceRecords = removeAllServiceRecords(daemonHome ?? dirname(paths.state)); }
     catch { throw uncertain("removing local service credentials and identity records failed; some records may remain. Repair their permissions and retry uninstall; the remote records may remain until you remove the computer in the dashboard"); }
     rmSync(plan.unitPath, { force: true });
-    if (!service) submitSystemdUnitRegistration("reload", plan.unit);
+    if (!service) submitDaemonUnitRegistration("reload", plan.unit);
     rmSync(unitReceiptFile(paths), { force: true });
     return { ...plan, state: "removed", removedServiceRecords };
   } finally { socket?.destroy(); exclusion?.release(); }

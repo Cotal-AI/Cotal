@@ -5,14 +5,13 @@ import { createInterface } from "node:readline/promises";
 import { execFileSync } from "node:child_process";
 import { registry, type Command } from "@cotal-ai/core";
 import { claimGlobalNpmUpdateLock } from "@cotal-ai/workspace";
-import { submitSystemdUnitControl } from "@cotal-ai/cli";
 import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, recordUpdateActivation, writeUpdateRecovery, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
-import { daemonPaths, EndpointRefusal, inheritDaemonRuntime, type DaemonPaths } from "./endpoint.js";
+import { daemonPaths, daemonUserServiceEnv, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, planUninstall, preflightInstalledDaemon, reconcileMissingShellRuntime, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, planUninstall, preflightInstalledDaemon, reconcileMissingShellRuntime, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, submitDaemonUnitControl, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { isDaemonStatusInterrupted, waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { cleanupExecutionStore } from "../execution-store.js";
@@ -200,7 +199,6 @@ const composed: Command = { ...command, async run(args) {
     }
   };
   try {
-  if (args.values.check !== true && !args.values.auto && !args.values.notify) inheritDaemonRuntime();
   if (process.platform === "darwin" && args.values.self === true && !process.env.COTAL_AUTO_UPDATE) await repairMissingInstalledProgram(daemonPaths());
   if (process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" && !process.env.COTAL_UPDATE_PARENT) {
     const prefix = updateRuntime.installPrefix();
@@ -231,10 +229,10 @@ const composed: Command = { ...command, async run(args) {
       if (repairService) {
         const plan = planUninstall(repairService, undefined);
         if (!installedDaemonIdentity(repairService).same || plan.mechanism !== "systemd-user") throw new Error("daemon installation changed before repair");
-        submitSystemdUnitControl("stop", plan.unit);
+        submitDaemonUnitControl("stop", plan.unit);
       }
       const ancestors = new Set<number>();
-      const native = execFileSync("busctl", ["--user", "--no-pager", "--timeout=5s", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"], { encoding: "utf8", timeout: 6000 }).trim();
+      const native = execFileSync("busctl", ["--user", "--no-pager", "--timeout=5s", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"], { env: daemonUserServiceEnv(), encoding: "utf8", timeout: 6000 }).trim();
       const manager = /^u ([1-9]\d*)$/.exec(native);
       if (!manager) throw new Error("the native user manager PID could not be authenticated for repair");
       const managerPid = Number(manager[1]);

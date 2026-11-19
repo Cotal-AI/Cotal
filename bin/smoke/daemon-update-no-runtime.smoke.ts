@@ -18,7 +18,14 @@ const runtime = `/run/user/${process.geteuid!()}`;
 const version = JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")).version as string;
 const newer = `${Number(version.split(".")[0]) + 1}.0.0`;
 let latest = version;
-const registry = createServer((_request, response) => response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest }, versions: { [latest]: { name: "cotal-ai", version: latest } } })));
+let runtimeOnRegistryRead: string | undefined;
+const registry = createServer((_request, response) => {
+  if (runtimeOnRegistryRead) {
+    mkdirSync(runtimeOnRegistryRead, { mode: 0o700 });
+    runtimeOnRegistryRead = undefined;
+  }
+  response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest }, versions: { [latest]: { name: "cotal-ai", version: latest } } }));
+});
 
 async function run(args: string[], cwd: string, env: NodeJS.ProcessEnv) {
   const child = spawn(process.execPath, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -34,7 +41,7 @@ async function run(args: string[], cwd: string, env: NodeJS.ProcessEnv) {
 
 await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
 try {
-  for (const kind of ["malformed", "dangling", "absent", "discovered", "explicit", "bad-mode", "symlink", "unavailable", "newer", "target-check"] as const) {
+  for (const kind of ["malformed", "dangling", "absent", "discovered", "explicit", "bad-mode", "symlink", "file", "wrong-owner", "unavailable", "late-runtime", "target-check", "target-changes-between-reads", "target-changes-after-reads", "target-runtime-removed"] as const) {
     const directory = join(root, kind);
     for (const part of ["home", "cotal/daemon", "config", "cache", "data", "state", "tmp", "native", "explicit"]) mkdirSync(join(directory, part), { recursive: true, mode: 0o700 });
     const receipt = join(directory, "cotal/daemon/service-unit.json");
@@ -42,6 +49,9 @@ try {
     const seed = join(directory, "config/cotal/seed");
     const log = join(directory, "systemctl.log");
     const legacy = kind === "malformed" || kind === "dangling" || kind === "absent";
+    const self = legacy || kind === "late-runtime" || kind === "wrong-owner";
+    const target = kind.startsWith("target-");
+    const invalidateAfter = kind === "target-changes-between-reads" ? 1 : kind === "target-changes-after-reads" || kind === "target-runtime-removed" ? 2 : 0;
     if (kind === "malformed") writeFileSync(receipt, "{}", { mode: 0o600 });
     if (kind === "dangling") symlinkSync(join(directory, "missing-receipt"), receipt);
     if (!legacy) {
@@ -55,8 +65,9 @@ try {
       for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: ["claude", "opencode", "codex", "hermes", "jcode", "pi", "web"] }), { mode: 0o600 });
       writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }), { mode: 0o600 });
     }
-    if (!legacy && kind !== "unavailable") {
+    if (!legacy && kind !== "unavailable" && kind !== "late-runtime") {
       if (kind === "symlink") symlinkSync(join(directory, "explicit"), privateRuntime);
+      else if (kind === "file") writeFileSync(privateRuntime, "not a directory", { mode: 0o700 });
       else {
         mkdirSync(privateRuntime, { mode: 0o700 });
         if (kind === "bad-mode" || kind === "explicit") chmodSync(privateRuntime, 0o755);
@@ -67,13 +78,21 @@ try {
     const preload = join(directory, "runtime.mjs");
     writeFileSync(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
 const lstat = fs.lstatSync, runtime = ${JSON.stringify(runtime)}, fixture = ${JSON.stringify(privateRuntime)};
-fs.lstatSync = (path, ...args) => lstat(typeof path === 'string' && (path === runtime || path.startsWith(runtime + '/')) ? fixture + path.slice(runtime.length) : path, ...args);
+fs.lstatSync = (path, ...args) => {
+  const stat = lstat(typeof path === 'string' && (path === runtime || path.startsWith(runtime + '/')) ? fixture + path.slice(runtime.length) : path, ...args);
+  if (${kind === "wrong-owner"} && path === runtime) stat.uid = process.geteuid() + 1;
+  return stat;
+};
 syncBuiltinESMExports();\n`);
     const expectedRuntime = kind === "explicit" ? join(directory, "explicit") : runtime;
     writeFileSync(join(directory, "native/systemctl"), `#!${process.execPath}
 const fs = require('node:fs'), args = process.argv.slice(2).join(' '), runtime = process.env.XDG_RUNTIME_DIR;
-fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify([args, runtime ?? null]) + '\\n');
+const log = ${JSON.stringify(log)};
+fs.appendFileSync(log, JSON.stringify([args, runtime ?? null]) + '\\n');
 if (args !== '--user show-environment' || runtime !== ${JSON.stringify(expectedRuntime)}) process.exit(1);
+if (${invalidateAfter} && fs.readFileSync(log, 'utf8').trim().split('\\n').length === ${invalidateAfter}) {
+  ${kind === "target-runtime-removed" ? `fs.rmdirSync(${JSON.stringify(privateRuntime)});` : `fs.chmodSync(${JSON.stringify(privateRuntime)}, 0o755);`}
+}
 console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(directory, "config")}`)});\n`, { mode: 0o700 });
     for (const name of ["loginctl", "busctl"]) writeFileSync(join(directory, "native", name), "#!/bin/sh\nexit 95\n", { mode: 0o700 });
     const env: NodeJS.ProcessEnv = {
@@ -84,12 +103,13 @@ console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(directory, "config")}`)});\
       NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
       COTAL_ALLOW_CHECKOUT_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1",
     };
-    latest = kind === "newer" ? newer : version;
+    latest = kind === "late-runtime" || kind === "wrong-owner" ? newer : version;
+    runtimeOnRegistryRead = kind === "late-runtime" ? privateRuntime : undefined;
     if (kind === "explicit") env.XDG_RUNTIME_DIR = expectedRuntime;
     const request = { v: 1, nonce: "a".repeat(32), installedEntry: entry, daemonArgv: [process.execPath, entry, "daemon", "serve"], flags: {} };
-    const { code, stdout, output } = await run(kind === "target-check"
+    const { code, stdout, output } = await run(target
       ? [join(repo, "bin/dist/execution-preinstall.js"), JSON.stringify(request)]
-      : [entry, "update", ...(legacy || kind === "newer" ? ["--self"] : [])], directory, env);
+      : [entry, "update", ...(self ? ["--self"] : [])], directory, env);
     const calls = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
     if (kind === "malformed" || kind === "dangling") {
       assert.equal(code, 1, output);
@@ -108,27 +128,49 @@ console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(directory, "config")}`)});\
       assert.match(output, /wrote operator-global seed store payload/);
       assert.equal(existsSync(seed), true, output);
       assert.deepEqual(calls, []);
-    } else if (kind === "bad-mode" || kind === "symlink" || kind === "unavailable") {
-      assert.notEqual(code, 0, output);
-      assert.match(output, kind === "bad-mode" ? /has mode 0755, not 0700/ : kind === "symlink" ? /is a symlink/ : /installed daemon preflight: the systemd user manager did not answer/);
-      assert.deepEqual(calls, kind === "unavailable" ? [["--user show-environment", null]] : []);
+    } else if (kind === "bad-mode" || kind === "symlink" || kind === "file" || kind === "wrong-owner") {
+      const reason = { "bad-mode": /has mode 0755, not 0700/, symlink: /is a symlink/, file: /is not a directory/, "wrong-owner": /is owned by uid/ }[kind];
+      assert.equal(code, 1, output);
+      assert.match(output, kind === "wrong-owner" ? /installed daemon preflight:/ : /running manager continuity check:/);
+      assert.match(output, reason);
+      if (kind === "wrong-owner") assert.match(output, /Next\s+inspect the intended user's runtime directory/);
+      assert.doesNotMatch(output, /OPERATION_UNKNOWN|Outcome unconfirmed/);
+      assert.deepEqual(calls, []);
       assert.equal(existsSync(join(seed, "stamp.json")), false, output);
       if (kind === "bad-mode") assert.equal(lstatSync(privateRuntime).mode & 0o777, 0o755);
       if (kind === "symlink") assert.ok(lstatSync(privateRuntime).isSymbolicLink());
-      if (kind === "unavailable") assert.equal(existsSync(privateRuntime), false);
-    } else if (kind === "newer") {
+    } else if (kind === "unavailable") {
+      assert.equal(code, 1, output);
+      assert.match(output, /installed daemon preflight: the systemd user manager did not answer/);
+      assert.deepEqual(calls, [["--user show-environment", null]]);
+      assert.equal(existsSync(privateRuntime), false);
+      assert.equal(existsSync(join(seed, "stamp.json")), false, output);
+    } else if (kind === "late-runtime") {
       // The newer tag is visible, but the fixture provides no release archive metadata.
       assert.equal(code, 1, output);
+      assert.equal(runtimeOnRegistryRead, undefined);
       assert.match(output, /Checking cotal-ai@.* release archives/);
       assert.match(output, /metadata .* is incomplete or invalid/);
       assert.doesNotMatch(output, /installed daemon preflight/);
       assert.deepEqual(calls, [["--user show-environment", runtime]]);
       assert.equal(existsSync(join(seed, "stamp.json")), false, output);
-    } else if (kind === "target-check") {
-      assert.equal(code, 0, output);
-      assert.ok(stdout.startsWith("COTAL_PREINSTALL_RESULT "), output);
-      assert.deepEqual(JSON.parse(stdout.slice("COTAL_PREINSTALL_RESULT ".length)).admission, { disposition: "restart-empty", occupied: 0, hostedSpaces: [] });
-      assert.deepEqual(calls, [["--user show-environment", runtime], ["--user show-environment", runtime]]);
+    } else if (target) {
+      if (invalidateAfter) {
+        assert.equal(code, 1, output);
+        assert.doesNotMatch(stdout, /COTAL_PREINSTALL_RESULT/);
+        if (kind === "target-runtime-removed") {
+          assert.match(output, /is absent and XDG_RUNTIME_DIR is not set/);
+          assert.equal(existsSync(privateRuntime), false);
+        } else {
+          assert.match(output, /has mode 0755, not 0700/);
+          assert.equal(lstatSync(privateRuntime).mode & 0o777, 0o755);
+        }
+      } else {
+        assert.equal(code, 0, output);
+        assert.ok(stdout.startsWith("COTAL_PREINSTALL_RESULT "), output);
+        assert.deepEqual(JSON.parse(stdout.slice("COTAL_PREINSTALL_RESULT ".length)).admission, { disposition: "restart-empty", occupied: 0, hostedSpaces: [] });
+      }
+      assert.deepEqual(calls, Array.from({ length: invalidateAfter || 2 }, () => ["--user show-environment", runtime]));
       assert.equal(existsSync(join(seed, "stamp.json")), false, output);
     } else {
       assert.equal(code, 0, output);

@@ -3,7 +3,7 @@ import { withIdpSessionDir } from "@cotal-ai/auth";
 import { homeCotalDir, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { queryDaemon } from "./client.js";
-import { daemonPaths, inheritDaemonRuntime } from "./endpoint.js";
+import { daemonPaths } from "./endpoint.js";
 import { installedDaemonIdentity, preflightInstalledDaemon, unitReceiptFile } from "./install.js";
 import { observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
 import { processBirth } from "./lifetime.js";
@@ -22,7 +22,6 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
   let admission: UpdateAdmission;
   const deferred = (reason: string): UpdateAdmission => ({ disposition: "deferred", occupied: null, hostedSpaces: [], reason: reason.slice(0, 2000) });
   try {
-    inheritDaemonRuntime();
     const paths = daemonPaths();
     const recorded = existsSync(unitReceiptFile(paths)) && preflightInstalledDaemon(paths, undefined, request.daemonArgv);
     const same = recorded && installedDaemonIdentity(paths, undefined, request.daemonArgv).same;
@@ -67,7 +66,9 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
   } catch (error) {
     admission = deferred(`${error instanceof Error ? error.message : String(error)}; the daemon and its Managers were left running`);
   }
-  if (!sameUpdateDaemon(daemon, await observeUpdateDaemon())) throw new Error("machine daemon lifetime changed during target admission");
+  // A restart admission requires a fresh runtime check as well as an unchanged lifetime.
+  const finalDaemon = await observeUpdateDaemon(admission.disposition === "deferred" ? undefined : daemonPaths());
+  if (!sameUpdateDaemon(daemon, finalDaemon)) throw new Error("machine daemon lifetime changed during target admission");
   // Released updaters (0.165.4 to 0.168.0) refuse a receipt whose `occupied` is not a non-negative
   // integer and read nothing else from it. The admission carries the unknown count.
   return { daemon, hostedSpaces: admission.hostedSpaces, occupied: admission.occupied ?? 0, admission };

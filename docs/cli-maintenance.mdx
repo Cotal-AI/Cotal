@@ -52,9 +52,10 @@ those integrations. If the package closure needs repair, the usual continuity gu
 leaves an unrecorded service alone. A valid receipt for another installation does not block
 this check. A malformed receipt, missing source, or ownership mismatch refuses before those
 package and connector changes. A dangling receipt symlink still refuses. On Linux, if
-`XDG_RUNTIME_DIR` is unset, both update modes use `/run/user/<effective uid>` for the user manager
-when it is a real directory owned by that user with mode 0700. Update never creates or repairs
-that directory. The user manager still has to answer for a recorded systemd service.
+`XDG_RUNTIME_DIR` is unset, both update modes check `/run/user/<effective uid>` before each native
+user-service call. They use it only if it is a real directory owned by that user with mode 0700.
+Update never creates or repairs that directory. The user manager still has to answer for a
+recorded systemd service.
 
 Read the receipt and source paths named by the refusal. If the receipt is stale, remove only
 that receipt to forget it, then run `cotal daemon install`. For an owned installation, run
