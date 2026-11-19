@@ -45,6 +45,7 @@ export const OFFICIAL_RUNTIME_TOOLS: Readonly<Record<string, { readonly names: r
  *  npm package, so running one before its extension is added names the package. Not authority, as
  *  for {@link OFFICIAL_RUNTIMES}: the command exists only once `cotal ext add` installs it. */
 export const OFFICIAL_COMMANDS: Readonly<Record<string, string>> = {
+  acp: "@cotal-ai/acp",
   linear: "@cotal-ai/linear",
 };
 

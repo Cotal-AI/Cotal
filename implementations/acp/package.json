@@ -1,0 +1,45 @@
+{
+  "name": "@cotal-ai/acp",
+  "description": "Cotal as an Agent Client Protocol agent: spawn and manage mesh agents from T3 Code, Zed and other ACP clients.",
+  "version": "0.170.0",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cotal-AI/Cotal.git",
+    "directory": "implementations/acp"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx smoke/agent.smoke.ts && tsx smoke/frames.smoke.ts",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "2.8.0",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@cotal-ai/core": "*",
+    "@cotal-ai/workspace": "*"
+  },
+  "devDependencies": {
+    "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*",
+    "@cotal-ai/workspace": "workspace:*"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

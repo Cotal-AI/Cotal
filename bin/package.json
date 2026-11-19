@@ -56,6 +56,7 @@
     "jose": "^6.2.3"
   },
   "devDependencies": {
+    "@cotal-ai/acp": "workspace:*",
     "@cotal-ai/connector-claude-code": "workspace:*",
     "@cotal-ai/connector-codex": "workspace:*",
     "@cotal-ai/connector-hermes": "workspace:*",
