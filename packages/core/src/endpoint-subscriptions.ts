@@ -194,8 +194,8 @@ export class EndpointSubscriptions {
     return { joined: true, backfilled, durable, ...(reason !== undefined ? { reason } : {}) };
   }
 
-  /** Leave a channel mid-session — MANAGER-FREE for the live read: close the core subscription. For a
-   *  Plane-3 durable channel, the membership is tombstoned FIRST at the leave cursor (SPEC §7: leave is
+  /** Leave a channel mid-session — MANAGER-FREE for the live read: close the core subscription. Any
+   *  Plane-3 membership is tombstoned FIRST at the leave cursor (SPEC §7: leave is
    *  a hard read boundary for the backstop — a pre-leave entry stays deliverable, `seq > leaveCursor` is
    *  denied). FAIL-CLOSED: if the tombstone can't be confirmed the call throws and the leave is NOT
    *  applied (live sub stays up, local mirror intact) so the caller can retry — never close the live
@@ -204,15 +204,14 @@ export class EndpointSubscriptions {
   async leaveChannel(channel: string, legacyDiscoveryMessage?: string): Promise<{ left: boolean }> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
     let left = this.channels.includes(channel);
-    if (this.readsChannelsOnDemand) await this.readChannels();
-    // Auth + durable-class ⇒ a Plane-3 membership may exist; tombstone it BEFORE touching local state.
+    // A concrete channel or family may still have a Plane-3 membership regardless of its current policy.
     // Discover the channel's rows across this principal's lifecycles, including memberships absent
     // from the local mirror. Keep each row's generation guard. fetchMemberships throws on a
     // responder-present error, so a leave whose
     // tombstone can't be confirmed propagates (live sub stays up, mirror intact) for the caller to retry
     // — reporting `left` while the trusted reader keeps transferring to DLV is the fail-open leak. A
     // genuine no-responder (open / no delivery daemon, no Plane-3) means there is no membership to tombstone.
-    if (this.authed && (isChannelFamily(channel) || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === "durable")) {
+    if (this.authed && (isChannelFamily(channel) || isConcreteChannel(channel))) {
       const memberships = await this.fetchMemberships(channel);
       if (memberships === undefined && this.plane3Channels.has(channel))
         await this.durableLeaveChannel(channel, this.plane3Channels.get(channel));
