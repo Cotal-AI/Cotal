@@ -327,8 +327,9 @@ options. The first
 start saves the space's `manager` service from the preset's defaults and says so on stderr; `cotal
 service show manager` reads it. A start that names another `--runtime` or other option for a
 stopped manager saves it again with that option, and says so. With `--dry-run` it makes the same
-checks and saves nothing. A running one refuses `LIFECYCLE_BLOCKED` and names `cotal manager stop`
-first.
+checks and saves nothing. A `--console-host` with whitespace or control characters is refused
+before changing the saved definition or stopped instance. A running one refuses
+`LIFECYCLE_BLOCKED` and names `cotal manager stop` first.
 
 On a user-auth space this folder hosts, `start` and `restart` need your signed-in, granted login,
 as `cotal up` does for its manager. On a user-auth space registered here from another host, they
