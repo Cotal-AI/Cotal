@@ -1360,6 +1360,7 @@
   "env:COTAL_TOKEN": "current:join --token",
   "env:COTAL_TOOLS_FILE": "internal:seat session variable the launcher writes for a spawned seat",
   "env:COTAL_UPDATE_PARENT": "internal:handoff between a Cotal process and the child it starts",
+  "env:COTAL_UPDATE_PARENT_REPORTS_PI": "internal:updater retains ownership of the standalone pi notice",
   "env:COTAL_UPDATE_PARENT_WAITS": "internal:waiting update parent marker exercised by smoke:daemon-update-generation",
   "env:COTAL_UPDATE_TARGET_VERSION": "internal:handoff between a Cotal process and the child it starts",
   "env:COTAL_VARIANT": "current:spawn --variant",
