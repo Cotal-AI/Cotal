@@ -826,6 +826,7 @@ The desktop app uses these same controls. Its source and native build instructio
 If desktop preferences cannot be parsed, the app keeps the original file beside `presence.json`
 with a fresh `.invalid.<number>` suffix, opens with defaults, and reports the saved file's location.
 Recovery leaves Open at login unchanged until the person chooses that setting explicitly.
+On Windows, Open at login applies only to the current user, even when the desktop app runs as an administrator.
 Its first run offers Continue with Cotal Cloud or a custom host, opens browser approval after a
 click, then offers Connect this computer. Its four steps are Welcome, Sign in, Connect and Ready.
 A connection link prefills its host and space without starting setup. The app selects the linked

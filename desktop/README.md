@@ -128,6 +128,8 @@ On Windows, both installers create a Cotal Start menu entry and desktop shortcut
 
 Once the computer is registered to its account, **Open at login** defaults on, even with no assigned spaces. It opens Cotal in the background at login, without showing or focusing its window. On macOS the app stays in the menu bar without a Dock icon, and on Windows/Linux it stays in the system tray until opened. Turn the switch off to remember that choice across reconnects. On hosts without account computers, startup follows the verified space inventory and disconnecting the last space removes the login entry. On account-capable hosts, removing a space does not disconnect the computer from the account. The app's login entry and the daemon's background service are separate.
 
+On Windows, Open at login applies only to the current user, even when Cotal runs as an administrator. If an earlier version left a machine-wide login entry pointing to this copy of Cotal, the app removes it when it has permission. If Windows denies removal, Settings explains how to remove it. An entry pointing to another copy is left alone.
+
 Windows NSIS and MSI uninstall remove their shortcuts and the current user's app login entry. A macOS DMG has no executable uninstaller: dragging the app to Trash cannot run cleanup code. Turn off Open at login before deleting the app. Linux deb/rpm packages install the desktop entry and icons for the launcher. Package removal does not remove the independently installed daemon. Disconnect spaces and use the matching CLI's daemon uninstall operation before removing a service installation you no longer need.
 
 | Platform | Desktop service | Installer |

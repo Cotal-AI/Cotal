@@ -93,7 +93,10 @@ function Shortcuts($path) {
 function Check-LoginScope($path) {
   $userRun = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
   $machineRun = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'
-  function Read-Login($key) { (Get-Item -LiteralPath $key).GetValue('Cotal', $null) }
+  function Read-Login($key) {
+    $registry = Get-Item -LiteralPath $key
+    try { $registry.GetValue('Cotal', $null) } finally { $registry.Dispose() }
+  }
   if ($null -ne (Read-Login $userRun) -or $null -ne (Read-Login $machineRun)) { throw 'Expected a fresh Windows runner with no Cotal login values.' }
   $prefs = Join-Path $env:APPDATA 'ai.cotal.desktop\presence.json'
   if (Test-Path -LiteralPath $prefs) { throw 'Expected fresh desktop preferences before the login scope check.' }
@@ -166,7 +169,13 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     $path = Join-Path $directory 'cotal-desktop.exe'
     if (!(Test-Path $path)) { throw 'Installed executable missing.' }
     if ($kind -eq 'nsis') { Check-LoginScope $path }
-    if ($LoginScopeOnly) { break }
+    if ($LoginScopeOnly) {
+      $uninstaller = Get-ChildItem $directory -Filter '*uninstall*.exe' | Select-Object -First 1
+      $p = Start-Process $uninstaller.FullName -ArgumentList @('/S', "_?=$directory") -Wait -PassThru
+      if ($p.ExitCode -notin @(0, 3010)) { throw "nsis uninstall exited $($p.ExitCode)" }
+      $installed = $false
+      return
+    }
     $links = @(Shortcuts $path)
     $links | Set-Content (Join-Path $out "$kind-shortcuts.txt")
     $launch = Start-Process -FilePath $path -PassThru -RedirectStandardOutput (Join-Path $out "$kind-stdout.log") -RedirectStandardError (Join-Path $out "$kind-stderr.log")
