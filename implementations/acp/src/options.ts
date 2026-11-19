@@ -83,6 +83,18 @@ function variantsOf(offer: Offer, selection: Selection): readonly string[] {
   return offer.catalogs.find((c) => c.agent === agent)?.models.find((m) => m.id === model)?.variants ?? [];
 }
 
+/** A selection made against one manager, carried to another manager's offer. A choice the new
+ *  manager does not offer returns to its default. Throws when the new manager offers no application. */
+export function reconcile(offer: Offer, selection: Selection): Selection {
+  const { agent } = parseModel(selection.model);
+  const next = refusal(offer.catalogs, agent) ? { ...selection, model: initialSelection(offer).model } : selection;
+  return {
+    ...next,
+    variant: next.variant === DEFAULT_VARIANT || variantsOf(offer, next).includes(next.variant) ? next.variant : DEFAULT_VARIANT,
+    persona: next.persona === DEFAULT_PERSONA || offer.personas.includes(next.persona) ? next.persona : DEFAULT_PERSONA,
+  };
+}
+
 /** Apply one `session/set_config_option` to a selection. Throws on a value the offer does not hold. */
 export function applyOption(offer: Offer, selection: Selection, configId: string, value: string): Selection {
   switch (configId) {

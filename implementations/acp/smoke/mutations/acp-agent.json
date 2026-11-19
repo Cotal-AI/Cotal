@@ -187,6 +187,20 @@
       "find": "      session.turn.stop(\"cancelled\");",
       "replace": "      void 0;",
       "expectRed": "deleting a session answers its running prompt cancelled and leaves the seat running"
+    },
+    {
+      "name": "a machine switch keeps choices the new manager lacks",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "          next = reconcile(offer, next);",
+      "replace": "          void reconcile;",
+      "expectRed": "a persona the chosen machine lacks returns to the default"
+    },
+    {
+      "name": "a spawn that returns after a delete binds the deleted session",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        if (sessions.get(session.id) !== session) {",
+      "replace": "        if (false) {",
+      "expectRed": "a delete during the first spawn hides the seat it returns and sends it nowhere"
     }
   ]
 }
