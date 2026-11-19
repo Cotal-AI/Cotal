@@ -182,6 +182,11 @@ const QUESTION = "Which one?";
   }
   const explicitNote = run(["who"], join(home, "beta"));
   check("explicit selection explains its target under Mesh once", /Mesh: alpha/.test(explicitNote.stdout + explicitNote.stderr) && /selected space applies here/.test(explicitNote.stdout + explicitNote.stderr), shown(explicitNote));
+  const explicitShow = run(["space", "show", "--plain"], join(home, "beta"));
+  check("space show still inspects the running folder and explains how to target it instead of the explicit selection",
+    explicitShow.status === 0 && /^Mesh: beta$/m.test(explicitShow.stdout) && /^ +broker: +reachable$/m.test(explicitShow.stdout) &&
+      explicitShow.stdout.includes('the selected space "alpha" applies here to commands such as `cotal who`') &&
+      explicitShow.stdout.includes('--space beta or `cotal use --clear`') && !explicitShow.stdout.includes("applies outside"), shown(explicitShow));
   const explicitWrite = run(["history", "clear", "--dry-run", "--json"], join(home, "beta"));
   check("a write preview names the explicit selected space, not the folder", envelope(explicitWrite)?.target?.space === "alpha", shown(explicitWrite));
   const selectedSpawnTerminal = terminal(["spawn", "--dry-run"]);

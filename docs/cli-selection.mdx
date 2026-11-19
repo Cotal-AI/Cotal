@@ -32,8 +32,8 @@ cotal use [<space> | --clear] [--json|--plain]
 
 `space` lists the spaces this machine can reach: each one's broker state, server, mode, origin
 (`started here`, `registered` or `discovered`) and root, with the selected one marked. Inside a
-project whose root has one running registered space other than the selection, that space is marked as
-this folder's, since a command without `--space` targets it there. It probes
+project whose root has one running registered space other than the automatically adopted selection,
+that space is marked as this folder's, since a command without `--space` targets it there. It probes
 each broker that this machine started or that was registered by hand, and reports one that does not
 answer as `unreachable` when the connection fails, or `not answering` when it times out.
 A stopped local listener is reported as `broker process is stopped`. Its registration stays.
@@ -43,8 +43,10 @@ An unoccupied folder still offers `cotal space create <name>` for this folder.
 A discovered space is never dialed by a listing and
 reads `not checked`. `space show [<name>]` shows one space in full and probes only that broker.
 With no name it is about this folder: the space it has registered, else the one it holds prepared or
-stopped, which `show` names although every other command there targets the selection, else the
-selected one. Neither writes anything. A registry record that cannot be
+stopped, else the selected one. This does not change what other commands target. If `cotal use`
+explicitly selected a different space, `space show` says that commands such as `cotal who` still
+target the selection here. Pass `--space <name>` or run `cotal use --clear` to target the folder's
+space instead. Neither `space` nor `space show` writes anything. A registry record that cannot be
 read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
 
 `--json` writes one document. `space` gives `current` (the selected space or null),
@@ -68,7 +70,11 @@ so is a bare `space show` outside a project with nothing selected. Each entry un
 whose stack ran and was stopped, and `unsettled` when its last `up` or `down` recorded no outcome.
 `lastOperation` names that operation and how it ended, such as `` `cotal down`, completed ``, or is null.
 `space show` of a prepared space gives those with the kind `prepared-space`. The listing marks
-such a folder `(no longer exists)` and names `cotal space forget <space>` for it instead of `cotal up`.
+a missing folder `(no longer exists)` and names `cotal space forget <space>` for it instead of
+`cotal up`. If you stop a stack and rename its project, run `space show <name>` in the renamed
+folder. It reads the matching journal and tells you how to move the folder back. After a completed
+`cotal down`, it also gives the exact `cotal space forget <name>` and
+`cotal space create <name> --adopt --root <dir>` commands for keeping the new location.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
 `space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,
@@ -461,9 +467,10 @@ A prepared space whose project folder was deleted cannot start. A command that t
 included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming
 `cotal space forget <space>`. `cotal space create <space> --root <dir>` then prepares it again.
 `use`, `space show`, `up --space` and `space forget` also say the folder no longer exists, and
-`space show` names the same forget and create steps in place of `cotal up`. Run from the folder it
-was moved to, whose stack journal names the old folder, such a command says the folder was moved and
-names the next step that `up` and `down` name there.
+`space show` names the same forget and create steps in place of `cotal up`. If a matching stack
+journal in this folder shows that the project was moved instead, `space show` gives the move-back
+and adoption guidance described in [Space inventory](#space-inventory). Other commands that target
+the space from the renamed folder name the next step that `up` and `down` name there.
 
 A stopped space that `cotal up` started is handled the same way when its folder was deleted. `status`
 says the folder no longer exists instead of naming `cotal up` there, and `send` and `history`
