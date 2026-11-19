@@ -229,7 +229,7 @@
     },
     {
       "name": "K17 the fresh filter compares timestamps only, so a tie is skipped",
-      "file": "extensions/connector-core/src/agent-inbox.ts",
+      "file": "extensions/connector-core/src/agent-inbox-model.ts",
       "find": "  return a.ts !== b.ts ? a.ts > b.ts : a.id > b.id;",
       "replace": "  return a.ts > b.ts;",
       "cell": "a recall twin sharing a millisecond with a delivered item is not filtered out for good",

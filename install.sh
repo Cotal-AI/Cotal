@@ -170,11 +170,13 @@ spin_stop() {
 }
 
 TMPDIR_SELF=""
+STAGED_INSTALL=""
 LOCKDIR=""
 # shellcheck disable=SC2329,SC2317  # invoked from the EXIT/INT/TERM/HUP traps set in main
 cleanup() {
   spin_stop
   [ -n "$TMPDIR_SELF" ] && [ -d "$TMPDIR_SELF" ] && rm -rf "$TMPDIR_SELF"
+  [ -n "$STAGED_INSTALL" ] && [ -d "$STAGED_INSTALL" ] && rm -rf "$STAGED_INSTALL"
   [ -n "$LOCKDIR" ] && [ -L "$LOCKDIR" ] && rm -f "$LOCKDIR"
   return 0
 }
@@ -200,7 +202,7 @@ acquire_install_lock() {
     if [ -d "$_lock" ] && [ ! -L "$_lock" ]; then
       die "Something is in the way of the install lock at $(tildify "$_lock")." \
         "Remove it if no other install is running:" \
-        "  rm -rf $_lock"
+        "  rm -rf $(shquote "$_lock")"
     fi
     # A symlink, not a directory: creating one is a single atomic operation that fails if the
     # name already exists, AND its target string carries the owner's pid. `mkdir` then
@@ -224,7 +226,7 @@ acquire_install_lock() {
     if [ -z "$_owner" ]; then
       die "Something is in the way of the install lock at $(tildify "$_lock")." \
         "Remove it if no other install is running:" \
-        "  rm -rf $_lock"
+        "  rm -rf $(shquote "$_lock")"
     fi
     _owner_host=${_owner%:*}
     _owner_pid=${_owner##*:}
@@ -236,7 +238,7 @@ acquire_install_lock() {
         "still running cannot be determined from here." \
         "" \
         "Wait for it to finish. If you are sure it is gone, clear the lock:" \
-        "  rm -f $_lock"
+        "  rm -f $(shquote "$_lock")"
     fi
     # kill -0 answers "may I signal this pid", not "is this my installer". A pid recycled by
     # an unrelated process therefore reads as a live owner. That is rare, and fail-closed is
@@ -247,7 +249,7 @@ acquire_install_lock() {
         "Wait for it to finish, then run this again." \
         "" \
         "If you are sure no other install is running, clear the lock:" \
-        "  rm -f $_lock"
+        "  rm -f $(shquote "$_lock")"
     fi
     # The owner is gone, so the lock is stale. Drop it and retry rather than assume the retry
     # wins: another installer may be doing exactly the same thing right now.
@@ -255,7 +257,7 @@ acquire_install_lock() {
     _tries=$((_tries + 1))
     [ "$_tries" -lt 5 ] || die "Could not claim the install lock at $(tildify "$_lock")." \
       "Remove it by hand if no other install is running:" \
-      "  rm -f $_lock"
+      "  rm -f $(shquote "$_lock")"
   done
 }
 
@@ -525,10 +527,12 @@ BIN_DIR=$(absolutize "$BIN_DIR")
 # about to write through, because `>>` follows a symlink and lands wherever it points:
 # ~/.zshrc can be a link out of $HOME, and containment has to see the real destination.
 # The opposite of canonical_file below, which is for paths we only need to name.
+# When checking a new link target, stop if the chain reaches the link being replaced.
 resolved_target() {
   _rt="$1"
   _rt_hops=0
   while [ -L "$_rt" ]; do
+    [ -z "${2:-}" ] || [ "$(canonical_file "$_rt")" != "$2" ] || return 1
     # Linux follows 40 links. Stopping short and then treating the still-unresolved link as
     # canonical is how a long chain walks straight past a containment check, so running out
     # of hops is a refusal, not an answer.
@@ -540,7 +544,9 @@ resolved_target() {
     esac
     _rt_hops=$((_rt_hops + 1))
   done
-  canonical_file "$_rt"
+  _rt=$(canonical_file "$_rt")
+  [ -z "${2:-}" ] || [ "$_rt" != "$2" ] || return 1
+  printf '%s\n' "$_rt"
 }
 
 # Resolve a file's DIRECTORY physically (killing `..` and symlinks) while keeping its
@@ -685,7 +691,11 @@ repair_install_modes() {
 link_node_bin() {
   _nb="$INSTALL_DIR/nodebin"
   mkdir -p "$_nb"
-  ln -sf "$(resolved_target "$NODE_BIN")" "$_nb/node"
+  # Keep the selected Node entry, not the current version behind a distro's `node` symlink.
+  # Leave the link in place if the selected entry already points through it.
+  if resolved_target "$NODE_BIN" "$(canonical_file "$_nb/node")" >/dev/null; then
+    ln -sf "$NODE_BIN" "$_nb/node"
+  fi
   ln -sf "$(resolved_target "$NPM_BIN")" "$_nb/npm"
   _npx=$(dirname "$NPM_BIN")/npx
   [ -e "$_npx" ] && ln -sf "$(resolved_target "$_npx")" "$_nb/npx"
@@ -718,6 +728,7 @@ read_installed_version() {
 
 install_cotal() {
   PREVIOUS_VERSION=$(read_installed_version)
+  STAGED_INSTALL=$(mktemp -d "$INSTALL_DIR/.install-stage.XXXXXX")
   _spec="$COTAL_PKG"
   [ "$OPT_VERSION" = "latest" ] || _spec="$COTAL_PKG@$OPT_VERSION"
 
@@ -727,14 +738,13 @@ install_cotal() {
     spin_start "Installing Cotal"
   fi
 
-  # nodebin goes on PATH for exactly this call. npm's own entry point resolves `node` through
-  # PATH, so on a machine with no system Node the vendored npm cannot start itself without
-  # it. Prepending only that one directory keeps every other tool the user has intact.
+  # npm's entry point resolves node through PATH. Use the selected runtime while staging,
+  # without changing the active installation's runtime links before verification.
   #
   # --prefix keeps this entirely inside a directory Cotal owns, which is what removes the
   # need for sudo. npm verifies the registry tarball against its published sha512 integrity
   # on the way in, so the package itself arrives checked without us re-implementing it.
-  if ! PATH="$INSTALL_DIR/nodebin:$PATH" "$NPM_BIN" install -g --prefix "$INSTALL_DIR" \
+  if ! PATH="$(dirname "$NODE_BIN"):$PATH" "$NPM_BIN" install -g --prefix "$STAGED_INSTALL" \
     --no-fund --no-audit --loglevel=error "$_spec" >>"$LOG" 2>&1; then
     spin_stop
     show_log_tail
@@ -743,6 +753,28 @@ install_cotal() {
   fi
   spin_stop
 
+  # The active package and launcher stay intact until the requested release can start.
+  if ! _version_output=$(COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 "$NODE_BIN" "$STAGED_INSTALL/lib/node_modules/$COTAL_PKG/dist/cotal.js" --version 2>&1); then
+    printf '%s\n' "$_version_output" >&2
+    if [ "$OPT_VERSION" != latest ]; then
+      die "The installed Cotal could not start." \
+        "Run the installer again without --version to install the latest release."
+    fi
+    die "The latest Cotal release could not start." \
+      "Report the error above at https://github.com/Cotal-AI/Cotal/issues."
+  fi
+  [ -x "$STAGED_INSTALL/bin/cotal" ] || [ -L "$STAGED_INSTALL/bin/cotal" ] ||
+    die "$COTAL_PKG installed without its cotal executable."
+  mkdir -p "$INSTALL_DIR/lib/node_modules" "$INSTALL_DIR/bin"
+  _active="$INSTALL_DIR/lib/node_modules/$COTAL_PKG"
+  if [ -e "$_active" ] || [ -L "$_active" ]; then
+    mv "$_active" "$STAGED_INSTALL/previous"
+  fi
+  if ! mv "$STAGED_INSTALL/lib/node_modules/$COTAL_PKG" "$_active"; then
+    [ ! -e "$STAGED_INSTALL/previous" ] && [ ! -L "$STAGED_INSTALL/previous" ] || mv "$STAGED_INSTALL/previous" "$_active"
+    die "Could not select the verified Cotal package."
+  fi
+  ln -sf "../lib/node_modules/$COTAL_PKG/dist/cotal.js" "$INSTALL_DIR/bin/cotal"
   INSTALLED_VERSION=$(read_installed_version)
   [ -n "$INSTALLED_VERSION" ] ||
     die "npm reported success but $COTAL_PKG is not in the install prefix." \
@@ -761,8 +793,7 @@ show_log_tail() {
   return 0
 }
 
-# The launcher is the whole reason a Cotal installed today still works after you change
-# your system Node tomorrow. It pins the runtime, and it points npm at Cotal's own prefix
+# The launcher selects the installed runtime link and points npm at Cotal's own prefix
 # so `cotal update` and `cotal ext add` keep writing where this installer wrote.
 write_launcher() {
   mkdir -p "$BIN_DIR"
@@ -771,8 +802,7 @@ write_launcher() {
   cat >"$_tmp" <<EOF
 #!/bin/sh
 # Cotal launcher, written by https://get.cotal.ai
-# Pins the Node this install was verified against, so a change to the system Node can never
-# leave Cotal running on a runtime it was not installed for.
+# Uses the Node executable selected by the installer. The CLI checks its version on launch.
 COTAL_ROOT=${_root_lit}
 
 # When the pin was a Node this installer did not own, the user can still remove it later.
@@ -812,8 +842,10 @@ EOF
 # PATH
 # ---------------------------------------------------------------------------------------
 
-PATH_STATE="" # already | added:<file> | manual
+PATH_STATE="" # already | added | manual
 PATH_RC=""
+PATH_UPDATED=""
+PATH_MANUAL=""
 
 on_path() {
   case ":$PATH:" in
@@ -822,8 +854,6 @@ on_path() {
   esac
 }
 
-# One marked block, appended once. Delete the block to undo it; re-running this installer
-# will not stack a second copy.
 setup_path() {
   if on_path; then
     PATH_STATE="already"
@@ -835,34 +865,33 @@ setup_path() {
   fi
 
   _shell=$(basename "${SHELL:-sh}")
-  _marker="# cotal"
+  _login_rc=""
   case "$_shell" in
     zsh)
       PATH_RC="${ZDOTDIR:-$HOME}/.zshrc"
       _line="export PATH=$(shquote "$BIN_DIR"):\"\$PATH\""
       ;;
     bash)
-      # Linux logs you into an interactive shell reading .bashrc; macOS Terminal starts a
-      # login shell reading .bash_profile. Prefer whichever this box already uses.
-      #
-      # Held in two variables rather than one space-separated list on purpose: a $HOME
-      # containing a space would word-split the list, and the fallback would then name a
-      # truncated path OUTSIDE the home directory and append the PATH block to it.
-      if [ "$OS" = "darwin" ]; then
-        _first="$HOME/.bash_profile"
-        _second="$HOME/.bashrc"
-      else
-        _first="$HOME/.bashrc"
-        _second="$HOME/.bash_profile"
-      fi
-      if [ -f "$_first" ]; then
-        PATH_RC="$_first"
-      elif [ -f "$_second" ]; then
-        PATH_RC="$_second"
-      else
-        PATH_RC="$_first"
-      fi
       _line="export PATH=$(shquote "$BIN_DIR"):\"\$PATH\""
+      if [ "$OS" = "linux" ]; then
+        # An interactive non-login shell reads .bashrc. A login shell reads the first
+        # readable login file, which need not source .bashrc. Default to .profile so
+        # creating a file does not mask an existing lower-priority profile.
+        PATH_RC="$HOME/.bashrc"
+        _login_rc="$HOME/.profile"
+        for _profile in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+          if [ -f "$_profile" ] && [ -r "$_profile" ]; then
+            _login_rc="$_profile"
+            break
+          fi
+        done
+        # A login profile can also source .bashrc. Add the directory only once.
+        _line="case \":\$PATH:\" in *:$(shquote "$BIN_DIR"):*) ;; *) $_line ;; esac"
+      elif [ -f "$HOME/.bash_profile" ] || [ ! -f "$HOME/.bashrc" ]; then
+        PATH_RC="$HOME/.bash_profile"
+      else
+        PATH_RC="$HOME/.bashrc"
+      fi
       ;;
     fish)
       PATH_RC="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
@@ -873,6 +902,28 @@ setup_path() {
       return 0
       ;;
   esac
+
+  write_path_block || PATH_MANUAL=$(tildify "$PATH_RC")
+  if [ -n "$_login_rc" ]; then
+    PATH_RC="$_login_rc"
+    write_path_block || PATH_MANUAL="${PATH_MANUAL:+$PATH_MANUAL, }$(tildify "$PATH_RC")"
+  fi
+  if [ -n "$PATH_MANUAL" ]; then
+    PATH_STATE="manual"
+  elif [ -n "$PATH_UPDATED" ]; then
+    PATH_STATE="added"
+  else
+    PATH_STATE="already"
+  fi
+  if [ -n "$PATH_UPDATED" ]; then
+    PATH="$BIN_DIR:$PATH"
+    export PATH
+  fi
+}
+
+# Append one marked block per startup file, even when the installer is run again.
+write_path_block() {
+  _marker="# cotal"
 
   # Containment, enforced rather than assumed: this installer writes nothing outside $HOME,
   # so a computed rc path that escaped it is a bug, and appending to it would be the damage.
@@ -885,15 +936,13 @@ setup_path() {
   # resolved path against the physically resolved $HOME to catch a symlinked escape.
   case "$PATH_RC" in
     ../* | */../* | */..)
-      PATH_STATE="manual"
-      return 0
+      return 1
       ;;
   esac
   case "$PATH_RC" in
     "$HOME"/*) ;;
     *)
-      PATH_STATE="manual"
-      return 0
+      return 1
       ;;
   esac
 
@@ -911,27 +960,19 @@ setup_path() {
   case "$_anc_real" in
     "$_real_home" | "$_real_home"/*) ;;
     *)
-      PATH_STATE="manual"
-      return 0
+      return 1
       ;;
   esac
 
-  mkdir -p "$(dirname "$PATH_RC")" 2>/dev/null || {
-    PATH_STATE="manual"
-    return 0
-  }
+  mkdir -p "$(dirname "$PATH_RC")" 2>/dev/null || return 1
 
   # And the final destination itself, following the rc file if it is a link. A refusal from
   # resolved_target (an unresolvable chain) is a refusal here too.
-  _rc_real=$(resolved_target "$PATH_RC") || {
-    PATH_STATE="manual"
-    return 0
-  }
+  _rc_real=$(resolved_target "$PATH_RC") || return 1
   case "$_rc_real" in
     "$_real_home"/*) ;;
     *)
-      PATH_STATE="manual"
-      return 0
+      return 1
       ;;
   esac
 
@@ -941,24 +982,19 @@ setup_path() {
   # to printing the line rather than risk a duplicate.
   _lock="$PATH_RC.cotal-lock"
   if ! mkdir "$_lock" 2>/dev/null; then
-    PATH_STATE="manual"
-    return 0
+    return 1
   fi
 
   if [ -f "$PATH_RC" ] && grep -qF "$_marker" "$PATH_RC" 2>/dev/null; then
     rmdir "$_lock" 2>/dev/null || true
-    PATH_STATE="already"
     return 0
   fi
   if ! { printf '\n%s\n%s\n' "$_marker" "$_line" >>"$PATH_RC"; } 2>/dev/null; then
     rmdir "$_lock" 2>/dev/null || true
-    PATH_STATE="manual"
-    return 0
+    return 1
   fi
   rmdir "$_lock" 2>/dev/null || true
-  PATH_STATE="added:$PATH_RC"
-  PATH="$BIN_DIR:$PATH"
-  export PATH
+  PATH_UPDATED="${PATH_UPDATED:+$PATH_UPDATED, }$(tildify "$PATH_RC")"
 }
 
 # The child shell can inspect PATH, but cannot clear its parent's command cache or aliases.
@@ -1056,18 +1092,21 @@ next_steps() {
   blank
   head_line "Next"
   case "$PATH_STATE" in
-    added:*)
-      _rc=${PATH_STATE#added:}
-      printf '    %s%s%s   %sreload your shell, once%s\n' "$C_BRAND" "exec $(basename "${SHELL:-sh}")" "$C_OFF" "$C_DIM" "$C_OFF"
+    added)
+      _reload="exec $_shell"
+      if [ -n "$_login_rc" ]; then _reload="exec bash -l"; fi
+      printf '    %s%s%s   %sreload your shell, once%s\n' "$C_BRAND" "$_reload" "$C_OFF" "$C_DIM" "$C_OFF"
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
-      blank
-      dim_line "PATH updated in $(tildify "$_rc")"
       ;;
     manual)
-      printf '    %s%s%s\n' "$C_BRAND" "export PATH=\"$BIN_DIR:\$PATH\"" "$C_OFF"
+      printf '    %s%s%s\n' "$C_BRAND" "export PATH=$(shquote "$BIN_DIR"):\"\$PATH\"" "$C_OFF"
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
       blank
-      dim_line "Add that export to your shell rc to make it permanent."
+      if [ -n "$PATH_MANUAL" ]; then
+        dim_line "Add that export to: $PATH_MANUAL"
+      else
+        dim_line "Add that export to your shell rc to make it permanent."
+      fi
       ;;
     *)
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
@@ -1075,6 +1114,10 @@ next_steps() {
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal spawn" "$C_OFF" "$C_DIM" "put an agent on it" "$C_OFF"
       ;;
   esac
+  if [ -n "$PATH_UPDATED" ]; then
+    blank
+    dim_line "PATH updated in $PATH_UPDATED"
+  fi
   blank
   dim_line "Docs $DOCS_URL"
   blank
@@ -1187,7 +1230,7 @@ main() {
     die "Cannot create $(tildify "$INSTALL_DIR")." \
       "This installer writes only inside your home directory, so it needs that to be" \
       "writable by you. Check the permissions:" \
-      "  ls -ld $(dirname "$INSTALL_DIR")" \
+      "  ls -ld $(shquote "$(dirname "$INSTALL_DIR")")" \
       "" \
       "Or send it somewhere else:" \
       "  curl -fsSL https://get.cotal.ai | COTAL_INSTALL_DIR=/path/you/own sh"
@@ -1203,9 +1246,8 @@ main() {
 
   resolve_node
   ok_line "Node $NODE_LABEL"
-  link_node_bin
-
   install_cotal
+  link_node_bin
   write_launcher
   if ! _version_output=$(COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 "$BIN_DIR/cotal" --version 2>&1); then
     printf '%s\n' "$_version_output" >&2
@@ -1227,8 +1269,8 @@ main() {
   setup_path
   case "$PATH_STATE" in
     already) ok_line "$(tildify "$BIN_DIR") is on your PATH" ;;
-    added:*) ok_line "Added $(tildify "$BIN_DIR") to your PATH" ;;
-    manual) warn_line "$(tildify "$BIN_DIR") is not on your PATH yet" ;;
+    added) ok_line "Added $(tildify "$BIN_DIR") to your shell's PATH configuration" ;;
+    manual) warn_line "PATH setup for $(tildify "$BIN_DIR") needs a manual step" ;;
   esac
 
   report_path_selection

@@ -74,6 +74,7 @@ try {
   const here = dirname(fileURLToPath(import.meta.url));
   const extensionSrc = readFileSync(join(here, "../src/extension.ts"), "utf8");
   const hostSrc = readFileSync(join(here, "../src/host.ts"), "utf8");
+  const hostSupportSrc = readFileSync(join(here, "../src/host-support.ts"), "utf8");
   check(
     "the manager window is the exported bound, not a second literal",
     /readinessTimeoutMs:\s*JCODE_READINESS_TIMEOUT_MS/.test(extensionSrc) && !/\b180_000\b/.test(extensionSrc),
@@ -81,8 +82,8 @@ try {
   );
   check(
     "the host default bound is that same export, not a second literal",
-    /return JCODE_READINESS_TIMEOUT_MS/.test(hostSrc) && !/\b180_000\b/.test(hostSrc),
-    hostSrc.match(/readinessTurnTimeoutMs[\s\S]{0,200}/)?.[0],
+    /return JCODE_READINESS_TIMEOUT_MS/.test(hostSupportSrc) && !/\b180_000\b/.test(hostSrc + hostSupportSrc),
+    hostSupportSrc.match(/readinessTurnTimeoutMs[\s\S]{0,200}/)?.[0],
   );
   check("feeds the declared catalog into the connector hook", jcodeConnector.listModels === listJcodeModels);
   const realJcodeHome = process.env.JCODE_HOME;
@@ -129,7 +130,7 @@ try {
   check("inherits explicitly allowed operator env", allowed.env?.UNRELATED_JCODE_ENV_CANARY === "inherited");
   check("resets inherited Cotal material", base.env?.COTAL_CREDS === undefined && base.env?.COTAL_LIFECYCLE_UID === undefined);
   check("mints a manager control endpoint", Boolean(base.control?.path && base.control?.token));
-  check("keeps the control token out of the environment", base.env?.COTAL_CONTROL_TOKEN === undefined);
+  check("keeps the control token out of the environment", base.env?.COTAL_CONTROL_KEY === undefined);
   check("control token round-trips through launch material", controlFromEnv(base.env)?.token === base.control?.token);
 
   const rooted = launch({ space: "space", name: "seat", workspaceRoot: dir, events: undefined });

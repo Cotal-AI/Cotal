@@ -1,16 +1,13 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, openSync, closeSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type Server } from "node:net";
-import { join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import { HarnessError, JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
-import { hardenPrivate, loadAgentFile, type PresenceCondition, type PresenceConditionCode } from "@cotal-ai/core";
+import { loadAgentFile, type PresenceCondition } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, removeJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, recordLaunch, recordOnceLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
 import { connectSteerClient, softInterruptWithLateReply } from "./steer-replies.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
-import { forkJcodeSession, jcodeSeatHome, markJcodeForkBriefed, type JcodeFork } from "./session-fork.js";
+import { forkJcodeSession, markJcodeForkBriefed, type JcodeFork } from "./session-fork.js";
 import { activeModelRoute, bareModelId, describeRoute, effectiveProvider } from "./route-identity.js";
 import {
   classifyReadinessFailure,
@@ -19,11 +16,9 @@ import {
   JcodeConnectorError,
   JcodeModelMismatch,
   JcodeCursorStateUnreadable,
-  JcodeProjectMcpConfig,
   JcodeSessionsEnumerationFailure,
   JcodeSessionsUnwritableFailure,
   jcodeEffortRefusal,
-  PROJECT_MCP_FILES,
   writeJcodeDiagnostic,
 } from "./startup-diagnostics.js";
 import {
@@ -34,7 +29,6 @@ import {
   storedSessionsPath,
   unwritableStoredSessions,
 } from "./stored-sessions.js";
-import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import {
   FALLBACK_INITIAL_MS,
   fallbackStillOwed,
@@ -52,7 +46,6 @@ import {
   eventPlaneStopped,
   EventWal,
   FileSubjectFrontier,
-  briefing,
   configFromEnv,
   controlFromEnv,
   envFlag,
@@ -60,342 +53,43 @@ import {
   fmtChannel,
   fmtFrom,
   formatInjection,
-  parseToolArgs,
   registerOnceExit,
   scrubLaunchMaterial,
   startControlServer,
-  cotalToolSpecs,
   ensureEventWalDir,
   resolveEventsStateRoot,
-  type AgentConfig,
   type InboxItem,
   type PrincipalLock,
-  type ToolResult,
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { createJcodeMapper, type JcodeMapper, type PositionedJcodeJournalRecord } from "./agui-map.js";
 import { initializeJcodeEventBoundary, JcodeJournalSource, jcodeJournalPath, positionedJcodeJournalSource } from "./agui-source.js";
-
-const MAX_RELAY_BYTES = 4 * 1024 * 1024;
-/** How often the relay checks that its socket path still exists. See the re-bind in `startRelay`. */
-const RELAY_REBIND_POLL_MS = 1_000;
-/** How long a run may hold the dispatch gate waiting for its own acknowledgement (#1233).
- *
- *  Matches the SDK's `acceptTimeoutMs` default, because that is the point past which `sendMessage`
- *  stops waiting anyway (jcode-sdk client.js:317), so a longer value here could only hold the gate
- *  after the thing it is waiting for has already given up. It is a CEILING, not a delay: the gate is
- *  released the moment the acknowledgement arrives, which is single-digit milliseconds on a healthy
- *  seat. A Harness that never acknowledges therefore costs one bounded wait, not a wedged gate. */
-const RUN_ACCEPT_WINDOW_MS = 10_000;
-/** One bridge recovery remains bounded, but it is bounded by time rather than one launch/attach
- *  outcome. A loaded host can lose a transient replacement race without turning that into a
- *  second provider close or an unbounded relaunch loop. The window opens at the close, so tearing
- *  down the broken tree spends it too. Exported so a test waiting on a recovery step allows the
- *  host the same window instead of a shorter guess. */
-export const BRIDGE_RECOVERY_WINDOW_MS = 60_000;
-
-function readinessTurnTimeoutMs(): number {
-  const raw = process.env.COTAL_JCODE_READINESS_TIMEOUT_MS?.trim();
-  if (!raw) return JCODE_READINESS_TIMEOUT_MS;
-  const parsed = Number(raw);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0)
-    throw new Error(`jcode connector: COTAL_JCODE_READINESS_TIMEOUT_MS ${JSON.stringify(raw)} is not a positive integer`);
-  return parsed;
-}
-
-/**
- * Override for the SDK's per-request reply timeout, which defaults to 30000ms.
- *
- * Exists so a fixture can make a soft-interrupt timeout happen in seconds instead of half a minute.
- * It is NOT a remedy for #1233 and must never be used as one: lengthening this bound only makes the
- * stall take longer to appear, and shortening it makes it appear sooner. What the fix changes is
- * what happens AFTER the timeout, which is why this knob is validated the same way as the readiness
- * bound and otherwise left alone.
- */
-function requestTimeoutOverrideMs(): number | undefined {
-  const raw = process.env.COTAL_JCODE_REQUEST_TIMEOUT_MS?.trim();
-  if (!raw) return undefined;
-  const parsed = Number(raw);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0)
-    throw new Error(`jcode connector: COTAL_JCODE_REQUEST_TIMEOUT_MS ${JSON.stringify(raw)} is not a positive integer`);
-  return parsed;
-}
-
-export const PERMANENT_BRIDGE_RECOVERY_CODES = new Set([
-  "handshake_failed",
-  "invalid_instance_home",
-  "invalid_request",
-  "jcode_not_found",
-  "unknown_request",
-  "unknown_session",
-  "unsupported_version",
-]);
-export const PERMANENT_BRIDGE_CONNECT_CAUSE_CODES = new Set(["EACCES"]);
-
-/** Recovery retries availability races, not a refusal that another attempt cannot change. */
-export function permanentBridgeRecoveryFailure(error: unknown): error is HarnessError {
-  if (!(error instanceof HarnessError)) return false;
-  if (PERMANENT_BRIDGE_RECOVERY_CODES.has(error.code)) return true;
-  if (error.code === "connect_failed")
-    return PERMANENT_BRIDGE_CONNECT_CAUSE_CODES.has((error.cause as NodeJS.ErrnoException | undefined)?.code ?? "");
-  return false;
-}
-
-interface RelayEndpoint {
-  /** The owner-only directory that holds {@link path}. Empty on Windows, which uses a named pipe. */
-  dir: string;
-  path: string;
-  token: string;
-}
-
-const PRESENCE_CONDITION_CODES: ReadonlySet<string> = new Set<PresenceConditionCode>([
-  "rate_limit", "overloaded", "auth", "billing", "budget", "context", "model", "request", "server", "retrying", "approval", "input", "failed",
-]);
-
-/** A failed turn's condition, relayed from the Harness's own error code. Only a `HarnessError` is
- *  relayed: it is what the Harness reported. A code outside the closed set reads `failed`, with
- *  the native code kept as `source`. Without this the seat read `waiting` with the error only in
- *  its private log (#618). */
-function jcodeTurnCondition(error: unknown, since = Date.now()): PresenceCondition | undefined {
-  if (!(error instanceof HarnessError)) return undefined;
-  const source = String(error.code);
-  const code = (PRESENCE_CONDITION_CODES.has(source) ? source : "failed") as PresenceConditionCode;
-  return { code, source, message: error.message, since };
-}
-
-/** Jcode acknowledges a plain send with `message_accepted` before it checks whether this connection
- *  is still processing a message, and then refuses the send with this error. The acknowledgement is
- *  therefore no proof that the model received the text. */
-export function isJcodeBusyRefusal(error: unknown): boolean {
-  return error instanceof HarnessError && error.message.includes("Already processing a message");
-}
-
-function privateAgentHome(space: string, name: string): string {
-  const root = process.env.COTAL_JCODE_HOME?.trim();
-  if (!root) throw new Error("COTAL_JCODE_HOME is not set — the connector must pin the agent's Jcode home");
-  const managedRoot = join(root, ".cotal", "jcode");
-  const home = jcodeSeatHome(root, space, name);
-  if (!resolve(home).startsWith(resolve(managedRoot) + sep)) throw new Error(`jcode home ${home} escapes ${managedRoot} — refusing`);
-  for (const path of [join(root, ".cotal"), managedRoot, home]) {
-    try {
-      if (lstatSync(path).isSymbolicLink()) throw new Error(`refusing symlinked managed path: ${path}`);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-  mkdirSync(home, { recursive: true, mode: 0o700 });
-  hardenPrivate(home, "dir");
-  return home;
-}
-
-function publicConfig(config: AgentConfig): AgentConfig {
-  // This object is handed to Jcode's MCP CHILD so it can render the exact tool schemas. It is not
-  // a second connection config: the host owns the MeshAgent. Do not put static creds, user-mode
-  // bearer material, join tokens, broker coordinates, feedback keys, or the launch-material
-  // pointer on the child rail.
-  return {
-    ...config,
-    // Keep the catalog's authenticated-mode gate without exposing either credential shape.
-    // Clearing both markers makes a user-mode child advertise tools its host refuses.
-    creds: config.creds || config.userAuth ? "managed" : undefined,
-    userAuth: undefined,
-    token: undefined,
-    user: undefined,
-    pass: undefined,
-    servers: "held by the Jcode host",
-    feedbackKey: undefined,
-  };
-}
-
-/** Jcode deliberately overlays project `.jcode/mcp.json`, `.mcp.json`, and `.claude/mcp.json`
- * over its private home. A same-name project entry could replace the connector's cotal bridge, or
- * add a server the operator never opted to share. The Harness API has no isolation switch for this
- * source set, so refuse the whole launch instead of claiming our private home is sufficient. A home
- * directory counts too: its `.jcode/mcp.json` is Jcode's own global file, read here as a project's. */
-function assertNoProjectMcpConfig(cwd: string): void {
-  const found = PROJECT_MCP_FILES.filter((relative) => existsSync(join(cwd, relative)));
-  if (found.length) throw new JcodeProjectMcpConfig(found);
-}
-
-function mcpEntry(): { command: string; args: string[] } {
-  const built = import.meta.url.includes("/dist/");
-  if (built) return { command: process.execPath, args: [filePath("mcp.js")] };
-  return { command: filePath("../node_modules/.bin/tsx"), args: [filePath("mcp-main.ts")] };
-}
-
-function filePath(relative: string): string {
-  return fileURLToPath(new URL(relative, import.meta.url));
-}
-
-function writeMcpConfig(home: string, relay: RelayEndpoint, config: AgentConfig): void {
-  const { command, args } = mcpEntry();
-  const mcp = {
-    servers: {
-      cotal: {
-        command,
-        args,
-        env: {
-          COTAL_JCODE_MCP_SOCKET: relay.path,
-          COTAL_JCODE_MCP_TOKEN: relay.token,
-          COTAL_JCODE_MCP_CONFIG: JSON.stringify(publicConfig(config)),
-        },
-        // Pooled (Jcode's default): one bridge per daemon, reused across every session in the
-        // seat, so repeated subagent sessions cannot each leave a bridge process behind until
-        // teardown. Pooling never crosses seats — the pool lives in the daemon and this daemon is
-        // private to the seat (its own JCODE_HOME, socket, and relay token above).
-        shared: true,
-      },
-    },
-  };
-  const path = join(home, "mcp.json");
-  // `home` is a real, private managed directory as checked above. Unlinking does not follow a
-  // planted symlink; O_EXCL|O_NOFOLLOW closes the replacement race before the private MCP bearer
-  // lands on disk. A seat whose private config cannot be safely written cannot start.
-  rmSync(path, { force: true });
-  let fd: number;
-  try {
-    fd = openSync(path, "wx", 0o600);
-  } catch (error) {
-    throw new Error(`refusing to write Jcode MCP config at ${path}: ${(error as Error).message}`);
-  }
-  try {
-    writeFileSync(fd, JSON.stringify(mcp));
-  } finally {
-    closeSync(fd);
-  }
-  if (process.platform !== "win32") hardenPrivate(path, "file");
-}
-
-/**
- * Where this launch keeps its tool relay socket.
- *
- * The socket used to sit at the top level of the shared temp directory. Anything that empties that
- * directory — a distribution's periodic cleaner, or a self-test whose recursive cleanup escaped its
- * own root — unlinked the control path of every live seat at once. The host kept listening on the
- * now-nameless inode, so every `cotal_*` call failed with `connect ENOENT` and the only recovery was
- * a respawn, which discards the session's context (#1625). One private per-launch directory keeps
- * the socket out of a top-level sweep, and `startRelay` re-binds the path if it disappears anyway.
- */
-function relayEndpoint(space: string, name: string): RelayEndpoint {
-  const token = randomBytes(32).toString("base64url");
-  const id = createHash("sha256").update(`${space}\0${name}\0${process.pid}\0${token}`).digest("base64url").slice(0, 32);
-  if (process.platform === "win32") return { dir: "", path: `\\\\.\\pipe\\cotal-jcode-${id}`, token };
-  // `/tmp` rather than `tmpdir()`, as the SDK alias directory does: this path is AF_UNIX and an
-  // overridden TMPDIR can push it past sun_path.
-  const dir = join("/tmp", `cotal-jcode-${id}`);
-  return { dir, path: join(dir, "relay.sock"), token };
-}
-
-function ensureRelayDirectory(endpoint: RelayEndpoint): void {
-  if (process.platform === "win32") return;
-  mkdirSync(endpoint.dir, { recursive: true, mode: 0o700 });
-  hardenPrivate(endpoint.dir, "dir");
-}
-
-function instructions(config: AgentConfig, persona: string | undefined): string {
-  const mesh = briefing(config, "jcode");
-  return persona ? `${persona}\n\n${mesh}` : mesh;
-}
-
-function constantTokenMatches(presented: unknown, expected: string): boolean {
-  if (typeof presented !== "string") return false;
-  const actual = Buffer.from(presented);
-  const wanted = Buffer.from(expected);
-  return actual.length === wanted.length && timingSafeEqual(actual, wanted);
-}
-
-async function startRelay(agent: MeshAgent, config: AgentConfig, endpoint: RelayEndpoint): Promise<Server> {
-  const specs = new Map(cotalToolSpecs(config, "jcode").map((spec) => [spec.name, spec]));
-  ensureRelayDirectory(endpoint);
-  if (process.platform !== "win32" && existsSync(endpoint.path)) rmSync(endpoint.path, { force: true });
-  const server = createServer((socket) => {
-    let input = "";
-    let handled = false;
-    const deadline = setTimeout(() => socket.destroy(), 5_000);
-    deadline.unref?.();
-    socket.setEncoding("utf8");
-    socket.on("close", () => clearTimeout(deadline));
-    socket.on("data", (chunk: string) => {
-      if (handled) return;
-      input += chunk;
-      if (input.length > MAX_RELAY_BYTES) return socket.destroy();
-      const newline = input.indexOf("\n");
-      if (newline < 0) return;
-      handled = true;
-      clearTimeout(deadline);
-      void (async () => {
-        try {
-          const frame = JSON.parse(input.slice(0, newline)) as { token?: unknown; name?: unknown; args?: unknown };
-          if (!constantTokenMatches(frame.token, endpoint.token)) return socket.destroy();
-          if (typeof frame.name !== "string" || !specs.has(frame.name)) throw new Error("unknown cotal tool");
-          const spec = specs.get(frame.name)!;
-          const args = parseToolArgs(spec, frame.args);
-          // The Jcode host owns automatic inbox delivery, so this bridge pulls only its buffered
-          // ambient queue. Unlike the other host-owned variants, Jcode still exposes the shared
-          // `peek` control and must carry it through to the spec rather than replacing it.
-          const result: ToolResult = await spec.run(
-            agent,
-            config,
-            spec.name === "cotal_inbox" ? { ...args, scope: "pull-only" } : args,
-          );
-          socket.end(JSON.stringify({ result }) + "\n");
-        } catch (error) {
-          socket.end(JSON.stringify({ error: (error as Error).message }) + "\n");
-        }
-      })();
-    });
-    socket.on("error", () => {});
-  });
-  const listen = (): Promise<void> =>
-    new Promise<void>((resolvePromise, reject) => {
-      server.once("error", reject);
-      server.listen(endpoint.path, () => {
-        server.removeListener("error", reject);
-        resolvePromise();
-      });
-    });
-  await listen();
-  if (process.platform !== "win32") {
-    // A listener whose path was unlinked serves nobody: the bridge connects by name and gets
-    // ENOENT. Re-bind it so a deleted socket costs one poll interval instead of a respawn (#1625).
-    // `server.listening` is false once shutdown closes the server for good, which retires this.
-    let rebinding = false;
-    const watch = setInterval(() => {
-      if (rebinding || !server.listening || existsSync(endpoint.path)) return;
-      rebinding = true;
-      void (async () => {
-        try {
-          ensureRelayDirectory(endpoint);
-          await closeServer(server);
-          await listen();
-          writeJcodeDiagnostic(`[cotal-jcode] the tool relay socket was deleted; re-bound it at the same path\n`);
-        } catch (error) {
-          writeJcodeDiagnostic(`[cotal-jcode] the tool relay socket was deleted and could not be re-bound: ${(error as Error).message}\n`);
-        } finally {
-          rebinding = false;
-        }
-      })();
-    }, RELAY_REBIND_POLL_MS);
-    watch.unref?.();
-  }
-  return server;
-}
-
-function closeServer(server: Server | undefined): Promise<void> {
-  return new Promise((resolve) => server?.close(() => resolve()) ?? resolve());
-}
-
-/** Close the relay and take its private directory with it, so a retired launch leaves nothing. */
-async function retireRelay(server: Server | undefined, endpoint: RelayEndpoint): Promise<void> {
-  await closeServer(server);
-  if (process.platform !== "win32") rmSync(endpoint.dir, { recursive: true, force: true });
-}
-
-function noCotalEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_")) env[key] = value;
-  return env;
-}
+import {
+  TUI_STOP_GRACE_MS,
+  RUN_ACCEPT_WINDOW_MS,
+  readinessTurnTimeoutMs,
+  requestTimeoutOverrideMs,
+  jcodeTurnCondition,
+  privateAgentHome,
+  assertNoProjectMcpConfig,
+  writeMcpConfig,
+  relayEndpoint,
+  instructions,
+  startRelay,
+  retireRelay,
+  SEAT_ATTRIBUTION_ENV,
+  noCotalEnv,
+  BRIDGE_RECOVERY_WINDOW_MS,
+  permanentBridgeRecoveryFailure,
+  isJcodeBusyRefusal,
+} from "./host-support.js";
+export {
+  BRIDGE_RECOVERY_WINDOW_MS,
+  PERMANENT_BRIDGE_RECOVERY_CODES,
+  PERMANENT_BRIDGE_CONNECT_CAUSE_CODES,
+  permanentBridgeRecoveryFailure,
+  isJcodeBusyRefusal,
+} from "./host-support.js";
 
 export async function runJcodeHost(): Promise<void> {
   const config = configFromEnv();
@@ -472,9 +166,14 @@ export async function runJcodeHost(): Promise<void> {
   const relay = relayEndpoint(config.space, config.name);
 
   // The endpoint is the sole reader of Cotal material. Once it has parsed config/control, neither
-  // Jcode itself nor the MCP child can inherit the material pointer or its broker credential.
+  // Jcode itself nor the MCP child can inherit the material pointer or its broker credential; only
+  // the non-secret seat attribution variables (`cotal stop --self`) are carried into Jcode.
   scrubLaunchMaterial();
-  for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+  const seatEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && SEAT_ATTRIBUTION_ENV.has(key)) seatEnv[key] = value;
+    if (key.startsWith("COTAL_")) delete process.env[key];
+  }
 
   // The card is built from the process environment. That environment no longer has COTAL_EVENTS,
   // so the decision read above is what the card reports.
@@ -878,6 +577,7 @@ export async function runJcodeHost(): Promise<void> {
       // seat's version is the operator's choice at spawn time; it must not change under a running
       // agent.
       env: {
+        ...seatEnv,
         JCODE_DISABLE_CLAUDE_MCP: "1",
         JCODE_NO_AUTO_UPDATE: "1",
         [launchBound.key]: launchBound.value,
@@ -900,23 +600,49 @@ export async function runJcodeHost(): Promise<void> {
     return connectSteerClient(instance.socketPath, perRequestMs);
   };
 
+  const onTuiExit = (code: number | null): void => void shutdown(code ?? 0);
   const launchTui = (): void => {
     const runtime = join(socketHome.jcodeHome, "run");
     tui = spawn(binary, ["--socket", join(runtime, "jcode.sock"), "--resume", sessionId!], {
       cwd,
-      env: { ...noCotalEnv(), JCODE_HOME: socketHome.jcodeHome, JCODE_RUNTIME_DIR: runtime, JCODE_SOCKET: join(runtime, "jcode.sock") },
+      // From Jcode 1.0 a TUI starts a detached desktop companion that opens URLs and terminals and
+      // listens for global push-to-talk. It outlives the seat, and a managed seat has no use for it.
+      env: {
+        ...noCotalEnv(),
+        ...seatEnv,
+        JCODE_HOME: socketHome.jcodeHome,
+        JCODE_RUNTIME_DIR: runtime,
+        JCODE_SOCKET: join(runtime, "jcode.sock"),
+        JCODE_COMPANION_AUTOSTART: "0",
+      },
       stdio: "inherit",
     });
-    tui.once("exit", (code) => void shutdown(code ?? 0));
+    tui.once("exit", onTuiExit);
+  };
+
+  /** Stop the TUI and wait for it to exit. It goes before the private tree: from Jcode 0.99.1 a TUI
+   *  that loses its server starts a new one on the seat's socket, which outlives the seat and makes
+   *  the next launch of the same name fail until Jcode's idle timeout ends it (#7950). */
+  const stopTui = async (): Promise<void> => {
+    const viewer = tui;
+    if (!viewer || viewer.exitCode !== null || viewer.signalCode !== null) return;
+    viewer.off("exit", onTuiExit);
+    const exited = new Promise<boolean>((resolve) => viewer.once("exit", () => resolve(true)));
+    const grace = (): Promise<boolean> => new Promise((resolve) => setTimeout(() => resolve(false), TUI_STOP_GRACE_MS).unref());
+    viewer.kill("SIGTERM");
+    if (await Promise.race([exited, grace()])) return;
+    viewer.kill("SIGKILL");
+    await Promise.race([exited, grace()]);
   };
 
   const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> => {
     if (stopping) return;
     stopping = true;
-    // The private tree goes first for every seat. A runtime stop SIGTERMs the seat and SIGKILLs it
-    // after a short grace, and the event drain or the broker close can use that whole grace. What
-    // this misses, its manager's retireAfterExit finds.
+    // The private tree goes first for every seat, right after the TUI that would restart it. A
+    // runtime stop SIGTERMs the seat and SIGKILLs it after a short grace, and the event drain or the
+    // broker close can use that whole grace. What this misses, its manager's retireAfterExit finds.
     let exit = code;
+    await stopTui();
     try {
       await stopPrivateJcode({ skipClientClose: true });
     } catch (error) {
@@ -931,11 +657,6 @@ export async function runJcodeHost(): Promise<void> {
     if (fallbackTimer !== undefined) {
       clearTimeout(fallbackTimer);
       fallbackTimer = undefined;
-    }
-    try {
-      tui?.kill("SIGTERM");
-    } catch {
-      /* already gone */
     }
     await retireRelay(relayServer, relay);
     try {
@@ -2138,15 +1859,19 @@ export async function runJcodeHost(): Promise<void> {
     // seat that already called the tool and then kept working (#1440).
     const readinessPrompt = "Call the cotal_orientation tool exactly once now. Do not perform any other work and do not write a response.";
     type ToolCall = Awaited<ReturnType<JcodeClient["run"]>>["toolCalls"][number];
-    // Jcode's deferred MCP surface reaches orientation through `mcp_call`, whose tool_done names
-    // only the wrapper. Its arguments are the call's streamed input, which the Harness API sends
-    // with no call id between that call's tool_start and tool_exec.
+    // Jcode's deferred MCP surface reaches orientation through a wrapper whose tool_done names only
+    // the wrapper: `mcp_call` up to Jcode 0.99.0, and `mcp` with action "call" from 0.99.1, where
+    // `mcp_call` no longer exists. Its arguments are the call's streamed input, which the Harness
+    // API sends with no call id between that call's tool_start and tool_exec.
     const deferredOrientationCalls = new Set<string>();
     let streamingCall: { callId: string; input: string } | undefined;
-    const isDeferredOrientation = (input: string): boolean => {
+    const isDeferredWrapper = (name: string): boolean => name === "mcp_call" || name === "mcp";
+    const isDeferredOrientation = (wrapper: string, input: string): boolean => {
       try {
         const args: unknown = JSON.parse(input);
-        return typeof args === "object" && args !== null && "server" in args && args.server === "cotal" && "tool" in args && args.tool === "cotal_orientation";
+        return typeof args === "object" && args !== null &&
+          (wrapper === "mcp_call" || ("action" in args && args.action === "call")) &&
+          "server" in args && args.server === "cotal" && "tool" in args && args.tool === "cotal_orientation";
       } catch {
         return false;
       }
@@ -2155,7 +1880,7 @@ export async function runJcodeHost(): Promise<void> {
     const isOrientationCall = (call: ToolCall) =>
       call.error === undefined &&
       !call.output.startsWith("Error: ") &&
-      (/(?:^|__)cotal_orientation$/.test(call.name) || (call.name === "mcp_call" && deferredOrientationCalls.has(call.callId)));
+      (/(?:^|__)cotal_orientation$/.test(call.name) || (isDeferredWrapper(call.name) && deferredOrientationCalls.has(call.callId)));
     const hasOrientation = (run: Awaited<ReturnType<JcodeClient["run"]>>) => run.toolCalls.some(isOrientationCall);
     writeJcodeDiagnostic(
       `[cotal-jcode] pre-join readiness: waiting for one cotal_orientation call (bound ${readinessBudgetMs}ms; not on the roster yet)\n`,
@@ -2180,7 +1905,7 @@ export async function runJcodeHost(): Promise<void> {
       }
       if (event.ev === "tool_input_delta" && streamingCall) streamingCall.input += event.delta;
       if (event.ev === "tool_exec") {
-        if (event.name === "mcp_call" && streamingCall?.callId === event.call_id && isDeferredOrientation(streamingCall.input))
+        if (isDeferredWrapper(event.name) && streamingCall?.callId === event.call_id && isDeferredOrientation(event.name, streamingCall.input))
           deferredOrientationCalls.add(event.call_id);
         streamingCall = undefined;
       }
@@ -2342,7 +2067,9 @@ export async function runJcodeHost(): Promise<void> {
     startControl?.close();
     await retireRelay(relayServer, relay);
     // The refusal is only safe once the launch it abandons is provably dead: returning non-zero
-    // hands the manager a retired seat while an unverified daemon would keep running (#839).
+    // hands the manager a retired seat while an unverified daemon would keep running (#839). The
+    // TUI started before readiness goes first, so it cannot start a replacement server (#7950).
+    await stopTui();
     try {
       await stopPrivateJcode({ skipClientClose: error instanceof JcodeConnectorError && error.code === "readiness_timeout" });
       removeCredentials();

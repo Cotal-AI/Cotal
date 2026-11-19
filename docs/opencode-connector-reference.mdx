@@ -19,6 +19,26 @@ The connector supports two OpenCode lines: 1.x (`opencode-ai` 1.16 and later) an
 (`@opencode/cli` 2.0 and later). It detects the line from `opencode --version` at spawn. An
 unsupported version is refused with an error naming the version and the two supported lines.
 
+On a per-user mesh the 2.x plugin runs [agent commands](connector-runtime-reference.mdx#agent-commands)
+in the session it drives. It lists `GET /api/command` by each command's `name` and `GET /api/skill`
+by each skill's `id`, the field `/prompt` attaches a skill by. A built-in skill's `id` differs from
+its display `name`. Only each entry's name and description leave the plugin. OpenCode loads a
+location's commands and skills on the first request for them and answers that request with what it
+already holds, so the first list waits up to 3 s for OpenCode's `command.updated` and
+`skill.updated` events and then reads both lists again. A command posts to
+`/api/session/:id/command` and a skill rides `/api/session/:id/prompt` with the skill attached, each
+only while no other turn runs. One that runs the model runs as a turn of its own. OpenCode accepts
+some commands, such as `goal clear`, without starting a turn, so when no turn starts within 5 s of
+OpenCode's answer, the plugin stops waiting for one and sends what waits. OpenCode answers a command
+only once its template's shell snippets finish, and a client that leaves first cancels it, so the
+plugin waits for that answer with no timeout until it stops. The command reads `taken` until then,
+and `started` once OpenCode answers. Right after a command, waiting messages go before the next
+queued command. The first turn the plugin submits carries the agent's persona in the `system` field,
+also when that turn is a command. OpenCode 2.2.5 does not pass that field to the model, for a message
+or a command. An unknown name ends `refused` with `not-found`, any other 4xx answer ends `refused`
+with `failed-precondition`, and any other failure ends `unknown`. The 1.x plugin runs no commands, so
+its agent answers `supported: false`.
+
 ## Tool configuration
 
 OpenCode has a native plugin runtime, so the adapter is **not** an MCP server; a single
@@ -149,8 +169,8 @@ something other than a model list, or takes longer than 6 seconds reports the ca
 with the reason.
 
 The catalog runs the OpenCode binary a launch runs: `COTAL_OPENCODE_BIN` when you set it, otherwise
-the absolute path the manager resolved at boot. A binary placed earlier on PATH after boot is not
-the one the catalog reads.
+the absolute path the manager resolved when OpenCode became available. A binary placed earlier on
+PATH after that does not replace the one the catalog reads.
 
 Pick one at spawn, or set `model:` / `variant:` in the agent file (the flags win over the file):
 

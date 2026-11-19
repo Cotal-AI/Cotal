@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, statfsSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isMainEntry } from './main-entry.mjs';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -160,7 +161,7 @@ export async function sameInstallReconcileCell({ root, candidate, nextCandidate,
   assert.deepEqual(report.finalNative, [], 'owned fixture processes must exit');
   return report;
 }
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMainEntry(import.meta.url)) {
   const [root, candidate, nextCandidate] = process.argv.slice(2); assert(root, 'usage: automatic-update-same-install-reconcile.mjs <private-root> [candidate-pack] [next-candidate-pack]');
   console.log(JSON.stringify(await sameInstallReconcileCell({ root, candidate, nextCandidate, seedSkip: process.env.RECONCILE_SEED_SKIP === '1', expected: candidate ? 'green' : 'red' })));
 }

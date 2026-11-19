@@ -122,6 +122,22 @@ const QUESTION = "Which one?";
   check("a script's human output refuses without asking", human.status === 2 && !human.stdout.includes(QUESTION) && !human.stderr.includes(QUESTION) && /multiple meshes running/.test(human.stderr), shown(human));
 }
 
+// Equivalent URLs keep identity and unchecked registrations keep their caveat.
+{
+  for (const server of [`${A}/`, A.replace("nats:", "NATS:")]) {
+    for (const flags of [[], ["--space", "alpha"]]) {
+      const identity = run(["whoami", "--server", server, ...flags, "--json"]);
+      check(`equivalent broker ${server} ${flags} keeps open identity`, identity.status === 0 && envelope(identity)?.result?.identity?.kind === "open", shown(identity));
+    }
+  }
+  recordMesh({ space: "shared", server: A, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString(), unchecked: true });
+  const ambiguous = run(["whoami", "--server", A, "--json"]);
+  check("explicit broker ambiguity names recorded spaces and explains removing --server after use", ambiguous.status === 2 && /multiple spaces recorded/.test(envelope(ambiguous)?.error?.message ?? "") && /remove --server/.test(envelope(ambiguous)?.error?.remedy ?? ""), shown(ambiguous));
+  const unchecked = run(["whoami", "--space", "shared", "--server", `${A}/`, "--json"]);
+  check("equivalent URL does not turn unchecked mode into checked", unchecked.status === 4 && envelope(unchecked)?.result?.modeChecked === false, shown(unchecked));
+  removeMesh("shared");
+}
+
 // ── A terminal chooses, for this run only ───────────────────────────────────────────────────────────
 {
   const t = terminal(["who"]);
@@ -166,6 +182,11 @@ const QUESTION = "Which one?";
   }
   const explicitNote = run(["who"], join(home, "beta"));
   check("explicit selection explains its target under Mesh once", /Mesh: alpha/.test(explicitNote.stdout + explicitNote.stderr) && /selected space applies here/.test(explicitNote.stdout + explicitNote.stderr), shown(explicitNote));
+  const explicitShow = run(["space", "show", "--plain"], join(home, "beta"));
+  check("space show still inspects the running folder and explains how to target it instead of the explicit selection",
+    explicitShow.status === 0 && /^Mesh: beta$/m.test(explicitShow.stdout) && /^ +broker: +reachable$/m.test(explicitShow.stdout) &&
+      explicitShow.stdout.includes('the selected space "alpha" applies here to commands such as `cotal who`') &&
+      explicitShow.stdout.includes('--space beta or `cotal use --clear`') && !explicitShow.stdout.includes("applies outside"), shown(explicitShow));
   const explicitWrite = run(["history", "clear", "--dry-run", "--json"], join(home, "beta"));
   check("a write preview names the explicit selected space, not the folder", envelope(explicitWrite)?.target?.space === "alpha", shown(explicitWrite));
   const selectedSpawnTerminal = terminal(["spawn", "--dry-run"]);
@@ -268,7 +289,7 @@ const QUESTION = "Which one?";
   const entry = run([], delta), entryHelp = run(["help"], delta), entryAway = run([]);
   check("in that folder bare cotal and help lead with the selection, name what the folder holds, and offer its up",
     [entry, entryHelp].every((r) => r.status === 0 && /^alpha · /m.test(r.stdout) && r.stdout.includes(`this folder holds the prepared space "delta"`) &&
-      /^Start here\n {2}cotal up +Start this folder's space$/m.test(r.stdout) && !/^delta · /m.test(r.stdout)),
+      /^Start here\n {2}(?:pnpm )?cotal up +Start this folder's space$/m.test(r.stdout) && !/^delta · /m.test(r.stdout)),
     [entry, entryHelp].map(shown));
   check("control: away from any project bare cotal leads with the selection, with no note",
     entryAway.status === 0 && entryAway.stdout.startsWith("alpha · ") && !entryAway.stdout.includes("this folder's space"), shown(entryAway));
@@ -296,7 +317,7 @@ const QUESTION = "Which one?";
   // zeta's root holds no broker pidfile, as the retained launcher's `down` leaves it, so its own
   // records show the stack stopped and the entry screen names the selection, as a prepared folder's does.
   const leadsWithSelection = (r: ReturnType<typeof run>) => r.status === 0 && /^alpha · /m.test(r.stdout) && r.stdout.includes(`this folder holds the stopped space "zeta"`) &&
-    /^Start here\n {2}cotal up +Start this folder's space$/m.test(r.stdout) && !/^zeta · /m.test(r.stdout);
+    /^Start here\n {2}(?:pnpm )?cotal up +Start this folder's space$/m.test(r.stdout) && !/^zeta · /m.test(r.stdout);
   const appliesWhileItRuns = (r: ReturnType<typeof run>) => r.status === 0 && /^zeta · /m.test(r.stdout) &&
     r.stdout.includes(`this folder's space while it runs; the selected space "alpha" applies outside it and while it is stopped`);
   check("bare cotal there, whose records hold no broker pidfile, leads with the selection, names the stopped space and offers its up",
@@ -312,7 +333,7 @@ const QUESTION = "Which one?";
   const refusedPs = run(["ps"], zetaRoot), refusedPsJson = run(["ps", "--json"], zetaRoot), refusedSend = run(["send", "-c", "general", "hi"], zetaRoot);
   setAdoptedCurrent("alpha");
   removePreparedSpace("eta");
-  const startsEta = (r: ReturnType<typeof run>) => r.status === 0 && /^eta · prepared · /m.test(r.stdout) && r.stdout.includes(`\nStart here\n  cotal up --root ${eta}  Start this space\n`) && !r.stdout.includes("cotal spawn");
+  const startsEta = (r: ReturnType<typeof run>) => r.status === 0 && /^eta · prepared · /m.test(r.stdout) && /\nStart here\n {2}(?:pnpm )?cotal up --root /.test(r.stdout) && r.stdout.includes(`--root ${eta}  Start this space\n`) && !r.stdout.includes("cotal spawn");
   check("with a prepared selection, bare cotal there names the selection's up as this space's start and offers no spawn, as away from any project",
     startsEta(entryPrepared) && entryPrepared.stdout.includes(`this folder holds the stopped space "zeta"`) && startsEta(entryPreparedAway), { here: shown(entryPrepared), away: shown(entryPreparedAway) });
   const wholeNote = (r: ReturnType<typeof run>) => r.status === 2 && new RegExp(`^Mesh: eta\n {2}${STOPPED}$`, "m").test(r.stdout + r.stderr) && (r.stdout + r.stderr).includes(`\nNext\n  start it with \`cotal up\` in ${eta}`);
@@ -336,11 +357,11 @@ const QUESTION = "Which one?";
   rmSync(join(zetaRoot, ".cotal", "stack-controller.json"));
   check("bare cotal ignores the old tiny cap in its folder note, command heading and start row",
     entryCapped.status === 0 && /^alpha · /m.test(entryCapped.stdout) && entryCapped.stdout.includes(`\n${CAPPED}\n`) &&
-      /^Start here\n {2}cotal up +Start this folder's space\n {2}cotal spawn /m.test(entryCapped.stdout) &&
+      /^Start here\n {2}(?:pnpm )?cotal up +Start this folder's space\n {2}(?:pnpm )?cotal spawn /m.test(entryCapped.stdout) &&
       new RegExp(`^Mesh: alpha\n {2}${CAPPED}$`, "m").test(headingCapped.stdout + headingCapped.stderr), { entry: shown(entryCapped), heading: shown(headingCapped) });
   check("with a selection whose stopped stack recorded that cap, bare cotal still names bare up in both folders",
-    entryEtaHere.status === 0 && /^eta · prepared here · /m.test(entryEtaHere.stdout) && /^Start here\n {2}cotal up +Start this space$/m.test(entryEtaHere.stdout) &&
-      entryEtaThere.stdout.includes(`\nStart here\n  cotal up --root ${eta}  Start this space\n`) && entryEtaThere.stdout.includes(`\n${CAPPED}\n`),
+    entryEtaHere.status === 0 && /^eta · prepared here · /m.test(entryEtaHere.stdout) && /^Start here\n {2}(?:pnpm )?cotal up +Start this space$/m.test(entryEtaHere.stdout) &&
+      startsEta(entryEtaThere) && entryEtaThere.stdout.includes(`\n${CAPPED}\n`),
     { here: shown(entryEtaHere), there: shown(entryEtaThere) });
   // A pidfile naming a live process does not show it stopped, and help reads no broker, so it says when
   // the folder's space applies; one naming a process that is gone does.

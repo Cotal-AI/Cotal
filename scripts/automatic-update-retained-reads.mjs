@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isMainEntry } from './main-entry.mjs';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
 
@@ -136,6 +136,6 @@ export async function automaticUpdateRetainedReads(A, B, C, newPrivateRoot, mode
   }
   return report;
 }
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMainEntry(import.meta.url)) {
   automaticUpdateRetainedReads(...process.argv.slice(2)).then(report => { console.log(JSON.stringify(report)); process.exitCode = report.passed ? 0 : 1; }).catch(error => { console.error(error); process.exitCode = 1; });
 }

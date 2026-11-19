@@ -164,10 +164,12 @@ The complete reply, responder-state, grant, reply-target validation, and rebindi
 
 `servePrincipal({ handlers })` serves this process's `agent` endpoint on the principal route: the
 core-defined command set about this process, whose cluster and compiled contracts are
-`AGENT_CLUSTER` and `AGENT_CONTRACTS`. It takes no endpoint or cluster, and refuses either. It throws
-on an open mesh, under a static credential, without a lifecycle UID, for handlers that are not the
-cluster's commands with those contracts, and when another endpoint in the process already serves
-`agent` for the lifecycle.
+`AGENT_CLUSTER` and `AGENT_CONTRACTS`. The cluster is at revision 2: `prompts`, `prompt` and
+`prompt-answer` admit the `owner` and `grant` words, and `commands`, `command`, `command-cancel` and
+`command-state` admit `owner` only.
+It takes no endpoint or cluster, and refuses either. It throws on an open mesh, under a static
+credential, without a lifecycle UID, for handlers that are not the cluster's commands with those
+contracts, and when another endpoint in the process already serves `agent` for the lifecycle.
 The returned `ready` resolves only after the broker accepted the subscription. It rejects when the
 credential holds no serve row, which a credential minted before this release does not. The serve
 subscribes again after every reconnect, and a refusal there resolves `failed` and is reported on

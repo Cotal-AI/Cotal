@@ -338,7 +338,20 @@ const CONSUMER_KEYS = new Set([
 /** Validate one recognized Cotal pull durable. Limits-retention consumers accept the checkpoint
  * migration shape; TASK remains canonical WorkQueue DeliverAll. */
 export function validatePersistentConsumer(space: string, stream: string, info: ConsumerInfo): void {
-  const expected = expectedConsumerConfig(space, stream, info.name);
+  validatePullConsumerReadConfig(stream, info, expectedConsumerConfig(space, stream, info.name), {
+    allowStartSequence: stream !== taskStream(space), allowImplicitAll: stream === taskStream(space),
+  });
+}
+
+/** Validate an observed pull durable against its stock family builder. The supplied configuration
+ * is a comparison target, never permission to create or adopt a consumer. */
+export function validatePullConsumerReadConfig(
+  stream: string,
+  info: ConsumerInfo,
+  expected: Partial<ConsumerConfig>,
+  options: { allowStartSequence?: boolean; allowImplicitAll?: boolean } = {},
+): void {
+  if (expected.durable_name !== info.name) throw new Error(`${stream}/${info.name} is not the expected durable`);
   const config = info.config as ConsumerConfig & Record<string, unknown>;
   const unknown = Object.keys(config).filter((key) => !CONSUMER_KEYS.has(key));
   if (unknown.length) throw new Error(`${stream}/${info.name} has unsupported consumer fields: ${unknown.sort().join(", ")}`);
@@ -350,9 +363,8 @@ export function validatePersistentConsumer(space: string, stream: string, info: 
   if (config.ack_policy !== AckPolicy.Explicit || config.ack_wait !== expected.ack_wait)
     throw new Error(`${stream}/${info.name} has noncanonical ACK settings`);
 
-  const task = stream === taskStream(space);
-  const migrated = !task && config.deliver_policy === DeliverPolicy.StartSequence;
-  const implicitTaskAll = task && config.deliver_policy === undefined;
+  const migrated = options.allowStartSequence === true && config.deliver_policy === DeliverPolicy.StartSequence;
+  const implicitTaskAll = options.allowImplicitAll === true && expected.deliver_policy === DeliverPolicy.All && config.deliver_policy === undefined;
   if (config.deliver_policy !== expected.deliver_policy && !migrated && !implicitTaskAll)
     throw new Error(`${stream}/${info.name} has a noncanonical delivery policy`);
   if (migrated) {

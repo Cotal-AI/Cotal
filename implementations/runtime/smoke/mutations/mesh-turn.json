@@ -27,7 +27,7 @@
   "mutations": [
     {
       "name": "the scope's handoff memo never rides the submission",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      const memo = this.handoffMemos.get(scope);\n      this.handoffMemos.delete(scope);\n      const handoffFrom = memo !== undefined && memo !== \"ambiguous\" && memo.to === name ? memo.fromGoalId : undefined;",
       "replace": "      const memo = this.handoffMemos.get(scope);\n      this.handoffMemos.delete(scope);\n      void memo;\n      const handoffFrom = undefined as string | undefined;",
       "expectRed": "the honoring submission carries the goal-chain link: handoffFrom is the previous turn's goalId",
@@ -36,7 +36,7 @@
     },
     {
       "name": "the memo spend is dropped, so honoring stops being immediate-only",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      const memo = this.handoffMemos.get(scope);\n      this.handoffMemos.delete(scope);",
       "replace": "      const memo = this.handoffMemos.get(scope);",
       "expectRed": "a handoff not honored by the NEXT turn in the scope links nothing",
@@ -45,7 +45,7 @@
     },
     {
       "name": "the L4005 roster validation of a handoff addressee is dropped",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      if (refusal === \"L4005\")\n        throw new EffectError(\"L4005\", \"turn-handoff\", `turn(${name}#${uid}) yielded a handoff to \"${toName}\", which is not in this run's roster`);",
       "replace": "      if (false)\n        throw new EffectError(\"L4005\", \"turn-handoff\", `turn(${name}#${uid}) yielded a handoff to \"${toName}\", which is not in this run's roster`);",
       "expectRed": "the yield is refused as the effect's own L4005",
@@ -54,7 +54,7 @@
     },
     {
       "name": "the L4004 cross-worktree validation of a handoff addressee is dropped",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      if (refusal === \"L4004\")",
       "replace": "      if (false)",
       "expectRed": "the yield is refused as the effect's own L4004",
@@ -63,7 +63,7 @@
     },
     {
       "name": "the carried notices are never marked consumed",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "        await markRunNoticeConsumed(this.kv, this.binding.endpoint, this.binding.runId, req.agent.agent, noticeId, String(ext.goalId), this.now());",
       "replace": "        void noticeId;",
       "expectRed": "the notice is consumed BY this goal after the yield",
@@ -72,7 +72,7 @@
     },
     {
       "name": "the presence watch is dropped: a dead seat is never observed by the run",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-seat-watch.ts",
       "find": "    if (!rows.some((p) => p.card.name === name && p.lifecycleUid === uid)) {",
       "replace": "    if (false) {",
       "expectRed": "the client observes the death itself and throws L4002, naming the reason",
@@ -81,7 +81,7 @@
     },
     {
       "name": "the deny's turn-deadline reason stops mapping to L4003",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      if (d?.reason === \"turn-deadline\") {\n        if (typeof d.agentDownAt === \"number\")",
       "replace": "      if (false) {\n        if (typeof d.agentDownAt === \"number\")",
       "expectRed": "the deny's turn-deadline reason maps to L4003",
@@ -126,7 +126,7 @@
     },
     {
       "name": "the turn external is never bound",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      ext = {\n        goalId, name, owner, actor, uid, deadlineAt,\n        noticeIds: notices.map((n) => n.noticeId),\n        ...(handoffFrom !== undefined ? { handoffFrom } : {}),\n      };\n      await ctx.bind(ext);",
       "replace": "      ext = {\n        goalId, name, owner, actor, uid, deadlineAt,\n        noticeIds: notices.map((n) => n.noticeId),\n        ...(handoffFrom !== undefined ? { handoffFrom } : {}),\n      };",
       "expectRed": "the acceptance floor and deadline are bound as the entry's external state before the wait",
@@ -135,7 +135,7 @@
     },
     {
       "name": "a marked seat death on the deadline deny is read as the deadline",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "        if (typeof d.agentDownAt === \"number\")\n          throw new EffectError(\"L4002\", \"turn\",",
       "replace": "        if (false)\n          throw new EffectError(\"L4002\", \"turn\",",
       "expectRed": "a deny marked agentDownAt is the agent-down L4002, never the deadline",
@@ -144,7 +144,7 @@
     },
     {
       "name": "the client arms a second clock instead of the acceptance's deadline",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      const deadlineAt = floor.deadlineAt;",
       "replace": "      const deadlineAt = this.now() + deadlineMs;",
       "expectRed": "the bound deadline is the acceptance's own instant (the manager's hold), not a second clock read before the round-trip",
@@ -153,7 +153,7 @@
     },
     {
       "name": "the turns permit is never checked",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      if (entry.permits?.turns !== undefined && taken >= entry.permits.turns)\n        throw new EffectError(\"L4001\", \"permit-turns\",",
       "replace": "      if (false)\n        throw new EffectError(\"L4001\", \"permit-turns\",",
       "expectRed": "the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint",
@@ -162,7 +162,7 @@
     },
     {
       "name": "a turn never spends the turns budget",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      this.turnsTaken.set(`${name}#${uid}`, taken + 1);\n",
       "replace": "",
       "expectRed": "the second is the catchable L4001 (kind permit-turns), naming the budget, and reaches no endpoint",
@@ -180,7 +180,7 @@
     },
     {
       "name": "the wall-clock permit admits a deadline past it",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "        if (deadlineMs > remaining)\n          throw new EffectError(\"L4001\", \"permit-wall-clock\",",
       "replace": "        if (false)\n          throw new EffectError(\"L4001\", \"permit-wall-clock\",",
       "expectRed": "a deadline past the remaining wall clock is L4001 (kind permit-wall-clock), naming both, and reaches no endpoint",
@@ -207,7 +207,7 @@
     },
     {
       "name": "a refused turn still spends the agent's permit",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      const payload = JSON.stringify({ run: this.binding.runId, step, context, noticeIds: notices.map((n) => n.noticeId) });",
       "replace": "      this.turnsTaken.set(`${name}#${uid}`, taken + 1);\n      const payload = JSON.stringify({ run: this.binding.runId, step, context, noticeIds: notices.map((n) => n.noticeId) });",
       "expectRed": "the agent's one permitted turn is still there: a refused turn spent nothing",
@@ -216,7 +216,7 @@
     },
     {
       "name": "the acceptance re-read classes a gone seat as an ordinary refusal",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "        if (err?.code === \"expired\")\n          return new EffectError(\"L4002\", \"turn\", `turn(${name}#${uid}) ${seatDownReading(err, host)} before the relay began: ${err.message}`);",
       "replace": "        if (false)\n          return new EffectError(\"L4002\", \"turn\", `turn(${name}#${uid}) ${seatDownReading(err!, host)} before the relay began: ${err?.message}`);",
       "expectRed": "a seat that died between the submit and the acceptance re-read is the catchable L4002",

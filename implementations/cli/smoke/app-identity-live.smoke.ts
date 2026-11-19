@@ -252,6 +252,8 @@ try {
   check("  it is issued as a terminal seat under its own lifecycle",
     refA.owner === DEV_OWNER && refA.actor === heldA.id && refA.uid === heldA.lifecycleUid &&
     issuedA.evidence?.sources.length === 1 && issuedA.evidence.sources[0]!.key === `cred.${heldA.lifecycleUid}`, issuedA);
+  check("  its record reserves the name before the host publishes presence",
+    isDeepStrictEqual((await run(["provision"], { space: SPACE, name: "claude_app", session: "before-presence-a" })).reply, { ok: false, taken: true }));
   const epA = await connect(envA, broker.servers, SPACE);
   await wait(1_500);
   check("  and it connects through a renewal source over its file, with no timer overflow", overflow.length === 0, overflow.slice(0, 2));
@@ -340,7 +342,12 @@ try {
   check("an open mesh opens a native conversation's identity", o.code === 0 && o.reply.ok === true && envO.COTAL_SPACE === OPEN, o.out);
   const heldO = record(o.reply.retire.dir);
   check("  with no credential", envO.COTAL_CREDS === undefined && envO.COTAL_ACCEPTED_TOKEN === undefined && readdirSync(heldO.dir).join() === "identity.json");
-  check("  recorded with its session and no seat", heldO.session === "session-o" && heldO.alias === undefined && heldO.id === envO.COTAL_ID);
+  check("  recorded with its session and reserved name", heldO.session === "session-o" && heldO.alias === "claude_open" && heldO.id === envO.COTAL_ID);
+  check("  its name is taken even before presence starts",
+    isDeepStrictEqual((await run(["provision"], { space: OPEN, name: "claude_open", session: "before-presence-o" })).reply, { ok: false, taken: true }));
+  const otherSpace = await run(["provision"], { space: SPACE, name: "claude_open", session: "other-space" });
+  check("  the same name on another space remains available", otherSpace.reply?.ok === true, otherSpace.out);
+  await run(["retire"], { dir: otherSpace.reply.retire.dir });
   check("  and the persona's grant plus its own event channel", isDeepStrictEqual(o.reply.grant,
     { scope: ["spawn", "run"], role: "default", allowSubscribe: ["general", "team.>"], allowPublish: [eventChannel({ owner: DEV_OWNER, actor: heldO.id }), "general"], subscribe: [] }), o.reply.grant);
   const epO = await connect(envO, openServers, OPEN);
@@ -350,6 +357,9 @@ try {
   check("  and its session cannot open a second one", sameO.code === 1 && /already has a live identity on/.test(sameO.reply?.error), sameO.out);
   await epO.stop();
   check("  it retires", (await run(["retire"], { dir: heldO.dir })).code === 0 && !existsSync(heldO.dir));
+  const reopened = await run(["provision"], { space: OPEN, name: "claude_open", session: "reopened-o" });
+  check("  retirement releases its reserved name", reopened.reply?.ok === true, reopened.out);
+  await run(["retire"], { dir: reopened.reply.retire.dir });
 
   // ── a signed-in mesh still refuses a caller with no native session ──────────────────────────
   // A per-user sign-in mesh, recorded the way `cotal meshes add` records one. It is refused before

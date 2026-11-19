@@ -1,12 +1,13 @@
 /**
- * The `agent` endpoint, revision 1 (SPEC 13.22): the fixed command set an agent serves about itself
- * on the principal route (SPEC 13.21). Revision 1 has `prompts`, `prompt` and `prompt-answer`, for
- * the questions an agent's harness stops to ask: a tool permission, a question, a plan, a form.
+ * The `agent` endpoint, revision 2 (SPEC 13.22): the fixed command set an agent serves about itself
+ * on the principal route (SPEC 13.21). `prompts`, `prompt` and `prompt-answer` serve the questions
+ * an agent's harness stops to ask: a tool permission, a question, a plan, a form. `commands` lists
+ * the harness commands and skills the agent runs, `command` queues one, `command-cancel` cancels a
+ * queued one and `command-state` reads how far one got.
  *
  * The contract is a core constant, like the registry's: every agent serves the same cluster, a
  * caller embeds these artifacts and pins their digests, and nothing is published to the contract
- * store. Every schema is closed and frozen. This module declares the wire; it serves nothing and
- * holds no prompt. The prompt desk that does is separate work.
+ * store. Every schema is closed and frozen.
  */
 import { contractDigest } from "./canonical.js";
 import { buildClusterArtifacts, buildClusterDocument, type ClusterDocument } from "./endpoint-cluster.js";
@@ -16,11 +17,15 @@ import type { PrincipalAuthority } from "./endpoint-subjects.js";
 
 export const AGENT_ENDPOINT = "agent";
 export const AGENT_CLUSTER_URN = "ai.cotal.agent";
-export const AGENT_CLUSTER_REVISION = 1;
+export const AGENT_CLUSTER_REVISION = 2;
 
 export const AGENT_CMD_PROMPTS = "prompts";
 export const AGENT_CMD_PROMPT = "prompt";
 export const AGENT_CMD_PROMPT_ANSWER = "prompt-answer";
+export const AGENT_CMD_COMMANDS = "commands";
+export const AGENT_CMD_COMMAND = "command";
+export const AGENT_CMD_COMMAND_CANCEL = "command-cancel";
+export const AGENT_CMD_COMMAND_STATE = "command-state";
 
 /** The canonical `content` of one prompt is at most this many bytes (SPEC 13.22). */
 export const AGENT_PROMPT_CONTENT_MAX_BYTES = 262144;
@@ -29,12 +34,23 @@ export const AGENT_PROMPT_LIST_MAX = 32;
 /** A prompt offers between 1 and this many options. */
 export const AGENT_PROMPT_OPTIONS_MAX = 16;
 
+/** A `commands` reply lists at most this many commands and skills. */
+export const AGENT_COMMAND_LIST_MAX = 512;
+/** A listed description is at most this many characters. */
+export const AGENT_COMMAND_DESCRIPTION_MAX = 1024;
+/** A listed input hint is at most this many characters. */
+export const AGENT_COMMAND_INPUT_HINT_MAX = 256;
+/** The `message` of a command state is at most this many characters. */
+export const AGENT_COMMAND_MESSAGE_MAX = 2048;
+
 /** `details[].kind` on a `conflict`, and on a `failed-precondition` for a closed prompt: `{ state }`. */
 export const AGENT_PROMPT_STATE_DETAIL = "ai.cotal.agent.prompt-state";
 /** `details[].kind` on a `failed-precondition` for a digest that differs: `{ digest }`. */
 export const AGENT_PROMPT_DIGEST_DETAIL = "ai.cotal.agent.prompt-digest";
 /** `details[].kind` on a `resource-exhausted` reply: `{ bytes, limit }`. */
 export const AGENT_PROMPT_SIZE_DETAIL = "ai.cotal.agent.prompt-size";
+/** `details[].kind` on a `command-cancel` `conflict`: `{ state }`. */
+export const AGENT_COMMAND_STATE_DETAIL = "ai.cotal.agent.command-state";
 
 // ---- the prompt (SPEC 13.22) ------------------------------------------------------------------
 
@@ -152,6 +168,63 @@ export interface PromptAnswerInput {
   option: string;
   note?: string;
   values?: Record<string, string | number | boolean | string[]>;
+}
+
+// ---- the commands (SPEC 13.22) ----------------------------------------------------------------
+
+/** A harness command (`/review`) or a harness skill. */
+export type CommandTarget = "command" | "skill";
+
+/** One command or skill an agent runs: `command` with this `target` and `name` runs it. `inputHint`
+ *  says what its `args` take, when the harness says. */
+export interface CommandEntry {
+  name: string;
+  target: CommandTarget;
+  description?: string;
+  inputHint?: string;
+}
+
+/** `supported: false`: the agent's connector runs no commands. `supported: true` with no entries: it
+ *  runs commands and has none. */
+export type CommandsOutput = { supported: false } | { supported: true; commands: CommandEntry[] };
+
+export interface CommandInput {
+  target: CommandTarget;
+  name: string;
+  /** What the command or skill is given. Absent: nothing. */
+  args?: string;
+}
+
+/** `command` queued the command under this id: `[a-z2-7]{26}`, random, never reused. */
+export interface CommandOutput {
+  id: string;
+}
+
+/** What `command-cancel` and `command-state` take. */
+export interface CommandIdInput {
+  id: string;
+}
+
+/** A command only moves forward: `queued`, then `taken` or a final state, and `taken` only to a final
+ *  state. `started` says the harness accepted the command, and its turn may still run. */
+export type CommandState =
+  | { kind: "queued" }
+  | { kind: "taken" }
+  | { kind: "started" }
+  | { kind: "cancelled" }
+  | { kind: "refused"; code: "not-found" | "failed-precondition" | "unavailable"; message: string }
+  | { kind: "unknown"; code: "internal"; message: string };
+
+export interface CommandStateOutput {
+  state: CommandState;
+}
+
+const COMMAND_NAME_PATTERN = "^[^\\s\\p{C}]{1,128}$";
+const COMMAND_NAME_RE = new RegExp(COMMAND_NAME_PATTERN, "u");
+
+/** Whether `command` can name this command or skill (SPEC 13.22). */
+export function isAgentCommandName(name: unknown): name is string {
+  return typeof name === "string" && COMMAND_NAME_RE.test(name);
 }
 
 /** The digest of a prompt's content: `sha256:<hex>` over its RFC 8785 canonical JSON. A reader
@@ -297,19 +370,58 @@ export const AGENT_PROMPT_ANSWER_INPUT_SCHEMA = deepFreeze(closed(["id", "digest
 }));
 export const AGENT_PROMPT_ANSWER_OUTPUT_SCHEMA = deepFreeze(closed(["state"], { state: STATE }));
 
-/** The command rows of revision 1. Every command is untargeted and admits both authority words. */
+const COMMAND_NAME = { type: "string", pattern: COMMAND_NAME_PATTERN };
+const TARGET = { enum: ["command", "skill"] };
+const ENTRY = closed(["name", "target"], {
+  name: COMMAND_NAME, target: TARGET, description: text(AGENT_COMMAND_DESCRIPTION_MAX), inputHint: text(AGENT_COMMAND_INPUT_HINT_MAX),
+});
+
+export const AGENT_COMMANDS_INPUT_SCHEMA = deepFreeze(closed([], {}));
+export const AGENT_COMMANDS_OUTPUT_SCHEMA = deepFreeze({
+  oneOf: [
+    closed(["supported"], { supported: { const: false } }),
+    closed(["supported", "commands"], { supported: { const: true }, commands: { type: "array", maxItems: AGENT_COMMAND_LIST_MAX, items: ENTRY } }),
+  ],
+});
+const COMMAND_ID = { type: "string", pattern: "^[a-z2-7]{26}$" };
+const COMMAND_MESSAGE = { type: "string", maxLength: AGENT_COMMAND_MESSAGE_MAX };
+const COMMAND_STATE = {
+  oneOf: [
+    closed(["kind"], { kind: { const: "queued" } }),
+    closed(["kind"], { kind: { const: "taken" } }),
+    closed(["kind"], { kind: { const: "started" } }),
+    closed(["kind"], { kind: { const: "cancelled" } }),
+    closed(["kind", "code", "message"], { kind: { const: "refused" }, code: { enum: ["not-found", "failed-precondition", "unavailable"] }, message: COMMAND_MESSAGE }),
+    closed(["kind", "code", "message"], { kind: { const: "unknown" }, code: { const: "internal" }, message: COMMAND_MESSAGE }),
+  ],
+};
+
+export const AGENT_COMMAND_INPUT_SCHEMA = deepFreeze(closed(["target", "name"], { target: TARGET, name: COMMAND_NAME, args: anyString }));
+export const AGENT_COMMAND_OUTPUT_SCHEMA = deepFreeze(closed(["id"], { id: COMMAND_ID }));
+export const AGENT_COMMAND_CANCEL_INPUT_SCHEMA = deepFreeze(closed(["id"], { id: COMMAND_ID }));
+export const AGENT_COMMAND_CANCEL_OUTPUT_SCHEMA = deepFreeze(closed(["state"], { state: COMMAND_STATE }));
+export const AGENT_COMMAND_STATE_INPUT_SCHEMA = deepFreeze(closed(["id"], { id: COMMAND_ID }));
+export const AGENT_COMMAND_STATE_OUTPUT_SCHEMA = deepFreeze(closed(["state"], { state: COMMAND_STATE }));
+
+/** The command rows of revision 2. Every command is untargeted. The prompt commands admit both
+ *  authority words; `commands`, `command`, `command-cancel` and `command-state` admit `owner` only,
+ *  so only the owner's interactive session runs an agent's commands. */
 export const AGENT_COMMANDS = deepFreeze([
-  { name: AGENT_CMD_PROMPTS, capability: "agent.prompts.read", input: AGENT_PROMPTS_INPUT_SCHEMA, output: AGENT_PROMPTS_OUTPUT_SCHEMA },
-  { name: AGENT_CMD_PROMPT, capability: "agent.prompts.read", input: AGENT_PROMPT_INPUT_SCHEMA, output: AGENT_PROMPT_OUTPUT_SCHEMA },
-  { name: AGENT_CMD_PROMPT_ANSWER, capability: "agent.prompts.answer", input: AGENT_PROMPT_ANSWER_INPUT_SCHEMA, output: AGENT_PROMPT_ANSWER_OUTPUT_SCHEMA },
-].map((row) => ({ ...row, targeted: false, authorities: ["owner", "grant"] as PrincipalAuthority[] })));
+  { name: AGENT_CMD_PROMPTS, capability: "agent.prompts.read", authorities: ["owner", "grant"], input: AGENT_PROMPTS_INPUT_SCHEMA, output: AGENT_PROMPTS_OUTPUT_SCHEMA },
+  { name: AGENT_CMD_PROMPT, capability: "agent.prompts.read", authorities: ["owner", "grant"], input: AGENT_PROMPT_INPUT_SCHEMA, output: AGENT_PROMPT_OUTPUT_SCHEMA },
+  { name: AGENT_CMD_PROMPT_ANSWER, capability: "agent.prompts.answer", authorities: ["owner", "grant"], input: AGENT_PROMPT_ANSWER_INPUT_SCHEMA, output: AGENT_PROMPT_ANSWER_OUTPUT_SCHEMA },
+  { name: AGENT_CMD_COMMANDS, capability: "agent.commands.read", authorities: ["owner"], input: AGENT_COMMANDS_INPUT_SCHEMA, output: AGENT_COMMANDS_OUTPUT_SCHEMA },
+  { name: AGENT_CMD_COMMAND, capability: "agent.commands.run", authorities: ["owner"], input: AGENT_COMMAND_INPUT_SCHEMA, output: AGENT_COMMAND_OUTPUT_SCHEMA },
+  { name: AGENT_CMD_COMMAND_CANCEL, capability: "agent.commands.run", authorities: ["owner"], input: AGENT_COMMAND_CANCEL_INPUT_SCHEMA, output: AGENT_COMMAND_CANCEL_OUTPUT_SCHEMA },
+  { name: AGENT_CMD_COMMAND_STATE, capability: "agent.commands.read", authorities: ["owner"], input: AGENT_COMMAND_STATE_INPUT_SCHEMA, output: AGENT_COMMAND_STATE_OUTPUT_SCHEMA },
+].map((row) => ({ ...row, targeted: false, authorities: row.authorities as PrincipalAuthority[] })));
 
 const TABLE = serviceContractTable(AGENT_COMMANDS);
 
 /** The compiled input and output pair per command, compiled on first access. */
 export const AGENT_CONTRACTS = TABLE.contracts;
 
-/** The cluster document of revision 1, deep-frozen. */
+/** The cluster document of revision 2, deep-frozen. */
 export const AGENT_CLUSTER: Readonly<ClusterDocument> = deepFreeze(buildClusterDocument(AGENT_CLUSTER_URN, AGENT_CLUSTER_REVISION, AGENT_COMMANDS));
 
 /** The cluster document's two digests: the root artifact and the closure manifest a caller pins

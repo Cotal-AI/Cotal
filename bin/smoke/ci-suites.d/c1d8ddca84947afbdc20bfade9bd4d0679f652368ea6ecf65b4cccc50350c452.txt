@@ -1,0 +1,3 @@
+# An agent's commands and skills on its agent endpoint, on a real broker through the shipped auth callout:
+# only the owner's interactive session lists and runs them, and every harness answer has its code and outcome.
+smoke:agent-commands:auth

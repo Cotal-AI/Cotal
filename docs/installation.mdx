@@ -28,18 +28,28 @@ This prerequisite step uses your system package manager.
 The Cotal installer does not run sudo or install system packages.
 
 Read the [installer script](https://get.cotal.ai) before you run it.
-To install without opening guided setup:
+The following command requires `curl`. It installs Cotal without opening guided setup:
 
 ```bash
 curl -fsSL https://get.cotal.ai | sh -s -- --no-setup
 ```
 
+If you have `wget` instead of `curl`, run:
+
+```bash
+wget -qO- https://get.cotal.ai | sh -s -- --no-setup
+```
+
 Run the installer as your own user, without sudo.
 Rerunning it installs the selected release and runs `cotal update` to reconcile the existing installation.
 `--version <target-version>` keeps that release installed instead of selecting latest again.
+The installer stages and starts the requested release before replacing the active package,
+runtime links or launcher. If that startup check fails, the previous installation still works.
 You can rerun it with Cotal's `nodebin` directory on PATH without replacing its runtime links with links to themselves.
 It installs inside your home directory and checks downloaded Node.js files against their published SHA-256 sums.
 It uses a suitable Node.js 22.10 or newer already on your machine, or installs one for Cotal.
+When the installer uses your system `node`, the launcher keeps using that executable path after
+a supported Node upgrade. If that path disappears or Node falls below 22.10, rerun the installer.
 
 Before reporting success, the installer runs the installed launcher with `--version`.
 If it cannot start, installation exits with an error and prints the command's output.
@@ -48,8 +58,10 @@ If the latest release cannot start, report the error at the [issue tracker](http
 
 The launcher goes in `~/.local/bin/cotal`.
 The install root defaults to `${XDG_DATA_HOME:-~/.local/share}/cotal`.
-The installer updates your shell configuration to add the launcher directory to PATH.
-Its files are not writable by other users.
+If the launcher directory is not already on PATH, the installer updates your shell configuration.
+On Linux with Bash, it updates `~/.bashrc` and the first readable login file: `~/.bash_profile`, `~/.bash_login`, or `~/.profile`.
+If none exists, it creates `~/.profile`.
+The installer's files are not writable by other users.
 
 To install and open guided setup in one command instead, omit `--no-setup`:
 
@@ -68,13 +80,13 @@ On macOS or Linux with distribution Node, the default prefix may be root-owned.
 Use the [shell installer](#use-the-shell-installer) above, or select a user-owned npm prefix before installing:
 
 ```bash
-npm config set prefix "$HOME/.local"
-export PATH="$HOME/.local/bin:$PATH"
+npm config set prefix "$HOME/.npm-global"
+export PATH="$HOME/.npm-global/bin:$PATH"
 npm install -g cotal-ai
 ```
 
 The prefix setting applies to all future npm global installs, not just Cotal.
-Add the same `export PATH="$HOME/.local/bin:$PATH"` line to your shell startup file
+Add the same `export PATH="$HOME/.npm-global/bin:$PATH"` line to your shell startup file
 (such as `~/.bashrc` or `~/.zshrc`) so new terminals can find `cotal`.
 If an install fails with npm `EACCES`, use one of these routes instead of retrying with sudo.
 
@@ -91,12 +103,22 @@ You can also use the shell installer inside WSL.
 Cotal includes a `nats-server` binary for its local broker.
 If you put your own `nats-server` on PATH, Cotal uses it when its folder is not writable by other accounts.
 Otherwise it uses the bundled binary. `cotal up` refuses a selected broker older than 2.12 and names its path and version.
-`cotal status` shows which binary Cotal will run.
+`cotal status --verbose` shows which binary Cotal will run in the `NATS` row of the `Machine` section.
 An older deployment with a file-backed presence bucket needs 2.14.5 or newer to avoid a known write failure.
 See [Run a mesh](run-a-mesh.mdx#the-stack) before reusing an existing broker.
 
 The CLI sends usage telemetry by default. Run `cotal telemetry off` to disable it.
 [Telemetry](telemetry.mdx) lists the fields and other opt-outs.
+
+### Switch from a shell installation
+
+To upgrade the shell-installed copy, run `cotal update --self` using its launcher.
+To use npm's CLI instead, install it in a separate prefix as shown above, with its `bin` directory
+first on PATH. The default shell launcher already occupies `~/.local/bin/cotal`.
+Do not use `npm --force` to overwrite it.
+Keep the shell installation and its files if your user daemon still uses them. Changing PATH
+picks the npm CLI for new shell commands without moving the daemon or deleting any spaces.
+Use the original launcher's absolute path to manage its installation and daemon.
 
 ## Check the installation
 
@@ -139,15 +161,18 @@ Use `--help` for the full list.
 ## Remove Cotal
 
 Stop the spaces and agents that use this installation before removing its files.
-For an npm installation, run:
+For an npm installation, remove the package and any generation store created by `cotal update --self`:
 
 ```bash
+rm -rf "$(npm root -g)/../.cotal-generations"
 npm uninstall -g cotal-ai
 ```
 
+On Windows, run `npm uninstall -g cotal-ai`.
+
 For a shell installation with the default locations, remove `~/.local/bin/cotal` and the `cotal` directory under `${XDG_DATA_HOME:-~/.local/share}`.
 If you selected custom install locations, remove those locations instead.
-Delete the `# cotal` block the installer added to your shell configuration.
+Delete each `# cotal` block the installer added to your shell startup files.
 
 Deleting `~/.cotal` also deletes machine-local mesh records, agent data, and credentials.
 Keep or back up that data unless you intend to remove it.

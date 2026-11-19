@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
-import { EndpointRefusal } from "../daemon/endpoint.js";
+import { daemonPaths, EndpointRefusal } from "../daemon/endpoint.js";
+import { serveDaemon } from "../daemon/server.js";
 import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js";
 import { installedDaemonIdentity, preflightInstalledDaemon, reconcileMissingShellRuntime, unitReceiptFile } from "../daemon/install.js";
 import { currentParentWaits } from "../daemon/update-entry.js";
@@ -69,6 +70,30 @@ function scripted(steps: (Reply | Error)[]) {
   const run = scripted([status("1.0.0")]);
   await waitForInstalledDaemonGeneration("2.0.0", { installed: () => false, query: run.query });
   assert.equal(run.calls(), 0);
+}
+
+if (process.platform === "linux") {
+  const paths = daemonPaths();
+  let stops = 0;
+  const old = await serveDaemon({ paths, version: "1.0.0",
+    updateStatus: () => ({ current: "1.0.0", automatic: false, failures: 0, lastResult: "not checked" }),
+    stopAllowed: async () => { stops++; return true; },
+  });
+  const probe = { installed: () => true, quiet: true, restartPrepared: true };
+  try {
+    old.generationPending("2.0.0", "entry verification did not confirm its version (exit null)");
+    await assert.rejects(waitForInstalledDaemonGeneration("2.0.0", { ...probe, timeoutMs: 800 }), /still runs Cotal 1\.0\.0/);
+    assert.equal(stops, 0, "an unprepared daemon is not asked to stop");
+    await old.prepareGenerationRestart();
+    const waiting = waitForInstalledDaemonGeneration("2.0.0", { ...probe, timeoutMs: 10_000 });
+    void waiting.catch(() => {});
+    // Exercise the stock local stop handshake. The real native supervisor is covered by the packed upgrade.
+    await Promise.race([old.stopped, waiting]);
+    assert.equal(stops, 1, "one authenticated stop releases the prepared old generation");
+    const replacement = await serveDaemon({ paths, version: "2.0.0" });
+    try { await waiting; }
+    finally { await replacement.close(); }
+  } finally { await old.close(); }
 }
 
 // A version change prints the wait once across the parent and its reconcile child: the child

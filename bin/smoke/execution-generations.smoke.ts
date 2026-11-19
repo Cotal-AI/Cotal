@@ -126,11 +126,14 @@ try {
       assert.equal(refused.stderr.includes("V8_FLAG:"), false, refused.stderr);
       assert.equal(refused.stderr.startsWith(`\ncotal-ai requires Node.js >= 22.10, but this is v${version}.\n`), true, refused.stderr);
       assert.match(refused.stderr, /nvm install 22\.10 && nvm use 22\.10/);
+      assert.match(refused.stderr, /installed Cotal globally with npm, reinstall it with the newer Node[^\n]+\n  npm install -g cotal-ai/);
+      assert.match(refused.stderr, /If you use npx, clear its cache instead[^\n]+\n  rm -rf ~\/\.npm\/_npx/);
     }
     const launcher = probe(join(repo, "bin/dist/cotal.js"), ["--version"], { COTAL_LAUNCHER: "1", TEST_FAKE_NODE_VERSION: "18.20.8", TEST_V8_KNOWN_FLAGS: "--no-concurrent-sparkplug" });
     assert.equal(launcher.status, 1, launcher.stderr);
     assert.equal(launcher.stderr.includes("unrecognized flag"), false, launcher.stderr);
     assert.match(launcher.stderr, /The Node this install was pinned to has been replaced with an older one\./);
+    assert.doesNotMatch(launcher.stderr, /npm install -g cotal-ai|rm -rf ~\/\.npm\/_npx/);
     const handoff = join(scratch, "handoff.json");
     writeFileSync(handoff, "{}");
     assert.equal(probe(join(repo, "bin/dist/cotal.js"), ["--version"], { COTAL_MANAGED_HANDOFF_FILE: handoff, TEST_FAKE_NODE_VERSION: "16.20.2", TEST_V8_KNOWN_FLAGS: "" }).status, 1);

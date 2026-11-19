@@ -1,8 +1,13 @@
 import { createConnection } from "node:net";
+import { existsSync } from "node:fs";
 import { mintCreds, newIdentity, probeConnect, isReachable } from "@cotal-ai/core";
 import { brokerAddressKey, loadMeshes } from "./mesh-registry.js";
 import type { MeshTarget } from "./mesh-target.js";
-import { stoppedLoopbackListener } from "./pid.js";
+import { stoppedLoopbackListener, parsePid, parseRecord, probeLiveness, readPidfile, assertRecordIdentity } from "./pid.js";
+import { localProcessPath, NATS_PIDFILE } from "./local-process.js";
+import { stackJournalPath } from "./auth-paths.js";
+import { readLocalRecordSource, decodeLocalJson } from "./protected-records.js";
+import { isCommandFailure } from "./output.js";
 
 /**
  * Liveness verification for a resolved mesh target — the companion to {@link resolveMeshTarget}
@@ -29,6 +34,9 @@ export type PreflightFailure =
   /** The listener answered but does not offer the required TLS. Its unauthenticated greeting
    *  cannot establish mesh identity or justify deleting a registration. */
   | "tls-unsupported"
+  | "auth-unsupported"
+  | "jetstream-unsupported"
+  | "non-nats-listener"
   /** A TLS-required NATS listener still greets (INFO.tls_required) but the TLS probe could not
    *  complete the handshake — typically a private CA without `NODE_EXTRA_CA_CERTS`. NEVER a prune
    *  signal: INFO is unauthenticated shape evidence, not peer identity; conservatively keep the
@@ -117,6 +125,42 @@ export async function preflightTarget(
     throw new Error("preflightTarget: a user-mode target cannot be credless-probed - the caller owns the user connect (see preflightOrExit's user branch)");
   const creds =
     probeCreds ?? (target.auth ? await mintCreds(target.auth, newIdentity(), "probe") : undefined);
+  // A local address accepting TCP is occupied, even when it never sends a NATS greeting.
+  // Do not prescribe a restart that cannot bind that address, or delete its registration.
+  const plain = /^nats:\/\//i.test(target.server) && !target.tlsRequired;
+  let ownBroker = false;
+  if (plain && target.origin === "up") {
+    let brokerGone = false;
+    if (existsSync(stackJournalPath(target.root))) {
+      try {
+        const bytes = readLocalRecordSource(stackJournalPath(target.root), 64 * 1024);
+        const journal = bytes === undefined ? undefined : decodeLocalJson(bytes) as { space?: string; root?: string; server?: string; members?: { role?: string; state?: string; process?: { pid: number; token: string } }[] };
+        const broker = journal?.space === target.space && journal.root === target.root && Array.isArray(journal.members) ? journal.members.find(member => member.role === "broker") : undefined;
+        brokerGone = broker !== undefined && (broker.state === "stopped" || broker.state === "already-stopped" || broker.process !== undefined && assertRecordIdentity(broker.process).kind === "gone");
+        ownBroker = !brokerGone && broker?.process !== undefined && assertRecordIdentity(broker.process).kind === "match" && journal?.server !== undefined && brokerAddressKey(journal.server) === brokerAddressKey(target.server);
+      } catch (error) {
+        if (!isCommandFailure(error) || !["PERMISSION_DENIED", "SCHEMA_INVALID", "CONFLICT"].includes(error.code)) throw error;
+        // Unusable local evidence does not prove the broker is gone. Keep the live probe below;
+        // status reports the journal's read failure separately as a warning.
+      }
+    } else {
+      const rawPid = readPidfile(localProcessPath(NATS_PIDFILE, { root: target.root, space: target.space }));
+      const pid = rawPid === undefined ? undefined : parsePid(rawPid);
+      brokerGone = rawPid === undefined || pid !== undefined && probeLiveness(pid) === "dead";
+      const record = rawPid === undefined ? undefined : parseRecord(rawPid);
+      const registered = loadMeshes().find(mesh => mesh.space === target.space && mesh.root === target.root);
+      ownBroker = record?.kind === "record" && assertRecordIdentity(record.record).kind === "match" && registered !== undefined && brokerAddressKey(registered.server) === brokerAddressKey(target.server);
+    }
+    const host = new URL(target.server).hostname;
+    const loopback = host === "127.0.0.1" || host === "localhost" || host === "[::1]";
+    ownBroker = ownBroker && loopback;
+    if (brokerGone && loopback) {
+      let connected = false;
+      const info = await readNatsInfoGreeting(target.server, 1_000, () => { connected = true; });
+      if (connected && info === null && stoppedLoopbackListener(target.server) === undefined)
+        return { ok: false, kind: "non-nats-listener", prune: false };
+    }
+  }
   // THE RECORDED TLS REQUIREMENT IS PART OF THE PROBE, not decoration on the record.
   //
   // Without it this probe connects to ANY broker on the recorded address, including a plaintext one
@@ -130,7 +174,7 @@ export async function preflightTarget(
   // two brokers apart, since the plaintext one answers perfectly well.
   const auth = { ...(creds ? { creds } : {}), ...(target.tlsRequired ? { tls: true as const } : {}) };
   let probe = await probeConnect(target.server, auth);
-  if (probe.ok) return { ok: true };
+  if (probe.ok) return await checkBrokerFeatures(target, plain, ownBroker);
   // A stopped broker never answers, so its pid is named now instead of after the confirm budget.
   const stopped = probe.reason === "timeout" ? stoppedLoopbackListener(target.server) : undefined;
   if (stopped !== undefined) return { ok: false, kind: "broker-stopped", prune: false, pid: stopped };
@@ -143,7 +187,7 @@ export async function preflightTarget(
   // more than a second. A first failure only makes it a candidate; re-probe with a budget that
   // fits a real network.
   probe = await probeConnect(target.server, { ...auth, timeoutMs: PREFLIGHT_CONFIRM_TIMEOUT_MS });
-  if (probe.ok) return { ok: true };
+  if (probe.ok) return await checkBrokerFeatures(target, plain, ownBroker);
 
   // TLS-REQUIRED + "unreachable" is often NOT a dead broker. Other transport failures,
   // including certificate verification, can still be `unreachable`. Against a
@@ -179,13 +223,28 @@ export async function preflightTarget(
   return { ok: false, kind, prune, ...(kind === "address-held" && heldBy !== undefined ? { heldBy } : {}) };
 }
 
+/** A successful connect to an open substitute does not prove the recorded broker's features. */
+async function checkBrokerFeatures(target: MeshTarget, plain: boolean, ownBroker: boolean): Promise<{ ok: true } | { ok: false; kind: PreflightFailure; prune: false }> {
+  if (!plain) return { ok: true };
+  const info = await readNatsInfoGreeting(target.server) ?? await readNatsInfoGreeting(target.server, PRUNE_CONFIRM_TIMEOUT_MS);
+  if (info === null) return { ok: false, kind: "slow-link", prune: false };
+  if (target.mode === "auth" && info.auth_required !== true)
+    return { ok: false, kind: "auth-unsupported", prune: false };
+  // Our running broker can disable JetStream after a store write failure. Let the request's
+  // existing store diagnosis name that local cause and its repair, not a foreign-broker remedy.
+  if (info.jetstream !== true && !ownBroker)
+    return { ok: false, kind: "jetstream-unsupported", prune: false };
+  return { ok: true };
+}
+
 /** Read the pre-auth NATS INFO greeting (plaintext, before any STARTTLS). Returns null if nothing
  *  usable answered. Used to distinguish a TLS-required NATS listener from a plaintext substitute
  *  without a TLS handshake. It does NOT establish mesh identity — INFO is unauthenticated. */
 export async function readNatsInfoGreeting(
   server: string,
   timeoutMs = 1_000,
-): Promise<{ tls_required?: boolean } | null> {
+  onConnect?: () => void,
+): Promise<{ tls_required?: boolean; auth_required?: boolean; jetstream?: boolean } | null> {
   let host: string;
   let port: number;
   try {
@@ -198,6 +257,7 @@ export async function readNatsInfoGreeting(
   }
   return new Promise((resolve) => {
     const sock = createConnection({ host, port });
+    if (onConnect) sock.once("connect", onConnect);
     let buf = "";
     let done = false;
     const finish = (v: { tls_required?: boolean } | null) => {

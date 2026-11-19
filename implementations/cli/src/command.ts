@@ -55,7 +55,7 @@ import {
   setInstalledExtensionsEnabled,
 } from "./ext-loader.js";
 import { recoverExtensionPromotion } from "./lib/extension-stage.js";
-import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors } from "./seed/reconcile.js";
+import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedDowngradeRefusal } from "./seed/reconcile.js";
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
@@ -91,7 +91,7 @@ function asksForHelp(args: readonly string[]): boolean {
 function takeGlobalFlag(word: string): boolean {
   if (!GLOBAL_FLAG_WORDS.has(word)) return false;
   if (word === "--no-color") disableColor();
-  else if (word === "--no-input") disableInput();
+  else if (word === "--no-input") disableInput(true);
   else return false;
   return true;
 }
@@ -213,7 +213,10 @@ async function extSeedGate(registry: Registry, argv: string[], configFolder: Con
     return true;
   }
   if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);
-  await extCmd.run(parseCommandArgs(extCmd, stripGlobalFlags(argv.slice(1), leading, extCmd)));
+  const parsed = parseCommandArgs(extCmd, stripGlobalFlags(argv.slice(1), leading, extCmd));
+  extCmd.validate?.(parsed);
+  recoverExtensionPromotion();
+  await extCmd.run(parsed);
   return true;
 }
 
@@ -233,6 +236,8 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (name === "logout") return true; // signing out does not install a connector, and a seed refusal must not keep the cached login
   if (name === "sync") return true; // refreshing account catalogs does not install connectors
   if (name === "use" && sub === undefined) return true; // bare `use` shows the selection: a read
+  if (name === "meshes" && (sub === undefined || sub === "list")) return true;
+  if (name === "config" && sub === "set") return true; // saving a preference does not require installing connectors
   // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
   // mutation of the operator-global seed store, manifest and npm prefix — it ran BEFORE the command
   // body could reject the invocation, so `down --preserve-state --dry-run` (an unsupported
@@ -246,7 +251,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (name === "team" && (sub === "deploy" || sub === "remove")) return true; // existing native manager/channel operations never install local connectors
   // `backup restore` is excluded: it starts the restored stack and resumes its seats through `up
   // --restore`, so it reconciles connectors under the same rules as that startup. Other modes stay offline.
-  if (name === "reset" || name === "down" || name === "doctor" || name === "feedback" || (name === "backup" && sub !== "restore") || name === "mint" || (name === "manager" && sub !== "start" && sub !== "restart") || name === "channel" || name === "stop" || name === "attach" || name === "input" || name === "auth" || name === "endpoint" || name === "service" || name === "daemon") return true; // native maintenance and channel policy never install connector packages
+  if (name === "reset" || name === "down" || name === "doctor" || name === "feedback" || (name === "backup" && sub !== "restore") || name === "mint" || (name === "manager" && sub !== "start" && sub !== "restart") || name === "channel" || name === "stop" || name === "attach" || name === "input" || name === "auth" || name === "endpoint" || name === "service-endpoint" || name === "service" || name === "daemon") return true; // native maintenance and channel policy never install connector packages
   if (name === "run" && (sub === "turns" || sub === "yield")) return true; // self-only relay does not repair the operator installation
   if (name === "update") return true; // update owns one explicit reconcile; never auto-refresh then force-refresh
   // The seed is skipped for an INTERNAL CHILD re-exec — the `up`/`spawn` that spawns the delivery
@@ -401,7 +406,13 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
     if (previous !== undefined && cmd.flags?.some((flag) => flag.type === "string" && (previous === `--${flag.name}` || previous === `-${flag.short}`))) continue;
     const short = /^-([^-=])=(.*)$/su.exec(word);
     const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
-    if (short && flag) return { message: `${word} gives -${short[1]} the value "=${short[2]}"`, remedy: `write -${short[1]} ${short[2]} or --${flag.name}=${short[2]}` };
+    if (short && flag) {
+      const value = short[2]!;
+      const quoted = shellWord(value);
+      const long = `--${flag.name}=${quoted}`;
+      const correction = value.startsWith("-") ? long : `-${short[1]} ${quoted} or ${long}`;
+      return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
+    }
     const typed = typographicOption(word, names, shorts);
     if (typed) return typed;
   }
@@ -427,7 +438,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
     const value = at < 0 ? undefined : rest[at + 1];
     if (value !== undefined && cmd.flags?.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
       return missingValue(flag);
-    if (value?.startsWith("-")) return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${value}` };
+    if (value?.startsWith("-")) return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${shellWord(value)}` };
   }
   return { message };
 }
@@ -621,8 +632,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const configFolder = globalConfigDirProblem();
   if (opts.extensions && !updateCheck) {
     try {
-      recoverExtensionPromotion();
       if (await extSeedGate(registry, argv, configFolder, leadingGlobals)) return;
+      recoverExtensionPromotion();
     } catch (e) {
       seedRefusal(e);
       process.exit(1);
@@ -666,6 +677,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       const lifecycle = managerServiceCommand(found, words);
       return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv } : { cmd: found, rest: words };
     } catch (error) {
+      if (asksForHelp(words)) return { cmd: found, rest: words };
       const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
       return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
     }
@@ -713,9 +725,12 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     const deferred = cmd?.name === "up";
     try {
       if (deferred) {
-        const refusal = deferredSeedRefusal();
+        // Broker-only startup still checks the store generation. An explicit restore can start its
+        // recorded manager even when --no-manager is present, so it retains the full seed path.
+        const brokerOnly = parsed?.values["no-manager"] === true && !parsed.values.restore;
+        const refusal = brokerOnly ? seedDowngradeRefusal() : deferredSeedRefusal();
         if (refusal) throw refusal;
-        deferSeedToLaunch();
+        if (!brokerOnly) deferSeedToLaunch();
       } else await reconcileSeededConnectors();
     } catch (e) {
       // The seed runs before the command, so a command that asked for JSON has not reached its own

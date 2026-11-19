@@ -256,6 +256,9 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const missing = await json(["setup", "--destination", "local"]);
   check("a script missing inputs is USAGE_INVALID, exit 1, naming each missing flag",
     refused(missing, 1, "USAGE_INVALID") && /--harness, --project, --space/.test(missing.env?.error?.message ?? "") && /--destination local --harness <connector> --project <dir> --space <name>/.test(missing.env?.error?.remedy ?? ""), shown(missing));
+  const emptyProject = await json([...FULL("empty-project", ""), "--configure-only", "--yes"], dirs.name);
+  check("an empty --project refuses before preparing the current directory",
+    refused(emptyProject, 1, "USAGE_INVALID") && /--project \./.test(emptyProject.env?.error?.remedy ?? "") && !existsSync(join(dirs.name, ".cotal")) && findPreparedSpace("empty-project") === undefined, shown(emptyProject));
   const missingHosted = await json(["setup", "--destination", "self-hosted", "--harness", "codex", "--space", "ok1"]);
   check("a self-hosted script missing --project gets the self-hosted form, with --connection-file",
     refused(missingHosted, 1, "USAGE_INVALID") && /pass --project$/.test(missingHosted.env?.error?.message ?? "")
@@ -684,6 +687,23 @@ if (process.platform !== "win32") {
   check("its report names the runtime that is not ready", plain.status === 4 && /set up rt for codex; the herdr runtime is not ready/.test(plain.stdout) && /herdr - already set up - does not answer/.test(plain.stdout), shown(plain));
   const none = await json(FULL("rt", dir));
   check("a rerun without --runtime removes neither", none.status === 0 && rows(none).filter((x) => x.state === "set-up").map((x) => x.name).join() === "tmux,herdr" && installed("@cotal-ai/herdr") !== undefined, shown(none));
+}
+
+if (process.platform !== "win32") {
+  const oldBin = project("old-bin");
+  const probed = join(oldBin, "nats-server.probed");
+  writeFileSync(join(oldBin, "nats-server"), `#!/bin/sh\nif [ "$1" != --version ]; then exit 1; fi\necho probed > "$0.probed"\necho 'nats-server: v2.9.0'\n`, { mode: 0o755 });
+  const path = { PATH: [oldBin, env.PATH].join(delimiter) };
+  const dir = project("brokerless");
+  const prepared = await json([...FULL("brokerless", dir), "--configure-only", "--yes"], dir, path);
+  check("configure-only saves the default persona without probing the old broker",
+    prepared.status === 0 && prepared.env?.result?.startup?.state === "not-requested" && !existsSync(probed)
+      && existsSync(join(dir, ".cotal", "agents", "default.md")), shown(prepared));
+  const startDir = project("broker-required");
+  const started = await json([...FULL("broker-required", startDir), "--start", "--detach", "--yes"], startDir, path);
+  check("explicit startup still refuses the old broker before writing the project",
+    refused(started, 2, "DEPENDENCY_UNAVAILABLE") && /reports version 2\.9\.0/.test(started.env?.error?.message ?? "")
+      && existsSync(probed) && !existsSync(join(startDir, ".cotal")), shown(started));
 }
 
 finish();

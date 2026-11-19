@@ -81,6 +81,8 @@ The updater pins recorded local Managers on Linux, macOS and Windows and continu
 From 0.167.0, an update names and leaves untouched a Manager from an unregistered home, or one this home has no credentials to read, keeping its loaded version until it is restarted from its own home; on 0.166.3 or earlier, wait for or stop the other home's Manager from its own home, then run the same update.
 A successful manual update waits for an authorized target daemon generation, not its updater's loaded version.
 Deferred activation names what still needs a restart and leaves that daemon and its Managers running.
+When no daemon is running, activation is not deferred. The update starts the recorded service, or reports that it is disabled or belongs to another installation.
+A Manager outside the machine daemon keeps the version it loaded. If the update cannot read one, it prints the reason and continues.
 Releases before 0.167.1 still use their own checks on the first hop. Downloading a newer target cannot repair those installed checks, including the missing-config
 refusal in 0.159.1 through 0.160.7 and the Manager-selection refusal before 0.163.1.
 For an npm installation, install once with `npm install -g cotal-ai@latest`, then run `cotal update`.
@@ -268,6 +270,8 @@ A self-update inherits the extension state captured by the updating CLI, includi
 and deliberate connector removals, even when that release has an older retained connector set.
 If the connector seed store is newer than the running CLI, reconciliation refuses before creating
 or pruning retained sets. Run `cotal update --self` to upgrade the CLI to match the store.
+If the machine daemon closes a status connection while restarting, reconciliation retries that
+status read for up to two minutes. It reports a failure if the daemon does not answer in time.
 When no Cotal Claude plugin or Desktop integration is installed, reconciliation only reads Claude's
 installation records. It creates no Claude directories or lock files, including in a read-only
 configuration directory. Unreadable or damaged installation records still refuse the update.

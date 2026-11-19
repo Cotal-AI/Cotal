@@ -74,6 +74,7 @@ interface LogEntry {
   error?: string;
   httpStatus?: number;
   mcpTokenPresent?: boolean;
+  seatAttribution?: Record<string, string>;
   cotalLeak?: string[];
   /** The fake's own MCP tool call, as `mcpCall` returned it. */
   res?: { body?: { result?: { content?: { text?: string }[] } } };
@@ -186,8 +187,11 @@ try {
     env: {
       ...cleanEnv,
       COTAL_SPACE: space,
+      COTAL_MANAGER_INSTANCE: "m".repeat(30),
       COTAL_NAME: PEER,
       COTAL_ID: PEER,
+      COTAL_LIFECYCLE_UID: "l".repeat(30),
+      COTAL_HOME: join(dir, "cotal-home"),
       COTAL_SERVERS: servers,
       COTAL_SUBSCRIBE: "team",
       COTAL_ROLE: "coder",
@@ -246,7 +250,18 @@ try {
   );
   check("thread/start no longer carries dynamicTools", threadStart.dynamicTools === undefined, threadStart.dynamicTools);
   const childEnv = await waitFor("fake env", () => logEntries().find((e) => e.ev === "env"));
-  check("child receives the MCP token, and NOTHING else COTAL_*", childEnv.mcpTokenPresent === true && (childEnv.cotalLeak as string[]).length === 0, childEnv);
+  check("child receives the MCP token and no secret or connector-internal COTAL_* vars", childEnv.mcpTokenPresent === true && (childEnv.cotalLeak as string[]).length === 0, childEnv);
+  check(
+    "child receives non-secret seat attribution for `cotal stop --self` (#7594)",
+    childEnv.seatAttribution?.COTAL_SPACE === space &&
+      childEnv.seatAttribution?.COTAL_MANAGER_INSTANCE === "m".repeat(30) &&
+      childEnv.seatAttribution?.COTAL_NAME === PEER &&
+      childEnv.seatAttribution?.COTAL_ID === PEER &&
+      childEnv.seatAttribution?.COTAL_LIFECYCLE_UID === "l".repeat(30) &&
+      childEnv.seatAttribution?.COTAL_ACCEPTED_TOKEN === undefined &&
+      childEnv.seatAttribution?.COTAL_HOME === join(dir, "cotal-home"),
+    childEnv,
+  );
   check("MCP token never rides argv by value", !/mcp_servers\.cotal\.bearer_token=/.test(argvStr), argv);
   const instructions = String(threadStart.developerInstructions ?? "");
   check(
@@ -1315,7 +1330,11 @@ try {
     env: {
       ...cleanEnv,
       COTAL_SPACE: space,
+      COTAL_MANAGER_INSTANCE: "t".repeat(30),
       COTAL_NAME: "tuipeer",
+      COTAL_ID: "tuipeer",
+      COTAL_LIFECYCLE_UID: "u".repeat(30),
+      COTAL_HOME: join(dir, "tui-cotal-home"),
       COTAL_SERVERS: servers,
       COTAL_SUBSCRIBE: "team",
       COTAL_CODEX_BIN: BIN,
@@ -1348,6 +1367,18 @@ try {
     tuiArgv,
   );
   check("the TUI never sits on the interactive update gate", tuiArgv.includes("check_for_update_on_startup=false"), tuiArgv);
+  check(
+    "the TUI receives non-secret seat attribution and leaks no private COTAL_* vars (#7594)",
+    (tuiLaunch.cotalLeak ?? []).length === 0 &&
+      tuiLaunch.seatAttribution?.COTAL_SPACE === space &&
+      tuiLaunch.seatAttribution?.COTAL_MANAGER_INSTANCE === "t".repeat(30) &&
+      tuiLaunch.seatAttribution?.COTAL_NAME === "tuipeer" &&
+      tuiLaunch.seatAttribution?.COTAL_ID === "tuipeer" &&
+      tuiLaunch.seatAttribution?.COTAL_LIFECYCLE_UID === "u".repeat(30) &&
+      tuiLaunch.seatAttribution?.COTAL_ACCEPTED_TOKEN === undefined &&
+      tuiLaunch.seatAttribution?.COTAL_HOME === join(dir, "tui-cotal-home"),
+    tuiLaunch,
+  );
   const tuiExit = await Promise.race([
     new Promise<number | null>((r) => tuiHost.on("exit", (code) => r(code))),
     sleep(20_000).then(() => "timeout" as const),

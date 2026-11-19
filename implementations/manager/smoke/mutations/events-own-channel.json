@@ -52,7 +52,7 @@
   "mutations": [
     {
       "name": "E1 the rule finds nothing foreign, ever",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "    return p !== null && !(p.owner === owner && p.actor === actor);",
       "replace": "    return false;",
       "expectRed": "a spawn asking for ANOTHER agent's event channel to READ is refused",
@@ -61,7 +61,7 @@
     },
     {
       "name": "E2 the spawn seam reads the read-set only, and forgets the post-set",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "const foreign = foreignEventChannels([...allowSubscribe, ...(allowPublish ?? [])], agentTriple.owner, agentTriple.actor);",
       "replace": "const foreign = foreignEventChannels([...allowSubscribe], agentTriple.owner, agentTriple.actor);",
       "expectRed": "a spawn asking to POST to another agent's event channel is refused too",
@@ -70,7 +70,7 @@
     },
     {
       "name": "E3 the rule catches the wildcard form too, which it does not claim to",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "    const p = eventChannelPrincipal(ch);",
       "replace": "    const p = eventChannelPrincipal(ch) ?? (ch.startsWith(\"events.\") ? { owner: \"\", actor: \"\" } : null);",
       "expectRed": "a WILDCARD event pattern is NOT refused by this rule",
@@ -124,7 +124,7 @@
     },
     {
       "name": "E9 the spawn door prints the route for the OTHER mesh than the one it is running on",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "            `spawn: ${this.readerRemedy(agentTriple.owner, foreign[0]!)}`,",
       "replace": "            `spawn: \\`cotal actor grant <reader> --owner ${agentTriple.owner} --scope '' --allow-subscribe '${foreign[0]!}' --allow-publish ''\\`, with every field spelled out.`,",
       "expectRed": "the refusal prints a mint command, naming a profile and a channel",

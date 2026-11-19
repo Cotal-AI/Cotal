@@ -13,6 +13,9 @@ import {
 import { controlEndpoint, startControlServer, type MeshAgent } from "@cotal-ai/connector-core";
 import { Manager } from "../src/manager.js";
 
+/** The control sockets' per-launch directories, removed at the end. */
+const controlDirs: string[] = [];
+
 let checks = 0;
 const check = (condition: unknown, message: string, detail?: unknown): void => {
   assert.ok(condition, `${message}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
@@ -37,7 +40,7 @@ const connector: Connector = {
   supportsSessionContinuation: true,
   buildLaunch(opts): LaunchSpec {
     spawnedOpts.push(opts);
-    const control = controlEndpoint("smoke", opts.name);
+    const control = controlEndpoint("smoke", opts.name, controlDirs);
     return { command: "true", args: [], env: {}, control, sessionStatePath: statePath };
   },
 };
@@ -278,4 +281,5 @@ check((await recover.restartSupervisedSeat({ alias: "orphan" }, storedPolicy))?.
 check((await recover.restartSupervisedSeat({ alias: "orphan", runtime: { kind: "fake", id: "owned" } }, storedPolicy))?.includes("cannot prove prior local work ended"), "successor refuses a runtime without durable work closure");
 
 for (const server of servers) try { server.close(); } catch { /* already closed */ }
+for (const dir of controlDirs) rmSync(dir, { recursive: true, force: true });
 console.log(`pi session recovery smoke: ${checks} checks passed`);

@@ -17,7 +17,7 @@ Startup is a separate step. A terminal prompt offers it, and `--start` requests 
 passes `--start` must also pass `--detach`. The dashboard remains a separately configured `web`
 service preset.
 
-Setup announces every file it writes with a `→ wrote …` line from `provenance.wrote`. The line goes
+Setup announces recorded writes with a `→ wrote …` line from `provenance.wrote`. The line goes
 to stderr, or to stdout with the error when a stderr write fails. Each announcement is one line. A
 control character or Unicode line separator in a path, such as a newline in `HOME`, prints as a
 `\uXXXX` escape.
@@ -97,8 +97,9 @@ answer makes the result `partial`. `setUpRuntimes` never removes a runtime.
 An application whose `requires` is not on PATH runs none of its actions. The result is then
 `partial`, with the rest saved.
 
-`prepare` records each write in the result's `written` list. The result is a `no-op` only when that
-list is empty, no connector action ran, and no startup was requested.
+`prepare` records setup writes in the result's `written` list. A connector's install action can
+report writes to the same list through `ConnectorSetupInput.wrote`. The result is a `no-op` only
+when the list is empty, no connector action ran, and no startup was requested.
 
 The rich presentation narrates actions through `runSteps`. `--json` and `--plain` run them quietly
 and keep stdout for the result. The old `--auth` and `--open` flags are gone, and
@@ -365,8 +366,8 @@ refusal on those paths then leaves none of them behind.
 
 ### An npx run offers a global install
 
-For ergonomics only, an npx run with no global `cotal` offers to run `npm i -g cotal-ai`
-(`offerGlobalInstall`), pinned to the running version. The offer is gated on `isNpx()` and a PATH
+For ergonomics only, an `npx` or `pnpm dlx` run with no global `cotal` offers to run `npm i -g cotal-ai`
+(`offerGlobalInstall`), pinned to the running version. The offer is gated on `isNpx()` or `isPnpmDlx()` and a PATH
 scan (`cotalOnPath()`). `displayCmd()` runs the same scan for every user-facing hint, so the scan
 resolves files and never runs them. The `cotal --version` exec probe stays in
 `verifiedCotalExecutables()`. The refusal of an older cotal
@@ -377,7 +378,7 @@ default. A failed install does not fail setup. Setup warns and prints the manual
 appears only in the rich presentation, so `--json` and `--plain` keep stdout for the result.
 
 The same `self-exec.ts` exposes `displayCmd()`. It returns the prefix that setup's next command
-uses, which is `cotal`, `npx cotal-ai`, or `pnpm cotal`, so the command matches how you ran setup.
+uses, which is `cotal`, `npx cotal-ai`, `pnpm dlx cotal-ai`, or `pnpm cotal`, so the command matches how you ran setup.
 
 ## Built-in connectors are seeded extensions
 

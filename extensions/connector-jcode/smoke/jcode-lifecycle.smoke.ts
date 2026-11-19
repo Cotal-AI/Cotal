@@ -113,7 +113,7 @@ function startHost(name: string, extra: NodeJS.ProcessEnv): HostRun {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: join(sockRoot, `${name}-control.sock`),
-      COTAL_CONTROL_TOKEN: `${name}-control-token`,
+      COTAL_CONTROL_KEY: `${name}-control-token`, COTAL_CONTROL_VERSION: "1",
       ...extra,
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -151,7 +151,12 @@ try {
     code: failing.child.exitCode,
     stderr: failing.stderr(),
   });
-  check("the failure names the readiness refusal, not an unrelated crash", /Jcode host startup failed/.test(failing.stderr()), failing.stderr());
+  check(
+    "the failure names the readiness refusal, not an unrelated crash",
+    failing.stderr().includes("pre-join readiness outcome: cotal_orientation never became callable") &&
+      /\[cotal-jcode\] fatal: Jcode startup failed \([a-z_]+\); workspace log: /.test(failing.stderr()),
+    failing.stderr(),
+  );
   check(
     "startup failure stops the private daemon before the connector returns (#839)",
     !alive(daemonRecord.pid),

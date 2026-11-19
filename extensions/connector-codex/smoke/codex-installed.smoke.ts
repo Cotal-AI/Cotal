@@ -313,6 +313,68 @@ try {
   check("`cotal down` reports success", torn.status === 0, `${torn.stdout}\n${torn.stderr}`);
   check("the broker this smoke started is really gone (nothing leaked into the gate)", !(await portOpen(PORT)));
 
+  // (5) #7594: managed Codex and Jcode seats inherit non-secret launch attribution so `cotal stop --self`
+  // from inside each harness's own process environment stops that verified seat cleanly.
+  const selfPort = await freePort();
+  const selfServers = `nats://127.0.0.1:${selfPort}`;
+  const selfRoot = join(dir, "selfstop");
+  const selfCapture = join(dir, "selfcapture");
+  mkdirSync(selfRoot, { recursive: true });
+  mkdirSync(selfCapture, { recursive: true });
+  mkdirSync(join(HOME, ".jcode"), { recursive: true });
+  writeFileSync(join(HOME, ".jcode", "auth.json"), JSON.stringify({ openai: { api_key: "fake-smoke-key" } }), { mode: 0o600 });
+  const fakeJcode = fileURLToPath(new URL("../../connector-jcode/smoke/fake-jcode.mjs", import.meta.url));
+  writeFileSync(
+    CODEX,
+    `#!/usr/bin/env node\nimport fs from "node:fs";\nimport { pathToFileURL } from "node:url";\nif (process.argv[2] === "resume") { process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000); }\nif (process.argv[2] === "app-server") fs.writeFileSync(${JSON.stringify(join(selfCapture, "codex-env.json"))}, JSON.stringify(process.env));\nprocess.env.FAKE_CODEX_LOG = ${JSON.stringify(LOG)};\nawait import(pathToFileURL(${JSON.stringify(FAKE)}).href);\n`,
+  );
+  chmodSync(CODEX, 0o755);
+  const JCODE = join(SHIM, "jcode");
+  writeFileSync(
+    JCODE,
+    `#!/usr/bin/env node\nimport fs from "node:fs";\nimport { pathToFileURL } from "node:url";\nif (process.argv[2] === "api-bridge") fs.writeFileSync(${JSON.stringify(join(selfCapture, "jcode-env.json"))}, JSON.stringify(process.env));\nawait import(pathToFileURL(${JSON.stringify(fakeJcode)}).href);\n`,
+  );
+  chmodSync(JCODE, 0o755);
+  const selfSandbox = recordSmokeSandbox({ root: selfRoot, cotalHome: COTAL_HOME, xdgConfigHome: CONFIG });
+  let selfUp = false;
+  try {
+    const created = spawnSync("node", [CLI, "space", "create", `cxself${process.pid}`], { cwd: selfRoot, env: cliEnv, encoding: "utf8" });
+    if (created.status !== 0) throw new Error(`space create failed (${created.status})\n${created.stdout}\n${created.stderr}`);
+    const started = spawnSync("node", [CLI, "up", "--server", selfServers], { cwd: selfRoot, env: cliEnv, encoding: "utf8" });
+    if (started.status !== 0) throw new Error(`selfstop up failed (${started.status})\n${started.stdout}\n${started.stderr}`);
+    selfUp = true;
+    for (const [harness, seatName, envFile] of [
+      ["codex", "self_codex", join(selfCapture, "codex-env.json")],
+      ["jcode", "self_jcode", join(selfCapture, "jcode-env.json")],
+    ] as const) {
+      const spawned = spawnSync("node", [CLI, "spawn", "-d", "-H", harness, "--name", seatName], { cwd: selfRoot, env: cliEnv, encoding: "utf8" });
+      check(`managed ${harness} seat spawns for stop --self (#7594)`, spawned.status === 0, `${spawned.stdout}\n${spawned.stderr}`);
+      const capturedEnv = await waitFor(`${harness} captured env`, () => (existsSync(envFile) ? (JSON.parse(readFileSync(envFile, "utf8")) as NodeJS.ProcessEnv) : undefined));
+      check(`${harness} receives complete non-secret seat attribution but no broker material (#7594)`,
+        ["COTAL_SPACE", "COTAL_MANAGER_INSTANCE", "COTAL_NAME", "COTAL_ID", "COTAL_LIFECYCLE_UID", "COTAL_ACCEPTED_TOKEN", "COTAL_HOME"].every((key) => Boolean(capturedEnv[key]))
+          && ["COTAL_CREDS", "COTAL_LAUNCH_MATERIAL", "COTAL_CONTROL_TOKEN", "COTAL_BEARER_CMD", "COTAL_SENTINEL_CREDS"].every((key) => capturedEnv[key] === undefined));
+      const selfStop = spawnSync("node", [CLI, "stop", "--self"], { cwd: selfRoot, env: capturedEnv, encoding: "utf8" });
+      check(
+        `\`cotal stop --self\` inside managed ${harness} seat exits 0 and acknowledges verified self-stop (#7594)`,
+        selfStop.status === 0 && selfStop.stdout.includes("Agent stop acknowledged") && selfStop.stdout.includes(seatName),
+        `${selfStop.stdout}\n${selfStop.stderr}`,
+      );
+    }
+    const psAfter = await waitFor("managed seats to clear after stop --self", () => {
+      const r = spawnSync("node", [CLI, "ps"], { cwd: selfRoot, env: cliEnv, encoding: "utf8" });
+      return r.status === 0 && r.stdout.includes("No managed agents.") ? r.stdout : undefined;
+    }, 15_000);
+    check("`cotal ps` lists no managed agents after Codex and Jcode self-stop (#7594)", psAfter.includes("No managed agents."), psAfter);
+  } finally {
+    if (selfUp) {
+      const downOpts = { cwd: selfRoot, env: cliEnv, encoding: "utf8" as const };
+      assertSmokeSandboxDown(selfSandbox, ["down", "--yes"], downOpts);
+      const d = spawnSync("node", [CLI, "down", "--yes"], downOpts);
+      for (let i = 0; i < 40 && (await portOpen(selfPort)); i++) await sleep(250);
+      check("selfstop stack tore down cleanly", d.status === 0 && !(await portOpen(selfPort)), `${d.stdout}\n${d.stderr}`);
+    }
+  }
+
   console.log(`\nCODEX INSTALLED-PATH SMOKE PASSED ✅  (${pass} checks)`);
 } catch (e) {
   console.error(`\n✗ codex installed-path smoke failed: ${(e as Error).message}`);
