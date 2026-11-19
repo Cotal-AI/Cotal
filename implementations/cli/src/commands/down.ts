@@ -49,6 +49,7 @@ import {
   readStoreIdentity,
   recordPreservationManagerCommit,
   keepsRegistration,
+  recordMesh,
   releaseMaintenanceLock,
   removeMeshesByRoot,
   sameStoreIdentity,
@@ -788,7 +789,10 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   if (selected.some((component) => component.clearsMesh)) {
     const root = folderCtx().root;
     rmSync(join(root, ".cotal", "run"), { recursive: true, force: true });
-    removeMeshesByRoot(root, undefined, localMeshesForRoot(root).find(keepsRegistration)?.space);
+    const retained = localMeshesForRoot(root).find(keepsRegistration);
+    removeMeshesByRoot(root, undefined, retained?.space);
+    if (any && retained?.space === guarded.space && retained.server === guarded.server)
+      recordMesh({ ...retained, stoppedByDown: true });
   }
   cleaning = false;
   cleaned = true;
