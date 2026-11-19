@@ -507,4 +507,5 @@ export class EndpointDurableBackstop {
     // expectedGeneration (captured by the agent at durableJoin) refuses a stale leave from tombstoning
     // a newer rejoin (StaleMembershipWrite) — a durable-disable primitive otherwise.
     await tombstoneMember(kv, channel, owner, lifecycleUid, await this.chatFrontier(), this.card.id, expectedGeneration);
-  }}
+  }
+}
