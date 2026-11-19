@@ -23,6 +23,7 @@ cotal up --log-file <path> [--logfile-size-limit <bytes> --logfile-max-num <coun
 cotal up --tls-cert <cert.pem> --tls-key <key.pem>   # serve broker TLS (both, or neither)
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
+cotal up -f <cotal.yaml> --dry-run --json
 ```
 
 | Flag | Default | Meaning |
@@ -958,6 +959,9 @@ previews this root's recorded stack and stops nothing. Controller-owned roots re
 before printing a plan if a required executable is missing. To review the declaration without
 installing those applications, use `cotal team boot <file> --dry-run` or `cotal team check <file> --graph`.
 When configured, the preview shows the effective broker log path and rotation bounds.
+Add `--json` to return one `manifest-up-preview` result. It includes the broker address, auth mode,
+manager plan, runtime, declared channels and agents, and effective log path and rotation bounds.
+Log settings that are not configured are `null`. Applying the manifest does not take `--json`.
 A manifest that declares agents refuses `--no-manager` with `USAGE_INVALID` (exit 1), including in a preview.
 `team deploy` and `team remove` take `--dry-run` to print the plan without applying it.
 `topology` validates the manifest and renders its channel / role / ACL graph. Given a folder

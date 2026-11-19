@@ -103,6 +103,13 @@ try {
     && preview.stdout.includes(`Broker log file: ${JSON.stringify(logFile)}`)
     && preview.stdout.includes("Broker log rotation size limit: 1048576 bytes")
     && preview.stdout.includes("Maximum broker log files: 3"), preview);
+  const jsonPreview = cli("up", "-f", manifest, "--server", SERVER, "--dry-run", ...rotation, "--json");
+  const plan = jsonPreview.status === 0 ? JSON.parse(jsonPreview.stdout) : undefined;
+  ok("JSON preview returns one plan with effective rotation and topology", plan?.outcome === "ok"
+    && plan.result?.kind === "manifest-up-preview" && plan.result?.dryRun === true && plan.result?.server === SERVER
+    && plan.result?.authMode === "open" && plan.result?.manager === true && plan.result?.runtime === "pty"
+    && plan.result?.channels.join(",") === "general,decisions" && plan.result?.agents.length === 0
+    && plan.result?.logFile === logFile && plan.result?.logfileSizeLimit === 1048576 && plan.result?.logfileMaxNum === 3, jsonPreview);
   ok("the refusals and preview started nothing and created no records or log", !await portOpen(PORT) && readdirSync(join(root, ".cotal")).length === 0 && !existsSync(logFile));
 
   const noLog = join(manifestDir, "no-log.yaml");
@@ -110,6 +117,10 @@ try {
   const missing = cli("up", "-f", noLog, "--server", SERVER, "--dry-run", ...rotation);
   ok("manifest rotation still refuses when neither source names a log path", missing.status === 1
     && missing.stdout === "" && missing.stderr.includes("require --log-file or broker.logFile"), missing);
+  const brokerOnly = cli("up", "-f", noLog, "--server", SERVER, "--dry-run", "--no-manager", "--json");
+  const brokerPlan = brokerOnly.status === 0 ? JSON.parse(brokerOnly.stdout).result : undefined;
+  ok("JSON preview reports no manager and null values for unconfigured logging", brokerPlan?.manager === false
+    && brokerPlan?.logFile === null && brokerPlan?.logfileSizeLimit === null && brokerPlan?.logfileMaxNum === null, brokerOnly);
 
   // 1) fresh up -f with a --server OVERRIDE (the manifest declares the decoy port; the flag wins).
   const up = cli("up", "-f", manifest, "--server", SERVER, "--logfile-size-limit", "1048576");
