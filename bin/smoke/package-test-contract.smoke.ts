@@ -44,6 +44,7 @@ const WORKSPACE_PACKAGE_DIRS = {
   "@cotal-ai/manager": "implementations/manager",
   "@cotal-ai/runtime": "implementations/runtime",
   "@cotal-ai/linear": "implementations/linear",
+  "@cotal-ai/acp": "implementations/acp",
   "@cotal-ai/web": "implementations/web",
   "@cotal-ai/tui": "implementations/tui",
   "@cotal-ai/core": "packages/core",

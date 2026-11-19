@@ -15,6 +15,7 @@
       "@cotal-ai/delivery",
       "@cotal-ai/web",
       "@cotal-ai/linear",
+      "@cotal-ai/acp",
       "@cotal-ai/cmux",
       "@cotal-ai/orca",
       "@cotal-ai/tmux",
