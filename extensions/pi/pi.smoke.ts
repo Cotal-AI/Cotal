@@ -208,6 +208,25 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     } }));
     ok(recovered?.events[0]?.type === "RUN_STARTED" && recovered.events.at(-1)?.type === "RUN_FINISHED",
       "a native error does not silence the next completed turn");
+    const aborted = unitOf(createPiMapper("aborted")({ type: "message", id: "abort-call", timestamp: "2026-01-01T00:00:00.000Z", message: {
+      role: "assistant", timestamp: 1_767_225_600_000, content: [{ type: "toolCall", id: "abort-tool", name: "bash" }], stopReason: "aborted",
+    } }));
+    ok(aborted?.events.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_END,RUN_FINISHED" &&
+      JSON.stringify((aborted.events.at(-1) as { outcome?: unknown }).outcome) ===
+        JSON.stringify({ type: "interrupt", interrupts: [{ id: "abort-call", reason: "aborted" }] }),
+      "an aborted assistant closes its native tool calls and ends its run as an interrupt, not an error");
+    // The shape Pi 0.84.3 wrote live when Escape landed during a bash call: the tool result, then a
+    // reply recorded as an error with the platform's AbortError text and no content.
+    const toolAbortMap = createPiMapper("tool-abort");
+    const toolAbort = [
+      { type: "message", id: "tool-turn", message: { role: "assistant", timestamp: 1_767_225_600_000, content: [{ type: "toolCall", id: "loop", name: "bash" }], stopReason: "toolUse" } },
+      { type: "message", id: "tool-result", message: { role: "toolResult", timestamp: 1_767_225_601_000, toolCallId: "loop" } },
+      { type: "message", id: "after-abort", message: { role: "assistant", timestamp: 1_767_225_602_000, content: [], stopReason: "error", errorMessage: "This operation was aborted" } },
+    ].flatMap((value) => unitOf(toolAbortMap(value))?.events ?? []);
+    ok(toolAbort.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_END,RUN_FINISHED" &&
+      JSON.stringify((toolAbort.at(-1) as { outcome?: unknown }).outcome) ===
+        JSON.stringify({ type: "interrupt", interrupts: [{ id: "after-abort", reason: "aborted" }] }),
+      "an error carrying the AbortError text after an aborted tool ends its run as an interrupt");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -885,6 +904,24 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(driver.state === "idle", "an error with zero batches still returns to idle, never a retry");
 }
 
+// Pi's extension runner builds a new context for every event, so a turn's start and end never share
+// one. A turn with no Cotal batch, aborted by its user or ended on an error, still publishes idle.
+for (const stopReason of ["aborted", "error"]) {
+  const mesh = new FakeMesh();
+  const host = new FakeHost();
+  const controller = new AbortController();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 200);
+  driver.bind(host);
+  driver.onSessionStart(context());
+  driver.onAgentStart(context(controller.signal));
+  if (stopReason === "aborted") controller.abort();
+  const end = context();
+  end.idle = true;
+  driver.onAgentEnd([{ role: "assistant", stopReason }], end);
+  await driver.flushPresence();
+  ok(mesh.statuses.at(-1)?.status === "idle", `a ${stopReason} turn with no Cotal batch publishes idle from its own end context`);
+}
+
 // Controls that must not weaken: a user abort holds without any automatic retry, even past the
 // backoff window.
 {
@@ -1355,6 +1392,15 @@ for (const assistant of [
       /mutually exclusive/,
     );
     ok(piConnector.supportsResume === true, "Pi declares operator fork-resume support");
+    for (const resume of ["--help", "-v", "-"]) {
+      assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", resume, events: false }), /session id cannot start with '-'/);
+      checks++;
+    }
+    const stateBeforePreview = join(root, ".cotal", "pi-sessions", "preview-life.json");
+    mkdirSync(dirname(stateBeforePreview), { recursive: true });
+    writeFileSync(stateBeforePreview, "keep this session");
+    const preview = piConnector.buildLaunch({ space: "test", name: "preview", lifecycleUid: "life", workspaceRoot: root, events: false, validateOnly: true });
+    ok(!preview.artifacts?.length && readFileSync(stateBeforePreview, "utf8") === "keep this session", "validation creates no artifacts and preserves existing session state");
     ok(piConnector.supportsSessionContinuation === true, "Pi declares exact-session crash continuation support");
     const forked = piConnector.buildLaunch({ space: "test", name: "pi", resume: "session weird;$(nope)", events: false });
     const forkAt = forked.args.indexOf("--fork");

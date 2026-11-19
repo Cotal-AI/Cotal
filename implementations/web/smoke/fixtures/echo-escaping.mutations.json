@@ -100,7 +100,7 @@
     },
     {
       "name": "E13 the send route's recipient refusal quotes with `JSON.stringify`, so an id carrying a bidi or separator codepoint arrives raw in the body and in the operator's line",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "throw new BadRequest(`no agent with id ${quoteForOperator(to)} is on the roster`);",
       "replace": "throw new BadRequest(`no agent with id ${JSON.stringify(to)} is on the roster`);",
       "expectRed": "4.2 a DM to an id that is not on the roster is refused 400 with the codepoint escaped in the body and the operator's line, never raw",
@@ -108,7 +108,7 @@
     },
     {
       "name": "E14 the send route skips the channel validator, so a channel name carrying a class member is posted to the channel the wire rewrites it to instead of refused with the codepoint named",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "    const name = canonicalChannel(channel);\n",
       "replace": "    const name = channel;\n",
       "expectRed": "4.1 a send to a channel the wire would rewrite is refused 400 with the codepoint escaped in the body and the operator's line, never raw",
@@ -116,7 +116,7 @@
     },
     {
       "name": "E15 a refused publish is answered with the broker's message raw, so a subject naming a recipient id with a terminal escape or a bidi override reaches the 502 body and the operator's line as it was written",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "    throw new BrokerRefused(escapeForOperator(e instanceof Error ? e.message : String(e)));\n",
       "replace": "    throw new BrokerRefused(e instanceof Error ? e.message : String(e));\n",
       "expectRed": "5.1 a 502 names the broker's refusal with every codepoint from the class escaped, in the body and the operator's line, and keeps the broker's wording",

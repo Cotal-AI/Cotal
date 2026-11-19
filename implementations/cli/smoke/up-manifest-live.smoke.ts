@@ -11,7 +11,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createConnection } from "node:net";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, statSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { canonicalLocalProcessPath, MANAGER_PIDFILE } from "@cotal-ai/workspace";
@@ -29,6 +29,7 @@ const TSX = join(WT, "node_modules", ".bin", "tsx");
 
 const home = mkdtempSync(join(tmpdir(), "cotal-upf-home-"));
 const root = mkdtempSync(join(tmpdir(), "cotal-upf-root-"));
+mkdirSync(join(root, ".cotal"), { mode: 0o700 });
 const configDir = join(home, "xdg");
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
@@ -70,14 +71,18 @@ const supervisors = () =>
     .stdout.split("\n")
     .filter((l) => l.includes(" __daemon-manager ") && l.includes(`--space ${SPACE}`));
 
-const manifest = join(root, "mesh.yaml");
+const manifestDir = join(root, "manifests");
+mkdirSync(manifestDir);
+const manifest = join(manifestDir, "mesh.yaml");
+const logFile = join(manifestDir, "broker.log");
+const rotation = ["--logfile-size-limit", "1048576", "--logfile-max-num", "3"];
 writeFileSync(
   manifest,
   `apiVersion: cotal/v1
 kind: Mesh
 space: ${SPACE}
 agent: claude
-broker: { servers: "nats://127.0.0.1:${DECOY_PORT}", auth: false }
+broker: { servers: "nats://127.0.0.1:${DECOY_PORT}", auth: false, logFile: "./broker.log" }
 channels:
   general: { description: Open coordination. }
   decisions: { description: The durable record. }
@@ -86,10 +91,33 @@ channels:
 
 let mgrPid = NaN;
 try {
+  const agents = join(manifestDir, "agents.yaml");
+  writeFileSync(agents, `${readFileSync(manifest, "utf8")}agents:\n  planner: { instructions: Plan. }\n  builder: { instructions: Build. }\n`);
+  const refused = cli("up", "-f", agents, "--dry-run", "--no-manager", "--server", SERVER);
+  ok("an agent manifest with --no-manager refuses as usage and names the next step",
+    refused.status === 1 && refused.stdout === "" && /Outcome:\s+refused/.test(refused.stderr) && /Code:\s+USAGE_INVALID/.test(refused.stderr)
+    && refused.stderr.includes("declares 2 agent(s)") && refused.stderr.includes("Next") && refused.stderr.includes("drop --no-manager"), refused);
+
+  const preview = cli("up", "-f", manifest, "--server", SERVER, "--dry-run", ...rotation);
+  ok("text preview shows the manifest-relative log path and both CLI rotation bounds", preview.status === 0
+    && preview.stdout.includes(`Broker log file: ${JSON.stringify(logFile)}`)
+    && preview.stdout.includes("Broker log rotation size limit: 1048576 bytes")
+    && preview.stdout.includes("Maximum broker log files: 3"), preview);
+  ok("the refusals and preview started nothing and created no records or log", !await portOpen(PORT) && readdirSync(join(root, ".cotal")).length === 0 && !existsSync(logFile));
+
+  const noLog = join(manifestDir, "no-log.yaml");
+  writeFileSync(noLog, readFileSync(manifest, "utf8").replace(', logFile: "./broker.log"', ""));
+  const missing = cli("up", "-f", noLog, "--server", SERVER, "--dry-run", ...rotation);
+  ok("manifest rotation still refuses when neither source names a log path", missing.status === 1
+    && missing.stdout === "" && missing.stderr.includes("require --log-file or broker.logFile"), missing);
+
   // 1) fresh up -f with a --server OVERRIDE (the manifest declares the decoy port; the flag wins).
-  const up = cli("up", "-f", manifest, "--server", SERVER);
+  const up = cli("up", "-f", manifest, "--server", SERVER, "--logfile-size-limit", "1048576");
   ok("up -f reports the mesh is up", up.stdout.includes(`mesh "${SPACE}" up`), up.stdout + up.stderr);
   ok("up -f reports seeded channels", /seeded 2 channel/.test(up.stdout), up.stdout);
+  const brokerConfig = readFileSync(join(root, ".cotal/server-open.conf"), "utf8");
+  ok("live manifest start renders the CLI rotation limit and writes the log beside the manifest", existsSync(logFile)
+    && brokerConfig.includes(`log_file: ${JSON.stringify(logFile)}`) && brokerConfig.includes("logfile_size_limit: 1048576"), brokerConfig);
   // Regression guard (checked BEFORE any settle sleep, while a lease-race loser would still be
   // alive): the launch rides THE one control-plane manager — two supervises here means the plain
   // manager and the launch manager are racing the singleton lease, so the agents' boot is a coin flip.

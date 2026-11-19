@@ -213,6 +213,7 @@ export const opencodeConnector: Connector = {
   // changed. It takes the PRINCIPAL: a display name is not an identity on this mesh, and a
   // name-keyed channel would fuse two principals' streams onto one subject.
   eventChannel,
+  supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("opencode connector does not support exact-session continuation");
     // Resuming an existing session isn't wired for opencode: the connector runs `opencode serve` +
@@ -359,6 +360,7 @@ export const opencodeConnector: Connector = {
     // leaves the mesh cleanly on shutdown. Minted here, after every refusal, because minting makes its
     // socket directory; passed to the plugin in the child env (the key never on argv/logs) — opencode serve inherits this process env, the attached TUI strips
     // COTAL_*. Returned in the LaunchSpec so the manager holds it in memory to drive the stop.
+    if (opts.validateOnly) return { command: "", args: [] };
     const control = controlEndpoint(opts.space, opts.name, artifacts);
     env.COTAL_CONTROL_SOCKET = control.path;
 

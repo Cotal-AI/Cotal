@@ -1,5 +1,23 @@
 # @cotal-ai/workspace
 
+## 0.171.2
+
+### Patch Changes
+
+- 31dc8ae: Keep the requested space in broker preset retries and preserve the saved manager settings when a console host override or stack start is rejected.
+- 2af222f: Allow self-update and local space startup through a protected symbolic-link home, and discard staged builds when the update snapshot fails.
+- 7a433a6: Wait for a simultaneous self-update of the same npm installation and recheck its installed CLI before replacing packages again.
+- 7a433a6: Continue self-update from the restored version, show when an update is still running, and remove abandoned release archive caches without disturbing active checks.
+- 7fbd856: Move the maintenance foundation (the journal and lock contract types, MaintenanceError, store identity, the process owner and the maintenance lock) out of `maintenance.ts` into an internal `maintenance-foundation.ts`. `maintenance.ts` re-exports every public name, so the package surface and import paths are unchanged.
+- 5ce3bda: Move the maintenance journal (the persisted record validators, listener custody proofs, the resume document and the journal read/validate/write path) out of `maintenance.ts` into an internal `maintenance-journal.ts`. `maintenance.ts` re-exports every public name, so the package surface and import paths are unchanged.
+- Updated dependencies [08ac896]
+- Updated dependencies [87b8626]
+- Updated dependencies [d388cfe]
+- Updated dependencies [576ce19]
+- Updated dependencies [7a433a6]
+- Updated dependencies [a55bdb0]
+  - @cotal-ai/core@0.171.2
+
 ## 0.171.1
 
 ### Patch Changes

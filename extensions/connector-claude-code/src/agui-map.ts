@@ -255,6 +255,28 @@ const runOpeningAttribution = (entry: ClaudeEntry): "human" | "channel" | "sdk" 
   return ORIGIN_RULE[kind]!;
 };
 
+/**
+ * The two texts Claude Code writes as a `user` entry when its user interrupts a turn: one during a
+ * tool call, one at any other point. MEASURED: 136 such entries over 18 session files on 2.1.295,
+ * both shapes again live on 2.1.327, each a single text block with no `origin` and no
+ * `promptSource`. Claude Code fires no hook for an interrupt (its hooks reference says `Stop` does
+ * not run after one, and no other hook ran when tried on 2.1.327), so this entry is the only
+ * terminal the interrupted turn gets.
+ */
+const USER_INTERRUPT_TEXTS: ReadonlySet<string> = new Set([
+  "[Request interrupted by user]",
+  "[Request interrupted by user for tool use]",
+]);
+
+/** The interrupt text when `entry` is Claude Code's record of its user interrupting a turn. */
+export function userInterrupt(entry: ClaudeEntry): string | undefined {
+  if (entry.type !== "user" || entry.isSidechain || entry.origin !== undefined || entry.promptSource !== undefined) return undefined;
+  const content = entry.message?.content;
+  if (!Array.isArray(content) || content.length !== 1 || content[0]?.type !== "text") return undefined;
+  const text = content[0].text;
+  return text !== undefined && USER_INTERRUPT_TEXTS.has(text) ? text : undefined;
+}
+
 /** A content block. Same reasoning as above: shape-tolerant, read narrowly. */
 export interface ClaudeBlock {
   type?: string;
@@ -343,6 +365,28 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
     const events: AguiEvent[] = [];
 
     if (entry.type === "user") {
+      // A user interrupt ends the open run as an interrupt. No hook reports it, so no later terminal
+      // closes this run, and a record with no run open begins nothing.
+      const interrupt = userInterrupt(entry);
+      if (interrupt !== undefined) {
+        if (open === null) return null;
+        const runId = open;
+        open = null;
+        const reason = interrupt.slice(1, -1);
+        return {
+          runId,
+          events: [
+            runFinished({
+              threadId: opts.threadId,
+              runId,
+              timestamp: ts,
+              outcome: { type: "interrupt", interrupts: [{ id: uuid || runId, reason }] },
+              ...(arrivalMeta ? { cotal: arrivalMeta } : {}),
+            }),
+          ],
+        };
+      }
+
       const content = entry.message?.content;
 
       // Tool results. These are `user` entries by the harness's shape, not by authorship, and they

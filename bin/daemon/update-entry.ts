@@ -24,6 +24,7 @@ import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
 import { observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
+import { daemonServiceRequirement } from "./guidance.js";
 
 /** A reconcile child of a parent that said it waits after the child and prints the line. A parent
  *  from before that marker never waits there, so its child keeps the line. */
@@ -226,7 +227,7 @@ const composed: Command = { ...command, async run(args) {
     }
   }
   const runtime = { ...updateRuntime, automaticGenerationWait: process.platform === "linux",
-    claimGlobalUpdate: (root: string) => claimGlobalNpmUpdateLock(root, legacyRepair && root === interruptedChildRoot ? { waitMs: 10 * 60_000, repairAmbiguous: () => {
+    claimGlobalUpdate: (root: string, onWait?: () => void) => claimGlobalNpmUpdateLock(root, legacyRepair && root === interruptedChildRoot ? { waitMs: 10 * 60_000, onWait, repairAmbiguous: () => {
       if (repairService) {
         const plan = planUninstall(repairService, undefined);
         if (!installedDaemonIdentity(repairService).same || plan.mechanism !== "systemd-user") throw new Error("daemon installation changed before repair");
@@ -264,7 +265,7 @@ const composed: Command = { ...command, async run(args) {
         }
       }
       console.log("Retaining the interrupted update marker after confirming this account has no other application process.");
-    } } : { waitMs: 10 * 60_000 }),
+    } } : { waitMs: 10 * 60_000, onWait }),
     ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {
       preflightExecution: preflightExecutionUpdate,
       repairInstallModes: (root: string) => repairExecutionInstallModes(executionInstallRoot(), () => repairInstallModes(root)),
@@ -314,15 +315,24 @@ const composed: Command = { ...command, async run(args) {
     currentPackages = updateRuntime.isCurrent?.() === true;
     return currentPackages;
   }, async automaticUpdateAdvice() {
+    const systemdAdvice = () => {
+      const requirement = daemonServiceRequirement();
+      return requirement && `${requirement.message} ${requirement.remedy}`;
+    };
     try {
       const reply = await queryDaemon({ paths: daemonPaths() });
       if (!reply.ok) throw new Error(`machine daemon update schedule is unreadable: ${reply.error.message}`);
       if (!reply.result.update) throw new Error("machine daemon returned no update schedule; run `cotal daemon status` to inspect it");
       if (reply.result.update.automatic && typeof reply.result.update.nextAttempt === "string") return undefined;
-      return "The daemon is not scheduling automatic installation. Run `cotal daemon status` to inspect it. If no daemon service is installed, run `cotal daemon install`.";
+      const inactive = "The daemon is not scheduling automatic installation. Run `cotal daemon status` to inspect it.";
+      const unsupported = systemdAdvice();
+      return `${inactive} ${unsupported ?? "If no daemon service is installed, run `cotal daemon install`."}`;
     } catch (error) {
+      if (error instanceof EndpointRefusal && error.code === "PEER_NOT_LOCK_OWNER") {
+        return `Could not check the automatic update schedule: ${error.message}.`;
+      }
       if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
-        return "No daemon service is running the automatic update schedule. Run `cotal daemon install`, then inspect `cotal daemon status`.";
+        return systemdAdvice() ?? "No daemon service is running the automatic update schedule. Run `cotal daemon install`, then inspect `cotal daemon status`.";
       }
       throw error;
     }

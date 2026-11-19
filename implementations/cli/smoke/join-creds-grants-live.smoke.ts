@@ -4,7 +4,7 @@
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,7 +13,7 @@ import {
   newIdentity, seedChannelRegistry, setupSpaceStreams,
 } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
-import { emitSentinel, killAndAwaitExit } from "@cotal-ai/smoke-kit";
+import { emitSentinel, freePort, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { bootBroker } from "../../manager/smoke/_boot-broker.js";
 import { cotalPty, clean, type Pty } from "./_console-pty.js";
 
@@ -107,6 +107,39 @@ try {
     await killAndAwaitExit(run.proc);
     await run.exited;
   }
+  const foreign = join(dir, "foreign.creds"), foreignUid = mintLifecycleUid();
+  const foreignAuth = await createSpaceAuth("elsewhere");
+  writeFileSync(foreign, await mintCreds(foreignAuth, newIdentity(), "agent", {
+    lifecycleUid: foreignUid, allowSubscribe: ["general"], allowPublish: ["general"], role: "reviewer",
+  }), { mode: 0o600 });
+  const foreignRoot = join(dir, "elsewhere");
+  mkdirSync(foreignRoot);
+  const foreignServer = `nats://127.0.0.1:${await freePort()}`;
+  recordMesh({ space: "elsewhere", server: foreignServer, root: foreignRoot, mode: "auth", ts: new Date().toISOString() });
+  const foreignArgs = ["join", "--creds", foreign, "--lifecycle-uid", foreignUid, "--name", "foreign"];
+  const rejected = cli(...foreignArgs, "--space", space);
+  check("wrong-space join names the target and the credential's space", await rejected.exited === 2 &&
+    /Code: +PERMISSION_DENIED/.test(rejected.output()) && rejected.output().includes(`Space:   ${space}`) &&
+    rejected.output().includes(`is a credential for space "elsewhere", not "${space}"`), rejected.output());
+  const replacementArgs = /`cotal auth mint (<label> [^`]+)`/.exec(rejected.output())?.[1];
+  assert.ok(replacementArgs?.includes(`--space ${space} --provision --allow-subscribe general --allow-publish general --role reviewer --no-persona`), rejected.output());
+  check("wrong-space join tells the operator to pair the replacement with its new lifecycle", rejected.output().includes("join with the lifecycle UID that mint reports"), rejected.output());
+  const crossRepair = join(dir, "cross-repair.creds");
+  const crossMint = cli("auth", "mint", ...replacementArgs!.split(" ").map((arg) => arg === "<label>" ? "cross_repair" : arg === "<file>" ? crossRepair : arg));
+  check("the wrong-space remedy mints a replacement", await crossMint.exited === 0, crossMint.output());
+  const crossUid = /^\s*Lifecycle:\s+(\S+)/m.exec(crossMint.output())?.[1];
+  assert.ok(crossUid, crossMint.output());
+  await joins("cross-repair", crossRepair, crossUid, "general");
+
+  // Use the broker's exact numeric address in the link so DNS and address family cannot change the result.
+  const wrongLink = cli(...foreignArgs, "--link", `${broker.servers.replace(/^nats:/, "cotal:")}/elsewhere`);
+  check("a link to the wrong broker reports the registered address and how to drop the link", await wrongLink.exited === 2 &&
+    /Code: +PERMISSION_DENIED/.test(wrongLink.output()) && wrongLink.output().includes(`registered here at ${foreignServer}`) &&
+    wrongLink.output().includes("--space elsewhere without --link"), wrongLink.output());
+  const unnamed = cli(...foreignArgs, "--server", broker.servers);
+  check("a broker without a named target does not get a guessed replacement space", await unnamed.exited === 2 &&
+    unnamed.output().includes('is a credential for space "elsewhere"') && !/Space:|auth mint/.test(unnamed.output()), unnamed.output());
+
   await joins("allowed", allowed.file, allowed.uid, "general");
   // Read grants alone suffice for joining, and wildcard coverage must not be mistaken for denial.
   await joins("wildcard", other.file, other.uid, "review.code");

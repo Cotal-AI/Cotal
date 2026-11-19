@@ -18,7 +18,7 @@
   "mutations": [
     {
       "name": "the rendered line drops the requesting principal",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-stop.ts",
       "find": "    case \"stopped-requested\": return `this manager stopped it at ${cause.requester}'s request`;",
       "replace": "    case \"stopped-requested\": return \"this manager stopped it\";",
       "expectRed": "a requested despawn names the AUTHENTICATED principal that asked",

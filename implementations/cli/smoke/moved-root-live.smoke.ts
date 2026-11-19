@@ -94,7 +94,8 @@ for (const open of [false, true]) {
   mkdirSync(cotalHome, { recursive: true, mode: 0o700 });
   let running = false;
   try {
-    const up = cli(project, "up", ...(open ? ["--open"] : []), "--server", `nats://127.0.0.1:${await freePort()}`);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const up = cli(project, "up", ...(open ? ["--open"] : []), "--server", server);
     running = up.status === 0;
     check(`native stack starts, open=${open}`, running);
     if (!running) throw new Error("native stack failed to start");
@@ -106,6 +107,12 @@ for (const open of [false, true]) {
       if (command[0] !== "status") check("cross-home mutation refuses", result.status === 2);
     }
     renameSync(project, renamed);
+    if (!open) {
+      const retry = cli(renamed, "up", "--foreground", "--space", "nativeauth", "--server", server);
+      check("explicit up refuses a duplicate static stack and tells the operator to move the project back before stopping",
+        retry.status === 2 && retry.stderr.includes("CONFLICT") && retry.stderr.includes(`move this folder back to ${project}`)
+          && retry.stderr.includes("cotal down --yes") && !retry.stderr.includes("use it from here with --space"));
+    }
     for (const command of [["down", "--yes"], ["up"], ["status", "--plain"]]) {
       const result = cli(renamed, ...command);
       check(`renamed native records name move-back remedy for ${command[0]}, open=${open}`, `${result.stdout}${result.stderr}`.includes(project) && /move.*back/.test(`${result.stdout}${result.stderr}`));

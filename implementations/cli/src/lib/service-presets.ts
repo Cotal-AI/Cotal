@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, isCommandFailure, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { metadataPositionals } from "./command-path.js";
+import { shellWord } from "./endpoint-errors.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
 import { cliVersion } from "./version.js";
 
@@ -45,8 +46,8 @@ export function resolveServicePreset(name: string): ServicePreset {
   return row.preset;
 }
 
-function optionProperties(preset: ServicePreset) {
-  const adapter = resolveServiceAdapter(preset.adapter, {}, false);
+function optionProperties(preset: ServicePreset, registeredOnly = false) {
+  const adapter = resolveServiceAdapter(preset.adapter, {}, false, undefined, registeredOnly);
   return { adapter, properties: adapter.declaration.optionsSchema.properties as Record<string, Record<string, unknown>>, required: new Set((adapter.declaration.optionsSchema.required ?? []) as string[]) };
 }
 
@@ -71,8 +72,8 @@ function placeholder(kind: string | undefined, type: unknown): string {
 
 /** One source for parsing, help, completion and option collection. Complex options use bounded
  *  JSON strings; scalar fields are parsed according to their declared type, without coercion. */
-export function servicePresetFlags(preset: ServicePreset): FlagSpec[] {
-  const { adapter, properties, required } = optionProperties(preset);
+export function servicePresetFlags(preset: ServicePreset, registeredOnly = false): FlagSpec[] {
+  const { adapter, properties, required } = optionProperties(preset, registeredOnly);
   const flags: FlagSpec[] = [], names = new Set(Object.keys(properties).map(presetFlagName));
   if (names.size !== Object.keys(properties).length) throw new CommandFailure("refused", "UNSUPPORTED", "the preset option names cannot be represented without shadowing CLI flags; use a validated --file definition instead");
   for (const [option, schema] of Object.entries(properties)) {
@@ -211,7 +212,8 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   // The line also names each default this space cannot fill, so it works the first time it is run.
   if (missing.length) {
     const unfilled = presetUnfilledDefaults(preset, space, root, given);
-    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: `${line} ${[...missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()), ...unfilled.map((row) => `--${row.name} ${row.value}`)].join(" ")}`, selfContained: true, remedyIsCommand: true });
+    const onSpace = given.space === undefined ? "" : ` --space ${shellWord(space)}`;
+    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: `${line} ${[...missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()), ...unfilled.map((row) => `--${row.name} ${row.value}`)].join(" ")}${onSpace}`, selfContained: true, remedyIsCommand: true });
   }
   const values: ParsedArgs["values"] = { ...presetDefaultOptions(preset, space, root, given, migrate), ...given };
   const options = parsedPresetOptions(preset, values);

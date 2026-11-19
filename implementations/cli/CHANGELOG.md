@@ -1,5 +1,41 @@
 # @cotal-ai/cli
 
+## 0.171.2
+
+### Patch Changes
+
+- d283195: Backup commands now explain symbolic-link loops, `up` rejects an empty `--restore` path before starting anything, and setup help labels the self-hosted example as interactive while the installation guide shows the full scripted command.
+- 7a433a6: Report self-update registry connection failures with npm's error code and the scoped registry setting to check instead of asking users to wait for publication.
+- 576ce19: Show usable next steps for manager status and credential minting, and retire durable memberships when leaving a channel that switched to live delivery.
+- ae7fa49: `pnpm dlx` runs under pnpm 11, which start the package from its global virtual store, are now recognised. The entry card and `status` suggest `pnpm dlx cotal-ai` commands instead of Node plus a store path, and `setup` offers the global install it offers under other `pnpm dlx` runs.
+- 31dc8ae: Keep the requested space in broker preset retries and preserve the saved manager settings when a console host override or stack start is rejected.
+- 2af222f: Allow self-update and local space startup through a protected symbolic-link home, and discard staged builds when the update snapshot fails.
+- 6eea486: Resolve foreground persona and broker log paths from the invoking folder, accept log rotation flags with a manifest log path, and report incompatible manifest flags as a usage refusal.
+- 66aef17: Shutdown preserves the requested agent teardown in its confirmation commands, setup points stopped projects to startup, and spawn offers compatible launch and manager restart commands.
+- 7a433a6: Report lost registry connectivity before self-update replacement as an unchanged installation instead of a release-propagation failure or raw npm errors.
+- 7a433a6: Wait for a simultaneous self-update of the same npm installation and recheck its installed CLI before replacing packages again.
+- 0a5fe42: Quote the folder path in the `backup create` permission error so the suggested `chmod` command works for paths with spaces.
+- 112c892: Fix `cotal down` leaving delivery and the broker running when the manager records a completed stop and exits during the receipt check.
+- 7a433a6: Continue self-update from the restored version, show when an update is still running, and remove abandoned release archive caches without disturbing active checks.
+- eb18727: Allow `space forget` to remove a damaged registration when another space's registry file is damaged too, instead of refusing with a recovery command that cannot run either.
+- a45b7bd: `cotal status` now shows how to list spaces and select a different one.
+- a55bdb0: Refuse invalid spawn arguments and inaccessible working directories before provisioning credentials, reject pi resume flags, and remove Hermes launch credentials, sockets and disposable profiles after stopping.
+- 4c5ba54: Keep npm-installed Cotal usable when Node is off PATH, leave recovery files untouched on offline updates, and preserve the npm launcher when the shell installer finds a recorded daemon service.
+- 7a433a6: Self-update reports when a signal stops npm's dependency check, and `cotal update` accepts the recorded broker URL of a stopped local stack without restarting it.
+- Updated dependencies [08ac896]
+- Updated dependencies [87b8626]
+- Updated dependencies [d388cfe]
+- Updated dependencies [576ce19]
+- Updated dependencies [31dc8ae]
+- Updated dependencies [2af222f]
+- Updated dependencies [7a433a6]
+- Updated dependencies [7a433a6]
+- Updated dependencies [a55bdb0]
+- Updated dependencies [7fbd856]
+- Updated dependencies [5ce3bda]
+  - @cotal-ai/core@0.171.2
+  - @cotal-ai/workspace@0.171.2
+
 ## 0.171.1
 
 ### Patch Changes

@@ -73,7 +73,7 @@ const baseCommands: Command[] = [
     flags: setupFlags,
     validate: validateSetupArguments,
     outputs: ["json", "plain"],
-    examples: [{ command: "cotal setup", note: "choose your application and prepare a space" }, { command: "cotal setup --destination local -H claude --project <dir> -s <name> -y", note: "prepare a local space without questions" }, { command: "cotal setup --destination self-hosted --connection-file <bundle.json>", note: "connect to a space that runs elsewhere" }],
+    examples: [{ command: "cotal setup", note: "choose your application and prepare a space" }, { command: "cotal setup --destination local -H claude --project <dir> -s <name> -y", note: "prepare a local space without questions" }, { command: "cotal setup --destination self-hosted --connection-file <bundle.json>", note: "asks for the remaining inputs in a terminal" }],
     run: setup,
   },
   {
@@ -609,9 +609,11 @@ const baseCommands: Command[] = [
     summary:
       "run an agent in this terminal; -d launches it through a manager and returns once it joins, --on <instance> launches through that manager and attaches",
     examples: [{ command: "cotal spawn", note: "run an agent in this terminal" }, { command: "cotal spawn -d", note: "launch through a manager and return" }, { command: "cotal spawn <persona> -p \"review PR 12\"", note: "start a persona with a task" }],
-    usage: "cotal spawn [<persona>] [--file <persona-file>] [-d | --foreground] [--dry-run] [options]",
+    usage: "cotal spawn [<persona> | --file <persona-file>] [-d | --foreground] [--dry-run] [options]",
     positionals: "[<persona>]",
     flags: spawnFlags,
+    // Persisted launchers still parse --config. Do not list it for public callers.
+    flagNames: spawnFlags.filter((flag) => flag.name !== "config").map((flag) => flag.name),
     outputs: ["json", "plain"],
     validate: validateSpawnArguments,
     run: spawn,

@@ -17,8 +17,23 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const cli = join(repo, "bin/dist/cotal.js");
 const root = mkdtempSync(join(tmpdir(), "uas-"));
 const home = join(root, "home"), config = join(root, "config"), runtime = join(root, "run"), native = join(root, "native");
-for (const dir of [home, config, runtime, native, join(root, "tmp")]) mkdirSync(dir, { mode: 0o700 });
+const missing = join(root, "missing");
+for (const dir of [home, config, runtime, native, missing, join(root, "tmp")]) mkdirSync(dir, { mode: 0o700 });
 const nativeLog = join(root, "native.log");
+const platform = join(root, "platform.mjs");
+writeFileSync(platform, `
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const { existsSync, lstatSync } = fs;
+fs.existsSync = (file) => file === '/run/systemd/system' ? process.env.SMOKE_SYSTEMD !== 'absent' : existsSync(file);
+fs.lstatSync = (file, ...args) => {
+  if (file === '/run/user/' + process.geteuid() && !process.env.XDG_RUNTIME_DIR)
+    throw Object.assign(new Error('missing default runtime directory'), { code: 'ENOENT' });
+  return lstatSync(file, ...args);
+};
+syncBuiltinESMExports();
+process.execArgv = [];
+`);
 const env: NodeJS.ProcessEnv = {
   PATH: `${native}:${process.env.PATH}`, HOME: home, USER: "smoke", LOGNAME: "smoke",
   XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, XDG_DATA_HOME: join(root, "data"),
@@ -27,7 +42,7 @@ const env: NodeJS.ProcessEnv = {
   COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1", NO_COLOR: "1",
 };
 for (const tool of ["systemctl", "loginctl", "launchctl", "schtasks"]) {
-  writeFileSync(join(native, tool), `#!${process.execPath}\nconst fs = require('node:fs'); const args = process.argv.slice(2);\nfs.appendFileSync(${JSON.stringify(nativeLog)}, JSON.stringify({tool:${JSON.stringify(tool)},args})+'\\n');\nif (${JSON.stringify(tool)} === 'systemctl' && args.join(' ') === '--user show-environment') { console.log(${JSON.stringify(`HOME=${home}\nXDG_CONFIG_HOME=${config}`)}); } else { process.exit(99); }\n`, { mode: 0o700 });
+  writeFileSync(join(native, tool), `#!${process.execPath}\nconst fs = require('node:fs'); const args = process.argv.slice(2);\nfs.appendFileSync(${JSON.stringify(nativeLog)}, JSON.stringify({tool:${JSON.stringify(tool)},args})+'\\n');\nif (${JSON.stringify(tool)} === 'systemctl' && args.join(' ') === '--user show-environment') { if (process.env.SMOKE_SYSTEMD === 'bus-down') process.exit(1); console.log(${JSON.stringify(`HOME=${home}\nXDG_CONFIG_HOME=${config}`)}); } else { process.exit(99); }\n`, { mode: 0o700 });
 }
 const version = JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")).version as string;
 const seed = join(config, "cotal/seed");
@@ -36,7 +51,7 @@ for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(
 writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }), { mode: 0o600 });
 writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: version }), { mode: 0o600 });
 function run(args: string[], overrides: NodeJS.ProcessEnv = {}) {
-  const result = spawnSync(process.execPath, [cli, ...args], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 15_000 });
+  const result = spawnSync(process.execPath, ["--import", platform, cli, ...args], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 15_000 });
   assert.ifError(result.error);
   return { code: result.status, text: `${result.stdout}${result.stderr}`.trim() };
 }
@@ -68,6 +83,24 @@ for (const text of [enabled, read]) {
 }
 assert.equal(existsSync(nativeLog), false, "missing daemon guidance must not call a service manager");
 assert.match(preference(["--auto"], { XDG_RUNTIME_DIR: undefined }), /cotal daemon install/);
+for (const overrides of [{ PATH: missing }, { SMOKE_SYSTEMD: "absent", XDG_RUNTIME_DIR: undefined }]) {
+  for (const args of [["install", "--dry-run"], ["setup", "--no-input"]]) {
+    const result = run(["daemon", ...args, "--json"], overrides);
+    assert.equal(result.code, 2, result.text);
+    const { error } = JSON.parse(result.text);
+    assert.equal(error.code, "UNSUPPORTED");
+    assert.match(error.message, /requires systemd/);
+    assert.match(error.remedy, /If no daemon is installed or running.*cotal daemon serve/);
+    assert.match(error.remedy, /cotal update --self/);
+  }
+  const advice = preference(["--auto"], overrides);
+  assert.match(advice, /requires systemd/);
+  assert.doesNotMatch(advice, /cotal daemon install/);
+}
+const noRuntime = JSON.parse(run(["daemon", "status", "--json"], { XDG_RUNTIME_DIR: undefined }).text);
+assert.equal(noRuntime.error.cause.code, "NO_RUNTIME_DIR");
+assert.match(noRuntime.error.remedy, /systemd-logind or pam_rundir.*0700.*XDG_RUNTIME_DIR/);
+assert.equal(existsSync(nativeLog), false, "unsupported installs and setup do not query the supervisor");
 assert.equal(preference(["--auto"], { COTAL_NO_UPDATE_CHECK: "1" }), "Automatic updates: on (disabled by COTAL_NO_UPDATE_CHECK=1)");
 {
   const notifyJson = JSON.parse(preference(["--notify", "--json"]));
@@ -156,6 +189,23 @@ try {
   await start(false);
   assert.equal(JSON.parse(run(["daemon", "status", "--json"]).text).result.update.automatic, false);
   assert.match(preference(["--auto"]), /cotal daemon install/, "foreground daemon cannot own the unattended schedule");
+  const otherHome = join(root, "other-home");
+  mkdirSync(otherHome, { mode: 0o700 });
+  const otherEnv = { COTAL_HOME: otherHome };
+  const foreign = run(["daemon", "status", "--json"], otherEnv);
+  assert.equal(foreign.code, 2, foreign.text);
+  assert.equal(JSON.parse(foreign.text).error.cause.code, "PEER_NOT_LOCK_OWNER");
+  const ownerSettings = readFileSync(settingsFile, "utf8");
+  assert.equal(JSON.parse(preference(["--auto", "off", "--json"], otherEnv)).result.enabled, false);
+  for (const args of [["--auto", "on", "--json"], ["--auto", "--json"]]) {
+    const result = JSON.parse(preference(args, otherEnv));
+    assert.equal(result.outcome, "ok");
+    assert.equal(result.result.enabled, true);
+    assert.equal(result.result.file, join(otherHome, "update-settings.json"));
+    assert.match(result.result.advice, /^Could not check the automatic update schedule: .*nothing was sent\.$/);
+  }
+  assert.equal(JSON.parse(readFileSync(join(otherHome, "update-settings.json"), "utf8")).auto, true);
+  assert.equal(readFileSync(settingsFile, "utf8"), ownerSettings);
   await stop();
   // Render a receipt and unit only. No install, start or registration command is invoked.
   const originalEnv = { ...process.env }, argv = process.argv, execArgv = process.execArgv;
@@ -180,6 +230,7 @@ try {
   assert.equal(typeof status.nextAttempt, "string");
   assert.equal(preference(["--auto", "on"]), "Automatic updates: on");
   assert.equal(preference(["--auto"]), "Automatic updates: on");
+  assert.equal(preference(["--auto"], { PATH: missing, SMOKE_SYSTEMD: "absent" }), "Automatic updates: on");
   await stop();
   writeFileSync(join(home, "update-attempt.json"), "{unreadable", { mode: 0o600 });
   await start(true);
@@ -196,6 +247,10 @@ try {
   console.log("PASS unreadable attempt record retains inactive-schedule advice despite automatic eligibility");
   assert.equal(preference(["--auto", "off"]), "Automatic updates: off");
   assert.equal(saved().auto, false);
+  const busDown = run(["daemon", "install", "--dry-run", "--json"], { SMOKE_SYSTEMD: "bus-down" });
+  assert.equal(busDown.code, 2, busDown.text);
+  assert.equal(JSON.parse(busDown.text).error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.match(JSON.parse(busDown.text).error.remedy, /logged-in session/);
   const calls = readFileSync(nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
   assert.ok(calls.length > 0);
   assert.ok(calls.every(call => call.tool === "systemctl" && call.args.join(" ") === "--user show-environment"), "only read-only ownership observation is allowed");

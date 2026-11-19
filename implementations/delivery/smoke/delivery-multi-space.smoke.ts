@@ -8,6 +8,8 @@
  *    the one it cannot;
  *  - each space's control rail answers through its own lane, each lease row is held by that space's
  *    own delivery identity, and a CONNZ sweep of each account lists only that space's identities;
+ *  - a lane with no membership store at startup serves durable joins and fills the store after the
+ *    provisioner restores it without restarting the host;
  *  - an outside party re-signing one lane's credential in the root store is adopted by that lane
  *    before the old credential expires, while another lane's connections stay untouched;
  *  - removing a space closes its lane and releases its lease under traffic to the others, an invalid
@@ -41,11 +43,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, s
 import { cpus, loadavg, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { parseArgs } from "node:util";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator, NoRespondersError, RequestError, type NatsConnection } from "@nats-io/transport-node";
 import {
   CotalEndpoint, CONTROL_DELIVERY, DEV_OWNER, MEMBERSHIP_INBOX_PREFIX, composeSpaceAuth, controlServiceSubject, createBrokerAuth,
   createSpaceAccountAuth, deliveryLeaseHolderFor, isReachable, mintConnectionEvictorCreds, mintCreds, mintLifecycleUid,
-  mintMembershipObserverCreds, newIdentity, principalKey, provisionAgent, serverConfig, setupSpaceStreams, type CotalMessage, type SpaceAuth,
+  membershipBucket, mintMembershipObserverCreds, newIdentity, principalKey, provisionAgent, reconcileSpaceMemoryBuckets,
+  serverConfig, setupSpaceStreams, type CotalMessage, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
   DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, connectionEvictorCredsKey, deliveryCredsKey,
@@ -192,14 +196,34 @@ async function prober(i: number): Promise<() => Promise<boolean>> {
   };
 }
 
-/** A read-only endpoint in space `i`, for its lease row. */
-async function inspector(i: number, profile: "delivery" | "supervisor" = "delivery"): Promise<CotalEndpoint> {
+/** An inspection endpoint in space `i`. */
+async function inspector(i: number, profile: "delivery" | "supervisor" | "admin" = "delivery"): Promise<CotalEndpoint> {
   const id = newIdentity();
   const ep = new CotalEndpoint({ space: names[i]!, servers, creds: await mintCreds(auths[i]!, id, profile), card: { id: id.id, name: "msd-inspector", kind: "endpoint" }, channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false });
   ep.on("error", () => {});
   await ep.start();
   endpoints.push(ep);
   return ep;
+}
+
+/** Join through the public endpoint and verify the durable row through the delivery rail. */
+async function joinForMembershipFeed(i: number): Promise<string> {
+  const space = names[i]!, auth = auths[i]!, identity = newIdentity(), lifecycleUid = mintLifecycleUid();
+  const channel = "general";
+  const provisioner = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "provisioner"), channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false, card: { name: "feed-prov", kind: "endpoint" } });
+  provisioner.on("error", () => {});
+  endpoints.push(provisioner);
+  await provisioner.start();
+  const creds = await provisionAgent(provisioner, auth, identity, { subscribe: [channel], allowSubscribe: [channel], lifecycleUid });
+  await provisioner.stop();
+  const member = new CotalEndpoint({ space, servers, creds, lifecycleUid, channels: [], card: { id: identity.id, name: "feed-member", kind: "agent" } });
+  member.on("error", () => {});
+  endpoints.push(member);
+  await member.start();
+  const joined = await member.joinChannel(channel);
+  const memberships = await member.fetchMemberships(channel);
+  check(`${space} confirms a durable join through the delivery rail`, joined.durable && memberships?.some((row) => row.channel === channel) === true, { joined, memberships });
+  return principalKey(DEV_OWNER, identity.id).key;
 }
 
 /** Every client connection the broker holds in space `i`'s account, read with that space's own
@@ -261,11 +285,38 @@ async function suite(): Promise<void> {
   const lease = (ep: CotalEndpoint) => ep.readDeliveryLease(0);
 
   // ---- startup serves the spaces it can and retries the rest -------------------------------------
-  writeManifest(manifestOf([A, C]));
+  writeManifest(manifestOf([A, B, C]));
   {
-    const run = start(["deliver", "--spaces", manifest, "--server", servers]);
+    const membershipStream = `KV_${membershipBucket(B)}`;
+    const deleter = newIdentity();
+    const deleteCreds = await mintCreds(auths[1]!, deleter, "membership-store-recreate");
+    const nc = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(deleteCreds)), inboxPrefix: `_INBOX_${deleter.id}` });
+    try {
+      check("the target's derived membership store is removed before startup", await (await jetstreamManager(nc)).streams.delete(membershipStream));
+    } finally {
+      await nc.close();
+    }
+    const run = start(["deliver", "--spaces", manifest, "--server", servers, "--root", root]);
     check("a manifest naming an unserviceable space starts the host serving the others and names the one it retries",
-      await until(() => run.text().includes("✓ delivery host up") || run.child.exitCode !== null, 120_000) && run.text().includes(`✓ delivery host up (1 space(s): ${A}; retrying ${C})`), run.text().slice(-800));
+      await until(() => run.text().includes("✓ delivery host up") || run.child.exitCode !== null, 120_000) && run.text().includes(`✓ delivery host up (2 space(s): ${A}, ${B}; retrying ${C})`), run.text().slice(-1200));
+    const missing = `membership store ${membershipStream} is missing`;
+    check("the target reports its missing membership store but has a ready delivery lease",
+      run.text().includes(missing) && (await lease(inspectB))?.ready === true, run.text().slice(-2000));
+    const controlId = await joinForMembershipFeed(0);
+    const targetId = await joinForMembershipFeed(1);
+    const control = await inspector(0, "admin"), target = await inspector(1, "admin");
+    const observes = async (reader: CotalEndpoint, id: string, after: number) => {
+      const { asOf, members } = await reader.readMembership();
+      return (asOf ?? 0) > after && members.some((row) => row.id === id && row.durable.includes("general"));
+    };
+    const restoredAt = Date.now();
+    const restored = await reconcileSpaceMemoryBuckets({ servers, space: B, creds: await mintCreds(auths[1]!, newIdentity(), "provisioner") });
+    check("the provisioner restored the missing membership store", restored.some((row) => row.stream === membershipStream && row.recreated), restored);
+    check("the control lane writes a fresh heartbeat and the durable member row",
+      await until(() => observes(control, controlId, restoredAt), 25_000), await control.readMembership());
+    check("the same host writes a heartbeat and durable member row after the target store is restored",
+      await until(() => observes(target, targetId, restoredAt), 64_000 - (Date.now() - restoredAt)),
+      { snapshot: await target.readMembership(), targetLog: run.text().split("\n").filter((line) => line.startsWith(`[${B}] `)) });
     check("the unserviceable space is reported by name with its reason and retried",
       await until(() => run.text().split(`delivery host: space "${C}" could not be served (`).length > 2, 30_000), run.text().slice(-800));
     check("the space that opened serves while the other is retried", (await lease(inspectA))?.ready === true);
@@ -367,7 +418,7 @@ async function suite(): Promise<void> {
     await until(() => host.text().slice(mark).includes("keeping the 2 lane(s) already open"), 30_000) && await askA() && await askD(), host.text().slice(mark, mark + 400));
   writeManifest(manifestOf([A, B, D]));
   check("re-adding B opens its lane again", await until(() => host.text().includes(`delivery host: space "${B}" opened - 3 lane(s) up`), 60_000), host.text().slice(-600));
-  check("B's control rail answers again and its lease is ready", await until(askB, 15_000) && (await lease(inspectB))?.ready === true);
+  check("B's control rail answers again and its lease is ready", await until(async () => await askB() && (await lease(inspectB))?.ready === true, 15_000));
 
   // ---- one lane loses its lease to another daemon -----------------------------------------------
   const foreignId = newIdentity();
