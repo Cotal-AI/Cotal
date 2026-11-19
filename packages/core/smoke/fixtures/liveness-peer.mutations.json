@@ -111,7 +111,7 @@
       "name": "the answer carries the lease holder alongside presence, leaking identity to a non-owner peer",
       "file": "packages/core/src/endpoint-liveness.ts",
       "find": "        const answer: LivenessAnswer = { plane, responder, instance };",
-      "replace": "        const answer = { plane, responder, instance, holder: this.card.id } as LivenessAnswer;",
+      "replace": "        const answer = { plane, responder, instance, holder: this.actor } as LivenessAnswer;",
       "expectRed": "CELL D8",
       "cell": "CELL D8: the wire answer carries EXACTLY {plane, responder, instance} - no holder, pid, root, lease instance id or roster"
     },
