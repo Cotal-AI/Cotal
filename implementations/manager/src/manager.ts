@@ -1,4 +1,4 @@
-import { UserProvision, type ManagedEnrollment, type ProvisionUserAgentOpts, type ProvisionedUserAgent, type UserAgentRefusal } from "./user-provision.js";
+import { UserProvision, type ProvisionUserAgentOpts, type ProvisionedUserAgent, type UserAgentRefusal } from "./user-provision.js";
 import { TurnRelay, goalKey, caughtEnvelope, TURN_ANSWER_RETENTION_MS, onceTurnNote, turnHoldToken, type PendingTurn, type OnceRetire, type TurnAcceptance } from "./turn-relay.js";
 import { createHash, randomBytes } from "node:crypto";
 import { checkEventStartup, EventStateConflictError, isPermissionDenied, chatStream, drainAndClose, requestSafeReconnect } from "@cotal-ai/core";
@@ -86,8 +86,8 @@ import {
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError, retainConnectorSeat } from "@cotal-ai/workspace";
 import { logicalExecutionEntry, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlEndpoint, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type RenewalRecord, type SeatCap, } from "@cotal-ai/workspace";
+import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlEndpoint, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -4871,8 +4871,6 @@ export class Manager {
       .finally(() => this.releaseLifecycle());
   }
 
-  private servedSpawnRequest(served: string, caller: EpCaller | undefined): { served: string; runId?: string } { return this.userProvision.servedSpawnRequest(served, caller); }
-
   private provisionUserAgent(name: string, opts: ProvisionUserAgentOpts): Promise<ProvisionedUserAgent | UserAgentRefusal> { return this.userProvision.provisionUserAgent(name, opts); }
 
   /** Shred a user agent's secret family from the store and from disk. Every removal is attempted,
@@ -4883,10 +4881,6 @@ export class Manager {
     for (const path of [family.actorToken, family.sentinelCreds, family.health])
       if (path) await attemptCleanup(unshredded, `file ${path}`, () => rmSync(path, { force: true }));
   }
-
-  private delegatedMeshRecord(): MeshEntry & { userAuth: UserAuthInfo } { return this.userProvision.delegatedMeshRecord(); }
-
-  private composeManagedHandoff(enrolled: ManagedEnrollment, actorToken: string): ManagedLifecycleHandoff { return this.userProvision.composeManagedHandoff(enrolled, actorToken); }
 
   /**
    * WHY A SEAT LEFT — one line, at the one place every free path passes through.
@@ -5056,14 +5050,6 @@ export class Manager {
     return this.sessionRecovery.forkProvenance(a);
   }
 
-  private refuseCarriedFork(a: ManagedAgent, timeoutMs: number): Promise<string | undefined> {
-    return this.sessionRecovery.refuseCarriedFork(a, timeoutMs);
-  }
-
-  private refuseLateCarriedFork(a: ManagedAgent, timeoutMs: number): Promise<void> {
-    return this.sessionRecovery.refuseLateCarriedFork(a, timeoutMs);
-  }
-
   private readManagedSession(a: ManagedAgent): string {
     return this.sessionRecovery.readManagedSession(a);
   }
@@ -5140,8 +5126,6 @@ export class Manager {
     this.reapChildrenOf(this.managedPrincipal(a));
   }
   private nameError(name: string): string | undefined { return this.namesCapacity.nameError(name); }
-  private nameInUse(name: string, live?: Set<string>): boolean { return this.namesCapacity.nameInUse(name, live); }
-  private uniqueName(base: string, unavailable: ReadonlySet<string> = new Set()): string { return this.namesCapacity.uniqueName(base, unavailable); }
 
   /** Spawn a teammate by persona ref (`name` loads `.cotal/agents/<name>.md`; the peer presents
    *  under that file's own `name:`), as if a peer asked via the control plane. Used to pre-spawn the
@@ -6002,8 +5986,8 @@ export class Manager {
     // SYNCHRONOUS (existsSync / registry / accessSync / readFileSync — no await), so the gate stays
     // atomic: the capacity snapshot and the reserve land in one tick (P4a/P4c), and two concurrent
     // spawns can't overshoot the ceiling or pick the same name.
-    const occupancy = this.occupancy(); // prunes expired cooling stamps; counts each name once
-    if (occupancy.used >= MAX_AGENTS) return { ok: false, error: this.capacityRefusal(occupancy) };
+    const occupancy = this.namesCapacity.occupancy(); // prunes expired cooling stamps; counts each name once
+    if (occupancy.used >= MAX_AGENTS) return { ok: false, error: this.namesCapacity.capacityRefusal(occupancy) };
 
     // Harness preflight before reserving a slot or minting — a missing `claude`/`opencode` binary
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
@@ -6067,7 +6051,7 @@ export class Manager {
       if (!this.remoteAuthority?.enrollManagedAgent)
         return { ok: false, error: `${delegatedBy}, which needs a host that enrolls managed agents (remoteAuthority.enrollManagedAgent); a delegated seat has no local grant path` };
       try {
-        this.delegatedMeshRecord();
+        this.userProvision.delegatedMeshRecord();
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
       }
@@ -6243,7 +6227,7 @@ export class Manager {
     // `start` op's checks, and no connector may receive a blank one (#2862).
     if (model !== undefined && !model.trim()) return { ok: false, error: "model: must not be empty" };
     if (variant !== undefined && !variant.trim()) return { ok: false, error: "variant: must not be empty" };
-    const idErr = this.nameError(identityName);
+    const idErr = this.namesCapacity.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${where}: ${idErr}` };
     // #966: a seat labelled `manager` that cannot spawn is a worker wearing a label, and the label
     // is what other agents ROUTE on (role is the anycast address). The gap is silent today because
@@ -6299,7 +6283,7 @@ export class Manager {
     const held = this.retirement.held(identityName);
     if (held !== undefined) {
       hooks?.onEffect?.();
-      void this.deprovision(held.target).catch(() => {});
+      void this.retirement.deprovision(held.target).catch(() => {});
       const err = lifecycleBlocked("failed-precondition",
         `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name.`,
         { blockedOp: "retirement", opId: held.opId, remedy: "retry" });
@@ -6354,12 +6338,12 @@ export class Manager {
     let name: string;
     for (;;) {
       if (hardPinned) {
-        if (this.nameInUse(identityName))
+        if (this.namesCapacity.nameInUse(identityName))
           return { ok: false, code: "already-exists", error: `the name "${identityName}" is hard-pinned (${opts.resolved ? "manifest-declared" : "--name/identity override"}) but is already held by a live incarnation (managed here, an unmanaged foreground/connector session, or another manager's agent); a pinned same-name collision refuses at accept - pick another name or despawn the existing one` };
         name = identityName;
       } else {
         try {
-          name = this.uniqueName(identityName, unavailable);
+          name = this.namesCapacity.uniqueName(identityName, unavailable);
         } catch (e) {
           return { ok: false, error: rejectionText(e) };
         }
@@ -6396,7 +6380,7 @@ export class Manager {
         }
         // Another spawn may have reserved the candidate while the disk/broker proof awaited.
         // Recheck in the same synchronous window as the cap and reservation below.
-        if (this.nameInUse(name) || (!hardPinned && name !== identityName && this.namesCapacity.numberedIssued(name))) {
+        if (this.namesCapacity.nameInUse(name) || (!hardPinned && name !== identityName && this.namesCapacity.numberedIssued(name))) {
           if (!hardPinned) continue;
           return { ok: false, code: "already-exists", error: `the hard-pinned name "${name}" became occupied while checking event startup; pick another name` };
         }
@@ -6454,7 +6438,7 @@ export class Manager {
       // launch. Minting it inside `runtime.spawn` (as it used to be) put the processes on disk
       // before anything recorded how to address them, so a crash in that window left a live seat
       // outside every manager and the successor retired the slot over it.
-      const custody = this.reserveCustody(runtime);
+      const custody = this.seatCustody.reserveCustody(runtime);
       // ACCEPT SEAM (spawn-as-action): the incarnation identity is minted and NOTHING has
       // been provisioned yet — the action serve path binds the goal + replies the acceptance HERE. A
       // throw (bind conflict / duplicate goalId) aborts the spawn before provisioning: the catch below
@@ -6552,7 +6536,7 @@ export class Manager {
           lifecycleUid,
           enrollmentCaller: authenticatedCaller ? { owner: authenticatedCaller.owner, actor: authenticatedCaller.actor } : undefined,
           delegatedIntent: opts.delegatedIntent,
-          ...(opts.served !== undefined ? { spawnRequest: this.servedSpawnRequest(opts.served, authenticatedCaller) } : {}),
+          ...(opts.served !== undefined ? { spawnRequest: this.userProvision.servedSpawnRequest(opts.served, authenticatedCaller) } : {}),
           // Hold the name at the UID the host enrolled for the intent's user before any later local
           // step runs, so no later failure, its refusal included, releases a lifecycle that only that
           // user's retirement intent retires.
@@ -6715,7 +6699,7 @@ export class Manager {
       let spec: LaunchSpec | undefined;
       let handle: AgentHandle;
       if (runtime.spawnDelegated) {
-        const handoff = this.composeManagedHandoff(enrolled!.material, enrolled!.actorToken);
+        const handoff = this.userProvision.composeManagedHandoff(enrolled!.material, enrolled!.actorToken);
         if (this.delegatedLaunched.has(lifecycleUid))
           throw new Error(`lifecycle ${lifecycleUid} was already handed to runtime "${runtime.kind}"; a lifecycle is handed off at most once`);
         this.delegatedLaunched.add(lifecycleUid);
@@ -6724,7 +6708,7 @@ export class Manager {
           { agent, persona: readFileSync(configPath, "utf8"), managerInstanceId: this.managerInstanceId, role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events, eventPayloads },
           handoff,
         );
-        this.watchConnectorHolder(handle, holder);
+        watchConnectorHolder(handle, holder);
       } else {
         if (carried) {
           seatHome = join(this.workspaceRoot, ".cotal", "seat-homes", lifecycleUid);
@@ -6734,7 +6718,7 @@ export class Manager {
         spec = connector.buildLaunch(launchOpts);
         if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);
         spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
-        handle = await this.spawnCustodied(runtime, name, spec, cwd, custody);
+        handle = await this.seatCustody.spawnCustodied(runtime, name, spec, cwd, custody);
       }
       if (onceTask && !handle.waitForExit)
         throw new Error(`once: runtime "${handle.kind}" cannot prove the seat's exit, which is what ends its task when the seat goes first`);
@@ -6829,8 +6813,7 @@ export class Manager {
           await casStaticSlot(t, { ...slot.row, phase: "active", ...(handle.reference ? { runtime: handle.reference } : {}) }, slot.revision);
         });
       }
-      this.agents.set(name, managed);
-      this.namesCapacity.placed(name);
+      this.place(name, managed);
       if (managed.once) this.watchOnceExit(managed);
       // The live slot now owns teardown — freeSlot deprovisions this identity on exit — so the
       // orphan-rollback in `finally` no longer applies to it.
@@ -6862,13 +6845,12 @@ export class Manager {
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
       if (!readiness.ok) {
         this.watchExit(managed);
-        if (managed.launch.carried) void this.refuseLateCarriedFork(managed, readinessTimeoutMs);
+        if (managed.launch.carried) void this.sessionRecovery.refuseLateCarriedFork(managed, readinessTimeoutMs);
         // A once seat is never left running with nothing to do, and its stop does not wait on the
         // spawn's terminal, whose write can stall. The spawn keeps that terminal: the stop lets go
         // of the spawn goal first. Its task was never served and is cancelled with the verdict.
         if (managed.once) {
-          this.agentGoals.delete(managed.name);
-          this.stopOnceSeat(managed, "readiness-timeout");
+          this.endOnceBeforeServe(managed, "readiness-timeout");
         }
         await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });
         return { ok: false, error: readiness.detail };
@@ -6883,9 +6865,7 @@ export class Manager {
           const watch = { ready: "opened its input screen without the prompt", failed: "failed", exited: "saw the seat exit", pending: "had not ended" }[startup];
           const error = `${name} joined, but ${connector.onceNeedsConfirmed}: its startup watch ${watch}, so it cannot take a once task`;
           this.watchExit(managed);
-          this.agentGoals.delete(managed.name);
-          managed.once!.stopReason ??= "launch-failed";
-          this.stopOnceSeat(managed, "launch-failed");
+          this.endOnceBeforeServe(managed, "launch-failed", "launch-failed");
           await hooks?.onOutcome?.({ kind: "failed", data: { error } });
           return { ok: false, error };
         }
@@ -6902,11 +6882,10 @@ export class Manager {
         }
       }
       if (managed.launch.carried) {
-        const refused = await this.refuseCarriedFork(managed, readinessTimeoutMs);
+        const refused = await this.sessionRecovery.refuseCarriedFork(managed, readinessTimeoutMs);
         if (refused !== undefined && managed.terminalizing) { hooks?.onTerminalDeferred?.(); return { ok: false, error: refused }; }
         if (refused !== undefined) {
-          this.stopHandle(managed, false, "carried-fork-refused");
-          this.trackStoppedHandle(managed, true, "carried-fork-refused");
+          this.stopAndTrack(managed, "carried-fork-refused");
           await hooks?.onOutcome?.({ kind: "failed", data: { error: refused } });
           return { ok: false, error: refused };
         }
@@ -6914,22 +6893,21 @@ export class Manager {
       if (managed.restart) {
         if (connector.supportsSessionContinuation) {
           try {
-            await this.armSessionRecovery(managed);
+            await this.sessionRecovery.armSessionRecovery(managed);
             // The capability flags are only a claim. An exact seat is recorded once the connector
             // has proved its session over its authenticated control endpoint, never before.
             if (exact && !managed.restart.armed)
               throw new Error("continuity: exact needs the connector to prove its session over an authenticated control endpoint, and it supplied none");
-            managed.launch.sessionId = this.readManagedSession(managed);
+            managed.launch.sessionId = this.sessionRecovery.readManagedSession(managed);
             if (reopenSession !== undefined && managed.launch.sessionId !== reopenSession)
               throw new Error(`continuity: exact asked for session ${reopenSession}, the connector bound ${managed.launch.sessionId}`);
             if (exact) {
               managed.continuity = { space: this.space, name, connector: agent, cwd };
-              this.recordContinuity(managed, managed.launch.sessionId);
+              this.sessionRecovery.recordContinuity(managed, managed.launch.sessionId);
             }
           } catch (error) {
             const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${rejectionText(error)}`;
-            this.stopHandle(managed, false, "session-bind-failed");
-            this.trackStoppedHandle(managed, true, "session-bind-failed");
+            this.stopAndTrack(managed, "session-bind-failed");
             await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
             return { ok: false, error: detail };
           }
@@ -6938,11 +6916,10 @@ export class Manager {
         }
         if (managed.restart.policy) {
           try {
-            this.recordSeat(managed);
+            this.seatCustody.recordSeat(managed);
           } catch (error) {
             const detail = `${managed.name} joined, but supervise cannot cover a manager restart for it: ${rejectionText(error)}`;
-            this.stopHandle(managed, false, "supervise-record-failed");
-            this.trackStoppedHandle(managed, true, "supervise-record-failed");
+            this.stopAndTrack(managed, "supervise-record-failed");
             await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
             return { ok: false, error: detail };
           }
@@ -6950,7 +6927,7 @@ export class Manager {
       }
       // An unsupervised seat a successor could adopt keeps a record too; one that cannot be written
       // costs only that adoption, so the spawn stands and the line says so.
-      if (!managed.restart?.policy) this.refreshSeatRecord(managed);
+      if (!managed.restart?.policy) this.seatCustody.refreshSeatRecord(managed);
       this.watchExit(managed);
       // Reply with the id the slot actually carries (user-mode: the owner.actor principal —
       // presence, ps, and the manifest ownership ledger all key on it; the throwaway static nkey
@@ -6970,9 +6947,7 @@ export class Manager {
       const committed = await hooks?.onOutcome?.({ kind: "succeeded", data: okData });
       if (onceTask && committed === true) this.openOnceDelivery(onceTask.ref);
       else if (onceTask) {
-        this.agentGoals.delete(managed.name);
-        managed.once!.stopReason ??= "launch-failed";
-        this.stopOnceSeat(managed, "launch-failed");
+        this.endOnceBeforeServe(managed, "launch-failed", "launch-failed");
       }
       return { ok: true, data: okData };
     } catch (e) {
@@ -9048,6 +9023,27 @@ export class Manager {
     void this.cancelAgentGoal(a.name, "graceful");
   }
 
+  /** Stop a seat this spawn just placed and track its exit: the stop first, so the terminalizing
+   *  latch is set before anything awaits, then the exit tracking. Both are synchronous. */
+  private stopAndTrack(a: ManagedAgent, cause: FreeSlotCause): void {
+    this.stopHandle(a, false, cause);
+    this.trackStoppedHandle(a, true, cause);
+  }
+
+  /** End a once seat before its task is served: let go of the spawn goal, record why it stopped if
+   *  `stopReason` is given and none is recorded yet, then stop the seat. Synchronous, in that order. */
+  private endOnceBeforeServe(a: ManagedAgent, reason: string, stopReason?: string): void {
+    this.agentGoals.delete(a.name);
+    if (stopReason !== undefined) a.once!.stopReason ??= stopReason;
+    this.stopOnceSeat(a, reason);
+  }
+
+  /** Put a launched seat in the agent table, then mark its reserved name placed. */
+  private place(name: string, a: ManagedAgent): void {
+    this.agents.set(name, a);
+    this.namesCapacity.placed(name);
+  }
+
   /** The once task's exit hook, on the handle the seat was launched with: whichever path ends the
    *  seat, its proved exit cancels a task that has no terminal yet and discharges the seat's debt. An
    *  exit that cannot be proved leaves both. */
@@ -9129,10 +9125,6 @@ export class Manager {
 
   /** Keep launch provenance independent of status and runtime wire contracts: {@link watchConnectorHolder}. */
   private watchConnectorHolder(handle: AgentHandle, holder: ReturnType<typeof retainConnectorSeat>): void { watchConnectorHolder(handle, holder); }
-
-  private recordSeat(a: ManagedAgent): void {
-    return this.seatCustody.recordSeat(a);
-  }
 
   private refreshSeatRecord(a: ManagedAgent): void {
     return this.seatCustody.refreshSeatRecord(a);

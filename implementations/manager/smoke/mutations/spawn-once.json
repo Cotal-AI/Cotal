@@ -65,7 +65,7 @@
     {
       "name": "S6 a seat that never joined is left running",
       "file": "implementations/manager/src/manager.ts",
-      "find": "          this.stopOnceSeat(managed, \"readiness-timeout\");\n",
+      "find": "          this.endOnceBeforeServe(managed, \"readiness-timeout\");\n",
       "replace": "",
       "expectRed": "...and the seat is stopped, never left running with nothing to do"
     },
@@ -79,8 +79,8 @@
     {
       "name": "S8 the readiness stop waits for the spawn's terminal",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        if (managed.once) {\n          this.agentGoals.delete(managed.name);\n          this.stopOnceSeat(managed, \"readiness-timeout\");\n        }\n        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n",
-      "replace": "        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n        if (managed.once) {\n          this.agentGoals.delete(managed.name);\n          this.stopOnceSeat(managed, \"readiness-timeout\");\n        }\n",
+      "find": "        if (managed.once) {\n          this.endOnceBeforeServe(managed, \"readiness-timeout\");\n        }\n        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n",
+      "replace": "        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n        if (managed.once) {\n          this.endOnceBeforeServe(managed, \"readiness-timeout\");\n        }\n",
       "expectRed": "a seat that never joins is stopped while its spawn's terminal cannot be published"
     },
     {
