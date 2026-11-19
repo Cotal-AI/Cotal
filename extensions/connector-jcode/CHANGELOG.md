@@ -1,5 +1,12 @@
 # @cotal-ai/connector-jcode
 
+## 0.170.0
+
+### Patch Changes
+
+- 1a4fbae: Jcode seats join again on Jcode 0.99.1 and later. Those releases renamed the deferred MCP tool from `mcp_call` to `mcp`, and the readiness check did not count a `cotal_orientation` call made through it, so every launch failed after two readiness turns.
+- 2211285: Keep the private Jcode startup log path readable in detached launch failures, even in deeply nested workspaces.
+
 ## 0.169.0
 
 ### Minor Changes
