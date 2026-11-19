@@ -86,11 +86,12 @@ setInterval(() => {}, 60_000);
     if (process.platform !== "win32" && process.getuid?.() !== 0) {
       const blocked = join(root, "noperm_dir");
       mkdirSync(blocked, { mode: 0 });
+      const beforeCwdRefusal = creds();
       try {
         const refusal = cli("spawn", "-d", "-H", "pi", "--cwd", blocked);
         check("unsearchable cwd is refused before execution with its path and EACCES", refusal.status === 2
           && /LIFECYCLE_BLOCKED/.test(refusal.out) && /EACCES/.test(refusal.out) && refusal.out.includes(blocked)
-          && /not-executed/.test(refusal.out) && !/chdir\(2\)|OPERATION_FAILED/.test(refusal.out) && creds() === initialCreds, refusal.out);
+          && /not-executed/.test(refusal.out) && !/chdir\(2\)|OPERATION_FAILED/.test(refusal.out) && creds() === beforeCwdRefusal, refusal.out);
       } finally { chmodSync(blocked, 0o700); }
     }
     for (const force of [false, true]) {
