@@ -62,16 +62,16 @@ setInterval(() => {}, 60_000);
     const credsDir = join(root, ".cotal", "auth", "creds");
     const creds = () => existsSync(credsDir) ? JSON.stringify(readdirSync(credsDir, { recursive: true }).sort()) : "absent";
     const initialCreds = creds();
-    const invalid: [string, string[]][] = [
-      ["claude", ["--resume=-foo"]], ["codex", ["--resume=abc"]], ["opencode", ["--resume=abc"]],
-      ["pi", ["--resume=--help"]], ["pi", ["--resume=-v"]], ["pi", ["--prompt=-bad"]],
-      ["claude", ["--prompt", "   "]], ["pi", ["--opt", "offline=true"]], ["claude", ["--variant", "high"]],
+    const invalid: [string, string[], RegExp][] = [
+      ["claude", ["--resume=-foo"], /cannot resume/], ["codex", ["--resume=abc"], /resum/], ["opencode", ["--resume=abc"], /resum/],
+      ["pi", ["--resume=--help"], /cannot resume/], ["pi", ["--resume=-v"], /cannot resume/], ["pi", ["--prompt=-bad"], /initial prompt cannot start/],
+      ["claude", ["--prompt", "   "], /prompt was given but it is empty/], ["pi", ["--opt", "offline=true"], /launch options.*not implemented/], ["claude", ["--variant", "high"], /model variants/],
     ];
-    for (const [harness, flags] of invalid) {
+    for (const [harness, flags, diagnostic] of invalid) {
       for (const preview of [true, false]) {
-        const result = cli("spawn", "-H", harness, ...flags, ...(preview ? ["--dry-run"] : []));
+        const result = cli("spawn", "-H", harness, ...flags, ...(preview ? ["--dry-run", "--json"] : []));
         check(`${harness} ${flags.join(" ")} ${preview ? "preview" : "foreground"} refuses before credentials or a child`,
-          result.status === 1 && /USAGE_INVALID/.test(result.out)
+          result.status === 1 && diagnostic.test(result.out) && (preview ? /"code":\s*"USAGE_INVALID"/.test(result.stdout) : /^✗ /m.test(result.stderr))
           && !/wrote creds|retired creds|spawning .* on the mesh|OPERATION_UNKNOWN/.test(result.out) && creds() === initialCreds, result.out);
       }
     }
