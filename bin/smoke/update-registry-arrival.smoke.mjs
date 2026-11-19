@@ -12,8 +12,9 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** Runs real npm and the built public entry against a registry with a listed, initially missing archive. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
-  assert(['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'orphan', 'pending', 'reconcile-killed', 'min-release-age', 'before'].includes(scenario));
+  assert(['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'orphan', 'pending', 'reconcile-killed', 'min-release-age', 'before'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
+  const closureKilled = scenario === 'closure-killed';
   const root = mkdtempSync(join(parent, 'registry-arrival-'));
   const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
   const target = '99.0.0', archives = new Map(), requests = [];
@@ -32,7 +33,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   }
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('COTAL_') && !['npm_config_before', 'NPM_CONFIG_BEFORE'].includes(name)));
   Object.assign(env, { HOME: home, COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: join(root, 'config'), TMPDIR: join(root, 'tmp'), XDG_RUNTIME_DIR: join(root, 'runtime'), npm_config_prefix: prefix, npm_config_cache: join(root, 'cache'), npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1' });
-  let origin, armed = false, missing = 0, heldArchive;
+  let origin, armed = false, missing = 0, heldArchive, closureSignal;
   const server = createServer((request, response) => {
     requests.push({ at: Date.now(), path: request.url });
     if (request.url?.endsWith('.tgz')) {
@@ -47,6 +48,19 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       return response.end(archives.get(version));
     }
     if (decodeURIComponent(request.url?.split('?')[0] ?? '') === `/${extension}`) {
+      if (armed && closureKilled && !closureSignal) {
+        try {
+          const pid = interrupted.pid;
+          const children = readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim();
+          assert.match(children, /^[1-9]\d*$/, 'only the actual dependency-check npm child is running');
+          const argv = readFileSync(`/proc/${children}/cmdline`, 'utf8');
+          assert.match(argv, /npm.*install.*cotal-closure-check|npm install @cotal-ai\//s);
+          process.kill(Number(children), 'SIGKILL');
+          closureSignal = 'SIGKILL';
+        } catch (error) {
+          closureSignal = error;
+        }
+      }
       const bytes = archives.get(target);
       response.setHeader('content-type', 'application/json');
       return response.end(JSON.stringify({ name: extension, 'dist-tags': { latest: target }, versions: { [target]: { name: extension, version: target, dist: { tarball: `${origin}/${target}.tgz`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` } } } }));
@@ -86,6 +100,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       delete env.npm_config_cache;
       mkdirSync(configuredCache, { mode: 0o500 });
       writeFileSync(join(home, '.npmrc'), `cache=${configuredCache}\n`);
+    }
+    if (scenario === 'cache' || closureKilled) {
       const extensions = join(root, 'config/cotal/extensions');
       mkdirSync(extensions, { recursive: true });
       writeFileSync(join(extensions, 'extensions.json'), JSON.stringify({ extensions: [{ pkg: extension, version: previous, spec: `${extension}@${previous}`, provides: [], commands: [] }] }));
@@ -205,7 +221,13 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     if (abandoned) await abandoned;
     const elapsedMs = Date.now() - started;
     const selected = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
-    if (dateFiltered) {
+    if (closureKilled) {
+      assert.equal(closureSignal, 'SIGKILL', `the real dependency-check child was killed: ${update.output}`);
+      assert.equal(update.code, 1, update.output);
+      assert.match(update.output, /npm dependency check was terminated by SIGKILL/);
+      assert.match(update.output, /No installed packages were replaced\. Run `cotal update --self` again\./);
+      assert.doesNotMatch(update.output, /registry access failed|still reaching the registry|again in a few minutes/);
+    } else if (dateFiltered) {
       assert.equal(update.code, 1, update.output);
       assert(elapsedMs < 60000, `date exclusions must not wait for propagation: ${elapsedMs}`);
       assert.match(update.output, /min-release-age.*before/);
@@ -258,8 +280,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const recovery = join(root, 'cotal/update-recovery.json');
     assert.equal(existsSync(recovery) ? JSON.parse(readFileSync(recovery, 'utf8')) : null, null);
     let retry;
-    if (dateFiltered) {
-      writeFileSync(join(home, '.npmrc'), '');
+    if (dateFiltered || closureKilled) {
+      if (dateFiltered) writeFileSync(join(home, '.npmrc'), '');
       retry = await run(process.execPath, [entry, 'update', '--self'], 60000);
       assert.equal(retry.code, 0, retry.output);
       assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, target);
@@ -279,7 +301,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'integrity', 'reset', 'min-release-age', 'before', ...(process.platform === 'linux' ? ['archive-interrupted', 'pending', 'reconcile-killed'] : [])];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'integrity', 'reset', 'min-release-age', 'before', ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }
