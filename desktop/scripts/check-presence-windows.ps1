@@ -1,3 +1,5 @@
+param([switch]$LoginScopeOnly)
+
 $ErrorActionPreference = 'Stop'
 if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'This installs only on disposable hosted runners.' }
 $out = Join-Path $env:RUNNER_TEMP 'desktop-presence'
@@ -12,6 +14,18 @@ using System.Collections.Generic;
 using System.Text;
 using System.Runtime.InteropServices;
 public static class PresenceWindow {
+  [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+  [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr token, int kind, out int value, int size, out int written);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  public static bool IsElevated(IntPtr process) {
+    IntPtr token;
+    if (!OpenProcessToken(process, 8, out token)) throw new System.ComponentModel.Win32Exception();
+    try {
+      int value, written;
+      if (!GetTokenInformation(token, 20, out value, sizeof(int), out written)) throw new System.ComponentModel.Win32Exception();
+      return value != 0;
+    } finally { CloseHandle(token); }
+  }
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll", EntryPoint="GetWindowLongW")] public static extern int GetWindowLong(IntPtr h, int index);
   [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint command);
@@ -76,9 +90,64 @@ function Shortcuts($path) {
   }
   return $links.FullName
 }
+function Check-LoginScope($path) {
+  $userRun = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+  $machineRun = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'
+  function Read-Login($key) { Get-ItemPropertyValue -Path $key -Name Cotal -ErrorAction SilentlyContinue }
+  if ($null -ne (Read-Login $userRun) -or $null -ne (Read-Login $machineRun)) { throw 'Expected a fresh Windows runner with no Cotal login values.' }
+  $prefs = Join-Path $env:APPDATA 'ai.cotal.desktop\presence.json'
+  if (Test-Path -LiteralPath $prefs) { throw 'Expected fresh desktop preferences before the login scope check.' }
+  $entry = Join-Path (Split-Path $path) 'runtime\dist\cotal.js'
+  $original = "$entry.login-proof-original"
+  $app = $null
+  Move-Item -LiteralPath $entry -Destination $original
+  try {
+    # The installed app still runs its real status bridge and Windows login code.
+    # Supply just the daemon's connected reply without signing in or installing a service.
+    Set-Content -LiteralPath $entry -Encoding utf8 -Value @'
+let input = '';
+process.stdin.setEncoding('utf8').on('data', chunk => {
+  input += chunk;
+  if (!input.includes('\n')) return;
+  const request = JSON.parse(input.slice(0, input.indexOf('\n')));
+  const result = request.op === 'about'
+    ? { version: '1.0.0', platform: 'win32', arch: 'x64', machine: 'Login scope test', memoryBytes: 8589934592 }
+    : request.op === 'status'
+      ? { version: '1.0.0', state: 'ready', account: { hostSupport: 'supported', mode: 'account', lastRegistration: '2026-01-01T00:00:00Z', spaces: [] } }
+      : {};
+  process.stdout.write(JSON.stringify({ v: 1, event: 'result', ok: true, result }) + '\n', () => process.exit(0));
+});
+'@
+    $app = Start-Process -FilePath $path -PassThru
+    $elevated = [PresenceWindow]::IsElevated($app.Handle)
+    if (!$elevated) { throw 'The installed app does not have an elevated process token.' }
+    $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    do {
+      $app.Refresh()
+      if ($app.HasExited) { throw "Installed app exited before registering login ($($app.ExitCode))." }
+      $currentUser = Read-Login $userRun
+      $localMachine = Read-Login $machineRun
+      $connected = (Test-Path -LiteralPath $prefs) -and ((Get-Content -Raw -LiteralPath $prefs | ConvertFrom-Json).connected -eq $true)
+      if ($connected -and ($currentUser -or $localMachine)) { break }
+      Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    $receipt = @{ path = $path; appPid = $app.Id; elevated = $elevated; connected = $connected; HKCU = $currentUser; HKLM = $localMachine } | ConvertTo-Json -Compress
+    $receipt | Set-Content (Join-Path $out 'login-scope.json')
+    Write-Host $receipt
+    if (!$connected -or $currentUser -ne "`"$path`" --background" -or $null -ne $localMachine) {
+      throw 'An elevated connected app must register the installed executable in HKCU only.'
+    }
+  } finally {
+    if ($app -and !$app.HasExited) { Stop-Process -Id $app.Id; $app.WaitForExit() }
+    Remove-ItemProperty -LiteralPath $userRun -Name Cotal -ErrorAction SilentlyContinue
+    Remove-ItemProperty -LiteralPath $machineRun -Name Cotal -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $prefs -ErrorAction SilentlyContinue
+    Move-Item -LiteralPath $original -Destination $entry -Force
+  }
+}
 $results = @()
 $taskbarMissing = @()
-foreach ($kind in @('nsis', 'msi')) {
+foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') })) {
   $owned = $null
   $launch = $null
   $installed = $false
@@ -96,6 +165,8 @@ foreach ($kind in @('nsis', 'msi')) {
     $installed = $true
     $path = Join-Path $directory 'cotal-desktop.exe'
     if (!(Test-Path $path)) { throw 'Installed executable missing.' }
+    if ($kind -eq 'nsis') { Check-LoginScope $path }
+    if ($LoginScopeOnly) { break }
     $links = @(Shortcuts $path)
     $links | Set-Content (Join-Path $out "$kind-shortcuts.txt")
     $launch = Start-Process -FilePath $path -PassThru -RedirectStandardOutput (Join-Path $out "$kind-stdout.log") -RedirectStandardError (Join-Path $out "$kind-stderr.log")

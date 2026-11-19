@@ -1,0 +1,55 @@
+name: Windows login scope proof
+on:
+  push:
+    branches: [fix/windows-per-user-login]
+    paths:
+      - '.github/workflows/windows-login-scope-proof.yml'
+      - 'desktop/**'
+permissions:
+  contents: read
+jobs:
+  login-scope:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            desktop/src-tauri/target/release
+            !desktop/src-tauri/target/release/bundle
+          key: windows-login-scope-${{ hashFiles('desktop/src-tauri/Cargo.lock', 'desktop/src-tauri/Cargo.toml') }}-${{ github.sha }}
+          restore-keys: windows-login-scope-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}-
+      - run: pnpm install --frozen-lockfile
+      - name: Build Windows identity and daemon host bindings
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+      - run: pnpm --workspace-concurrency=3 --filter cotal-ai... build
+      - run: pnpm --filter cotal-ai seeded-connectors
+      - run: pnpm --dir desktop prepare:runtime
+      - run: pnpm --dir desktop check:runtime
+      - run: pnpm --dir desktop exec tauri build --bundles nsis
+      - name: Verify elevated installed app registers per-user login
+        shell: pwsh
+        run: ./desktop/scripts/check-presence-windows.ps1 -LoginScopeOnly
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: windows-login-scope
+          path: ${{ runner.temp }}/desktop-presence/
+          if-no-files-found: ignore
