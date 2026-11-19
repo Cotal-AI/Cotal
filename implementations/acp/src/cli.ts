@@ -3,11 +3,11 @@
  * write to it goes to stderr.
  */
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { closeSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { ndJsonStream } from "@agentclientprotocol/sdk";
-import { mkSecretDir, writeSecretFileAtomic, type ParsedArgs } from "@cotal-ai/core";
+import { mkSecretDir, openPrivateAppend, type ParsedArgs } from "@cotal-ai/core";
 import { homeCotalDir, isConnectRefusal, resolveTargetOrThrow } from "@cotal-ai/workspace";
 import { cotalAgent, type HiddenSessions } from "./agent.js";
 import { openLiveMesh } from "./live-mesh.js";
@@ -16,15 +16,14 @@ export const USAGE = "cotal acp [--space <name>] [--server <url>] | cotal acp --
 
 const version = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
-/** Seat runs that `session/delete` hid, by lifecycle UID. Every read goes to the file, because a
- *  client may run one agent process per thread and another process may have hidden one since. */
+/** Seat runs that `session/delete` hid, one lifecycle UID per line. Every read goes to the file,
+ *  because a client may run one agent process per thread and another process may have hidden one
+ *  since. Each hide is one append, so two processes hiding at once both keep theirs. */
 export function hiddenStore(dir = join(homeCotalDir(), "acp")): HiddenSessions {
-  const path = join(dir, "hidden.json");
+  const path = join(dir, "hidden-runs");
   const read = (): Set<string> => {
     try {
-      const doc = JSON.parse(readFileSync(path, "utf8")) as { lifecycles?: unknown };
-      if (!Array.isArray(doc.lifecycles) || !doc.lifecycles.every((u) => typeof u === "string")) throw new Error(`${path} is not a hidden-sessions file`);
-      return new Set(doc.lifecycles as string[]);
+      return new Set(readFileSync(path, "utf8").split("\n").filter((line) => line !== ""));
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return new Set();
       throw e;
@@ -33,11 +32,15 @@ export function hiddenStore(dir = join(homeCotalDir(), "acp")): HiddenSessions {
   return {
     read,
     add(lifecycleUid) {
-      const ids = read();
-      if (ids.has(lifecycleUid)) return;
-      ids.add(lifecycleUid);
+      if (!lifecycleUid || /[\r\n]/.test(lifecycleUid)) throw new Error(`"${lifecycleUid}" is not a lifecycle UID`);
+      if (read().has(lifecycleUid)) return;
       mkSecretDir(dir);
-      writeSecretFileAtomic(path, `${JSON.stringify({ lifecycles: [...ids] })}\n`);
+      const fd = openPrivateAppend(path);
+      try {
+        writeSync(fd, `${lifecycleUid}\n`);
+      } finally {
+        closeSync(fd);
+      }
     },
   };
 }
