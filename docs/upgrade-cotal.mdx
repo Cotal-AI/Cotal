@@ -112,6 +112,7 @@ selects the execution generation and binds to the installed package identity and
 The package manifest and original dependencies stay as npm or pnpm installed them. A manual
 package-manager install therefore sees its own original record, replaces the package normally,
 and retires the superseded active descriptor.
+This also works when npm replaces the launcher with its Node-pinning wrapper.
 After a staged update, npm's listing can be behind; `cotal --version` is the version in use, and
 `cotal status --verbose` and `cotal status --json` report both (`npm lists <old>; in use <new>`).
 Native ownership checks retain the bootstrap's validated logical installation identity when they
