@@ -1,11 +1,14 @@
 /**
- * Broker redelivery framing uses the broker's real count without inventing a prior model handoff.
+ * Broker redelivery framing tells a queued message from an unconfirmed handoff.
  *
- * The recipient buffers one genuine DM and performs no inbox read or automatic context handoff.
- * The pre-provisioned consumer keeps the product's native 60-second ack wait. Once JetStream
- * redelivers the still-pending copy, the first possible automatic frame and the first cotal_inbox
- * read must say that prior model handling is unknown. They must not claim a prior run from the
- * broker count alone.
+ * Three real MeshAgents on a private broker keep the product's native 60-second ack wait, and every
+ * cell runs inside the same wait:
+ *  - a DM this session queued and never handed over is redelivered at count 2, and its first frame
+ *    and first `cotal_inbox` read carry no redelivery label;
+ *  - a DM this session held for a frame and released unacked, as a failed turn does, is redelivered
+ *    at count 2 and says that an earlier handoff in this session was not confirmed;
+ *  - a DM whose first copy reaches a restarted session as a redelivery keeps the prior model handoff
+ *    unknown, since nothing local records what the earlier session did with it.
  *
  * Run: pnpm smoke:broker-redelivery-framing
  */
@@ -38,12 +41,10 @@ broker.stderr?.on("data", (chunk) => { brokerOutput += String(chunk); });
 const releaseBroker = teardownOnSignal(broker, dir);
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-const lifecycleUid = mintLifecycleUid();
-const receiverId = "receiver_agent228";
-const receiverConfig: AgentConfig = {
+const config = (id: string, name: string, lifecycleUid: string): AgentConfig => ({
   space,
-  name: "Receiver",
-  id: receiverId,
+  name,
+  id,
   servers,
   subscribe: [],
   allowSubscribe: [],
@@ -51,11 +52,18 @@ const receiverConfig: AgentConfig = {
   kind: "agent",
   tls: false,
   lifecycleUid,
-};
+});
+const lifecycleUid = mintLifecycleUid();
+const receiverConfig = config("receiver_agent228", "Receiver", lifecycleUid);
 const receiver = new MeshAgent(receiverConfig);
 receiver.on("error", () => {});
 const incoming: InboxItem[] = [];
 receiver.on("incoming", (item) => incoming.push({ ...item }));
+// The restart cell: one lifecycle, received first by a session that stops before handing it over.
+const restartConfig = config("restart_agent228", "Restarted", mintLifecycleUid());
+const before = new MeshAgent(restartConfig);
+before.on("error", () => {});
+let after: MeshAgent | undefined;
 const sender = new CotalEndpoint({
   space,
   servers,
@@ -64,7 +72,7 @@ const sender = new CotalEndpoint({
   lifecycleUid: mintLifecycleUid(),
 });
 sender.on("error", () => {});
-let previousInboxReads = 0;
+const byText = (agent: MeshAgent, text: string) => agent.peekInbox().find((i) => i.text === text);
 
 try {
   await awaitBrokerReady(() => isReachable(servers), {
@@ -75,38 +83,71 @@ try {
   });
   await sender.start();
   await receiver.start();
-  check("receiver joined the private broker", receiver.connected === true);
+  await before.start();
+  check("both receivers joined the private broker", receiver.connected === true && before.connected === true);
 
   const observer = await connect({ servers });
   const consumer = await (await jetstreamManager(observer)).consumers.info(
     dmStream(space),
-    dmDurable("local", receiverId, lifecycleUid),
+    dmDurable("local", receiverConfig.id!, lifecycleUid),
   );
   check("the real DM consumer retains the native 60-second ack wait", consumer.config.ack_wait === 60_000_000_000, consumer.config.ack_wait);
   await observer.close();
 
-  await sender.unicast(receiver.id, "unique-agent-228-current-base");
-  for (let i = 0; i < 100 && incoming.length < 1; i++) await sleep(50);
-  check("the first broker delivery reaches the real MeshAgent at count 1", incoming.length === 1 && incoming[0]?.deliveryCount === 1, incoming.map((i) => i.deliveryCount));
-  check("no inbox or context handoff occurred before redelivery", previousInboxReads === 0 && receiver.inboxCount() === 1, { previousInboxReads, inbox: receiver.inboxCount() });
+  await sender.unicast(receiver.id, "agent-228-queued");
+  await sender.unicast(receiver.id, "agent-228-handed-over");
+  await sender.unicast(before.id, "agent-228-restarted");
+  for (let i = 0; i < 100 && (incoming.length < 2 || !byText(before, "agent-228-restarted")); i++) await sleep(50);
+  const queued = byText(receiver, "agent-228-queued");
+  const handed = byText(receiver, "agent-228-handed-over");
+  check("each first broker delivery reaches its MeshAgent at count 1",
+    queued?.deliveryCount === 1 && handed?.deliveryCount === 1 && byText(before, "agent-228-restarted")?.deliveryCount === 1,
+    incoming.map((i) => [i.text, i.deliveryCount]));
 
-  for (let i = 0; i < 750 && incoming.length < 2; i++) await sleep(100);
-  const buffered = receiver.peekInbox();
-  check("native ack expiry produces broker delivery count 2", incoming.length >= 2 && buffered[0]?.deliveryCount === 2, { incoming: incoming.length, counts: buffered.map((i) => i.deliveryCount) });
+  // A frame holds its batch for its turn. A failed turn releases the hold without an ack.
+  assert(queued && handed, "both DMs are buffered");
+  check("the handed-over DM is held for a frame", receiver.holdInFlight([handed.recvKey]) === true);
+  receiver.releaseInFlight([handed.recvKey]);
+  await before.stop();
+  after = new MeshAgent(restartConfig);
+  after.on("error", () => {});
+  await after.start();
 
-  const frame = formatInjection(buffered) ?? "";
-  check("the first possible context frame labels prior model handoff unknown", frame.includes("broker redelivery, delivery 2: prior model handoff unknown"), frame);
-  check("the first possible context frame does not invent a prior run", !frame.includes("may already have run") && previousInboxReads === 0, { frame, previousInboxReads });
+  const redelivered = () => byText(receiver, "agent-228-queued")?.deliveryCount === 2
+    && byText(receiver, "agent-228-handed-over")?.deliveryCount === 2
+    && byText(after!, "agent-228-restarted") !== undefined;
+  for (let i = 0; i < 750 && !redelivered(); i++) await sleep(100);
+  check("native ack expiry redelivers each DM", redelivered(), {
+    receiver: receiver.peekInbox().map((i) => [i.text, i.deliveryCount]),
+    restarted: after.peekInbox().map((i) => [i.text, i.deliveryCount]),
+  });
+
+  const queuedFrame = formatInjection([byText(receiver, "agent-228-queued")!]) ?? "";
+  check("a queued DM's first frame carries no redelivery label", !queuedFrame.includes("redelivery") && !queuedFrame.includes("handoff"), queuedFrame);
+  const handedFrame = formatInjection([byText(receiver, "agent-228-handed-over")!]) ?? "";
+  check("a DM released unacked says an earlier handoff in this session was not confirmed",
+    handedFrame.includes("broker redelivery, delivery 2: an earlier handoff in this session was not confirmed"), handedFrame);
+
+  const restarted = byText(after, "agent-228-restarted");
+  check("a restarted session's first copy is already a redelivery", restarted !== undefined && restarted.deliveryCount! > 1 && restarted.firstDeliveryCount === restarted.deliveryCount, restarted);
+  const restartedFrame = formatInjection([restarted!]) ?? "";
+  check("a restarted session keeps the prior model handoff unknown",
+    restartedFrame.includes(`broker redelivery, delivery ${restarted?.deliveryCount}: prior model handoff unknown`), restartedFrame);
 
   const inbox = cotalToolSpecs(receiverConfig).find((spec) => spec.name === "cotal_inbox");
   assert(inbox, "cotal_inbox spec exists");
-  previousInboxReads += 1;
   const result = await inbox.run(receiver, receiverConfig, {});
-  check("the first inbox read preserves the same unknown handoff distinction", result.text.includes("broker redelivery, delivery 2: prior model handoff unknown"), result.text);
-  check("the first inbox read clears exactly the one message", receiver.inboxCount() === 0, receiver.inboxCount());
+  const line = (text: string) => result.text.split("\n").find((l) => l.includes(text)) ?? "";
+  check("the first inbox read shows the queued DM without a redelivery label",
+    line("agent-228-queued") !== "" && !line("agent-228-queued").includes("redelivery"), result.text);
+  check("the first inbox read keeps the unconfirmed handoff on the released DM",
+    line("agent-228-handed-over").includes("an earlier handoff in this session was not confirmed"), result.text);
+  check("the first inbox read clears both messages", receiver.inboxCount() === 0, receiver.inboxCount());
   finish();
 } finally {
   await receiver.stop().catch(() => {});
+  await before.stop().catch(() => {});
+  await after?.stop().catch(() => {});
   await sender.stop().catch(() => {});
   await killAndAwaitExit(broker);
   releaseBroker();

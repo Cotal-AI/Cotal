@@ -567,6 +567,28 @@ try {
       fromCarol.status === 0 && fromCarol.stdout.includes("--from carol searched only the 1000 read; older retained messages were not searched\n"), shown(fromCarol));
   }
 
+  // `channel show` recommends a scoped read even when the channel name is a history verb.
+  {
+    const channels = ["clear", "limit", "ordinary"];
+    for (const channel of channels) {
+      const saved = await run(["channel", "set", channel, "--desc", "History hint test", "--space", openSpace]);
+      const posted = await run(["send", "-c", channel, `retained in ${channel}`, "--space", openSpace]);
+      if (saved.status !== 0 || posted.status !== 0)
+        throw new Error(`could not seed #${channel}: ${JSON.stringify({ saved: shown(saved), posted: shown(posted) })}`);
+    }
+    for (const channel of channels) {
+      const card = await run(["channel", "show", channel, "--space", openSpace, "--plain"]);
+      const word = card.stdout.match(/^\s+cotal history '(#[\w.-]+)'\s+Read retained messages within your grant$/m)?.[1];
+      // Only execute the quoted channel form. An unexpected administrative command is a test failure.
+      const read = word === `#${channel}` ? await run(["history", word, "--space", openSpace, "--json"]) : undefined;
+      const messages = read?.envelope?.result?.items;
+      check(`channel show #${channel} recommends a history read for that channel only`,
+        card.status === 0 && read?.status === 0 && messages?.length === 1
+          && messages[0]?.channel === channel && messages[0].text === `retained in ${channel}`,
+        { card: shown(card), read: read && shown(read) });
+    }
+  }
+
   // ── destructive clear accepts no selection or read mode ──────────────────────────────────────
   {
     const writer = new CotalEndpoint({ space: openSpace, servers: openServers, channels: [], consume: false, registerPresence: false, watchPresence: false, card: { name: "clear-sentinel", kind: "endpoint" } });

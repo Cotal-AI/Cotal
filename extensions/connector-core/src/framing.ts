@@ -148,14 +148,7 @@ export function fmtDeliveryItem(i: InboxItem): string {
 
 function formatItem(i: InboxItem, metadata = "", attributionMax?: number): string {
   const h = i.historical ? "(history) " : ""; // backfilled on join, so it pre-dates you and is not live
-  // The broker's count, so a peer cannot forge or hide it: an earlier copy outlived its ack wait.
-  // That is a delivery fact, not evidence of a prior context handoff. A process restart also loses
-  // every local observation of what happened before it, so preserve the unknown rather than inventing
-  // a prior run or claiming the earlier copy did not reach one.
-  const r = i.deliveryCount !== undefined && i.deliveryCount > 1
-    ? `(broker redelivery, delivery ${i.deliveryCount}: prior model handoff unknown) `
-    : "";
-  const body = `${metadata}${h}${r}${fmtBody(i.text)}`;
+  const body = `${metadata}${h}${redeliveryNote(i)}${fmtBody(i.text)}`;
   // A notice is the mesh's own word about something this session sent, checked against the delivery
   // lease, so it is labelled as that and not as a peer's DM that wants an answer.
   if (i.notice) return `[${i.notice} notice from the delivery daemon] ${body}`;
@@ -170,6 +163,27 @@ function formatItem(i: InboxItem, metadata = "", attributionMax?: number): strin
   }
   const head = `[#${label(i.channel)}${i.mentionsMe ? " @you" : ""} `;
   return `${head}${from(head)}] ${body}`;
+}
+
+/**
+ * What a broker redelivery says about an earlier handoff to a model.
+ *
+ * The count is the broker's, so a peer cannot forge or hide it, but a count above 1 only proves that
+ * an earlier copy outlived its ack wait. A message queued in this session past that wait is
+ * redelivered without ever reaching the host, and labelling it a redelivery made seats read a post
+ * that waited an hour as one they had seen sixty times. This session records the first copy it
+ * received and the first copy it handed to its host, so it says nothing for a message it never handed
+ * over and says when an earlier handoff was not confirmed. A first copy that was already a
+ * redelivery, as after a restart, has no local record behind it, so the handoff stays unknown.
+ */
+function redeliveryNote(i: InboxItem): string {
+  const n = i.deliveryCount;
+  if (n === undefined || n <= 1) return "";
+  if (i.firstDeliveryCount === undefined || i.firstDeliveryCount > 1)
+    return `(broker redelivery, delivery ${n}: prior model handoff unknown) `;
+  if (i.handedOverAt !== undefined && i.handedOverAt < n)
+    return `(broker redelivery, delivery ${n}: an earlier handoff in this session was not confirmed) `;
+  return "";
 }
 
 /**
