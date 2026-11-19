@@ -475,16 +475,19 @@ try {
   check("a healthy default stack exits 0 with the installed dashboard not-started",
     notStarted.status === 0 && /web\s+not-started · optional/.test(notStartedText) &&
       ["manager", "delivery", "broker"].every(name => new RegExp(`${name}\\s+serving`).test(notStartedText)), notStartedText);
-  const managerGuidance = (cwd: string) => {
+  const managerGuidance = (cwd: string, openMesh: boolean) => {
     const roster = cliIn(cwd, ["ps", "--json"]);
     const manager = (JSON.parse(roster.stdout) as { result: { managers: { instanceId: string }[] } }).result.managers[0]!.instanceId;
     for (const name of ["manager", manager]) {
-      const read = cliIn(cwd, ["status", name, "--plain"]);
+      const read = cliIn(cwd, ["status", name, "--json"]);
+      const error = (JSON.parse(read.stdout) as { error?: { code: string; remedy?: string } }).error;
       check(`status ${name === "manager" ? "manager" : "manager instance"} explains the answering manager is not an agent`,
-        read.status === 2 && `${read.stdout}${read.stderr}`.includes(`${name} is this space's manager, which is answering, not an agent it runs`), `${read.stdout}${read.stderr}`);
+        read.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.remedy !== undefined
+          && error.remedy.includes(`${name} is this space's manager, which is answering, not an agent it runs`)
+          && error.remedy.includes("`cotal status`") && error.remedy.includes("`cotal endpoint describe manager`") === !openMesh, `${read.stdout}${read.stderr}`);
     }
   };
-  managerGuidance(webRoot);
+  managerGuidance(webRoot, false);
   if (process.platform !== "win32") {
     const deliveryCreds = join(webRoot, ".cotal", deliveryCredsKey(WEB_SPACE, { injected: false, root: webRoot }));
     chmodSync(deliveryCreds, 0o644);
@@ -515,7 +518,7 @@ try {
   const openHealth = cliIn(openRoot, ["status", "--components"]);
   const openText = `${openHealth.stdout}${openHealth.stderr}`;
   check("a healthy open stack needs no delivery daemon and exits zero", openHealth.status === 0 && /delivery\s+not-started.*not used on an open mesh/.test(openText) && /broker\s+serving/.test(openText) && /manager\s+serving/.test(openText), openText);
-  managerGuidance(openRoot);
+  managerGuidance(openRoot, true);
   const openDown = cliIn(openRoot, ["down", "--yes"], 120_000);
   openStack = openDown.status !== 0;
   check("the open controller stack stops", openDown.status === 0, `${openDown.stdout}${openDown.stderr}`);
