@@ -42,10 +42,17 @@ assert.ok(existsSync(BIN), `built binary missing at ${BIN} - run \`pnpm --filter
     assert.equal(help.stderr, "");
     assert.match(help.stdout, /^cotal ext seed$/m);
     for (const flag of ["--repair", "--reset", "--force"]) assert.ok(help.stdout.includes(flag));
-    const shortHelp = run(["x", "seed", "-h"]);
-    assert.equal(shortHelp.status, 0, shortHelp.stderr);
-    assert.equal(shortHelp.stderr, "");
-    assert.equal(shortHelp.stdout, help.stdout);
+    for (const args of [["x", "seed", "-h"], ["help", "x", "seed"], ["help", "--all", "ext", "seed"], ["--help", "ext", "seed"], ["-h", "--", "x", "seed"]]) {
+      const otherHelp = run(args);
+      assert.equal(otherHelp.status, 0, otherHelp.stderr);
+      assert.equal(otherHelp.stderr, "");
+      assert.equal(otherHelp.stdout, help.stdout);
+    }
+    const extraHelpWord = run(["help", "x", "seed", "extra"]);
+    assert.equal(extraHelpWord.status, 1);
+    assert.equal(extraHelpWord.stdout, "");
+    assert.match(extraHelpWord.stderr, /cotal ext seed has no subcommand "extra"/);
+    assert.ok(extraHelpWord.stderr.endsWith(help.stdout));
 
     for (const [args, reason] of [
       [["ext", "seed", "--not-an-option"], /Unknown option '--not-an-option'$/],
@@ -59,6 +66,11 @@ assert.ok(existsSync(BIN), `built binary missing at ${BIN} - run \`pnpm --filter
       [["x", "seed", "--", "\u2013\u2013force"], /does not take positional arguments/],
       [["x", "seed", "--json"], /ext seed takes neither --json nor --plain\. Omit both flags/],
       [["--no-input", "x", "seed", "--no-input"], /Option '--no-input' cannot be repeated/],
+      [["--no-color", "--no-color", "ext", "seed"], /Option '--no-color' cannot be repeated/],
+      [["--no-input", "--no-input", "--", "x", "seed"], /Option '--no-input' cannot be repeated/],
+      [["\u2013\u2013plain", "ext", "seed"], /Unknown option '\u2013\u2013plain' before the command$/],
+      [["\u2013\u2013force", "x", "seed"], /Unknown option '\u2013\u2013force' before the command$/],
+      [["--not-a-leading-flag", "--", "x", "seed"], /Unknown option '--not-a-leading-flag' before the command$/],
     ] as const) {
       const r = run([...args]);
       assert.equal(r.status, 1, `${args.join(" ")}: ${r.stderr}`);
@@ -75,11 +87,15 @@ assert.ok(existsSync(BIN), `built binary missing at ${BIN} - run \`pnpm --filter
       assert.doesNotMatch(plain.stderr, /pass --json for a document or --plain for text/);
       assert.ok(plain.stderr.endsWith(help.stdout));
     }
-    for (const args of [["x", "\u2013\u2013force", "seed"], ["x", "seed", "\u2013\u2013force"]]) {
-      const typo = run(args);
+    for (const [args, flag] of [
+      [["x", "\u2013\u2013force", "seed"], "--force"],
+      [["x", "seed", "\u2013\u2013force"], "--force"],
+      [["\u2013\u2013no-input", "x", "seed"], "--no-input"],
+    ] as const) {
+      const typo = run([...args]);
       assert.equal(typo.status, 1);
       assert.equal(typo.stdout, "");
-      assert.match(typo.stderr, /type the option with hyphens: --force/);
+      assert.ok(typo.stderr.includes(`type the option with hyphens: ${flag}`));
       assert.ok(typo.stderr.endsWith(help.stdout));
     }
 

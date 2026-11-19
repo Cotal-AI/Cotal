@@ -568,6 +568,34 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
   paintFor(process.stdout, () => printHelpPath(cmd, unknown === undefined ? path : [...path, unknown]));
 }
 
+/** Resolve seed from built-in metadata, including a literal `help ext seed` topic. */
+function seedScope(commands: readonly Command[], cmd: Command | undefined, words: readonly string[]): Command | undefined {
+  if (cmd?.name === "ext") return helpPath(cmd, words).mode?.name === "seed" ? cmd : undefined;
+  if (cmd?.name !== "help") return undefined;
+  const [topic, mode] = metadataPositionals(cmd, words).positionals;
+  const ext = findCommand(commands, topic?.value);
+  return ext?.name === "ext" && findSubcommand(ext, mode?.value)?.name === "seed" ? ext : undefined;
+}
+
+function entryName(word: string | undefined): string | undefined {
+  if (word === "--help" || word === "-h") return "help";
+  if (word === "--version" || word === "-V") return "version";
+  return word;
+}
+
+/** Look beyond an invalid option only to name the seed usage in its refusal. Never dispatch it. */
+function seedAfterInvalidLeadingOption(commands: readonly Command[], argv: readonly string[], lead: number): Command | undefined {
+  const start = lead;
+  while (lead < argv.length) {
+    const word = argv[lead]!;
+    if (word === "--" || word === "-" || entryName(word) !== word || !/^[-\u2010-\u2015\u2212]/u.test(word)) break;
+    lead++;
+  }
+  if (lead === start) return undefined;
+  if (argv[lead] === "--") lead++;
+  return seedScope(commands, findCommand(commands, entryName(argv[lead])), argv.slice(lead + 1));
+}
+
 /**
  * Dispatch `argv` against the commands self-registered in a {@link Registry}. The single entry point
  * a composition root calls — no hardcoded command list.
@@ -585,21 +613,36 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // command's own, so one written before the command word moves after it, and a `--` there ends
   // the leading flags. A command that takes its words raw has no flags to read them as, so it
   // refuses them there. The built-in surface decides that before any extension overlay is read.
+  const builtins = registry.all<Command>("command");
   const output: string[] = [];
   const leadingGlobals = new Set<string>();
+  let repeated: string | undefined;
   let lead = 0;
   for (; lead < argv.length; lead++) {
     const word = argv[lead]!;
     if (OUTPUT_FLAG_WORDS.has(word)) output.push(word);
-    else if (leadingGlobals.has(word)) usageExit(`Option '${word}' cannot be repeated`);
+    else if (leadingGlobals.has(word)) repeated ??= word;
     else if (takeGlobalFlag(word)) leadingGlobals.add(word);
     else break;
   }
-  if (argv[lead] === "--") lead++;
+  const leadingEnded = argv[lead] === "--";
+  if (leadingEnded) lead++;
+  const name = entryName(argv[lead]);
+  const builtin = findCommand(builtins, name);
+  const entryArgs = [...output, ...argv.slice(lead + 1)];
+  const seed = opts.extensions ? seedScope(builtins, builtin, entryArgs) : undefined;
+  const invalidLeading = opts.extensions && !leadingEnded ? seedAfterInvalidLeadingOption(builtins, argv, lead) : undefined;
+  if (repeated) usageExit(`Option '${repeated}' cannot be repeated`, seed ?? invalidLeading, false, output.includes("--plain"), undefined, ["seed"]);
+  if (invalidLeading) {
+    const word = argv[lead]!;
+    // Seed rejects output flags, and its maintenance flags belong after the command word.
+    const refusal = misspelledOption([], [word]);
+    usageExit(refusal?.message ?? `Unknown option '${word}' before the command`, invalidLeading, false, output.includes("--plain"), refusal?.remedy, ["seed"]);
+  }
   if (output.length && lead >= argv.length) usageExit(`${output[0]} needs a command after it - run \`cotal help\` to list commands`);
-  if (output.length && takesWordsRaw(findCommand(registry.all<Command>("command"), argv[lead])))
+  if (output.length && takesWordsRaw(builtin))
     usageExit(`${output[0]} before ${argv[lead]} is not read - ${argv[lead]} takes its words raw, with no output flags`);
-  argv = [...argv.slice(lead, lead + 1), ...output, ...argv.slice(lead + 1)];
+  argv = name === undefined ? [] : [name, ...entryArgs];
   // A recorded unit boots from built-in code only. Even reading the extension overlay can
   // prevent recovery from an unrelated broken manifest. Validate before any handoff custody,
   // installation repair, package materialization or target preparation. This is one exact
@@ -616,24 +659,25 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   }
   // Before any ordinary dispatch outcome can exit, a spawn takes its handoff, and no command lets a
   // child inherit the variable. The unit entry refuses such a handoff without consuming its file.
-  takeManagedHandoffCustody(process.env, findCommand(registry.all<Command>("command"), argv[0])?.name === "spawn");
+  takeManagedHandoffCustody(process.env, builtin?.name === "spawn");
   setInstalledExtensionsEnabled(Boolean(opts.extensions));
-  // The global spellings of help and version are the `help` and `version` commands.
   if (argv[0] === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
-  if (argv[0] === "--version" || argv[0] === "-V") argv = ["version", ...argv.slice(1)];
-  else if (argv[0] === "--help" || argv[0] === "-h") argv = ["help", ...argv.slice(1)];
   // The built-in check reports an unreadable inventory itself. Do not require that inventory to
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
-  const builtin = findCommand(registry.all<Command>("command"), argv[0]);
   const updateCheck = builtin?.name === "update" && argv.includes("--check") && !asksForHelp(argv.slice(1))
     && parseOrExit(builtin, ownWords(builtin, argv.slice(1), leadingGlobals)).values.check === true;
   const configFolder = globalConfigDirProblem();
   if (opts.extensions && !updateCheck) {
-    const words = argv.slice(1);
+    const rest = argv.slice(1);
+    if (seed && builtin?.name === "help") {
+      const args = ownWords(builtin, rest, leadingGlobals);
+      if (asksForHelp(args)) return printHelpFor(builtin, args);
+      const { positionals } = parseOrExit(builtin, args);
+      return paintFor(process.stdout, () => printHelpPath(seed, positionals.slice(1)));
+    }
     // Validate seed before promotion recovery and run it before reading the manifest it can repair.
-    const seed = builtin?.name === "ext" && helpPath(builtin, words).mode?.name === "seed" ? builtin : undefined;
-    if (seed && asksForHelp(words)) return printHelpFor(seed, words);
-    const parsed = seed && parseOrExit(seed, ownWords(seed, words, leadingGlobals));
+    if (seed && asksForHelp(rest)) return printHelpFor(seed, rest);
+    const parsed = seed && parseOrExit(seed, ownWords(seed, rest, leadingGlobals));
     if (seed && configFolder) failureExit(seed, configFolderRefusal(configFolder), false);
     try {
       recoverExtensionPromotion();

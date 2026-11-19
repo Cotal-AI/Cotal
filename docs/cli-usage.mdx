@@ -171,8 +171,10 @@ typeset text, is refused naming the option it meant, rather than read as a posit
 command word the same holds for the leading flags, so `cotal ––json status` names `--json`.
 
 `cotal ext seed` takes no positional arguments. It reports invalid flags or extra arguments with
-seed help on stderr before attempting extension recovery. The `ext list`, `ext root`, and
-`telemetry` modes also refuse extra arguments and omit the `--` remedy for unknown flags.
+seed help on stderr before attempting extension recovery, including for leading flag errors.
+Both `cotal ext seed --help` and `cotal help ext seed` print this help without recovering the
+extension store. The `ext list`, `ext root`, and `telemetry` modes also refuse extra arguments
+and omit the `--` remedy for unknown flags.
 
 
 ### Color
