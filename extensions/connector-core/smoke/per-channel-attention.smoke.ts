@@ -5,7 +5,8 @@
  *   - quiet: channel ambient is buffered pull-only and never automatic; a quiet @-mention stays automatic;
  *   - precedence: quiet BUFFERS even under global focus (override wins); normal/muted still drop under focus;
  *   - buffered items: quiet makes buffered ambient pull-only, muted makes every buffered item pull-only, and a
- *     leave makes the left channel's buffered ambient pull-only; an item in flight keeps its lane and nothing is raised;
+ *     leave makes the left channel's buffered ambient pull-only; an item in flight keeps its lane until its hand-over
+ *     ends, and is lowered then if it was not acked; nothing is raised;
  *   - boot seed: config.quiet/muted seed the map; reset on restart (a runtime setChannelMode is gone in a fresh agent);
  *   - presence mirror: setChannelMode/setAttention publish channelModes/attention to peers.
  * Run: pnpm smoke:channel-attention
@@ -253,6 +254,24 @@ try {
   await agent.setChannelMode("normal-ch", "quiet");
   check("an item a host is handing over keeps its lane when the channel goes quiet", agent.peekInbox("automatic")[0]?.text === "held-before-quiet");
   if (held) agent.releaseInFlight([held.recvKey]);
+  // A failed turn releases its batch without an ack. The quiet it missed while in flight applies
+  // then, so the retry turn does not carry the post again.
+  check("a hand-over that ends without an ack leaves the quieted item pull-only",
+    agent.peekInbox("automatic").length === 0 && agent.peekInbox("pull-only").map((i) => i.text).join() === "held-before-quiet",
+    { auto: agent.peekInbox("automatic").map((i) => i.text), pull: agent.peekInbox("pull-only").map((i) => i.text) });
+  await agent.setChannelMode("normal-ch", "normal");
+
+  reset();
+  await pub.multicast("held-then-acked", { channel: "normal-ch" });
+  await sleep(350);
+  const acked = agent.peekInbox("automatic")[0];
+  check("a second item can be held for a hand-over", acked !== undefined && agent.holdInFlight([acked.recvKey]));
+  await agent.setChannelMode("normal-ch", "quiet");
+  if (acked) {
+    agent.drainInboxDeliveries([acked.recvKey]);
+    agent.releaseInFlight([acked.recvKey]);
+  }
+  check("a hand-over that ends with an ack leaves nothing behind", agent.inboxCount() === 0, { auto: agent.peekInbox("automatic").map((i) => i.text), pull: agent.peekInbox("pull-only").map((i) => i.text) });
   await agent.setChannelMode("normal-ch", "normal");
 
   // ============ leave: the left channel's buffered ambient becomes pull-only ============
