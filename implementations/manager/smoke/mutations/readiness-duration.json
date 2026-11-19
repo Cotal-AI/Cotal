@@ -8,7 +8,7 @@
   "mutations": [
     {
       "name": "round uncertain readiness windows to whole seconds",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/readiness-wait.ts",
       "find": "no mesh presence within ${readinessTimeoutMs}ms;",
       "replace": "no mesh presence within ${Math.round(readinessTimeoutMs / 1000)}s;",
       "expectRed": "M3 uncertain diagnostic reports the configured 400ms window",
