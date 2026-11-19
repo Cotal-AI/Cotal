@@ -25,7 +25,7 @@ import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@co
 import { parseRemoteEndpointDeregisterRequest, parseRemoteEndpointDeregisterResult } from "@cotal-ai/core";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
-import { deleteIdpSpaceCatalog, fetchSessionIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireBetterAuthSession, requireIdpSession } from "./login.js";
+import { deleteIdpSpaceCatalog, fetchSessionIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, IdpSessionRejectedError, loadIdpSession, normalizeIdpUrl, prepareIdpSpaceCatalogs, probeIdpJwks, requireBetterAuthSession, requireIdpSession, sessionIdpProofReader } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, notGrantedReason, withManagedGrantTransaction } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
@@ -273,7 +273,7 @@ export const cotalAuthProvider: AuthProvider = {
     // remote arm consumes exactly what registration pinned - it discovers nothing at connect time.
     if (!idp || !callout) return remoteUserCredentials(request);
     // The no-fallback login gate: throws the exact `cotal login --idp …` line when not signed in.
-    requireIdpSession(idpSessionDir(), idp.url);
+    const readProof = sessionIdpProofReader(idpSessionDir(), idp.url);
     // Daemon liveness BEFORE the IdP round-trip: a down auth service must surface its exact
     // restart recovery (U10) without spending an IdP /token call — and without an unrelated
     // IdP/network failure masking it. Missing-login stays primary (the session gate above).
@@ -289,7 +289,7 @@ export const cotalAuthProvider: AuthProvider = {
         `the user-auth service for space "${space}" is not running - restart it with \`cotal up\` (or \`cotal auth-service --space ${space} --server <broker>\`)`,
       );
     // Fresh short-lived IdP proof per connect — IdP-side revocation bites HERE, at the next fetch.
-    const idpJwt = await fetchSessionIdpJwt(idpSessionDir(), idp.url);
+    const idpJwt = await readProof();
     let res: Response;
     try {
       res = await fetch(`${info.url}/exchange`, {
@@ -1018,6 +1018,7 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<U
   // The pin's transport rule is a STATIC check - run it before spending an IdP round trip on a
   // mint that is doomed either way (same ordering discipline as the local arm's liveness-first).
   const exchangeUrl = pinnedExchangeUrl(remote.endpoints.url, space);
+  const readProof = sessionIdpProofReader(idpSessionDir(), remote.idp.url);
   // Only the updater opts in, and only repeatable base/Manager-view credential issuance retries.
   // Each attempt still checks the current grant and keeps the original Manager instance pin.
   const deadline = view === undefined || view === "manager-caller" ? remoteExchangeRetryDeadline() : undefined;
@@ -1030,7 +1031,7 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<U
     // Re-enter the proof reader on each attempt so its normal freshness/revocation bounds hold.
     const proofSignal = remaining === undefined ? undefined : AbortSignal.timeout(remaining);
     let idpJwt: string;
-    try { idpJwt = await fetchSessionIdpJwt(idpSessionDir(), remote.idp.url, proofSignal); }
+    try { idpJwt = await readProof(proofSignal); }
     catch (e) { if (proofSignal?.aborted) throw hostUnavailable(); throw e; }
     const exchangeRemaining = deadline === undefined ? 15_000 : deadline - Date.now();
     if (exchangeRemaining <= 0) throw hostUnavailable();

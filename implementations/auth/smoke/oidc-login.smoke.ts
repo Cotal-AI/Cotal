@@ -7,9 +7,9 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
-import { cotalAuthProvider, ensurePinnedIdp, fetchSessionIdpJwt, loadIdpSession, verifyIdpToken, verifyToolResultHumanProof } from "@cotal-ai/auth";
+import { cotalAuthProvider, ensurePinnedIdp, fetchSessionIdpJwt, loadIdpSession, verifyIdpToken, verifyToolResultHumanProof, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { recordMesh, userAuthStateDir } from "@cotal-ai/workspace";
+import { recordMesh, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 
 const { check, finish } = createSuite();
 const root = mkdtempSync(join(tmpdir(), "cotal-oidc-login-"));
@@ -27,6 +27,8 @@ let pending = false;
 let exchangeFailed = false;
 let refreshStarted: (() => void) | undefined;
 let meshProofs = 0;
+let replaceLogin: (() => Promise<void>) | undefined;
+const credentialMarker = "secret123";
 const meshOwner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
 const refresh = () => `fixture-refresh+${current}`;
 const access = () => `fixture-access+${current}`;
@@ -62,8 +64,16 @@ async function serve(req: IncomingMessage, res: ServerResponse) {
   if (path === "/mesh/exchange") {
     const request = JSON.parse(body) as { actor: string; idpToken: string };
     assert.equal(request.actor, "cli");
-    assert.equal((await verifyIdpToken(request.idpToken, { issuer, audience: clientId, key: publicKey })).sub, sub);
+    const account = await verifyIdpToken(request.idpToken, { issuer, audience: clientId, key: publicKey });
+    assert.equal(account.sub, variant === "other-subject" ? "different-human" : sub);
     meshProofs++;
+    if (replaceLogin) {
+      const replace = replaceLogin;
+      replaceLogin = undefined;
+      await replace();
+      json(res, 503, {});
+      return;
+    }
     json(res, 200, { token: "fixture-mesh-bearer", owner: meshOwner, grant: { scope: [], allowPublish: [], allowSubscribe: [], dmHistory: "own" } });
     return;
   }
@@ -81,6 +91,7 @@ async function serve(req: IncomingMessage, res: ServerResponse) {
   if (path === "/activate") {
     assert.equal(form.get("scope"), "openid offline_access");
     if (variant === "device-redirect") { res.writeHead(307, { location: `${origin}/wrong` }).end(); return; }
+    if (variant === "error-detail") { json(res, 400, { error: "invalid_request", error_description: credentialMarker }); return; }
     pending = true;
     json(res, 200, { device_code: "fixture-device+code", user_code: "CODE-000", verification_uri: `${origin}/approve`, interval: 1, expires_in: 20 });
     return;
@@ -102,6 +113,7 @@ async function serve(req: IncomingMessage, res: ServerResponse) {
         json(res, 400, { error: "authorization_pending" });
         return;
       }
+      if (variant === "malformed-token") { res.writeHead(200, { "content-type": "application/json" }).end(credentialMarker); return; }
       json(res, 200, { access_token: access(), ...(variant !== "missing-refresh" ? { refresh_token: refresh() } : {}) });
       return;
     case "refresh_token": {
@@ -160,6 +172,13 @@ try {
     const result = await login(home);
     check(`refuse ${mode} without a cache or fallback request`, result.status === 1 && expected.test(result.stderr) && !cache(home)
       && seen.slice(start).every(row => row.path !== "/wrong" && row.path !== "/realm/device/code"), result.stderr);
+  }
+  for (const [mode, diagnostic] of [["error-detail", /refused the device authorization/], ["malformed-token", /unreadable response body/]] as const) {
+    variant = mode;
+    const home = fixtureDir(mode);
+    const result = await login(home);
+    check(`refuse ${mode} without logging credentials or caching a login`, result.status === 1 && diagnostic.test(result.stderr)
+      && !`${result.stdout}${result.stderr}`.includes(credentialMarker) && !cache(home));
   }
   variant = "ok";
   const missingClient = await cotal(fixtureDir("no-client"), ["login", "--oidc", "--idp", issuer, "--no-browser", "--plain"]);
@@ -225,8 +244,25 @@ try {
   await assert.rejects(verifyToolResultHumanProof(jwt, { issuer, audience: clientId, key: publicKey }), /requires a fresh signed password proof/);
   check("the exchange does not bypass the fresh-human proof rule", true);
 
+  const originalHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = dir;
+  try {
+    const beforeRetry = meshProofs;
+    replaceLogin = async () => {
+      variant = "other-subject";
+      assert.equal((await login(dir)).status, 0);
+      assert.equal(loadIdpSession(dir, issuer)?.sub, "different-human");
+    };
+    const result = await withRemoteExchangeRetry(() => cotalAuthProvider.userCredentials({ store: workspaceSecretStore(project), dir: stateDir, space: "oidc-remote", actor: "cli" }))
+      .then(() => "unexpected success", (error: unknown) => String(error));
+    check("a remote credential retry refuses a replacement login instead of exchanging its proof", /cached login changed/.test(result)
+      && meshProofs === beforeRetry + 1 && loadIdpSession(dir, issuer)?.sub === "different-human", result);
+  } finally {
+    if (originalHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = originalHome;
+  }
   const cacheView = await cotal(dir, ["auth", "--json"]);
-  check("account metadata remains readable without a reported session expiry", cacheView.status === 0 && cacheView.stdout.includes(sub) && !cacheView.stdout.includes(refresh()));
+  check("account metadata remains readable without a reported session expiry", cacheView.status === 0 && cacheView.stdout.includes("different-human") && !cacheView.stdout.includes(refresh()));
   const logout = await cotal(dir, ["logout", "--idp", issuer, "--plain"]);
   check("logout revokes the latest refresh handle and removes the local login", logout.status === 0 && revoked && loadIdpSession(dir, issuer) === undefined, logout.stderr);
 

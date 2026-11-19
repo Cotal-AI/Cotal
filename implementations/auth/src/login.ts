@@ -245,14 +245,16 @@ async function idpFetch(url: string, init?: RequestInit, cancel?: AbortSignal, m
  *  DURING the body read (an IdP that flushes headers then stalls or truncates the body), and that
  *  abort is raised from `res.json()` — outside idpFetch's catch — so without this it would leak a
  *  raw DOMException/parse error instead of the legible "idp request to …" sentence. */
-async function idpJson<T>(url: string, res: Response, cancel?: AbortSignal): Promise<T> {
+async function idpJson<T>(url: string, res: Response, cancel?: AbortSignal, redactBody = false): Promise<T> {
   try {
     return (await res.json()) as T;
   } catch (e) {
     throwIfCancelled(cancel);
     if (e instanceof DOMException && e.name === "TimeoutError")
       throw new IdpUnreachableError(`idp request to ${url} timed out reading the response body - the IdP flushed headers then stalled`);
-    throw new Error(`idp request to ${url} returned an unreadable response body: ${e instanceof Error ? e.message : String(e)}`);
+    // JSON parser diagnostics may quote fragments of a malformed body containing credentials.
+    const detail = redactBody ? "" : `: ${e instanceof Error ? e.message : String(e)}`;
+    throw new Error(`idp request to ${url} returned an unreadable response body${detail}`);
   }
 }
 
@@ -319,11 +321,15 @@ async function pollDeviceLogin(opts: DeviceLoginOpts, base: string, oidc?: OidcM
   const post = (url: string, fields: Record<string, string>, ms?: number) => oidc
     ? oidcPost(url, fields, opts.signal, ms)
     : idpFetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(fields) }, opts.signal);
+  const errorDetail = (response: Response, error: { error?: string; error_description?: string }) => {
+    const status = `HTTP ${response.status}`;
+    return oidc ? status : `${error.error ?? status}: ${error.error_description ?? "no detail"}`;
+  };
   const res = await post(deviceUrl, { client_id: opts.clientId, ...(oidc ? { scope: "openid offline_access" } : {}) });
   if (!res.ok) {
     const e = await oauthError(res, opts.signal);
     throw new IdpDeviceAuthorizationRefusedError(
-      `idp login: ${base} refused the device authorization (${e.error ?? `HTTP ${res.status}`}: ${e.error_description ?? "no detail"})`,
+      `idp login: ${base} refused the device authorization (${errorDetail(res, e)})`,
     );
   }
   const grant = await idpJson<{
@@ -333,7 +339,7 @@ async function pollDeviceLogin(opts: DeviceLoginOpts, base: string, oidc?: OidcM
     verification_uri_complete?: string;
     expires_in: number;
     interval: number;
-  } | null>(deviceUrl, res, opts.signal);
+  } | null>(deviceUrl, res, opts.signal, oidc !== undefined);
   // The WHOLE grant is shape-checked before anything is shown or polled — the timing fields
   // especially: a malicious IdP handing back `interval: "abc"` or a non-finite/absurd
   // `expires_in` would otherwise turn the poll loop into a tight (setTimeout coerces garbage to
@@ -391,7 +397,7 @@ async function pollDeviceLogin(opts: DeviceLoginOpts, base: string, oidc?: OidcM
       intervalSec *= 2;
       continue;
     }
-    if (poll.ok) return idpJson<TokenReply | null>(tokenUrl, poll, opts.signal);
+    if (poll.ok) return idpJson<TokenReply | null>(tokenUrl, poll, opts.signal, oidc !== undefined);
     const e = await oauthError(poll, opts.signal);
     if (e.error === "authorization_pending") continue;
     if (e.error === "slow_down") {
@@ -402,7 +408,7 @@ async function pollDeviceLogin(opts: DeviceLoginOpts, base: string, oidc?: OidcM
     if (e.error === "expired_token")
       throw new Error(`idp login: the device code expired before the sign-in was approved - run \`${retry}\` again`);
     throw new Error(
-      `idp login: ${base} rejected the poll (${e.error ?? `HTTP ${poll.status}`}: ${e.error_description ?? "no detail"})`,
+      `idp login: ${base} rejected the poll (${errorDetail(poll, e)})`,
     );
   }
 }
@@ -479,7 +485,7 @@ async function exchangeOidcProof(issuer: string, tokenUrl: string, account: Oidc
     requested_token_type: ID_TOKEN_TYPE,
   }, signal);
   if (!res.ok) throw new Error(`idp OIDC: token exchange failed (HTTP ${res.status})`);
-  const body = await idpJson<TokenReply | null>(tokenUrl, res, signal);
+  const body = await idpJson<TokenReply | null>(tokenUrl, res, signal, true);
   if (body?.issued_token_type !== ID_TOKEN_TYPE || typeof body.access_token !== "string" || !body.access_token)
     throw new Error("idp OIDC: token exchange did not return the requested ID token");
   await verifyIdpToken(body.access_token, { issuer, audience: account.clientId, key: pinnedJwksResolver(account.jwksUri) });
@@ -605,10 +611,26 @@ export async function fetchIdpJwt(idpUrl: string, sessionToken: string, signal?:
 /** Read a proof for a cached login. A standards login may rotate its handle in this directory. */
 export async function fetchSessionIdpJwt(dir: string, idpUrl: string, signal?: AbortSignal): Promise<string> {
   throwIfCancelled(signal);
+  return sessionIdpProofReader(dir, idpUrl)(signal);
+}
+
+/** Bind repeatable requests to the selected login, including any rotations of that login. */
+export function sessionIdpProofReader(dir: string, idpUrl: string): (signal?: AbortSignal) => Promise<string> {
   const base = normalizeIdpUrl(idpUrl);
   const selected = requireIdpSession(dir, base);
-  if (!selected.oidc) return fetchIdpJwt(base, selected.token, signal);
+  if (!selected.oidc) return (signal) => fetchIdpJwt(base, selected.token, signal);
   const generation = selected.oidc.id;
+  return (signal) => fetchOidcProof(dir, base, generation, signal);
+}
+
+async function fetchOidcProof(dir: string, base: string, generation: string, signal?: AbortSignal): Promise<string> {
+  throwIfCancelled(signal);
+  const readSelected = () => {
+    const session = requireIdpSession(dir, base);
+    if (!session.oidc || session.oidc.id !== generation)
+      throw new Error("idp OIDC: the cached login changed; retry the command");
+    return session;
+  };
   const cacheKey = (session: OidcSession) => JSON.stringify([resolve(dir), base, session.oidc.id, session.oidc.refreshToken]);
   const heldProof = (session: OidcSession) => {
     const key = cacheKey(session);
@@ -617,15 +639,13 @@ export async function fetchSessionIdpJwt(dir: string, idpUrl: string, signal?: A
     oidcProofs.delete(key);
     return undefined;
   };
-  const cached = heldProof(selected);
+  const cached = heldProof(readSelected());
   if (cached) return cached;
 
   return withIdpSessionLockAsync(dir, async () => {
     throwIfCancelled(signal);
     // A waiter must read the winner's handle, not the potentially spent one it read on entry.
-    const session = requireIdpSession(dir, base);
-    if (!session.oidc || session.oidc.id !== generation)
-      throw new Error("idp OIDC: the cached account or its configuration changed while waiting for a proof; retry the command");
+    const session = readSelected();
     const hit = heldProof(session);
     if (hit) return hit;
     const { issuer } = session.oidc;
@@ -643,7 +663,7 @@ export async function fetchSessionIdpJwt(dir: string, idpUrl: string, signal?: A
         throw new IdpSessionRejectedError(`idp OIDC: the cached refresh grant was rejected; sign in again with \`cotal login --idp ${issuer} --oidc --client-id <id>\``);
       throw new Error(`idp OIDC: refreshing the session failed (HTTP ${response.status})`);
     }
-    const body = await idpJson<TokenReply | null>(meta.tokenUrl, response);
+    const body = await idpJson<TokenReply | null>(meta.tokenUrl, response, undefined, true);
     if (!body || (body.refresh_token !== undefined && !opaqueRefreshToken(body.refresh_token)))
       throw new Error("idp OIDC: the refresh response did not contain a usable replacement handle");
     const next: OidcSession = body.refresh_token === undefined ? session : { ...session, oidc: { ...session.oidc, refreshToken: body.refresh_token } };
