@@ -10,7 +10,7 @@
   "mutations": [
     {
       "name": "M1 remove handshake_failed and jcode_not_found and disable EACCES classification",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-support.ts",
       "find": "export const PERMANENT_BRIDGE_RECOVERY_CODES = new Set([\n  \"handshake_failed\",\n  \"invalid_instance_home\",\n  \"invalid_request\",\n  \"jcode_not_found\",\n  \"unknown_request\",\n  \"unknown_session\",\n  \"unsupported_version\",\n]);\nexport const PERMANENT_BRIDGE_CONNECT_CAUSE_CODES = new Set([\"EACCES\"]);",
       "replace": "export const PERMANENT_BRIDGE_RECOVERY_CODES = new Set([\n  \"invalid_instance_home\",\n  \"invalid_request\",\n  \"unknown_request\",\n  \"unknown_session\",\n  \"unsupported_version\",\n]);\nexport const PERMANENT_BRIDGE_CONNECT_CAUSE_CODES = new Set([]);",
       "expectRed": "the permanent recovery contract contains exactly seven direct SDK codes plus EACCES",
@@ -18,7 +18,7 @@
     },
     {
       "name": "M2 disable connect_failed EACCES classification",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-support.ts",
       "find": "export const PERMANENT_BRIDGE_CONNECT_CAUSE_CODES = new Set([\"EACCES\"]);",
       "replace": "export const PERMANENT_BRIDGE_CONNECT_CAUSE_CODES = new Set([]);",
       "expectRed": "the permanent recovery contract contains exactly seven direct SDK codes plus EACCES",
@@ -26,7 +26,7 @@
     },
     {
       "name": "M3 make unknown HarnessError codes terminal",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-support.ts",
       "find": "  return false;\n}",
       "replace": "  return true;\n}",
       "expectRed": "an unknown HarnessError code retries inside the bounded window",
