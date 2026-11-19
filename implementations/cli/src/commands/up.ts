@@ -4736,7 +4736,7 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   }
   const nativeHost = nativeMembers.length ? knownStackRecoveryHost() : undefined;
   const recorded: MeshEntry = { ...m, origin, ...(nativeHost !== undefined ? { nativeMembers, nativeHost } : {}) };
-  recordMesh(provenance === "refresh" ? { ...prior, ...recorded, stoppedByDown: undefined } : recorded);
+  recordMesh(provenance === "refresh" ? { ...prior, ...recorded, stoppedByDown: undefined, stoppedWithAgents: undefined } : recorded);
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
     setAdoptedCurrent(m.space);

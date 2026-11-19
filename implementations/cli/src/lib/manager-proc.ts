@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, fstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { daemonArgv } from "./self-exec.js";
@@ -504,7 +504,7 @@ export const MANAGER_PROCESS = {
  *  component stopped, and every other caller through {@link clearManagerArtifacts}. */
 export async function stopManager(
   space: string = folderSpace(),
-  { withAgents = false, pid, root = cotalRoot() }: { withAgents?: boolean; pid?: number; root?: string } = {},
+  { withAgents = false, pid, root = cotalRoot(), onRetired }: { withAgents?: boolean; pid?: number; root?: string; onRetired?: () => void } = {},
 ): Promise<boolean> {
   const context = { root, space };
   let spared: SpareSeatRow[] | undefined;
@@ -533,6 +533,11 @@ export async function stopManager(
     // Disarmed by the attempt that armed it, inside its reservation: a stop refused the reservation
     // never reaches this, so it cannot remove the intent of the stop that holds it.
     afterFailedSignal: withAgents ? () => disarmManagerShutdownIntent(context) : undefined,
+    afterExit: withAgents && onRetired ? () => {
+      // The manager claims the intent to select the policy and drops its pid record only after
+      // shutdown succeeds. The CLI's cleanup of a forced or failed stop is not that evidence.
+      if (readPidfile(PID_PATH(space, root)) === undefined && !existsSync(localProcessPath(MANAGER_SHUTDOWN_INTENT, context))) onRetired();
+    } : undefined,
   });
   if (!found) return false;
   if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();

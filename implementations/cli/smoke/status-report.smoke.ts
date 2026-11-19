@@ -621,8 +621,8 @@ if (process.platform !== "win32") {
   const onPath = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
   const plain = run(["status", "--space", "nosuch", "--plain"], onPath);
   const machine = plain.stdout.split("\n\n")[0] ?? "";
-  check("the applications line names what is set up and counts the rest behind cotal setup",
-    ascii(`  Agent applications: aa · 1 more with \`${displayCmd()} setup\``) === plain.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)), shown(plain));
+  check("the headless applications line names what is set up and counts the rest",
+    ascii("  Agent applications: aa · 1 not set up") === plain.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)), shown(plain));
   check("no row is printed per known application",
     !/^ {2}aa: /m.test(plain.stdout) && !/^ {2}bb: /m.test(plain.stdout) && !/not on PATH/.test(plain.stdout), machine);
   check("the extensions line is one count at the version they share",
@@ -672,8 +672,8 @@ if (process.platform !== "win32") {
     const [port] = (await once(greeter.stdout!, "data")) as [Buffer];
     const noApp = run(["status", "--server", `nats://127.0.0.1:${port.toString().trim()}`, "--plain"], onPath);
     const next = noApp.stdout.split("\nNext\n")[1] ?? "";
-    check("when every seeded connector is missing its executable, Next offers setup instead of spawn",
-      noApp.status === 0 && /Agent applications: +not set up/.test(noApp.stdout) && /\bcotal setup +Set up an agent application\b/.test(next) && !/\bcotal spawn\b/.test(next), shown(noApp));
+    check("when every seeded connector is missing its executable, headless Next offers scripted setup help instead of spawn",
+      noApp.status === 0 && /Agent applications: +not set up/.test(noApp.stdout) && /\bcotal setup --help +See setup flags for scripts/.test(next) && !/\bcotal spawn\b/.test(next), shown(noApp));
   } finally {
     greeter.kill("SIGKILL");
   }
