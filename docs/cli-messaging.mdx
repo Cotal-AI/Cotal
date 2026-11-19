@@ -497,6 +497,8 @@ Each value with no per-channel override is marked `inherited`, whether it comes 
 defaults or the built-in policy. The inventory uses the same mark for replay and delivery.
 Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the
 mark identifies values supplied by the built-in policy.
+`channel set` and `channel defaults` trim surrounding whitespace from `--window` before saving
+the duration. For example, `--window ' 24h '` saves `24h`.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. A roster name that is only whitespace is shown as
 the id. A member the roster has not named says `name not reported`. JSON keeps the roster name,
@@ -619,8 +621,10 @@ read. Empty or whitespace-only `--from` and `--grep` values refuse with `USAGE_I
 before connecting. When older retained messages are not shown, raise `--limit` to read further back.
 There is no 1000-message read cap. For example, `cotal history general --limit 2000`
 reads the newest 2000 retained messages before applying filters. `result.window` says how many messages were read, whether older retained
-messages exist that the window did not reach, and whether the window goes back to `--since`. The report names the local time and the ISO instant a
-time `--since` resolved to, or the chat stream sequence a bare number was read as. A four-digit
+messages exist that the window did not reach, and whether the window goes back to `--since`.
+With `--dms`, a full window alone does not prove that it left out older messages.
+The report names the local time and the ISO instant a time `--since` resolved to, or the chat
+stream sequence a bare number was read as. A four-digit
 number from 1900 to 2099 is still a sequence, and the report says to write a date in full. A bare
 number past the chat stream's newest sequence names no message, so it is a `USAGE_INVALID` refusal
 that names that sequence and how to write a date. An age outside the supported date range, a date
@@ -735,10 +739,11 @@ credential gets, `AUTH_REQUIRED` or `PERMISSION_DENIED`, and its Next. Without `
 static-auth space the follow mints its own credential from the space's trust, so when the broker
 rejects it the Next says to run the follow again, which mints one from the current trust. With
 `--json` each line is one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
-The first record is a `snapshot` holding the window, then one `event` per message. An event has
-no `seq`, because the live feed carries no stream sequence; the snapshot's items keep theirs. To
-read on from a follow, give `--since` the last event's `ts`. An `error`
-record names a failure on the live feed, and a lost connection is one `TARGET_UNAVAILABLE` error. A
+The first record is a `snapshot` holding the window, then one `event` per message that matches the
+filters. A time-based `--since` applies to both the snapshot and live messages. A sequence cutoff
+applies only to the snapshot because live events have no `seq`. To read on from a follow, give
+`--since` the last event's `ts`. An `error` record names a failure on the live feed, and a lost
+connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not
 shown. An `end` record always closes the stream. The exit code is the snapshot's, the refusal's
 when the credential ended the follow, or 130 or 143 when SIGINT or SIGTERM ended it.
@@ -767,8 +772,9 @@ previous lifecycle by its complete durable name without substituting a
 same-named current agent. An absent or unreadable durable is not `pending 0`. A missing DM stream is
 `TARGET_NOT_FOUND` as well: the durable was not read.
 The caller needs the native admin read authority; user-auth has no equivalent
-view here and refuses without a static or bare fallback. A failed read does
-not prune a locally saved mesh registration.
+view here and refuses without a static or bare fallback. If the local stack is stopped, the
+refusal names the stopped space and where to start it again. A failed read does not prune a locally
+saved mesh registration.
 
 Candidates are read without acknowledging DMs. The read creates one of this
 credential's history readers with a description unique to that read, and deletes

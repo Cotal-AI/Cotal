@@ -37,7 +37,7 @@ See the [route and verb reference](control-discovery.mdx#request-routes).
 
 The principal route, `prin`, carries the commands an agent serves about itself, addressed by its own principal, lifecycle, and process.
 It needs no registration. The agent's own credential serves it, and the caller's credential says whether it may call with the `owner` or the `grant` word.
-The `agent` endpoint on it lets an authorized session read and answer the prompts an agent's harness raises.
+The `agent` endpoint on it lets an authorized session read and answer the prompts an agent's harness raises, and lets the agent owner's interactive session list and run the agent's own harness commands and skills.
 See [SPEC §13.21](../SPEC.md#1321-principal-route) and [§13.22](../SPEC.md#1322-the-agent-endpoint).
 
 ## Lifecycle identity [#lifecycle-identity]

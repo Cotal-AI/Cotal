@@ -90,7 +90,10 @@ export async function persona(args: ParsedArgs): Promise<void> {
     const reserved = reservedPersonaName(name!);
     if (reserved) throw new CommandFailure("refused", "USAGE_INVALID", reserved, { remedy: "choose another name" });
     const expected = readPersonaSource(path);
-    if (expected !== undefined) throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`, { remedy: `change it with \`cotal persona edit ${name}\`, or remove it with \`cotal persona remove ${name}\` first` });
+    if (expected !== undefined) {
+      const target = targetWords(values);
+      throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`, { remedy: `change it with \`cotal persona edit ${name}${target}\`, or remove it with \`cotal persona remove ${name}${target}\` first` });
+    }
     const bytes = await createSource(name!, path, values);
     commitPersona(path, expected, bytes);
     return receipt(presentation, catalog, name!, path, "created");

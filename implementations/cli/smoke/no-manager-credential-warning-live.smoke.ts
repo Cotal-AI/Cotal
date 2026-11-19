@@ -69,6 +69,12 @@ try {
         const web = credsClaims(readFileSync(join(root, ".cotal", webCredsKey(space, { injected: false, root })), "utf8"));
         suite.check(`${scenario}: up provisions the space's web.creds with no expiry`, web.exp === undefined, web);
       }
+      if (managed) {
+        const doctor = run("doctor", "auth");
+        suite.check("doctor lists the unbounded dashboard credential without counting a finding",
+          doctor.status === 0 && doctor.text.includes("No local credential findings") &&
+          /^\s*web\.creds +unbounded +.* +not reported\s*$/m.test(doctor.text), doctor.text);
+      }
       const expected = !open && !managed;
       const warning = controller ? up.envelope?.warnings?.find((w) => w.code === code)?.message : up.text;
       suite.check(`${scenario}: warning is limited to broker-only authenticated starts`, expected ? warning?.includes("--no-manager starts no local daemon-credential renewal owner") === true : !up.text.includes(code) && !up.text.includes("no local daemon-credential renewal owner"), up.text);

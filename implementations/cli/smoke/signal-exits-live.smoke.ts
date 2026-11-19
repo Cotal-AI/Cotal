@@ -8,7 +8,7 @@
  *     `terminated`.
  *  B. on a terminal: the `watch`, `chat` and `console` views exit 130 on SIGINT, after the view has
  *     stopped, rather than dying by the signal. The chat view closes its session first. The watch
- *     view exits 143 on SIGTERM.
+ *     view exits 143 on SIGTERM. A join exits cleanly when /quit is pasted after a status command.
  *
  * COTAL_HOME is sandboxed, the child environment carries no `COTAL_` variable of the runner, and the
  * stack stops with `cotal down --yes`. Needs `nats-server` on PATH. Run: pnpm smoke:signal-exits:live
@@ -110,6 +110,25 @@ try {
   }
   const term = await onTerminal(["watch"], "SIGTERM", "q leave");
   check("the watch view exits 143 on SIGTERM, not by the signal", term.code === 143 && term.signal === undefined, term);
+
+  const pasted = await new Promise<{ code: number; out: string }>((done) => {
+    const pty = cotalPty(["join", "--name", "PasteAudit", "--channel", "general"], { cwd: s, env });
+    let out = "", sent = false;
+    const deadline = setTimeout(() => (pty.kill as (signal?: string) => void)("SIGKILL"), 60_000);
+    pty.onData((data) => {
+      out += data;
+      const text = clean(out);
+      if (sent || !text.includes("Type to broadcast.") || !text.endsWith("PasteAudit> ")) return;
+      sent = true;
+      pty.write("/working audit\n/quit\n");
+    });
+    pty.onExit(({ exitCode }) => {
+      clearTimeout(deadline);
+      done({ code: exitCode, out: clean(out) });
+    });
+  });
+  check("join exits 0 when /working and /quit arrive in one paste",
+    pasted.code === 0 && pasted.out.includes("leaving") && !/ERR_USE_AFTER_CLOSE|connection closed/.test(pasted.out), pasted);
 } finally {
   if (up) {
     const down = cotal("down", "--yes");

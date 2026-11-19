@@ -8,7 +8,7 @@
  * `CotalEndpoint.callPrincipal`. Raw connections of the same principals send the requests whose
  * timing the suite controls and read the reply bytes off the wire.
  *
- * Covered: the refusals of `openPromptDesk`; the presence count and counter after each change; the
+ * Covered: the refusals of `openAgentEndpoint`; the presence count and counter after each change; the
  * `prompt-answer` checks in their order, each request refused by the earliest check it fails; every
  * named case of the desk's work list; the interleavings, in both orders where two exist; the measured
  * replies on the wire; a serve that fails on a reconnect, and a reconnect that lands on a smaller
@@ -47,9 +47,10 @@ import {
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER, type AclResolver, type ValidatedUserToken } from "@cotal-ai/auth";
 import { SMOKE_BROKER_TOKEN, createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
-  PROMPT_DESK_MIN_MAX_PAYLOAD, PROMPT_SUMMARY_MAX_BYTES, PromptRefused, openPromptDesk,
-  stepPrompt, type Delivery, type PromptDesk, type PromptEvent, type PromptHold, type PromptHooks, type PromptSpec, type PromptVerdict,
+  PROMPT_DESK_MIN_MAX_PAYLOAD, PROMPT_SUMMARY_MAX_BYTES, PromptRefused,
+  stepPrompt, type Delivery, type PromptEvent, type PromptHold, type PromptHooks, type PromptSpec, type PromptVerdict,
 } from "../src/prompt-desk.js";
+import { openAgentEndpoint, type AgentEndpoint } from "../src/agent-endpoint.js";
 import { contentOfBytes, contentWithLargestSummary, permission, question } from "./_prompt-fixtures.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -163,9 +164,9 @@ async function seat(w: Who): Promise<Seat> {
   return { w, nc };
 }
 const warns: string[] = [];
-const desks: PromptDesk[] = [];
-async function deskOn(ep: CotalEndpoint, label: string): Promise<PromptDesk> {
-  const desk = await openPromptDesk(ep, { warn: (m) => warns.push(`${label}: ${m}`) });
+const desks: AgentEndpoint[] = [];
+async function deskOn(ep: CotalEndpoint, label: string): Promise<AgentEndpoint> {
+  const desk = await openAgentEndpoint(ep, { warn: (m) => warns.push(`${label}: ${m}`) });
   desks.push(desk);
   return desk;
 }
@@ -182,7 +183,7 @@ interface Fake {
   delivered(d: Delivery): void; failed(e: Error): void;
 }
 const fakes: Fake[] = [];
-function openFake(desk: PromptDesk, label: string, o: {
+function openFake(desk: AgentEndpoint, label: string, o: {
   content?: PromptContent; openMs?: number; settleMs?: number;
   /** The spec as the adapter gives it, in place of one built from the three fields above. */
   spec?: unknown;
@@ -214,7 +215,7 @@ function openFake(desk: PromptDesk, label: string, o: {
     },
   };
   o.hooks?.(hooks);
-  f.hold = desk.open((o.spec ?? { content, openMs: o.openMs ?? 600_000, settleMs: o.settleMs ?? 600_000 }) as PromptSpec, hooks);
+  f.hold = desk.prompts.open((o.spec ?? { content, openMs: o.openMs ?? 600_000, settleMs: o.settleMs ?? 600_000 }) as PromptSpec, hooks);
   f.id = f.hold.id;
   f.digest = agentPromptDigest(content);
   fakes.push(f);
@@ -361,11 +362,10 @@ try {
   webRaw = await seat(W.web);
   builderRaw = await seat(W.builder);
 
-  // ── openPromptDesk refuses where it cannot serve ──
-  console.log("\nopenPromptDesk refuses where no answer can arrive");
+  console.log("\nopenAgentEndpoint refuses where no answer can arrive");
   {
     const legacyEp = await userEndpoint(W.legacy, { registerPresence: true });
-    const r = await settled(openPromptDesk(legacyEp, { warn: () => {} }));
+    const r = await settled(openAgentEndpoint(legacyEp, { warn: () => {} }));
     check("a credential minted before the rows: rejects with the broker's refusal of the subscription",
       !r.ok && r.error instanceof EpEnvelopeError && r.error.code === "permission-denied", r);
     await until(() => roster(W.legacy) !== undefined, 8000);
@@ -376,8 +376,8 @@ try {
     await staticEp.start();
     const openEp = own(new CotalEndpoint({ space, servers: OPEN_SERVERS, lifecycleUid: openUid, card: { actor: "open", name: "open", kind: "agent" }, consume: false, registerPresence: false, watchPresence: false, watchChannels: false }), "open");
     await openEp.start();
-    const s = await settled(openPromptDesk(staticEp, { warn: () => {} }));
-    const o = await settled(openPromptDesk(openEp, { warn: () => {} }));
+    const s = await settled(openAgentEndpoint(staticEp, { warn: () => {} }));
+    const o = await settled(openAgentEndpoint(openEp, { warn: () => {} }));
     check("a static credential: rejects", !s.ok && String((s.error as Error).message).includes("static credential"), s);
     check("an open mesh: rejects", !o.ok && String((o.error as Error).message).includes("open mesh"), o);
   }
@@ -386,7 +386,7 @@ try {
   console.log("\ndesk 1: the presence count and counter after each change");
   const desk1 = await deskOn(coderEp, "desk1");
   {
-    check("openPromptDesk resolves once the broker accepted the subscription, and presence shows { open: 0, seq: 1 }: the serve took seq 0 and the desk the next", await presenceIs(0, 1));
+    check("openAgentEndpoint resolves once the broker accepted the subscription, and presence shows { open: 0, seq: 1 }: the serve took seq 0 and the desk the next", await presenceIs(0, 1));
     const l0 = await list();
     check("prompts: no prompt, seq 1, and the runtime is the agent's presence runtime",
       l0.open.length === 0 && l0.closed.length === 0 && l0.seq === 1 && l0.runtime.id === coderAt.runtimeId
@@ -770,7 +770,7 @@ try {
 
     // A logger that throws, on the interactive actor's own desk.
     const termAt = addressOf(W.term);
-    const loud = await openPromptDesk(termEp, { warn: (m) => { warns.push(`loud: ${m}`); throw new Error("the logger is down"); } });
+    const loud = await openAgentEndpoint(termEp, { warn: (m) => { warns.push(`loud: ${m}`); throw new Error("the logger is down"); } });
     desks.push(loud);
     const endThrows = openFake(loud, "end throws, and so does the logger", { end: () => { throw new Error("end exploded"); } });
     const after = openFake(loud, "closed after it");
@@ -904,7 +904,7 @@ try {
     for (let i = 0; i < 32; i++) waiting.push((await accept(openFake(desk2, `open at the bound ${i}`, { content: contentWithLargestSummary(PROMPT_SUMMARY_MAX_BYTES, "o") }))).reply);
     let fullReason = "";
     try { openFake(desk2, "the 33rd"); } catch (e) { fullReason = (e as PromptRefused).reason; }
-    check("a 33rd prompt is refused full while 32 are open or sent", fullReason === "full" && desk2.waiting === 32, { fullReason, waiting: desk2.waiting });
+    check("a 33rd prompt is refused full while 32 are open or sent", fullReason === "full" && desk2.prompts.waiting === 32, { fullReason, waiting: desk2.prompts.waiting });
     const listWire = await rawSend(webRaw, "prompts", {});
     const listed = listWire?.reply.ok ? (listWire.reply.data as PromptsOutput) : undefined;
     const each = listed ? [...listed.open, ...listed.closed].map((s) => Buffer.byteLength(JSON.stringify(s))) : [];
@@ -1092,7 +1092,7 @@ try {
     await (coder2Ep as unknown as { nc: NatsConnection }).nc.reconnect();
     const closedOnIt = await until(() => open.ends.length === 1 && sent.ends.length === 1, 10_000);
     check("the next credential lacks the rows: the serve fails, the desk closes, the open prompt is released and the sent one ends attempted",
-      closedOnIt && same(open.ends, [false]) && same(sent.ends, [true]) && warns.slice(before).some((w) => w.startsWith("coder2: the prompt desk closed")), warns.slice(before));
+      closedOnIt && same(open.ends, [false]) && same(sent.ends, [true]) && warns.slice(before).some((w) => w.startsWith("coder2: the agent endpoint closed")), warns.slice(before));
     check("...and presence clears the prompts field", await until(() => roster(W.coder2) !== undefined && roster(W.coder2)!.prompts === undefined, 8000));
     const r = await settled(reply);
     check("...the waiting caller, whose reply can no longer be published, sees an unknown outcome at its deadline, never a refusal that claims nothing ran",
@@ -1121,8 +1121,8 @@ try {
       closedOnIt && same(f.ends, [false]) && warns.slice(before).some((w) => w.includes("max_payload is 262144 bytes")), warns.slice(before));
     let reconnected = false;
     for (let i = 0; i < 300 && !reconnected; i++) { try { reconnected = coderEp.maxPayload === 262144; } catch { /* not live yet */ } if (!reconnected) await wait(100); }
-    const again = await settled(openPromptDesk(coderEp, { warn: () => {} }));
-    check("openPromptDesk on that connection rejects, naming the limit", reconnected && !again.ok && String((again.error as Error).message).includes("262144"), again.ok ? "opened" : (again.error as Error).message);
+    const again = await settled(openAgentEndpoint(coderEp, { warn: () => {} }));
+    check("openAgentEndpoint on that connection rejects, naming the limit", reconnected && !again.ok && String((again.error as Error).message).includes("262144"), again.ok ? "opened" : (again.error as Error).message);
   }
 
   console.log("\nevery path");

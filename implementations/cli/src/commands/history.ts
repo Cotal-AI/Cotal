@@ -349,7 +349,7 @@ export async function history(args: ParsedArgs): Promise<void> {
       writeResult(presentation, { command: "history", target, result, completeness, warnings, ...(partial ? { partial } : {}) }, (r) => historyView(r, conn.space, names, since, live !== undefined));
     }
     if (!live) return;
-    await live.follow(result.items, (item) => keep(item, undefined, v.from, v.grep), presentation, target, names, () => stopping);
+    await live.follow(result.items, (item) => keep(item, since?.kind === "time" ? since : undefined, v.from, v.grep), presentation, target, names, () => stopping);
   } finally {
     stopping = true;
     await ep.stop().catch(() => {});
@@ -410,9 +410,10 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     const retained = listed ? listed.filter((row) => channels.includes(row.channel)).reduce((sum, row) => sum + row.messages, 0) : undefined;
     olderRetained = retained === undefined ? null : retained > read.length;
     if (req.dms) {
-      const dms = (await ep.dmHistory({ limit: req.limit })).map((msg) => itemOf(msg, {}));
-      const merged = [...read, ...dms].sort((a, b) => a.ts.localeCompare(b.ts));
-      if (dms.length === req.limit || merged.length > req.limit) olderRetained = true;
+      const dmLimit = Math.min(req.limit + 1, Number.MAX_SAFE_INTEGER);
+      const dms = await ep.dmHistory({ limit: dmLimit });
+      const merged = [...read, ...dms.slice(-req.limit).map((msg) => itemOf(msg, {}))].sort((a, b) => a.ts.localeCompare(b.ts));
+      if (dms.length > req.limit || merged.length > req.limit) olderRetained = true;
       read = merged.slice(-req.limit);
       // An absent stream reads as no messages. That is a missing read, not an empty history.
       try {

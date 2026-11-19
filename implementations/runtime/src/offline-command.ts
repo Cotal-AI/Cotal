@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
+import { hasDuplicateNames } from "@cotal-ai/core";
 import { dryRunOutcome, Journal, journalEntryKeyString, LangErrors, validate, type SimScript } from "@cotal-ai/lang";
 import { CommandFailure, isCommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
@@ -71,6 +72,10 @@ function scriptOf(file: string | undefined): SimScript {
   let value: unknown;
   try { value = JSON.parse(text); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} is not valid JSON`, { target: { file }, remedy: `save a JSON results object in ${file}` }); }
+  const duplicate = hasDuplicateNames(text);
+  if (duplicate.duplicate) throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} names ${JSON.stringify(duplicate.name)} twice in one object`, {
+    target: { file }, remedy: "keep each key once. To give a step multiple sequential results, put them in an array under its key",
+  });
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script must be an object");
   const script = value as Record<string, unknown>;
   const fields = new Set(["turns", "asks", "checkpoints", "events", "clock", "faults"]);
@@ -79,6 +84,9 @@ function scriptOf(file: string | undefined): SimScript {
     if (key === "faults" ? !Array.isArray(item) : !item || typeof item !== "object" || Array.isArray(item))
       throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid simulation script field '${key}'`);
   }
+  const start = (script.clock as Record<string, unknown> | undefined)?.start;
+  if (start !== undefined && (typeof start !== "number" || !Number.isFinite(start)))
+    throw new CommandFailure("refused", "SCHEMA_INVALID", "clock.start must be a finite number in milliseconds", { target: { file } });
   for (const [name, entry] of Object.entries((script.checkpoints ?? {}) as Record<string, unknown>)) {
     for (const [index, result] of (Array.isArray(entry) ? entry : [entry]).entries()) {
       const problem = checkpointResultProblem(result);
@@ -95,7 +103,7 @@ function scriptOf(file: string | undefined): SimScript {
   }
   for (const [name, entry] of Object.entries((script.turns ?? {}) as Record<string, unknown>)) {
     for (const result of Array.isArray(entry) ? entry : [entry]) {
-      const problem = turnResultProblem(result);
+      const problem = turnResultProblem(result, name);
       if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted turn '${name}': ${problem}`, { target: { file } });
     }
   }
@@ -121,7 +129,7 @@ function checkpointResultProblem(result: unknown): { message: string; field?: "s
 /** Why a scripted turn result is not one `turn()` can return, or undefined. The simulator hands the
  *  entry to the program as it is, so a status a live turn never yields is refused here rather than
  *  branched on. */
-function turnResultProblem(result: unknown): string | undefined {
+function turnResultProblem(result: unknown, name: string): string | undefined {
   if (!result || typeof result !== "object" || Array.isArray(result)) return "a result must be an object";
   const fields = result as Record<string, unknown>;
   if (fields.status !== "done" && fields.status !== "blocked" && fields.status !== "handoff") return "status must be \"done\", \"blocked\" or \"handoff\"";
@@ -129,6 +137,13 @@ function turnResultProblem(result: unknown): string | undefined {
   const known = new Set(["status", "to", "note"]);
   const unknown = Object.keys(fields).find((key) => !known.has(key));
   if (unknown !== undefined) return `unknown field '${unknown}'`;
+  if (fields.to !== undefined) {
+    const to = fields.to as Record<string, unknown> | null;
+    if (!to || typeof to !== "object" || Array.isArray(to) || typeof to.agent !== "string" || !to.agent.length || typeof to.persona !== "string"
+      || (to.kind !== undefined && to.kind !== "spawned" && to.kind !== "participant")
+      || (to.worktree !== undefined && typeof to.worktree !== "string") || (to.role !== undefined && typeof to.role !== "string"))
+      return `turns.${name}.to must be an agent handle with string agent and persona fields`;
+  }
   if (fields.note !== undefined && typeof fields.note !== "string") return "note must be a string";
   return undefined;
 }

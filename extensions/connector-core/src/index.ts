@@ -23,8 +23,13 @@ export * from "./tools.js";
 export * from "./gateway.js";
 export * from "./control.js";
 export * from "./relay.js";
+export { openAgentEndpoint, type AgentEndpoint } from "./agent-endpoint.js";
 export {
-  openPromptDesk, PromptRefused, PROMPT_ANSWER_REPLY_MS, PROMPT_DESK_MIN_MAX_PAYLOAD, PROMPT_OPEN_MS, PROMPT_SETTLE_MS,
+  COMMAND_LIST_MS, CommandRefused, ENDED_COMMANDS_KEPT, MAX_QUEUED_COMMANDS,
+  type AgentCommand, type CommandDispatch, type CommandDispatcher, type CommandQueue,
+} from "./agent-commands.js";
+export {
+  PromptRefused, PROMPT_ANSWER_REPLY_MS, PROMPT_DESK_MIN_MAX_PAYLOAD, PROMPT_OPEN_MS, PROMPT_SETTLE_MS,
   PROMPT_SUMMARY_MAX_BYTES,
   type Delivery, type Evidence, type PromptDesk, type PromptHold, type PromptHooks, type PromptSpec, type PromptVerdict,
 } from "./prompt-desk.js";
