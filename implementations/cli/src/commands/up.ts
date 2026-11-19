@@ -1722,9 +1722,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Gated on the ATTEMPT, not on holding the lock. The lock is now always held, and this refuses
     // whenever a journal exists — which is precisely the state a resume re-entry is in, so gating
     // it on the lock would refuse the very resume the lock is here to protect.
-    // Without --server the default URL only seeds a first boot. A first boot that found it taken ran
-    // on a free port, which this root's record keeps; a re-run must start from that URL, or every
-    // lookup below misses its own mesh and the space claim refuses it (#3889).
     const recordedSpace = values.space ?? folderSpace();
     const registration = localMeshesForRoot(cotalRoot()).find((m) => m.space === recordedSpace);
     // A stopped legacy root's own files decide its start: its `down` dropped the registration that
@@ -1759,8 +1756,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${codeSpan(cleaned.command)}` });
     }
     // A registered address stays as recorded, so a running stack is still found by it.
-    const implicitServer = registeredServer ?? serving(retained?.server ?? DEFAULT_SERVER);
-    let server = values.server ?? implicitServer;
+    const implicitServer = registeredServer ?? serving(retained?.server ?? registration?.server ?? DEFAULT_SERVER);
     const host = values.host ?? "127.0.0.1";
     // `--host` is the BIND address; `server` is the URL the readiness probe, the mesh registry, and
     // every later client use. They must name the SAME address. Left independent, `--host <non-loopback>`
@@ -1768,7 +1764,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // SIGTERM'd a broker that had started perfectly — so `--host` alone could never succeed.
     // Derive the URL from `--host` when no explicit `--server` pins it, and refuse a contradicting
     // pair rather than starting a broker nothing can reach.
-    if (values.host) server = reconcileHostAndServer(values.host, values.server, "--host", "--server", implicitServer);
+    const requestedServer = values.host
+      ? reconcileHostAndServer(values.host, values.server, "--host", "--server", implicitServer)
+      : values.server ?? implicitServer;
+    // Only a first boot gets an automatic port. A legacy store or launch record can survive the
+    // loss of its address records, and a cleaned manifest root can still hold its deployment summary.
+    const firstAddress = !resumeAttempt && values.server === undefined && !values["rotate-sys"] && recordsNameNoSpace(cotalRoot())
+      && !["nats", "stack-home.json", "team-summaries"].some((entry) => existsSync(cotalPath(entry)));
+    const server = firstAddress ? await freshStackServer(serving(requestedServer), host) : requestedServer;
     // A same-root repair reopens the store the mesh record names, ONCE, before the ordinary-up
     // assertion below reads --store-dir (#2218): an ordinary `up` on a space whose broker died must
     // not silently fall back to the root's default store while the record still names a custom one.
@@ -1872,8 +1875,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const root = cotalRoot();
     // A broker is already on this port. Same root means "this project is already up" unless the
     // operator explicitly asked for a second space in the same `.cotal/` root (unsupported today: pid,
-    // auth, and logs are root-scoped). Different root / unrecorded broker on the implicit default port
-    // gets a fresh free port instead of making the user hunt for one.
+    // auth, and logs are root-scoped). A new stack already selected a free address above.
     const meshes = loadMeshes();
     // An explicit refresh names a complete identity. Selecting only by server makes the result depend
     // on registry order when that broker has records for several spaces. A bare refresh keeps its
@@ -2204,8 +2206,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
     // Reaching here with `--rotate-sys` means something IS answering at the requested address and it
-    // is not this root's recorded mesh (that case was refused above). The ordinary response is to pick
-    // a free port and carry on, which for a rotation is the wrong instinct: the unidentified listener
+    // is not this root's recorded mesh (that case was refused above). The unidentified listener
     // may be a `nats-server -c <root>/.cotal/auth/server.conf` started by hand, holding THIS root's
     // config and JetStream store while writing neither a pidfile nor a registry row. Rotating around
     // it retires the account it is still serving and opens its store a second time. Nothing available
@@ -2217,18 +2218,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       );
       process.exit(1);
     }
-    if (values.server === undefined && (!held || held.root !== root)) {
-      const next = await serverWithFreePort(server, host);
-      console.log(c.dim(`${server} is already in use by ${who}; starting "${space}" at ${next} instead`));
-      server = next;
-    } else {
-      console.error(
-        c.red(
-          `✗ ${server} is already in use by ${who} - to run "${space}" use \`--server nats://${host}:<port>\` with a free port`,
-        ),
-      );
-      process.exit(1);
-    }
+    console.error(
+      c.red(
+        `✗ ${server} is already in use by ${who} - to run "${space}" use \`--server nats://${host}:<port>\` with a free port`,
+      ),
+    );
+    process.exit(1);
   }
   if (stoppedStart) console.log(c.dim(stoppedStart));
 

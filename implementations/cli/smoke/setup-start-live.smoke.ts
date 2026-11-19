@@ -1,4 +1,4 @@
-/** Live regression for #4421: implicit local addresses and classified setup startup refusals.
+/** Live regressions for implicit local addresses (#4421, #8034) and classified setup startup refusals.
  * Run: pnpm smoke:setup-start:live
  */
 import { spawnSync } from "node:child_process";
@@ -18,17 +18,18 @@ const env: Record<string, string | undefined> = { ...host, HOME: home, USERPROFI
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 Object.assign(process.env, env);
 const { check, finish } = createSuite();
-interface Receipt { outcome: string; error?: { code: string; message: string; remedy?: string }; result?: { server?: string; spaceState?: string; withAgents?: boolean; signalled?: boolean; next?: { command: string; cwd: string | null }; startup?: { state: string; failure?: { code: string; message?: string } } } }
+interface Receipt { outcome: string; error?: { code: string; message: string; remedy?: string }; result?: { server?: string; spaceState?: string; withAgents?: boolean; signalled?: boolean; next?: { command: string; cwd: string | null }; startup?: { state: string; failure?: { code: string; message?: string } }; items?: { space: string; server: string; check: string }[] } }
 const unconfirmed = new Set<string>();
 const anchors = new Map<string, SmokeSandboxAnchor>();
-const run = (cwd: string, ...args: string[]) => {
-  assertSmokeSandboxDown(anchors.get(cwd), [...args, "--json"], { cwd, env });
-  const r = spawnSync(process.execPath, [BIN, ...args, "--json"], { cwd, env, encoding: "utf8", timeout: 120_000 });
+const invoke = (cwd: string, ...args: string[]) => {
+  assertSmokeSandboxDown(anchors.get(cwd), args, { cwd, env });
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   let receipt: Receipt | undefined;
   try { receipt = JSON.parse(r.stdout) as Receipt; } catch { /* Printed below if the command failed. */ }
   if (args[0] === "up" && (r.status === null || receipt?.outcome === "unknown")) unconfirmed.add(cwd);
   return { status: r.status, receipt, stdout: r.stdout, stderr: r.stderr };
 };
+const run = (cwd: string, ...args: string[]) => invoke(cwd, ...args, "--json");
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(-2000), stderr: r.stderr.slice(-1000) });
 const project = (name: string) => {
   const path = join(home, name); mkdirSync(path, { mode: 0o700 });
@@ -148,6 +149,30 @@ try {
       const parallel = run(other, "up", "--space", "third", "--open", "--no-manager");
       check("two separate spaces run together on distinct recorded addresses", parallel.status === 0 && parallel.receipt?.result?.server !== journal.server && parallel.receipt?.result?.server !== "nats://127.0.0.1:4222", shown(parallel));
 
+    }
+  }
+
+  if (!selected || selected === "unprepared-address") {
+    // Stop the root walk at the isolated home, while leaving the new project empty.
+    mkdirSync(join(home, ".cotal"), { recursive: true, mode: 0o700 });
+    const root = join(home, "unprepared-address");
+    mkdirSync(root, { mode: 0o700 });
+    const started = invoke(root, "up");
+    try {
+      check("bare up in an unprepared project starts beside a reserved default address", started.status === 0, shown(started));
+      if (started.status === 0) {
+        const spaces = run(root, "space");
+        const rows = spaces.receipt?.result?.items;
+        const own = rows?.find((row) => row.space === "unprepared-address");
+        check("the new broker answers on a distinct registered address", own?.check === "reachable" && own.server !== "nats://127.0.0.1:4222", shown(spaces));
+        check("the original reservation is unchanged", rows?.some((row) => row.space === "held" && row.server === "nats://127.0.0.1:4222") === true, shown(spaces));
+      }
+    } finally {
+      if (existsSync(join(root, ".cotal"))) {
+        anchors.set(root, recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! }));
+        const stopped = invoke(root, "down", "--yes");
+        if (stopped.status !== 0) throw new Error(`cleanup did not confirm the owned stack stopped: ${stopped.stderr}`);
+      }
     }
   }
 
