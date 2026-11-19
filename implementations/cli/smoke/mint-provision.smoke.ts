@@ -597,6 +597,17 @@ try {
       r3.code === 2 && r3.out.includes(`the referenced credential ${join(root, "missing.creds")} does not exist`), r3.out);
     check("  and mints nothing", !existsSync(out));
     // An --out folder that cannot hold the credential is named, with the cause and the step.
+    const unsafe = join(root, "out-unsafe");
+    mkdirSync(unsafe, { mode: 0o700 });
+    chmodSync(unsafe, 0o777);
+    const unsafeOut = join(unsafe, "newdir", "deeper", "x.creds");
+    const unsafeMint = await runMint(["x", "--out", unsafeOut]);
+    check("--out refuses an unsafe existing ancestor without creating missing folders",
+      unsafeMint.code === 2 && /^\s*Code:\s+PERMISSION_DENIED$/m.test(unsafeMint.out) && unsafeMint.out.includes(`${unsafe} is writable by every local account`) && readdirSync(unsafe).length === 0, unsafeMint.out);
+    chmodSync(unsafe, 0o700);
+    const safeMint = await runMint(["x", "--out", unsafeOut]);
+    check("--out creates missing folders and writes the credential after the ancestor is protected",
+      safeMint.code === 0 && existsSync(unsafeOut), safeMint.out);
     const real = join(root, "out-real"), link = join(root, "out-link");
     mkdirSync(real, { mode: 0o700 });
     symlinkSync(real, link);
