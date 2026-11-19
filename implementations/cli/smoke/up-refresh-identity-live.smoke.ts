@@ -465,7 +465,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
   const fixture = await makeFixture("fg-crash");
   process.env.COTAL_HOME = fixture.home;
   process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
-  const { findMesh } = await import("@cotal-ai/workspace");
+  const { findMesh, readMaintenanceLockHolder } = await import("@cotal-ai/workspace");
   const space = "fg-crash";
   const child = spawn(process.execPath, ["--import", TSX_LOADER, CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
@@ -524,7 +524,9 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
     let railsUp = false;
     for (let i = 0; i < 60 && !railsUp; i++) {
       const set = cotal(fixture, ["channel", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
-      if (set.status === 0) railsUp = true;
+      // A channel write can succeed before the legacy manager has published its stop capability.
+      // Wait for the startup lock to clear before testing the steady-state shutdown path.
+      if (set.status === 0 && !readMaintenanceLockHolder(fixture.root)) railsUp = true;
       else await sleep(1_000);
     }
     check("(control) the second foreground fixture answers channel set within the poll budget", railsUp);
