@@ -516,8 +516,10 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
   }
 
   // CONTROL: the same foreground `up`, ended with SIGINT (the intended stop) instead of SIGKILL,
-  // exits 0 and drops the record — proving the crash branch above is the ONLY one that keeps it.
+  // exits 130 and drops the record, proving the crash branch above is the only one that keeps it.
   const control = spawn(process.execPath, ["--import", TSX_LOADER, CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
+  let controlOutput = "";
+  for (const stream of [control.stdout, control.stderr]) stream.on("data", (chunk) => { controlOutput = (controlOutput + String(chunk)).slice(-4000); });
   try {
     let railsUp = false;
     for (let i = 0; i < 60 && !railsUp; i++) {
@@ -526,9 +528,13 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
       else await sleep(1_000);
     }
     check("(control) the second foreground fixture answers channel set within the poll budget", railsUp);
-    control.kill("SIGINT");
-    const controlExit = await new Promise<number | null>((res) => control.once("exit", (code) => res(code)));
-    check("(control) SIGINT (intended stop) exits 130", controlExit === 130, controlExit);
+    const controlExit = await new Promise<number | null>((res) => {
+      if (control.exitCode !== null || control.signalCode !== null) { res(control.exitCode); return; }
+      const timer = setTimeout(() => res(null), 120_000);
+      control.once("exit", (code) => { clearTimeout(timer); res(code); });
+      control.kill("SIGINT");
+    });
+    check("(control) SIGINT (intended stop) exits 130", controlExit === 130, { exitCode: controlExit, signal: control.signalCode, output: controlOutput });
     check("(control) SIGINT drops the record", findMesh(space) === undefined, findMesh(space));
   } finally {
     if (control.exitCode === null) { try { control.kill("SIGKILL"); } catch { /* already gone */ } }
