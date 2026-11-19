@@ -797,6 +797,7 @@ and `--json` require `--yes`. The old `--force` spelling refuses with the replac
 
 `history clear --dry-run` resolves the target and names the affected streams offline. It issues no
 caller credential, connects nowhere and does not check authorization or retained message counts.
+A local controller stack stopped by a completed `down` previews using its saved broker address.
 A space that is prepared but not started is refused with `TARGET_UNAVAILABLE` (exit 2), and the
 refusal says how to start it.
 The purge uses the existing purger instrument or one-action user purger view, not a broader caller.

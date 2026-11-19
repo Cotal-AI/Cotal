@@ -5272,7 +5272,14 @@ async function refuseRunningElsewhere(space: string, root: string): Promise<void
   if (!owner || owner.origin === "manual" || owner.origin === "catalog" || !isAbsolute(owner.root) || canonicalRoot(owner.root) === canonicalRoot(root) || !(await isReachable(owner.server))) return;
   let controller = false;
   try { controller = readStackJournal(owner.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
-  throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${owner.server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server: owner.server }, remedy: `use it from here with --space ${space}, or stop it with \`cotal down${controller ? " --yes" : ""}\` in ${owner.root}` });
+  const rootExists = existsSync(owner.root);
+  const moved = !controller && !retainedLegacyBroker(owner.root) && recordsElsewhereError(root)?.details.stackSpace === space;
+  const remedy = moved
+    ? `${rootExists ? `move what is now at ${owner.root} aside, then ` : ""}move this folder back to ${owner.root} and run \`cotal down --yes\` there`
+    : !rootExists
+      ? `restore the original project at ${owner.root}, then run \`cotal down --yes\` there`
+      : `stop it with \`cotal down${controller ? " --yes" : ""}\` in ${owner.root}`;
+  throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${owner.server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server: owner.server }, remedy });
 }
 
 /** Refuses a bare `up` in a folder holding the records of a space this machine registers for another

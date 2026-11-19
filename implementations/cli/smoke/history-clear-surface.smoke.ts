@@ -10,7 +10,8 @@
  * docs/cli-messaging.mdx used to document `history clear --force`, which the CLI refuses. The page and the help
  * now both name `--yes` and `--dry-run`.
  *
- * Driven through the built binary in a sandboxed COTAL_HOME. No broker is started.
+ * Driven through the built binary in a sandboxed COTAL_HOME, with a broker started and stopped to
+ * check that the saved address still works for an offline preview.
  *
  * Run: pnpm smoke:history-clear-surface
  */
@@ -18,8 +19,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chatStream } from "@cotal-ai/core";
-import { createSuite, freePort } from "@cotal-ai/smoke-kit";
+import { chatStream, dmStream } from "@cotal-ai/core";
+import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { recordMesh } from "@cotal-ai/workspace";
 import { readDocument } from "@cotal-ai/docs-content";
 
@@ -32,8 +33,8 @@ if (!existsSync(BIN)) {
 
 interface Envelope {
   outcome: string;
-  target: { space?: string } | null;
-  result: { kind?: string; streams?: string[]; purged?: boolean } | null;
+  target: { space?: string; broker?: string } | null;
+  result: { kind?: string; streams?: string[]; purged?: boolean; authorization?: string; retainedCounts?: string } | null;
   error?: { code: string; message: string; remedy?: string };
 }
 
@@ -68,6 +69,30 @@ check("the refusal names the prepared space", plain.stderr.includes('"hcdry" is 
 const json = run(["history", "clear", "--dry-run", "--json"]);
 check("json: the refusal envelope is TARGET_UNAVAILABLE", json.status === 2 && json.envelope?.outcome === "refused" && json.envelope.error?.code === "TARGET_UNAVAILABLE", shown(json));
 check("json: the remedy says how to start the space", /cotal up/.test(json.envelope?.error?.remedy ?? ""), json.envelope?.error);
+
+const server = `nats://127.0.0.1:${await freePort()}`;
+const anchor = recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+const stopArgs = ["down", "--space", "hcdry", "--yes", "--json"];
+const stop = () => {
+  assertSmokeSandboxDown(anchor, stopArgs, { cwd: root, env });
+  return run(stopArgs);
+};
+try {
+  const up = run(["up", "--open", "--no-manager", "--server", server, "--json"]);
+  check("fixture: the prepared project starts a broker", up.status === 0, shown(up));
+  const down = stop();
+  check("fixture: down completes the stop", down.status === 0 && down.envelope?.outcome === "ok", shown(down));
+  for (const args of [[], ["--space", "hcdry"], ["--space", "hcdry", "--server", server]]) {
+    const stopped = run(["history", "clear", "--dry-run", "--dms", "--json", ...args]);
+    const e = stopped.envelope;
+    check(`stopped space previews its recorded broker and both streams offline (${args.join(" ") || "local project"})`,
+      stopped.status === 0 && e?.target?.space === "hcdry" && e.target.broker === server
+        && e.result?.streams?.join(",") === [chatStream("hcdry"), dmStream("hcdry")].join(",")
+        && e.result.authorization === "not-checked" && e.result.retainedCounts === "not-checked" && e.result.purged === false, shown(stopped));
+  }
+} finally {
+  stop();
+}
 
 // A registered space at a port with nothing listening: the preview still answers.
 const port = await freePort();
