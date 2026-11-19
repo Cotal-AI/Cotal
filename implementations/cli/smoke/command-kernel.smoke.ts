@@ -1501,6 +1501,45 @@ for (const code of ["ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN", "ECO
   assert.ok(!fixture.events.some(event => event.includes("installed globally") || event.includes("into npm's global installation")));
 }
 
+// A snapshot refusal must discard the verified but unpublished generation on every attempt.
+{
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const xdg = mkdtempSync(join(tmpdir(), "cotal-staged-snapshot-refusal-"));
+  process.env.XDG_CONFIG_HOME = xdg;
+  mkdirSync(join(xdg, "cotal", "seed"), { recursive: true, mode: 0o700 });
+  const blocked = join(xdg, "cotal", "extensions");
+  writeFileSync(blocked, "not a directory");
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const stage = join(xdg, `unpublished-${attempt}`);
+      const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+      let discarded = 0, published = 0, released = 0;
+      fixture.rt.prepareExecution = async () => {
+        mkdirSync(stage, { mode: 0o700 });
+        return {
+          entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: "/private/execution.json",
+          async preflight() {}, verify() {}, restore() {},
+          publish() { published++; },
+          discard() { discarded++; rmSync(stage, { recursive: true }); },
+        };
+      };
+      fixture.rt.prepareReplacement = async () => async () => { released++; };
+      assert.equal(await executeUpdate(true, fixture.rt), 1);
+      assert.equal(discarded, 1);
+      assert.equal(existsSync(stage), false, "unpublished generation is removed after snapshot refusal");
+      assert.equal(published, 0);
+      assert.equal(released, 1);
+      assert.ok(fixture.events.some(event => event.includes("update snapshot refused:")));
+      assert.equal(readUpdateRecovery(), undefined);
+      assert.equal(readFileSync(blocked, "utf8"), "not a directory");
+    }
+  } finally {
+    rmSync(xdg, { recursive: true, force: true });
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
+}
+
 // Staged verification loads the live extension config, so rollback restores its snapshot first.
 {
   const priorXdg = process.env.XDG_CONFIG_HOME;
