@@ -962,6 +962,13 @@ lists managed seats. Stale Claude skills and out-of-date `.agents` skills recomm
 `cotal setup --skills`, not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the
 mesh to inspect; it starts nothing.
 
+When `status` would suggest restarting the selected stopped local stack,
+`status` checks the recorded root's default `.cotal/channels.json` with the same validation as `up`.
+An invalid file is named under Next with the repair to make before restarting. The broker still
+reports as unreachable when dialed. The check does not change the file or start the stack.
+In `--json`, `selected.channelSeedBlocksRestart` is `true` when this check finds a blocker, and
+`hints` names the file and its repair.
+
 
 ### Broker probes
 

@@ -25,6 +25,8 @@ import {
   recordOperationSpace,
   resolveControlTarget,
   resolveMeshTarget,
+  spaceRootTarget,
+  workspaceErrorParts,
   connectOrThrow,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
@@ -39,6 +41,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
 import { connectorHarnesses } from "../lib/status.js";
+import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
 import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
 
@@ -585,11 +588,21 @@ export async function ps(args: ParsedArgs): Promise<void> {
   const command = slots ? "slots" : "ps";
   const kind = slots ? "slots" : "seats";
   refuseControlCreds(v.creds, v.space);
-  const on = await managerPin(v, onRerun("cotal ps", v, slots ? ["--slots"] : []));
+  let on: string | undefined;
   let census: SeatCensus;
   try {
+    on = await managerPin(v, onRerun("cotal ps", v, slots ? ["--slots"] : []));
     census = await readSeats(v, command, on);
   } catch (e) {
+    const parts = isConnectRefusal(e) ? e.parts : isWorkspaceTargetError(e) && e.code === "not-started" ? workspaceErrorParts({ kind: "target", error: e }) : undefined;
+    if (parts?.restartRoot !== undefined) {
+      const block = channelSeedRestartBlock(parts.restartRoot);
+      if (block) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${parts.message}. Restart blocked: ${block.message}`, {
+        target: isConnectRefusal(e) ? e.target : isWorkspaceTargetError(e) ? spaceRootTarget(e.details) : undefined,
+        native: isConnectRefusal(e) ? e.native : undefined,
+        remedy: block.remedy,
+      });
+    }
     // On a user-auth mesh where no manager of yours answers, or none is live, your agents are read
     // from presence instead. Static slots are a manager's own records, so `--slots` keeps the refusal.
     const failure = isCommandFailure(e) ? e : isConnectRefusal(e) ? e.failure() : undefined;
