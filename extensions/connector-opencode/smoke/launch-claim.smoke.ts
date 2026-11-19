@@ -39,6 +39,7 @@ case "$1" in
   serve)
     echo "first-run dependency preparation"
     if [ "$STUB_FAIL" = 1 ]; then echo "dependency install refused" >&2; exit 7; fi
+    if [ "$STUB_CLEAN_EXIT" = 1 ]; then echo "serve stopped early"; exit 0; fi
     if [ -n "$STUB_REFUSE" ]; then echo "[cotal-connector] plugin loaded" >&2; echo "[cotal-connector] $STUB_REFUSE" >&2; exit 1; fi
     if [ -n "$STUB_DELAY" ]; then trap 'kill $! 2>/dev/null; exit 0' TERM; sleep "$STUB_DELAY" & wait; fi
     echo "[cotal-session] stub-session"; trap 'kill $! 2>/dev/null; exit 0' TERM; sleep 600 & wait ;;
@@ -92,6 +93,14 @@ try {
     expect(log.includes("first-run dependency preparation") && log.includes("dependency install refused"), { log });
     expect((statSync(join(agentHome, logs[0])).mode & 0o777) === 0o600, { mode: statSync(join(agentHome, logs[0])).mode });
     expect(failedBoot.out().includes(`boot log: ${join(agentHome, logs[0])}`) && failedBoot.out().trimEnd().endsWith("Last output: first-run dependency preparation | dependency install refused"), { out: failedBoot.out() });
+  });
+
+  await check("a serve that exits 0 before the session handshake fails the launch", async () => {
+    // #8124: the launcher forwarded the serve's 0, so the spawn reported success for a seat that never joined.
+    const early = launch({ STUB_CLEAN_EXIT: "1" });
+    const code = await early.exited;
+    const last = early.out().split("\n").filter((line) => line.trim()).at(-1) ?? "";
+    expect(code === 1 && last.includes("OpenCode exited before its Cotal session was ready (code 0)") && last.endsWith("Last output: first-run dependency preparation | serve stopped early"), { code, last });
   });
 
   await check("a boot the plugin refused ends on the plugin's own reason", async () => {
@@ -169,4 +178,4 @@ try {
 
 console.log(`\nopencode-launch-claim.smoke: ${passed} passed, ${failed} failed`);
 emitSentinel({ passed, failed });
-if (failed > 0 || passed !== 7) process.exitCode = 1;
+if (failed > 0 || passed !== 8) process.exitCode = 1;
