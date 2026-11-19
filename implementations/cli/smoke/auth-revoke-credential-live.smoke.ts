@@ -216,7 +216,9 @@ try {
     // A --creds agent file holds its own post grant, so a refused post names it.
     const unposted = cli(root, "send", "-c", "general", "no post grant", "--json", "--creds", join(creds, "fresh.creds"), "--space", space, "--server", server);
     check("a post the fresh file may not make names its post grant, read from the file",
-      unposted.status === 2 && unposted.env?.error?.code === "PERMISSION_DENIED" && unposted.env.error.remedy === `this identity may post to no channel in ${space}`, shown(unposted));
+      unposted.status === 2 && unposted.env?.outcome === "refused" && unposted.env.error?.code === "PERMISSION_DENIED"
+        && unposted.env.error.message.includes("it was not stored")
+        && unposted.env.error.remedy?.startsWith(`this identity may post to no channel in ${space}.`) === true, shown(unposted));
   }
 } finally {
   if (anchors.has(root)) cli(root, "down", "--yes", "--json");
