@@ -87,7 +87,7 @@
 import assert from "node:assert/strict";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
-import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -190,18 +190,33 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
 }
 type Frame = Record<string, unknown>;
 let seq = 0;
-async function ask(socket: string, req: Frame, ms = 40_000): Promise<Frame> {
+type AskObservation = (phase: string, facts?: { id?: string; bytes?: number; hadError?: boolean }) => void;
+async function ask(socket: string, req: Frame, ms = 40_000, observe?: AskObservation): Promise<Frame> {
   const sock = netConnect(socket);
   await new Promise<void>((res, rej) => { sock.once("connect", () => res()); sock.once("error", rej); });
   const id = `g${++seq}`;
+  observe?.("sending", { id });
   sock.write(`${JSON.stringify({ v: 1, id, ...req })}\n`);
   sock.setEncoding("utf8");
   let buf = "";
   try {
     return await new Promise<Frame>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error(`no reply within ${ms}ms; got ${buf.slice(0, 300)}`)), ms);
-      sock.on("data", (c: string) => { buf += c; const nl = buf.indexOf("\n"); if (nl !== -1) { clearTimeout(t); resolve(JSON.parse(buf.slice(0, nl)) as Frame); } });
+      const t = setTimeout(() => {
+        observe?.("deadline", { id, bytes: Buffer.byteLength(buf) });
+        reject(new Error(`no reply within ${ms}ms; got ${buf.slice(0, 300)}`));
+      }, ms);
+      sock.on("data", (c: string) => { buf += c; const nl = buf.indexOf("\n"); if (nl !== -1) { clearTimeout(t); observe?.("reply", { id, bytes: Buffer.byteLength(buf) }); resolve(JSON.parse(buf.slice(0, nl)) as Frame); } });
       sock.once("error", (e) => { clearTimeout(t); reject(e); });
+      if (observe) {
+        const peerClosed = (phase: "peer-ended" | "closed", hadError?: boolean) => {
+          const bytes = Buffer.byteLength(buf);
+          observe(phase, { id, bytes, hadError });
+          clearTimeout(t);
+          reject(new Error(`connection closed by daemon before reply to ${id}; received ${bytes} bytes`));
+        };
+        sock.once("end", () => peerClosed("peer-ended"));
+        sock.once("close", hadError => peerClosed("closed", hadError));
+      }
     });
   } finally { sock.destroy(); }
 }
@@ -1908,14 +1923,28 @@ try {
             signIn: (outcome: "pending" | "denied" | "expired") => { deviceApproved = false; deviceFailure = outcome === "pending" ? undefined : outcome; },
             requests: () => deviceCodeRequests,
             ...(desktopAccount ? { account: {
-              enable: async () => {
+              enable: async daemonLog => {
                 accountDesired = true; accountBindingRevision = ++accountRevision;
                 const desktopSocket = daemonPaths({ XDG_RUNTIME_DIR: join(root, "grt") }).socket;
                 const deadline = Date.now() + 120_000;
                 let ready = false;
                 let last: Frame | undefined;
+                let poll = 0;
+                const output = process.platform === "darwin" && process.arch === "x64" && process.env.RUNNER_TEMP
+                  ? join(process.env.RUNNER_TEMP, "desktop-account-e2e", "intel-account-status-polls.jsonl") : undefined;
                 while (Date.now() < deadline) {
-                  last = await ask(desktopSocket, { op: "status" }, 10_000);
+                  const ordinal = ++poll;
+                  const observe: AskObservation | undefined = output ? (phase, facts) => {
+                    let daemonLogBytes: number | null = null;
+                    let daemonLogInode: number | null = null;
+                    try {
+                      const stat = statSync(daemonLog, { throwIfNoEntry: false });
+                      if (stat?.isFile()) { daemonLogBytes = stat.size; daemonLogInode = stat.ino; }
+                    } catch { /* A missing log offset stays unknown. */ }
+                    try { appendFileSync(output, `${JSON.stringify({ at: new Date().toISOString(), poll: ordinal, phase, ...facts, daemonLogBytes, daemonLogInode })}\n`, { mode: 0o600 }); }
+                    catch { /* Observations cannot decide acceptance or replace its original error. */ }
+                  } : undefined;
+                  last = await ask(desktopSocket, { op: "status" }, 10_000, observe);
                   ready = last.ok === true && resultOf(last).managers?.some((manager: any) => manager.space === ON
                     && manager.state === "answering" && typeof manager.instanceId === "string"
                     && manager.connectors?.some((connector: any) => connector.state === "available"));

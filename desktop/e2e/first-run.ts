@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { hostname } from "node:os";
@@ -20,7 +20,7 @@ import { nativeRequestRows, recoveryCells, recoveryWaitMs, requestSummary, resta
 interface Fixture {
   root: string; idpUrl: string; space: string; catalogId: string;
   approve(): void; signIn(outcome: "pending" | "denied" | "expired"): void; requests(): number;
-  account?: { enable(): Promise<void> };
+  account?: { enable(daemonLog: string): Promise<void> };
 }
 
 export async function firstRun(fixture: Fixture): Promise<void> {
@@ -677,7 +677,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       await installApplication();
       await proveWindowsRestart();
       await discoveryEvidence("before-account-enable");
-      await fixture.account.enable();
+      await fixture.account.enable(join(daemonHome, "daemon.log"));
       try { await until("enabled account space reads Connected", () => driver.text("connection-status"), value => value === "Connected", 120_000); }
       finally { await discoveryEvidence("after-account-enable"); }
       const connected = await status();
@@ -1002,6 +1002,22 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     if (process.platform !== "win32" && existsSync(join(daemonHome, "daemon.log"))) {
       const log = readFileSync(join(daemonHome, "daemon.log"), "utf8").slice(-64 * 1024).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>");
       writeFileSync(join(output, "daemon-native.log"), log);
+      if (process.platform === "darwin" && process.arch === "x64" && fixture.account) {
+        try {
+          const fd = openSync(join(daemonHome, "daemon.log"), "r");
+          try {
+            const { ino, size } = fstatSync(fd);
+            const start = Math.max(0, size - 64 * 1024);
+            const bytes = Buffer.alloc(size - start);
+            const count = readSync(fd, bytes, 0, bytes.length, start);
+            const marker = Buffer.from("daemon: peer credentials unreadable (Socket is not connected); dropped");
+            const offsets: number[] = [];
+            const observed = bytes.subarray(0, count);
+            for (let index = observed.indexOf(marker); index >= 0; index = observed.indexOf(marker, index + marker.length)) offsets.push(start + index);
+            writeFileSync(join(output, "intel-account-peer-drop-offsets.json"), JSON.stringify({ ino, size, start, count, offsets }), { mode: 0o600 });
+          } finally { closeSync(fd); }
+        } catch { /* Missing offset evidence must not replace the outcome. */ }
+      }
     }
     writeFileSync(join(output, "result.json"), JSON.stringify({ platform: process.platform, binary, checks, calls, failure,
       ...(recoveryCell ? { recoveryCell, acceptance: true,
