@@ -37,6 +37,10 @@
       "types": "./dist/dispatch.d.ts",
       "import": "./dist/dispatch.js"
     },
+    "./version": {
+      "types": "./dist/lib/version.d.ts",
+      "import": "./dist/lib/version.js"
+    },
     "./service-unit": {
       "types": "./dist/service-unit.d.ts",
       "import": "./dist/service-unit.js"
