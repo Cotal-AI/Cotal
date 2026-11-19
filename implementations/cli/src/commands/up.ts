@@ -2231,7 +2231,16 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   }
   if (stoppedStart) console.log(c.dim(stoppedStart));
 
-  if (!resumeAttempt) refuseRegisteredAddress(server, values.space ?? folderSpace(), `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
+  if (!resumeAttempt) {
+    const space = values.space ?? folderSpace();
+    // A stopped reservation has no listener to trigger the port selection above. Only a first
+    // implicit start can move: a prior store, launch record or manifest summary can outlive its address.
+    if (!listenerReachable && values.server === undefined && !values["rotate-sys"] && registeredAddressHolder(server, space)
+      && recordsNameNoSpace(cotalRoot()) && !["nats", "stack-home.json", "team-summaries"].some((entry) => existsSync(cotalPath(entry)))) {
+      server = await freshStackServer(server, host);
+    }
+    refuseRegisteredAddress(server, space, `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
+  }
   await assertBrokerAddressFree(server, "cotal up");
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
@@ -4982,6 +4991,13 @@ async function assertFreshTeamBindAvailable(server: string, host: string, space:
   });
 }
 
+function registeredAddressHolder(server: string, space: string) {
+  const key = brokerAddressKey(server);
+  if (key === undefined) return undefined;
+  const root = canonicalRoot(cotalRoot());
+  return loadMeshes().find((m) => m.space !== space && canonicalRoot(m.root) !== root && brokerAddressKey(m.server) === key);
+}
+
 /** Refuse an address that a space registered for another folder keeps while its broker is stopped,
  *  as an occupied one is refused. Starting there would leave two registrations naming one broker:
  *  whichever stack runs answers for both, and the other one's `down` and reads reach it. Every
@@ -4989,10 +5005,7 @@ async function assertFreshTeamBindAvailable(server: string, host: string, space:
  *  `elsewhere` names the way to move the one being started. A space this start takes the name of is
  *  left to the name rules. */
 function refuseRegisteredAddress(server: string, space: string, elsewhere: string): void {
-  const key = brokerAddressKey(server);
-  if (key === undefined) return;
-  const root = canonicalRoot(cotalRoot());
-  const held = loadMeshes().find((m) => m.space !== space && canonicalRoot(m.root) !== root && brokerAddressKey(m.server) === key);
+  const held = registeredAddressHolder(server, space);
   if (!held) return;
   throw new CommandFailure("refused", "CONFLICT", `${server} is the broker address of "${held.space}", registered for ${held.root} and stopped; nothing was started`, {
     target: { root: cotalRoot(), server, space, heldSpace: held.space, heldBy: held.root },
