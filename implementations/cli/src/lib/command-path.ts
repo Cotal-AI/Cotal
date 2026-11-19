@@ -1,5 +1,11 @@
 import type { Command, FlagSpec } from "@cotal-ai/core";
 
+/** The options a help scope presents. Parsing still uses the full declaration. */
+export function visibleFlags(cmd: Pick<Command, "flags">, names: readonly string[] | undefined): readonly FlagSpec[] {
+  const flags = cmd.flags ?? [];
+  return names === undefined ? flags : flags.filter((flag) => names.includes(flag.name));
+}
+
 /** Read metadata paths without interpreting option values as command words or running a validator. */
 export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly string[], options: { completing?: boolean } = {}) {
   const positionals: { value: string; index: number }[] = [];

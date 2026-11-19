@@ -145,6 +145,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { callerHarness, missingConnector, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { ENROLLMENT_FILE_ENV, ENROLLMENT_URL_ENV, isPersistedSpawn, reservedSpawnConfig } from "../lib/spawn-input.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -166,9 +167,6 @@ import {
   type UserBundle,
 } from "./meshes-add.js";
 import { askManager, describeUnanswered, liveManagerIds, managerRailGone, refuseUnregisteredManager, refuseWithoutLiveManager, START_TIMEOUT_MS, withControlConnection } from "@cotal-ai/workspace/control";
-
-const ENROLLMENT_URL_ENV = "COTAL_ENROLLMENT_URL";
-const ENROLLMENT_FILE_ENV = "COTAL_ENROLLMENT_FILE";
 
 /** Remove the one line terminator a text file ends with, and nothing else: the file holds the URL
  *  and at most that terminator. Any other whitespace belongs to the credential the owner minted and
@@ -490,14 +488,12 @@ export function validateSpawnArguments(args: ParsedArgs): void {
   presentationOf(values);
   if (args.positionals[0] !== undefined && !args.positionals[0].trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "persona cannot be empty", { remedy: "name a persona, or omit it to use the default persona" });
-  // `runCli` has already taken the handoff into custody and deleted its variable.
-  const internal = holdsManagedHandoff() || Boolean(process.env[ENROLLMENT_URL_ENV] || process.env[ENROLLMENT_FILE_ENV]);
+  const internal = isPersistedSpawn();
   if (!holdsManagedHandoff() && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined))
     throw new CommandFailure("refused", "USAGE_INVALID", `--expect-owner and --expect-lifecycle-uid apply only with ${MANAGED_HANDOFF_FILE_ENV}`);
   const direct = values.foreground === true || internal || !spawnUsesManager(values);
-  if (!internal && values.config !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--config is reserved for persisted internal launch callers", {
-    remedy: "use `cotal spawn <persona>` for a catalog name or `cotal spawn --file <persona-file>` for a file",
-  });
+  if (!internal && values.config !== undefined)
+    throw new CommandFailure("refused", "USAGE_INVALID", reservedSpawnConfig.message, { remedy: reservedSpawnConfig.remedy });
   if (values.file !== undefined && (args.positionals.length || values.config !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "choose one positional persona or --file/-f, not multiple explicit persona sources");
   if (values.file !== undefined) { try { personaFileReference(values.file); } catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", (error as Error).message); } }
   if (values["allow-stale"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "manifest deployment options belong to `cotal team deploy <file>`, not spawn");

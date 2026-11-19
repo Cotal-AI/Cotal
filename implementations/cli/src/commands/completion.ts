@@ -11,7 +11,7 @@ import {
   type Subcommand,
 } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
-import { metadataPositionals } from "../lib/command-path.js";
+import { metadataPositionals, visibleFlags } from "../lib/command-path.js";
 import { fileCompletion, spaceCompletion } from "../lib/completion.js";
 import { debugFlag } from "../lib/debug-flag.js";
 import { servicePresetCommand } from "../lib/service-presets.js";
@@ -103,8 +103,7 @@ async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): 
     selected = child; parent = child;
     if (!child.subcommands?.length) break;
   }
-  const flagNames = selected?.flagNames ?? cmd?.flagNames;
-  const flags = (cmd?.flags ?? []).filter((flag) => !flagNames || flagNames.includes(flag.name));
+  const flags = cmd ? visibleFlags(cmd, selected?.flagNames ?? cmd.flagNames) : [];
   if (cmd && !context?.valueFlag && !context?.optionsEnded && word.startsWith("-") && !word.includes("=")) {
     emit(flags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), "nofiles");
     return;

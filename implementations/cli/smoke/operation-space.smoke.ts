@@ -298,6 +298,24 @@ const configJson = cotal("spawn", "--config", "./pv.md", "--json");
 check("public --config also gives scripts both alternatives in a USAGE_INVALID refusal",
   configJson.status === 1 && configJson.stderr === "" && configJson.envelope?.error?.code === "USAGE_INVALID"
     && configJson.envelope.error.message === reserved && guidance.test(configJson.envelope.error.remedy ?? ""), shown(configJson));
+const bareConfig = cotal("spawn", "--config");
+check("public bare --config gives both alternatives rather than asking for a value",
+  bareConfig.status === 1 && bareConfig.stdout === "" && bareConfig.stderr.includes(reserved)
+    && guidance.test(bareConfig.stderr.replace(/\s+/g, " ")) && !configOption.test(bareConfig.stderr), shown(bareConfig));
+for (const args of [["--config", "--json"], ["\u2013\u2013config", "default", "--json"]]) {
+  const r = cotal("sp", ...args);
+  check(`public sp ${args.join(" ")} refuses the reserved flag without suggesting its spelling or value`,
+    r.status === 1 && r.stderr === "" && r.envelope?.error?.code === "USAGE_INVALID"
+      && r.envelope.error.message === reserved && guidance.test(r.envelope.error.remedy ?? ""), shown(r));
+}
+const configTypo = cotal("spawn", "--confg", "default", "--dry-run", "--json");
+check("spawn does not suggest the reserved flag for a typo",
+  configTypo.status === 1 && configTypo.stderr === "" && configTypo.envelope?.error?.code === "USAGE_INVALID"
+    && configTypo.envelope.error.message?.includes("Unknown option '--confg'") && !configTypo.stdout.includes("--config"), shown(configTypo));
+const fileTypo = cotal("spawn", "--flie", "./pv.md", "--dry-run", "--json");
+check("spawn still suggests the public --file flag for a typo",
+  fileTypo.status === 1 && fileTypo.envelope?.error?.code === "USAGE_INVALID"
+    && fileTypo.envelope.error.message?.includes("did you mean --file?"), shown(fileTypo));
 const spawnOptions = cotal("__complete", "spawn", "--");
 check("spawn option completion offers --file but does not suggest the reserved flag",
   spawnOptions.status === 0 && /^--file\t/m.test(spawnOptions.stdout) && !/^--config\b/m.test(spawnOptions.stdout), shown(spawnOptions));
@@ -333,11 +351,16 @@ const knownDirect = cotal("spawn", "--file", "pv.md", "--harness", "opencode", "
 const knownPreview = knownDirect.envelope as unknown as { result?: Preview; warnings?: unknown[] } | undefined;
 check("a known harness still previews the file's source without warnings or importing its connector",
   knownDirect.status === 0 && knownPreview?.result?.harness === "opencode" && knownPreview.result.persona?.source === "file" && same(knownPreview.warnings, []), shown(knownDirect));
-const launcher = outcome(spawnSync(process.execPath, [BIN, "spawn", "--config", "./pv.md", "--harness", "opencode", "--dry-run", "--json"], {
+const launcherSpawn = (...args: string[]) => outcome(spawnSync(process.execPath, [BIN, "spawn", ...args], {
   cwd: root, env: { ...env, COTAL_ENROLLMENT_FILE: join(home, "unused-enrollment") }, encoding: "utf8", timeout: 120_000,
 }));
+const launcher = launcherSpawn("--config", "./pv.md", "--harness", "opencode", "--dry-run", "--json");
 check("a persisted launcher can still pass --config without reading its enrollment input in a dry run",
   launcher.status === 0 && launcher.envelope?.outcome === "ok" && launcher.envelope.result?.requestedName === "pv", shown(launcher));
+const launcherBare = launcherSpawn("--json", "--config");
+check("a persisted launcher's bare --config still needs a value",
+  launcherBare.status === 1 && launcherBare.envelope?.error?.code === "USAGE_INVALID"
+    && launcherBare.envelope.error.message === "--config needs a value", shown(launcherBare));
 
 // The display name in a persona need not be a launch identity. Preview the effective value with
 // the same local rule as foreground launch, including the selected space's actor-token bound.

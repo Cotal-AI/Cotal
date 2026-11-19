@@ -49,7 +49,8 @@ chooses the runtime of that one managed seat, and the manager keeps every other 
 cotal spawn [<persona> | --file <persona-file>] [-d | --foreground] [--dry-run] [options]
 ```
 
-Pass a persona catalog name, or use `--file` for a persona file on the execution host.
+Pass a persona catalog name, or use `--file` for a persona file on the execution host. The CLI
+reserves `--config` for internal launchers and points public callers to both forms.
 
 A bare `spawn` runs the application in this terminal, on every kind of mesh, and no manager is
 involved unless you name one with `--on` or request `--detach`. An explicit empty or whitespace-only

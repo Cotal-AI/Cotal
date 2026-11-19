@@ -6,6 +6,7 @@
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
 import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, readCurrentSelection, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, nearbyMeshManifest, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, paintFor, renderReport, resolvePreference, rootHidesNoManifest, terminalWidth, upCommand, wrapWords, type Section } from "@cotal-ai/workspace";
 import { shellWord } from "./lib/endpoint-errors.js";
+import { visibleFlags } from "./lib/command-path.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { c, hang } from "./ui.js";
@@ -295,8 +296,7 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   if (examples.length) sections.push({ title: "Examples", blocks: [{ kind: "commands", items: examples.map((example) => typeof example === "string" ? { command: example, description: "" } : { command: example.command, description: example.note }) }] });
   const subs = (sub ? sub.subcommands ?? [] : cmd.subcommands ?? []).filter((item) => !item.hidden);
   if (subs.length) sections.push({ title: "Commands", blocks: [{ kind: "commands", items: subs.map((item) => ({ command: label(item), description: item.summary })) }] });
-  const flagNames = selected.flagNames;
-  const flags = (cmd.flags ?? []).filter((flag) => !flagNames || flagNames.includes(flag.name));
+  const flags = visibleFlags(cmd, selected.flagNames);
   if (flags.length) sections.push({ title: "Options", blocks: [{ kind: "commands", items: flags.map((flag) => ({
     command: `${flag.short ? `-${flag.short}, ` : ""}--${flag.name}${flag.type === "string" ? ` ${flag.value ?? "<value>"}` : ""}`,
     description: flag.description ?? "",

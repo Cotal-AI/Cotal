@@ -61,7 +61,7 @@ import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
-import { metadataPositionals } from "./lib/command-path.js";
+import { metadataPositionals, visibleFlags } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
@@ -70,6 +70,7 @@ import { reportLostOutput } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
+import { isPersistedSpawn, reservedSpawnConfig } from "./lib/spawn-input.js";
 import { didYouMean, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { UnusableFile } from "./lib/unusable-file.js";
 import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
@@ -94,14 +95,6 @@ function takeGlobalFlag(word: string): boolean {
   else if (word === "--no-input") disableInput(true);
   else return false;
   return true;
-}
-
-/** Node's unknown-option error, trimmed to its first sentence, with the nearest of `cmd`'s flags. */
-function parseErrorMessage(cmd: Command, e: Error): string {
-  const message = e.message.split(".")[0]!;
-  const option = (e as { code?: string }).code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" ? /^Unknown option '(--[^']+)'/.exec(message)?.[1] : undefined;
-  const hint = option ? didYouMean(option, [...(cmd.flags ?? []).map((flag) => `--${flag.name}`), "--no-color", "--no-input", "--help"]) : "";
-  return hint ? `${message} - ${hint}` : message;
 }
 
 /** `words` without the global flags before any `--`, each applied. A global flag is given once, as
@@ -383,10 +376,16 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
 
 /** The refusal for one of the option `names` or `shorts` typed with a typographic dash pasted from
  *  typeset text, as `\u2013\u2013json`, naming it with hyphens; undefined when `word` is no such option. */
-function typographicOption(word: string, names: ReadonlySet<string>, shorts: ReadonlySet<string> = new Set()): { message: string; remedy: string } | undefined {
+function typographicOption(word: string, names: ReadonlySet<string>, shorts: ReadonlySet<string> = new Set()): { option: string; message: string; remedy: string } | undefined {
   const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)/u.exec(word);
   if (!typed || !(names.has(typed[1]!) || shorts.has(typed[1]!))) return undefined;
-  return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: ${names.has(typed[1]!) ? "--" : "-"}${typed[1]}` };
+  const option = `${names.has(typed[1]!) ? "--" : "-"}${typed[1]}`;
+  return { option, message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: ${option}` };
+}
+
+/** The parser can reject a reserved flag before spawn's validator sees it. Keep its remedy the same. */
+function reservedOptionRefusal(cmd: Command, option: string): typeof reservedSpawnConfig | undefined {
+  if (cmd.name === "spawn" && option === "--config" && !isPersistedSpawn()) return reservedSpawnConfig;
 }
 
 /** An option the parser would misread without an error: a short option written `-c=value`, which
@@ -403,7 +402,7 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
     const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
     if (short && flag) return { message: `${word} gives -${short[1]} the value "=${short[2]}"`, remedy: `write -${short[1]} ${short[2]} or --${flag.name}=${short[2]}` };
     const typed = typographicOption(word, names, shorts);
-    if (typed) return typed;
+    if (typed) return reservedOptionRefusal(cmd, typed.option) ?? typed;
   }
   return undefined;
 }
@@ -413,16 +412,27 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
  *  an option value that starts with `-` is written `--name=value`, and an option given with no value,
  *  last or before another of the command's options, is named with its placeholder. */
 function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[]): { message: string; remedy?: string } {
-  const message = parseErrorMessage(cmd, error);
-  if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" && cmd.positionals !== undefined)
-    return { message, remedy: "to pass a word that starts with \"-\", put -- before it" };
+  const message = error.message.split(".")[0]!;
+  if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
+    const option = /^Unknown option '(--[^']+)'/.exec(message)?.[1];
+    const scope = helpPath(cmd, rest).selected ?? cmd;
+    const candidates = visibleFlags(cmd, scope.flagNames).map((flag) => `--${flag.name}`);
+    const hint = option ? didYouMean(option, [...candidates, "--no-color", "--no-input", "--help"]) : "";
+    return {
+      message: hint ? `${message} - ${hint}` : message,
+      ...(cmd.positionals === undefined ? {} : { remedy: "to pass a word that starts with \"-\", put -- before it" }),
+    };
+  }
+  if (error.code !== "ERR_PARSE_ARGS_INVALID_OPTION_VALUE") return { message };
   const missingValue = (flag: FlagSpec) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}` });
   const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
-  const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
-  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(last);
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
-  const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
-  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag) {
+  const name = bare ?? long;
+  const reserved = name === undefined ? undefined : reservedOptionRefusal(cmd, `--${name}`);
+  if (reserved) return reserved;
+  const flag = name === undefined ? undefined : cmd.flags?.find((item) => item.name === name);
+  if (flag) {
+    if (bare !== undefined) return missingValue(flag);
     const at = rest.findIndex((word) => word === `--${flag.name}` || (flag.short !== undefined && word === `-${flag.short}`));
     const value = at < 0 ? undefined : rest[at + 1];
     if (value !== undefined && cmd.flags?.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
@@ -536,19 +546,20 @@ function canonicalSubcommand(cmd: Command, parsed: ParsedArgs): ParsedArgs {
 
 /** The subcommand path the words in `rest` name under `cmd`, and the first word where a subcommand
  *  belongs that names none. Read from the declared specs, so a stub's help never imports its package. */
-function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unknown?: string } {
+function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unknown?: string; selected?: Subcommand } {
   const words = metadataPositionals(cmd, rest).positionals.map((item) => item.value);
   let surface: Pick<Command, "subcommands"> = cmd;
+  let selected: Subcommand | undefined;
   const path: string[] = [];
   for (const word of words) {
     const sub: Subcommand | undefined = findSubcommand(surface, word);
     // History's own first word may be a channel.
-    if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return { path, unknown: word };
+    if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return { path, unknown: word, selected };
     if (!sub || sub.hidden) break;
-    path.push(sub.name); surface = sub;
+    path.push(sub.name); surface = selected = sub;
     if (!sub.subcommands?.length) break;
   }
-  return { path };
+  return { path, selected };
 }
 
 /** `-h`/`--help` anywhere after a command: that command's help, or its subcommand's when the first
