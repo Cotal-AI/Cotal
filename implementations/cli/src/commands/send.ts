@@ -52,7 +52,7 @@ export const sendFlags = [
   { name: "file", short: "f", type: "string", value: "<path>", description: "read the message body from this UTF-8 file (- reads stdin), instead of a positional body" },
   { name: "stdin", type: "boolean", description: "read the message body from explicit stdin, instead of a positional body" },
   { name: "mention", type: "string", multiple: true, value: "<agent>", description: "channel: wake this authorized peer; repeat for several peers" },
-  { name: "reply-to", type: "string", value: "<message-id>", description: "direct send: name the message this body answers" },
+  { name: "reply-to", type: "string", value: "<message-id>", description: "direct or channel send: name the message this body answers" },
   { name: "verbose", short: "v", type: "boolean", description: "include the actual sending principal in the receipt" },
 ] as const satisfies readonly FlagSpec[];
 
@@ -119,8 +119,8 @@ export function sendArguments(args: ParsedArgs): SendInput {
   } catch (error) {
     throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message);
   }
-  if (values["reply-to"] !== undefined && (destination.mode !== "dm" || !values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--reply-to takes a message identifier and requires --to");
+  if (values["reply-to"] !== undefined && (destination.mode === "ask" || !values["reply-to"].trim() || /[\u0000-\u001f\u007f]/u.test(values["reply-to"])))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--reply-to takes a message identifier and requires --to or --channel");
   if (values.mention?.length && destination.mode !== "msg")
     throw new CommandFailure("refused", "USAGE_INVALID", "native mention hints belong to channel publications; they do not change a direct or role destination", { remedy: "drop --mention, or send to a channel with -c <channel>" });
   if (values.mention?.some((name) => !name.replace(/^@/, "").trim() || /[\/\u0000-\u001f\u007f]/u.test(name)))
@@ -485,7 +485,7 @@ export async function send(args: ParsedArgs): Promise<void> {
       } else if (input.mode === "ask") {
         const { msg, ack } = await ep.anycastAttributed(input.target, text);
         messageId = msg.id; sequence = ack.seq;
-      } else messageId = (await ep.multicast(text, { channel: input.target, mentions })).id;
+      } else messageId = (await ep.multicast(text, { channel: input.target, mentions, replyTo: values["reply-to"] })).id;
     } catch (error) {
       if (payloadRefused(error)) throw tooLarge(bytes);
       if (isPublishPermissionDenied(error)) {

@@ -59,7 +59,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 113;
+const EXPECTED = 115;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -134,13 +134,13 @@ let carol: CotalEndpoint | undefined;
 let dave: CotalEndpoint | undefined;
 let witness: CotalEndpoint | undefined;
 const expectedSender = `${userInfo().username}@${hostname()}`;
-const got: Array<{ route: string; text: string; fromId: string; fromName: string }> = [];
+const got: Array<{ route: string; text: string; fromId: string; fromName: string; replyTo?: string }> = [];
 // Bob's endpoint options and message handler, kept so the same lifecycle can come back later.
 let bobOptions: ConstructorParameters<typeof CotalEndpoint>[0];
 const onBobMessage = (message: CotalMessage, delivery: Delivery) => {
   const text = message.parts.map((part) => (part.kind === "text" ? part.text : "")).join("");
   const route = message.to ? "DM" : message.toService ? `ANY:${message.toService}` : `#${message.channel ?? ""}`;
-  got.push({ route, text, fromId: message.from.id, fromName: message.from.name });
+  got.push({ route, text, fromId: message.from.id, fromName: message.from.name, replyTo: message.replyTo });
   delivery.ack();
 };
 
@@ -265,6 +265,22 @@ try {
   const laterFresh = await run(["send", "-c", fresh, "two", "--json"]);
   const consumersAfterFresh = await watchConsumers();
   await inspector.close();
+  // A reply names the message it answers on a direct or channel send; a role send has no such field.
+  const answered = `answered-${randomUUID().slice(0, 6)}`;
+  const replyTexts = { dm: `reply-u-${randomUUID().slice(0, 6)}`, msg: `reply-m-${randomUUID().slice(0, 6)}`, ask: `reply-a-${randomUUID().slice(0, 6)}` };
+  const [dmReply, msgReply, askReply] = await Promise.all([
+    run(["send", "-t", "bob", replyTexts.dm, "--reply-to", answered, "--json"]),
+    run(["send", "-c", "general", replyTexts.msg, "--reply-to", answered, "--json"]),
+    run(["send", "-r", "reviewer", replyTexts.ask, "--reply-to", answered, "--json"]),
+  ]);
+  await wait(700);
+  const replied = (reply: typeof dmReply, route: string, text: string) =>
+    reply.code === 0 && (JSON.parse(reply.stdout) as { result: { replyTo: string | null } }).result.replyTo === answered &&
+      got.some((m) => m.route === route && m.text === text && m.replyTo === answered);
+  check("`cotal send -t` and `cotal send -c` with --reply-to store the reply relation and report it in the receipt",
+    replied(dmReply, "DM", replyTexts.dm) && replied(msgReply, "#general", replyTexts.msg), { dmReply, msgReply });
+  check("`cotal send -r` with --reply-to is USAGE_INVALID, exit 1, naming --to and --channel, and nothing is sent",
+    askReply.code === 1 && askReply.stdout.includes('"code":"USAGE_INVALID"') && askReply.stdout.includes("requires --to or --channel") && !got.some((m) => m.text === replyTexts.ask), askReply);
 
   check(
     "the consumer count reads bob's own presence and channel-registry watches",
