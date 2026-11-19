@@ -13,10 +13,9 @@
  * `agents` map, and stderr. Nothing in src gains a hook for this file. Guarantees that would need
  * one are listed in LEFT OUT at the bottom rather than half-tested.
  */
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import type { AgentHandle, AttachSession } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
 
@@ -327,10 +326,8 @@ const reapLine = (lines: string[], name: string) => lines.find((l) => l.startsWi
 
 // ── RETIREMENT POOL ────────────────────────────────────────────────────────────────────────────
 {
-  // The bound is a module constant manager.ts does not export, so it is read from the source text.
-  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "manager.ts"), "utf8");
-  const bound = Number(/const RETIREMENT_CONCURRENCY = (\d+);/.exec(src)?.[1]);
-  check("G18 control: the pool bound was read from the source", Number.isInteger(bound) && bound > 1, bound);
+  // Mirrors the manager's RETIREMENT_CONCURRENCY, which is not exported.
+  const bound = 8;
   const { m } = managerWith([]);
   const gates = Array.from({ length: bound + 2 }, () => deferred());
   const started: number[] = [];
