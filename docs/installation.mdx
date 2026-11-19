@@ -58,8 +58,10 @@ If the latest release cannot start, report the error at the [issue tracker](http
 
 The launcher goes in `~/.local/bin/cotal`.
 The install root defaults to `${XDG_DATA_HOME:-~/.local/share}/cotal`.
-The installer updates your shell configuration to add the launcher directory to PATH.
-Its files are not writable by other users.
+If the launcher directory is not already on PATH, the installer updates your shell configuration.
+On Linux with Bash, it updates `~/.bashrc` and the first readable login file: `~/.bash_profile`, `~/.bash_login`, or `~/.profile`.
+If none exists, it creates `~/.profile`.
+The installer's files are not writable by other users.
 
 To install and open guided setup in one command instead, omit `--no-setup`:
 
@@ -170,7 +172,7 @@ On Windows, run `npm uninstall -g cotal-ai`.
 
 For a shell installation with the default locations, remove `~/.local/bin/cotal` and the `cotal` directory under `${XDG_DATA_HOME:-~/.local/share}`.
 If you selected custom install locations, remove those locations instead.
-Delete the `# cotal` block the installer added to your shell configuration.
+Delete each `# cotal` block the installer added to your shell startup files.
 
 Deleting `~/.cotal` also deletes machine-local mesh records, agent data, and credentials.
 Keep or back up that data unless you intend to remove it.

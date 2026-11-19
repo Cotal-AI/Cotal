@@ -134,7 +134,13 @@ const roleFile = join(root, "badrole.md");
 writeFileSync(roleFile, "---\nname: badrole\nrole: bad role!\nsubscribe: []\n---\n");
 const roleInFile = cotal("persona", "create", "badrole", "--file", roleFile, "--json");
 check("persona create --file whose role send -r refuses is SCHEMA_INVALID naming the file and the role",
-  roleInFile.status === 1 && roleInFile.envelope?.error?.code === "SCHEMA_INVALID" && (roleInFile.envelope.error.message ?? "").includes(`invalid persona definition ${roleFile}: invalid role "bad role!"`) && !existsSync(agentFilePath(root, "badrole")), shown(roleInFile));
+  roleInFile.status === 1 && roleInFile.envelope?.error?.code === "SCHEMA_INVALID" && (roleInFile.envelope.error.message ?? "").includes(`invalid persona definition ${roleFile}: "role" must be a single token`) && !roleInFile.envelope.error.message?.includes("bad role!") && !existsSync(agentFilePath(root, "badrole")), shown(roleInFile));
+const nullOptions = agentFilePath(root, "null-options");
+writeFileSync(nullOptions, "---\nname: null-options\nlaunchOptions: null\n---\n");
+const badOptions = cotal("persona", "show", "null-options", "--json");
+check("persona show refuses null launchOptions and names the file and mapping rule",
+  badOptions.status === 1 && badOptions.envelope?.error?.code === "SCHEMA_INVALID" && badOptions.envelope.error.message?.includes(`${nullOptions}: "launchOptions" must be a mapping of key: value pairs`) === true, shown(badOptions));
+rmSync(nullOptions);
 const roleOk = cotal("persona", "create", "goodrole", "--prompt", "x", "--role", "reviewer", "--subscribe", "", "--json");
 check("control: a valid role token is created", roleOk.status === 0 && existsSync(agentFilePath(root, "goodrole")), shown(roleOk));
 
@@ -253,6 +259,8 @@ for (const [label, body, reason] of [
   ["an empty file", "", 'missing "---" frontmatter block'],
   ["a blank model", '---\nname: badspawn\nmodel: "   "\n---\n', '"model" must not be empty'],
   ["a blank variant", '---\nname: badspawn\nvariant: "   "\n---\n', '"variant" must not be empty'],
+  ["a null options mapping", "---\nname: badspawn\nlaunchOptions: null\n---\n", '"launchOptions" must be a mapping of key: value pairs'],
+  ["an invalid role", "---\nname: badspawn\nrole: secret-role value\n---\n", '"role" must be a single token using letters, digits, underscores or hyphens'],
   ["an invalid channel declaration", "---\nname: badspawn\nsubscribe: [ops]\nallowSubscribe: [general]\n---\n", 'subscribe "ops" is not within allowSubscribe [general]'],
   ["malformed YAML with a secret value", "---\nname: badspawn\nrole: [secret-value\n---\n", "the frontmatter is not valid YAML at line 3"],
 ] as const) {

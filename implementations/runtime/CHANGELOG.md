@@ -1,5 +1,31 @@
 # @cotal-ai/runtime
 
+## 0.170.0
+
+### Patch Changes
+
+- a9e235f: Workflow plans report the correct call-site line numbers for every JavaScript line ending.
+- 49f387d: Quote option values in CLI corrections so they can be pasted into a shell, and show the required status and handoff destination when `cotal run yield` is missing a turn ID.
+- a171c3e: Workflow simulations now name the results file and explain what to correct when a scripted checkpoint result is invalid.
+- ee44b80: Separate the mesh handler's pause timers and settlement into an internal module without changing the runtime API.
+- 78b79b8: Separate the mesh handler's checkpoint relay and presence watch into an internal module without changing the runtime API.
+- 20ff353: Hosted workflows resume from their journals when JetStream returns after a broker outage interrupts a journal write.
+- Updated dependencies [c701881]
+- Updated dependencies [ad6d984]
+- Updated dependencies [3afefa8]
+- Updated dependencies [0e42b19]
+- Updated dependencies [dd478d4]
+- Updated dependencies [6170fc9]
+- Updated dependencies [8c965ac]
+- Updated dependencies [b73a8de]
+- Updated dependencies [2b1659e]
+- Updated dependencies [07978b3]
+- Updated dependencies [20ff353]
+- Updated dependencies [3e748e8]
+  - @cotal-ai/workspace@0.170.0
+  - @cotal-ai/core@0.170.0
+  - @cotal-ai/lang@0.170.0
+
 ## 0.169.0
 
 ### Patch Changes

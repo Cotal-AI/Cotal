@@ -1791,13 +1791,17 @@ export function validate(source: string, file = "program.cotal.js"): ValidateRes
     ast = parse(source, ACORN_OPTIONS) as unknown as AnyNode;
   } catch (e) {
     const err = e as { message?: string; loc?: { line: number; column: number } };
+    const { loc } = err;
     const span: SourceSpan = {
       file,
-      line: err.loc?.line ?? 1,
-      column: (err.loc?.column ?? 0) + 1,
+      line: loc?.line ?? 1,
+      column: (loc?.column ?? 0) + 1,
     };
     const message = err.message ?? "could not be parsed";
     const mapped = PARSE_ERROR_MAP.find((m) => m.test.test(message));
+    // Acorn appends its zero-based column to the message. The span already gives the position.
+    const suffix = loc === undefined ? undefined : ` (${loc.line}:${loc.column})`;
+    const reason = suffix !== undefined && message.endsWith(suffix) ? message.slice(0, -suffix.length) : message;
     throw new LangErrors(
       [
         new LangError(
@@ -1806,7 +1810,7 @@ export function validate(source: string, file = "program.cotal.js"): ValidateRes
             : {
                 code: "L1008",
                 span,
-                cause: `This program is not valid JavaScript, so none of the language rules could be checked: ${message}.`,
+                cause: `This program is not valid JavaScript, so none of the language rules could be checked: ${reason}.`,
                 fix: "Fix the syntax at the marked position.",
               },
         ),

@@ -23,14 +23,10 @@ import {
 } from "@nats-io/transport-node";
 import { wsconnect } from "@nats-io/nats-core";
 import {
-  parseLivenessAnswer,
   responderFromLease,
   responderFromProbe,
-  isLivenessPlane,
-  LIVENESS_PLANES,
   type LivenessAnswer,
   type LivenessPlane,
-  type ProbeOutcome,
   type ResponderState,
 } from "./liveness.js";
 import { EndpointPresence, type PresenceView } from "./endpoint-presence.js";
@@ -64,7 +60,7 @@ import { isConsumerNotFound, isJetStreamMissing, isStreamNotFound } from "./jets
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { nextHeartbeat } from "./presence-heartbeat.js";
-import { anycastStoreDefinition, createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, PRESENCE_STORAGE } from "./streams.js";
+import { anycastStoreDefinition, taskDurableConfig, PRESENCE_STORAGE } from "./streams.js";
 import { DELIVERY_LIMIT_HEADER, PLANE3_MAX_MSGS_PER_SUBJECT } from "./backup-config.js";
 import {
   jetstream,
@@ -119,6 +115,8 @@ import { EndpointMessaging, assertPartsSerializable } from "./endpoint-messaging
 import { EndpointDurableBackstop } from "./endpoint-durable-backstop.js";
 import { EndpointSubscriptions, membershipConsumerReleased, type MembershipFeedWatch } from "./endpoint-subscriptions.js";
 import { EndpointChannelDiscovery } from "./endpoint-channel-discovery.js";
+import { EndpointLiveness } from "./endpoint-liveness.js";
+import { EndpointProvisioning } from "./endpoint-provisioning.js";
 import { ackWaitOf, authenticatedChannelMessage, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import {
   openChannelRegistry,
@@ -146,13 +144,10 @@ import {
   chatStream,
   chatSubject,
   controlServiceSubject,
-  livenessSubject,
-  livenessServeFilter,
   CONTROL_DELIVERY,
   CONTROL_DELIVERY_ADMIN,
   dmStream,
   dmDurable,
-  dlvStream,
   membershipInAllow,
   isConcreteChannel,
   isChannelFamily,
@@ -2939,17 +2934,7 @@ export class CotalEndpoint extends EventEmitter {
    *  untouched (unlike `variant`, it is never deleted, since a caller that does not know the
    *  provider says nothing about whether one still applies). */
   async setCardModel(model: string, variant?: string, provider?: string): Promise<void> {
-    const m = model.trim();
-    const v = variant?.trim();
-    const p = provider?.trim();
-    if (!m || (this.card.meta?.model === m && this.card.meta.variant === v && (p === undefined || this.card.meta?.provider === p)))
-      return;
-    const meta: Record<string, unknown> = { ...(this.card.meta ?? {}), model: m };
-    if (v) meta.variant = v;
-    else delete meta.variant;
-    if (p) meta.provider = p;
-    this.card.meta = meta;
-    await this.publishPresence();
+    return this.presence.setCardModel(model, variant, provider);
   }
 
   /** Overlay the session's working directory onto the card's display-only `meta.cwd`, then
@@ -2959,9 +2944,7 @@ export class CotalEndpoint extends EventEmitter {
    *  or end in whitespace, so it is never trimmed or normalized. An empty string names no directory
    *  and leaves the card unchanged. */
   async setCardCwd(cwd: string): Promise<void> {
-    if (!cwd || this.card.meta?.cwd === cwd) return;
-    this.card.meta = { ...(this.card.meta ?? {}), cwd };
-    await this.publishPresence();
+    return this.presence.setCardCwd(cwd);
   }
 
   // ---- channel discovery ---------------------------------------------------
@@ -3605,11 +3588,19 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  /** Create the three backing streams for this space (idempotent). Open-mode lazy create;
-   *  the same definitions are used by `cotal up` at privileged setup. */
+  /** Stream creation and the privileged DM, DELIVER and TASK durable provisioning of this endpoint.
+   *  Every dependency is read when it is used, so a field assigned after construction is seen. */
+  private readonly provisioning = new EndpointProvisioning({
+    jsm: () => this.jsm,
+    space: () => this.space,
+    authed: () => this.authed,
+    notLiveMsg: () => this.notLiveMsg(),
+    manager: () => this.manager(),
+  });
+
+  /** Forwards to the provisioning component's {@link EndpointProvisioning.ensureStreams}. */
   private async ensureStreams(): Promise<void> {
-    if (!this.jsm) throw new Error(this.notLiveMsg());
-    await createSpaceStreams(this.jsm, this.space);
+    return this.provisioning.ensureStreams();
   }
 
   /** Create this open space's message streams if they are not there yet, as a consuming endpoint
@@ -3617,14 +3608,8 @@ export class CotalEndpoint extends EventEmitter {
    *  participant (#7045). An authenticated broker's streams come from its setup, and its agents may
    *  not create them, so this throws there. */
   async ensureOpenSpaceStreams(): Promise<void> {
-    if (this.authed) throw new Error(`the streams of ${this.space} come from its broker's setup on an authenticated space; a sender does not create them`);
-    await createSpaceStreams(await this.manager(), this.space);
+    return this.provisioning.ensureOpenSpaceStreams();
   }
-
-  // (v3) The old `provisionMembership` — manager/provisioner-written boot membership at spawn — is GONE.
-  // Boot durable membership is now the AGENT self-joining its durable boot channels via the daemon's
-  // `ctl.delivery` op at connect ({@link armBootDurableMemberships}), reconciled on outage. The
-  // primitive it wrapped, {@link durableJoinFor}, is now driven by the daemon's `ctl.delivery` handler.
 
   /**
    * Privileged: pre-create an agent's DM inbox durable (auth mode), so the agent can BIND
@@ -3634,55 +3619,17 @@ export class CotalEndpoint extends EventEmitter {
    * safe to call again on manager restart. The caller must be permissive on DM_<space>.
    */
   async provisionDmInbox(owner: string, actor: string, lifecycleUid: string): Promise<void> {
-    await this.ensureDmDurable(owner, actor, lifecycleUid, {});
+    return this.provisioning.provisionDmInbox(owner, actor, lifecycleUid);
   }
 
-  /** Idempotent-PER-LIFECYCLE create of a `dm_<o>-<a>-<uid>` durable with its ACTIVATION FRONTIER
-   *  (SPEC §8). Info-first: an existing durable (a manager-restart re-provision of the SAME uid, or
-   *  the same lifecycle's own restart) is kept as-is, preserving the ORIGINAL frontier — the
-   *  activation moment never moves. A fresh lifecycle captures the DM stream's current `last_seq` and
-   *  starts delivery at frontier+1, so a same-alias successor inherits none of the predecessor's
-   *  pending DMs (its filter is the shared alias subject `inst.>`; the FRONTIER, not the subject, is
-   *  the cut).
-   *
-   *  HONESTY (panel-locked): the no-gap guarantee (a DM published between the capture and the create
-   *  lands ABOVE the frontier and is delivered) holds ONLY under ONE provisioner per lifecycle uid —
-   *  the manager provisions sequentially, which satisfies it. Under CONCURRENT same-uid provisioners
-   *  (a split-brain manager), a higher-frontier winner excludes the loser's N+1..M capture window:
-   *  the lost-race branch below keeps the winner's durable unconditionally. No per-uid serialization
-   *  or persisted-frontier machinery is added in this slice; concurrent same-uid provisioning is
-   *  out-of-contract (at-least-once best-effort). */
+  /** Forwards to the provisioning component's {@link EndpointProvisioning.ensureDmDurable}. */
   private async ensureDmDurable(
     owner: string,
     actor: string,
     lifecycleUid: string,
     opts: { ackWaitMs?: number; inactiveThresholdMs?: number },
   ): Promise<void> {
-    const jsm = await this.manager();
-    const stream = dmStream(this.space);
-    const name = dmDurable(owner, actor, lifecycleUid);
-    try {
-      await jsm.consumers.info(stream, name);
-      return; // this lifecycle's durable exists — keep its original frontier
-    } catch (e) {
-      if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) throw e;
-      // Genuinely absent consumer: create it below. A denial is not absence.
-    }
-    const frontier = (await jsm.streams.info(stream)).state.last_seq;
-    try {
-      await jsm.consumers.add(stream, dmDurableConfig(this.space, owner, actor, lifecycleUid, { ...opts, activationFrontier: frontier }));
-    } catch (e) {
-      // A concurrent same-lifecycle provisioner may have won the create with an earlier frontier —
-      // if the durable now exists it is authoritative; anything else stays a loud failure.
-      try { await jsm.consumers.info(stream, name); return; }
-      catch (probeError) {
-        // The probe never creates a successful result: it either proves the concurrent winner above,
-        // or the original create failure stays authoritative. Preserve a denial from the probe because
-        // it names the missing capability more accurately than an unrelated create conflict.
-        if (isPermissionDenied(probeError)) throw probeError;
-      }
-      throw e;
-    }
+    return this.provisioning.ensureDmDurable(owner, actor, lifecycleUid, opts);
   }
 
   /**
@@ -3693,8 +3640,7 @@ export class CotalEndpoint extends EventEmitter {
    * acks them via native JetStream (SPEC §8). Idempotent. The caller must be permissive on DLV.
    */
   async provisionDlvInbox(owner: string, actor: string, lifecycleUid: string): Promise<void> {
-    const jsm = await this.manager();
-    await jsm.consumers.add(dlvStream(this.space), dlvDurableConfig(this.space, owner, actor, lifecycleUid));
+    return this.provisioning.provisionDlvInbox(owner, actor, lifecycleUid);
   }
 
   /**
@@ -3704,8 +3650,7 @@ export class CotalEndpoint extends EventEmitter {
    * Idempotent per role. The caller must be permissive on TASK_<space>.
    */
   async provisionTaskQueue(role: string): Promise<void> {
-    const jsm = await this.manager();
-    await jsm.consumers.add(taskStream(this.space), taskDurableConfig(this.space, role));
+    return this.provisioning.provisionTaskQueue(role);
   }
 
   // ---- Plane-3: durable backstop (SPEC §8) — privileged, hosted by the server-side DELIVERY DAEMON ----
@@ -4450,6 +4395,22 @@ export class CotalEndpoint extends EventEmitter {
 
   // ---- the peer-readable liveness surface (#1577) --------------------------
 
+  /** The peer-readable liveness responders and the probe, of this endpoint. Every dependency is read
+   *  when it is used, so a field assigned after construction is seen. */
+  private readonly liveness = new EndpointLiveness({
+    nc: () => this.nc,
+    space: () => this.space,
+    owner: () => this.owner,
+    actor: () => this.actor,
+    subs: () => this.subs,
+    livenessResponders: () => this.livenessResponders,
+    notLiveMsg: () => this.notLiveMsg(),
+    requestBoundReply: (nc, subject, body, reply, timeoutMs) => this.requestBoundReply(nc, subject, body, reply, timeoutMs),
+    isNoResponders: (e) => this.isNoResponders(e),
+    emitRecoverable: (err) => this.emitRecoverable(err),
+    emit: (event, ...args) => this.emit(event, ...args),
+  });
+
   /** Bind this endpoint as the liveness RESPONDER for one plane, answering presence and nothing
    *  else to any credentialed peer that asks (`live.<plane>.<owner>.<actor>`).
    *
@@ -4492,80 +4453,12 @@ export class CotalEndpoint extends EventEmitter {
    *  the plane answered by the broker's no-responders status while this endpoint is serving. A second
    *  call for the same plane replaces the first. */
   serveLiveness(plane: LivenessPlane, readState: () => Promise<ResponderState> | ResponderState): void {
-    if (!this.nc) throw new Error(this.notLiveMsg());
-    const held = this.livenessResponders.get(plane);
-    if (held) held.readState = readState;
-    else this.livenessResponders.set(plane, { readState });
-    this.bindLiveness(plane);
+    return this.liveness.serveLiveness(plane, readState);
   }
 
-  /** (Re)bind one plane's liveness responder on the CURRENT connection, dropping the stale sub first
-   *  as {@link armDeliveryControl} does. */
+  /** Forwards to the liveness component's {@link EndpointLiveness.bindLiveness}. */
   private bindLiveness(plane: LivenessPlane): void {
-    const held = this.livenessResponders.get(plane);
-    if (!held || !this.nc) return;
-    if (held.sub) {
-      try { held.sub.unsubscribe(); } catch { /* dead with the old connection */ }
-      const i = this.subs.indexOf(held.sub);
-      if (i >= 0) this.subs.splice(i, 1);
-    }
-    const { readState } = held;
-    const sub = this.nc.subscribe(livenessServeFilter(this.space, plane), { queue: `live.${plane}` });
-    held.sub = sub;
-    this.subs.push(sub);
-    // The responder token this bind answers under: AN OPAQUE VALUE MINTED HERE, and deliberately
-    // not any name this process already has. It is what makes "which responder answered" askable
-    // without making "who is this responder" answerable — the two properties the surface has to
-    // hold at once. The endpoint's own `card.id` would be its principal, the lease row's
-    // `instanceId` is a field of a bucket an agent holds no grant on, and either would turn a
-    // presence probe into an identity read for every credentialed peer in the space. A fresh
-    // random token correlates with nothing but this plane's other answers, which is the whole job:
-    // two answers carrying two different tokens came from two different responders.
-    //
-    // Per BIND rather than per process, so a responder that goes away and comes back answers under
-    // a new token. That is the honest reading: a caller comparing answers across a restart is
-    // comparing two different incarnations, and a token that survived the restart would say
-    // otherwise. A re-bind after a reconnect is such a return: the plane had no responder here for
-    // the gap.
-    const instance = randomUUID();
-    void (async () => {
-      for await (const m of sub) {
-        // Sender-bound reply guard. Drop silently rather than publishing somewhere else: a reply
-        // aimed outside the sender's own subtree is not a request we can answer safely.
-        //
-        // REPORTED ON `warning`, NOT ON `error`, AND THAT IS A SAFETY PROPERTY RATHER THAN A CHOICE
-        // OF CHANNEL. A rejected probe is a condition this responder is already surviving: it drops
-        // the frame and keeps serving. `error` cannot carry such a notice on this class, because
-        // Node's `EventEmitter` RETHROWS an `error` emit that has no listener attached, so the
-        // notice would end the process of any embedder that had not attached one — and the plane
-        // would then genuinely be unbound, which a peer's next probe reports as `unbound`. The
-        // condition would have manufactured the state it described. `warning` is observable and
-        // never fatal without a listener (see {@link emitRecoverable} and #891, where retry notices
-        // on `error` killed hosts the endpoint intended to keep running).
-        //
-        // Since ANY credentialed peer may publish a probe, and the reply target inside it is chosen
-        // by that peer and not permission-checked by the broker, reaching this branch is a peer's
-        // decision, not an operator's. Safety here must therefore hold with no listener attached,
-        // which is what CELL F1 runs.
-        if (!m.reply || !m.reply.startsWith(`${m.subject}.reply.`)) {
-          this.emitRecoverable(new Error(`rejected liveness probe on ${m.subject}: reply target "${m.reply ?? "(none)"}" is not under the sender's own reply subtree`));
-          continue;
-        }
-        let responder: ResponderState;
-        try {
-          responder = await readState();
-        } catch {
-          responder = "unknown";
-        }
-        const answer: LivenessAnswer = { plane, responder, instance };
-        try { m.respond(JSON.stringify(answer)); } catch { /* the requester is gone */ }
-      }
-      // The loop itself ends only on a SUBSCRIPTION-level fault (the connection went away), which
-      // is not something a peer's probe can cause: the guard above `continue`s, `readState` is
-      // caught, and the respond is caught. So this arm stays on `error` — it reports that this
-      // responder has stopped answering at all, which is a fault an embedder should not be able to
-      // miss, and no credentialed peer can reach it.
-    })().catch((e) => this.emit("error", e as Error));
+    return this.liveness.bindLiveness(plane);
   }
 
   /** Bind the liveness responder for the DELIVERY plane, grading itself from its own shard-0 lease
@@ -4598,48 +4491,7 @@ export class CotalEndpoint extends EventEmitter {
    *  The reply rides `<request>.reply.<uuid>`, the sender's own subtree, so the responder's bound
    *  reply guard accepts it and the responder needs no broad inbox-publish grant to answer. */
   async probeLiveness(plane: string, timeoutMs = 2_000): Promise<LivenessAnswer> {
-    if (!isLivenessPlane(plane))
-      // A closed set, refused loudly. Answering an unknown plane at all would make this a probe
-      // that returns something for every input, which is indistinguishable from one that is not
-      // measuring anything.
-      throw new Error(`liveness: "${plane}" is not a plane this surface answers for (${[...LIVENESS_PLANES].join(", ")})`);
-    if (!this.nc) throw new Error(this.notLiveMsg());
-    const reqSubject = livenessSubject(this.space, plane, this.owner, this.actor);
-    const reply = `${reqSubject}.reply.${randomUUID()}`;
-    let outcome: ProbeOutcome;
-    let answered: ResponderState | undefined;
-    let instance: string | undefined;
-    try {
-      const m = await this.requestBoundReply(this.nc, reqSubject, "", reply, timeoutMs);
-      let body: unknown;
-      try { body = m.json(); } catch { body = undefined; }
-      const parsed = parseLivenessAnswer(body, plane);
-      // A reply we cannot read is `malformed`, which grades `unknown`. It is NOT promoted to
-      // `bound` on the strength of having replied at all: that promotion is the `pgrep` error,
-      // where evidence a process exists was read as evidence it works.
-      outcome = parsed ? "replied" : "malformed";
-      answered = parsed?.responder;
-      instance = parsed?.instance;
-    } catch (e) {
-      outcome = this.isNoResponders(e) ? "noResponders" : this.probeFailureOutcome(e);
-    }
-    // `instance` rides ONLY a reply that was read. Every other outcome means no responder answered,
-    // so there is no responder to name, and a token attached to an `unbound` or an `unknown` would
-    // claim one had. It stays absent on those arms by construction: nothing assigns it.
-    const verdict: LivenessAnswer = { plane, responder: responderFromProbe(outcome, answered) };
-    return instance === undefined ? verdict : { ...verdict, instance };
-  }
-
-  /** Grade a failed probe that was NOT a no-responders answer. Both arms return an outcome that
-   *  maps to `unknown`; they are told apart so the distinction stays legible at the call site and so
-   *  a future caller can render the two differently (a refusal is about YOUR credential, a timeout
-   *  is about something being wedged). Neither may ever mean health. */
-  private probeFailureOutcome(e: unknown): ProbeOutcome {
-    if (e instanceof AuthorizationError || e instanceof PermissionViolationError) return "refused";
-    if (e instanceof TimeoutError) return "timeout";
-    // Anything else is a transport or client failure: it says something about our link, not about
-    // the plane, so it is graded like a refusal rather than guessed at.
-    return "refused";
+    return this.liveness.probeLiveness(plane, timeoutMs);
   }
 
   /**

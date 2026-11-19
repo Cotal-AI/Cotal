@@ -50,10 +50,11 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 When an installed CLI is off PATH, `status` and `ps` suggestions use the absolute Node runtime
 and installed entry, with paths quoted for a POSIX shell. For the POSIX installer, the suggestions
 also preserve its private Node/npm PATH and npm install prefix, so setup can seed connectors.
-They do not require a source checkout or pnpm. PATH invocations keep `cotal`, npx invocations keep
-`npx cotal-ai`, and checkout invocations keep `pnpm cotal`.
+They do not require a source checkout or pnpm. The entry card and status next steps use `cotal`
+when a permanent launcher is on PATH. Otherwise, `npx` runs suggest `npx cotal-ai`, `pnpm dlx`
+runs suggest `pnpm dlx cotal-ai` even with a custom cache directory, and checkouts suggest `pnpm cotal`.
 
-`npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
+`npx cotal-ai <command>` and `pnpm dlx cotal-ai <command>` run it without a global install. Bare `cotal` starts nothing: it names
 the explicit `cotal use` selection first, else the space this folder has registered, else an
 automatically adopted selection, else, with nothing selected, the space
 this folder prepared, and lists common commands. It reads no
@@ -164,7 +165,8 @@ still checks and uses the whole value. A usage error is found before any effect,
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
 `--`, which the refusal names, and an option value that starts with one is written `--limit=-1`,
-which the refusal gives. An option given with no value, last or just before another option, is
+which the refusal gives. The refusal quotes values that a POSIX shell would split or expand, as in
+`--search='-help usage'`. An option given with no value, last or just before another option, is
 refused naming the option and its placeholder. A short option takes its value after a space, so `-c=general` is refused
 rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
 typeset text, is refused naming the option it meant, rather than read as a positional. Before the

@@ -368,7 +368,16 @@ const baseCommands: Command[] = [
     usage: "cotal space [--json|--plain] | space show [<name>] | space add [<name>] | space create <name> | space forget <name> | space delete <name> [--dry-run|-y] | space export <name> --out <private-file>",
     positionals: "[show [<name>] | add [<name>] | create <name> | forget <name> | delete <name> [--dry-run|-y] | export <name> --out <private-file>]",
     subcommands: [
-      { name: "show", flagNames: ["json", "plain"], summary: "one space in full: broker, mode, root, origin and login; the selected one when no name is given", examples: [{ command: "cotal space show", note: "show the selected space in full" }, { command: "cotal space show <name> --json", note: "one space as a JSON document" }], usage: "cotal space show [<name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
+      {
+        name: "show", flagNames: ["json", "plain"],
+        summary: "show one space in full: broker, mode, root, origin and login. With no name, show this folder's space if it has one, otherwise the selected space.",
+        examples: [
+          { command: "cotal space show", note: "show this folder's space, or the selected one" },
+          { command: "cotal space show alpha", note: "show alpha from any folder" },
+          { command: "cotal space show <name> --json", note: "one space as a JSON document" },
+        ],
+        usage: "cotal space show [<name>] [--json|--plain]", outputs: ["json", "plain"], reads: true,
+      },
       {
         name: "add",
         flagNames: ["server", "root", "mode", "file", "from", "tls", "allow-unencrypted-overlay", "force", "yes", "json", "plain"],

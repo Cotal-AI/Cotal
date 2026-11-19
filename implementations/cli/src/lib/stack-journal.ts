@@ -177,6 +177,17 @@ export function stackRecoveryHost(): string {
   return createHash("sha256").update(JSON.stringify(processServiceHost())).digest("hex");
 }
 
+/** {@link stackRecoveryHost}, or undefined where this host has no machine identity to read, as a
+ *  container image with no `/etc/machine-id` has none. Such a host records no process pins, and a
+ *  recorded pin is never its own. */
+export function knownStackRecoveryHost(): string | undefined {
+  try { return stackRecoveryHost(); }
+  catch (error) {
+    if (isCommandFailure(error) && (error.code === "DEPENDENCY_UNAVAILABLE" || error.code === "UNSUPPORTED")) return undefined;
+    throw error;
+  }
+}
+
 function replacementOf(input: unknown, root: string): StackReplacement {
   const value = localRecordObject(input, ["operation", "instanceId", "launchRequestId", "definitionRevision"]);
   try { for (const id of [value.operation, value.instanceId, value.launchRequestId, ...(value.definitionRevision === undefined ? [] : [value.definitionRevision])]) serviceOperationId(id); } catch { invalid(root); }

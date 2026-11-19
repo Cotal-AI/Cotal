@@ -16,7 +16,7 @@
   "mutations": [
     {
       "name": "M1 return the alias spelling instead of the canonical path",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      cwd = realpathSync(resolved);",
       "replace": "      cwd = resolved;",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
@@ -25,7 +25,7 @@
     },
     {
       "name": "M2 fall back to the workspace root for a missing directory",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      return { refusal: `path cannot be resolved: ${rejectionText(error)}` };",
       "replace": "      cwd = this.workspaceRoot;",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
@@ -43,7 +43,7 @@
     },
     {
       "name": "M4 let a spawn naming an unresolvable cwd through admission",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      if (\"refusal\" in checked)\n        return { ok: false, error: `spawn: cwd does not resolve on this host (${hostname()}): ${JSON.stringify(asked)} (${checked.refusal}); the seat was not launched` };\n      resolvedCwd = checked.cwd;",
       "replace": "      resolvedCwd = \"refusal\" in checked ? this.workspaceRoot : checked.cwd;",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
