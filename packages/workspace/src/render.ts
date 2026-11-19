@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { boundedValue, oneLine } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
-import { userCotalDir, homeCotalDir } from "./mesh-registry.js";
+import { brokerUrlKey, userCotalDir, homeCotalDir } from "./mesh-registry.js";
 import { shellPath } from "./protected-records.js";
 import { codeSpan } from "./text-wrap.js";
 import type { MeshTarget, MeshTargetError } from "./mesh-target.js";
@@ -148,6 +148,8 @@ const NOT_ANSWERING_REMEDY = "retry; if it keeps happening, check that the broke
 /** "Is it live" failures on a registry-resolved target — the classified preflight sentence. */
 function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: boolean, pid?: number, heldBy?: string): WorkspaceErrorParts {
   const server = brokerAddressForDisplay(t.server) ?? "an invalid broker address";
+  const unrecordedAddress = (t.source === "flag-server" || t.source === "flag-space-override") &&
+    (t.recordedServer === undefined || brokerUrlKey(t.recordedServer) !== brokerUrlKey(t.server));
   switch (kind) {
     case "non-nats-listener":
       return parts(`another non-NATS listener holds ${server} while this folder's broker is stopped`, `stop the listener at ${server} and run \`cotal up\` in ${t.root}, or start on another port with \`cotal up --server nats://127.0.0.1:<port>\` there`);
@@ -159,7 +161,7 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       // A broker address `--server` supplied that is not the one recorded for this space says nothing
       // about whether that space's mesh runs: name the address that did not answer, and the recorded
       // one when there is one. The recorded broker is never tried in its place.
-      if ((t.source === "flag-server" || t.source === "flag-space-override") && t.recordedServer !== t.server)
+      if (unrecordedAddress)
         return t.recordedServer === undefined
           ? parts(`nothing answered at ${server}, the broker address --server named`, "check that address and that a broker runs there")
           : parts(`nothing answered at ${server}, the broker address --server named`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
@@ -194,11 +196,11 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
     case "creds-rejected":
       // Another space's broker named by `--server` rejects this space's credentials while this space
       // still runs at its recorded address, so `cotal up` is not the step: name both addresses.
-      if ((t.source === "flag-server" || t.source === "flag-space-override") && t.recordedServer !== undefined && t.recordedServer !== t.server)
+      if (unrecordedAddress && t.recordedServer !== undefined)
         return parts(`credentials for "${t.space}" were rejected at ${server}, the broker address --server named; a different mesh may be running there`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
       return parts(`credentials for "${t.space}" were rejected at ${server}; a different mesh may be running there`, "run `cotal meshes` to check, or `cotal up` here to start yours");
     case "open-wants-auth":
-      if ((t.source === "flag-server" || t.source === "flag-space-override") && t.recordedServer !== undefined && t.recordedServer !== t.server)
+      if (unrecordedAddress && t.recordedServer !== undefined)
         return parts(`broker at ${server}, the address --server named, requires auth, but "${t.space}" is recorded as an open mesh at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}`, `check that address, or drop --server to reach "${t.space}" at ${brokerAddressForDisplay(t.recordedServer) ?? "an invalid broker address"}, where it is recorded`);
       return parts(`broker at ${server} requires auth, but this mesh is open (no trust material)`, "use `--space <name>` for an auth mesh, or run `cotal up` here without `--open`");
     case "stale-auth":

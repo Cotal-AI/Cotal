@@ -45,6 +45,7 @@ Setup saves preparation before a separate startup decision. Configure-only is th
 application, runtimes, project folder and space.
 It shows the answers before it writes: Save writes them, Change asks every question again with the
 answers kept, and Cancel saves nothing.
+An empty `--project` is refused before setup writes anything. Use `--project .` for the current folder.
 
 Choose Cloud to set up a space of your Cotal Cloud account. When no Cloud space is registered on
 this machine, setup signs you in first: it prints the approval link and code, opens your browser,
@@ -542,6 +543,7 @@ An interactive presence: join a space under your own name and role, without laun
 harness. Another participant whose name is only whitespace is shown as the id, in the roster,
 on an incoming line, and on a DM you send. A `--link` supplies the where and the auth in one value. See
 [Spaces](spaces.mdx) and [Identity and auth](identity-and-auth.mdx).
+Enter `/quit` to leave the session, including when pasting it after another command.
 
 A bare join on a static-auth mesh provisions its own inboxes and read grant for the landing
 channel. It establishes durable membership when the channel's delivery policy is durable, even

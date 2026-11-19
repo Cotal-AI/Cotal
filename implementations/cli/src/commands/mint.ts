@@ -159,8 +159,12 @@ export async function mint(args: ParsedArgs): Promise<void> {
     target = { ...target, path: out };
     if (values.out !== undefined) assertExternalCredentialExport(out, [root, currentRoot]);
     const parent = dirname(out), volume = parse(parent).root;
-    try { ensureDirNoSymlink(volume, ...parent.slice(volume.length).split(sep).filter(Boolean)); }
-    catch (error) { throw outFolderRefusal(target, out, error) ?? error; }
+    try {
+      let existing = parent;
+      while (existing !== volume && !lstatSync(existing, { throwIfNoEntry: false })) existing = dirname(existing);
+      if (existing !== parent) protectedLocalDirectory(existing);
+      ensureDirNoSymlink(volume, ...parent.slice(volume.length).split(sep).filter(Boolean));
+    } catch (error) { throw outFolderRefusal(target, out, error) ?? error; }
     protectedLocalDirectory(parent);
     held = acquireLock(`${out}.mint.lock`, { label: "credential output", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another credential writer holds this output") });
     let previous: Buffer | undefined, standing: string | undefined, replaced: Replaced | undefined, replacedGrants: AgentGrants | undefined;

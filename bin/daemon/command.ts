@@ -40,7 +40,7 @@ import { daemonCommandCopy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
-import { SPACE_PATTERN } from "./protocol.js";
+import { isDaemonSpaceName, SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
 import { readReceipt } from "./install-receipt.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
@@ -162,6 +162,8 @@ function statusView(s: DaemonStatus): Report {
 
 async function status(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
+  const space = (args.values as { space?: string }).space;
+  if (space !== undefined && !isDaemonSpaceName(space)) throw new CommandFailure("refused", "USAGE_INVALID", "space must be 1-64 characters of [A-Za-z0-9_-]", { native: { code: "BAD_FIELD" } });
   const { paths, home } = resolveTarget(args);
   let reply;
   try {
@@ -184,7 +186,6 @@ async function status(args: ParsedArgs): Promise<void> {
     throw asFailure(e);
   }
   if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the status request: ${reply.error.code} ${reply.error.message}`);
-  const space = (args.values as { space?: string }).space;
   const result = space ? { ...reply.result, agents: reply.result.agents?.filter(row => row.space === space), managers: [await managerViaDaemon({ paths, peerUid, peerPid }, { op: "manager-status", space }) as import("./protocol.js").HostedManager] } : reply.result;
   writeResult(presentation, { command: "daemon status", target: space ? { space } : null, result }, statusView);
 }
