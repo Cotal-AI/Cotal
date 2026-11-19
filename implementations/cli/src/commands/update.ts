@@ -1389,25 +1389,8 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   const onTerm = (): void => interrupt(143);
   process.on("SIGINT", onInt);
   process.on("SIGTERM", onTerm);
-  const outcome = await replaceAndReconcile().finally(async () => {
-    try {
-      try { await releaseAdmission?.(); }
-      finally { try { releaseClosure?.(); } finally { releaseGlobal(); } }
-    } finally {
-      process.off("SIGINT", onInt);
-      process.off("SIGTERM", onTerm);
-    }
-  });
-  // Admission release can await the daemon while the interrupt handlers are still active.
-  if (interrupted) return interrupted;
-  if (typeof outcome === "number") return outcome;
-  if (outcome === "repaired") rt.out(c.green(`✓ cotal-ai@${targetVersion} repaired and reconciled`));
-  else if (stagedExecution) rt.out(c.green(`✓ cotal-ai@${targetVersion} in use and reconciled`));
-  else rt.out(c.green(`✓ cotal-ai@${targetVersion} installed globally and reconciled`));
-  reportStandalonePiUpdate(rt, targetVersion);
-  return 0;
-
-  async function replaceAndReconcile(): Promise<number | "updated" | "repaired"> {
+  let outcome: number | "updated" | "repaired";
+  replacement: try {
   if (execution) {
     rt.out(`Switching to cotal-ai@${targetVersion}`);
   } else {
@@ -1439,12 +1422,14 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     const reason = `cotal-ai@${targetVersion} is not available yet. The release is still arriving; the next update check will try it again. No packages were replaced.`;
     recordUpdateDeferral(targetVersion, reason, true, true);
     rt.out(reason);
-    return 0;
+    outcome = 0;
+    break replacement;
   }
   if (installed.stderr) rt.stderr(installed.stderr);
   if (installed.status !== 0) {
     rt.err(c.red(`✗ global cotal-ai@${targetVersion} install failed: ${failure(installed)}`));
-    return await repairReplacement(`global install failed: ${failure(installed)}`);
+    outcome = await repairReplacement(`global install failed: ${failure(installed)}`);
+    break replacement;
   }
 
   rt.out("Verifying installed global entry");
@@ -1454,7 +1439,8 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     else entry = rt.verifyGlobalEntry(root, targetVersion);
   } catch (e) {
     rt.err(c.red(`✗ installed global cotal-ai could not be verified: ${message(e)}`));
-    return await repairReplacement(`installed entry verification failed: ${message(e)}`);
+    outcome = await repairReplacement(`installed entry verification failed: ${message(e)}`);
+    break replacement;
   }
   const env: NodeJS.ProcessEnv = {
     ...rt.env,
@@ -1473,7 +1459,8 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   if (child.stdout) rt.stdout(child.stdout);
   if (child.status !== 0) {
     rt.err(c.red(`✗ cotal-ai@${targetVersion} installed globally, but its reconcile failed: ${failure(child)}`));
-    return await repairReplacement(`reconcile failed: ${failure(child)}`, child.status ?? 1, readUpdateRecovery()?.phase === "verified-ready");
+    outcome = await repairReplacement(`reconcile failed: ${failure(child)}`, child.status ?? 1, readUpdateRecovery()?.phase === "verified-ready");
+    break replacement;
   }
   if (rt.env.COTAL_AUTO_UPDATE !== "1" || rt.automaticGenerationWait) {
     try {
@@ -1482,18 +1469,38 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       await rt.waitForInstalledGeneration?.(targetVersion);
     } catch (error) {
       rt.err(c.red(`✗ installed daemon generation: ${refusal(error)}`));
-      return await repairReplacement(`installed daemon generation: ${message(error)}`, 1, true);
+      outcome = await repairReplacement(`installed daemon generation: ${message(error)}`, 1, true);
+      break replacement;
     }
   }
   try { execution?.verify(targetVersion); }
-  catch (error) { return await repairReplacement(`selected execution after reconciliation: ${message(error)}`, 1, true); }
+  catch (error) {
+    outcome = await repairReplacement(`selected execution after reconciliation: ${message(error)}`, 1, true);
+    break replacement;
+  }
   rt.out("Removing completed update recovery snapshot");
   snapshot.discard();
   clearUpdateRecovery();
   recordUpdateCompletion(targetVersion, `updated to ${targetVersion}`, true);
   execution?.complete?.();
-  return "updated";
+  outcome = "updated";
+  } finally {
+    try {
+      try { await releaseAdmission?.(); }
+      finally { try { releaseClosure?.(); } finally { releaseGlobal(); } }
+    } finally {
+      process.off("SIGINT", onInt);
+      process.off("SIGTERM", onTerm);
+    }
   }
+  // Admission release can await the daemon while the interrupt handlers are still active.
+  if (interrupted) return interrupted;
+  if (typeof outcome === "number") return outcome;
+  if (outcome === "repaired") rt.out(c.green(`✓ cotal-ai@${targetVersion} repaired and reconciled`));
+  else if (stagedExecution) rt.out(c.green(`✓ cotal-ai@${targetVersion} in use and reconciled`));
+  else rt.out(c.green(`✓ cotal-ai@${targetVersion} installed globally and reconciled`));
+  reportStandalonePiUpdate(rt, targetVersion);
+  return 0;
 
   async function reconcileVersion(version: string): Promise<boolean> {
     const verified = execution ? (execution.verify(version), version === targetVersion ? execution.entry : join(root, "cotal-ai", "dist/cotal.js")) : rt.verifyGlobalEntry(root, version);

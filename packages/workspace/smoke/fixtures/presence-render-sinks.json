@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1091,
+    "total": 1092,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 869
+    "non-render/control": 870
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -7638,7 +7638,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "sion} install failed: ${failure(installed)}`));\n    return await r",
+      "anchor": "sion} install failed: ${failure(installed)}`));\n    outcome = awai",
       "class": "non-render/control",
       "rationale": "The installer exit result is formatted for the failed-install diagnostic, not peer presence."
     },
@@ -7652,7 +7652,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "lobal install failed: ${failure(installed)}`);\n  }\n\n  rt.out(\"Veri",
+      "anchor": "lobal install failed: ${failure(installed)}`);\n    break replaceme",
       "class": "non-render/control",
       "rationale": "The recovery reason formats an npm child process failure before verification, not peer presence."
     },
@@ -7680,7 +7680,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "its reconcile failed: ${failure(child)}`));\n    return await r",
+      "anchor": "its reconcile failed: ${failure(child)}`));\n    outcome = awai",
       "class": "non-render/control",
       "rationale": "The reconciliation child's exit status is formatted for an installation error, not peer presence."
     },
@@ -7697,6 +7697,13 @@
       "anchor": "nt(`reconcile failed: ${failure(child)}`, child.status ?? 1, r",
       "class": "non-render/control",
       "rationale": "Rollback receives the reconciliation failure reason and child exit code, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "return outcome;",
+      "class": "non-render/control",
+      "rationale": "The updater returns its transaction exit code after cleanup, without reporting peer progress."
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
