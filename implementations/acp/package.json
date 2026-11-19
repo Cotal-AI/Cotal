@@ -33,7 +33,6 @@
   },
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
-    "@cotal-ai/smoke-kit": "workspace:*",
     "@cotal-ai/workspace": "workspace:*"
   },
   "files": [
