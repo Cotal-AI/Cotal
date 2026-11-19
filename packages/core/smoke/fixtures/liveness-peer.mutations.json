@@ -79,13 +79,13 @@
       "name": "an agent is granted the responder's serve filter and can answer a peer's probe for a plane it does not own",
       "file": "packages/core/src/provision-permissions.ts",
       "find": "  const livenessReplies = LIVENESS_PLANES.map((plane) => `${livenessSubject(space, plane, pr.owner, pr.actor)}.>`);",
-      "replace": "  const livenessReplies = [...LIVENESS_PLANES.map((plane) => `${livenessSubject(space, plane, pr.owner, pr.actor)}.>`), ...LIVENESS_PLANES.map((plane) => livenessServeFilter(space, plane))];",
+      "replace": "  const livenessReplies = [...LIVENESS_PLANES.map((plane) => `${livenessSubject(space, plane, pr.owner, pr.actor)}.>`), ...LIVENESS_PLANES.map((plane) => livenessSubject(space, plane, \"*\", \"*\"))];",
       "expectRed": "CELL D3",
       "cell": "CELL D3: a peer CANNOT subscribe the responder's SERVE filter (it cannot answer for a plane)"
     },
     {
       "name": "the supervisor's reply grant widens off the reply leaf so it could forge a probe as a peer",
-      "file": "packages/core/src/provision-permissions.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "        livenessReplyGrant(space, \"manager\"),",
       "replace": "        `${spacePrefix(space)}.live.manager.>`,",
       "expectRed": "CELL E3",
@@ -93,7 +93,7 @@
     },
     {
       "name": "the delivery plane's serve filter is granted to the supervisor too, so planes no longer answer only for themselves",
-      "file": "packages/core/src/provision-permissions.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "        livenessServeFilter(space, \"manager\"),\n      ],",
       "replace": "        livenessServeFilter(space, \"manager\"),\n        livenessServeFilter(space, \"delivery\"),\n      ],",
       "expectRed": "CELL E2",
@@ -149,7 +149,7 @@
     },
     {
       "name": "the remote-manager credential loses the manager liveness serve subscription, so a bound remote manager is reported unbound",
-      "file": "packages/core/src/provision-permissions.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "        ...(isSupervisorActor ? [livenessServeFilter(space, \"manager\")] : []),",
       "replace": "        ...(false && isSupervisorActor ? [livenessServeFilter(space, \"manager\")] : []),",
       "expectRed": "CELL E6",
@@ -157,7 +157,7 @@
     },
     {
       "name": "the remote-manager credential loses its bounded liveness reply grant, so its responder cannot answer the probe it serves",
-      "file": "packages/core/src/provision-permissions.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "        ...(isSupervisorActor ? [livenessReplyGrant(space, \"manager\")] : []),",
       "replace": "        ...(false && isSupervisorActor ? [livenessReplyGrant(space, \"manager\")] : []),",
       "expectRed": "CELL E7",
@@ -165,7 +165,7 @@
     },
     {
       "name": "the remote-manager liveness rows go to BOTH actors, so the executor carries authority to answer a probe it never serves",
-      "file": "packages/core/src/provision-permissions.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "  const isSupervisorActor = pin.actor === `manager_${iid}`;",
       "replace": "  const isSupervisorActor = true;",
       "expectRed": "CELL E9",
