@@ -156,6 +156,23 @@ try {
   await start(false);
   assert.equal(JSON.parse(run(["daemon", "status", "--json"]).text).result.update.automatic, false);
   assert.match(preference(["--auto"]), /cotal daemon install/, "foreground daemon cannot own the unattended schedule");
+  const otherHome = join(root, "other-home");
+  mkdirSync(otherHome, { mode: 0o700 });
+  const otherEnv = { COTAL_HOME: otherHome };
+  const foreign = run(["daemon", "status", "--json"], otherEnv);
+  assert.equal(foreign.code, 2, foreign.text);
+  assert.equal(JSON.parse(foreign.text).error.cause.code, "PEER_NOT_LOCK_OWNER");
+  const ownerSettings = readFileSync(settingsFile, "utf8");
+  assert.equal(JSON.parse(preference(["--auto", "off", "--json"], otherEnv)).result.enabled, false);
+  for (const args of [["--auto", "on", "--json"], ["--auto", "--json"]]) {
+    const result = JSON.parse(preference(args, otherEnv));
+    assert.equal(result.outcome, "ok");
+    assert.equal(result.result.enabled, true);
+    assert.equal(result.result.file, join(otherHome, "update-settings.json"));
+    assert.match(result.result.advice, /^Could not check the automatic update schedule: .*nothing was sent\.$/);
+  }
+  assert.equal(JSON.parse(readFileSync(join(otherHome, "update-settings.json"), "utf8")).auto, true);
+  assert.equal(readFileSync(settingsFile, "utf8"), ownerSettings);
   await stop();
   // Render a receipt and unit only. No install, start or registration command is invoked.
   const originalEnv = { ...process.env }, argv = process.argv, execArgv = process.execArgv;

@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
@@ -7,6 +7,7 @@ import {
   CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, writeResult, type OutputWarning,
   cmdSpawnSpec,
   beginGlobalUpdateChild,
+  processGroupMembers,
   processStartToken,
   claimUpdateClosureAccess,
   updateClosureOwner,
@@ -74,7 +75,7 @@ import { managerPin } from "../lib/manager-choice.js";
 import { localUpdateManagers, recordedUpdateManagers, type UpdateManager } from "../lib/update-managers.js";
 export { localUpdateManagers } from "../lib/update-managers.js";
 export { managerPin as updateManagerPin } from "../lib/manager-choice.js";
-import { assertRecordIdentity, brokerAddressKey } from "@cotal-ai/workspace";
+import { assertRecordIdentity, brokerAddressKey, brokerUrlKey } from "@cotal-ai/workspace";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
 const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
@@ -96,6 +97,7 @@ export const updateFlags: readonly FlagSpec[] = [
 
 interface CommandResult {
   readonly status: number | null;
+  readonly signal?: NodeJS.Signals | null;
   readonly stdout: string;
   readonly stderr: string;
   readonly error?: string;
@@ -157,14 +159,16 @@ export interface UpdateRuntime {
   prepareReplacement?(): Promise<() => Promise<void>>;
   /** Validate recorded local service ownership before replacing packages or reconciling connectors. */
   preflightReplacement?(): Promise<void>;
-  claimGlobalUpdate(root: string): () => void;
+  claimGlobalUpdate(root: string, onWait?: () => void): () => void;
+  /** Read the selected global package again after acquiring its update reservation. */
+  globalVersion?(root: string): string | undefined;
   selfArgv(): string[];
   /** Whether this CLI runs from a source checkout, where `--self` installs a separate global copy. */
   checkout(): boolean;
   /** The verified prefix of an installed POSIX npm CLI, absent for a checkout or local/npx copy. */
   installPrefix(): string | undefined;
   npm(args: string[], inherit?: boolean): CommandResult;
-  npmAsync(args: string[]): Promise<CommandResult>;
+  npmAsync(args: string[], archiveCache?: string): Promise<CommandResult>;
   spawn(file: string, args: string[], env: NodeJS.ProcessEnv, inherit?: boolean): CommandResult;
   spawnGlobal(
     root: string,
@@ -218,7 +222,14 @@ export const updateRuntime: UpdateRuntime = {
   extensions: () => loadExtensionsManifest().extensions,
   verifyExtension: verifyCurrentExtension,
   claimUpdatePass: () => claimExtensionUpdatePass(),
-  claimGlobalUpdate: (root) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000 }),
+  claimGlobalUpdate: (root, onWait) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000, onWait }),
+  globalVersion: (root) => {
+    const path = join(root, "cotal-ai", "package.json");
+    if (!existsSync(path)) return undefined;
+    const meta = JSON.parse(readFileSync(path, "utf8")) as { name?: string; version?: string };
+    if (meta.name !== "cotal-ai" || !meta.version || !STRICT_SEMVER.test(meta.version)) throw new Error("the installed global cotal-ai version is invalid");
+    return meta.version;
+  },
   selfArgv,
   checkout: () => seedWriterKind() === "checkout",
   installPrefix: () => {
@@ -287,9 +298,10 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   });
   const environments = [...new Set([process.env, rt.env])];
   const previous = environments.map(env => ({ env, values: { TMPDIR: env.TMPDIR, TMP: env.TMP, TEMP: env.TEMP } }));
+  let continuation: string | undefined;
   try {
     for (const env of environments) Object.assign(env, { TMPDIR: scratch, TMP: scratch, TEMP: scratch });
-    await updateInstallation(args, rt);
+    continuation = await updateInstallation(args, rt);
   } finally {
     for (const { env, values } of previous) for (const [key, value] of Object.entries(values)) {
       if (value === undefined) delete env[key];
@@ -297,10 +309,18 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
     }
     rmSync(scratch, { recursive: true, force: true, maxRetries: 3 });
   }
+  if (continuation) {
+    const result = rt.spawn(rt.nodePath, [continuation, "update", ...args.raw], rt.env, true);
+    if (result.error) throw new Error(`cannot continue the update through the restored installation: ${result.error}`);
+    if (result.status !== 0) process.exitCode = result.status ?? 1;
+    // The installed command owns any remaining activation and its exit result.
+    rt.generationWaited = true;
+  }
+  if (args.values.self === true && !process.exitCode && childBinding(rt).kind === "none") collectArchiveCaches(dirname(scratch));
 }
 
-async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<void> {
-  if (args.values.check === true) return checkUpdate(args, rt);
+async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<string | undefined> {
+  if (args.values.check === true) { await checkUpdate(args, rt); return; }
   if (args.values.self === true && existsSync(join(cliPackageRoot(), "desktop-runtime.json"))) {
     throw new CommandFailure("refused", "UNSUPPORTED", "this Cotal runtime belongs to the desktop app; npm self-update would separate it from its bundled runtime", {
       remedy: "update the desktop app with its signed platform installer; no npm self-update was attempted",
@@ -317,7 +337,11 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       });
     }
   }
-  if (await recoverInterruptedUpdate(rt) && args.values.self !== true) return;
+  const restored = await recoverInterruptedUpdate(rt);
+  if (restored) {
+    if (args.values.self !== true) return;
+    if (restored.version !== rt.version()) return restored.entry;
+  }
   // A folder above the config folder is not one this command repairs. Refuse it before the mode
   // repair and before seeding, so a refusal writes nothing and does not replace the binary.
   try {
@@ -345,19 +369,19 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
 }
 
 /** Resume an abandoned replacement before a command or daemon can activate its closure. */
-export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime, startup = false): Promise<boolean> {
-  if (childBinding(rt).kind === "bound") return false;
+export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime, startup = false): Promise<{ entry: string; version: string } | undefined> {
+  if (childBinding(rt).kind === "bound") return;
   const observed = readUpdateRecovery();
-  if (!observed) return false;
+  if (!observed) return;
   if (startup) {
     // A restarted daemon must answer the updater that still owns the closure. It may only
     // observe that live transaction here, never compete with it for restoration authority.
-    if (liveUpdateClosureOwner(observed, rt.recoveryOwnerStart ?? recoveryProcessStartToken)) return false;
+    if (liveUpdateClosureOwner(observed, rt.recoveryOwnerStart ?? recoveryProcessStartToken)) return;
   }
   const release = claimUpdateClosureAccess(true);
   try {
     const record = readUpdateRecovery();
-    if (!record) return false;
+    if (!record) return;
     const now = rt.now?.() ?? Date.now();
     let decision = recoveryDisposition(record, now, rt.recoveryOwnerStart ?? recoveryProcessStartToken);
     if (decision.action === "wait") {
@@ -370,13 +394,11 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
       try { retained = retainUnusableRecovery(record, now); }
       catch (error) { throw new CommandFailure("refused", "CONFLICT", `${decision.instruction} Retention could not complete: ${message(error)}`, { remedy: "inspect the recovery records and retained folders in the Cotal home, correct access, then run `cotal update --self`" }); }
       rt.out(`Retained unusable interrupted-update records in ${retained}; continuing the update.`);
-      return false;
+      return;
     }
-    if (startup && (decision.action === "wait" || decision.action === "active" || decision.action === "restore" && record.phase === "paused")) return false;
-    if (decision.action !== "restore") throw new CommandFailure("refused", decision.action === "active" ? "LIFECYCLE_BLOCKED" : decision.action === "wait" ? "CONFLICT" : "DEPENDENCY_UNAVAILABLE", decision.instruction, { native: { code: decision.action === "active" ? "UPDATE_RECOVERY_OWNER_ACTIVE" : decision.action === "wait" ? "UPDATE_RECOVERY_OBSERVATION_WAIT" : "UPDATE_RECOVERY_INSPECTION_FAILED" }, remedy: "follow the recovery instruction above, then run `cotal update --self`" });
-    if (!record.owner) return false;
-    const start = processStartToken(record.owner.pid);
-    if (start !== undefined && start === record.owner.start) return false;
+    if (startup && (decision.action === "wait" || decision.action === "active" || decision.action === "restore" && record.phase === "paused")) return;
+    if (decision.action !== "restore") throw new CommandFailure("refused", decision.action === "active" ? "LIFECYCLE_BLOCKED" : decision.action === "wait" ? "CONFLICT" : "DEPENDENCY_UNAVAILABLE", decision.instruction, { native: { code: decision.action === "active" ? "UPDATE_RECOVERY_OWNER_ACTIVE" : decision.action === "wait" ? "UPDATE_RECOVERY_OBSERVATION_WAIT" : "UPDATE_RECOVERY_INSPECTION_FAILED" }, ...(decision.action === "active" ? {} : { remedy: "follow the recovery instruction above, then run `cotal update --self`" }) });
+    if (!record.owner) return;
     try {
       if (!record.snapshot) throw new Error("interrupted update has no closure snapshot");
       writeUpdateRecovery({ ...record, owner: updateClosureOwner(), phase: "restoring" });
@@ -406,7 +428,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
           clearUpdateRecovery();
           recordUpdateCompletion(version, `repaired paused installation at ${version}`, true);
           rt.out(`Repaired the paused installation with cotal-ai@${version}; the machine service and its hosted Managers were verified.`);
-          return true;
+          return { entry, version };
         }
         let entry: string;
         let recoveredExecution: ExecutionReplacement | undefined;
@@ -436,7 +458,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
         clearUpdateRecovery();
         recoveredExecution?.complete?.();
         rt.out(`Restored cotal-ai@${record.previous} after an interrupted update.`);
-        return true;
+        return { entry, version: record.previous };
       } finally { releaseGlobal(); }
     } catch (error) {
       writeUpdateRecovery({ ...readUpdateRecovery()!, phase: "paused", reason: `interrupted update restore failed: ${message(error)}` });
@@ -757,11 +779,12 @@ export async function isStoppedLocalMesh(target: MeshTarget): Promise<boolean> {
 /** A prepared controller that completed ordinary down is cold only while its own instance records
  *  prove every process gone, no supervisor may serve it, and its recorded broker has no listener.
  *  The target resolver refuses before returning a MeshTarget for this lifecycle. */
-async function stoppedController(d: MeshTargetErrorDetails): Promise<boolean> {
+async function stoppedController(d: MeshTargetErrorDetails, server: string | undefined): Promise<boolean> {
   if (typeof d.space !== "string" || typeof d.root !== "string" || !d.stopped ||
       d.rootMissing === true || d.unsettled !== undefined || d.home !== undefined || d.stackSpace !== undefined) return false;
   const journal = readStackJournal(d.root)?.journal;
   if (!journal || journal.space !== d.space || journal.operation.kind !== "down" || journal.operation.phase !== "completed") return false;
+  if (server !== undefined && brokerUrlKey(server) !== brokerUrlKey(journal.server)) return false;
   const instances = serviceInstances(d.space);
   if (journal.members.some((member) => member.instanceId !== null &&
       !instances.some((row) => row.name === member.instanceId && row.record.value.definition === member.definition))) return false;
@@ -959,7 +982,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
         console.log(c.dim(`  ${e.details.space}: prepared in ${e.details.root}, not started; no manager running`));
         return "none";
       }
-      if (e.code === "not-started" && server === undefined && await stoppedController(e.details)) {
+      if (e.code === "not-started" && await stoppedController(e.details, server)) {
         console.log(c.dim(`  ${e.details.space}: stopped; no manager running`));
         return "none";
       }
@@ -1106,7 +1129,8 @@ function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
   try {
     const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
-    if (result.status !== 0) throw new Error(`installed extension dependency closure is unavailable: ${failure(result)}`);
+    if (result.signal) throw new DependencyCheckInterrupted(`npm dependency check was terminated by ${result.signal}`);
+    if (result.status !== 0) throw releaseReadError(result, `installed extension dependency closure is unavailable: ${failure(result)}`);
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
   }
@@ -1120,11 +1144,16 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
   const pending = new Set(["cotal-ai"]);
   const names = ["cotal-ai"];
   try {
+    if (process.platform === "linux" || process.platform === "darwin") {
+      const start = processStartToken(process.pid);
+      if (!start) throw new Error("cannot identify the archive cache owner");
+      writeFileSync(join(cache, ".owner"), `${process.pid}\n${start}\n`, { mode: 0o600, flag: "wx" });
+    }
     for (let offset = 0; offset < names.length;) {
       const batch = names.slice(offset, offset + 3);
       // Settle every read before validating or removing its shared private cache. Validation below
       // stays in discovery order, including when independent registry requests finish out of order.
-      const manifests = await Promise.allSettled(batch.map(name => rt.npmAsync(["view", `${name}@${version}`, "--json", ...options])));
+      const manifests = await Promise.allSettled(batch.map(name => rt.npmAsync(["view", `${name}@${version}`, "--json", ...options], cache)));
       offset += batch.length;
       for (const [index, name] of batch.entries()) {
         const spec = `${name}@${version}`;
@@ -1161,7 +1190,7 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
     // Its cache add accepts multiple specs. Bound each group rather than starting npm per archive.
     for (let offset = 0; offset < names.length; offset += 6) {
       const specs = names.slice(offset, offset + 6).map(name => `${name}@${version}`);
-      const archive = await rt.npmAsync(["cache", "add", ...specs, "--json", "--ignore-scripts", ...options]);
+      const archive = await rt.npmAsync(["cache", "add", ...specs, "--json", "--ignore-scripts", ...options], cache);
       if (archive.status !== 0) throw releaseReadError(archive, `archives for ${specs.join(", ")} could not be downloaded and verified`);
     }
   } finally {
@@ -1169,8 +1198,74 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
   }
 }
 
+/** Only caches with recorded custody can be reclaimed. A worker cannot open its cache before its
+ * process group is recorded, and the owner cannot start new workers after it exits. */
+function collectArchiveCaches(parent: string): void {
+  if (process.platform !== "linux" && process.platform !== "darwin") return;
+  try { parent = realpathSync(parent); }
+  catch { return; }
+  const uid = process.getuid!();
+  const privateDirectory = (path: string) => {
+    const info = lstatSync(path);
+    return info.isDirectory() && info.uid === uid && (info.mode & 0o077) === 0;
+  };
+  const deadOwner = (cache: string): boolean => {
+    const file = join(cache, ".owner");
+    const info = lstatSync(file);
+    if (!info.isFile() || info.uid !== uid || info.size > 256 || (info.mode & 0o077) !== 0) return false;
+    const owner = /^([1-9]\d*)\n([^\r\n]+)\n$/.exec(readFileSync(file, "utf8"));
+    const pid = Number(owner?.[1]);
+    return !!owner && Number.isSafeInteger(pid) && pid > 1 && recoveryProcessStartToken(pid) !== owner[2];
+  };
+  const absentGroup = (pid: number): boolean => {
+    if (!Number.isSafeInteger(pid) || pid < 2) return false;
+    try {
+      process.kill(-pid, 0);
+      if (process.platform !== "linux") return false;
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return /^[ZX] /.test(stat.slice(stat.lastIndexOf(") ") + 2)) && processGroupMembers(pid).length === 0;
+    }
+    catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+  };
+  function sweep(directory: string): void {
+    for (const name of readdirSync(directory)) {
+      if (!/^cotal-release-check-[a-zA-Z0-9]{6}$/.test(name)) continue;
+      const cache = join(directory, name);
+      try {
+        if (!privateDirectory(cache)) continue;
+        protectedLocalDirectory(cache, "the release archive cache");
+        if (!deadOwner(cache)) continue;
+        const workers = readdirSync(cache).filter(name => name.startsWith(".worker-"));
+        if (workers.every(worker => {
+          const match = /^\.worker-([1-9]\d*)$/.exec(worker);
+          return !!match && absentGroup(Number(match[1]));
+        })) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
+      } catch { /* Unprovable or already collected scratch is left alone. */ }
+    }
+  }
+  try {
+    sweep(parent);
+    for (const name of readdirSync(parent)) {
+      if (!/^cotal-update-[a-zA-Z0-9]{6}$/.test(name)) continue;
+      const scratch = join(parent, name);
+      try { if (privateDirectory(scratch)) sweep(scratch); }
+      catch { /* Another command can retire its scratch during the scan. */ }
+    }
+  } catch { /* Temporary storage cleanup is best effort. */ }
+}
+
 class ReleaseNotAvailable extends Error {}
 class ReleaseDateExcluded extends Error {}
+class DependencyCheckInterrupted extends Error {}
+class RegistryUnavailable extends Error {}
+
+const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND)$/;
+
+function registryNetworkFailure(error: unknown): boolean {
+  if (error instanceof RegistryUnavailable) return true;
+  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(message(error))?.[1];
+  return code !== undefined && NETWORK_ERROR_CODE.test(code);
+}
 
 function releaseReadError(result: CommandResult, detail: string): Error {
   if (result.status !== null && !result.error) {
@@ -1178,10 +1273,16 @@ function releaseReadError(result: CommandResult, detail: string): Error {
       const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown; detail?: unknown } }).error;
       if (error?.code === "ETARGET" && [error.summary, error.detail].some(text => typeof text === "string" && /with a date before\b/i.test(text)))
         return new ReleaseDateExcluded(`${detail}: npm's min-release-age or before setting excludes this release. Adjust that date filter and run \`cotal update --self\` again`);
+      // A first-party scoped read can fail while the public registry still answers.
+      if (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code)) return new RegistryUnavailable(detail);
       if (error?.code === "E404" || error?.code === "ETARGET") return new ReleaseNotAvailable(detail);
+      if (typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code)) {
+        const registry = detail.includes("@cotal-ai/") ? "the @cotal-ai:registry setting in .npmrc" : "your npm registry settings";
+        return new Error(`${detail} (npm ${error.code}${error.code === "ECONNREFUSED" ? ": registry connection refused" : ""}); check ${registry}, authentication, proxy and TLS configuration`);
+      }
     } catch { /* An unstructured failure is not evidence of registry propagation. */ }
   }
-  return new Error(detail);
+  return registryNetworkFailure(new Error(failure(result))) ? new RegistryUnavailable(detail) : new Error(detail);
 }
 
 async function waitForReleaseArchives(version: string, current: string, rt: UpdateRuntime): Promise<boolean> {
@@ -1254,13 +1355,23 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     }
     rt.out(`✓ release archives checked (${((Date.now() - releaseChecksStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
+    if (e instanceof DependencyCheckInterrupted) {
+      recordUpdateDeferral(targetVersion, message(e));
+      rt.err(c.red(`✗ ${message(e)}. No installed packages were replaced. Run \`cotal update --self\` again.`));
+      return 1;
+    }
     if (e instanceof ReleaseDateExcluded) {
       recordUpdateDeferral(targetVersion, "npm date filter excludes the release");
       rt.err(c.red(`✗ ${message(e)}. No global install was attempted.`));
       return 1;
     }
+    if (registryNetworkFailure(e)) {
+      recordUpdateDeferral(targetVersion, "waiting for registry access", true);
+      rt.out("The registry cannot be reached; nothing was changed.");
+      return 0;
+    }
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
-    rt.err(c.red(`✗ cotal-ai@${targetVersion} release is not ready: ${message(e)}. The release is still reaching the registry or registry access failed; no global install was attempted. Check registry access and run \`cotal update --self\` again in a few minutes.`));
+    rt.err(c.red(`✗ cotal-ai@${targetVersion} update preflight failed: ${message(e)}. No global install was attempted. ${e instanceof ReleaseNotAvailable ? "The release is still reaching the registry; run `cotal update --self` again in a few minutes." : "Correct the reported failure, then run `cotal update --self` again."}`));
     return 1;
   }
 
@@ -1312,9 +1423,28 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
 
   let releaseGlobal: () => void;
   try {
-    releaseGlobal = rt.claimGlobalUpdate(root);
+    releaseGlobal = rt.claimGlobalUpdate(root, () => rt.out("Waiting up to 10 minutes for another updater to release npm's global root"));
   } catch (e) {
     rt.err(c.red(`✗ could not reserve npm's global root for update: ${message(e)}`));
+    return 1;
+  }
+
+  // Another updater may have finished while this process still has the old generation loaded.
+  // Re-enter through its verified installation instead of replacing it or rolling back to stale code.
+  try {
+    const installed = rt.globalVersion?.(root);
+    if (installed && compareSemver(installed, current) > 0 && compareSemver(installed, targetVersion) >= 0) {
+      const entry = rt.verifyGlobalEntry(root, installed);
+      releaseGlobal();
+      rt.out(`Another update installed cotal-ai@${installed}; rechecking the installed CLI`);
+      const child = rt.spawn(rt.nodePath, [entry, "update", "--self", ...targetArgv(target), ...(target["stop-agents"] === true ? ["--stop-agents"] : [])], rt.env, true);
+      if (child.stderr) rt.stderr(child.stderr);
+      if (child.stdout) rt.stdout(child.stdout);
+      return child.status ?? 1;
+    }
+  } catch (error) {
+    releaseGlobal();
+    rt.err(`could not recheck the installed global CLI: ${message(error)}`);
     return 1;
   }
 
@@ -1333,6 +1463,11 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     } catch (error) {
       try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
       releaseGlobal();
+      if (!execution && message(error).startsWith("target staging failed: ") && registryNetworkFailure(error)) {
+        recordUpdateDeferral(targetVersion, "waiting for registry access", true);
+        rt.out("The registry cannot be reached; nothing was changed.");
+        return 0;
+      }
       recordUpdateDeferral(targetVersion, `staged pre-install check refused: ${preflightDetail(error)}`);
       rt.err(`staged pre-install check refused: ${message(error)}; no installed packages or connector state were changed`);
       return 1;
@@ -1627,14 +1762,30 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
   return entry;
 }
 
-async function runNpmAsync(args: string[]): Promise<CommandResult> {
+async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {
   try {
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
-    const child = spawn(file, spawnArgs, { windowsVerbatimArguments, windowsHide: true });
+    const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
+    const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
+    const child = spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-release-check", file, ...spawnArgs] : spawnArgs, {
+      windowsVerbatimArguments, windowsHide: true,
+      ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] } : {}),
+    });
     let stdout = "", stderr = "", error: string | undefined;
     child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
     child.once("error", cause => { error = cause.message; });
+    if (gated) {
+      const permit = child.stdio[3] as import("node:stream").Writable;
+      permit.on("error", cause => { error = message(cause); });
+      try {
+        if (child.pid === undefined) permit.end();
+        else {
+          writeFileSync(join(archiveCache!, `.worker-${child.pid}`), "", { mode: 0o600 });
+          permit.end("run\n");
+        }
+      } catch (cause) { error = message(cause); permit.end(); }
+    }
     const status = await new Promise<number | null>(resolveClose => child.once("close", resolveClose));
     return { status, stdout, stderr, ...(error ? { error } : {}) };
   } catch (error) {
@@ -1650,6 +1801,7 @@ function runNpm(args: string[], inherit = false): CommandResult {
       : { encoding: "utf8", windowsVerbatimArguments });
     return {
       status: result.status,
+      signal: result.signal,
       stdout: `${result.stdout ?? ""}`,
       stderr: `${result.stderr ?? ""}`,
       error: result.error?.message,

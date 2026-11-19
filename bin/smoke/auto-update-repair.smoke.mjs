@@ -110,8 +110,8 @@ for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused',
      console.log('CLOSURE AFTER:', JSON.stringify(deferred));
      const log = readFileSync(join(home, 'update-attempt.log'), 'utf8');
      console.log('CLOSURE LOG:', log.trim());
-     assert.match(log, /release is not ready: installed extension dependency closure is unavailable:[\s\S]*npm error code E404/);
-     assert.match(log, /no global install was attempted/);
+     assert.match(log, /update preflight failed: installed extension dependency closure is unavailable:[\s\S]*npm error code E404/);
+     assert.match(log, /No global install was attempted\./);
      assert.ok(deferred.next >= started + 3600000 && deferred.next <= Date.now() + 3600000, 'closure retry is one hour later');
      assert.equal(existsSync(join(home, 'update-recovery.json')), false, 'preflight creates no recovery record');
      assert.equal(updater.status().automatic, true);
@@ -119,8 +119,8 @@ for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused',
      assert.equal(readFileSync(join(prefix, 'lib/node_modules/cotal-ai/preserve'), 'utf8'), 'unchanged');
      const manual = await command();
      assert.equal(manual.code, 1, manual.output);
-     assert.match(manual.output, /release is not ready: installed extension dependency closure is unavailable:[\s\S]*npm error code E404/);
-     assert.match(manual.output, /no global install was attempted/);
+     assert.match(manual.output, /update preflight failed: installed extension dependency closure is unavailable:[\s\S]*npm error code E404/);
+     assert.match(manual.output, /No global install was attempted\./);
      continue;
     }
     assert.match(deferred.result, /release is still arriving.*next update check/);
