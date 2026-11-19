@@ -33,7 +33,7 @@ export function managerServiceCommand(manager: Command, argv: readonly string[])
   const cmd: Command = {
     ...augmented, name: "manager", aliases: manager.aliases, group: manager.group, summary: manager.summary,
     usage: declared.usage, positionals: "<start | stop | restart | status | logs | install | uninstall>",
-    subcommands: augmented.subcommands?.filter((sub) => sub.name === verb).map((sub) => ({ ...sub, summary: declared.summary, usage: declared.usage, examples: declared.examples, flagNames: sub.flagNames?.filter((flag) => flag !== "file" && flag !== "preset" && flag !== "new-instance") })),
+    subcommands: augmented.subcommands?.filter((sub) => sub.name === verb).map((sub) => ({ ...sub, summary: declared.summary, usage: declared.usage, examples: declared.examples, flagNames: sub.flagNames?.filter((flag) => flag !== "file" && flag !== "preset" && flag !== "new-instance" && flag !== "no-open") })),
     validate: (args) => augmented.validate?.(withName(args)),
     run: (args) => augmented.run(withName(args)),
   };

@@ -79,6 +79,9 @@ import { initializeJcodeEventBoundary, JcodeJournalSource, jcodeJournalPath, pos
 const MAX_RELAY_BYTES = 4 * 1024 * 1024;
 /** How often the relay checks that its socket path still exists. See the re-bind in `startRelay`. */
 const RELAY_REBIND_POLL_MS = 1_000;
+/** How long a stop waits for the TUI to exit after SIGTERM, and again after SIGKILL. A TUI exits in
+ *  milliseconds; the bound keeps a wedged one from eating the grace the private tree needs. */
+const TUI_STOP_GRACE_MS = 1_000;
 /** How long a run may hold the dispatch gate waiting for its own acknowledgement (#1233).
  *
  *  Matches the SDK's `acceptTimeoutMs` default, because that is the point past which `sendMessage`
@@ -916,23 +919,49 @@ export async function runJcodeHost(): Promise<void> {
     return connectSteerClient(instance.socketPath, perRequestMs);
   };
 
+  const onTuiExit = (code: number | null): void => void shutdown(code ?? 0);
   const launchTui = (): void => {
     const runtime = join(socketHome.jcodeHome, "run");
     tui = spawn(binary, ["--socket", join(runtime, "jcode.sock"), "--resume", sessionId!], {
       cwd,
-      env: { ...noCotalEnv(), ...seatEnv, JCODE_HOME: socketHome.jcodeHome, JCODE_RUNTIME_DIR: runtime, JCODE_SOCKET: join(runtime, "jcode.sock") },
+      // From Jcode 1.0 a TUI starts a detached desktop companion that opens URLs and terminals and
+      // listens for global push-to-talk. It outlives the seat, and a managed seat has no use for it.
+      env: {
+        ...noCotalEnv(),
+        ...seatEnv,
+        JCODE_HOME: socketHome.jcodeHome,
+        JCODE_RUNTIME_DIR: runtime,
+        JCODE_SOCKET: join(runtime, "jcode.sock"),
+        JCODE_COMPANION_AUTOSTART: "0",
+      },
       stdio: "inherit",
     });
-    tui.once("exit", (code) => void shutdown(code ?? 0));
+    tui.once("exit", onTuiExit);
+  };
+
+  /** Stop the TUI and wait for it to exit. It goes before the private tree: from Jcode 0.99.1 a TUI
+   *  that loses its server starts a new one on the seat's socket, which outlives the seat and makes
+   *  the next launch of the same name fail until Jcode's idle timeout ends it (#7950). */
+  const stopTui = async (): Promise<void> => {
+    const viewer = tui;
+    if (!viewer || viewer.exitCode !== null || viewer.signalCode !== null) return;
+    viewer.off("exit", onTuiExit);
+    const exited = new Promise<boolean>((resolve) => viewer.once("exit", () => resolve(true)));
+    const grace = (): Promise<boolean> => new Promise((resolve) => setTimeout(() => resolve(false), TUI_STOP_GRACE_MS).unref());
+    viewer.kill("SIGTERM");
+    if (await Promise.race([exited, grace()])) return;
+    viewer.kill("SIGKILL");
+    await Promise.race([exited, grace()]);
   };
 
   const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> => {
     if (stopping) return;
     stopping = true;
-    // The private tree goes first for every seat. A runtime stop SIGTERMs the seat and SIGKILLs it
-    // after a short grace, and the event drain or the broker close can use that whole grace. What
-    // this misses, its manager's retireAfterExit finds.
+    // The private tree goes first for every seat, right after the TUI that would restart it. A
+    // runtime stop SIGTERMs the seat and SIGKILLs it after a short grace, and the event drain or the
+    // broker close can use that whole grace. What this misses, its manager's retireAfterExit finds.
     let exit = code;
+    await stopTui();
     try {
       await stopPrivateJcode({ skipClientClose: true });
     } catch (error) {
@@ -947,11 +976,6 @@ export async function runJcodeHost(): Promise<void> {
     if (fallbackTimer !== undefined) {
       clearTimeout(fallbackTimer);
       fallbackTimer = undefined;
-    }
-    try {
-      tui?.kill("SIGTERM");
-    } catch {
-      /* already gone */
     }
     await retireRelay(relayServer, relay);
     try {
@@ -2362,7 +2386,9 @@ export async function runJcodeHost(): Promise<void> {
     startControl?.close();
     await retireRelay(relayServer, relay);
     // The refusal is only safe once the launch it abandons is provably dead: returning non-zero
-    // hands the manager a retired seat while an unverified daemon would keep running (#839).
+    // hands the manager a retired seat while an unverified daemon would keep running (#839). The
+    // TUI started before readiness goes first, so it cannot start a replacement server (#7950).
+    await stopTui();
     try {
       await stopPrivateJcode({ skipClientClose: error instanceof JcodeConnectorError && error.code === "readiness_timeout" });
       removeCredentials();

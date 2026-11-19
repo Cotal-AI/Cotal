@@ -103,7 +103,7 @@
     },
     {
       "name": "K3 the fix over-corrects and dedups on nothing at all",
-      "file": "extensions/connector-core/src/agent-inbox.ts",
+      "file": "extensions/connector-core/src/agent-inbox-model.ts",
       "find": "function ingestDedupKey(id: string): string | undefined {\n  return id === \"\" ? undefined : id;\n}",
       "replace": "function ingestDedupKey(_id: string): string | undefined {\n  return undefined;\n}",
       "expectRed": "the same REAL id twice still collapses to one entry",
