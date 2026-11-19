@@ -799,7 +799,7 @@ cotal docs --search <query> [--json | --plain]
 | `--search <query>` | none | Show the sections that best match a query, each naming its page |
 | `--refresh` | off | With a page: also try the version-pinned copy on docs.cotal.ai |
 | `--json` / `-j` | off | One JSON document |
-| `--plain` | off | The same report without color, and a page as its Markdown |
+| `--plain` | off | Text without color. A page has a source and version line followed by Markdown. |
 
 Reads the docs bundled with this installed version, offline: the same pages agents read with
 `cotal_docs`. Bare `docs` lists the pages by category (`Start here`, `Guide`, `Concept`, `Reference`,
@@ -812,8 +812,9 @@ for reading: each heading is a title, paragraphs and lists wrap to the terminal,
 becomes one record per row when its columns do not fit, and a code block keeps its lines.
 Links show their destinations, including page names and section anchors. A page reference such as
 `<cli-processes.mdx#daemon>` can be opened with `cotal docs cli-processes.mdx#daemon`.
-To a pipe or a file, and with `--plain`, the page is its Markdown. An unknown page is refused with
-`USAGE_INVALID`, naming every page.
+When stdout goes to a pipe or file, or you pass `--plain`, it starts with a source and version
+line (for example, `bundled v<version>`) followed by the page's Markdown. To export only the Markdown,
+use `--json` and extract `result.body`. An unknown page is refused with `USAGE_INVALID`, naming every page.
 
 `--refresh` fetches the page from the immutable path for this version on docs.cotal.ai.
 `result.source` says which copy was served, `bundled` or `docs.cotal.ai`, and `result.refresh` says

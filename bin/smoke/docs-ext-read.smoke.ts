@@ -78,7 +78,7 @@ let specBody = "";
   // A line of the page with no punctuation that plain writes in ASCII, so it reads the same in both.
   const asciiLine = r?.body.split("\n").find((line) => line.length > 20 && /^[\x20-\x7e]+$/.test(line));
   check("a page's slug is matched without case or .md, and the plain page says which copy it is", plain.status === 0 && lines[0] === `bundled v${VERSION}` && plain.stdout.includes("# Architecture") && plain.stdout.includes(asciiLine ?? "\u0000"), shown(plain));
-  // A page is drawn only on a terminal (the pty suite reads that); to a pipe it is its Markdown.
+  // A page is drawn only on a terminal (the pty suite reads that); to a pipe it keeps its Markdown.
   const piped = run(["docs", "cli"]);
   check("the CLI hub read to a pipe keeps its Markdown heading and links", piped.status === 0 && piped.stdout.includes("\n# CLI reference\n") && piped.stdout.includes("[CLI usage](cli-usage.mdx#structured-output)"), shown(piped));
   const usage = run(["docs", "cli-usage"]);
@@ -86,6 +86,35 @@ let specBody = "";
   const spec = run(["docs", "spec", "--json"]);
   specBody = (spec.envelope?.result as { body?: string } | undefined)?.body ?? "";
   check("spec, lang and schema are pages too", spec.status === 0 && specBody.length > 0 && run(["docs", "lang", "--json"]).status === 0 && run(["docs", "schema", "--json"]).status === 0, shown(spec));
+}
+
+{
+  const plain = run(["docs", "cli-processes.mdx#daemon", "--plain"]);
+  const piped = run(["docs", "cli-installation"]);
+  const json = run(["docs", "cli-installation", "--json"]);
+  const body = json.envelope?.result?.body;
+  check("plain and redirected pages start with the source and version line", plain.status === 0 && plain.stdout.startsWith(`bundled v${VERSION}\n\n# Process supervision\n`) && piped.status === 0 && piped.stdout.startsWith(`bundled v${VERSION}\n\n# CLI installation\n`), { plain: shown(plain), piped: shown(piped) });
+  check("the bundled reference explains the banner and how to export only the Markdown", json.status === 0 && typeof body === "string" && body.startsWith("# CLI installation\n") && /starts with a source and version\s+line/.test(body) && /use `--json` and extract `result\.body`/.test(body), shown(json));
+}
+
+{
+  const docs = run(["docs", "cli-agents", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const remedy = typeof body === "string" ? /`cotal (persona create default --file <persona\.md>)`/.exec(body)?.[1] : undefined;
+  check("the bundled spawn reference gives a complete default persona remedy", docs.status === 0 && !!remedy, shown(docs));
+  const project = join(home, "demo");
+  const file = join(home, "persona.md");
+  mkdirSync(project);
+  writeFileSync(file, "---\nname: default\nsubscribe: [general]\n---\n\nSummarize the work.\n");
+  const prepare = run(["space", "create", "demo", "--root", project]);
+  const remove = run(["persona", "remove", "default", "--space", "demo", "--yes"]);
+  const missing = run(["persona", "show", "default", "--space", "demo"]);
+  check("the prepared space has no default after removal", prepare.status === 0 && remove.status === 0 && missing.status === 2, { prepare: shown(prepare), remove: shown(remove), missing: shown(missing) });
+  if (remedy) {
+    const create = run([...remedy.split(" ").map((arg) => arg === "<persona.md>" ? file : arg), "--space", "demo"]);
+    const show = run(["persona", "show", "default", "--space", "demo"]);
+    check("the documented remedy restores the default in the named space", create.status === 0 && show.status === 0 && show.stdout.includes("Summarize the work."), { create: shown(create), show: shown(show) });
+  }
 }
 
 // ── docs: --refresh says which copy it served ────────────────────────────────────────────────────

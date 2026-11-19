@@ -174,7 +174,7 @@
     },
     {
       "name": "the relayed escalation carries no prompt",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-seat-watch.ts",
       "find": "      checkpoint: { token, prompt: req.prompt, schema: req.schema ?? null, deadlineAt, escalatedTo: to },",
       "replace": "      checkpoint: { token, schema: req.schema ?? null, deadlineAt, escalatedTo: to },",
       "expectRed": "carrying the question, the addressee and the step to answer at",
@@ -192,7 +192,7 @@
     },
     {
       "name": "an escalation relays to whatever `to` names, seat or not",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-seat-watch.ts",
       "find": "    const seat = this.seatAddress(to);\n    if (seat.address === undefined) return;",
       "replace": "    const seat = this.seatAddress(to);\n    if (seat.address === undefined) { /* relay anyway */ }",
       "expectRed": "an escalation addressed to someone who is not a seat relays to nobody, stays parked, and still records who it names",
@@ -201,7 +201,7 @@
     },
     {
       "name": "an escalation whose seat is gone fails the checkpoint L4002 again",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-seat-watch.ts",
       "find": "      if (!(e instanceof EffectError && e.code === \"L4002\")) throw e;\n      console.error(",
       "replace": "      throw e;\n      console.error(",
       "expectRed": "an escalation whose seat is gone at the relay is TOLD to nobody and the pause stands, armed and answerable from anywhere",

@@ -24,7 +24,7 @@
     },
     {
       "name": "a manager on an open mesh reads a run's id",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "    if (runId === undefined || this.meshMode !== \"static\") return undefined;\n    let driver: EpCaller | undefined;\n",
       "replace": "    if (runId === undefined) return undefined;\n    let driver: EpCaller | undefined;\n",
       "afterRestore": "pnpm --filter cotal-ai... build",

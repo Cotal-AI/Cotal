@@ -232,6 +232,13 @@ try {
     check("a default-armed foreground launch carries the mesh root", r.opts?.workspaceRoot === root, { got: r.opts?.workspaceRoot, expected: root });
   }
 
+  for (const field of ["role: two words", "launchOptions: null"]) {
+    const invalid = join(root, ".cotal", "agents", "invalid.md");
+    writeFileSync(invalid, `---\nname: invalid\n${field}\n---\nbody\n`);
+    const r = await run(["spawn", "invalid", "--foreground", "--server", server, "--space", "fgevents", "--agent", "fg-probe-live"]);
+    check(`foreground with ${field} refuses before reaching the connector`, r.opts === undefined && r.exited === 1, r);
+  }
+
   {
     const r = await openRun(["--agent", "fg-probe-emitter", "--events"]);
     check("--events reaches the connector on the foreground path", r.opts?.events === true, r.stderr.slice(0, 300));
@@ -369,7 +376,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 24;
+const EXPECTED = 26;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
