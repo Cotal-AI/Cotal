@@ -7,7 +7,7 @@
   "mutations": [
     {
       "name": "the tap forwards an agent's frames as message again, so every browser receives every agent's frames whether or not anyone watches",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-request.ts",
       "find": "  const agent = channel === undefined ? null : eventChannelPrincipal(channel);",
       "replace": "  const agent = null as { owner: string; actor: string } | null;",
       "expectRed": "1.1 a chat message on events.local.abc is an agent-frame for local.abc, not a message",
@@ -15,7 +15,7 @@
     },
     {
       "name": "the tap forwards a frame on an agent's event channel whoever published it, so another principal can write into that agent's session",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-request.ts",
       "find": "    if (senderId !== id) return null;",
       "replace": "    void senderId;",
       "expectRed": "1.10 a frame on events.local.abc published by local.mallory comes back null: not the agent's frame, and never a message",

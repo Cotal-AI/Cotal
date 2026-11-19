@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync, unlinkSync, type Stats } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, readlinkSync, realpathSync, statSync, unlinkSync, type Stats } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { acquireLock, ensureDirNoSymlink, hardenPrivate, mkSecretDir, realDirNoSymlink, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure } from "./output.js";
 import { homeCotalDir } from "./cotal-home.js";
@@ -59,8 +59,8 @@ export function prepareCotalHomeForWrite(): void {
     let dir = home;
     while (!lstatSync(dir, { throwIfNoEntry: false }) && dirname(dir) !== dir) dir = dirname(dir);
     try {
-      if (dir === home) protectedLocalEntry(home, "the Cotal home");
-      else protectedLocalDirectory(dir, "the Cotal home");
+      if (dir === home) protectedLocalEntry(join(protectedResolvedDirectory(dirname(home), "the Cotal home"), basename(home)), "the Cotal home");
+      else protectedResolvedDirectory(dir, "the Cotal home");
     } catch (e) {
       if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
       throw new CommandFailure(e.outcome, e.code, `${e.message}; nothing was written`, { remedy: e.remedy, target: e.target });
@@ -275,9 +275,9 @@ type ProtectionGap = { path: string; reason: string; fix: "physical" | "o-w" | "
 
 /** Why an existing entry is not protected against other local writers, or nothing when it is. Root
  *  or the caller must own it. Group write needs the caller's proven user private group and no
- *  extended ACL, whose named entries the group bits only mask. World write is never accepted. An
- *  `ancestor` walk also accepts a root-owned sticky directory such as /tmp. */
-function protectionGap(path: string, stat: EntryStat, options: { ancestor?: boolean; policy?: ProtectedPathPolicy }): ProtectionGap | undefined {
+ *  extended ACL, unless the directory is below an ancestor other accounts cannot search. World
+ *  write is never accepted. An `ancestor` walk also accepts a root-owned sticky directory such as /tmp. */
+function protectionGap(path: string, stat: EntryStat, options: { ancestor?: boolean; policy?: ProtectedPathPolicy; privateAncestor?: boolean }): ProtectionGap | undefined {
   const gap = (reason: string, fix: ProtectionGap["fix"]): ProtectionGap => ({ path, reason, fix });
   if (stat.isSymbolicLink()) return gap("is a symbolic link", "physical");
   if (stat.uid !== 0 && stat.uid !== (options.policy?.uid ?? process.getuid!())) return gap("is owned by another account", "physical");
@@ -286,6 +286,7 @@ function protectionGap(path: string, stat: EntryStat, options: { ancestor?: bool
   // step removes both.
   if ((stat.mode & 0o002) !== 0) return gap("is writable by every local account", (stat.mode & 0o020) !== 0 ? "go-w" : "o-w");
   if ((stat.mode & 0o020) === 0) return undefined;
+  if (options.privateAncestor && stat.isDirectory()) return undefined;
   const policy = options.policy ?? systemPolicy();
   const group = stat.uid === policy.uid ? policy.privateGroupGap(stat.gid) : "it is not owned by you";
   if (group) return gap(`is group-writable and ${group}`, "g-w");
@@ -346,10 +347,41 @@ export function assertProtectedEntry(what: string, path: string, stat: EntryStat
 
 /** Verify an existing physical directory chain before using a protected private output path. The
  *  whole chain is read, and one refusal names every entry in it that is not protected. `what` names
- *  the path for the refusal, such as "the project root". */
-export function protectedLocalDirectory(path: string, what = "the path", policy?: ProtectedPathPolicy): void {
-  const gaps = directoryChainGaps(path, what, policy);
+ *  the path for the refusal, such as "the project root". Returns whether an ancestor above `path`
+ *  bars other local accounts from reaching it. */
+export function protectedLocalDirectory(path: string, what = "the path", policy?: ProtectedPathPolicy): boolean {
+  const { gaps, privateAncestor } = directoryChainGaps(path, what, policy);
   if (gaps.length) throw protectionRefusal(what, gaps, path);
+  return privateAncestor;
+}
+
+/** Resolve an existing directory only after checking each link's physical parent chain. The
+ *  target and every path used to reach it must be protected against other local writers. */
+export function protectedResolvedDirectory(path: string, what = "the path"): string {
+  if (requireLocalRecordAccess() !== "posix") return realpathSync(path);
+  let pending = resolve(path), links = 0;
+  for (;;) {
+    let parent = resolve(sep);
+    const segments = pending.slice(parent.length).split(sep).filter(Boolean);
+    let followed = false;
+    for (let index = 0; index < segments.length; index++) {
+      if (segments[index] === ".") continue;
+      if (segments[index] === "..") { parent = dirname(parent); continue; }
+      const entry = join(parent, segments[index]!);
+      if (lstatSync(entry).isSymbolicLink()) {
+        protectedLocalEntry(parent, what);
+        if (++links > 40) throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} has too many symbolic links`, { target: { path } });
+        const target = readlinkSync(entry);
+        pending = `${isAbsolute(target) ? target : `${parent}${sep}${target}`}${sep}${segments.slice(index + 1).join(sep)}`;
+        followed = true;
+        break;
+      }
+      parent = entry;
+    }
+    if (followed) continue;
+    protectedLocalDirectory(parent, what);
+    return parent;
+  }
 }
 
 /** {@link protectedLocalDirectory} for an existing file or directory and every directory above it,
@@ -357,8 +389,9 @@ export function protectedLocalDirectory(path: string, what = "the path", policy?
  *  a root-owned sticky directory, as an ancestor is. */
 export function protectedLocalEntry(path: string, what = "the path", policy?: ProtectedPathPolicy): void {
   const entry = lstatSync(path);
-  const gap = requireLocalRecordAccess() === "posix" ? protectionGap(path, entry, { policy }) : undefined;
-  const gaps = [...(gap ? [gap] : []), ...directoryChainGaps(dirname(path), what, policy)];
+  const { gaps, privateSubtree } = directoryChainGaps(dirname(path), what, policy);
+  const gap = requireLocalRecordAccess() === "posix" ? protectionGap(path, entry, { policy, privateAncestor: privateSubtree && resolve(path) === path }) : undefined;
+  if (gap) gaps.unshift(gap);
   if (gaps.length) throw protectionRefusal(what, gaps, path);
 }
 
@@ -366,26 +399,33 @@ export function protectedLocalEntry(path: string, what = "the path", policy?: Pr
  *  so one refusal names each gap in the directory, its entries and the directories above it. */
 export function protectedLocalEntries(directory: string, names: readonly string[], what = "the path", policy?: ProtectedPathPolicy): void {
   const posix = requireLocalRecordAccess() === "posix";
-  const gaps = posix ? [directory, ...names.map((name) => join(directory, name))].flatMap((path) => protectionGap(path, lstatSync(path), { policy }) ?? []) : [];
-  gaps.push(...directoryChainGaps(dirname(directory), what, policy));
+  const { gaps, privateSubtree } = directoryChainGaps(dirname(directory), what, policy);
+  if (posix) gaps.unshift(...[directory, ...names.map((name) => join(directory, name))].flatMap((path, index) => protectionGap(path, lstatSync(path), { policy, privateAncestor: index === 0 && privateSubtree && resolve(directory) === directory }) ?? []));
   if (gaps.length) throw protectionRefusal(what, gaps);
 }
 
 /** Every gap on `path` and the directories above it, deepest first. */
-function directoryChainGaps(path: string, what: string, policy?: ProtectedPathPolicy): ProtectionGap[] {
+function directoryChainGaps(path: string, what: string, policy?: ProtectedPathPolicy): { gaps: ProtectionGap[]; privateAncestor: boolean; privateSubtree: boolean } {
   const posix = requireLocalRecordAccess() === "posix";
   const gaps: ProtectionGap[] = [];
-  let parent = path;
-  for (;;) {
+  const parents = [path];
+  for (let parent = path; dirname(parent) !== parent;) {
+    parent = dirname(parent);
+    parents.push(parent);
+  }
+  let privateAncestor = false, privateSubtree = false;
+  // On Linux, an extended access ACL's mask occupies the group mode bits. If neither group nor
+  // other has search permission, an ACL cannot give it to a named user either.
+  const checkSearch = posix && process.platform === "linux" && resolve(path) === path;
+  for (const parent of parents.reverse()) {
     const directory = lstatSync(parent);
     if (!directory.isDirectory() && !directory.isSymbolicLink()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${parent} is not a directory`, { target: { path: parent } });
-    const gap = posix ? protectionGap(parent, directory, { ancestor: true, policy }) : undefined;
+    privateAncestor = privateSubtree;
+    const gap = posix ? protectionGap(parent, directory, { ancestor: true, policy, privateAncestor }) : undefined;
     if (gap) gaps.push(gap);
-    const next = dirname(parent);
-    if (next === parent) break;
-    parent = next;
+    if (checkSearch && !gap && directory.isDirectory() && (directory.mode & 0o011) === 0) privateSubtree = true;
   }
-  return gaps;
+  return { gaps: gaps.reverse(), privateAncestor, privateSubtree };
 }
 
 export function protectedCredentialReference(path: string): void {
@@ -461,7 +501,7 @@ export class ProtectedRecordStore<T> {
 
   directory(create = false): string | undefined {
     const access = requireLocalRecordAccess();
-    const home = homeCotalDir();
+    let home = homeCotalDir();
     if (create) prepareCotalHomeForWrite();
     try { privateDirectory(home, access); }
     catch (error) {
@@ -469,6 +509,7 @@ export class ProtectedRecordStore<T> {
       if (!create) return undefined;
       mkSecretDir(home); privateDirectory(home, access);
     }
+    home = protectedResolvedDirectory(home, "the Cotal home");
     const segments = [this.namespace, spaceKey(this.space), ...(this.family ? [this.family] : [])];
     const paths = segments.map((_, index) => join(home, ...segments.slice(0, index + 1)));
     // Windows has no create mode, so each store directory made here gets the private access list.

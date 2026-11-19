@@ -117,6 +117,8 @@ export function validateConfigArguments(args: ParsedArgs): void {
     const problem = preferenceSpaceProblem(v.space);
     if (problem) throw usage(problem);
   }
+  if (sub === "set" && args.positionals.length !== 3) throw usage("usage: cotal config set <key> <value> [--user | --space <name>]");
+  if (sub === "unset" && args.positionals.length !== 2) throw usage("usage: cotal config unset <key> [--user | --space <name>]");
 }
 
 /**
@@ -149,8 +151,6 @@ export async function config(args: ParsedArgs): Promise<void> {
     return;
   }
   if (sub === "set" || sub === "unset") {
-    const want = sub === "set" ? 2 : 1;
-    if (rest.length !== want) throw usage(sub === "set" ? "usage: cotal config set <key> <value> [--user | --space <name>]" : "usage: cotal config unset <key> [--user | --space <name>]");
     const key = keyOf(rest[0]!);
     const value = sub === "set" ? rest[1]! : undefined;
     if (key === "harness" && value !== undefined) checkHarness(value);

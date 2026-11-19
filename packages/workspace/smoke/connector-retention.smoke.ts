@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -35,15 +35,19 @@ assert.equal(existsSync(before),true);
 `], { env: { ...childEnv, XDG_CONFIG_HOME: freshConfig, COTAL_HOME: join(root, "fresh-home") }, encoding: "utf8", timeout: 30_000 });
   assert.equal(fresh.status, 0, `${fresh.stdout}${fresh.stderr}`);
   passed++;
-  for (const scenario of ["unfinished-root", "unfinished-holders", "unfinished-seat", "unfinished-live-seat", "unfinished-dead-seat", "unfinished-link", "unselected-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "pnpm-dlx-refresh", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "initial-inherit", "checkout", "desktop", "windows"] as const) {
+  for (const scenario of ["unfinished-root", "unfinished-holders", "unfinished-seat", "unfinished-live-seat", "unfinished-dead-seat", "unfinished-link", "unselected-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "linked-config", "pnpm-dlx-refresh", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "initial-inherit", "checkout", "desktop", "windows"] as const) {
     const config = join(root, scenario);
     mkdirSync(join(config, "cotal/seed/store/0.162.0"), { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "cotal/extensions/node_modules/old"), { recursive: true, mode: 0o700 });
     writeFileSync(join(config, "cotal/seed/stamp.json"), JSON.stringify({ generation: "0.162.0" }));
     writeFileSync(join(config, "cotal/extensions/node_modules/old/lazy.js"), "old graph\n");
+    if (scenario === "linked-config") {
+      renameSync(config, `${config}-physical`);
+      symlinkSync(`${config}-physical`, config);
+    }
     const script = `
 import assert from 'node:assert/strict';
-import {readFileSync,writeFileSync,symlinkSync,renameSync,mkdirSync,rmSync} from 'node:fs';
+import {readFileSync,writeFileSync,symlinkSync,renameSync,mkdirSync,mkdtempSync,rmSync} from 'node:fs';
 import {spawn,spawnSync} from 'node:child_process';
 import fs from 'node:fs';
 import {syncBuiltinESMExports} from 'node:module';
@@ -63,6 +67,7 @@ assert.equal(canRecoverConnectorConfig(),true,'canonical state keeps implicit re
 assert.deepEqual(snapshot(original),canonicalBefore,'no predecessor must read canonical state without writes');
 ${scenario === "initial-inherit" ? "inheritConnectorConfig();assert.notEqual(connectorConfigDir(),original,'first installed seed must select without existing lineage');" : ""}
 ${scenario === "no-identity" || scenario === "checkout" || scenario === "desktop" || scenario === "windows" ? `inheritConnectorConfig();assert.equal(connectorConfigDir(),original);assert.throws(()=>retainConnectorConfig(),/installed POSIX/);` : scenario === "linked-prefix" ? `renameSync(join(original,'extensions'),join(original,'foreign'));symlinkSync(join(original,'foreign'),join(original,'extensions'));assert.throws(()=>retainConnectorConfig(),/non-directory/);` : `
+${scenario === "linked-config" ? `const parent=mkdtempSync(join(${JSON.stringify(root)},'replaceable-link-parent-'));symlinkSync(process.env.XDG_CONFIG_HOME,join(parent,'config'));const safe=process.env.XDG_CONFIG_HOME;process.env.XDG_CONFIG_HOME=join(parent,'config');fs.chmodSync(parent,0o777);assert.throws(()=>retainConnectorConfig(),/replaceable-link-parent.*writable/);assert.equal(fs.existsSync(join(original,'installs')),false,'refused link parent publishes no retained state');fs.chmodSync(parent,0o700);process.env.XDG_CONFIG_HOME=safe;` : ""}
 ${scenario === "interrupted-lineage" ? `const rename=fs.renameSync;let publications=0;fs.renameSync=(source,target)=>{if(/(?:selection|current)\\.json$/.test(String(target))&&++publications===2)throw new Error('interrupted second publication');return rename(source,target)};syncBuiltinESMExports();assert.throws(()=>retainConnectorConfig(),/interrupted second publication/);fs.renameSync=rename;syncBuiltinESMExports();const selected=connectorConfigDir();assert.notEqual(selected,original);` : "const selected=retainConnectorConfig();"}
 assert.notEqual(selected,original);
 assert.equal(connectorConfigDir(),selected);

@@ -1,5 +1,30 @@
 # @cotal-ai/workspace
 
+## 0.171.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.171.1
+
+## 0.171.0
+
+### Patch Changes
+
+- 00fcd05: Keep the right project in CLI recovery steps for unreachable brokers, stopped spaces, and missing managers, and keep component health consistent when a broker URL has a trailing slash.
+- 11555a1: Fix Linux daemon installation when an owned group-writable systemd unit directory sits below a private directory that other accounts cannot traverse.
+- 1a51b71: List meshes and save preferences without installing connectors, reject malformed commands and conflicting seed modes before seeding, and direct users with a corrupt extension manifest to `cotal ext seed --repair`.
+- f976f2f: Show the restart step for a stopped local space that stays registered, give equivalent broker URLs the same recovery advice, and allow a named reset of an isolated stopped open space.
+- 58dcdc6: `cotal status` and `cotal ps` now tell you to repair an invalid `.cotal/channels.json` before restarting a stopped local stack.
+- 3cae462: Separate the workspace's persisted identity records into an internal module without changing the package API.
+- Updated dependencies [edd19cc]
+- Updated dependencies [7ff146c]
+- Updated dependencies [725bd24]
+- Updated dependencies [bbea1c9]
+- Updated dependencies [3a01e61]
+- Updated dependencies [67a59e9]
+- Updated dependencies [f2f8058]
+  - @cotal-ai/core@0.171.0
+
 ## 0.170.0
 
 ### Patch Changes

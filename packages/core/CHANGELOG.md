@@ -1,5 +1,26 @@
 # @cotal-ai/core
 
+## 0.171.1
+
+No changes in this release.
+
+## 0.171.0
+
+### Minor Changes
+
+- edd19cc: An agent owner's interactive session can now list an OpenCode 2.x agent's own commands and skills and run one, such as `/review`, which waits for the agent's next idle turn and can be cancelled until it starts, and the broker refuses every other caller.
+  
+  `@cotal-ai/core` advances the `agent` endpoint's cluster to revision 2 with four commands. `commands` lists `{ name, target, description?, inputHint? }` entries or answers `{ supported: false }`. `command` queues one by `{ target, name, args? }` and answers its `{ id }` at once. `command-cancel` cancels a queued command by id, and `command-state` reads whether it is `queued`, `taken` or `started`, was `cancelled`, was `refused` with `not-found`, `failed-precondition` or `unavailable`, or ended `unknown`. The four declare the `owner` authority word only, so an interactive ledger row gets their caller rows, and no grant row can name them. `@cotal-ai/connector-core` adds `openAgentEndpoint`, the one owner of the agent serve, which replaces `openPromptDesk` and serves the prompt desk beside a command lane. Every `MeshAgent` with a user-auth credential opens it, with the connector's `commands` dispatcher or none. A command starts only while no turn runs. At most 8 are queued, with no time bound, stopping the agent refuses every queued one, and the agent remembers the last 32 to end. A connector takes each queued command with `dispatchNextCommand()` when `MeshAgent` emits `command`. An open or static mesh serves nothing yet. `@cotal-ai/connector-opencode` lists `GET /api/command` by name and `GET /api/skill` by id and runs a command through `/command` and a skill through `/prompt`. A first-turn command carries the persona's `system` field as a first message does, though OpenCode 2.2.5 passes it to the model for neither, and right after a command turn, waiting messages go first.
+
+### Patch Changes
+
+- 7ff146c: Codex setup lists its configuration and plugin files in the JSON receipt, status reports disabled plugins, and updates leave read-only Codex configuration unchanged.
+- 725bd24: Move the endpoint's boot durable self-join and its reconcile into an internal module without changing the endpoint API.
+- bbea1c9: Move the endpoint's stream creation and durable provisioning into an internal module without changing the endpoint API.
+- 3a01e61: Internal refactor: the per-profile permission builders now live in their own module. Credential permissions are unchanged.
+- 67a59e9: Restarting a local stack no longer leaves unused manager goal-index consumers, and channel replay windows are saved without surrounding whitespace.
+- f2f8058: Hosted workflow starts include syntax diagnostics in JSON refusals, and simulations reject invalid handoff destinations, nonnumeric clock starts, and duplicate script keys.
+
 ## 0.170.0
 
 ### Minor Changes

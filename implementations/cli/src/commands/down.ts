@@ -673,7 +673,10 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   refuseUncontainedRecords(selected, folderCtx());
   if (args.values.yes !== true) {
     const target = { root: folderCtx().root, space: guarded.space };
-    if (!canPrompt()) throw new ConfirmationRequired(yesRequired("stopping the whole local stack", false), { target, remedy: `run \`${displayCmd()} down --yes\` to stop it; \`${displayCmd()} down --dry-run\` shows its local records` });
+    if (!canPrompt()) {
+      const command = `${displayCmd()} down${values["with-agents"] ? " --with-agents" : ""}`;
+      throw new ConfirmationRequired(yesRequired("stopping the whole local stack", false), { target, remedy: `run \`${command} --yes\` to stop it. \`${command} --dry-run\` shows its local records` });
+    }
     const records = () => selected.map((component) => {
       const path = localProcessPath(component.pidFile, folderCtx());
       return { path, recorded: processRecorded(component, folderCtx()), pid: readContainedRecord(target.root, path), identity: readContainedRecord(target.root, `${path}.identity`) };

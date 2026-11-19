@@ -213,7 +213,10 @@ async function extSeedGate(registry: Registry, argv: string[], configFolder: Con
     return true;
   }
   if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);
-  await extCmd.run(parseCommandArgs(extCmd, stripGlobalFlags(argv.slice(1), leading, extCmd)));
+  const parsed = parseCommandArgs(extCmd, stripGlobalFlags(argv.slice(1), leading, extCmd));
+  extCmd.validate?.(parsed);
+  recoverExtensionPromotion();
+  await extCmd.run(parsed);
   return true;
 }
 
@@ -233,6 +236,8 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (name === "logout") return true; // signing out does not install a connector, and a seed refusal must not keep the cached login
   if (name === "sync") return true; // refreshing account catalogs does not install connectors
   if (name === "use" && sub === undefined) return true; // bare `use` shows the selection: a read
+  if (name === "meshes" && (sub === undefined || sub === "list")) return true;
+  if (name === "config" && sub === "set") return true; // saving a preference does not require installing connectors
   // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
   // mutation of the operator-global seed store, manifest and npm prefix — it ran BEFORE the command
   // body could reject the invocation, so `down --preserve-state --dry-run` (an unsupported
@@ -627,8 +632,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const configFolder = globalConfigDirProblem();
   if (opts.extensions && !updateCheck) {
     try {
-      recoverExtensionPromotion();
       if (await extSeedGate(registry, argv, configFolder, leadingGlobals)) return;
+      recoverExtensionPromotion();
     } catch (e) {
       seedRefusal(e);
       process.exit(1);

@@ -21,8 +21,9 @@ export function installUpdateNotice(argv: readonly string[], current: string): v
       child.unref();
     }
     const recovery = readUpdateRecovery();
+    const decision = recovery && recoveryDisposition(recovery);
     const remedy = existsSync(fileURLToPath(new URL("../desktop-runtime.json", import.meta.url))) ? "Update the desktop app with its signed platform installer." : "Run `cotal update --self`.";
-    const message = recovery ? `Cotal update needs repair (installed ${recovery.installed}, previous ${recovery.previous}). ${recoveryDisposition(recovery).instruction}` : cached?.latest && newerUpdate(cached.latest, current) ? `Cotal update available: ${current} -> ${cached.latest}. ${remedy}` : undefined;
+    const message = recovery && decision ? (decision.action === "active" ? decision.instruction : `Cotal update needs repair (installed ${recovery.installed}, previous ${recovery.previous}). ${decision.instruction}`) : cached?.latest && newerUpdate(cached.latest, current) ? `Cotal update available: ${current} -> ${cached.latest}. ${remedy}` : undefined;
     if (message) process.once("exit", () => process.stderr.write(`${message}\n`));
   } catch { /* Optional notice state cannot make a working command fail. */ }
 }

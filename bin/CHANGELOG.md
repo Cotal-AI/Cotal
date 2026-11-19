@@ -1,5 +1,78 @@
 # cotal-ai
 
+## 0.171.1
+
+### Patch Changes
+
+- d22042f: The shell installer now configures PATH even when a startup file already contains a comment about Cotal. It preserves existing comments and shows the export command when matching PATH lines may not have run.
+- Updated dependencies [0eed499]
+- Updated dependencies [a9ac959]
+- Updated dependencies [6f43df3]
+- Updated dependencies [1a98542]
+  - @cotal-ai/connector-core@0.171.1
+  - @cotal-ai/cli@0.171.1
+  - @cotal-ai/manager@0.171.1
+  - @cotal-ai/auth@0.171.1
+  - @cotal-ai/delivery@0.171.1
+  - @cotal-ai/registry@0.171.1
+  - @cotal-ai/runtime@0.171.1
+  - @cotal-ai/core@0.171.1
+  - @cotal-ai/seat@0.171.1
+  - @cotal-ai/workspace@0.171.1
+
+## 0.171.0
+
+### Patch Changes
+
+- 7e9479a: Clarify how to identify the broker executable, answer or resume a workflow, preview a team without its applications, and interpret the dashboard credential in `doctor auth`.
+- cd3abfe: Reject malformed space names in daemon status, report unregistered spaces when connecting, and keep nonexistent Managers out of status after disconnect.
+- 7c08ef8: Keep shell installs working when the system Node executable is upgraded, explain how to reinstall npm copies after a Node upgrade, and document curl-free and noncolliding install options.
+- 93f3e6f: Let manual self-updates on Linux restart a prepared machine daemon, and let future daemons give a slow version probe more time on retry.
+- 11555a1: Fix Linux daemon installation when an owned group-writable systemd unit directory sits below a private directory that other accounts cannot traverse.
+- 45df48a: On Windows, daemon installation now gives the initial Task Scheduler lookup up to 60 seconds to finish before refusing.
+- Updated dependencies [a75caff]
+- Updated dependencies [c0b8868]
+- Updated dependencies [edd19cc]
+- Updated dependencies [7e9479a]
+- Updated dependencies [4926192]
+- Updated dependencies [185310f]
+- Updated dependencies [7ff146c]
+- Updated dependencies [3b8a019]
+- Updated dependencies [725bd24]
+- Updated dependencies [bbea1c9]
+- Updated dependencies [3a01e61]
+- Updated dependencies [7c08ef8]
+- Updated dependencies [b6dcffa]
+- Updated dependencies [93dc933]
+- Updated dependencies [16a50e3]
+- Updated dependencies [096501f]
+- Updated dependencies [a4fa66d]
+- Updated dependencies [62ee06a]
+- Updated dependencies [2aec2ee]
+- Updated dependencies [5e915d4]
+- Updated dependencies [00fcd05]
+- Updated dependencies [11555a1]
+- Updated dependencies [67a59e9]
+- Updated dependencies [1a51b71]
+- Updated dependencies [4303dc5]
+- Updated dependencies [f2f8058]
+- Updated dependencies [95f1f36]
+- Updated dependencies [18044e7]
+- Updated dependencies [1303e3f]
+- Updated dependencies [f976f2f]
+- Updated dependencies [58dcdc6]
+- Updated dependencies [3cae462]
+  - @cotal-ai/cli@0.171.0
+  - @cotal-ai/core@0.171.0
+  - @cotal-ai/connector-core@0.171.0
+  - @cotal-ai/manager@0.171.0
+  - @cotal-ai/delivery@0.171.0
+  - @cotal-ai/workspace@0.171.0
+  - @cotal-ai/runtime@0.171.0
+  - @cotal-ai/auth@0.171.0
+  - @cotal-ai/registry@0.171.0
+  - @cotal-ai/seat@0.171.0
+
 ## 0.170.0
 
 ### Patch Changes

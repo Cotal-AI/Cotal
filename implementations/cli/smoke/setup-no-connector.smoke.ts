@@ -57,7 +57,14 @@ check("nothing was written to the project", !existsSync(join(project, ".cotal"))
 const seededEnv = { ...env, COTAL_SKIP_CONNECTOR_SEED: "0", COTAL_ALLOW_CHECKOUT_SEED: "1" };
 const command = (...args: string[]) => spawnSync(process.execPath, [BIN, ...args], { cwd: project, env: seededEnv, encoding: "utf8", timeout: 180_000 });
 check("seed the built-ins", command("ext", "seed").status === 0);
-for (const pkg of ["connector-claude-code", "connector-opencode", "connector-codex", "connector-hermes", "connector-jcode", "pi"]) {
+const removedClaude = command("ext", "remove", "@cotal-ai/connector-claude-code");
+check("remove connector-claude-code", removedClaude.status === 0, removedClaude.stderr);
+const withSiblings = setup("claude", seededEnv);
+check("setup names the missing Claude package when other connectors remain installed",
+  withSiblings.status === 2 && withSiblings.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE"
+    && withSiblings.envelope.error.remedy === "run `cotal ext add @cotal-ai/connector-claude-code`"
+    && !existsSync(join(project, ".cotal")), shown(withSiblings));
+for (const pkg of ["connector-opencode", "connector-codex", "connector-hermes", "connector-jcode", "pi"]) {
   const removed = command("ext", "remove", `@cotal-ai/${pkg}`);
   check(`remove ${pkg}`, removed.status === 0, removed.stderr);
 }

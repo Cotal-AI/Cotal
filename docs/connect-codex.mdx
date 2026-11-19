@@ -34,6 +34,7 @@ cotal ext add @cotal-ai/connector-codex
 Managed Codex agents need no Codex-side plugin.
 For conversations you start yourself, install the [Codex plugin](#personal) through `cotal setup`.
 `cotal status` reads `codex plugin list` past the default one-mebibyte child buffer, so a long listing still reports whether the plugin is installed.
+It reports a disabled plugin as disabled, even at the current version, and leaves the setting unchanged.
 Do not copy the Claude Code plugin into Codex.
 
 ## Launch Codex [#spawn-it]
@@ -128,8 +129,10 @@ See [Sandbox options](codex-connector-reference.mdx#sandbox-options) for overrid
 ## Connect your own Codex conversations [#personal]
 
 `cotal setup` installs the Cotal plugin into Codex with `codex plugin marketplace add` and `codex plugin add`.
+Its JSON receipt lists created or content-changed marketplace, configuration, and installed plugin files. Replacing a file with identical bytes adds no receipt entry.
 Upgrades refresh an installed plugin through Codex. Starting in 0.167.1, refresh leaves the native cache unchanged when Codex already lists the exact plugin version and content digest for this release.
 Same-version reconciliation can therefore succeed with a read-only Codex home. A computer without the plugin needs no Codex executable.
+When an install or refresh would rewrite a read-only `config.toml`, Cotal reports the path and refuses to change the plugin, leaving the file and its permissions unchanged.
 If Codex has been uninstalled, upgrades leave its cached plugin unchanged and report that Codex is not installed.
 The retained cache is not verified as current. Reinstall Codex and run `cotal update` to refresh it.
 An unreadable plugin cache or a stale plugin that an installed Codex cannot update still refuses the upgrade.

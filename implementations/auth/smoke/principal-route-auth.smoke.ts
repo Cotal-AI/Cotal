@@ -252,6 +252,10 @@ function testAgent(ep: CotalEndpoint, w: Who): TestAgent {
       await ep.setPromptsPresence({ open: 1, seq: agent.seq });
       return { state: p.state };
     } },
+    { command: "commands", contract: AGENT_CONTRACTS.commands, handler: () => ({ supported: false }) },
+    { command: "command", contract: AGENT_CONTRACTS.command, handler: () => { throw new EpEnvelopeError("unimplemented", "this test agent runs no commands", undefined, "not-executed"); } },
+    ...(["command-cancel", "command-state"] as const).map((command) => ({ command, contract: AGENT_CONTRACTS[command],
+      handler: () => { throw new EpEnvelopeError("not-found", "this test agent queues no commands", undefined, "not-executed"); } })),
   ];
   agent.serve = ep.servePrincipal({ handlers });
   return agent;
@@ -350,7 +354,7 @@ try {
   check("cell 1: describe answers the fixed cluster inline, public, under the agent's owner",
     answer?.public === true && answer.descriptor.endpoint === "agent" && answer.descriptor.owner === A
     && answer.descriptor.clusters[0].digest === agentClusterArtifacts().closureDigest
-    && JSON.stringify(answer.descriptor.clusters[0].commands) === JSON.stringify(["prompts", "prompt", "prompt-answer"]), describe);
+    && JSON.stringify(answer.descriptor.clusters[0].commands) === JSON.stringify(["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state"]), describe);
   check("cell 1: the agent's handlers saw three requests, each under the owner word from alice.web's triple",
     coder.calls.length === 3 && coder.calls.every((c) => c.authority === "owner" && c.caller === `${A}.web.${W.web.uid}`), coder.calls);
   await until(() => webEp.getRoster().find((p) => p.card.id === `${A}.coder`)?.prompts?.seq === coder.seq, 8000);
@@ -806,7 +810,7 @@ try {
   }
 
   // ── cell 30: stopping the endpoint ends its principal serve ──
-  const stubHandlers = (prompts?: EpPrincipalCommandDef["handler"]): EpPrincipalCommandDef[] => (["prompts", "prompt", "prompt-answer"] as const).map((command) => ({
+  const stubHandlers = (prompts?: EpPrincipalCommandDef["handler"]): EpPrincipalCommandDef[] => (["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state"] as const).map((command) => ({
     command, contract: AGENT_CONTRACTS[command],
     handler: command === "prompts" && prompts ? prompts : (ctx) => ({ runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] }),
   }));
@@ -975,19 +979,17 @@ try {
     check("this caller, an agent that serves nothing on the route: unavailable, not-executed", !older.ok && codeOf(older.error) === "unavailable/not-executed", older);
     const oldCaller = await settle(call(oldWebEp, coderAt, "prompts", "owner", {}));
     check("a caller minted before the rows: permission-denied, not-executed", !oldCaller.ok && codeOf(oldCaller.error) === "permission-denied/not-executed", oldCaller);
-    // A later revision: the caller pins digests this agent does not serve, learns the revision it
-    // does from describe, verifies it against its embedded artifacts, and calls revision 1.
-    const rev2 = { input: AGENT_CONTRACTS.prompts.input, output: compileContract({ root: { type: "object", properties: { runtime: {}, seq: {}, open: {}, closed: {}, interrupted: {} } } }) };
-    const pinned = await webEp.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: coderAt, command: "prompts", authority: "owner", args: {}, deadlineMs: 4000, contract: rev2 });
-    check("a revision-2 caller and a revision-1 agent: contract-mismatch, not-executed", !pinned.ok && pinned.error.code === "contract-mismatch" && pinned.error.outcome === "not-executed", pinned);
+    const laterContract = { input: AGENT_CONTRACTS.prompts.input, output: compileContract({ root: { type: "object", properties: { runtime: {}, seq: {}, open: {}, closed: {}, interrupted: {} } } }) };
+    const pinned = await webEp.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: coderAt, command: "prompts", authority: "owner", args: {}, deadlineMs: 4000, contract: laterContract });
+    check("a revision-3 caller and a revision-2 agent: contract-mismatch, not-executed", !pinned.ok && pinned.error.code === "contract-mismatch" && pinned.error.outcome === "not-executed", pinned);
     const d = await call(webEp, coderAt, "describe", "owner");
     const doc = d.ok ? (d.data as DescribeAnswer).descriptor.clusters[0] : undefined;
     const parsed = doc?.document ? parseClusterDocument(doc.document) : undefined;
-    check("then describe: the agent serves revision 1, and the document matches the caller's embedded artifacts",
-      parsed?.revision === 1 && doc?.digest === agentClusterArtifacts().closureDigest
+    check("then describe: the agent serves revision 2, and the document matches the caller's embedded artifacts",
+      parsed?.revision === 2 && doc?.digest === agentClusterArtifacts().closureDigest
       && parsed.commands.every((c) => c.inputDigest === AGENT_CONTRACTS[c.name].input.closureDigest && c.outputDigest === AGENT_CONTRACTS[c.name].output.closureDigest), d);
-    const rev1 = await call(webEp, coderAt, "prompts", "owner", {});
-    check("then revision 1 answers", rev1.ok, rev1);
+    const current = await call(webEp, coderAt, "prompts", "owner", {});
+    check("then revision 2 answers", current.ok, current);
   }
 
   // ── a reconnect that rebinds ──

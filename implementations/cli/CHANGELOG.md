@@ -1,5 +1,52 @@
 # @cotal-ai/cli
 
+## 0.171.1
+
+### Patch Changes
+
+- 6f43df3: Channel details and watch output suggest history reads that work even for channels named `clear` or `limit`. The suggested commands quote the `#channel` argument so it stays distinct from a history subcommand.
+- @cotal-ai/core@0.171.1
+  - @cotal-ai/workspace@0.171.1
+
+## 0.171.0
+
+### Patch Changes
+
+- a75caff: Mark endpoint work commands as unavailable, hide the web-only `--no-open` option from manager start help, and preserve `ps --slots` in manager selector errors.
+- c0b8868: History reports older direct messages only when the read finds an omission, and live follow honors time-based `--since` cutoffs.
+- 7e9479a: Clarify how to identify the broker executable, answer or resume a workflow, preview a team without its applications, and interpret the dashboard credential in `doctor auth`.
+- 4926192: Reject an empty setup project, mark forced legacy mesh registrations as unchecked, and refuse unsafe credential output paths without creating directories.
+- 185310f: Report an empty `spawn --resume` as a usage error in both launches and previews, exit `join` cleanly when `/quit` is pasted after a status command, and stop the plain console without a false broker outage warning.
+- 7ff146c: Codex setup lists its configuration and plugin files in the JSON receipt, status reports disabled plugins, and updates leave read-only Codex configuration unchanged.
+- 7c08ef8: Keep shell installs working when the system Node executable is upgraded, explain how to reinstall npm copies after a Node upgrade, and document curl-free and noncolliding install options.
+- b6dcffa: Local cleanup refusals tell you to remove only the unsupported mesh flags and their values, so a retry keeps options such as `--force`, `--dry-run` and `--store-dir`.
+- 93dc933: Configure-only setup no longer needs a runnable NATS server, setup names the install command for a missing built-in connector, and slow connector setup no longer expires the broker startup credential.
+- 2aec2ee: Report missing member records in `cotal status` when a live stack's journal does not name its launching Cotal home, even if the current home has prepared a space in that folder.
+- 5e915d4: Reject persona imports with invalid UTF-8 and keep the requested space or server in the edit and removal commands shown when a persona already exists.
+- 00fcd05: Keep the right project in CLI recovery steps for unreachable brokers, stopped spaces, and missing managers, and keep component health consistent when a broker URL has a trailing slash.
+- 11555a1: Fix Linux daemon installation when an owned group-writable systemd unit directory sits below a private directory that other accounts cannot traverse.
+- 67a59e9: Restarting a local stack no longer leaves unused manager goal-index consumers, and channel replay windows are saved without surrounding whitespace.
+- 1a51b71: List meshes and save preferences without installing connectors, reject malformed commands and conflicting seed modes before seeding, and direct users with a corrupt extension manifest to `cotal ext seed --repair`.
+- 4303dc5: Keep foreground service stop receipts intact and reject unsupported preset start options in dry runs before saving the definition.
+- 1303e3f: Make `space show` explain explicit selections and give working recovery commands for renamed stopped projects.
+- f976f2f: Show the restart step for a stopped local space that stays registered, give equivalent broker URLs the same recovery advice, and allow a named reset of an isolated stopped open space.
+- 58dcdc6: `cotal status` and `cotal ps` now tell you to repair an invalid `.cotal/channels.json` before restarting a stopped local stack.
+- Updated dependencies [edd19cc]
+- Updated dependencies [7ff146c]
+- Updated dependencies [725bd24]
+- Updated dependencies [bbea1c9]
+- Updated dependencies [3a01e61]
+- Updated dependencies [00fcd05]
+- Updated dependencies [11555a1]
+- Updated dependencies [67a59e9]
+- Updated dependencies [1a51b71]
+- Updated dependencies [f2f8058]
+- Updated dependencies [f976f2f]
+- Updated dependencies [58dcdc6]
+- Updated dependencies [3cae462]
+  - @cotal-ai/core@0.171.0
+  - @cotal-ai/workspace@0.171.0
+
 ## 0.170.0
 
 ### Patch Changes

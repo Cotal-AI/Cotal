@@ -236,9 +236,18 @@ for (const [args, usage, foreign] of [
   const listedCommand = `${command} --space widenext`;
   const listed = await at80(["service", "--space", "widenext"]);
   check(`cotal service on 80 columns keeps the ${listedCommand.length}-column exec-endpoint next: command on one line`, created.status === 0 && listed.some((line) => line.trim() === listedCommand), { created: shown(created), listed });
+  // With the broker URL already registered, this complete retry fits with its explicit space.
+  const shortRoot = join(home, "short-next");
+  mkdirSync(shortRoot, { mode: 0o700 });
+  const registered = run(["space", "add", "w", "--root", shortRoot, "--mode", "open", "--server", "nats://127.0.0.1:4222", "--force", "--yes", "--json"]);
+  const shortCommand = "cotal service add b --preset broker --config <file> --binary <file> --space w";
   for (const flags of [[], ["--plain"]]) {
     const refused = await at80(["service", "add", "myep", "--preset", "exec-endpoint", "--space", "widenext", ...flags]);
-    check(`the service add refusal on 80 columns${flags.length ? " under --plain" : ""} keeps its remedy command on one line`, refused.some((line) => line.trim() === command.replace("<name>", "myep")), refused.slice(0, 16));
+    const short = await at80(["service", "add", "b", "--preset", "broker", "--space", "w", ...flags]);
+    check(`the service add refusal on 80 columns${flags.length ? " under --plain" : ""} keeps its remedy command on one line`,
+      refused.some((line) => line.trim() === listedCommand.replace("<name>", "myep")) && registered.status === 0
+      && short.some((line) => line.trim() === shortCommand && displayWidth(line) <= 80),
+      { refused: refused.slice(0, 16), registered: shown(registered), short: short.slice(0, 16) });
   }
   // A logged-in user with a private runtime directory and no session bus reaches no user manager, so
   // the dry run refuses before it renders a unit. Its Next split the span after `--user`.

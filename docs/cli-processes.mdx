@@ -611,6 +611,8 @@ cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
 On Linux, daemon installation reads its unit directory from the systemd user manager.
+An owned group-writable unit directory can be used when an ancestor owned by you or root denies
+search permission to group and other accounts, such as an owned `.config` directory with mode 0700.
 Shell-quoted home and config paths, including spaces, are decoded without running a shell.
 Relative paths, control characters and malformed quoting are refused.
 
@@ -1076,7 +1078,8 @@ the job loads and at each login, and starts it again whenever it exits. Its outp
 GUI domain that does not answer refuses `TARGET_UNAVAILABLE`, and so does running it as root.
 `uninstall` boots the job out and removes the plist.
 
-On Windows it is a scheduled task. It writes the task definition to `service-task.xml` in the
+On Windows it is a scheduled task. Installation waits up to 60 seconds for Task Scheduler to
+confirm that the task name is unused. It writes the task definition to `service-task.xml` in the
 daemon's state directory and registers it with `schtasks /Create /XML`, then runs it. The stock CLI
 task starts the packaged `daemon-native.js` entry, which marks the native launch before loading
 the CLI. The task starts at this user's logon and runs with the user's own token at least privilege, so no password is
@@ -1253,6 +1256,8 @@ you, SYSTEM or Administrators, and its access list may grant nothing to anyone e
 directory `TARGET_NOT_FOUND`, and a symlinked, foreign or loose one `PERMISSION_DENIED`. Nothing is
 created or repaired. Bash and Zsh completion offer file paths for `--daemon-home`, including
 existing directories; the directory checks still apply when the command runs.
+On Linux, when a foreground daemon is stopped, `daemon status` and `daemon service-connect`
+name the `cotal daemon serve` command for the selected home, including `--daemon-home` if supplied.
 
 `serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. The default daemon holds the
 same lock at `<COTAL_HOME>/daemon/daemon.lock`. A second `serve` for the same daemon refuses

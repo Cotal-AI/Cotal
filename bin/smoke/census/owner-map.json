@@ -1281,6 +1281,7 @@
   "env:COTAL_HERMES_RESUME": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_HERMES_RESUME_HOME": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_HERMES_RESUME_RECORD": "internal:connector plumbing the launcher sets for one harness",
+  "env:COTAL_HERMES_SEAT_HOME": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_HERMES_UV_BIN": "pending:config",
   "env:COTAL_HOME": "pending:config",
   "env:COTAL_HOME_CHANNEL": "internal:seat session variable the launcher writes for a spawned seat",

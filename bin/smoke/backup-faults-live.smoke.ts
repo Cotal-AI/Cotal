@@ -169,6 +169,21 @@ async function backupStageFaultScenario(): Promise<void> {
       }
       const plain = run("backup", "create", join(notFolder, "backup"));
       assert.ok(plain.status === 1 && plain.stderr.includes("ENOTDIR") && !plain.stderr.includes("Usage"), `the path refusal prints no command help\n${plain.stderr}`);
+
+      symlinkSync("self-loop", join(root, "self-loop"));
+      const beforeAttempts = attemptResidue(root).sort();
+      for (const path of [join(root, "self-loop", "backup"), join(loop, "backup")]) {
+        for (const command of [["backup", "inspect", path], ["backup", "verify", path], ["backup", "restore", path], ["up", "--restore", path, "--detach"]]) {
+          const refused = run(...command, "--plain");
+          const output = refused.stdout + refused.stderr;
+          assert.equal(refused.status, 1, `${command.join(" ")} refuses the loop\n${output}`);
+          assert.match(output, /Code:\s+USAGE_INVALID/);
+          assert.ok(output.includes(path) && output.includes("symbolic-link loop (ELOOP)") && output.includes("fix the symbolic link"), output);
+          assert.doesNotMatch(output, /Outcome unconfirmed|cotal status/);
+        }
+      }
+      assert.equal(createHash("sha256").update(readFileSync(journal)).digest("hex"), prior, "looped artifact paths leave the preservation journal unchanged");
+      assert.deepEqual(attemptResidue(root).sort(), beforeAttempts, "looped artifact paths leave no restore attempt");
     }
     for (const [path, missing] of [[nowhere, "folder"], [join(root, "no-such-artifact"), "artifact"]] as const) {
       const restore = run("backup", "restore", path, "--json");

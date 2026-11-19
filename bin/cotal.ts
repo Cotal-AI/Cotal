@@ -32,8 +32,9 @@ export function ensureSupportedNode(): void {
       `Re-run the installer to repin it:\n  curl -fsSL https://get.cotal.ai | sh\n\n` +
       `Or stop depending on the system Node altogether:\n  curl -fsSL https://get.cotal.ai | sh -s -- --vendor-node\n\n`
     : `Install a newer Node (https://nodejs.org). With nvm:\n  nvm install ${MIN_NODE} && nvm use ${MIN_NODE}\n\n` +
-      `If you already ran cotal once under the old Node, also clear the npx cache so the bundled\n` +
-      `nats-server is fetched cleanly, then retry:\n  rm -rf ~/.npm/_npx        # or: npx clear-npx-cache\n\n` +
+      `If you installed Cotal globally with npm, reinstall it with the newer Node to fetch the bundled broker:\n` +
+      `  npm install -g cotal-ai\n\n` +
+      `If you use npx, clear its cache instead, then rerun your npx command:\n  rm -rf ~/.npm/_npx\n\n` +
       `Or let the installer manage the runtime for you:\n  curl -fsSL https://get.cotal.ai | sh\n\n`;
   process.stderr.write(`\ncotal-ai requires Node.js >= ${MIN_NODE}, but this is ${process.version}.\n` +
     `Below Node ${MIN_MAJOR}, npm silently skips the bundled nats-server broker and the CLI's UI\n` +

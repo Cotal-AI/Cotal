@@ -124,7 +124,9 @@ refuses `TARGET_NOT_FOUND` (exit 2), naming it and saying whether it is a file, 
 a folder with other files. The folder of a create in this root that was
 interrupted before it wrote a file is still an incomplete artifact. A path that names nothing refuses
 `TARGET_NOT_FOUND` (exit 2) and says in `missing` whether its folder or the artifact is missing, as
-`backup restore` does. A full artifact of an authenticated space
+`backup restore` does. A path through a symbolic-link loop refuses `USAGE_INVALID` (exit 1) before
+the artifact is read or a restore attempt is staged. Fix the link or use a path that avoids it.
+A full artifact of an authenticated space
 restores only into a root that still holds the trust state it was taken under, so it cannot move to
 another machine or a fresh root. `backup create`, `backup inspect` and `backup verify` say so in a
 `Restores into` row, and their JSON carries `trustBound`. A registry restore does not check the trust

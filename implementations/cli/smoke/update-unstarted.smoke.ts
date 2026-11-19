@@ -70,10 +70,11 @@ try {
     assert.equal(await readManagerContinuity({ space: target.space }), "none", "a named completed-down controller has no running custody");
     setCurrent(target.space);
     assert.equal(await readManagerContinuity({}), "none", "an in-folder selected completed-down controller has no running custody");
-    await assert.rejects(readManagerContinuity({ space: target.space, server: target.server }), "an explicit server never takes the stopped-controller shortcut");
+    await assert.rejects(readManagerContinuity({ space: target.space, server: `tls://127.0.0.1:${address.port}` }), "a different broker URL cannot borrow the stopped-controller proof");
     await assert.rejects(readManagerContinuity({ space: target.space, creds: join(root, "missing.creds") }), "explicit credentials never take the shortcut");
     await new Promise<void>((resolve, reject) => { listener.once("error", reject); listener.listen(address.port, "127.0.0.1", resolve); });
     await assert.rejects(readManagerContinuity({ space: target.space }), "a listener at the stopped controller address blocks update");
+    await assert.rejects(readManagerContinuity({ space: target.space, server: target.server }), "a matching flag still requires the recorded endpoint to be unreachable");
     await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
     snapshot = writeStackJournal(root, snapshot, { ...journal, operation: { ...journal.operation, phase: "applying" } });
     await assert.rejects(readManagerContinuity({ space: target.space }), "an unfinished down cannot claim cold-update eligibility");
@@ -93,6 +94,8 @@ try {
     writeStackJournal(root, snapshot, journal);
     process.chdir(cwd);
     assert.equal(await readManagerContinuity({ space: target.space }), "none", "a named stopped controller is eligible from another folder");
+    assert.equal(await readManagerContinuity({ space: target.space, server: target.server }), "none", "the recorded broker URL is eligible from another folder");
+    assert.equal(await readManagerContinuity({ space: target.space, server: `${target.server}/` }), "none", "harmless URL spelling still selects the recorded broker");
   } finally { process.chdir(cwd); }
   // Native sudo regression: the controller journal belongs to a different account, and
   // its member records are not in the updater's home. Run this cell on the root test machine.

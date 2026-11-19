@@ -105,8 +105,8 @@ async function runCase(mode: "open" | "auth", manifest = false) {
     const prepared = cliRun("space", "create", "logrot", "--root", root);
     check("space preparation succeeds", prepared.status === 0, { stdout: prepared.stdout, stderr: prepared.stderr });
     const file = join(root, "cotal.yaml");
-    if (manifest) writeFileSync(file, `apiVersion: cotal/v1\nkind: Mesh\nspace: logrot\nbroker:\n  auth: ${mode !== "open"}\n  servers: ${server}\n  logFile: ${JSON.stringify(logFile)}\n  logfileSizeLimit: 2048\n  logfileMaxNum: 3\nchannels: {}\nagents: {}\n`);
-    const restartArgs = manifest ? ["-f", file] : [];
+    if (manifest) writeFileSync(file, `apiVersion: cotal/v1\nkind: Mesh\nspace: logrot\nbroker:\n  auth: ${mode !== "open"}\n  servers: ${server}\n  logFile: ./logs/broker.log\nchannels: {}\nagents: {}\n`);
+    const restartArgs = manifest ? ["-f", file, "--logfile-size-limit", "2048", "--logfile-max-num", "3"] : [];
     if (!manifest) {
       const withoutLog = cliRun("up", "--no-manager", "--server", server, ...(mode === "open" ? ["--open"] : []));
       check(`${label} initial start without native logging succeeds`, withoutLog.status === 0, withoutLog.stderr);

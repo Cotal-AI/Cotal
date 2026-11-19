@@ -12,8 +12,8 @@ import {
   readPidfile, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
   type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, type ManagerSpareSeats, type ProcessIdentityRecord,
-  type ProcessRecord, type ProcessRecordState,
-  parsePositiveIntegerFlag, verifyIdentityPin, writePidPair,
+  type ProcessRecord, type ProcessRecordState, type SeatCap,
+  parsePositiveIntegerFlag, seatCapText, verifyIdentityPin, writePidPair,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { stopLocalProcess } from "./local-process-stop.js";
@@ -313,6 +313,7 @@ export type ManagerStartOpts = {
   wsPort?: number;
   /** Live-session ceiling forwarded as `supervise --max-sessions`. */
   maxSessions?: number;
+  managerSeatCap?: SeatCap;
 };
 
 export function startManagerDetached(
@@ -359,6 +360,7 @@ export function startManagerDetached(
     // P2 item 6: the broker ws listener port (loopback) for the console session client's wsUrl.
     ...(o.wsPort !== undefined ? ["--ws-port", String(o.wsPort)] : []),
     ...(o.maxSessions !== undefined ? ["--max-sessions", String(o.maxSessions)] : []),
+    ...(o.managerSeatCap !== undefined ? ["--seat-cap", seatCapText(o.managerSeatCap)] : []),
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).

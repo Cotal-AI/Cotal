@@ -57,6 +57,7 @@ import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { mkdirPrivate } from "../lib/private-directory.js";
+import { removeStep } from "../lib/registry-errors.js";
 import { adoptionRefusal, adoptStackJournal, journalRecordedElsewhere, releaseStackDefinitions, runningStackRoles, stackRootGone } from "../lib/stack-journal.js";
 import { pruneEmptyServiceSpace } from "../lib/service-process.js";
 import {
@@ -600,7 +601,9 @@ function createdView(r: SpaceCreated): Report {
  * is forgotten the same way, and the `.cotal/` folder `space create` made stays. The stopped stack
  * definitions saved for the space at its root are removed with it, so the name can start elsewhere;
  * any that cannot be removed are kept and the result warns about them. Other services saved under
- * the name stay for a later space of that name, and the result names them.
+ * the name stay for a later space of that name, and the result names them. Only recovery of the
+ * named space's damaged registration can proceed while another registration is damaged. The
+ * result warns about any damaged registrations it leaves behind.
  */
 export async function spaceForget(rest: readonly string[], presentation: Presentation): Promise<void> {
   if (rest.length !== 1) throw usage("usage: cotal space forget <name>");
@@ -612,8 +615,11 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   const legacy = encodeURIComponent(name);
   const damaged = registry.unusable.filter((e) => e.file === meshFile(name)
     || !/^space\.[0-9a-f]+$/.test(legacy) && e.file === join(homeCotalDir(), "meshes", `${legacy}.json`));
-  const unrelated = registry.unusable.find((e) => !damaged.includes(e));
-  if (unrelated) throw unrelated;
+  const unrelated = registry.unusable.filter((e) => !damaged.includes(e));
+  // Only the recovery offered for an exact damaged registration bypasses other damaged records.
+  if (damaged.length === 0 && unrelated[0]) throw unrelated[0];
+  const damagedWarnings: OutputWarning[] = unrelated.map((error) =>
+    ({ code: "MESH_REGISTRY_DAMAGED", target: { file: error.file }, message: `mesh registry file ${error.file} is still damaged: ${removeStep(error.file)}` }));
   const removeDamaged = () => { for (const error of damaged) rmSync(error.file, { force: true }); };
   const m = registry.entries.find((entry) => entry.space === name);
   if (!m) {
@@ -628,13 +634,13 @@ export async function spaceForget(rest: readonly string[], presentation: Present
       if (!isMeshRegistryError(e) || preparedRecordSpace(e.file) !== name) throw e;
       removeDamaged();
       removePreparedSpace(name);
-      return forgotten(presentation, { space: name, server: null, root: null, origin: "prepared", releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision);
+      return forgotten(presentation, { space: name, server: null, root: null, origin: "prepared", releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision, damagedWarnings);
     }
     if (!p) {
       if (!damaged.length) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { requested: name }, "see the registered spaces with `cotal space`");
       removeDamaged();
       removeMesh(name);
-      return forgotten(presentation, { space: name, server: null, root: null, origin: null, releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision);
+      return forgotten(presentation, { space: name, server: null, root: null, origin: null, releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision, damagedWarnings);
     }
     const runningOwner = liveMeshOwner(p.root, name);
     if (runningOwner) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${p.root} (${runningOwner}); nothing was forgotten`, target, `stop it with \`cotal down\` in ${p.root}, then run \`cotal space forget ${name}\` again`);
@@ -642,7 +648,7 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     removeDamaged();
     removeMesh(name);
     removePreparedSpace(name);
-    return forgotten(presentation, { space: name, server: null, root: p.root, origin: "prepared", releasedDefinitions: release.released, keptServices }, preferencesRevision, keptWarnings(name, release.kept));
+    return forgotten(presentation, { space: name, server: null, root: p.root, origin: "prepared", releasedDefinitions: release.released, keptServices }, preferencesRevision, [...damagedWarnings, ...keptWarnings(name, release.kept)]);
   }
   if (m.origin === "catalog")
     throw refuse("CONFLICT", `"${name}" is listed by a signed-in space catalog, so this machine does not own its registration`, target, "it is removed when the catalog no longer lists it and `cotal sync` runs");
@@ -662,29 +668,30 @@ export async function spaceForget(rest: readonly string[], presentation: Present
       : keepsRegistration(m) ? `stop it with \`cotal down\` in ${m.root}, which keeps its record, then run \`cotal space forget ${name}\` again` : `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
     // A deleted folder takes the pidfiles and stack journal that check reads, so a stack left running
     // there shows only in this machine's instance records or at its recorded address (#7325).
-    if (!existsSync(m.root) || goneLegacyRoot(m.space) !== undefined) await refuseGoneFolderStack(m);
+    if (!existsSync(m.root) || goneLegacyRoot(m.space, m) !== undefined) await refuseGoneFolderStack(m, registry.entries);
   }
   const release = releaseStackDefinitions(m.root, name), keptServices = savedServicesLeft(name, release.kept);
   removeDamaged();
   removeMesh(name);
   const warnings = unsettled.map((member) => ({ code: "STACK_MEMBER_UNSETTLED", target, message: `the stack member ${member} is gone but was never stopped cleanly: its record has no stop receipt` }));
-  forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null, releasedDefinitions: release.released, keptServices }, preferencesRevision, [...warnings, ...keptWarnings(name, release.kept)]);
+  forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null, releasedDefinitions: release.released, keptServices }, preferencesRevision, [...damagedWarnings, ...warnings, ...keptWarnings(name, release.kept)]);
 }
 
 /** Refuses to forget a space whose folder is gone while the stack it started there may still run: a
  *  controller stack member its instance records show running, or anything listening at the recorded
  *  broker address that no other registration names. Forgetting it then would leave that broker
  *  holding its port with nothing on this machine naming it. */
-async function refuseGoneFolderStack(m: MeshEntry): Promise<void> {
+async function refuseGoneFolderStack(m: MeshEntry, entries: readonly MeshEntry[]): Promise<void> {
   const target = { space: m.space, root: m.root, server: m.server };
   const gone = `"${m.space}" started in ${m.root}, which no longer exists`;
   const members = stackRootGone(m.space, m.root) ? runningStackRoles(m.space) : [];
   if (members.length) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but its stack's ${members.join(", ")} still ${members.length === 1 ? "runs" : "run"}; nothing was forgotten`, target, `stop it with \`cotal down --space ${m.space} --yes\`, which also drops this record`);
-  if (goneLegacyRoot(m.space) !== undefined) {
-    const retained = goneLegacyMembers(m.space, m.root);
+  if (goneLegacyRoot(m.space, m) !== undefined) {
+    const retained = goneLegacyMembers(m.space, m.root, m);
     if (retained.length) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but its retained stack processes still run (${retained.map((member) => `${member.role}: pid ${member.pid}`).join(", ")}); nothing was forgotten`, target, `stop it with \`cotal down --space ${m.space} --yes\`, which also drops this record`);
   }
-  if (loadMeshes().some((other) => other.space !== m.space && other.server === m.server)) return;
+  // A damaged record names no server, so only the usable records can name this broker address.
+  if (entries.some((other) => other.space !== m.space && other.server === m.server)) return;
   const address = await listenerAt(m.server);
   if (address) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but something still listens at ${m.server}, its recorded broker address, so the broker it started may still run; nothing was forgotten`, target, `stop the process listening on ${address}, then run \`cotal space forget ${m.space}\` again`);
 }

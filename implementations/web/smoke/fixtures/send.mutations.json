@@ -32,7 +32,7 @@
     },
     {
       "name": "S4 the send route is left out of the body routes, so the pre-dispatch guard refuses every post as a body the route does not take",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-request.ts",
       "find": "const BODY_ROUTES = new Set([\"/api/channel/delete\", \"/api/send\"]);",
       "replace": "const BODY_ROUTES = new Set([\"/api/channel/delete\"]);",
       "expectRed": "2.1 a channel post answers 200 and reaches the subscriber from the operator",

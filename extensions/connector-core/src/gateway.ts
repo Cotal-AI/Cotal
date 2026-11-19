@@ -23,7 +23,7 @@ import { McpError, ErrorCode, type ToolAnnotations } from "@modelcontextprotocol
 import { z } from "zod";
 import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
-import { cotalToolSpecs, orientationCard, parseToolArgs, PATTERN_SEND_HELP, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
+import { connectionNotReadyWarning, cotalToolSpecs, orientationCard, parseToolArgs, PATTERN_SEND_HELP, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
 import { briefing } from "./briefing.js";
 import type { MeshAgent, NativeTurnParticipationLease } from "./agent.js";
 import type { AgentConfig } from "./config.js";
@@ -696,7 +696,14 @@ export function registerCotalGatewayTools(
         const woke = await waitForWake(c.agent, limit * 1000, extra.signal);
         if (c.agent.stopping) return refuse(CONNECTION_REQUIRED);
         if (!woke) {
-          return toContent({ text: `No new messages in ${limit} second${limit === 1 ? "" : "s"}. Call cotal_wait again to keep listening.` });
+          const span = `${limit} second${limit === 1 ? "" : "s"}`;
+          // A wait that could not hear from the broker only knows the local buffer, as cotal_inbox says.
+          const notReady = connectionNotReadyWarning(c.agent);
+          return toContent({
+            text: notReady
+              ? `${notReady}\n\nNothing new reached the local buffer in ${span}. Call cotal_wait again to keep listening.`
+              : `No new messages in ${span}. Call cotal_wait again to keep listening.`,
+          });
         }
         try {
           return toContent(await runFor(inbox, c, {}, extra.signal));
