@@ -5,7 +5,6 @@ import {
   authDir,
   brokerCheck,
   canonicalRoot,
-  codeSpan,
   cotalDirLink,
   findCotalRoot,
   findMesh,
@@ -19,7 +18,6 @@ import {
   listSpaceAccounts,
   loadMeshes,
   loadPreparedSpaces,
-  movedRootRemedy,
   noteFolderSpace,
   noteFolderSpaceShown,
   plainFlag,
@@ -27,6 +25,7 @@ import {
   presentationOf,
   readCurrentSelection,
   recordOperationSpaceNote,
+  stackElsewhereRemedy,
   stackJournalRoot,
   writeResult,
   type Cell,
@@ -221,9 +220,9 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
       const journal = !existsSync(p.root) && stackJournalRoot(project) === p.root && cotalDirLink(project) === undefined
         ? journalRecordedElsewhere(project)?.journal : undefined;
       const moved = journal?.space === p.space ? project : undefined;
-      const canAdoptAfterForget = journal?.space === p.space && journal.operation.kind === "down" && journal.operation.phase === "completed";
+      const remedy = journal?.space === p.space ? stackElsewhereRemedy(project, p.root, p.space, journal.members, journal.operation) : undefined;
       const result: PreparedDetail = { kind: "prepared-space", ...preparedRow(p, current, moved) };
-      writeResult(presentation, { command: "space", target: { space: p.space }, result }, (row) => preparedView(row, moved, canAdoptAfterForget));
+      writeResult(presentation, { command: "space", target: { space: p.space }, result }, (row) => preparedView(row, remedy));
       return;
     }
     const check: Check = m.origin === "catalog" ? "not-checked" : await brokerCheck(m.server, m.tlsRequired);
@@ -361,13 +360,12 @@ function spacesView(result: SpacesResult): Report {
   };
 }
 
-function preparedView(p: PreparedDetail, moved: string | undefined, canAdoptAfterForget: boolean): Report {
+function preparedView(p: PreparedDetail, movedRemedy: string | undefined): Report {
   const hints: Cell[] = [];
-  if (moved !== undefined) {
+  if (movedRemedy !== undefined) {
     hints.push(
       { text: `this folder holds the stack journal of "${p.space}" and was moved from ${p.root}`, tone: "waiting" },
-      { text: movedRootRemedy(p.root), tone: "hint" });
-    if (canAdoptAfterForget) hints.push({ text: `to keep this location, run \`cotal space forget ${p.space}\`, then ${codeSpan(`cotal space create ${p.space} --adopt --root ${shellWord(moved)}`)}`, tone: "hint" });
+      { text: movedRemedy, tone: "hint" });
   } else if (p.rootMissing) {
     hints.push({ text: `prepared in ${p.root}, which no longer exists`, tone: "waiting" }, { text: `forget it with \`cotal space forget ${p.space}\`, then prepare it again with \`cotal space create ${p.space} --root <dir>\``, tone: "hint" });
   } else if (p.state === "unsettled") {

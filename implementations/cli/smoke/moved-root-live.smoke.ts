@@ -2,7 +2,7 @@
  * Run: pnpm smoke:moved-root:live
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, renameSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -44,6 +44,12 @@ try {
   renameSync(root, moved);
   const inside = json(moved, "status", "--space", space);
   check("inside the renamed folder, the existing moved-folder diagnosis remains", inside.envelope.result?.selected?.code === "moved-folder" && inside.envelope.result.selected.message?.includes(root) === true);
+  const liveUp = cli(moved, "up", "--plain"), liveStatus = cli(moved, "status", "--plain");
+  check("up and status do not offer forget or adoption while the moved stack runs",
+    liveUp.status === 2 && liveStatus.status === 0 && [liveUp, liveStatus].every((run) => {
+      const output = `${run.stdout}${run.stderr}`;
+      return output.includes(`move this folder back to ${root}`) && !/space forget|--adopt/.test(output);
+    }));
   for (const recreated of [false, true]) {
     if (recreated) mkdirSync(join(root, ".cotal/nats"), { recursive: true });
     const status = json(other, "status", "--space", space);
@@ -130,7 +136,7 @@ for (const open of [false, true]) {
   }
 }
 {
-  const space = "movedstopped", project = join(home, space), renamed = `${project} renamed`;
+  const space = "movedstopped", project = join(home, space), renamed = `${project} renamed`, copy = `${project} copy`;
   mkdirSync(project, { mode: 0o700 });
   check("prepare a project to move after shutdown", cli(project, "space", "create", space).status === 0);
   const up = cli(project, "up", "--open", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`);
@@ -139,13 +145,30 @@ for (const open of [false, true]) {
   const args = ["down", "--space", space, "--yes"];
   assertSmokeSandboxDown(anchor, args, { cwd: project, env });
   if (cli(project, ...args).status !== 0) throw new Error("private stack did not stop");
+  cpSync(project, copy, { recursive: true });
+  const copiedUp = cli(copy, "up", "--plain"), copiedStatus = cli(copy, "status", "--plain");
+  check("a stopped stack's copy does not get either adoption command while the original holds the journal",
+    copiedUp.status === 2 && copiedStatus.status === 0 && [copiedUp, copiedStatus].every((run) => {
+      const output = `${run.stdout}${run.stderr}`;
+      return output.includes(`use the stack from ${project}`) && !/space forget|--adopt/.test(output);
+    }));
   renameSync(project, renamed);
+  const journal = join(renamed, ".cotal", "stack-controller.json");
+  const before = readFileSync(journal);
+  const upMoved = cli(renamed, "up", "--plain"), status = cli(renamed, "status", "--plain");
   const selected = cli(renamed, "use", space, "--plain");
   const show = cli(renamed, "space", "show", space, "--plain");
   check("space show recognizes the stopped stack from its matching moved journal",
-    selected.status === 0 && show.status === 0 && /broker: +stopped/.test(show.stdout) && show.stdout.includes(`was moved from ${project}`) && show.stdout.includes(`move this folder back to ${project}`));
-  check("space show prints the exact forget and adopt commands for the renamed path",
-    show.stdout.includes(`\`cotal space forget ${space}\`, then \`cotal space create ${space} --adopt --root '${renamed}'\``) && !show.stdout.includes("--root <dir>"));
+    selected.status === 0 && show.status === 0 && /broker: +stopped/.test(show.stdout) && show.stdout.includes(`was moved from ${project}`));
+  check("up and status retain their exit codes and leave the moved journal intact",
+    upMoved.status === 2 && `${upMoved.stdout}${upMoved.stderr}`.includes("CONFLICT") && status.status === 0 && readFileSync(journal).equals(before));
+  const recovery = `forget it with \`cotal space forget ${space}\`, then run \`cotal space create ${space} --adopt --root '${renamed}'\``;
+  for (const [command, run] of [["up", upMoved], ["status", status], ["space show", show]] as const) {
+    const output = `${run.stdout}${run.stderr}`;
+    check(`${command} gives both recovery options, quoting the renamed path`, output.includes(`move this folder back to ${project}`) && output.includes(recovery));
+  }
+  const tooSoon = cli(renamed, "space", "create", space, "--adopt", "--root", renamed, "--plain");
+  check("adoption still refuses before forget and does not rewrite the journal", tooSoon.status === 2 && readFileSync(journal).equals(before));
   check("following the printed forget succeeds", cli(renamed, "space", "forget", space, "--plain").status === 0);
   check("following the printed adopt prepares the space in the renamed folder",
     cli(renamed, "space", "create", space, "--adopt", "--root", renamed, "--plain").status === 0 &&

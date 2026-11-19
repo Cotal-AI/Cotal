@@ -96,8 +96,8 @@ function invalid(root: string): never {
 /** A well-formed journal that another folder recorded: this folder's `.cotal` links to that folder's,
  *  or this folder was moved or copied after that stack started there. Its members and instances
  *  belong to that folder, so nothing here uses them. The next step is the one every command there names. */
-function recordedElsewhere(root: string, recordedRoot: string, space: string, members: readonly StackMember[]): never {
-  const link = cotalDirLink(root), remedy = stackElsewhereRemedy(root, recordedRoot, space, members);
+function recordedElsewhere(root: string, recordedRoot: string, space: string, members: readonly StackMember[], operation: unknown): never {
+  const link = cotalDirLink(root), remedy = stackElsewhereRemedy(root, recordedRoot, space, members, operation);
   if (link !== undefined)
     throw new CommandFailure("refused", "CONFLICT", `${join(root, ".cotal")} is a link to ${link}, whose stack journal was recorded at ${recordedRoot}; a controller stack runs only from the folder it started in`, { target: { root, recordedRoot, space, link }, remedy });
   if (recordsMovedTo(recordedRoot, root))
@@ -167,7 +167,7 @@ function validate(input: unknown, root: string): StackJournal {
     const recovery = localRecordObject(value.recovery, ["home", "host"]);
     if (typeof recovery.home !== "string" || !isAbsolute(recovery.home) || typeof recovery.host !== "string" || !/^[0-9a-f]{64}$/.test(recovery.host)) invalid(root);
   }
-  if (value.root !== root) recordedElsewhere(root, value.root as string, value.space as string, members);
+  if (value.root !== root) recordedElsewhere(root, value.root as string, value.space as string, members, operation);
   const { broker: _broker, ...rest } = value as unknown as StackJournal;
   return { ...rest, members, ...(broker ? { broker } : {}), operation: operation as unknown as StackJournal["operation"] };
 }
