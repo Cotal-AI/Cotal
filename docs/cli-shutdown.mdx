@@ -698,10 +698,10 @@ value in its printed force command so it stays one shell argument. A run without
 `USAGE_INVALID` (exit 1) and prints the command to run, keeping `--store-dir` for `store` and `all`
 and `--space`, `--server`, `--creds` and `--dms` for `history`, so that command acts on the same target.
 Only `history` takes `--space` (or `-s`), `--server` or `--creds`. Local cleanup uses the project found
-from the working directory and refuses these flags with `USAGE_INVALID` (exit 1) before inspecting or
-removing project state. If you ran the command from the project you intend to clean, retry from the
-same working directory. Remove only the refused flags and their values. A relative `--store-dir` is
-resolved from the working directory, which can be a subdirectory of the project.
+from the working directory. When local cleanup refuses these flags, it reports `USAGE_INVALID`
+(exit 1) and names the flags to remove. If you ran the command from the project you intend to clean,
+retry from the same working directory and remove only the named flags and their values. A relative
+`--store-dir` is resolved from the working directory, which can be a subdirectory of the project.
 
 - `history` purges the retained message backlog on the **running** broker (channels, plus DMs
   with `--dms`). A stream that is not on the broker is already clear: the command purges the streams
