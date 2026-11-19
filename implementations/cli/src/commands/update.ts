@@ -353,6 +353,13 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       recordUpdateDeferral(rt.version(), `connector configuration preflight: ${preflightDetail(failure)}`);
       throw failure;
     }
+    // Built-in self-update skips the extension overlay. Validate its inventory after recovery, not before.
+    try { loadExtensionsManifest(); }
+    catch (error) {
+      rt.err(c.red(`✗ ${message(error)}`));
+      process.exitCode = 1;
+      return;
+    }
   }
   const restored = await recoverInterruptedUpdate(rt);
   if (restored) {
