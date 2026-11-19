@@ -1261,6 +1261,23 @@ main() {
     exit 0
   fi
 
+  # A recorded service may still run the npm installation after the shell install. Do not
+  # replace its visible command with a launcher for a different package before reconciliation.
+  _daemon_receipt="${COTAL_HOME:-$HOME/.cotal}/daemon/service-unit.json"
+  if [ -L "$BIN_DIR/cotal" ] && { [ -e "$_daemon_receipt" ] || [ -L "$_daemon_receipt" ]; }; then
+    _current_entry=$(resolved_target "$BIN_DIR/cotal") || _current_entry=""
+    _shell_entry=$(resolved_target "$INSTALL_DIR/lib/node_modules/$COTAL_PKG/dist/cotal.js") || _shell_entry=""
+    case "$_current_entry" in
+      */lib/node_modules/"$COTAL_PKG"/dist/cotal.js|*/lib/node_modules/"$COTAL_PKG"/dist/cotal-npm)
+        if [ "${_current_entry%/*}" != "${_shell_entry%/*}" ]; then
+          die "$(shquote "$BIN_DIR/cotal") belongs to an npm installation and a Cotal daemon service is recorded. The launcher was not changed." \
+            "Keep this installation and run $(shquote "$BIN_DIR/cotal") update --self." \
+            "To switch installers, stop your Cotal spaces and uninstall the recorded daemon from its owning installation before running this installer again."
+        fi
+        ;;
+    esac
+  fi
+
   # First write of the run. A read-only or unwritable home is common enough (locked-down
   # images, a misowned $HOME) that it deserves a real message rather than a raw mkdir error.
   if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
