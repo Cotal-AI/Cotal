@@ -96,10 +96,16 @@ function takeGlobalFlag(word: string): boolean {
   return true;
 }
 
-/** Node's unknown-option error, trimmed to its first sentence, with the nearest of `cmd`'s flags. */
-function parseErrorMessage(cmd: Command, e: Error): string {
-  const message = e.message.split(".")[0]!;
-  const option = (e as { code?: string }).code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" ? /^Unknown option '(--[^']+)'/.exec(message)?.[1] : undefined;
+/** Node's parse diagnostic without its own usage guidance, with the nearest flag for a typo. */
+function parseErrorMessage(cmd: Command, error: Error & { code?: string }): string {
+  if (error.code === "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL")
+    return error.message.replace(/\. This command does not take positional arguments$/u, "");
+  if (error.code !== "ERR_PARSE_ARGS_UNKNOWN_OPTION") return error.message.split(".\n", 1)[0]!;
+  // Node includes a JSON-quoted example when positionals are allowed. Strip that guidance
+  // separately so punctuation inside the option name cannot end the diagnostic.
+  const message = cmd.positionals === undefined ? error.message
+    : error.message.replace(/\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "");
+  const option = /^Unknown option '(--.+)'$/su.exec(message)?.[1];
   const hint = option ? didYouMean(option, [...(cmd.flags ?? []).map((flag) => `--${flag.name}`), "--no-color", "--no-input", "--help"]) : "";
   return hint ? `${message} - ${hint}` : message;
 }
@@ -414,10 +420,9 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
   return undefined;
 }
 
-/** A parse error as a refusal. Node's message is trimmed to its first sentence, and the hint its tail
- *  carries is given as the remedy in this CLI's words: a word that starts with `-` goes after `--`,
- *  an option value that starts with `-` is written `--name=value`, and an option given with no value,
- *  last or before another of the command's options, is named with its placeholder. */
+/** A parse error as a refusal. Node's usage guidance becomes a remedy in this CLI's words: a word
+ *  that starts with `-` goes after `--`, a value that starts with `-` is written `--name=value`,
+ *  and an option given without a value is named with its placeholder. */
 function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[]): { message: string; remedy?: string } {
   const message = parseErrorMessage(cmd, error);
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" && cmd.positionals !== undefined)

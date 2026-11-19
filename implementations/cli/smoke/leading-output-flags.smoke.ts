@@ -7,6 +7,8 @@
  * read it as: `cotal --json __complete status` used to hand `__complete` the words `--json status`,
  * and it is now a usage error.
  *
+ * Usage errors retain periods inside rejected words in both text and JSON.
+ *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME. No broker is
  * started.
  *
@@ -24,7 +26,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { command?: string; outcome?: string; error?: { code?: string } }
+interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string } }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-leading-flags-"));
@@ -58,6 +60,25 @@ check("cotal --plain status prints the plain report", (plain.status === 0 || pla
 
 const plainVersion = run(["--plain", "version"]), versionPlain = run(["version", "--plain"]);
 check("cotal --plain version is refused as version --plain is: version has no plain output", plainVersion.status === 1 && /Unknown option '--plain'/.test(plainVersion.stderr) && versionPlain.status === 1 && /Unknown option '--plain'/.test(versionPlain.stderr), { before: shown(plainVersion), after: shown(versionPlain) });
+
+const dottedMessage = "Unknown option '--js.on' - did you mean --json?";
+for (const [args, diagnostic] of [
+  [["version", "--js.on"], dottedMessage],
+  [["version", "--jso"], "Unknown option '--jso' - did you mean --json?"],
+  [["version", "-."], "Unknown option '-.'"],
+  [["version", "value.with.dots"], "Unexpected argument 'value.with.dots'"],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} keeps the full rejected word in its usage error`, r.status === 1 && r.stdout === ""
+    && r.stderr.includes(diagnostic) && r.stderr.includes("Usage\n  cotal version"), shown(r));
+}
+const dottedJson = run(["version", "--js.on", "--json"]);
+check("a JSON usage refusal keeps the dotted option name and suggestion", dottedJson.status === 1 && dottedJson.stderr === ""
+  && dottedJson.envelope?.error?.code === "USAGE_INVALID" && dottedJson.envelope.error.message === dottedMessage, shown(dottedJson));
+const dottedSend = run(["send", "--chan.nel"]);
+check("a command with positionals keeps the dotted option name and its own remedy", dottedSend.status === 1 && dottedSend.stdout === ""
+  && dottedSend.stderr.includes("Unknown option '--chan.nel' - did you mean --channel?") && dottedSend.stderr.includes("put -- before it")
+  && !dottedSend.stderr.includes("To specify a positional argument"), shown(dottedSend));
 
 const dashes = run(["--", "version"]);
 check("cotal -- version runs version", dashes.status === 0 && /\d+\.\d+\.\d+/.test(dashes.stdout), shown(dashes));

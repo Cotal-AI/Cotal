@@ -140,8 +140,10 @@ connectors, starts the broker, delivery daemon and Manager, checks native proces
 Manager control, then stops and restarts them. Every platform must pass before normal or snapshot
 publication can proceed.
 
-An undeclared flag is a usage error, and so is a flag given more than once unless it is
-repeatable, as `--opt` and `down --session-store` are. A word that starts with a dash and a digit,
+An undeclared flag is a usage error. The diagnostic keeps periods inside the option name, so
+`cotal version --js.on` shows `--js.on` and suggests `--json`.
+A flag given more than once is a usage error unless it is repeatable, as `--opt` and
+`down --session-store` are. A word that starts with a dash and a digit,
 as `-1` does, after a flag that takes a value is that flag's value, so `--limit -1` gets the
 command's own check of `--limit`. So is an unknown command, and a first word
 that is not one of the command's subcommands when it declares them. So is input a command checks
