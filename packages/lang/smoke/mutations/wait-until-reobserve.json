@@ -74,7 +74,7 @@
     },
     {
       "name": "the static validator stops refusing a zero cadence, leaving only the runtime check",
-      "file": "packages/lang/src/grammar.ts",
+      "file": "packages/lang/src/grammar-resolve.ts",
       "find": "  if (e !== undefined && isDuration(e) && parseDuration(e) <= 0) {",
       "replace": "  if (false) {",
       "expectRed": "a ZERO cadence is refused, and it is not caught by the ordering test: `every: 0` is not greater than any deadline",
