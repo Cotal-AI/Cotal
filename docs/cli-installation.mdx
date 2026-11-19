@@ -150,6 +150,9 @@ Daily checks, update notices and their settings remain available on every platfo
 Bare `cotal update --auto` reports the saved setting and the platform limit.
 On Linux, macOS and Windows, enabling or reading an enabled setting also checks the daemon's
 schedule. If no daemon answers, it names `cotal daemon install` and `cotal daemon status`.
+If a daemon answers at the socket but does not own the lock for this Cotal home, the command
+reports the saved preference and says the schedule could not be checked. It sends no request to
+that daemon.
 An answering daemon without an active automatic schedule is reported separately, including one
 paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
 the command installs and starts nothing.

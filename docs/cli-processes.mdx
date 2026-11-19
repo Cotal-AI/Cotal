@@ -1239,6 +1239,8 @@ you, SYSTEM or Administrators, and its access list may grant nothing to anyone e
 directory `TARGET_NOT_FOUND`, and a symlinked, foreign or loose one `PERMISSION_DENIED`. Nothing is
 created or repaired. Bash and Zsh completion offer file paths for `--daemon-home`, including
 existing directories; the directory checks still apply when the command runs.
+On Linux, when a foreground daemon is stopped, `daemon status` and `daemon service-connect`
+name the `cotal daemon serve` command for the selected home, including `--daemon-home` if supplied.
 
 `serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. The default daemon holds the
 same lock at `<COTAL_HOME>/daemon/daemon.lock`. A second `serve` for the same daemon refuses
