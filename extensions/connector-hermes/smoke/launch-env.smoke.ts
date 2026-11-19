@@ -140,6 +140,7 @@ assert.equal(withFloor.COTAL_BACKFILL_FLOOR, "42", "a requested backfill floor i
 // ── Allow-list extras (the operator declared `spawn.env`) ─────────────────────────────────────────
 const confined = buildLaunch({ space: "smoke", name: "hermes-2", envAllow: ["NOUS_API_KEY"] }).env ?? {};
 
+assert.notEqual(confined.COTAL_LAUNCH_MATERIAL, process.env.COTAL_LAUNCH_MATERIAL, "containment does not reuse the parent carrier");
 assert.equal(confined.NOUS_API_KEY, "smoke-NOUS_API_KEY", "a declared name is forwarded under containment");
 assert.ok(!("GH_TOKEN" in confined), "an undeclared name is withheld under containment");
 assert.ok(!("SOME_UNRELATED_SECRET" in confined), "containment means the OS allow-list plus the declared names, nothing else");
@@ -157,6 +158,7 @@ assert.ok(!("CLAUDECODE" in opted), "an unnamed host marker stays withheld even 
 // An empty array is a POLICY (the OS allow-list alone), not "unset". If this were read as unset the
 // child would inherit everything, which is the one way the opt-in could silently fail open.
 const bare = buildLaunch({ space: "smoke", name: "hermes-3", envAllow: [] }).env ?? {};
+assert.notEqual(bare.COTAL_CONTROL_SOCKET, process.env.COTAL_CONTROL_SOCKET, "an empty allow-list does not reuse the parent socket");
 assert.equal(bare.NOUS_API_KEY, "smoke-NOUS_API_KEY", "empty spawn.env does not drop connector-declared provider keys");
 assert.ok(!("GH_TOKEN" in bare), "empty spawn.env still withholds undeclared names");
 assert.ok(bare.PATH !== undefined, "an empty spawn.env still carries the OS allow-list");
