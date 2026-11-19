@@ -663,6 +663,8 @@ cotal ext seed [--repair|--reset|--force]
 
 `add` and `remove` each take one operand. Missing or extra operands are usage errors and
 leave the extension inventory unchanged.
+Give `remove` the package name as listed by `cotal ext list`, without a version.
+If the package is already absent, `remove` reports that nothing was removed and exits 0.
 
 Operator-installed extensions: `add` installs an npm package into a cotal-owned prefix and records
 every registry provider it contributes. Commands appear in help, completion, and dispatch; runtime

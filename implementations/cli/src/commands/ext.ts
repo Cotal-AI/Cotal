@@ -13,7 +13,7 @@ import { withInstallUmask } from "../lib/install-umask.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir } from "@cotal-ai/workspace";
-import { inspectLock, extensionNpmMutationPath } from "@cotal-ai/workspace";
+import { inspectLock, extensionNpmMutationPath, oneLine } from "@cotal-ai/workspace";
 import { selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
@@ -65,6 +65,9 @@ export function validateExtArguments(args: ParsedArgs): void {
     throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
   }
   if ((sub === "add" || sub === "remove") && (args.positionals.length !== 2 || !operand)) throw usage(EXT_USAGE);
+  if (sub === "remove" && operand && !/^(?:@[a-z0-9-][a-z0-9._~-]*\/)?[a-z0-9-][a-z0-9._~-]*$/i.test(operand)) {
+    throw usage(`invalid extension package name "${oneLine(operand)}". Give the package name as shown by \`cotal ext list\``);
+  }
   if (sub === "seed" && args.positionals.length !== 1) throw usage("cotal ext seed takes no operands");
 }
 
@@ -616,7 +619,10 @@ async function remove(pkg: string): Promise<void> {
 async function removeUnlocked(pkg: string): Promise<void> {
   const manifest = loadExtensionsManifest();
   const entry = manifest.extensions.find((e) => e.pkg === pkg);
-  if (!entry) throw new Error(`no installed extension "${pkg}" - see \`cotal ext list\``);
+  if (!entry) {
+    console.log(`${pkg} is already absent. Nothing was removed.`);
+    return;
+  }
   assertExtensionServiceInstancesStopped(pkg);
   const processes = await extensionProcesses(entry);
   const recorded = processes.filter(({ pidPath }) => {

@@ -341,7 +341,7 @@ const ansi = /\x1b\[/;
 // ── consumers: color, the editor, the detach key ─────────────────────────────────────────────────
 {
   run(["config", "set", "color", "always"]);
-  const refusal = ["ext", "remove", "not-installed"];
+  const refusal = ["ext", "remove", "not/a/package"];
   check("a saved color=always colors piped output", ansi.test(run(refusal).stderr), shown(run(refusal)));
   check("NO_COLOR beats the saved color=always", !ansi.test(run(refusal, { NO_COLOR: "1" }).stderr));
   check("--no-color beats the saved color=always", !ansi.test(run(["--no-color", ...refusal]).stderr));

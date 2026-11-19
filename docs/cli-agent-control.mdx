@@ -503,6 +503,9 @@ A write the manager cannot confirm, such as a terminal write that failed partway
 `Outcome unconfirmed` and is not typed again. Part of the text may already be at the prompt, so check
 the seat before you send it again.
 
+If `--space` names an unregistered space, `input --json` writes a `refused` envelope with
+`TARGET_NOT_FOUND` to stdout and exits 2. It sends no input.
+
 With no manager running, as after `cotal service stop stack-manager`, `input` refuses
 `TARGET_UNAVAILABLE` (exit 2) before it sends anything. `stop` and `attach` find their seat the
 same way and refuse the same. Like `ps`, they name the local project where `cotal up` starts the
