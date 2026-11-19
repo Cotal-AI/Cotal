@@ -16,6 +16,7 @@ import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js
 import { runSubmissionKey } from "./run-submission.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
+import { epRegistrationLeaseKey } from "./endpoint-registration-lease.js";
 import { snapshotAckGrant } from "./backup.js";
 import type { MintOpts, MintPrincipal } from "./provision-jwt.js";
 
@@ -1123,6 +1124,7 @@ export function endpointServeExecutorPermissions(
         `$KV.${AUTH}.${repairKey}`,
         `$KV.${AUTH}.${credPrefix}.>`,
         ...recordKeys.map((k) => `$KV.${REC}.${k}`),
+        `$KV.${AUTH}.${epRegistrationLeaseKey(pin.endpoint, pin.instanceId)}`,
         // §13.7 contract-artifact publication: the registration publishes the
         // endpoint's cluster document, closure manifests, and schema roots to the EPC store so
         // callers can fetch-verify-compile the registered digests. A digest subject is a SINGLE

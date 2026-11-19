@@ -11,6 +11,8 @@ import {
   endpointRegistrationBarrier, isReachable, mintCreds, mintLifecycleUid, newIdentity,
   remoteManagerActors, serverConfig, serveIssuanceGateKv, setupSpaceStreams, standaloneConnectOpts,
   mintMembershipObserverCreds, observePrincipalLiveness, MEMBERSHIP_INBOX_PREFIX,
+  GateReconcileRefused, reconcileEndpointGate, recordsBucket,
+  releaseEndpointRegistrationLease, renewEndpointRegistrationLease,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { registerRemoteManagerAuthority } from "../src/remote-register.js";
@@ -71,6 +73,24 @@ try {
   }
   const short = await executorCreds(5);
   const expiry = credsClaims(short).exp!;
+  const principal = `${owner}.${actors.serve}`;
+  const executorPrincipal = `${owner}.${actors.executor}`;
+  const leaseBinding = { endpoint: "manager", instanceId, principal, executorNkey: executor.id, lifecycleUid: mintLifecycleUid() };
+  const lease = await renewEndpointRegistrationLease(authKv, {
+    ...leaseBinding, requestId: mintLifecycleUid(), expiresAt: expiry * 1000 + 60_000,
+  });
+  const recordsKv = await new Kvm(observer).open(recordsBucket(space));
+  async function probe(who: string) {
+    const result = await observePrincipalLiveness(livenessObserver!, auth.account.pub, who, { settleMs: 0, maxWaitMs: 1000 });
+    assert.equal(result.sweepComplete, true);
+    return { state: result.state, detail: "complete broker sweep" };
+  }
+  const reconcile = () => reconcileEndpointGate({
+    kv: authKv, recordsKv, space, endpoint: "manager", instanceId,
+    probeHolder: probe, probeRegistrationExecutor: () => probe(executorPrincipal),
+    evictHolders: async () => assert.fail("recovery must refuse before evicting"), log: () => {},
+  });
+  const refuses = (condition: string) => (error: unknown) => error instanceof GateReconcileRefused && error.condition === condition;
   let evictions = 0, refreshes = 0;
   let frozenRevision: number | undefined;
   const samples: { start: string; end: string; state: string; sweepComplete: boolean }[] = [];
@@ -83,7 +103,7 @@ try {
       samples.push({ start, end: new Date().toISOString(), state: result.state, sweepComplete: result.sweepComplete });
     }
   })();
-  const registered = await registerRemoteManagerAuthority({ ...base, prepareCreds: short,
+  const registered = await registerRemoteManagerAuthority({ ...base, prepareCreds: short, registrationLease: lease,
     refreshPrepareCreds: async () => {
       refreshClocks.start = new Date().toISOString();
       refreshes++;
@@ -91,7 +111,13 @@ try {
       assert.equal(frozen.state, "frozen");
       assert.equal(frozen.revision, frozenRevision);
       assert.equal(frozen.processEpoch, first.processEpoch);
+      assert.equal((await probe(principal)).state, "gone");
+      assert.equal((await probe(executorPrincipal)).state, "gone");
+      await assert.rejects(reconcile, refuses("registration-leased"));
+      assert.equal((await gate.observe())!.revision, frozenRevision);
       const refreshed = await executorCreds(60);
+      await renewEndpointRegistrationLease(authKv, { ...leaseBinding, leaseId: lease.leaseId,
+        requestId: mintLifecycleUid(), expiresAt: credsClaims(refreshed).exp! * 1000 + 60_000 });
       refreshClocks.end = new Date().toISOString();
       return refreshed;
     },
@@ -103,6 +129,8 @@ try {
       assert.equal(frozen.revision, frozenRevision);
       assert.equal((await barrier.enumerate()).filter(row => row.state === "revoked").length, 36);
       if (evictions === 1) {
+        await assert.rejects(reconcile, refuses("holder-alive"));
+        assert.equal((await gate.observe())!.revision, frozenRevision);
         // Expiry is enforced by the broker, not a simulated closed-connection exception.
         await new Promise(resolve => setTimeout(resolve, Math.max(0, (expiry + 1) * 1000 - Date.now())));
       }
@@ -134,6 +162,19 @@ try {
   assert.ok(logged.some(line => /executor expired; resuming/.test(line)));
   console.log("  ✓ broker expiry resumes the same freeze, preserves all revocations and advances one epoch");
   console.log("  ✓ registration reports numeric family progress and fresh-authority recovery");
+  // Start the same leased attempt with a fresh broker connection after Phase 4. It must
+  // finish at the committed coordinates, not refreeze and strand the lease at activation.
+  const completed = (await gate.observe())!;
+  const resumed = await registerRemoteManagerAuthority({ ...base, prepareCreds: await executorCreds(60),
+    registrationLease: lease, refreshPrepareCreds: async () => assert.fail("unexpected refresh"),
+    evict: async () => assert.fail("a completed attempt must not evict again"),
+  });
+  assert.equal(resumed.registrationRevision, registered.registrationRevision);
+  assert.equal(resumed.processEpoch, registered.processEpoch);
+  assert.equal((await gate.observe())!.revision, completed.revision);
+  await releaseEndpointRegistrationLease(authKv, leaseBinding);
+  console.log("  ✓ fresh executor finishes an already reopened attempt without refreezing and can activate");
+  console.log("  ✓ connected and refreshing executors both exclude recovery without changing the gate");
 
   // A live connection's non-expiry refusal must not be hidden by the authority retry.
   await assert.rejects(registerRemoteManagerAuthority({ ...base, prepareCreds: await executorCreds(60),
@@ -166,4 +207,4 @@ try {
   await killAndAwaitExit(broker);
   release();
 }
-console.log("remote-registration-expiry: 5 passed, 0 failed");
+console.log("remote-registration-expiry: 7 passed, 0 failed");

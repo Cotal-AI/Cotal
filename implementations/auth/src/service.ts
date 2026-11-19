@@ -6,6 +6,7 @@ export { dispatchManagerAuthorityRequest, handleManagerServiceAuthority, type Ma
 import { send, RequestBodyError, sendRequestError, refuseCapability, refuseExchange, REFUSAL_STATUS, readJsonBody } from "./service-http.js";
 import { registryStores } from "./lifecycle-registry.js";
 import { drainAndClose } from "@cotal-ai/core";
+import { renewEndpointRegistrationLease, releaseEndpointRegistrationLease } from "@cotal-ai/core";
 import { createToolResultConsentSigner, makeToolResultConsentRecorder, type ToolResultConsentRecorder, type ToolResultConsentSignerOptions } from "./tool-result-consent.js";
 /**
  * The AUTH SERVICE daemon — the one server-side process a user-auth space runs alongside its broker
@@ -1504,6 +1505,10 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             const gate = managerIssuanceGate(r.instanceId);
             const observed = await gate.observe();
             if (!observed) throw new EpEnvelopeError("failed-precondition", "manager-service activation found no issuance gate");
+            await releaseEndpointRegistrationLease(authKv, {
+              endpoint: "manager", instanceId: r.instanceId, principal: remoteManagerServePrincipal(owner, r.instanceId),
+              executorNkey: r.identities.executor.id, lifecycleUid: r.managerLifecycleUid,
+            });
             credentials.serve = await mintPublicUserJwt(
               issuerAuth(),
               r.identities.serve.id,
@@ -1554,6 +1559,17 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             }
           }
         });
+      }
+      if (holder.request.operation === "prepare") {
+        const r = holder.request;
+        const lease = await renewEndpointRegistrationLease(authKv, {
+          endpoint: "manager", instanceId: r.instanceId, principal: remoteManagerServePrincipal(owner, r.instanceId),
+          executorNkey: r.identities.executor.id, lifecycleUid: r.managerLifecycleUid,
+          requestId: r.requestId, leaseId: r.registrationLeaseId,
+          // Even the last issued JWT expires before recovery can claim this attempt.
+          expiresAt: material.credentials.executor!.exp * 1000 + 60_000,
+        });
+        material.registrationLease = { leaseId: lease.leaseId, expiresAt: lease.expiresAt };
       }
       return material;
     },

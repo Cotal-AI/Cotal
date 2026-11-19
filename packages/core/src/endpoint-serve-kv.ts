@@ -20,6 +20,7 @@ import { isCasLoss as isRawCasLoss } from "./endpoint-records.js";
 import { assertLifecycleToken } from "./endpoint-subjects.js";
 import { epgateKey, epcredFamilyPrefix, epcredRowKey, eprepairKey, parseEndpointGate, parseLedgerRow, parseEndpointRepairCursor, type CredentialLedgerRow, type EndpointGateRow, type EndpointRepairCursor } from "./lifecycle-state.js";
 import type { EpGateState, EpIssuanceGate, EpServeLedgerRow } from "./endpoint-service.js";
+import { readEndpointRegistrationLease } from "./endpoint-registration-lease.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -400,6 +401,8 @@ export function endpointRegistrationBarrier(
   kv: KV,
   space: string,
   args: { endpoint: string; instanceId: string; opId: string;
+    /** Trusted recovery resumes only the exact durable lease claim for this frozen revision. */
+    recoveryFreezeToken?: number;
     serviceRegistration?: { requestId: string; requestDigest: string };
     evict?: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[] },
 ): import("./endpoint-service.js").EpIssuanceBarrier {
@@ -409,6 +412,19 @@ export function endpointRegistrationBarrier(
   const key = epgateKey(endpoint, instanceId);
   const evict = args.evict ?? ((holderPrincipals: readonly string[]) => holderPrincipals.map(() => false)); // FAIL-CLOSED: no evictor ⇒ eviction not verified (a takeover fails closed)
   const observed = () => readEndpointGate(kv, key);
+  const assertLease = async () => {
+    const stored = await readEndpointRegistrationLease(kv, endpoint, instanceId);
+    if (!stored || stored.lease.state === "released") return;
+    const current = await observed();
+    if (current?.row.state === "retired") return; // Let the gate's terminal refusal name its op.
+    if (current && stored.lease.generation < current.row.generation) return;
+    if (current && stored.lease.state === "recovering" && stored.lease.freezeToken === args.recoveryFreezeToken
+      && stored.lease.freezeToken === current.revision && stored.lease.generation === current.row.generation
+      && stored.lease.principal === current.row.principal) return;
+    if (!current || stored.lease.principal !== current.row.principal || stored.lease.generation !== current.row.generation
+      || stored.lease.state !== "active" || stored.lease.expiresAt <= Date.now())
+      throw new EpEnvelopeError("conflict", "registration no longer holds its host lease");
+  };
   const assertEmptyServiceFamily = async () => {
     const current = await observed();
     if (!current?.row.serviceAuthority || current.row.state !== "frozen" || current.row.op.kind !== "registration" || current.row.op.opId !== opId)
@@ -427,8 +443,9 @@ export function endpointRegistrationBarrier(
   };
   return {
     operationId: opId,
-    observe: () => endpointGateState(kv, space, endpoint, instanceId),
+    observe: async () => { await assertLease(); return endpointGateState(kv, space, endpoint, instanceId); },
     freeze: async (expectedRevision: number) => {
+      await assertLease();
       const cur = await observed();
       if (cur === null || cur.revision !== expectedRevision || cur.row.state !== "open") return null;
       if (cur.row.serviceAuthority && (cur.row.serviceAuthority.activationIssued
@@ -486,6 +503,7 @@ export function endpointRegistrationBarrier(
     },
     evict: async (holderPrincipals: readonly string[]) => evict(holderPrincipals),
     reopen: async (token: number, successor) => {
+      await assertLease();
       const cur = await observed();
       // Token-pinned: only THIS barrier (still holding its freeze at `token`) reopens; a reconciler
       // or newer barrier that advanced the revision wins and this stale reopen loses.

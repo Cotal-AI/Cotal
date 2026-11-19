@@ -398,6 +398,7 @@ export async function handleManagerServiceAuthority(req: IncomingMessage, res: S
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     // A conflict, such as a name another lifecycle holds or a stale serve epoch, answers 409.
-    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused manager-service authority: ${reason}`, e instanceof EpEnvelopeError && e.code === "conflict" ? 409 : 403, { error: reason });
+    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused manager-service authority: ${reason}`, e instanceof EpEnvelopeError && e.code === "conflict" ? 409 : 403,
+      { error: reason, ...(e instanceof EpEnvelopeError && e.details ? { details: e.details } : {}) });
   }
 }
