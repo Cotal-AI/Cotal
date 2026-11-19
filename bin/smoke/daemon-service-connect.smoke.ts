@@ -76,6 +76,7 @@
  * Add --renewal-resume-only for shipped restarts with an expired or removed human sign-in.
  * Service-only setup: --hosting-only --no-manager-only, optionally --account-only.
  * Claude Code host setup: --hosting-only --claude-wake-only (stock connector, stand-in executable).
+ * Late Claude Code install: --hosting-only --claude-wake-late-repro.
  * Add --hosting-only --updater-ownership-repro for two living updater clients' restart admission ownership.
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Manual empty-legacy admission: --hosting-only --update-repro --manual-admission-race-repro.
@@ -132,7 +133,8 @@ const desktopGapOnly = process.argv.includes("--desktop-gap-only");
 const desktopSetupOnly = process.argv.includes("--desktop-setup-only");
 const originalPath = process.env.PATH;
 const setupProgressOnly = process.argv.includes("--setup-progress-only");
-const claudeWakeOnly = process.argv.includes("--claude-wake-only");
+const claudeWakeLateRepro = process.argv.includes("--claude-wake-late-repro");
+const claudeWakeOnly = claudeWakeLateRepro || process.argv.includes("--claude-wake-only");
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -1914,7 +1916,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       if (claudeWakeOnly) {
         const claudeBin = join(root, "claude-bin");
         mkdirSync(claudeBin);
-        writeFileSync(join(claudeBin, "claude"), `#!${process.execPath}
+        writeFileSync(join(claudeBin, claudeWakeLateRepro ? "claude.pending" : "claude"), `#!${process.execPath}
 const { existsSync, readFileSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { spawn } = require('node:child_process');
@@ -1931,12 +1933,20 @@ if (family === 'plugin') {
   return;
 }
 if (family === 'mcp' && group === 'add') {
+  const delay = join(home, 'delay-claude-registration');
+  if (existsSync(delay)) {
+    writeFileSync(join(home, 'claude-registration-entered'), '');
+    const deadline = Date.now() + 15000;
+    const wait = new Int32Array(new SharedArrayBuffer(4));
+    while (existsSync(delay) && Date.now() < deadline) Atomics.wait(wait, 0, 0, 25);
+  }
   if (existsSync(join(home, 'reject-claude-registration'))) { console.error('fixture registration blocked'); process.exit(1); }
   const [command, ...args] = tail.slice(tail.indexOf('--') + 1);
   writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { cotal: { command, args } } }));
   return;
 }
 const argv = process.argv.slice(2);
+writeFileSync(join(home, 'claude-launch-entered'), '');
 const config = JSON.parse(argv[argv.indexOf('--mcp-config') + 1]);
 const user = JSON.parse(readFileSync(join(home, '.claude.json'))).mcpServers.cotal;
 if (!user.args.some(arg => arg === join(plugin, 'dist', 'seat.cjs'))) process.exit(99);
@@ -1951,6 +1961,7 @@ process.stdin.once('data', () => {
 `, { mode: 0o700 });
         writeFileSync(join(home, "reject-claude-registration"), "");
         env.PATH = `${claudeBin}:${env.PATH}`;
+        if (claudeWakeLateRepro) assert.equal((spawnSync("claude", ["--version"], { env }).error as NodeJS.ErrnoException | undefined)?.code, "ENOENT");
         env.COTAL_NO_UPDATE_CHECK = "1";
         const seeded = spawnSync(process.execPath, [join(repo, "bin/dist/cotal.js"), "ext", "seed"], { cwd: root, env, encoding: "utf8", timeout: 180_000 });
         assert.equal(seeded.status, 0, seeded.stdout + seeded.stderr);
@@ -2953,10 +2964,41 @@ process.stdin.once('data', () => {
             return { code, out, err };
           };
           const launch = (instance: string) => run("spawn", "--space", ON, "--on", instance, "--harness", "claude", "--name", "daemon_claude_wake", "--no-events", "--detach", "--json");
-          const view = (await cli("status", "--space", ON)).doc.result.managers[0];
+          const status = async () => (await cli("status", "--space", ON)).doc.result.managers[0];
+          const view = await status();
           const userConfig = join(home, ".claude.json");
-          const reason = view.connectors.find((row: any) => row.agent === "claude" && row.state === "unavailable")?.reason;
           const remedy = `cotal daemon setup --space ${ON}`;
+          if (claudeWakeLateRepro) {
+            const inventory = (manager: typeof view) => manager.connectors.find((row: any) => row.agent === "claude");
+            const sameManager = (manager: typeof view) => manager.state === "answering" && manager.pid === view.pid && manager.instanceId === view.instanceId;
+            const delayRegistration = join(home, "delay-claude-registration");
+            check("hosted Manager booted without claude or a user MCP entry", view.state === "answering" && inventory(view)?.state === "unavailable" && inventory(view)?.reason?.includes("claude harness needs claude on PATH") && !existsSync(userConfig), view);
+            writeFileSync(delayRegistration, "");
+            renameSync(join(root, "claude-bin", "claude.pending"), join(root, "claude-bin", "claude"));
+            await status();
+            const entered = join(home, "claude-registration-entered");
+            for (let i = 0; i < 100 && !existsSync(entered); i++) await sleep(50);
+            const pending = await status();
+            check("status starts wake setup and keeps answering while registration is pending", existsSync(entered) && sameManager(pending) && inventory(pending)?.state === "unavailable" && inventory(pending)?.reason?.includes("needs claude on PATH") && !existsSync(userConfig), pending);
+            rmSync(delayRegistration);
+            const refused = await launch(view.instanceId);
+            const failed = await status();
+            const row = inventory(failed);
+            check("failed wake registration leaves Claude unavailable with the cause and remedy", sameManager(failed) && row?.state === "unavailable" && row.reason?.includes("fixture registration blocked") && row.reason?.includes(remedy) && !existsSync(userConfig), failed);
+            check("pinned Claude spawn refuses with the cause and never starts a seat", refused.code !== 0 && refused.out.includes("fixture registration blocked") && refused.out.includes(remedy) && !existsSync(join(home, "claude-launch-entered")), refused);
+            rmSync(join(home, "reject-claude-registration"));
+            const repaired = await launch(view.instanceId);
+            check("the same Manager joins Claude after successful wake setup", repaired.code === 0 && JSON.parse(repaired.out).result?.readiness === "joined", repaired);
+            const ready = await status();
+            const registered = existsSync(userConfig) ? JSON.parse(readFileSync(userConfig, "utf8")).mcpServers.cotal : undefined;
+            check("the same Manager advertises Claude only with the installed user wake channel", sameManager(ready) && inventory(ready)?.state === "available" && registered?.args.includes(join(home, "claude-plugin", "cotal", "dist", "seat.cjs")) && existsSync(join(home, "claude-installed")) && !existsSync(join(participant, ".mcp.json")), ready);
+            if (repaired.code === 0) {
+              const stopped = await run("stop", "daemon_claude_wake", "--space", ON, "--on", view.instanceId, "--json");
+              check("the late-started Claude seat stops through its original Manager", stopped.code === 0, stopped);
+            }
+            return;
+          }
+          const reason = view.connectors.find((row: any) => row.agent === "claude" && row.state === "unavailable")?.reason;
           check("Claude is unavailable when user MCP registration fails", reason?.includes("fixture registration blocked") && !existsSync(userConfig) && setup.code === 2, { view, setup });
           const first = await launch(view.instanceId);
           check("Claude spawn refusal names the daemon setup command", first.code !== 0 && first.out.includes(remedy), first);
