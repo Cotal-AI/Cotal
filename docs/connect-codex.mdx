@@ -129,7 +129,7 @@ See [Sandbox options](codex-connector-reference.mdx#sandbox-options) for overrid
 ## Connect your own Codex conversations [#personal]
 
 `cotal setup` installs the Cotal plugin into Codex with `codex plugin marketplace add` and `codex plugin add`.
-Its JSON receipt includes the marketplace files Cotal writes and the changes it observes to Codex's configuration and installed plugin files.
+Its JSON receipt lists created or content-changed marketplace, configuration, and installed plugin files. Replacing a file with identical bytes adds no receipt entry.
 Upgrades refresh an installed plugin through Codex. Starting in 0.167.1, refresh leaves the native cache unchanged when Codex already lists the exact plugin version and content digest for this release.
 Same-version reconciliation can therefore succeed with a read-only Codex home. A computer without the plugin needs no Codex executable.
 When an install or refresh would rewrite a read-only `config.toml`, Cotal reports the path and refuses to change the plugin, leaving the file and its permissions unchanged.

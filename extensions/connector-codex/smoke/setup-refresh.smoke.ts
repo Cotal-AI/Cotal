@@ -110,11 +110,10 @@ if (args === "plugin list") {
 } else if (args === "plugin add cotal@cotal-mesh") {
   const plugin = readFileSync(${JSON.stringify(join(process.env.COTAL_HOME!, "codex-plugin/plugins/cotal/.codex-plugin/plugin.json"))}, "utf8");
   const cache = ${JSON.stringify(cache(f.codex))} + "/" + JSON.parse(plugin).version;
-  mkdirSync(cache);
-  mkdirSync(cache + "/.codex-plugin");
+  mkdirSync(cache + "/.codex-plugin", { recursive: true });
   writeFileSync(cache + "/.codex-plugin/plugin.json", plugin);
   writeFileSync(cache + "/.mcp.json", "{}");
-  writeFileSync(config + ".tmp", readFileSync(config), { mode: 0o600 });
+  writeFileSync(config + ".tmp", readFileSync(config, "utf8").replace("# stale\\n", ""), { mode: 0o600 });
   renameSync(config + ".tmp", config);
   writeFileSync(${JSON.stringify(installed)}, JSON.parse(plugin).version);
 } else process.exit(1);
@@ -122,13 +121,24 @@ if (args === "plugin list") {
     try {
       const cotal = [process.execPath, join(ROOT, "cotal.js")];
       const written: string[] = [];
-      await codexSetupProvider.connector!.run({ cotal, wrote: (_, path) => written.push(path) });
+      const setup = () => codexSetupProvider.connector!.run({ cotal, wrote: (_, path) => written.push(path) });
+      writeFileSync(config, `# stale\n${disabledConfig}`);
+      await setup();
       const version = readFileSync(installed, "utf8");
-      assert.ok(written.includes(config), "the native config rewrite must be reported");
+      assert.ok(written.includes(config), "the native config content change must be reported");
       assert.ok(written.includes(join(process.env.COTAL_HOME!, "codex-plugin/plugins/cotal/.mcp.json")));
       for (const path of [".codex-plugin/plugin.json", ".mcp.json"]) {
         assert.ok(written.includes(join(cache(f.codex), version, path)), `the cached ${path} write must be reported`);
       }
+      written.length = 0;
+      await setup();
+      assert.deepEqual(written, [], "identical marketplace, config and cache rewrites must not be reported");
+      const cachedMcp = join(cache(f.codex), version, ".mcp.json");
+      rmSync(cachedMcp);
+      const marketplaceMcp = join(process.env.COTAL_HOME!, "codex-plugin/plugins/cotal/.mcp.json");
+      writeFileSync(marketplaceMcp, "{}");
+      await setup();
+      assert.deepEqual(written, [marketplaceMcp, cachedMcp], "repair reports only the changed and recreated files");
       assert.deepEqual(codexSetupProvider.status!({ version: version.split("+")[0]!, skillsRemedy: "" }), [
         { label: "Codex plugin", state: "off", text: "disabled" },
       ]);

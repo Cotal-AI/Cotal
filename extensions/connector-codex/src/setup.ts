@@ -65,6 +65,16 @@ function pluginVersion(files: Readonly<Record<string, string>>): string {
   return `${release}+${hash.digest("hex").slice(0, 12)}`;
 }
 
+/** Compare known setup outputs by content, since Codex can replace an unchanged file. */
+function snapshotFile(path: string): Buffer | undefined {
+  try {
+    return statSync(path, { throwIfNoEntry: false })?.isFile() ? readFileSync(path) : undefined;
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR", "EISDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return undefined;
+    throw error;
+  }
+}
+
 /** Write the marketplace and the plugin, replacing an earlier copy whole. */
 function materializeCodexPlugin(cotal: readonly string[], version: string, wrote?: ConnectorSetupInput["wrote"]): string[] {
   const market = codexMarketplaceDir();
@@ -72,6 +82,8 @@ function materializeCodexPlugin(cotal: readonly string[], version: string, wrote
   mkdirSync(plugins, { recursive: true });
   const files = pluginFiles(cotal, version);
   const dest = join(plugins, PLUGIN);
+  const paths = [...ASSETS, ...Object.keys(files)];
+  const before = wrote ? paths.map((path) => snapshotFile(join(dest, path))) : [];
   const staging = `${dest}.staging.${process.pid}`;
   const old = `${dest}.old.${process.pid}`;
   rmSync(staging, { recursive: true, force: true });
@@ -85,16 +97,20 @@ function materializeCodexPlugin(cotal: readonly string[], version: string, wrote
   }
   if (existsSync(dest)) renameSync(dest, old);
   renameSync(staging, dest);
-  const paths = [...ASSETS, ...Object.keys(files)];
-  for (const path of paths) wrote?.("Codex marketplace plugin file", join(dest, path));
+  if (wrote) for (const [i, path] of paths.entries()) {
+    const output = join(dest, path);
+    if (!before[i]?.equals(readFileSync(output))) wrote("Codex marketplace plugin file", output);
+  }
   rmSync(old, { recursive: true, force: true });
   mkdirSync(join(market, ".agents", "plugins"), { recursive: true });
   const manifest = join(market, ".agents", "plugins", "marketplace.json");
-  writeFileSync(manifest, `${JSON.stringify({
+  const manifestBytes = Buffer.from(`${JSON.stringify({
     name: MARKETPLACE,
     plugins: [{ name: PLUGIN, source: { source: "local", path: `./plugins/${PLUGIN}` }, policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" }, category: "Productivity" }],
   }, null, 2)}\n`);
-  wrote?.("Codex marketplace manifest", manifest);
+  const previousManifest = wrote ? snapshotFile(manifest) : undefined;
+  writeFileSync(manifest, manifestBytes);
+  if (wrote && !previousManifest?.equals(manifestBytes)) wrote("Codex marketplace manifest", manifest);
   return paths;
 }
 
@@ -122,17 +138,15 @@ function assertWritableConfig(): void {
 function install(version: string, paths: readonly string[] = [], wrote?: ConnectorSetupInput["wrote"]): void {
   const config = join(codexHome(), "config.toml");
   const cache = join(codexHome(), "plugins", "cache", MARKETPLACE, PLUGIN, version);
-  // Codex owns these writes. Record only known outputs that actually changed, including rewrites
-  // with identical bytes. The native commands do not return a list of files they wrote.
+  // Codex owns these writes and does not return a list of paths. Compare only known outputs.
   const outputs = wrote ? [config, ...paths.map((path) => join(cache, path))] : [];
-  const snapshot = (path: string) => statSync(path, { throwIfNoEntry: false, bigint: true });
-  const before = outputs.map(snapshot);
+  const before = outputs.map(snapshotFile);
   const reportWrites = () => {
     if (!wrote) return;
     for (const [i, path] of outputs.entries()) {
       const previous = before[i];
-      const now = snapshot(path);
-      if (now && (!previous || now.ino !== previous.ino || now.ctimeNs !== previous.ctimeNs)) {
+      const now = snapshotFile(path);
+      if (now && !previous?.equals(now)) {
         wrote(path === config ? "Codex configuration" : "Codex cached plugin file", path);
       }
       before[i] = now;
