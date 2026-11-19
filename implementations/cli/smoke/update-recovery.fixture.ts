@@ -19,9 +19,10 @@ Object.assign(updateRuntime, {
   npm: (args: string[]) => ({ status: 0, stderr: "", stdout: args[0] === "root" ? join(process.env.HOME!, "prefix/lib/node_modules") : args[0] === "view" && args[2] === "--json" ? JSON.stringify({ name: "cotal-ai", version: "0.13.1", dist: { tarball: "https://registry.example/cotal.tgz", integrity: "sha512-fixture" } }) : '"0.164.6"' }),
   claimGlobalUpdate: () => () => {},
   spawnGlobal: async (_root: string, operation: string) => { console.log(`recovery operation: ${operation}`); return { status: process.env.RECOVERY_TEST_RESTORE_FAIL ? 42 : 0, stdout: "", stderr: "restore fixture failure" }; },
+  spawn: (_file: string, args: string[]) => { console.log(`continued through restored entry: ${JSON.stringify(args)}`); return { status: 0, stdout: "", stderr: "" }; },
   verifyGlobalEntry: () => process.env.RECOVERY_TEST_COMPLETED_ROLLBACK ? process.argv[1]! : join(process.env.HOME!, "prefix/lib/node_modules/cotal-ai/dist/cotal.js"),
 });
 if (process.env.RECOVERY_TEST_STARTUP) {
   const restored = await recoverInterruptedUpdate(updateRuntime, true);
-  console.log(`startup restored: ${restored}`);
+  console.log(`startup restored: ${Boolean(restored)}`);
 } else await runCli(registry, process.argv.slice(2));

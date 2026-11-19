@@ -91,6 +91,23 @@ for (const failed of [false, true]) {
   assert.deepEqual(c.retained(), []);
 }
 
+if (process.platform === "linux" || process.platform === "darwin") {
+  const c = cell("live-valid-snapshot");
+  const local = join(c.env.XDG_CONFIG_HOME, "cotal/.update-snapshot-live");
+  mkdirSync(local, { mode: 0o700 });
+  c.save({ ...c.record, phase: "replacing", snapshot: local, owner: { pid: process.pid, start: processStartToken(process.pid)!, nonce: "live-owner" } });
+  const entry = join(import.meta.dirname, "../../../bin/dist/cotal.js");
+  const version = () => spawnSync(process.execPath, [entry, "--version"], { env: c.env, encoding: "utf8", timeout: 30000 });
+  const live = version();
+  assert.equal(live.status, 0, live.stderr);
+  assert.match(live.stdout, /An update is in progress in pid \d+\. Wait for it to finish\./);
+  assert.doesNotMatch(live.stdout + live.stderr, /needs repair|interrupted update|update --self/);
+  c.save({ ...c.record, phase: "replacing", snapshot: local });
+  const stopped = version();
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.match(stopped.stdout, /restore the interrupted update/);
+}
+
 for (const malformed of [false, true]) {
   const c = cell(malformed ? "malformed-owner" : "missing-owner");
   const { owner: _owner, ...unowned } = c.record;
@@ -140,9 +157,11 @@ for (const shape of ["absent", "missing", "file", "symlink", "reused-owner"] as 
   mkdirSync(join(local, "seed"), { recursive: true, mode: 0o700 });
   writeFileSync(join(local, "seed", "restored"), "original seed bytes");
   c.save({ ...c.record, snapshot: local });
-  const result = c.run();
+  const result = c.run({}, ["update", "--self", "--space", "test-space"]);
   assert.equal(result.code, 0, result.output);
   assert.match(result.output, /Restored cotal-ai@0.13.1/);
+  assert.match(result.output, /continued through restored entry: .*"update","--self","--space","test-space"/);
+  assert.doesNotMatch(result.output, /no newer latest tag/);
   assert.equal(readFileSync(join(c.env.XDG_CONFIG_HOME, "cotal/seed/restored"), "utf8"), "original seed bytes");
   assert.equal(existsSync(local), false);
   assert.deepEqual(c.retained(), []);
