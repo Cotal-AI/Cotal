@@ -562,14 +562,15 @@ try {
 
   // A credential file is a path, never the connection's loaded credential material.
   {
+    const directory = join(home, "read with creds");
+    mkdirSync(directory, { mode: 0o700 });
     const file = "observer key.creds";
-    const path = join(shell, file);
+    const path = join(directory, file);
     writeFileSync(path, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
-    const card = await run(["channel", "show", "general", "--creds", file, "--plain"]);
+    const card = await run(["channel", "show", "general", "--creds", file, "--plain"], directory);
     const command = /^\s+(cotal history .+?) {2,}Read retained messages within your grant$/m.exec(card.stdout)?.[1];
-    const expected = ["cotal", "history", "#general", "--space", space, "--creds", path];
-    const words = command === undefined ? [] : execWords(command);
-    const read = JSON.stringify(words) === JSON.stringify(expected) && await run([...words.slice(1), "--json"], openRoot);
+    const expected = `cotal history '#general' --space ${space} --creds '${path}'`;
+    const read = command === expected && await run([...execWords(command).slice(1), "--json"], openRoot);
     check("a history recommendation keeps an explicit credential path when copied to another folder",
       card.status === 0 && !!read && read.status === 0 && texts(read).includes("deploy started"), { card: shown(card), read: read && shown(read) });
   }
