@@ -2939,17 +2939,7 @@ export class CotalEndpoint extends EventEmitter {
    *  untouched (unlike `variant`, it is never deleted, since a caller that does not know the
    *  provider says nothing about whether one still applies). */
   async setCardModel(model: string, variant?: string, provider?: string): Promise<void> {
-    const m = model.trim();
-    const v = variant?.trim();
-    const p = provider?.trim();
-    if (!m || (this.card.meta?.model === m && this.card.meta.variant === v && (p === undefined || this.card.meta?.provider === p)))
-      return;
-    const meta: Record<string, unknown> = { ...(this.card.meta ?? {}), model: m };
-    if (v) meta.variant = v;
-    else delete meta.variant;
-    if (p) meta.provider = p;
-    this.card.meta = meta;
-    await this.publishPresence();
+    return this.presence.setCardModel(model, variant, provider);
   }
 
   /** Overlay the session's working directory onto the card's display-only `meta.cwd`, then
@@ -2959,9 +2949,7 @@ export class CotalEndpoint extends EventEmitter {
    *  or end in whitespace, so it is never trimmed or normalized. An empty string names no directory
    *  and leaves the card unchanged. */
   async setCardCwd(cwd: string): Promise<void> {
-    if (!cwd || this.card.meta?.cwd === cwd) return;
-    this.card.meta = { ...(this.card.meta ?? {}), cwd };
-    await this.publishPresence();
+    return this.presence.setCardCwd(cwd);
   }
 
   // ---- channel discovery ---------------------------------------------------
