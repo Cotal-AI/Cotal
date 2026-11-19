@@ -122,6 +122,11 @@ try {
     check("  and a preset that runs many instances with the add that names one", endpoint?.next.startsWith("cotal service add <name> --preset exec-endpoint") === true, endpoint);
     check("  and nothing is saved by listing", before.definitions.length === 0, before.definitions);
 
+    const preview = ["manager", "start", "--dry-run", "--new-instance"];
+    const freshPreview = cotal(preview);
+    check("a fresh manager preview refuses a new instance without saving a definition",
+      freshPreview.status === 2 && out(freshPreview).includes("UNSUPPORTED") && !inventory().definitions.includes("manager"), out(freshPreview));
+
     // ---- The manager: start, start again, status, logs, a conflicting start, stop ---------------
     const dry = cotal(["manager", "start", "--dry-run"]);
     check("cotal manager start --dry-run previews and saves nothing", dry.status === 0 && inventory().definitions.length === 0, out(dry));
@@ -173,6 +178,33 @@ try {
 
     const helloLog = JSON.parse(cotal(["service", "logs", "hello", "--json"]).stdout) as { result: { path: string } };
     const helloPath = helloLog.result.path;
+    const foregroundScript = join(root, "foreground.mjs");
+    writeFileSync(foregroundScript, "process.on('SIGTERM', () => process.exit(0));\nsetInterval(() => {}, 1_000);\n");
+    const foregroundAdd = cotal(["service", "add", "foreground", "--exec", `${process.execPath} ${foregroundScript}`]);
+    check("the graceful foreground service is saved", foregroundAdd.status === 0, out(foregroundAdd));
+    const foreground = spawn(process.execPath, ["--import", TSX_LOADER, BIN, "service", "start", "foreground", "--foreground"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+    let foregroundOutput = "";
+    foreground.stdout.on("data", (chunk: Buffer) => { foregroundOutput += chunk.toString(); });
+    foreground.stderr.on("data", (chunk: Buffer) => { foregroundOutput += chunk.toString(); });
+    const foregroundExit = new Promise<number | null>((resolve, reject) => {
+      foreground.once("error", reject);
+      foreground.once("close", resolve);
+    });
+    try {
+      for (const deadline = Date.now() + 60_000; !foregroundOutput.includes("Owned service process running") && foreground.exitCode === null && Date.now() < deadline;) await sleep(100);
+      check("the direct service is running in the foreground", foregroundOutput.includes("Owned service process running"), foregroundOutput);
+      const stopped = cotal(["service", "stop", "foreground", "--yes", "--json"]);
+      const code = await Promise.race([foregroundExit, sleep(15_000).then(() => "timeout" as const)]);
+      const status = cotal(["service", "status", "foreground", "--json"]);
+      const result = JSON.parse(status.stdout).result;
+      check("external stop and the foreground CLI both finish and keep the stop receipt and exit status",
+        stopped.status === 0 && code === 0 && result?.recordedState === "stopped" && result.observedProcess === "gone" && result.exit?.code === 0 && result.processStop?.requestId === result.requestId && result.processStop?.signal === "SIGTERM", { stop: out(stopped), status: out(status), code, foregroundOutput });
+    } finally {
+      if (foreground.exitCode === null && foreground.signalCode === null) {
+        foreground.kill("SIGTERM");
+        await foregroundExit;
+      }
+    }
     writeFileSync(`${helloPath}.1`, "previous output\n");
     check("stopping a service keeps its current log and rotation", existsSync(helloPath) && existsSync(`${helloPath}.1`));
     const removedHello = cotal(["service", "remove", "hello", "--yes"]);
@@ -185,6 +217,8 @@ try {
     check("cotal manager stop stops it", stop.status === 0 && !inventory().running.includes("manager"), out(stop));
     const after = row(inventory().services, "manager");
     check("  and the listing shows it stopped, with cotal manager start next", after?.state === "stopped" && after.next === "cotal manager start", after);
+    const savedPreview = cotal(preview);
+    check("a saved manager preview refuses the same unsupported new instance", savedPreview.status === 2 && out(savedPreview).includes("UNSUPPORTED"), out(savedPreview));
 
     // ---- The manager a plain cotal up starts: logs reads it, stop and install still refuse -------
     const plainUp = upCotal(["up", "--detach", "--open", "--space", UP_SPACE, "--server", UP_SERVER]);
