@@ -423,9 +423,12 @@ When a newer release exists, Cotal first downloads and integrity-checks its `cot
 of its first-party runtime dependency closure through npm, using a temporary cache and no install
 scripts. Each registry request has a 15-second timeout. Package installs and archive checks retry
 transient network failures twice, waiting one second and then two seconds. The latest-version read
-keeps a single attempt. Missing archives or invalid
-metadata refuse before global installation or connector reconciliation, with a registry propagation
-hint and a request to check registry access and try again in a few minutes. This preflight does not
+keeps a single attempt. Missing release archives wait up to ten minutes before keeping the installed
+version. Invalid metadata, integrity failures and scoped registry access errors refuse before global
+installation or connector reconciliation. Since 0.167.1, registry access refusals report npm's error
+code rather than asking you to wait for publication. For a refused scoped connection, check the
+`@cotal-ai:registry` line in `.npmrc` and restore that registry's connectivity or correct the setting
+before retrying. The updater does not bypass your configured registry. This preflight does not
 guarantee later registry requests or third-party dependency downloads will succeed.
 From 0.167.1, an npm `ETARGET` that names a date bound stops the update immediately with
 exit code 1. The diagnostic names `min-release-age` and `before`: adjust the setting that
@@ -467,6 +470,13 @@ that wait. The command then restores the interrupted transaction and continues t
 self-update. An expired wait, an unpublished child PID or ambiguous descendant state still refuses
 without starting a competing replacement.
 
+When two `cotal update --self` commands target the same npm installation, one waits up to ten
+minutes for the other update to finish. Only a command that has to wait prints a waiting line, once.
+It then reads the installed version again. If the other
+command installed the requested release or a newer one, it continues through that verified CLI
+instead of replacing the package again. A timeout or unresolved child state still
+refuses without starting a competing replacement.
+
 Once global replacement starts, Ctrl-C waits for installation, verification and reconciliation to
 finish before returning exit code 130. SIGTERM waits the same way and returns 143. The command
 explains the wait, keeps its update lock and does not send terminal interrupts into the child
@@ -495,8 +505,12 @@ Third-party extensions are listed with their installed version and recorded spec
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
 a future follow-up. When `update --self` cannot reach the registry before selecting a release,
 it reports that nothing changed and exits 0 without reconciling packages or inspecting Manager
-custody. The version read has no retries and a 15-second network timeout. Unknown availability
-is not a claim that the installed version is current. A failed connector/extension install, npm metadata check after reconciliation, or requested global
+custody. From 0.167.1, losing registry connectivity during release checks, extension-dependency
+checks or target staging also reports that nothing changed and exits 0 before replacement.
+A failed first-party scoped metadata read still names the `@cotal-ai:registry` setting and exits 1.
+Authentication, permission, integrity and target pre-install refusals still exit nonzero.
+Retry `cotal update --self` when connectivity returns. The version read has no retries and a
+15-second network timeout. Unknown availability is not a claim that the installed version is current. A failed connector/extension install, npm metadata check after reconciliation, or requested global
 install is reported and makes the command exit nonzero. Independent extension attempts continue so
 the output includes every failure; an unavailable npm registry does not undo a completed local
 reconcile, but the command still exits nonzero because it could not establish that the install is

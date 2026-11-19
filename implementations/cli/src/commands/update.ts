@@ -159,7 +159,9 @@ export interface UpdateRuntime {
   prepareReplacement?(): Promise<() => Promise<void>>;
   /** Validate recorded local service ownership before replacing packages or reconciling connectors. */
   preflightReplacement?(): Promise<void>;
-  claimGlobalUpdate(root: string): () => void;
+  claimGlobalUpdate(root: string, onWait?: () => void): () => void;
+  /** Read the selected global package again after acquiring its update reservation. */
+  globalVersion?(root: string): string | undefined;
   selfArgv(): string[];
   /** Whether this CLI runs from a source checkout, where `--self` installs a separate global copy. */
   checkout(): boolean;
@@ -220,7 +222,14 @@ export const updateRuntime: UpdateRuntime = {
   extensions: () => loadExtensionsManifest().extensions,
   verifyExtension: verifyCurrentExtension,
   claimUpdatePass: () => claimExtensionUpdatePass(),
-  claimGlobalUpdate: (root) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000 }),
+  claimGlobalUpdate: (root, onWait) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000, onWait }),
+  globalVersion: (root) => {
+    const path = join(root, "cotal-ai", "package.json");
+    if (!existsSync(path)) return undefined;
+    const meta = JSON.parse(readFileSync(path, "utf8")) as { name?: string; version?: string };
+    if (meta.name !== "cotal-ai" || !meta.version || !STRICT_SEMVER.test(meta.version)) throw new Error("the installed global cotal-ai version is invalid");
+    return meta.version;
+  },
   selfArgv,
   checkout: () => seedWriterKind() === "checkout",
   installPrefix: () => {
@@ -1121,7 +1130,7 @@ function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
   try {
     const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
     if (result.signal) throw new DependencyCheckInterrupted(`npm dependency check was terminated by ${result.signal}`);
-    if (result.status !== 0) throw new Error(`installed extension dependency closure is unavailable: ${failure(result)}`);
+    if (result.status !== 0) throw releaseReadError(result, `installed extension dependency closure is unavailable: ${failure(result)}`);
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
   }
@@ -1248,6 +1257,15 @@ function collectArchiveCaches(parent: string): void {
 class ReleaseNotAvailable extends Error {}
 class ReleaseDateExcluded extends Error {}
 class DependencyCheckInterrupted extends Error {}
+class RegistryUnavailable extends Error {}
+
+const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND)$/;
+
+function registryNetworkFailure(error: unknown): boolean {
+  if (error instanceof RegistryUnavailable) return true;
+  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(message(error))?.[1];
+  return code !== undefined && NETWORK_ERROR_CODE.test(code);
+}
 
 function releaseReadError(result: CommandResult, detail: string): Error {
   if (result.status !== null && !result.error) {
@@ -1255,10 +1273,16 @@ function releaseReadError(result: CommandResult, detail: string): Error {
       const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown; detail?: unknown } }).error;
       if (error?.code === "ETARGET" && [error.summary, error.detail].some(text => typeof text === "string" && /with a date before\b/i.test(text)))
         return new ReleaseDateExcluded(`${detail}: npm's min-release-age or before setting excludes this release. Adjust that date filter and run \`cotal update --self\` again`);
+      // A first-party scoped read can fail while the public registry still answers.
+      if (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code)) return new RegistryUnavailable(detail);
       if (error?.code === "E404" || error?.code === "ETARGET") return new ReleaseNotAvailable(detail);
+      if (typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code)) {
+        const registry = detail.includes("@cotal-ai/") ? "the @cotal-ai:registry setting in .npmrc" : "your npm registry settings";
+        return new Error(`${detail} (npm ${error.code}${error.code === "ECONNREFUSED" ? ": registry connection refused" : ""}); check ${registry}, authentication, proxy and TLS configuration`);
+      }
     } catch { /* An unstructured failure is not evidence of registry propagation. */ }
   }
-  return new Error(detail);
+  return registryNetworkFailure(new Error(failure(result))) ? new RegistryUnavailable(detail) : new Error(detail);
 }
 
 async function waitForReleaseArchives(version: string, current: string, rt: UpdateRuntime): Promise<boolean> {
@@ -1341,8 +1365,13 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       rt.err(c.red(`✗ ${message(e)}. No global install was attempted.`));
       return 1;
     }
+    if (registryNetworkFailure(e)) {
+      recordUpdateDeferral(targetVersion, "waiting for registry access", true);
+      rt.out("The registry cannot be reached; nothing was changed.");
+      return 0;
+    }
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
-    rt.err(c.red(`✗ cotal-ai@${targetVersion} release is not ready: ${message(e)}. The release is still reaching the registry or registry access failed; no global install was attempted. Check registry access and run \`cotal update --self\` again in a few minutes.`));
+    rt.err(c.red(`✗ cotal-ai@${targetVersion} update preflight failed: ${message(e)}. No global install was attempted. ${e instanceof ReleaseNotAvailable ? "The release is still reaching the registry; run `cotal update --self` again in a few minutes." : "Correct the reported failure, then run `cotal update --self` again."}`));
     return 1;
   }
 
@@ -1394,9 +1423,28 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
 
   let releaseGlobal: () => void;
   try {
-    releaseGlobal = rt.claimGlobalUpdate(root);
+    releaseGlobal = rt.claimGlobalUpdate(root, () => rt.out("Waiting up to 10 minutes for another updater to release npm's global root"));
   } catch (e) {
     rt.err(c.red(`✗ could not reserve npm's global root for update: ${message(e)}`));
+    return 1;
+  }
+
+  // Another updater may have finished while this process still has the old generation loaded.
+  // Re-enter through its verified installation instead of replacing it or rolling back to stale code.
+  try {
+    const installed = rt.globalVersion?.(root);
+    if (installed && compareSemver(installed, current) > 0 && compareSemver(installed, targetVersion) >= 0) {
+      const entry = rt.verifyGlobalEntry(root, installed);
+      releaseGlobal();
+      rt.out(`Another update installed cotal-ai@${installed}; rechecking the installed CLI`);
+      const child = rt.spawn(rt.nodePath, [entry, "update", "--self", ...targetArgv(target), ...(target["stop-agents"] === true ? ["--stop-agents"] : [])], rt.env, true);
+      if (child.stderr) rt.stderr(child.stderr);
+      if (child.stdout) rt.stdout(child.stdout);
+      return child.status ?? 1;
+    }
+  } catch (error) {
+    releaseGlobal();
+    rt.err(`could not recheck the installed global CLI: ${message(error)}`);
     return 1;
   }
 
@@ -1415,6 +1463,11 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     } catch (error) {
       try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
       releaseGlobal();
+      if (!execution && message(error).startsWith("target staging failed: ") && registryNetworkFailure(error)) {
+        recordUpdateDeferral(targetVersion, "waiting for registry access", true);
+        rt.out("The registry cannot be reached; nothing was changed.");
+        return 0;
+      }
       recordUpdateDeferral(targetVersion, `staged pre-install check refused: ${preflightDetail(error)}`);
       rt.err(`staged pre-install check refused: ${message(error)}; no installed packages or connector state were changed`);
       return 1;
