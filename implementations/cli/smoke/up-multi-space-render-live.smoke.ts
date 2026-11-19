@@ -17,6 +17,7 @@
  *  3. alpha connects too (the booted tenant is not traded away for the sibling).
  *  4. an UNREADABLE record in the account namespace REFUSES the boot, rather than rendering a
  *     config that silently drops whatever tenant it may have been.
+ *  5. an authenticated foreground boot reaches delivery after slow connector reconciliation.
  *
  * Sandboxes COTAL_HOME under a scratch base with proven-clean `.cotal` ancestry; kills only its own
  * child. Needs `nats-server` on PATH.
@@ -24,11 +25,13 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
-import { freePort } from "@cotal-ai/smoke-kit";
+import { freePort, killAndAwaitExit } from "@cotal-ai/smoke-kit";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
+import { MANAGER_OMITTED } from "../src/lib/delivery-proc.js";
 
 const scratch = makeScratch("cotal-up-multispace-");
 const home = mkdtempSync(join(scratch, "home-"));
@@ -113,6 +116,52 @@ async function connects(port: number, creds: string): Promise<boolean> {
   }
 }
 
+async function foregroundAfterSlowSeed(): Promise<void> {
+  const space = "slow-seed", root = realpathSync(mkdtempSync(join(scratch, "slow-root-")));
+  const home = realpathSync(mkdtempSync(join(scratch, "slow-home-"))), xdg = join(home, "xdg");
+  assertScratchHeld(root, "the slow seed project");
+  const cli = join(WT, "bin", "dist", "cotal.js");
+  const { version } = JSON.parse(readFileSync(join(WT, "bin", "package.json"), "utf8")) as { version: string };
+  const seed = join(xdg, "cotal", "seed"), stamp = join(seed, "stamp.json");
+  mkdirSync(seed, { recursive: true, mode: 0o700 });
+  // All connectors were deliberately removed and the version stamp needs to be written again.
+  // This still runs the real reconcile, without making the smoke depend on npm downloads.
+  writeFileSync(join(seed, "authority.json"), JSON.stringify({ everSeeded: Object.keys(SEEDED_EXTENSIONS) }));
+  writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }));
+  const clock = join(home, "seed-clock.cjs");
+  // Start the CLI clock 310 seconds behind and restore it at the real seed commit. NATS keeps
+  // wall time, so a provisioner minted before reconciliation is expired when it reaches NATS.
+  writeFileSync(clock, `const fs = require("node:fs");
+    const now = Date.now.bind(Date), rename = fs.renameSync;
+    Date.now = () => now() - 310_000;
+    fs.renameSync = (from, to) => {
+      rename(from, to);
+      if (to === ${JSON.stringify(stamp)}) {
+        Date.now = now;
+        fs.renameSync = rename;
+        require("node:module").syncBuiltinESMExports();
+      }
+    };
+    require("node:module").syncBuiltinESMExports();`);
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const child = spawn(process.execPath, ["--require", clock, cli, "up", "--server", server, "--space", space, "--foreground", "--no-manager"], {
+    cwd: root, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "0", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_TELEMETRY: "off" },
+  });
+  let log = "";
+  for (const output of [child.stdout, child.stderr]) output.setEncoding("utf8").on("data", (chunk: string) => { log += chunk; });
+  const omitted = canonicalLocalProcessPath(MANAGER_OMITTED, { root, space });
+  const delivery = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root, space });
+  try {
+    const deadline = Date.now() + 60_000;
+    while (child.exitCode === null && child.signalCode === null && !existsSync(omitted) && Date.now() < deadline) await sleep(100);
+    ok("foreground boot after slow reconciliation starts authenticated delivery without a manager",
+      child.exitCode === null && existsSync(stamp) && existsSync(omitted) && existsSync(delivery) && !log.includes("Authorization Violation"), log.slice(-4000));
+  } finally {
+    await killAndAwaitExit(child);
+  }
+}
+
 try {
   mkdirSync(join(root, ".cotal"), { recursive: true });
   assertScratchHeld(root, "up multi-space render fixture");
@@ -182,6 +231,8 @@ try {
   ok("the second render preloads EVERY sibling callout account",
     siblingCallouts.every(({ account }) => secondConf.includes(`${account.pub}: ${account.jwt}`)));
   await stopBoot(second);
+
+  await foregroundAfterSlowSeed();
 
   console.log(`\nUP MULTI-SPACE RENDER SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {
