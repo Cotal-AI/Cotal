@@ -216,6 +216,7 @@
     "packages/core/src/endpoint-invoke.ts": { "no-longer": 1 },
     "packages/core/src/endpoint-liveness.ts": { "issue-reference": 1 },
     "packages/core/src/endpoint-presence.ts": { "issue-reference": 22, "no-longer": 3 },
+    "packages/core/src/endpoint-provisioning.ts": { "issue-reference": 1 },
     "packages/core/src/endpoint-publish-denial.ts": { "issue-reference": 1 },
     "packages/core/src/endpoint-receipt.ts": { "no-longer": 1 },
     "packages/core/src/endpoint-reconcile.ts": { "no-longer": 1 },
