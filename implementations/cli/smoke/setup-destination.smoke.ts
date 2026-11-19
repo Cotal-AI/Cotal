@@ -689,5 +689,22 @@ if (process.platform !== "win32") {
   check("a rerun without --runtime removes neither", none.status === 0 && rows(none).filter((x) => x.state === "set-up").map((x) => x.name).join() === "tmux,herdr" && installed("@cotal-ai/herdr") !== undefined, shown(none));
 }
 
+if (process.platform !== "win32") {
+  const oldBin = project("old-bin");
+  const probed = join(oldBin, "nats-server.probed");
+  writeFileSync(join(oldBin, "nats-server"), `#!/bin/sh\nif [ "$1" != --version ]; then exit 1; fi\necho probed > "$0.probed"\necho 'nats-server: v2.9.0'\n`, { mode: 0o755 });
+  const path = { PATH: [oldBin, env.PATH].join(delimiter) };
+  const dir = project("brokerless");
+  const prepared = await json([...FULL("brokerless", dir), "--configure-only", "--yes"], dir, path);
+  check("configure-only saves the default persona without probing the old broker",
+    prepared.status === 0 && prepared.env?.result?.startup?.state === "not-requested" && !existsSync(probed)
+      && existsSync(join(dir, ".cotal", "agents", "default.md")), shown(prepared));
+  const startDir = project("broker-required");
+  const started = await json([...FULL("broker-required", startDir), "--start", "--detach", "--yes"], startDir, path);
+  check("explicit startup still refuses the old broker before writing the project",
+    refused(started, 2, "DEPENDENCY_UNAVAILABLE") && /reports version 2\.9\.0/.test(started.env?.error?.message ?? "")
+      && existsSync(probed) && !existsSync(join(startDir, ".cotal")), shown(started));
+}
+
 finish();
 process.exit(process.exitCode ?? 0);

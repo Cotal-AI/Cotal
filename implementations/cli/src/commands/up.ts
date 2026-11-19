@@ -2366,16 +2366,16 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // Decided above the branch; the dial host is only settled here (a port collision may have moved
   // the server, and the hostname is what the certificate has to match).
   assertServesDialHost(transport, new URL(server).hostname);
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore, false, { authTimeout, maxPayload, accountResolver, manager: values["no-manager"] !== true }) : undefined;
-  const brokerMaxPayload = setup?.maxPayload ?? maxPayload ?? readBrokerPolicy(cotalRoot())?.maxPayload;
+  const brokerSetup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore, false, { authTimeout, maxPayload, accountResolver, manager: values["no-manager"] !== true }) : undefined;
+  const brokerMaxPayload = brokerSetup?.maxPayload ?? maxPayload ?? readBrokerPolicy(cotalRoot())?.maxPayload;
   const port = Number(new URL(server).port) || 4222;
   // Both modes go through a RENDERER, never bare CLI flags. Open mode used to start from
   // `-js -sd … -p … -a …`, which never called a renderer at all — so the required transport union
   // protected the auth path and was silent on the open one, and a cert/key pair passed to an
   // open-mode `up` would have been accepted while the listener came up in cleartext.
-  const renderingBinary = setup?.brokerBinary ?? await resolveNatsServer();
+  const renderingBinary = brokerSetup?.brokerBinary ?? await resolveNatsServer();
   if (!renderingBinary.version) throw unreadVersion(renderingBinary);
-  const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore, maxPayload: brokerMaxPayload });
+  const confPath = brokerSetup ? brokerSetup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore, maxPayload: brokerMaxPayload });
   const natsArgs = [
     "-c", confPath,
     ...(boundListener ? ["--name", boundListener.serverName] : []),
@@ -2383,6 +2383,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const natsServer = renderingBinary;
   const bin = natsServer.path;
   await seedBeforeLaunch();
+  const setup = brokerSetup && { ...brokerSetup, creds: await brokerSetup.mintProvisioner() };
 
   const starting = `Starting ${natsServerLabel(natsServer)} (JetStream, ${useAuth ? "JWT auth" : "OPEN/no-auth"}) - store: ${storeDir}, bind: ${host}`;
   for (const line of hang("", starting, terminalWidth(process.stdout), c.dim)) console.log(line);
@@ -3560,9 +3561,9 @@ export function controllerStackNative(): StackUpNative {
   return {
     prepareBroker: async (opts) => {
       const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.logFile !== undefined ? { logFile: opts.logFile } : {}), ...(opts.logfileSizeLimit !== undefined ? { logfileSizeLimit: opts.logfileSizeLimit } : {}), ...(opts.logfileMaxNum !== undefined ? { logfileMaxNum: opts.logfileMaxNum } : {}), ...(opts.authTimeout !== undefined ? { authTimeout: opts.authTimeout } : {}), ...(opts.maxPayload !== undefined ? { maxPayload: opts.maxPayload } : {}), ...(opts.accountResolver !== undefined ? { accountResolver: opts.accountResolver } : {}), ...(opts.noManager ? { noManager: true } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
-      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort, moveWebsocketPort: prepared.setup.moveWebsocketPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}), ...(prepared.maxPayload !== undefined ? { maxPayload: prepared.maxPayload } : {}), ...(prepared.setup?.accountResolver !== undefined ? { accountResolver: prepared.setup.accountResolver } : {}) };
+      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { mintProvisioner: prepared.setup.mintProvisioner, wsPort: prepared.setup.wsPort, moveWebsocketPort: prepared.setup.moveWebsocketPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}), ...(prepared.maxPayload !== undefined ? { maxPayload: prepared.maxPayload } : {}), ...(prepared.setup?.accountResolver !== undefined ? { accountResolver: prepared.setup.accountResolver } : {}) };
     },
-    initializeStreams: (server, space, setup, seedFile, recreateIssuedStores, recreateMembershipStore) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined, recreateIssuedStores, recreateMembershipStore, true),
+    initializeStreams: async (server, space, setup, seedFile, recreateIssuedStores, recreateMembershipStore) => postStart(server, space, setup && { creds: await setup.mintProvisioner() }, seedFile as ChannelRegistryFile | undefined, recreateIssuedStores, recreateMembershipStore, true),
     recreateDeletedStreams: ({ seed, ...opts }) => recreateDeletedStreams({ ...opts, ...(seed !== undefined ? { seed: seed as ChannelRegistryFile } : {}) }),
     recordMesh: (entry) => recordOurMesh({ ...entry, ts: new Date().toISOString() }, "started", true),
     commitTransport: (root, chosen, limits) => commitTransportPolicy(root, chosen, true, undefined, limits),
@@ -4121,7 +4122,7 @@ async function serveReadyListener(l: {
   server: string;
   space: string;
   storeDir: string;
-  setup?: Awaited<ReturnType<typeof authSetup>>;
+  setup?: Awaited<ReturnType<typeof authSetup>> & { creds: string };
   maxPayload?: number;
   seedFile?: ChannelRegistryFile;
   /** `--recreate-issued-stores`: the new backup directory the fresh boot's stream setup uses. */
@@ -4372,8 +4373,9 @@ export async function startMeshDetached(
   // entirely cannot carry a mandatory decision.
   opts: DetachOpts,
 ): Promise<{ server: string; pid: number; executable: string; controlPlane: boolean; authService: boolean; deliveryResponderBound: boolean | null; delivery: boolean; deliveryLost?: string; manager: boolean }> {
-  const { server, space, useAuth, storeDir, seedFile, transport, setup, maxPayload, args, bin, source, version } = await prepareBrokerStart(opts);
+  const { server, space, useAuth, storeDir, seedFile, transport, setup: brokerSetup, maxPayload, args, bin, source, version } = await prepareBrokerStart(opts);
   await seedBeforeLaunch();
+  const setup = brokerSetup && { ...brokerSetup, creds: await brokerSetup.mintProvisioner() };
   const logPath = cotalPath("nats.log");
   const fd = openBrokerLog(logPath);
   const listenerStartedAt = new Date().toISOString();
@@ -5593,8 +5595,8 @@ function unreadableTrust(error: unknown): unknown {
   });
 }
 
-/** Ensure the space's trust material exists, render a server config, and mint a privileged
- *  setup creds (used to pre-create streams once the server is up). The account signing key
+/** Ensure the space's trust material exists and render a server config. The caller can mint
+ *  the setup credential after connector reconciliation. The account signing key
  *  in `.cotal/auth` is what `cotal mint` and the manager later use to issue per-agent creds.
  *
  *  USER MODE (`user` set): additionally run the registered auth provider's `prepareServer` over the
@@ -5628,7 +5630,7 @@ async function authSetup(
   // rather than two trailing optional numbers: a transposed pair of those renders a wrong
   // configuration in silence.
   requested: { authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; manager?: boolean; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number } = {},
-): Promise<{ brokerBinary: NatsServer; confPath: string; creds: string; wsPort: number; moveWebsocketPort: () => Promise<number>; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number; maxPayload?: number; accountResolver: "memory" | "full" }> {
+): Promise<{ brokerBinary: NatsServer; confPath: string; mintProvisioner: () => Promise<string>; wsPort: number; moveWebsocketPort: () => Promise<number>; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number; maxPayload?: number; accountResolver: "memory" | "full" }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());
   let auth: SpaceAuth | undefined = await getSpaceAuth(store, space).catch((error: unknown) => { throw unreadableTrust(error); });
@@ -5765,11 +5767,10 @@ async function authSetup(
   // takes it first, the broker exits before readiness, and a controller stack start renders this
   // configuration again on a newly chosen port.
   const moveWebsocketPort = async () => { const moved = await freePort(host); render(moved); return moved; };
-  // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
-  // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
-  // enumerated `provisioner` scope. No broad `manager` residual for the up path.
-  const creds = await mintCreds(auth, newIdentity(), "provisioner");
-  return { brokerBinary, confPath, creds, wsPort, moveWebsocketPort, ...(prepared ? { prepared, stateDir } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), accountResolver: resolverChoice };
+  // Connector reconciliation can outlast the provisioner's lifetime. Mint only when boot needs it
+  // to probe the listener, create streams and buckets, or seed the channel registry.
+  const mintProvisioner = () => mintCreds(auth, newIdentity(), "provisioner");
+  return { brokerBinary, confPath, mintProvisioner, wsPort, moveWebsocketPort, ...(prepared ? { prepared, stateDir } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), accountResolver: resolverChoice };
 }
 
 /**
