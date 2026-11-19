@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { logicalExecutionEntry, extensionProvides, loadExtensionsManifest, type InstalledExtension } from "@cotal-ai/workspace";
+import { logicalExecutionEntry, extensionProvides, loadExtensionsManifest } from "@cotal-ai/workspace";
 import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
 
@@ -46,28 +46,26 @@ export interface ExtensionVersion {
   pkg: string;
 }
 
-/** Installed extensions (seeded built-in connectors + operator `ext add`s) with their pinned
- *  versions, for `cotal version` and `cotal status`. Reads the on-disk manifest directly — no import, no
- *  seeding side effect. Returns `[]` on an absent or corrupt manifest: the version view stays
- *  resilient, and a corrupt manifest is surfaced loudly by the real commands (the overlay is fatal). */
+/** Read pinned versions from the manifest without importing or seeding extensions. */
 export function extensionVersions(): ExtensionVersion[] {
-  return readExtensionVersions().versions;
+  return loadExtensionsManifest().extensions.map((e, index) => {
+    if (!e || typeof e.pkg !== "string" || !e.pkg || typeof e.version !== "string" || !e.version) {
+      throw new Error(`invalid extension version entry at index ${index}`);
+    }
+    return {
+      label: [...new Set(extensionProvides(e).map((ref) => ref.name))].join(", ") || e.pkg,
+      version: e.version,
+      pkg: e.pkg,
+    };
+  });
 }
 
 /** {@link extensionVersions}, with the reason when the manifest could not be read, so a structured
  *  report can say its list is incomplete rather than empty. */
 export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string } {
-  let extensions: readonly InstalledExtension[];
   try {
-    extensions = loadExtensionsManifest().extensions;
+    return { versions: extensionVersions() };
   } catch (e) {
     return { versions: [], unreadable: e instanceof Error ? e.message : String(e) };
   }
-  return {
-    versions: extensions.map((e) => ({
-      label: [...new Set(extensionProvides(e).map((ref) => ref.name))].join(", ") || e.pkg,
-      version: e.version,
-      pkg: e.pkg,
-    })),
-  };
 }

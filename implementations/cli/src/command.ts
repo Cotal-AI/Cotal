@@ -613,9 +613,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (argv[0] === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
   if (argv[0] === "--version" || argv[0] === "-V") argv = ["version", ...argv.slice(1)];
   else if (argv[0] === "--help" || argv[0] === "-h") argv = ["help", ...argv.slice(1)];
-  // The built-in check reports an unreadable inventory itself. Do not require that inventory to
-  // construct its command surface, or recover an installation as a prelude to this read-only mode.
+  // These built-in reads report an unreadable inventory themselves and do not use extension
+  // commands. Update check also skips the ordinary recovery of a pending installation promotion.
   const builtin = findCommand(registry.all<Command>("command"), argv[0]);
+  const versionJson = builtin?.name === "version" && !asksForHelp(argv.slice(1)) && asksForJson(builtin, argv.slice(1));
   const updateCheck = builtin?.name === "update" && argv.includes("--check") && !asksForHelp(argv.slice(1))
     && parseOrExit(builtin, ownWords(builtin, argv.slice(1), leadingGlobals)).values.check === true;
   const configFolder = globalConfigDirProblem();
@@ -631,7 +632,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const surface = (): Command[] => {
     let commands: Command[];
     try {
-      commands = opts.extensions && !updateCheck ? overlayExtensions(registry) : registry.all<Command>("command");
+      commands = opts.extensions && !versionJson && !updateCheck ? overlayExtensions(registry) : registry.all<Command>("command");
     } catch (e) {
       // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
       // rendered as the CLI's one red line, not an unhandled-rejection stack dump.

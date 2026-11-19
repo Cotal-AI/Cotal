@@ -4,6 +4,7 @@
  * generation and the dispatcher's flag-name completion. Run: pnpm smoke:cli-kernel
  */
 import "./update-isolation.js";
+import "./version-json.smoke.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
@@ -287,48 +288,6 @@ async function completionOut(positionals: string[]): Promise<string> {
     // First line is always `cotal-ai <semver>`; any installed extensions follow indented (none in
     // a bare unit env).
     assert.match(out.split("\n")[0], /^cotal-ai \d+\.\d+\.\d+/, `${argv.join(" ")} prints the binary version`);
-  }
-}
-
-// --- version --json is one envelope; an unreadable extensions manifest makes its list partial -----
-// The binary's overlay refuses a corrupt manifest before version runs; a composition root without
-// extensions reaches version's own read.
-{
-  const { runCli } = await import("../src/command.js");
-  const { extensionsManifestPath } = await import("@cotal-ai/workspace");
-  const priorXdg = process.env.XDG_CONFIG_HOME;
-  const xdg = mkdtempSync(join(tmpdir(), "cotal-version-json-"));
-  process.env.XDG_CONFIG_HOME = xdg;
-  const capture = async (argv: string[]) => {
-    let out = "";
-    const real = process.stdout.write;
-    process.stdout.write = ((chunk: string) => ((out += chunk), true)) as typeof process.stdout.write;
-    try {
-      await runCli(registry, argv);
-    } finally {
-      process.stdout.write = real;
-    }
-    return out;
-  };
-  try {
-    const clean = JSON.parse(await capture(["version", "--json"]));
-    assert.equal(clean.completeness, "complete", "version --json with a readable manifest is complete");
-    assert.deepEqual(clean.warnings, [], "version --json with a readable manifest has no warnings");
-    mkdirSync(join(extensionsManifestPath(), ".."), { recursive: true });
-    writeFileSync(extensionsManifestPath(), "{ not json");
-    const corrupt = JSON.parse(await capture(["version", "--json"]));
-    const partialExit = process.exitCode;
-    process.exitCode = 0;
-    assert.equal(corrupt.result?.version, clean.result.version, "version --json still reports the binary's version");
-    assert.equal(corrupt.outcome, "partial", "an unreadable manifest makes the read partial, not empty and complete");
-    assert.equal(corrupt.completeness, "partial", "an unreadable manifest makes the extension list partial");
-    assert.equal(corrupt.error?.code, "OPERATION_PARTIAL", "a partial read carries OPERATION_PARTIAL");
-    assert.equal(partialExit, 4, "a partial read exits 4");
-    assert.equal(corrupt.warnings[0]?.code, "EXTENSIONS_UNREADABLE", "an unreadable manifest is named in a warning");
-  } finally {
-    rmSync(xdg, { recursive: true, force: true });
-    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
-    else process.env.XDG_CONFIG_HOME = priorXdg;
   }
 }
 
