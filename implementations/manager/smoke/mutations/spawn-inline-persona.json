@@ -161,7 +161,7 @@
       "name": "N16 let the rollback throw when its snapshot removal fails",
       "file": "implementations/manager/src/seat-launch.ts",
       "find": "      const snapshotGone = snapshotUid === undefined || this.dropInlineSnapshot(name, snapshotUid);\n",
-      "replace": "      const snapshotGone = snapshotUid === undefined || (removeInlineSnapshot(this.workspaceRoot, snapshotUid), true);\n",
+      "replace": "      const snapshotGone = snapshotUid === undefined || this.dropInlineSnapshot(name, snapshotUid) || (() => { throw new Error(\"inline snapshot removal failed\"); })();\n",
       "expectRed": "and still tears its grant down",
       "cell": "and still tears its grant down"
     },
