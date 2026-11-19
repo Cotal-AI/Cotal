@@ -49,7 +49,7 @@
     },
     {
       "name": "stop omits the final owned-connection proof",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "    if ([...this.ownedConnections].some((nc) => !nc.isClosed()))\n      throw new Error(\"endpoint stop could not prove its connection closed; local consumer custody must be retained\");",
       "replace": "    // Mutation: release custody without proving every owned connection closed.",
       "expectRed": "an unclosed owned connection retains custody after all bind flights settle",

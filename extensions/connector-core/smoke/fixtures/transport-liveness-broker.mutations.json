@@ -31,7 +31,7 @@
   "mutations": [
     {
       "name": "a stop landing mid-bind still announces the connection it then tears down",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "    if (this.stopped) return;\n    this.emit(\"connection\", { connected: true });\n",
       "replace": "    this.emit(\"connection\", { connected: true });\n",
       "expectRed": "stop during a REAL initial bind never announces the connection it then tears down",
