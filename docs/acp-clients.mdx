@@ -107,6 +107,7 @@ When this machine records no space at all, it runs `cotal setup` instead.
 
 - Stopping a turn sends the agent's interrupt key through its manager. Claude Code and Pi agents support it. For any other application, the thread says the agent could not be stopped, the turn ends as cancelled, and the agent keeps working on the mesh.
 - When you stop a Claude Code turn before the agent answered, Claude puts that prompt back in its input box. Your next prompt is typed after it, so the agent gets both.
+- A later prompt is typed as if you typed it into the application, so the application's input shortcuts apply. In Claude Code, a prompt that starts with `!` runs as a shell command and its turn does not show in the thread.
 - A later prompt ends when the agent stops working. When the agent was already busy as the prompt arrived, the turn can end when that earlier work does.
 - A later prompt needs an agent on the built-in `pty` runtime, because the manager types it into the agent's terminal. An agent on tmux, cmux, Orca or Herdr refuses it, and so does a Claude Code agent showing a selection menu. The turn then fails with the manager's reason.
 - Work an agent does between your prompts, such as answering a peer, does not show live in T3 Code.

@@ -188,6 +188,11 @@ const personaChoices = (o: typeof opts) => (o.find((x) => x.id === "persona") as
 opts = (await set("machine", "m2")).configOptions;
 check("choosing another machine offers that manager's personas", personaChoices(opts).includes("builder") && !personaChoices(opts).includes("reviewer"), personaChoices(opts));
 await set("machine", "m1");
+await set("persona", "reviewer");
+opts = (await set("machine", "m2")).configOptions;
+const carried = opts.find((o) => o.id === "persona") as { currentValue?: string } | undefined;
+check("a persona the chosen machine lacks returns to the default", carried?.currentValue === "default", carried);
+await set("machine", "m1");
 await set("model", "claude/opus");
 await set("persona", "reviewer");
 const noChannel = await errorOf(set("channel", "nowhere"));
@@ -312,6 +317,7 @@ check("its open tool call is closed as failed", updates.some((u) => u.update.ses
 
 // cancel
 const cancel = (sessionId: string) => conn.agent.notify(methods.agent.session.cancel, { sessionId });
+const seatOf = (name: string): SeatRef => ({ name, owner: "local", actor: `actor-${name}`, lifecycleUid: `life-${name}` });
 const settled = (p: Promise<{ stopReason: string } | undefined>) => p.catch((e: Error) => ({ stopReason: `error: ${e.message}` }));
 const go = (sessionId: string) => settled(within(agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "count" }] })));
 
@@ -368,6 +374,21 @@ await tick(50);
 await agent.request(methods.agent.session.delete, { sessionId: c5.sessionId });
 const r5 = await p5;
 check("deleting a session answers its running prompt cancelled and leaves the seat running", r5?.stopReason === "cancelled" && mesh.interrupted.length === interruptsBefore && !mesh.despawned.includes(c5.sessionId), r5);
+
+// A delete while the first spawn is pending hides the seat the spawn returns.
+const c6 = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+mesh.spawnDelay = 150;
+mesh.script = { before: [], after: [] };
+const p6 = go(c6.sessionId);
+await tick(20);
+await agent.request(methods.agent.session.delete, { sessionId: c6.sessionId });
+const r6 = await p6;
+await tick(200);
+updates.length = 0;
+mesh.emit(seatOf(c6.sessionId), [{ type: "TEXT_MESSAGE_START", messageId: "z", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "z", delta: "orphan" }], "r1");
+await tick();
+check("a delete during the first spawn hides the seat it returns and sends it nowhere", r6?.stopReason === "cancelled" && hidden.ids.has(`life-${c6.sessionId}`) && !updates.some((u) => u.sessionId === c6.sessionId), { r6, hidden: [...hidden.ids], updates });
+mesh.spawnDelay = 0;
 
 let threw = false;
 try { promptText([{ type: "image", data: "", mimeType: "image/png" }]); } catch { threw = true; }

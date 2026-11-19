@@ -21,7 +21,7 @@ import { realpathSync } from "node:fs";
 import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type ContentBlock, type SessionUpdate, type StopReason } from "@agentclientprotocol/sdk";
 import { FrameMapper, type RunSignal } from "./frames.js";
 import { SignInRequired, type Mesh, type SeatFrame, type SeatRef, type SeatRow } from "./mesh.js";
-import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, refusal, type Offer, type Selection } from "./options.js";
+import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
 export const COMMANDS = [
@@ -386,7 +386,13 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       }
       if (next.machine !== session.selection.machine) {
         const m = await mesh();
-        session.offer = await offerFor(m, next.machine);
+        const offer = await offerFor(m, next.machine);
+        try {
+          next = reconcile(offer, next);
+        } catch (e) {
+          throw RequestError.invalidParams(undefined, (e as Error).message);
+        }
+        session.offer = offer;
       }
       session.selection = next;
       return { configOptions: configOptions(session.offer, session.selection) };
@@ -419,6 +425,11 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
           prompt: text,
           ...(session.selection.machine ? { managerInstanceId: session.selection.machine } : {}),
         });
+        // A session deleted or replaced while the spawn was pending keeps no claim on the seat.
+        if (sessions.get(session.id) !== session) {
+          if (!sessions.has(session.id)) options.hidden.add(seat.lifecycleUid);
+          return;
+        }
         bind(session, seat);
       });
       return { stopReason };
