@@ -309,6 +309,9 @@ It stops, adopts and removes nothing. `--with-agents` on a stopped stack refuses
 preview, `cotal down --dry-run --with-agents`, shows the no-op and warns with that refusal. When the
 stack's last completed `down` took `--with-agents`, or the root never started a stack, no agent of
 it can remain, and `--with-agents` reports the same no-op.
+For a legacy stack, the retry needs the registration that `down` keeps for a space named after its
+project folder. The registration records retirement only when the manager completed that shutdown.
+A plain stop or an unconfirmed retirement still leaves `--with-agents` unable to tell whether agents remain.
 
 When a legacy preserved cut is `ready`, bare `down` checks that the recorded processes are stopped
 and that the recorded broker address has no listener. It leaves the cut unchanged, exits 0, and

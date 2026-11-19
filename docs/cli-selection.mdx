@@ -640,7 +640,10 @@ This machine shows what is set up and what needs attention. The version line is 
 applications is one line: the applications whose required executables are on PATH, and a count of the
 others, which `cotal setup` adds. An application's own rows, such as the Claude plugin, Claude
 Desktop and Claude skills, appear for an application that is set up and only when they are not
-current. When this machine has local broker records, such as a prepared space, a stack or a
+current. When no application is set up and `status` cannot prompt, Next names the missing executable
+and gives a configure-only setup command if the prepared local space has a saved harness whose
+connector is installed. If those inputs are not known, Next points to `cotal setup --help` for the
+scripted flags. Bare `cotal setup` needs a terminal. When this machine has local broker records, such as a prepared space, a stack or a
 registration started here, the broker executable appears if it is missing or `up` refuses it.
 Prepared spaces count even when another space is selected or status runs outside their projects.
 Local trust and a stack journal also retain the row, including records that cannot be read or parsed.

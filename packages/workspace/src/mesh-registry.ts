@@ -140,6 +140,8 @@ export interface MeshEntry {
   ts: string;
   /** This folder's completed legacy down kept the registration. The next up clears this receipt. */
   stoppedByDown?: true;
+  /** The completed legacy down also confirmed the manager's shutdown with agent retirement. */
+  stoppedWithAgents?: true;
 }
 
 /** Non-secret user-auth metadata on a {@link MeshEntry}. TRUST PINS and CONVENIENCE ENDPOINTS are

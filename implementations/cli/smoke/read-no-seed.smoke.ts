@@ -78,9 +78,9 @@ const GATE = /refusing to reconcile the operator-global seed store/;
   const next = human.stdout.split("\nNext\n")[1]?.split("\n").map(line => line.trim().replace(/ +/g, " "));
   check("status on a fresh machine leads with Cloud sign-in and still points at application setup",
     human.status === 0
-      && human.stdout.split("\n").some(line => line.trim() === `Agent applications: ○ not set up · \`${displayCmd()} setup\` adds one`)
+      && human.stdout.split("\n").some(line => line.trim() === "Agent applications: ○ not set up")
       && next?.[0] === `${displayCmd()} login Sign in to Cotal Cloud`
-      && next.includes(`${displayCmd()} setup Set up an agent application and a space`), shown(human));
+      && next.some(line => line.startsWith(`${displayCmd()} setup --help See setup flags for scripts.`)), shown(human));
 }
 
 {
