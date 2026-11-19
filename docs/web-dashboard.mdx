@@ -49,7 +49,7 @@ The `host` and `port` definition options default to `127.0.0.1` and 7799. Port 0
 A wildcard host is refused when the service starts, and the refusal names the `cotal service remove` and `cotal service add` that change the saved definition.
 Background `cotal service start web` opens an authenticated browser session for a loopback listener.
 Repeating it reuses the matching process and refreshes the single-use link in the private session file without signing out existing browser sessions.
-This also works with `--no-open`, which skips the browser opener. If there is no opener or Linux graphical session, the command warns how to find the refreshed link.
+This also works with `--no-open`, which skips the browser opener. If the opener fails, does not return promptly, or there is no Linux graphical session, the command tells you where to find the refreshed link.
 The service starts no dependency automatically. For a remote listener, use `--no-open` and read the initial link from the private session file. Repeating start does not refresh that remote link.
 Readiness confirms the HTTP listener and signal handlers, not a new authenticated endpoint reply.
 A page file that cannot be read returns `500` with the failed read identified.
@@ -86,6 +86,7 @@ Anyone holding the private browser session can exercise the configured posting a
 Find the owner-private session file with `cotal service logs web --space <space>` and open its `launchUrl` in the browser profile you intend to use.
 The dashboard creates the file for its instance and launch request. A refresh updates that same file and replaces any unused link.
 Logs and start output show only how to find the file.
+If the file is missing, unreadable, or changed, the dashboard leaves it alone. Restore the original owner-private file, or follow the restart command in the error to create a fresh one. Restarting signs out existing browser sessions.
 
 <Callout type="warn" title="Keep the session file private">
 

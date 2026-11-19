@@ -111,14 +111,18 @@ const nativeWebServiceCommand: Command = {
           process.stdout.write(`${posting ? "Posting-enabled" : "Read-only"} dashboard. Private browser bootstrap file: ${oneLine(sessionPath)}\n`);
         },
         onLaunchUrl(launchUrl) {
+          const original = sessionRecord;
           try {
-            if (!sessionRecord || !unchangedSession()) throw new Error("missing session record");
-            const next = { ...sessionRecord, launchUrl };
+            if (!original || !unchangedSession()) return false;
+          } catch { return false; }
+          const next = { ...original, launchUrl };
+          try {
             writeSecretFileAtomic(sessionPath, sessionBytes(next));
-            sessionRecord = next;
           } catch {
-            throw new Error("the private dashboard session record could not be refreshed");
+            throw new Error("the private dashboard session record could not be written");
           }
+          sessionRecord = next;
+          return true;
         },
         onReady() { publishServiceStartup(readyPath, { phase: "web-listening", space: selected.space, instanceId, launchRequestId }); },
         onClosed() {

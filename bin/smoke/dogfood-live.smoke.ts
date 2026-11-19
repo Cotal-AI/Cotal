@@ -28,7 +28,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -38,6 +38,8 @@ import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE } from "@c
 // Ephemeral OS-assigned ports: no fixed-port collision across back-to-back / concurrent runs.
 const AUTH_PORT = await freePort();
 const WEB_PORT = await freePort();
+const WEB_HOST = process.platform === "linux" ? "127.0.0.2" : "127.0.0.1";
+const WEB_ORIGIN = `http://${WEB_HOST}:${WEB_PORT}`;
 const SPACE = "dogfood-custom";
 const NONCE = `dogfood-${randomUUID()}`;
 const REPO = resolve(import.meta.dirname, "..", "..");
@@ -61,7 +63,8 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 const openerDir = join(sandbox, "openers");
 mkdirSync(openerDir);
 const openedPath = join(sandbox, "opened-url");
-writeFileSync(join(openerDir, "xdg-open"), `#!/bin/sh\nprintf '%s' "$1" > '${openedPath}'\n`, { mode: 0o700 });
+const openerPath = join(openerDir, "xdg-open");
+writeFileSync(openerPath, `#!/bin/sh\nprintf '%s' "$1" > '${openedPath}'\n`, { mode: 0o700 });
 const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, USERPROFILE: home, DISPLAY: ":smoke", WAYLAND_DISPLAY: "", PATH: `${openerDir}:${process.env.PATH}`, XDG_CONFIG_HOME: configDir, XDG_RUNTIME_DIR: runtimeDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
 const tsxCli = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
@@ -82,7 +85,7 @@ const alive = (pid: number) => {
 };
 const out = (r: ReturnType<typeof cotal>) => r.stdout + r.stderr;
 const pidOf = (r: ReturnType<typeof cotal>) => Number(/^\s*PID:\s+(\d+)\s*$/m.exec(r.stdout)?.[1]);
-const web = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${WEB_PORT}${path}`, { ...init, headers: { ...init?.headers, connection: "close" }, signal: AbortSignal.timeout(15_000) });
+const web = (path: string, init?: RequestInit) => fetch(`${WEB_ORIGIN}${path}`, { ...init, headers: { ...init?.headers, connection: "close" }, signal: AbortSignal.timeout(15_000) });
 
 /** The service's bounded log tail, parsed from its JSON result. */
 const serviceLog = (name: string) => {
@@ -109,7 +112,7 @@ try {
   // -- A: the dashboard is not core ----------------------------------------------------------------
   const creds = join(sandbox, "dashboard.creds");
   const flags = ["--preset", "web", "--space", SPACE, "--creds", creds, "--read-only"];
-  const definition = ["service", "add", "web", ...flags, "--root", root, "--port", String(WEB_PORT)];
+  const definition = ["service", "add", "web", ...flags, "--root", root, "--host", WEB_HOST, "--port", String(WEB_PORT)];
   {
     const r = cotal(["web", "--help"]);
     ok("`cotal web` is an unknown command", r.status === 1 && /unknown command: web/.test(r.stderr), r.stderr.slice(0, 150));
@@ -151,7 +154,7 @@ try {
 
     // Another process holds the dashboard's port. The start must fail without touching it.
     const squatter = createServer((_req, res) => res.end("squatter"));
-    await new Promise<void>((ready) => squatter.listen(WEB_PORT, "127.0.0.1", ready));
+    await new Promise<void>((ready) => squatter.listen(WEB_PORT, WEB_HOST, ready));
     const add = cotal(definition);
     ok("service add --preset web saves the dashboard definition", add.status === 0 && /Service definition saved/.test(add.stdout), out(add).slice(-500));
     const blocked = cotal(["service", "start", "web", "--space", SPACE]);
@@ -173,7 +176,7 @@ try {
     const { path: sessionPath, session, log } = boot!;
     ok("the bootstrap file is owner-private", (statSync(sessionPath).mode & 0o077) === 0, sessionPath);
     ok("the bootstrap file belongs to this instance and process", session.instanceId === log.instanceId && session.process?.pid === webPid, { session: { instanceId: session.instanceId, pid: session.process?.pid }, log: log.instanceId, webPid });
-    ok("the bootstrap file preserves the bound listener host", session.host === "127.0.0.1", { host: session.host });
+    ok("the bootstrap file preserves the bound listener host", session.host === WEB_HOST, { host: session.host });
     ok("the bootstrap file preserves the bound listener port", session.port === WEB_PORT, { port: session.port, expected: WEB_PORT });
     const launchUrl = session.launchUrl as string;
     const token = new URL(launchUrl).searchParams.get("k");
@@ -211,7 +214,7 @@ try {
       const repeat = cotal(["service", "start", "web", "--space", SPACE, "--json", ...flags]);
       const { outcome, result, warnings } = JSON.parse(repeat.stdout) as { outcome: string; result: { pid: number }; warnings?: { code: string; message: string }[] };
       const warned = warnings?.some((w) => w.code === "BROWSER_NOT_OPENED" && w.message.includes(`cotal service logs web --space ${SPACE}`)) ?? false;
-      ok(`${label} keeps the same dashboard and does not invoke the opener`, repeat.status === 0 && outcome === "ok" && result.pid === webPid && alive(webPid) && !existsSync(openedPath) && warned === warn, { exit: repeat.status, outcome, warned });
+      ok(`${label} keeps the same dashboard and leaves manual access`, repeat.status === 0 && outcome === "ok" && result?.pid === webPid && alive(webPid) && !existsSync(openedPath) && warned === warn, { exit: repeat.status, outcome, warned });
       const latest = await bootstrapAfter([]);
       if (!latest || typeof latest.session.launchUrl !== "string") throw new Error(`${label} did not leave a link in the session file`);
       const url = latest.session.launchUrl;
@@ -227,18 +230,34 @@ try {
     env.PATH = absentDir;
     try { await manualRepeat("a repeat with a missing opener", [], true); }
     finally { env.PATH = savedPath; }
+    const failedOpener = join(sandbox, "failed-opener");
+    writeFileSync(openerPath, `#!/bin/sh\ntouch '${failedOpener}'\nexit 1\n`);
+    await manualRepeat("a repeat with an opener that exits nonzero", [], true);
+    ok("the failing opener actually ran", existsSync(failedOpener));
 
     const manual = cotal(["service", "start", "web", "--space", SPACE, "--no-open"]);
     const refreshedBytes = readFileSync(sessionPath, "utf8");
     const refreshed = JSON.parse(refreshedBytes) as { launchUrl: string; launchNonce: string };
+    const restartArgs = ["service", "restart", "web", "--space", SPACE, "--instance", log.instanceId, "--yes"];
+    const checkRecordRefusal = (cause: string) => {
+      const refused = cotal(["service", "start", "web", "--space", SPACE, "--no-open", "--json"]);
+      const { outcome, error } = JSON.parse(refused.stdout) as { outcome: string; error?: { message: string; remedy?: string } };
+      ok(`a ${cause} private record gives a partial result with specific recovery`, refused.status === 4 && outcome === "partial" && error?.message.includes(cause) === true && error.remedy?.includes(`cotal ${restartArgs.join(" ")}`) === true && error.remedy.includes("end existing browser sessions") && !error.remedy.includes("retry") && alive(webPid), { exit: refused.status, outcome });
+      ok("a refused refresh gives no stale-link warning and leaks no credential", !out(refused).includes("BROWSER_NOT_OPENED") && !out(refused).includes(refreshed.launchNonce) && !out(refused).includes(new URL(refreshed.launchUrl).searchParams.get("k")!));
+    };
+    const savedRecord = `${sessionPath}.saved`;
+    renameSync(sessionPath, savedRecord);
+    try {
+      checkRecordRefusal("missing");
+      ok("a missing record is not recreated", !existsSync(sessionPath));
+    } finally { renameSync(savedRecord, sessionPath); }
     try {
       // A change that keeps the process and launch IDs still is not the child's record to replace.
       writeFileSync(sessionPath, refreshedBytes + "\n");
-      const refused = cotal(["service", "start", "web", "--space", SPACE, "--no-open", "--json"]);
-      ok("the running dashboard refuses to refresh a changed private record without replacing it", manual.status === 0 && refused.status === 4 && JSON.parse(refused.stdout).outcome === "partial" && readFileSync(sessionPath, "utf8") === refreshedBytes + "\n" && alive(webPid), { exit: refused.status });
-      ok("a refused refresh gives no stale-link warning and leaks no credential", !out(refused).includes("BROWSER_NOT_OPENED") && !out(refused).includes(refreshed.launchNonce) && !out(refused).includes(new URL(refreshed.launchUrl).searchParams.get("k")!));
+      checkRecordRefusal("changed");
+      ok("the running dashboard does not overwrite a changed private record", readFileSync(sessionPath, "utf8") === refreshedBytes + "\n");
     } finally { writeFileSync(sessionPath, refreshedBytes); }
-    ok("a refused refresh leaves the last issued link usable", (await fetch(refreshed.launchUrl, { redirect: "manual", signal: AbortSignal.timeout(15_000) })).status === 302);
+    ok("a refused refresh leaves the last issued link usable", manual.status === 0 && (await fetch(refreshed.launchUrl, { redirect: "manual", signal: AbortSignal.timeout(15_000) })).status === 302);
 
     ok("unauthenticated callers cannot mint browser links", (await web("/api/browser-launch", { method: "POST" })).status === 401);
     ok("readiness authority cannot mint browser links", (await web("/api/browser-launch", { method: "POST", headers: { "x-cotal-readiness": (session as Bootstrap & { readiness: string }).readiness } })).status === 401);
@@ -276,7 +295,7 @@ try {
     ok("the direct-message history answers for the admin credential", dms.status === 200 && Array.isArray(await dms.json()), dms.status);
     const del = await web("/api/channel/delete", {
       method: "POST",
-      headers: { ...authed, origin: `http://127.0.0.1:${WEB_PORT}`, "content-type": "application/json" },
+      headers: { ...authed, origin: WEB_ORIGIN, "content-type": "application/json" },
       body: JSON.stringify({ channel: "general" }),
     });
     const refusal = (await del.json()) as { code?: string };
@@ -307,9 +326,16 @@ try {
     ok("bare down refuses while the saved dashboard service runs", refusedDown.status === 2 && /LIFECYCLE_BLOCKED/.test(refusedOut) && /bare down stopped nothing/.test(refusedOut), refusedOut.slice(-900));
     ok("the refusal names the exact service stop remedy", liveBoot !== undefined && refusedOut.includes(`cotal service stop web --instance ${liveBoot.log.instanceId} --space ${SPACE} --yes`), refusedOut.slice(-900));
     ok("the refusal leaves the dashboard, its bootstrap file and the stack alive", alive(livePid) && liveBoot !== undefined && existsSync(liveBoot.path) && meshPids.every(alive));
-    const stopAgain = cotal(["service", "stop", "web", "--instance", liveBoot!.log.instanceId, "--space", SPACE, "--yes"]);
-    for (let i = 0; i < 50 && alive(livePid); i++) await sleep(100);
-    ok("the explicit stop ends the dashboard and removes its bootstrap file before the stack", stopAgain.status === 0 && !alive(livePid) && !existsSync(liveBoot!.path) && meshPids.every(alive), out(stopAgain).slice(-500));
+    writeFileSync(liveBoot!.path, readFileSync(liveBoot!.path, "utf8") + "\n");
+    const recovered = cotal(restartArgs);
+    const recoveryPid = pidOf(recovered);
+    if (Number.isFinite(recoveryPid)) ownPids.push(recoveryPid);
+    ok("the printed restart remedy replaces the dashboard with the changed record", recovered.status === 0 && !alive(livePid) && alive(recoveryPid) && recoveryPid !== livePid, { exit: recovered.status, recoveryPid });
+    const recoveryBoot = await bootstrapAfter([sessionPath, liveBoot!.path]);
+    ok("the replacement supplies a usable link in a new private record", typeof recoveryBoot?.session.launchUrl === "string" && (await fetch(recoveryBoot.session.launchUrl, { redirect: "manual", signal: AbortSignal.timeout(15_000) })).status === 302);
+    const stopAgain = cotal(["service", "stop", "web", "--instance", recoveryBoot!.log.instanceId, "--space", SPACE, "--yes"]);
+    for (let i = 0; i < 50 && alive(recoveryPid); i++) await sleep(100);
+    ok("the explicit stop ends the dashboard and removes its bootstrap file before the stack", stopAgain.status === 0 && !alive(recoveryPid) && !existsSync(recoveryBoot!.path) && meshPids.every(alive), out(stopAgain).slice(-500));
     const down = cotal(["down", "--yes"]);
     ok("bare down then stops the auth mesh", down.status === 0 && meshPids.every((pid) => !alive(pid)), out(down).slice(-500));
   }

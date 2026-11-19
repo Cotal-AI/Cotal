@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { WEB_SERVICE_ADAPTER, serviceWebSessionPath, readLocalRecordSource, webBoundUrl, type OutputWarning } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { lstatSync, readlinkSync } from "node:fs";
-import type { ParsedArgs } from "@cotal-ai/core";
+import { isLoopbackLiteral, type ParsedArgs } from "@cotal-ai/core";
 import { ConfirmationRequired, CommandFailure, canonicalRoot, commandFailureReport, isCommandFailure, oneLine, presentationOf, processGroupMembers, processGroupOf, protectedLocalDirectory, renderReport, writeResult, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { observeRecordedSupervisor, systemdUserUnitDirectory } from "../lib/service-systemd.js";
@@ -40,6 +40,22 @@ function runningExecutable(row: ReturnType<typeof instanceProjection>): string |
   } catch {
     return null;
   }
+}
+
+/** Some openers wait for the browser to close. Stop waiting without killing that browser. */
+async function openDashboardBrowser(launchUrl: string): Promise<"accepted" | "failed" | "unconfirmed"> {
+  const executable = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const child = spawn(executable, process.platform === "win32" ? ["/c", "start", "", launchUrl] : [launchUrl], { stdio: "ignore", detached: true });
+  return new Promise((resolve) => {
+    const finish = (outcome: "accepted" | "failed" | "unconfirmed") => {
+      clearTimeout(timer);
+      child.unref();
+      resolve(outcome);
+    };
+    const timer = setTimeout(() => finish("unconfirmed"), 2000);
+    child.once("error", () => finish("failed"));
+    child.once("exit", (code) => finish(code === 0 ? "accepted" : "failed"));
+  });
 }
 
 function instanceView(row: ReturnType<typeof instanceProjection> & { executable?: string | null }, title: string): Report {
@@ -404,49 +420,46 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   let issuedBrowserLink = false;
   if (mode === "start" && name === "web" && prepared?.adapter?.pin.name === WEB_SERVICE_ADAPTER && !values.foreground && (!noOpen || started.noOp)) {
     const privateLink = `use \`cotal service logs web --space ${space}\` for the private session record and open its single-use launchUrl locally`;
-    const retry = `retry \`cotal service start web --space ${space} --no-open\` to request a private link without opening a browser`;
-    let remote = false;
+    const browserTarget = { space, name, instanceId: result.instanceId };
+    const failure = (reason: string, remedy: string) => new CommandFailure("partial", "OPERATION_PARTIAL", `the dashboard is running, but ${reason}`, { target: browserTarget, remedy });
+    const recordFailure = (reason: string) => failure(reason, `restore the original owner-private session record, or run \`cotal service restart web --space ${space} --instance ${result.instanceId} --yes\` to create a new record and end existing browser sessions`);
     try {
       const value = started.instance.record.value;
       const path = serviceWebSessionPath({ space, instanceId: value.instanceId, launchRequestId: value.launchRequestId, stateDirectory: serviceInstanceStore(space).directory()! });
       const readSession = () => {
-        const bytes = readLocalRecordSource(path, 16384, true);
-        if (!bytes) throw new Error("missing session record");
-        const session = JSON.parse(bytes.toString("utf8"));
-        if (session.space !== space || session.instanceId !== value.instanceId || session.launchRequestId !== value.launchRequestId || session.process?.pid !== value.process?.pid || session.process?.token !== value.process?.token || typeof session.launchNonce !== "string") throw new Error("session mismatch");
+        let bytes: Buffer | undefined;
+        try { bytes = readLocalRecordSource(path, 16384, true); }
+        catch { throw recordFailure("the private browser session record could not be read as an owner-private file"); }
+        if (!bytes) throw recordFailure("the private browser session record is missing");
+        let session;
+        try { session = JSON.parse(bytes.toString("utf8")); }
+        catch { throw recordFailure("the private browser session record is invalid"); }
+        if (session?.space !== space || session.instanceId !== value.instanceId || session.launchRequestId !== value.launchRequestId || session.process?.pid !== value.process?.pid || session.process?.token !== value.process?.token || typeof session.launchNonce !== "string" || typeof session.launchUrl !== "string" || typeof session.host !== "string" || !Number.isInteger(session.port) || session.port < 1 || session.port > 65535) throw recordFailure("the private browser session record does not match this dashboard launch");
         return session;
       };
       const session = readSession();
-      remote = !["127.0.0.1", "::1"].includes(session.host);
       // A remote listener keeps its startup link. Never send the private launch nonce over that HTTP listener.
-      if (remote && !noOpen) throw new Error("browser launch requires a loopback listener");
-      if (!remote) {
+      const loopback = isLoopbackLiteral(session.host);
+      if (!loopback && !noOpen) throw failure("opening a browser requires a loopback listener", `${privateLink} if it has not been used`);
+      if (loopback) {
         if (observeServiceProcess(value) !== "running") throw new Error("browser launch requires a live local listener");
         const response = await fetch(new URL("/api/browser-launch", webBoundUrl(session.host, session.port)), { method: "POST", headers: { "x-cotal-browser-launch": session.launchNonce }, redirect: "manual", signal: AbortSignal.timeout(5000) });
+        if (response.status === 409) throw recordFailure("the dashboard refused to refresh a private browser session record that is missing, unreadable, or changed");
         if (!response.ok) throw new Error("browser handoff refused");
         const { launchUrl } = await response.json() as { launchUrl: string };
         const url = new URL(launchUrl);
         if (url.origin !== new URL(session.launchUrl).origin || url.protocol !== "http:" || url.username || url.password || url.pathname !== "/" || !url.searchParams.get("k")) throw new Error("invalid launch URL");
         const refreshed = readSession();
         if (refreshed.launchUrl !== launchUrl || refreshed.host !== session.host || refreshed.port !== session.port || refreshed.launchNonce !== session.launchNonce) throw new Error("fresh link not confirmed in the session record");
-        const open = !noOpen && !(process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY);
-        let opened = false;
-        if (open) {
-          const executable = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-          try {
-            const child = spawn(executable, process.platform === "win32" ? ["/c", "start", "", launchUrl] : [launchUrl], { stdio: "ignore", detached: true });
-            await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-            child.unref();
-            opened = true;
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          }
+        if (!noOpen) {
+          const opener = process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY ? "failed" : await openDashboardBrowser(launchUrl);
+          if (opener !== "accepted") browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: browserTarget, message: `${opener === "unconfirmed" ? "Browser opening was not confirmed" : "No browser was opened"}; ${privateLink}.` });
         }
-        if (!noOpen && !opened) browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: { space, name }, message: `No browser was opened; ${privateLink}.` });
         issuedBrowserLink = true;
       }
-    } catch {
-      throw new CommandFailure("partial", "OPERATION_PARTIAL", remote ? "the dashboard is running, but opening a browser requires a loopback listener" : "the dashboard is running, but the browser link handoff did not complete", { target: { space, name, instanceId: result.instanceId }, remedy: remote ? `${privateLink} if it has not been used` : retry });
+    } catch (error) {
+      if (isCommandFailure(error) && error.code === "OPERATION_PARTIAL") throw error;
+      throw failure("the browser link handoff did not complete", `check \`cotal service status web --space ${space} --instance ${result.instanceId}\` and its service log before requesting another link`);
     }
   }
   writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp && !issuedBrowserLink, warnings: browserWarnings }, (row) => {

@@ -230,7 +230,7 @@ function cookieValue(header: string | undefined, name: string): string | undefin
  *  such request as `unauthenticated` and the operator would never learn that something cross-origin
  *  was talking to their console. The more specific condition wins.
  */
-export function makeAuthGate(port: number, host: string = WEB_HOST, launchNonce?: string, publishLaunchUrl?: (url: string) => void) {
+export function makeAuthGate(port: number, host: string = WEB_HOST, launchNonce?: string, publishLaunchUrl?: (url: string) => boolean) {
   // Single-use, minted per process. 32 bytes: this is the only secret standing between a local
   // process and the mesh view until the cookie exists.
   let launchToken: string | undefined = randomBytes(32).toString("base64url");
@@ -262,14 +262,14 @@ export function makeAuthGate(port: number, host: string = WEB_HOST, launchNonce?
     launchToken: launchToken!,
     readinessNonce,
     /** `undefined` = let the request through. Otherwise the named condition that refused it. */
-    check(req: IncomingMessage, query: URLSearchParams): { refuse: string } | { exchange: string } | { launchUrl: string } | undefined {
+    check(req: IncomingMessage, query: URLSearchParams): { refuse: string } | { exchange: string } | { launchUrl: string } | { launchRecordConflict: true } | undefined {
       if (launchNonce && pathOf(req) === "/api/browser-launch" && req.method === "POST" &&
           typeof req.headers["x-cotal-browser-launch"] === "string" && secretEquals(req.headers["x-cotal-browser-launch"], launchNonce) &&
           req.headers.origin === undefined && req.headers["transfer-encoding"] === undefined && Number(req.headers["content-length"] ?? 0) === 0) {
         const nextToken = randomBytes(32).toString("base64url");
         const launchUrl = `${webUrl(host, port)}?k=${nextToken}`;
         // The new link becomes usable only after the private handoff succeeds.
-        publishLaunchUrl?.(launchUrl);
+        if (publishLaunchUrl?.(launchUrl) === false) return { launchRecordConflict: true };
         launchToken = nextToken;
         return { launchUrl };
       }
@@ -428,7 +428,7 @@ interface WebServiceLifecycle {
   readonly posting?: { creds: string; expiresAt: number };
   readonly connection: Omit<Connection, "auth">;
   readonly onSession: (session: WebSession) => void | Promise<void>;
-  readonly onLaunchUrl?: (url: string) => void;
+  readonly onLaunchUrl?: (url: string) => boolean;
   readonly onReady: () => void | Promise<void>;
   readonly onClosed: () => void | Promise<void>;
 }
@@ -603,6 +603,10 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
       return void res.end();
     }
 
+    if (verdict !== undefined && "launchRecordConflict" in verdict) {
+      res.setHeader("cache-control", "no-store");
+      return json(res, { error: "browser-launch-record-conflict" }, 409);
+    }
     if (verdict !== undefined && "launchUrl" in verdict) {
       res.setHeader("cache-control", "no-store");
       return json(res, verdict);
