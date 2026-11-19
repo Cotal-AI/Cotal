@@ -245,7 +245,8 @@ try {
     const activity = (await activityRes.json()) as { entries?: { mode: string; msg: Message }[]; partial?: boolean };
     ok("the activity feed carries the message from a complete read", activityRes.status === 200 && activity.partial === false && activity.entries?.some((e) => e.mode === "chat" && isNonce(e.msg)) === true, activity);
     const dms = await web("/api/dms", { headers: authed });
-    ok("the direct-message history answers for the admin credential", dms.status === 200 && Array.isArray(await dms.json()), dms.status);
+    const emptyDms = await dms.json();
+    ok("an authorized empty DM history is still a successful empty list", dms.status === 200 && Array.isArray(emptyDms) && emptyDms.length === 0, emptyDms);
     const del = await web("/api/channel/delete", {
       method: "POST",
       headers: { ...authed, origin: `http://127.0.0.1:${WEB_PORT}`, "content-type": "application/json" },

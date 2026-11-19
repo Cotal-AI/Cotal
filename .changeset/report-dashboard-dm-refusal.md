@@ -1,7 +1,8 @@
 ---
-"@cotal-ai/core": patch
+"@cotal-ai/core": minor
+"@cotal-ai/cli": patch
 "@cotal-ai/web": patch
 "cotal-ai": patch
 ---
 
-Report when the dashboard cannot read direct messages instead of showing an empty history and complete activity.
+Report a refused direct-message history read instead of returning an empty list from `CotalEndpoint.dmHistory()`.

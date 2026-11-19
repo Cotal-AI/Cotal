@@ -387,6 +387,12 @@ try {
   const observer = join(home, "observer.creds");
   writeFileSync(observer, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
   const asObserver = ["--creds", observer, "--space", space, "--server", servers, "--json"];
+  const restrictedDms = await run(["history", "--dms", ...asObserver]);
+  check("history --dms keeps readable chat and reports a refused DM read as partial",
+    restrictedDms.status === 4 && restrictedDms.envelope?.completeness === "partial" &&
+    restrictedDms.envelope.warnings.filter((w) => w.code === "DM_STREAM_UNREAD").length === 1 &&
+    restrictedDms.envelope.warnings.some((w) => w.code === "DM_STREAM_UNREAD" && /^direct-message history could not be read:.*permissions? violation/i.test(w.message)) &&
+    texts(restrictedDms).includes("deploy started") && !texts(restrictedDms).includes("a private note"), shown(restrictedDms));
   const deniedWrites: [string, string[], RegExp][] = [
     ["channel set", ["channel", "set", "general", "--desc", "x"], /^this observer credential may not write channel metadata in \S+, so nothing was saved: Permissions Violation/],
     ["channel remove", ["channel", "remove", "general", "--yes"], /^this observer credential may not remove channel metadata in \S+, so nothing was removed: Permissions Violation/],
