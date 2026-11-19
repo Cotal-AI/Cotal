@@ -271,8 +271,10 @@ the folder, because no space was resolved there.
 In open or static-auth mode, an unanswered `--server` address that differs from the registration
 retained by target resolution gives `TARGET_UNAVAILABLE`, naming the address that did not answer.
 Its Next names the recorded broker and says to drop `--server` to reach it. If resolution retained
-no registration, the Next says to check the address instead. The request is not sent to the
-recorded broker in its place. A trailing slash or scheme case change in `--server` retains the
+no registration, the Next says to check the address instead. For a prepared space and an explicit
+`nats://127.0.0.1:<port>` address, it also gives `cotal up --root <root> --space <space> --server <url>`
+to start that project there. The request is not sent to the recorded broker in its place.
+A trailing slash or scheme case change in `--server` retains the
 registered space. Matching preserves the URL's transport scheme and TLS intent. If equivalent
 addresses name several registered spaces, pass `--space` to choose one.
 When an overriding `--server` requires auth but the selected space is recorded as open at another
@@ -1123,7 +1125,8 @@ sibling as proof that the component serves. It prints one of `serving`, `absent`
 `refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed
 state wins). The optional dashboard prints `not-installed` when its extension is not installed,
 or `not-started` when it is installed but has no process record or unsettled owned instance. Both exit `0`.
-The component pass uses the same selected space as the report above it.
+The component pass uses the same selected space as the report above it. A trailing slash in the
+broker URL does not change which startup records the pass reads.
 That exit replaces the report's own, so a partial report followed by a clean pass exits 0:
 
 - **manager**: local PID record, its liveness-lease holder and PID, then the manager's own typed

@@ -767,8 +767,9 @@ previous lifecycle by its complete durable name without substituting a
 same-named current agent. An absent or unreadable durable is not `pending 0`. A missing DM stream is
 `TARGET_NOT_FOUND` as well: the durable was not read.
 The caller needs the native admin read authority; user-auth has no equivalent
-view here and refuses without a static or bare fallback. A failed read does
-not prune a locally saved mesh registration.
+view here and refuses without a static or bare fallback. If the local stack is stopped, the
+refusal names the stopped space and where to start it again. A failed read does not prune a locally
+saved mesh registration.
 
 Candidates are read without acknowledging DMs. The read creates one of this
 credential's history readers with a description unique to that read, and deletes
