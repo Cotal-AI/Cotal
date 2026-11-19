@@ -1,7 +1,9 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createRegistry } from "node:http";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
@@ -45,6 +47,49 @@ for (const consistent of [false, true]) {
   assert.deepEqual(actions, []);
   assert.deepEqual(lines, ["The registry cannot be reached; nothing was changed."]);
 }
+async function closedPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  if (!address || typeof address === "string") throw new Error("no loopback address");
+  return address.port;
+}
+const proxyPort = await closedPort();
+let registryPort = await closedPort();
+while (registryPort === proxyPort) registryPort = await closedPort();
+const proxyEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:cotal_|npm_config_|(?:https?_proxy|all_proxy|proxy|no_proxy)$)/i.test(key)));
+const proxyHome = mkdtempSync(join(tmpdir(), "cotal-update-proxy-"));
+try {
+  const userConfig = join(proxyHome, "user.npmrc");
+  const update = (extra: NodeJS.ProcessEnv) => spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", "--self"], {
+    cwd: proxyHome, encoding: "utf8", timeout: 30_000,
+    env: { ...proxyEnv, HOME: proxyHome, USERPROFILE: proxyHome, COTAL_HOME: join(proxyHome, "cotal"),
+      XDG_CONFIG_HOME: join(proxyHome, "config"), XDG_RUNTIME_DIR: join(proxyHome, "runtime"), TMPDIR: proxyHome, TMP: proxyHome, TEMP: proxyHome,
+      LOCALAPPDATA: join(proxyHome, "local"), APPDATA: join(proxyHome, "roaming"),
+      npm_config_userconfig: userConfig, npm_config_globalconfig: join(proxyHome, "global.npmrc"),
+      npm_config_registry: `https://127.0.0.1:${registryPort}`, COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", ...extra },
+  });
+  const checkRefusal = (refused: ReturnType<typeof update>) => {
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    assert.match(refused.stderr, /npm proxy refused the connection \(ECONNREFUSED\)/);
+    assert.match(refused.stderr, /HTTP_PROXY, HTTPS_PROXY/);
+    assert.doesNotMatch(refused.stdout + refused.stderr, /example-user|example-password|localhost|127\.0\.0\.1|registry cannot be reached/i);
+  };
+  checkRefusal(update({ https_proxy: `http://example-user:example-password@localhost:${proxyPort}` }));
+  writeFileSync(userConfig, `https-proxy=http://127.0.0.1:${proxyPort}\n`);
+  checkRefusal(update({}));
+  writeFileSync(userConfig, "");
+  for (const extra of [{}, { HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`, NO_PROXY: "127.0.0.1" },
+    { HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`, COTAL_AUTO_UPDATE: "1" }]) {
+    const offline = update(extra);
+    assert.equal(offline.status, 0, offline.stdout + offline.stderr);
+    assert.equal(offline.stdout.trim(), "The registry cannot be reached; nothing was changed.");
+    assert.doesNotMatch(offline.stderr, /proxy refused/i);
+  }
+} finally {
+  rmSync(proxyHome, { recursive: true, force: true });
+}
 const { seedInstallationCurrent } = await import("../src/seed/reconcile.js");
 assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not proven current");
 const { registryArrivalCell } = await import("../../../bin/smoke/update-registry-arrival.smoke.mjs");
@@ -52,33 +97,36 @@ const cacheUpdate = await registryArrivalCell({ scenario: "cache" });
 assert.equal(cacheUpdate.code, 0, "real CLI and npm update succeed with a user-owned cache that is not writable");
 if (process.platform !== "win32") {
   const home = mkdtempSync(join(tmpdir(), "cotal-update-cwd-"));
+  const version = JSON.parse(readFileSync(join(import.meta.dirname, "../../../bin/package.json"), "utf8")).version;
+  const registry = createRegistry((_request, response) => response.end(JSON.stringify({
+    name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } },
+  })));
   try {
-    const gone = join(home, "gone");
+    await new Promise<void>((resolve, reject) => registry.once("error", reject).listen(0, "127.0.0.1", resolve));
+    const address = registry.address();
+    if (!address || typeof address === "string") throw new Error("no loopback registry address");
+    const gone = join(home, "gone"), tools = join(home, "tools");
     mkdirSync(gone);
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !key.toLowerCase().startsWith("npm_config_")));
-    const result = spawnSync("/bin/sh", ["-c", 'cd "$1" && rmdir "$1" && shift && "$@" update --self && "$@" update --self', "sh", gone,
-      process.execPath, join(import.meta.dirname, "../../../bin/dist/cotal.js")], {
-      cwd: home, encoding: "utf8", timeout: 180_000,
-      env: { ...env, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "xdg"),
-        COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1" },
-    });
-    assert.equal(result.status, 0, `plain self-update and retry run from an already removed folder: ${result.stdout}\n${result.stderr}`);
-    assert.doesNotMatch(result.stdout + result.stderr, /this folder no longer exists|release is not ready|registry cannot be reached/i,
-      "removed cwd does not refuse update or masquerade as unavailable registry metadata");
-    assert.match(result.stdout, /Registry latest:/, "the actual updater completed its registry check");
-    mkdirSync(join(home, ".cotal"));
-    mkdirSync(gone);
-    const during = await new Promise<{ status: number | null; output: string; removed: boolean }>((resolve, reject) => {
-      const child = spawn("/bin/sh", ["-c", 'cd "$1" && shift && "$@" update --self && "$@" update --self', "sh", gone,
-        process.execPath, join(import.meta.dirname, "../../../bin/dist/cotal.js")], {
-        cwd: home, env: { ...env, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "xdg"),
-          COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1" },
-      });
+    mkdirSync(tools);
+    // Only test the vanished cwd, even if the public tag has moved past this checkout.
+    // Connector reconciliation still needs the real registry for dependencies.
+    writeFileSync(join(tools, "npm"), `#!/bin/sh
+if [ "$1:$2:$3" = 'view:cotal-ai@latest:version' ]; then export npm_config_registry=http://127.0.0.1:${address.port}; fi
+export PATH="$COTAL_TEST_ORIGINAL_PATH"
+exec npm "$@"
+`, { mode: 0o700 });
+    const env = { ...proxyEnv, PATH: `${tools}:${process.env.PATH}`, COTAL_TEST_ORIGINAL_PATH: process.env.PATH,
+      npm_config_prefix: join(home, "prefix"), npm_config_cache: join(home, "cache"),
+      npm_config_globalconfig: join(home, "global.npmrc"), npm_config_userconfig: join(home, "user.npmrc"),
+      HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_RUNTIME_DIR: join(home, "runtime"),
+      COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1" };
+    const run = (shell: string, removeDuringUpdate: boolean) => new Promise<{ status: number | null; output: string; removed: boolean }>((resolve, reject) => {
+      const child = spawn("/bin/sh", ["-c", shell, "sh", gone, process.execPath, join(import.meta.dirname, "../../../bin/dist/cotal.js")], { cwd: home, env });
       let output = "", removed = false;
       const timer = setTimeout(() => child.kill("SIGTERM"), 180_000);
       child.stdout.on("data", chunk => {
         output += chunk.toString();
-        if (!removed && /Built-in connectors|installed package closure is current/.test(output)) {
+        if (removeDuringUpdate && !removed && /Built-in connectors|installed package closure is current/.test(output)) {
           rmdirSync(gone);
           removed = true;
         }
@@ -87,9 +135,20 @@ if (process.platform !== "win32") {
       child.once("error", error => { clearTimeout(timer); reject(error); });
       child.once("close", status => { clearTimeout(timer); resolve({ status, output, removed }); });
     });
+    const result = await run('cd "$1" && rmdir "$1" && shift && "$@" update --self && "$@" update --self', false);
+    assert.equal(result.status, 0, `plain self-update and retry run from an already removed folder: ${result.output}`);
+    assert.doesNotMatch(result.output, /this folder no longer exists|release is not ready|registry cannot be reached/i,
+      "removed cwd does not refuse update or masquerade as unavailable registry metadata");
+    assert.match(result.output, /Registry latest:/, "the actual updater completed its registry check");
+    mkdirSync(join(home, ".cotal"));
+    mkdirSync(gone);
+    const during = await run('cd "$1" && shift && "$@" update --self && "$@" update --self', true);
     assert.equal(during.removed, true, `remove the original folder after plain update begins: ${during.output}`);
     assert.equal(during.status, 0, during.output);
     assert.doesNotMatch(during.output, /this folder no longer exists|release is not ready|registry cannot be reached/i);
-  } finally { rmSync(home, { recursive: true, force: true }); }
+  } finally {
+    await new Promise<void>(resolve => registry.close(() => resolve()));
+    rmSync(home, { recursive: true, force: true });
+  }
 }
 emitSentinel({ passed: counted.cells(), failed: 0 });

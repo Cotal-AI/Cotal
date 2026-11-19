@@ -1,5 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
+import { lookup } from "node:dns/promises";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { isIP, SocketAddress } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
@@ -538,6 +540,10 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     const latest = latestVersion(rt);
     if (!latest.ok) {
       if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry availability", true);
+      else if (latest.npmResult && await npmProxyRefused(latest.npmResult, rt)) {
+        rt.err("The npm proxy refused the connection (ECONNREFUSED). The update did not start. Check HTTP_PROXY, HTTPS_PROXY, or npm's proxy and https-proxy settings, then retry.");
+        return 1;
+      }
       rt.out("The registry cannot be reached; nothing was changed.");
       return 0;
     }
@@ -1084,19 +1090,63 @@ export function printLegacyReport(
 
 /** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
  *  notifier off, so the read leaves nothing in npm's own cache, log directory or notifier stamp. */
-function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string } {
+function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string; npmResult?: CommandResult } {
+  const result = npmRead(rt, ["view", "cotal-ai@latest", "version", "--json", "--fetch-retries=0", "--fetch-timeout=15000"]);
+  if (result.status !== 0) return { ok: false, error: failure(result), npmResult: result };
+  try {
+    return { ok: true, version: parseNpmVersion(result.stdout) };
+  } catch (e) {
+    return { ok: false, error: message(e) };
+  }
+}
+
+function npmRead(rt: UpdateRuntime, args: string[]): CommandResult {
   const cache = mkdtempSync(join(tmpdir(), "cotal-npm-view-"));
   try {
-    const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000"]);
-    if (result.status !== 0) return { ok: false, error: failure(result) };
-    try {
-      return { ok: true, version: parseNpmVersion(result.stdout) };
-    } catch (e) {
-      return { ok: false, error: message(e) };
-    }
+    return rt.npm([...args, "--cache", cache, "--logs-max=0", "--update-notifier=false"]);
   } finally {
     rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
+}
+
+/** npm's generic proxy hint appears for direct failures too. Match the refused socket instead. */
+async function npmProxyRefused(result: CommandResult, rt: UpdateRuntime): Promise<boolean> {
+  if (result.status === null || result.error) return false;
+  let error: { code?: unknown; summary?: unknown } | undefined;
+  try { error = JSON.parse(result.stdout)?.error; }
+  catch { return false; }
+  if (error?.code !== "ECONNREFUSED" || typeof error.summary !== "string") return false;
+  const refused = /^(?:FetchError: )?request to (\S+) failed, reason: connect ECONNREFUSED (\S+):(\d+)$/.exec(error.summary);
+  if (!refused) return false;
+  const [, request, address, port] = refused;
+  const registry = URL.parse(request);
+  if (!registry || (registry.protocol !== "http:" && registry.protocol !== "https:") || !isIP(address)) return false;
+
+  const portOf = (url: URL) => url.port || (url.protocol === "https:" ? "443" : "80");
+  const normalizeIp = (ip: string) => isIP(ip) === 6 ? new SocketAddress({ address: ip, family: "ipv6" }).address : ip;
+  const refusedAddress = normalizeIp(address);
+  const addressesOf = async (url: URL) => {
+    const host = url.hostname.replace(/^\[|\]$/g, "");
+    return isIP(host) ? [normalizeIp(host)] : (await lookup(host, { all: true })).map(item => normalizeIp(item.address));
+  };
+  // If the same socket could belong to the registry, there is no proof npm used a proxy.
+  try { if (portOf(registry) === port && (await addressesOf(registry)).includes(refusedAddress)) return false; }
+  catch { return false; }
+
+  const candidates = Object.entries(rt.env)
+    .filter(([key]) => /^(?:https?_proxy|proxy|npm_config_(?:https_)?proxy)$/i.test(key))
+    .map(([, value]) => value);
+  // Query separately because npm withholds a value that contains credentials.
+  for (const key of ["https-proxy", "proxy"]) {
+    const config = npmRead(rt, ["config", "get", key]);
+    if (config.status === 0) candidates.push(config.stdout.trim());
+  }
+  const matches = await Promise.allSettled([...new Set(candidates)].map(async value => {
+    const proxy = value && URL.parse(value);
+    return !!proxy && (proxy.protocol === "http:" || proxy.protocol === "https:") && portOf(proxy) === port
+      && (await addressesOf(proxy)).includes(refusedAddress);
+  }));
+  return matches.some(match => match.status === "fulfilled" && match.value);
 }
 
 /** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies. */
