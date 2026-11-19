@@ -495,8 +495,10 @@ export function validateSpawnArguments(args: ParsedArgs): void {
   if (!holdsManagedHandoff() && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined))
     throw new CommandFailure("refused", "USAGE_INVALID", `--expect-owner and --expect-lifecycle-uid apply only with ${MANAGED_HANDOFF_FILE_ENV}`);
   const direct = values.foreground === true || internal || !spawnUsesManager(values);
+  if (!internal && values.config !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--config is reserved for persisted internal launch callers", {
+    remedy: "use `cotal spawn <persona>` for a catalog name or `cotal spawn --file <persona-file>` for a file",
+  });
   if (values.file !== undefined && (args.positionals.length || values.config !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "choose one positional persona or --file/-f, not multiple explicit persona sources");
-  if (!internal && values.config !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--config is reserved for persisted internal launch callers; use `cotal spawn --file <persona-file>`");
   if (values.file !== undefined) { try { personaFileReference(values.file); } catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", (error as Error).message); } }
   if (values["allow-stale"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "manifest deployment options belong to `cotal team deploy <file>`, not spawn");
   if (values.runtime !== undefined && !values.runtime.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--runtime cannot be empty");
@@ -529,7 +531,6 @@ export function validateSpawnArguments(args: ParsedArgs): void {
     parseShareSelection(values["share-tools"]);
   } catch { throw new CommandFailure("refused", "USAGE_INVALID", "invalid launch options, native role or tool-sharing selection; use declared keys and unique key=value option pairs"); }
   if (!internal && args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "spawn takes one persona; pass the kickoff request with --prompt/-p");
-  if (!internal && values.config !== undefined && args.positionals.length) throw new CommandFailure("refused", "USAGE_INVALID", "choose one persona input, not both a positional name and --config");
 }
 
 /** Foreground `cotal spawn` resolves its `--agent` connector from the registry (spawn.ts below); on
@@ -1111,7 +1112,7 @@ async function transferWriterOrExit(flags: ConnectFlags, t: ControlTarget, insta
 }
 
 /**
- * `cotal spawn [<persona>] [--file <persona-file>]` runs the native application in this terminal.
+ * `cotal spawn [<persona> | --file <persona-file>]` runs the native application in this terminal.
  * `--detach` launches it through a manager and returns after readiness, and `--on <instance>`
  * launches it through that manager and attaches to its allocated incarnation. File validation
  * belongs to the execution host.

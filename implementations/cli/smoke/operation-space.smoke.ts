@@ -14,9 +14,10 @@
  * takes the seeded default's launch name. Removing the seeded default says so, and a launch preview
  * refuses a missing persona as the launch does. A managed preview exits 0, and both previews name
  * the persona's source in words. A direct preview refuses an unknown harness; a managed preview
- * warns because its execution host is not checked. A managed preview names its
- * `--runtime` and what this host said about it, and `--runtime auto` is refused before anything is
- * resolved. No broker is started.
+ * warns because its execution host is not checked. Spawn help and completion omit the launcher-only
+ * `--config`, and refusing it tells public callers how to pass a catalog name or file. A managed
+ * preview names its `--runtime` and what this host said about it, and `--runtime auto` is refused
+ * before anything is resolved. No broker is started.
  *
  * Run: pnpm smoke:operation-space
  */
@@ -281,6 +282,26 @@ for (const [modeLabel, flags] of [["foreground", ["--foreground"]], ["dry-run", 
       && (r.envelope?.error?.remedy ?? r.stderr).includes("`cotal team deploy <file>`"), shown(r));
 }
 
+const spawnHelp = cotal("spawn", "--help");
+const personaChoice = "[<persona> | --file <persona-file>]";
+const configOption = /^\s+--config\b/m;
+check("spawn help shows the catalog-or-file choice and omits the reserved flag",
+  spawnHelp.status === 0 && spawnHelp.stdout.includes(personaChoice) && !configOption.test(spawnHelp.stdout), shown(spawnHelp));
+const reserved = "--config is reserved for persisted internal launch callers";
+const guidance = /`cotal spawn <persona>` for a catalog name or `cotal spawn --file <persona-file>` for a file/;
+const configRefusal = cotal("spawn", "-d", "--config", "default", "--name", "cfg-test");
+check("public --config refuses with both alternatives and never lists itself in the appended help",
+  configRefusal.status === 1 && configRefusal.stdout === "" && configRefusal.stderr.includes(reserved)
+    && guidance.test(configRefusal.stderr.replace(/\s+/g, " ")) && configRefusal.stderr.includes(personaChoice)
+    && !configOption.test(configRefusal.stderr), shown(configRefusal));
+const configJson = cotal("spawn", "--config", "./pv.md", "--json");
+check("public --config also gives scripts both alternatives in a USAGE_INVALID refusal",
+  configJson.status === 1 && configJson.stderr === "" && configJson.envelope?.error?.code === "USAGE_INVALID"
+    && configJson.envelope.error.message === reserved && guidance.test(configJson.envelope.error.remedy ?? ""), shown(configJson));
+const spawnOptions = cotal("__complete", "spawn", "--");
+check("spawn option completion offers --file but does not suggest the reserved flag",
+  spawnOptions.status === 0 && /^--file\t/m.test(spawnOptions.stdout) && !/^--config\b/m.test(spawnOptions.stdout), shown(spawnOptions));
+
 // A managed preview cannot validate the execution host. A direct preview knows its effective
 // harness and refuses an unknown name before reporting success, regardless of its source.
 interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string }
@@ -312,6 +333,11 @@ const knownDirect = cotal("spawn", "--file", "pv.md", "--harness", "opencode", "
 const knownPreview = knownDirect.envelope as unknown as { result?: Preview; warnings?: unknown[] } | undefined;
 check("a known harness still previews the file's source without warnings or importing its connector",
   knownDirect.status === 0 && knownPreview?.result?.harness === "opencode" && knownPreview.result.persona?.source === "file" && same(knownPreview.warnings, []), shown(knownDirect));
+const launcher = outcome(spawnSync(process.execPath, [BIN, "spawn", "--config", "./pv.md", "--harness", "opencode", "--dry-run", "--json"], {
+  cwd: root, env: { ...env, COTAL_ENROLLMENT_FILE: join(home, "unused-enrollment") }, encoding: "utf8", timeout: 120_000,
+}));
+check("a persisted launcher can still pass --config without reading its enrollment input in a dry run",
+  launcher.status === 0 && launcher.envelope?.outcome === "ok" && launcher.envelope.result?.requestedName === "pv", shown(launcher));
 
 // The display name in a persona need not be a launch identity. Preview the effective value with
 // the same local rule as foreground launch, including the selected space's actor-token bound.
