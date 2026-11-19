@@ -372,7 +372,7 @@ const baseCommands: Command[] = [
         name: "show", flagNames: ["json", "plain"],
         summary: "show one space in full: broker, mode, root, origin and login. With no name, show this folder's space if it has one, otherwise the selected space.",
         examples: [
-          { command: "cotal space show", note: "show this folder's space, or the selected space if this folder has none" },
+          { command: "cotal space show", note: "show this folder's space, or the selected one" },
           { command: "cotal space show alpha", note: "show alpha from any folder" },
           { command: "cotal space show <name> --json", note: "one space as a JSON document" },
         ],
