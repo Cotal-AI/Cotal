@@ -80,6 +80,21 @@ check("a command with positionals keeps the dotted option name and its own remed
   && dottedSend.stderr.includes("Unknown option '--chan.nel' - did you mean --channel?") && dottedSend.stderr.includes("put -- before it")
   && !dottedSend.stderr.includes("To specify a positional argument"), shown(dottedSend));
 
+// The manager group accepts positionals, but parsing the child command rejects the extra word.
+for (const flags of [[], ["--plain"]]) {
+  const r = run(["manager", "seats", "extra.word", ...flags]);
+  check(`manager seats preserves the nested parse diagnostic${flags.length ? " under --plain" : ""}`, r.status === 1 && r.stdout === ""
+    && r.stderr.includes("Unexpected argument 'extra.word'") && /Usage\r?\n +cotal manager seats/.test(r.stderr), shown(r));
+}
+for (const [word, message] of [
+  ["mesh.example.com", "Unexpected argument 'mesh.example.com'"],
+  ["--drain", "Unknown option '--drain'"],
+] as const) {
+  const r = run(["--json", "manager", "reconcile", word]);
+  check(`manager reconcile ${word} keeps the nested parse diagnostic in JSON`, r.status === 1 && r.stderr === ""
+    && r.envelope?.error?.code === "USAGE_INVALID" && r.envelope.error.message === message, shown(r));
+}
+
 const dashes = run(["--", "version"]);
 check("cotal -- version runs version", dashes.status === 0 && /\d+\.\d+\.\d+/.test(dashes.stdout), shown(dashes));
 

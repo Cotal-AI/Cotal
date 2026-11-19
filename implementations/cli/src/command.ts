@@ -96,15 +96,18 @@ function takeGlobalFlag(word: string): boolean {
   return true;
 }
 
+type ArgError = { code: string; message: string };
+
 /** Node's parse diagnostic without its own usage guidance, with the nearest flag for a typo. */
-function parseErrorMessage(cmd: Command, error: Error & { code?: string }): string {
+function parseErrorMessage(error: ArgError, cmd?: Command): string {
   if (error.code === "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL")
     return error.message.replace(/\. This command does not take positional arguments$/u, "");
   if (error.code !== "ERR_PARSE_ARGS_UNKNOWN_OPTION") return error.message.split(".\n", 1)[0]!;
   // Node includes a JSON-quoted example when positionals are allowed. Strip that guidance
   // separately so punctuation inside the option name cannot end the diagnostic.
-  const message = cmd.positionals === undefined ? error.message
-    : error.message.replace(/\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "");
+  const message = error.message.replace(/\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "");
+  // A nested parser may have a different flag set. Suggest only from the surface we just parsed.
+  if (!cmd) return message;
   const option = /^Unknown option '(--.+)'$/su.exec(message)?.[1];
   const hint = option ? didYouMean(option, [...(cmd.flags ?? []).map((flag) => `--${flag.name}`), "--no-color", "--no-input", "--help"]) : "";
   return hint ? `${message} - ${hint}` : message;
@@ -290,10 +293,10 @@ function readsOnly(cmd: Command, first: string | undefined): boolean {
   return sub ? sub.reads === true : cmd.reads === true;
 }
 
-/** node's parseArgs throws these for unknown/malformed flags; treat as a usage error. */
-function isArgError(e: unknown): boolean {
-  const code = (e as { code?: string })?.code;
-  return typeof code === "string" && code.startsWith("ERR_PARSE_ARGS");
+/** Node's parseArgs throws these for unknown or malformed flags and unexpected positionals. */
+function isArgError(e: unknown): e is ArgError {
+  const error = e as Partial<ArgError> | undefined;
+  return typeof error?.code === "string" && error.code.startsWith("ERR_PARSE_ARGS") && typeof error.message === "string";
 }
 
 /** The managed verbs whose unpinned manager selection is asked on a terminal: each is refused
@@ -423,8 +426,8 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
 /** A parse error as a refusal. Node's usage guidance becomes a remedy in this CLI's words: a word
  *  that starts with `-` goes after `--`, a value that starts with `-` is written `--name=value`,
  *  and an option given without a value is named with its placeholder. */
-function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[]): { message: string; remedy?: string } {
-  const message = parseErrorMessage(cmd, error);
+function parseRefusal(error: ArgError, cmd: Command, rest: readonly string[]): { message: string; remedy?: string } {
+  const message = parseErrorMessage(error, cmd);
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" && cmd.positionals !== undefined)
     return { message, remedy: "to pass a word that starts with \"-\", put -- before it" };
   const missingValue = (flag: FlagSpec) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}` });
@@ -454,7 +457,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     parsed = parseCommandArgs(cmd, rest);
   } catch (e) {
     if (isArgError(e)) {
-      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest);
+      const refusal = parseRefusal(e, cmd, rest);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
     throw e;
@@ -481,7 +484,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     cmd.validate?.(canonical);
   } catch (error) {
     if (isCommandFailure(error)) failureExit(cmd, error, json, canonical.values.plain === true, undefined, rest);
-    if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain, undefined, rest);
+    if (isArgError(error)) usageExit(parseErrorMessage(error), cmd, json, plain, undefined, rest);
     throw error;
   }
   // The TCP client drops URL components beyond host and port. Apply registration's syntax rule
@@ -824,7 +827,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     const mode = parsed.positionals[0];
     const json = structured(cmd, mode) && parsed.values.json === true;
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
-    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, parsed.values.plain === true, undefined, rest);
+    if (isArgError(e)) usageExit(parseErrorMessage(e), cmd, json, parsed.values.plain === true, undefined, rest);
     // A refused manager selection among several live managers becomes the choice: each manager
     // and the command again with `--on` for it. A space whose stack folder is gone names its stop.
     const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
