@@ -544,6 +544,8 @@ for (const [args, message] of [
   [["persona", "shwo"], /cotal persona has no subcommand "shwo" - did you mean show\? Or run `cotal help persona`/],
   [["help", "persona", "shwo"], /cotal persona has no subcommand "shwo" - did you mean show\?/],
   [["status", "--jsno"], /Unknown option '--jsno' - did you mean --json\?/],
+  [["version", "--js.on"], /Unknown option '--js\.on' - did you mean --json\?/],
+  [["history", "general", "--gr.ep"], /Unknown option '--gr\.ep' - did you mean --grep\?/],
 ] as const) {
   const r = run([...args]);
   check(`${args.join(" ")} names the nearest word`, r.status === 1 && message.test(r.stderr), shown(r));

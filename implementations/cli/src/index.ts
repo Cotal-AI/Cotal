@@ -609,9 +609,11 @@ const baseCommands: Command[] = [
     summary:
       "run an agent in this terminal; -d launches it through a manager and returns once it joins, --on <instance> launches through that manager and attaches",
     examples: [{ command: "cotal spawn", note: "run an agent in this terminal" }, { command: "cotal spawn -d", note: "launch through a manager and return" }, { command: "cotal spawn <persona> -p \"review PR 12\"", note: "start a persona with a task" }],
-    usage: "cotal spawn [<persona>] [--file <persona-file>] [-d | --foreground] [--dry-run] [options]",
+    usage: "cotal spawn [<persona> | --file <persona-file>] [-d | --foreground] [--dry-run] [options]",
     positionals: "[<persona>]",
     flags: spawnFlags,
+    // Persisted launchers still parse --config. Do not list it for public callers.
+    flagNames: spawnFlags.filter((flag) => flag.name !== "config").map((flag) => flag.name),
     outputs: ["json", "plain"],
     validate: validateSpawnArguments,
     run: spawn,
