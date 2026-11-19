@@ -2191,7 +2191,8 @@ function nextActions(r: StatusResult): Section {
     items.push({ command: `${cmd} ps`, description: "See the agent roster" });
   } else if (noApplication) items.push({ command: `${cmd} setup`, description: r.selected.code === "not-started" ? "Set up an agent application" : "Set up an agent application and a space" });
   if (r.selected.resolved || !noApplication) {
-    items.push({ command: `${cmd} use`, description: "Choose another space" });
+    items.push({ command: `${cmd} space`, description: "List the spaces on this machine" });
+    items.push({ command: `${cmd} use <name>`, description: "Select the default space" });
     if (r.meshes.items.length > 1) items.push({ command: `${cmd} status --all`, description: "Check every registered space" });
   }
   // A stopped broker is resumed, not restarted. A local controller stack that does not answer,
