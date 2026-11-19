@@ -228,6 +228,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function waitForStop(work: Promise<unknown>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([work, new Promise<void>((resolve) => { timer = setTimeout(resolve, 3_000); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * The five states a caller has to tell apart, derived in one place so every consumer agrees.
  *
@@ -901,7 +910,7 @@ export class MeshAgent extends EventEmitter {
     // The close answers every prompt caller at once, and those replies must go out before the
     // departure closes the connection. A drain on a connection that is down settles only on its
     // close, so the wait is bounded.
-    await Promise.race([agentEndpointClosed, sleep(3_000)]);
+    if (agentEndpointClosed) await waitForStop(agentEndpointClosed);
     // Unconditional: a background self-heal can flip _connected without us, so a `_connected`
     // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop()
     // coalesces its retained shutdown outcome, including an earlier closure refusal.
@@ -913,7 +922,7 @@ export class MeshAgent extends EventEmitter {
     // this point is refused at once by inOrder() (see there) rather than queued behind departure,
     // so a straggler cannot land after offline and does not sit out setStatus's connect grace.
     const departure = this.inOrder(() => this.ep.stop(), true);
-    await Promise.race([departure, sleep(3_000)]);
+    await waitForStop(departure);
     await this.ep.stop();
     await departure;
     // A late initial bind must finish its stopped teardown before custody is released.

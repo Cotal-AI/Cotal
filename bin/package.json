@@ -65,6 +65,7 @@
     "@cotal-ai/pi": "workspace:*",
     "@cotal-ai/smoke-kit": "workspace:*",
     "@cotal-ai/web": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@nats-io/jetstream": "3.4.0",
     "@nats-io/transport-node": "3.4.0",
     "typescript": "^5.9.3"
