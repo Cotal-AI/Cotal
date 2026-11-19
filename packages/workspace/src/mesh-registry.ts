@@ -138,6 +138,8 @@ export interface MeshEntry {
   unchecked?: boolean;
   /** ISO timestamp of when the record was written. */
   ts: string;
+  /** This folder's completed legacy down kept the registration. The next up clears this receipt. */
+  stoppedByDown?: true;
 }
 
 /** Non-secret user-auth metadata on a {@link MeshEntry}. TRUST PINS and CONVENIENCE ENDPOINTS are

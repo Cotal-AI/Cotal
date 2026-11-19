@@ -993,13 +993,12 @@ export function credsSpace(cwd: string): { space: string; selected: boolean } | 
   return space === undefined ? undefined : { space, selected: false };
 }
 
-/** Whether {@link resolveMeshTarget} reads liveness (`flags.offline`) for `flags` at `cwd`. A named
- *  `--space`, the selection where it is the target, and a registration of this project's root each
+/** Whether {@link resolveMeshTarget} reads liveness (`flags.offline`) for `flags` at `cwd`. An explicit
+ *  `--space` or `--server`, the selection where it is the target, and a registration of this project's root each
  *  pick the target without it, so a caller that sweeps the recorded brokers first has nothing to
  *  probe then. It follows the same precedence and records nothing. */
 export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boolean {
-  if (flags.space) return false;
-  if (flags.server) return true;
+  if (flags.space || flags.server) return false;
   const meshes = loadMeshes();
   const current = getCurrent();
   if (current) {
@@ -1065,7 +1064,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // hand back whichever sorted first, connecting the caller to an arbitrary tenant; refuse and
     // name them instead (`--space` picks one explicitly, handled above).
     const requestedServer = brokerUrlKey(flags.server);
-    const onServer = loadMeshes().filter((e) => brokerUrlKey(e.server) === requestedServer && !offline.has(e.space));
+    const onServer = loadMeshes().filter((e) => brokerUrlKey(e.server) === requestedServer);
     if (onServer.length > 1)
       throw new MeshTargetError(
         "ambiguous-target",
