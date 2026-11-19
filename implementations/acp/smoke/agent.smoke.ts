@@ -221,9 +221,10 @@ const after = (ms: number, f: () => void) => void setTimeout(f, ms);
 mesh.present.set(actor, "idle");
 mesh.onDm = (seat) => {
   after(20, () => { mesh.present.set(actor, "working"); mesh.emit(seat, [{ type: "RUN_STARTED", runId: "r2" }, { type: "TEXT_MESSAGE_START", messageId: "a", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "a", delta: "on it" }], "r2"); });
-  // Presence reports idle before the run's last frame arrives.
+  // Presence reports idle well before the run's last frame arrives: longer than the settle wait plus
+  // a watch tick, so a prompt that ignored the open run would answer before that frame.
   after(250, () => mesh.present.set(actor, "idle"));
-  after(700, () => mesh.emit(seat, [{ type: "TEXT_MESSAGE_CONTENT", messageId: "a", delta: " and done" }, { type: "TEXT_MESSAGE_END", messageId: "a" }, { type: "RUN_FINISHED", runId: "r2" }], "r2"));
+  after(1500, () => mesh.emit(seat, [{ type: "TEXT_MESSAGE_CONTENT", messageId: "a", delta: " and done" }, { type: "TEXT_MESSAGE_END", messageId: "a" }, { type: "RUN_FINISHED", runId: "r2" }], "r2"));
 };
 updates.length = 0;
 const later = await within(agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "and again" }] }));
