@@ -1,5 +1,38 @@
 # @cotal-ai/cli
 
+## 0.170.0
+
+### Patch Changes
+
+- d75d210: Make the Linux shell installer put `cotal` on PATH in new Bash login and non-login terminals.
+- b0d9d94: Start a broker-only mesh with `cotal up --no-manager` without installing connectors or requiring npm.
+- c701881: Report damaged local stack, process, trust, credential and renewal records without inferring stopped or healthy components, and retain file-specific recovery guidance.
+- ad6d984: Show why persona definitions are unreadable, return exit 4 for an incomplete legacy catalog, and reject invalid roles and null launch options before starting an application.
+- 49f387d: Quote option values in CLI corrections so they can be pasted into a shell, and show the required status and handoff destination when `cotal run yield` is missing a turn ID.
+- 0798da9: `cotal down` now waits for a starting foreground stack when its broker is registered, refuses safely if startup has not settled, and leaves an already stopped preserved cut unchanged.
+- 111f861: Refuse one-second provisioned credentials, flag exported credentials with missing seeds in `doctor auth`, and include the selected channel in `join`'s missing-inbox remedy.
+- a171c3e: Workflow simulations now name the results file and explain what to correct when a scripted checkpoint result is invalid.
+- 07978b3: On Linux, retrying `cotal update --self` recovers from an interrupted install or reconcile child once its recorded processes are gone.
+- 6bd46bd: Show runnable commands on the CLI entry card and in status when using npx or pnpm dlx, including with a custom pnpm cache.
+- 6b1d82d: `cotal service status` now reports `not started` for a saved service with no recorded instances instead of refusing.
+- fd4bed7: Clarify that `cotal space show` shows the current project's space before the selected space, and show how to inspect a space by name.
+- 12cc4ce: Report exposed delivery credentials and failing broker stores in status checks, accept healthy open stacks without delivery, and give accurate store-permission and manager-instance guidance.
+- 3874152: `cotal team` keeps readable deployment records and exits 4 when a local record cannot be read or validated.
+- 9ea3082: `cotal up` starts again on a host with no machine identity, such as a container image with no `/etc/machine-id`. Release 0.169.0 refused there after starting the broker, because it recorded process pins that need that identity. Such a host now records no pins and its stack is stopped as it was before 0.169.0.
+- Updated dependencies [c701881]
+- Updated dependencies [ad6d984]
+- Updated dependencies [3afefa8]
+- Updated dependencies [0e42b19]
+- Updated dependencies [dd478d4]
+- Updated dependencies [6170fc9]
+- Updated dependencies [8c965ac]
+- Updated dependencies [b73a8de]
+- Updated dependencies [2b1659e]
+- Updated dependencies [07978b3]
+- Updated dependencies [20ff353]
+  - @cotal-ai/workspace@0.170.0
+  - @cotal-ai/core@0.170.0
+
 ## 0.169.0
 
 ### Patch Changes

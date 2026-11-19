@@ -174,7 +174,10 @@ A partial or unknown result retains the allocated public identity and lifecycle 
 and does not retry the mint.
 
 A fixed-profile credential expires 24 hours after it is minted unless `--expires-in` or
-`--expires-at` sets another time, in native seconds. `--no-expiry` issues one with no expiry claim and
+`--expires-at` sets another time, in native seconds. With `--provision`, `--expires-in` must be at
+least 2 seconds. A shorter lifetime refuses before the mint creates a file or an inbox. If a
+credential expires during provisioning, the mint does not report success.
+`--no-expiry` issues one with no expiry claim and
 records that request beside the file, in `<file>.no-expiry.json`, so `doctor auth` reports it as a
 warning rather than a finding. The receipt reports the resulting JWT expiry. The three flags are
 mutually exclusive, and an `--expires-at` that is not in the future refuses before anything is written. So does an expiry
@@ -474,7 +477,9 @@ observer or admin file it names no managed renewal, as no manager runs one.
 
 Each file `auth mint --out` wrote for the space from this root and that is still there is listed
 under Exported credential files, and in `result.exported`, with its state and expiry. These rows
-are not findings. An expired one is an `EXPORTED_CREDENTIAL_EXPIRED` warning. One near expiry or
+are not findings. A file missing its user seed block is unreadable even if its JWT still parses.
+Restore the complete file, or use the replacement mint the report names. An expired one is an
+`EXPORTED_CREDENTIAL_EXPIRED` warning. One near expiry or
 expired names `cotal auth mint <label> --identity <file> --out <file>`, which signs the same key
 again with the same grants. One whose key was revoked, or that an earlier space identity issued,
 names a mint with a new key instead, because the broker refuses that key and `auth mint --identity`

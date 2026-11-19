@@ -49,8 +49,30 @@ const chmod = fs.chmodSync;
 fs.chmodSync = (path, mode) => { if (path === ${JSON.stringify(installed)}) throw Object.assign(new Error('read-only filesystem'), { code: 'EROFS' }); return chmod(path, mode); };
 syncBuiltinESMExports();\n`);
   const nodeOptions = env.NODE_OPTIONS;
-  env.NODE_OPTIONS = `${nodeOptions ?? ""} --import=${pathToFileURL(readOnly).href}`;
+  // Represent root ownership on runners that cannot chown to root. Keep the real write-access check.
+  const rootOwned = join(root, "root-owned.mjs");
+  writeFileSync(rootOwned, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const lstat = fs.lstatSync;
+fs.lstatSync = (path, ...args) => { const stat = lstat(path, ...args); if (path === ${JSON.stringify(installed)}) stat.uid = 0; return stat; };
+syncBuiltinESMExports();\n`);
+  const tools = join(root, "tools"), invoked = join(root, "privilege-tool-invoked");
+  mkdirSync(tools);
+  const installCommand = `npm install -g --prefix '${prefix.replace(/'/g, "'\\''")}' cotal-ai@latest`;
   chmodSync(installed, 0o500);
+  for (const tool of [undefined, "doas", "sudo"] as const) {
+    if (tool) writeFileSync(join(tools, tool), '#!/bin/sh\nprintf invoked > privilege-tool-invoked\nexit 1\n', { mode: 0o700 });
+    const result = run({ PATH: tools, NODE_OPTIONS: `${nodeOptions ?? ""} --import=${pathToFileURL(rootOwned).href}` });
+    const administrator = tool ? `run: ${tool} ${installCommand}` : `run as root: ${installCommand}`;
+    const followup = tool ? `, without ${tool}` : "";
+    check.equal(result.status, 2, result.stderr);
+    check.ok(result.stderr.includes(`installation is not writable; have an administrator ${administrator}; then run \`cotal update\` as your normal account${followup}; no changes were made`), result.stderr);
+    check.match(result.stderr, /DEPENDENCY_UNAVAILABLE/);
+    check.match(result.stderr, /Native outcome:\s+not-executed/);
+    check.equal(existsSync(invoked), false);
+    check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+    check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
+  }
+  env.NODE_OPTIONS = `${nodeOptions ?? ""} --import=${pathToFileURL(readOnly).href}`;
   const refused = run();
   writeFileSync(join(root, "unwritable.stderr.log"), refused.stderr ?? "");
   check.equal(refused.status, 2, refused.stderr);

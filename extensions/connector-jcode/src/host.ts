@@ -2154,15 +2154,19 @@ export async function runJcodeHost(): Promise<void> {
     // seat that already called the tool and then kept working (#1440).
     const readinessPrompt = "Call the cotal_orientation tool exactly once now. Do not perform any other work and do not write a response.";
     type ToolCall = Awaited<ReturnType<JcodeClient["run"]>>["toolCalls"][number];
-    // Jcode's deferred MCP surface reaches orientation through `mcp_call`, whose tool_done names
-    // only the wrapper. Its arguments are the call's streamed input, which the Harness API sends
-    // with no call id between that call's tool_start and tool_exec.
+    // Jcode's deferred MCP surface reaches orientation through a wrapper whose tool_done names only
+    // the wrapper: `mcp_call` up to Jcode 0.99.0, and `mcp` with action "call" from 0.99.1, where
+    // `mcp_call` no longer exists. Its arguments are the call's streamed input, which the Harness
+    // API sends with no call id between that call's tool_start and tool_exec.
     const deferredOrientationCalls = new Set<string>();
     let streamingCall: { callId: string; input: string } | undefined;
-    const isDeferredOrientation = (input: string): boolean => {
+    const isDeferredWrapper = (name: string): boolean => name === "mcp_call" || name === "mcp";
+    const isDeferredOrientation = (wrapper: string, input: string): boolean => {
       try {
         const args: unknown = JSON.parse(input);
-        return typeof args === "object" && args !== null && "server" in args && args.server === "cotal" && "tool" in args && args.tool === "cotal_orientation";
+        return typeof args === "object" && args !== null &&
+          (wrapper === "mcp_call" || ("action" in args && args.action === "call")) &&
+          "server" in args && args.server === "cotal" && "tool" in args && args.tool === "cotal_orientation";
       } catch {
         return false;
       }
@@ -2171,7 +2175,7 @@ export async function runJcodeHost(): Promise<void> {
     const isOrientationCall = (call: ToolCall) =>
       call.error === undefined &&
       !call.output.startsWith("Error: ") &&
-      (/(?:^|__)cotal_orientation$/.test(call.name) || (call.name === "mcp_call" && deferredOrientationCalls.has(call.callId)));
+      (/(?:^|__)cotal_orientation$/.test(call.name) || (isDeferredWrapper(call.name) && deferredOrientationCalls.has(call.callId)));
     const hasOrientation = (run: Awaited<ReturnType<JcodeClient["run"]>>) => run.toolCalls.some(isOrientationCall);
     writeJcodeDiagnostic(
       `[cotal-jcode] pre-join readiness: waiting for one cotal_orientation call (bound ${readinessBudgetMs}ms; not on the roster yet)\n`,
@@ -2196,7 +2200,7 @@ export async function runJcodeHost(): Promise<void> {
       }
       if (event.ev === "tool_input_delta" && streamingCall) streamingCall.input += event.delta;
       if (event.ev === "tool_exec") {
-        if (event.name === "mcp_call" && streamingCall?.callId === event.call_id && isDeferredOrientation(streamingCall.input))
+        if (isDeferredWrapper(event.name) && streamingCall?.callId === event.call_id && isDeferredOrientation(event.name, streamingCall.input))
           deferredOrientationCalls.add(event.call_id);
         streamingCall = undefined;
       }

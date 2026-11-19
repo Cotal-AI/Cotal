@@ -266,6 +266,8 @@ cotal update
 ```
 
 This reconciles installed extensions and connector integrations with the running CLI's release.
+If the machine daemon closes a status connection while restarting, reconciliation retries that
+status read for up to two minutes. It reports a failure if the daemon does not answer in time.
 When no Cotal Claude plugin or Desktop integration is installed, reconciliation only reads Claude's
 installation records. It creates no Claude directories or lock files, including in a read-only
 configuration directory. Unreadable or damaged installation records still refuse the update.

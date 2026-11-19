@@ -281,6 +281,9 @@ export class AgentInbox {
   /** Surfaced to the host but not yet committed or abandoned, counted per holding frame because
    *  frames overlap. See {@link holdInFlight}. */
   private inFlightIds = new Map<string, number>();
+  /** Receive keys {@link lowerBuffered} passed over because a host was handing them over. A turn
+   *  that carries one acks it; when the hand-over ends without an ack, it is lowered then. */
+  private lowerOnRelease = new Set<string>();
   /** Ack-wait renewal timers of held durable deliveries, by receive key. See {@link keepOwned}. */
   private renewals = new Map<string, ReturnType<typeof setInterval>>();
   private classificationUnsafe = false;
@@ -1035,6 +1038,13 @@ export class AgentInbox {
       if (held <= 1) {
         this.inFlightIds.delete(id);
         this.stopRenewal(id);
+        if (!this.lowerOnRelease.delete(id)) continue;
+        // A failed turn leaves the entry buffered; the change it missed applies now.
+        const p = this.inbox.find((pending) => pending.item.recvKey === id);
+        if (p && !p.pullOnly) {
+          p.pullOnly = true;
+          this.excludeFromFocus(p.item);
+        }
       } else this.inFlightIds.set(id, held - 1);
     }
   }
@@ -1401,12 +1411,17 @@ export class AgentInbox {
 
   /** Make the automatic entries buffered from `channel` (a concrete channel or a pattern) pull-only,
    *  mentions of this agent too when `mentions` is set, except on a channel `keep` still covers. An
-   *  entry a host is handing over keeps its lane, since the turn carrying it acks it. */
+   *  entry a host is handing over keeps its lane, since the turn carrying it acks it. If that turn
+   *  fails instead, {@link releaseInFlight} lowers the entry when the hand-over ends. */
   lowerBuffered(channel: string, mentions: boolean, keep: string[] = []): void {
     for (const p of this.inbox) {
       if (p.pullOnly || p.item.kind !== "channel" || !p.item.channel || !channelInAllow([channel], p.item.channel)) continue;
       if (channelInAllow(keep, p.item.channel)) continue;
-      if ((p.item.mentionsMe && !mentions) || this.inFlightIds.has(p.item.recvKey)) continue;
+      if (p.item.mentionsMe && !mentions) continue;
+      if (this.inFlightIds.has(p.item.recvKey)) {
+        this.lowerOnRelease.add(p.item.recvKey);
+        continue;
+      }
       p.pullOnly = true;
       this.excludeFromFocus(p.item);
     }
