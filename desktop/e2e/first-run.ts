@@ -397,7 +397,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
   const lifecycle = async (action: LifecycleAction, debuggerPort?: number): Promise<NativeObservation> => {
     let observation: NativeObservation;
     if (driver instanceof MacWindowDriver) {
-      if (action === "connected-view") observation = { ...(await driver.native("describe")), title: await driver.text("connection-title"), label: await driver.text("tray-label") };
+      if (action === "connected-view") observation = { ...(await driver.native("describe")), title: await driver.text("connection-title"), label: await driver.text("connection-status") };
       else {
         if (action === "prove-login-cells" || action === "enable-login" || action === "read-login-settings") throw new Error(`${action} is Windows-only`);
         observation = await driver.native(action);
@@ -647,7 +647,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     await shot("02-browser-approval"); fixture.approve();
     if (fixture.account) {
       await title("This computer is connected to your account");
-      await until("account Ready label", () => driver.text("tray-label"), value => value === "Ready");
+      await until("account Ready label", () => driver.text("connection-status"), value => value === "Ready");
       const registered = await status();
       check("account sign-in registers this computer without enabling a space", registered.account?.hostSupport === "supported" && registered.account?.mode === "account" && registered.account?.lastRegistration && !registered.managers?.length);
       let systemName = hostname();
@@ -672,13 +672,13 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       const readySettings = await lifecycle("settings-back");
       check("native Settings opens the real panel and Back returns to account Ready", readySettings.title === "Settings" && readySettings.label === "Back" && readySettings.visible);
       await title("This computer is connected to your account");
-      check("native tray Settings restores account Ready", (await lifecycle("describe")).visible && await driver.text("tray-label") === "Ready");
+      check("native tray Settings restores account Ready", (await lifecycle("describe")).visible && await driver.text("connection-status") === "Ready");
       await shot("04-settings-ready");
       await installApplication();
       await proveWindowsRestart();
       await discoveryEvidence("before-account-enable");
       await fixture.account.enable();
-      try { await until("enabled account space reads Connected", () => driver.text("tray-label"), value => value === "Connected", 120_000); }
+      try { await until("enabled account space reads Connected", () => driver.text("connection-status"), value => value === "Connected", 120_000); }
       finally { await discoveryEvidence("after-account-enable"); }
       const connected = await status();
       const manager = connected.managers?.find((row: any) => row.space === fixture.space);

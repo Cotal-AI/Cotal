@@ -179,6 +179,8 @@ Direct `tauri-driver` has no macOS WKWebView driver. The account journey uses th
 
 ### App presence and login
 
+The account journey reads the visible `connection-status` button by its exact ID. On macOS and Windows, it reads the native button name rather than assuming the nested status span appears as a separate accessibility element. The journey still requires the expected Ready and Connected states and independently checks the daemon and Manager.
+
 The Windows presence check tests both NSIS and MSI. It keeps the Explorer UI Automation name inventory and also records the native accessible push-button names under the running-app toolbar before and after opening Cotal. A legacy name counts only when the same toolbar gains exactly one visible Cotal button. Missing and ambiguous names remain unproven. A screenshot, matching shortcut or window title cannot prove the taskbar name.
 
 If `presence.json` contains invalid preferences, Cotal keeps the original bytes in a fresh `presence.json.invalid.<number>` file beside it and opens with defaults. The window reports the saved file's location and keeps it visible when a login warning is also reported. Automatic connection refresh does not change Open at login after recovery. Choose Open at login in Settings to set it explicitly.

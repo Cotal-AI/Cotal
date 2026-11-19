@@ -431,10 +431,15 @@ case "displayed":
 case "enabled": output(enabled(unique(matches(arg(0)))))
 case "text":
     let target = unique(matches(arg(0)))
-    if arg(0) == "tray-label" && (string(target, "AXValue").isEmpty && string(target, "AXTitle").isEmpty && string(target, "AXDescription").isEmpty) {
-        let textChildren = children(target).filter { string($0, "AXRole") == "AXStaticText" && !text($0).isEmpty }
-        guard textChildren.count == 1 else { fail("tray-label must have one AXStaticText child, found \(textChildren.count)") }
-        output(text(textChildren[0]))
+    if arg(0) == "connection-status" {
+        var owner: pid_t = 0
+        guard AXUIElementGetPid(target, &owner) == .success, owner == pid,
+              string(target, "AXRole") == "AXButton", visible(target) else {
+            fail("connection-status must be one visible button owned by the app")
+        }
+        let name = string(target, "AXTitle")
+        guard !name.isEmpty else { fail("connection-status button has no accessibility name") }
+        output(name)
     } else {
         output(text(target))
     }

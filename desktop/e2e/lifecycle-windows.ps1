@@ -724,19 +724,11 @@ public static class FilteredAppLauncher {
                 if ($controls[0].Current.IsOffscreen) { throw "Exact AutomationId '$id' is offscreen." }
                 return $controls[0]
             }
-            function Read-SingleText([System.Windows.Automation.AutomationElement]$element, [string]$labelName) {
-                $direct = $element.Current.Name
-                if ($direct) { return $direct }
-                $textNodes = @(Children $element | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Text -and $_.Current.Name })
-                if ($textNodes.Count -ne 1) {
-                    throw "Expected one named Text child under '$labelName', found $($textNodes.Count)."
-                }
-                return $textNodes[0].Current.Name
-            }
             if ($Action -eq 'connected-view') {
                 $heading = Exact-Control 'connection-title'
-                $label = Exact-Control 'tray-label'
-                $result = [ordered]@{ title = $heading.Current.Name; label = (Read-SingleText $label 'tray-label') }
+                $label = Exact-Control 'connection-status'
+                if ($label.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button) { throw 'Expected the exact connection-status button.' }
+                $result = [ordered]@{ title = $heading.Current.Name; label = $label.Current.Name }
                 if (!$result.title -or !$result.label) { throw 'Exact native view controls expose empty accessibility names.' }
             } elseif ($Action -eq 'settings-back') {
                 Assert-Owner
