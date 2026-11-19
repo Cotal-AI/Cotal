@@ -80,7 +80,7 @@ try {
   mkdirSync(join(npmPackage, "dist"));
   mkdirSync(join(npmPackage, "scripts"));
   copyFileSync(resolve(import.meta.dirname, "../../../bin/scripts/pin-npm-node.mjs"), join(npmPackage, "scripts/pin-npm-node.mjs"));
-  writeFileSync(join(npmPackage, "dist/cotal.js"), '#!/usr/bin/env node\nconsole.log("cotal-ai 0.0.0");\n', { mode: 0o755 });
+  writeFileSync(join(npmPackage, "dist/cotal.js"), '#!/usr/bin/env node\nconsole.log(process.argv[2] === "--entry" ? process.argv[1] : "cotal-ai 0.0.0");\n', { mode: 0o755 });
   const installation = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
   assert(installation.includes("`wget` instead of `curl`") && installation.includes("wget -qO- https://get.cotal.ai | sh -s -- --no-setup"), "the install guide offers the wget bootstrap");
   const shellLauncher = join(npmHome, ".local", "bin", "cotal");
@@ -110,9 +110,14 @@ try {
   assert.equal(readFileSync(shellLauncher, "utf8"), shellLauncherBody, "switching the selected CLI does not overwrite the shell launcher");
   const npmLauncher = join(npmHome, ".npm-global/bin/cotal");
   const npmLink = readlinkSync(npmLauncher);
+  const bootstrap = realpathSync(join(npmHome, ".npm-global/lib/node_modules/cotal-ai/dist/cotal.js"));
+  assert.equal(realpathSync(npmLauncher), join(dirname(bootstrap), "cotal-npm"), "npm's executable links to the shell launcher");
   const noNode = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
   assert.equal(noNode.status, 0, output(noNode));
   assert.equal(noNode.stdout.trim(), "cotal-ai 0.0.0", "npm launcher uses the install-time Node without Node on PATH");
+  const launched = spawnSync(npmLauncher, ["--entry"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
+  assert.equal(launched.status, 0, output(launched));
+  assert.equal(realpathSync(launched.stdout.trim()), bootstrap, "the shell launcher runs the stable JavaScript entry");
   const daemonDir = join(npmHome, "cotal", "daemon");
   mkdirSync(daemonDir, { recursive: true });
   writeFileSync(join(daemonDir, "service-unit.json"), "{}\n");
