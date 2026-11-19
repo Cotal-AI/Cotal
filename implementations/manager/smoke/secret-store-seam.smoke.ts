@@ -121,9 +121,13 @@ try {
     agents: Map<string, { id: string; name: string; lifecycleUid: string; seed?: string; terminalizing?: boolean; secretPaths?: { creds?: string } }>;
     renewDaemonCreds(): Promise<void>;
     renewManagedStaticCred(a: unknown): Promise<void>;
-    deprovision(a: { id: string; name: string; lifecycleUid: string; secretPaths?: { creds?: string } }): Promise<void>;
-    freeSlot(a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause): void;
-    retiring: Map<string, unknown>;
+    retirement: {
+      deprovision(a: { id: string; name: string; lifecycleUid: string; secretPaths?: { creds?: string } }): Promise<void>;
+      retiring: Map<string, unknown>;
+    };
+    namesCapacity: {
+      freeSlot(a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause): void;
+    };
   };
 
   const spawned = await mgr.startAgent({ name: "worker", agent: "smoke-ss", events: false });
@@ -181,9 +185,9 @@ try {
   console.log("D. the retirement teardown deletes the credential through the injected store");
   {
     const before = store.seen.length;
-    M.freeSlot(a, false, "process-exit");
-    await M.deprovision({ id: a.id, name: a.name, lifecycleUid: a.lifecycleUid, secretPaths: a.secretPaths });
-    for (let i = 0; i < 150 && M.retiring.has("worker"); i++) await wait(200);
+    M.namesCapacity.freeSlot(a, false, "process-exit");
+    await M.retirement.deprovision({ id: a.id, name: a.name, lifecycleUid: a.lifecycleUid, secretPaths: a.secretPaths });
+    for (let i = 0; i < 150 && M.retirement.retiring.has("worker"); i++) await wait(200);
     check("the teardown really happened (the credential file is gone)", !existsSync(credsPath!));
     check("the credential was DELETED through the injected store (else a retired agent's cred is left in the configured backend)",
       store.sawSince(before, "delete", credKey), store.seen.slice(before).filter((x) => x.op === "delete"));

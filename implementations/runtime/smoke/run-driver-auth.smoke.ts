@@ -211,7 +211,7 @@ const annNc = await open(await mintCreds(auth, ann, "agent", { allowPublish: [CH
 const say = async (text: string) => {
   const msg: CotalMessage = {
     id: `m-${Date.now()}`, ts: Date.now(), space: S,
-    from: { id: ann.id, name: "ann" }, channel: CHANNEL, parts: [{ kind: "text", text }],
+    from: { id: `${DEV_OWNER}.${ann.id}`, name: "ann" }, channel: CHANNEL, parts: [{ kind: "text", text }],
   };
   await jetstream(annNc).publish(chatSubject(S, DEV_OWNER, ann.id, CHANNEL), new TextEncoder().encode(JSON.stringify(msg)));
 };

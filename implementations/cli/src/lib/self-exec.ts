@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { cmdSpawnSpec, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -74,16 +74,47 @@ export const DAEMON_NODE_FLAGS: readonly string[] = ["--max-semi-space-size=1"];
 
 /** {@link selfArgv} for a long-lived daemon: the same verified entry, under {@link DAEMON_NODE_FLAGS}.
  *  The flags come before any inherited loader flag, so a node flag the operator passed explicitly
- *  still wins. */
+ *  still wins. Keep a same-directory alias of this runtime, so a distribution's stable `node`
+ *  symlink can move to its next supported version without pinning a shell's transient directory. */
 export function daemonArgv(): string[] {
   const [node, ...self] = selfArgv();
+  const invoked = resolveOnPath(process.argv0);
+  // Only preserve a sibling alias, never a directory alias such as fnm's per-shell PATH entry.
+  // A custom argv0 or another runtime on PATH is not authority to change the running runtime.
+  const executable = invoked && dirname(invoked) === dirname(node!) && realpathSync(invoked) === node ? invoked : node!;
   const logical = logicalExecutionEntry();
-  return [node!, ...DAEMON_NODE_FLAGS, ...self.slice(0, -1), logical ?? self.at(-1)!];
+  return [executable, ...DAEMON_NODE_FLAGS, ...self.slice(0, -1), logical ?? self.at(-1)!];
 }
 
 /** True when launched via `npx` — the package is unpacked under `~/.npm/_npx/<hash>/…`. */
 export function isNpx(): boolean {
   return /[/\\]_npx[/\\]/.test(process.argv[1] ?? "");
+}
+
+/** True when launched from pnpm's default or configured dlx cache. */
+export function isPnpmDlx(): boolean {
+  const entry = process.argv[1] ?? "";
+  return inPnpmDlxCache(entry, process.env) || linkedFromPnpmDlx(entry, process.env);
+}
+
+/** pnpm 11 runs a dlx package from its global virtual store, so the entry's path names the store
+ *  rather than the dlx cache. The cache's bin directory, which pnpm puts first on PATH, still links
+ *  the package the entry belongs to. */
+function linkedFromPnpmDlx(entry: string, env: NodeJS.ProcessEnv): boolean {
+  const bin = (env.PATH ?? "").split(delimiter)[0];
+  if (!entry || !bin || !env.npm_config_user_agent?.startsWith("pnpm/") || !bin.endsWith(`${sep}node_modules${sep}.bin`) || !inPnpmDlxCache(bin, env)) return false;
+  try { return realpathSync(entry).startsWith(realpathSync(join(bin, "..", "cotal-ai")) + sep); }
+  catch { return false; }
+}
+
+function inPnpmDlxCache(path: string, env: NodeJS.ProcessEnv): boolean {
+  if (/[/\\]pnpm[/\\]dlx[/\\]/.test(path)) return true;
+  const cache = env.npm_config_cache_dir;
+  if (!cache || !path) return false;
+  // pnpm uses <cache>/dlx/<hash>/<id>/node_modules for both the entry and its PATH shim.
+  const withinCache = relative(join(cache, "dlx"), path);
+  const [hash, id, modules, child] = withinCache.split(sep);
+  return !isAbsolute(withinCache) && Boolean(hash && hash !== ".." && id && modules === "node_modules" && child);
 }
 
 /** Is a *durable* `cotal` executable resolvable on PATH? A pure PATH scan (no exec):
@@ -152,26 +183,20 @@ export function verifiedCotalExecutables(env: NodeJS.ProcessEnv = process.env): 
 
 /** Every durable `cotal` executable on `env`'s PATH, in PATH order. Each entry is probed as an
  *  absolute path because `join(".", "cotal")` is the bare name `cotal`, which {@link resolveOnPath}
- *  would scan the whole PATH for, npx's transient bins included. */
+ *  would scan the whole PATH for, npx and pnpm dlx transient bins included. */
 function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
   return (env.PATH ?? "")
     .split(delimiter)
-    .filter((dir) => dir && !isEphemeralNpxBin(dir))
+    .filter((dir) => dir && !/[/\\]_npx[/\\]/.test(dir) && !inPnpmDlxCache(dir, env))
     .flatMap((dir) => resolveOnPath(resolve(dir, "cotal"), env) ?? []);
 }
 
-/** A PATH entry npx (`npm exec`) injected for the current run only — its `_npx` cache
- *  `node_modules/.bin`. A `cotal` shim there disappears when npx exits, so it must not count as
- *  `cotal` being installed. Matches the `_npx` cache segment on POSIX and Windows. */
-function isEphemeralNpxBin(dir: string): boolean {
-  return /[/\\]_npx[/\\]/.test(dir);
-}
-
-/** The copy-paste command prefix for user-facing hints: prefer PATH or npx, then the installed
- *  entry under this Node runtime. A dev clone uses pnpm. Re-execs use {@link selfArgv}. */
+/** The copy-paste command prefix for user-facing hints: prefer PATH, npx, or pnpm dlx, then the
+ *  installed entry under this Node runtime. A dev clone uses pnpm. Re-execs use {@link selfArgv}. */
 export function displayCmd(): string {
   if (cotalOnPath()) return "cotal";
   if (isNpx()) return "npx cotal-ai";
+  if (isPnpmDlx()) return "pnpm dlx cotal-ai";
   if (runsCliEntry() && seedWriterKind() === "released") {
     const command = [process.execPath, entryScript()].map(shellWord).join(" ");
     if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {

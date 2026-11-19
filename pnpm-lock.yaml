@@ -483,6 +483,9 @@ importers:
 
   extensions/connector-opencode:
     devDependencies:
+      '@cotal-ai/auth':
+        specifier: workspace:*
+        version: link:../../implementations/auth
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../connector-core
@@ -501,6 +504,9 @@ importers:
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
       tsx:
         specifier: ^4.22.4
         version: 4.22.4
@@ -1122,6 +1128,24 @@ importers:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../smoke-kit
+
+  tools/docs-checks:
+    devDependencies:
+      '@cotal-ai/docs-content':
+        specifier: workspace:*
+        version: link:../docs-content
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.0
+      marked:
+        specifier: ^18.0.6
+        version: 18.0.6
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
   tools/docs-content:
     dependencies:

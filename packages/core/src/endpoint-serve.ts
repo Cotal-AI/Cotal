@@ -13,29 +13,35 @@
  * superseded subscriber, every reply carries the responder's epoch in its SUBJECT (attributably
  * stale when superseded), and commits are epoch-fenced at the record seam
  * ({@link writeServiceStatus}).
+ *
+ * The principal route (SPEC 13.21) is served here too, by {@link servePrincipalRoute}: both routes
+ * run one per-message pipeline, `runRequest`, and differ only in the steps that read the serve
+ * grant or the principal's own identity.
  */
 import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node";
 import type { ContractValidator } from "./contract-validator.js";
 import { spacePrefix } from "./subjects.js";
 import {
   endpointToken, assertCommandToken, assertLifecycleToken, epClassQueueGroup,
-  deriveReplySubject, parseEpSubject, EP_RAIL_V1,
-  type EpCaller, type ParsedEpRequest,
+  deriveReplySubject, parseEpSubject, EP_RAIL_V1, EP_PRINCIPAL_AUTHORITIES,
+  derivePrincipalReplySubject, epPrincipalServeFilter, isPrincipalAuthority,
+  type EpCaller, type EpPrincipal, type ParsedEpPrincipalRequest, type ParsedEpRequest, type PrincipalAuthority,
 } from "./endpoint-subjects.js";
 import {
   EpEnvelopeError, parseEndpointRequest, checkRequestSubjectAgreement, assertClassMatches,
   assertArgsValid, assertOutputValid, EP_BIND_REFUSED, EP_TARGET_UNMAPPED,
   type EndpointRequest, type EndpointReply, type EpClass, type EpBindRefusedDetail,
 } from "./endpoint-envelope.js";
-import { compileContract, assertCompiledContract, VOID_SCHEMA, type CompiledContract } from "./schema-profile.js";
+import { compileContract, assertCompiledContract, singleDocumentClosure, VOID_SCHEMA, type CompiledContract } from "./schema-profile.js";
 import { assertServeGrantAuthorized, type EpServeGrant } from "./endpoint-service.js";
-import type { DescribeDescriptor } from "./endpoint-cluster.js";
+import { parseClusterDocument, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
 import {
   GOVERNED_TRAIT_URNS, TRAIT_GUARDED, TRAIT_PRICED,
   assertGovernedSurfaceFor, assertGovernedPreEffect, type EpTraitEnforcement,
 } from "./endpoint-traits.js";
 import type { GuardObligation } from "./endpoint-guard.js";
 import { parseDescribeObservation, type DescribeRequestContext } from "./endpoint-describe-observation.js";
+import { carriesStoredProvenance } from "./endpoint-provenance.js";
 
 // ---- the serve table ---------------------------------------------------------------------------
 
@@ -83,22 +89,26 @@ export interface EpCommandDef {
   handler: (ctx: EpServeContext) => Promise<unknown> | unknown;
 }
 
-/** The internal dispatch shape: registered defs plus the ONE reserved describe. `digests` is
- *  absent exactly for describe (it pins no contract, §13.7); `validate` is ALWAYS present —
- *  describe validates against the canonical void input and the declared
- *  {@link DescribeAnswer} output ({@link describeValidators}). `targeted`/`targetModes` are
- *  the command's REGISTERED §13.2/§13.7 admission surface, out of verified cluster bytes. */
-interface ActiveDef {
+/** The internal dispatch shape of one served command, on either route: the declared defs plus
+ *  the ONE reserved describe. `digests` is absent exactly for describe (it pins no contract,
+ *  §13.7); `validate` is ALWAYS present — describe validates against the canonical void input and
+ *  the declared {@link DescribeAnswer} output ({@link describeValidators}). */
+interface ServedCommand<C> {
   command: string;
   class: EpClass;
   digests?: { input: string; output: string };
   validate: { args: ContractValidator; output: ContractValidator };
+  handler: (ctx: C) => Promise<unknown> | unknown;
+}
+
+/** A service-route command. `targeted`/`targetModes` are its REGISTERED §13.2/§13.7 admission
+ *  surface, out of verified cluster bytes. */
+interface ActiveDef extends ServedCommand<EpServeContext> {
   targeted: boolean;
   targetModes: ReadonlySet<string>;
   /** True iff the REGISTERED declaration carries a governed trait (§13.7): the pre-effect
    *  gate runs for exactly these commands, keyed on the verified governed surface. */
   governed: boolean;
-  handler: (ctx: EpServeContext) => Promise<unknown> | unknown;
 }
 
 /** The FRESH target-resolver seam (§13.3/§13.9: targets resolve by `(alias, lifecycleUid)`
@@ -143,7 +153,7 @@ export type EpLedgerAuthority = (args: {
  * someone else); a different EPOCH on the same instance is `expired`, as everywhere else.
  *
  * Both refusals carry {@link EP_BIND_REFUSED}, meaning NOTHING RAN — true only while this stays
- * ahead of every effect in `handle`, including the governed gate, which may consume a one-use
+ * ahead of every effect in `runRequest`, including the governed gate, which may consume a one-use
  * priced proof.
  */
 function assertBoundIncarnation(env: EndpointRequest, identity: EpServeIdentity): void {
@@ -196,7 +206,7 @@ async function assertTargetCurrent(env: EndpointRequest, resolve: EpTargetResolv
  *  digest PRESENCE for every non-describe command; here the pinned values must EQUAL the served
  *  contract. `describe` has no contract to pin (`digests` absent exactly there), so a digest
  *  carried on it cannot be honored — `contract-mismatch`, never silently ignored. */
-function bindContract(env: EndpointRequest, def: ActiveDef): void {
+function bindContract(env: EndpointRequest, def: Pick<ServedCommand<unknown>, "digests">): void {
   if (def.digests === undefined) {
     if (env.op.inputDigest !== undefined || env.op.outputDigest !== undefined)
       throw new EpEnvelopeError("contract-mismatch", "describe pins no contract; a digest carried on it cannot be honored (SPEC 13.7)");
@@ -255,6 +265,155 @@ async function assertTargetModeAuthorized(
     throw new EpEnvelopeError("permission-denied", mode === "child"
       ? `the durable spawner record does not name the caller as ${t.owner}.${t.actor}'s spawner (SPEC 13.2: child mode is a fresh spawner check, never the grant alone)`
       : `the authorization ledger holds no live grant for this caller on ${t.owner}.${t.actor} (SPEC 13.2: ledger mode is a fresh ledger read, fail closed)`);
+}
+
+// ---- the shared per-message pipeline (SPEC 13.2, 13.21) -----------------------------------------
+
+/** The route-specific half of the per-message pipeline. {@link runRequest} is the other half and
+ *  both routes run it, so a request meets one validator whichever route it rode. A hook refuses by
+ *  throwing an {@link EpEnvelopeError}. */
+interface RouteSteps<P extends ParsedEpRequest | ParsedEpPrincipalRequest, C, D extends ServedCommand<C>> {
+  /** This route's request shape, or `null`: no sender, so it MUST NOT be handled. */
+  parse(subject: string): P | null;
+  /** Whether this process is the one the request is for, before anything is said about the
+   *  command it names. */
+  addressed(env: EndpointRequest, parsed: P): void;
+  /** The command admits the form the subject names. */
+  admit(parsed: P, def: D): void;
+  /** The checks that read a seam before the effect. Returns the guard's verified obligations, when
+   *  it allowed with some. */
+  beforeEffect(env: EndpointRequest, parsed: P, def: D): Promise<readonly GuardObligation[] | undefined>;
+  /** The handler's context. */
+  context(a: {
+    parsed: P; env: EndpointRequest; def: D; subject: string; original: unknown; receivedAtMonotonicMs: number;
+    obligations: readonly GuardObligation[] | undefined; replyFits: (data: unknown, ceiling: number) => boolean;
+  }): C;
+  /** The reply subject, derived from this process and the parsed request. */
+  replySubject(parsed: P): string;
+  /** Whether a reply may still go out. A route whose stop has stopped waiting drops a late one. */
+  mayReply?(): boolean;
+}
+
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+function successReply(id: string, data: unknown): EndpointReply {
+  return { v: 1, id, ok: true, ...(data !== undefined ? { data } : {}) };
+}
+
+function encodeReply(reply: EndpointReply): Uint8Array {
+  return enc.encode(JSON.stringify(reply));
+}
+
+/** One request through the shared pipeline: subject parse, envelope parse, subject agreement, the
+ *  route's addressee check, class match, digest binding, the route's admission, args validation, the
+ *  route's seam checks, dispatch, the outcome stamp, and the derived reply. */
+async function runRequest<P extends ParsedEpRequest | ParsedEpPrincipalRequest, C, D extends ServedCommand<C>>(
+  nc: NatsConnection,
+  steps: RouteSteps<P, C, D>,
+  pick: (parsed: P) => D | undefined,
+  msg: { subject: string; data: Uint8Array },
+): Promise<void> {
+  const receivedAtMonotonicMs = performance.now();
+  const parsed = steps.parse(msg.subject);
+  if (!parsed) return; // no sender: MUST NOT be handled (§13.2)
+  let env: EndpointRequest | undefined;
+  let dispatched = false;
+  let returned = false;
+  let reply: EndpointReply;
+  try {
+    const original: unknown = JSON.parse(dec.decode(msg.data));
+    env = parseEndpointRequest(original);
+    checkRequestSubjectAgreement(env, parsed);
+    // §13.2 FIRST among the semantic gates, and deliberately ahead of the command's own class,
+    // contract, and args: whether this instance is the addressee at all is settled before
+    // anything is said about the command it names. It also has to precede the governed gate,
+    // which can consume a one-use priced proof — the refusal claims nothing ran, so nothing may.
+    steps.addressed(env, parsed);
+    // A route served by one subscription for every command meets a command it does not serve.
+    const def = pick(parsed);
+    if (def === undefined)
+      throw new EpEnvelopeError("unimplemented", `command "${parsed.command}" is not served here`);
+    assertClassMatches(env, def.class);
+    bindContract(env, def);
+    // §13.2: the command admits only its declared form — before args validation, so an
+    // unadmitted form learns nothing about the input contract.
+    steps.admit(parsed, def);
+    // §13.7: args validate against the input schema BEFORE any effect (bad-request).
+    assertArgsValid(def.validate.args, env.args);
+    const obligations = await steps.beforeEffect(env, parsed, def);
+    const requestId = env.id;
+    const ctx = steps.context({
+      parsed, env, def, subject: msg.subject, original, receivedAtMonotonicMs, obligations,
+      replyFits: (data, ceiling) => {
+        const maxPayload = nc.info?.max_payload;
+        if (!Number.isSafeInteger(maxPayload) || maxPayload === undefined || maxPayload <= 0)
+          throw new EpEnvelopeError("unavailable", "the serving connection has no valid payload ceiling");
+        if (!Number.isSafeInteger(ceiling) || ceiling <= 0)
+          throw new EpEnvelopeError("failed-precondition", "reply byte ceiling must be a positive safe integer");
+        return encodeReply(successReply(requestId, data)).byteLength <= Math.min(ceiling, maxPayload);
+      },
+    });
+    dispatched = true;
+    if (!env.replyExpected) {
+      await def.handler(ctx);
+      return; // cast: the responder MUST NOT reply (§13.5)
+    }
+    const data = await def.handler(ctx);
+    returned = true;
+    // §13.7: the reply validates against the output schema BEFORE it is published, under the
+    // same fixed budget as args — an invalid reply is a server bug and fails loud, never
+    // reaches the caller as success.
+    assertOutputValid(def.validate.output, data);
+    reply = successReply(env.id, data);
+  } catch (err) {
+    if (env && !env.replyExpected) return; // a failed cast stays silent (§13.5 at-most-once)
+    const error = err instanceof EpEnvelopeError
+      ? err.toEpError()
+      : { code: "internal", message: (err as Error)?.message ?? String(err) };
+    // §13.3: a refusal raised before dispatch MUST say nothing ran, one raised after the handler
+    // returned MUST say it ran, and an omitted outcome reads as `unknown`. Deciding it here, from
+    // where the loop stands, covers every check on either side of the handler, including one
+    // added later and a body that never parsed into an envelope. A handler's own throw keeps
+    // whatever outcome it stated: the loop cannot tell how far it got.
+    // The id echoes the request where one parsed; the reply subject is already nonce-scoped
+    // to exactly this request's caller, so attribution never rides the echo.
+    const stated = !dispatched ? "not-executed" : returned ? "executed" : undefined;
+    reply = { v: 1, id: env?.id ?? "invalid", ok: false, error: stated === undefined ? error : { ...error, outcome: stated } };
+  }
+  // Replacing a reply that cannot be serialized or published changes nothing about whether the
+  // command ran, so each replacement below keeps the outcome the replaced reply stated, and a
+  // success states `executed`.
+  const outcome = reply.ok ? "executed" : reply.error?.outcome;
+  let bytes: Uint8Array;
+  try {
+    bytes = encodeReply(reply);
+  } catch (err) {
+    // A non-serializable payload or refusal detail (cycle, BigInt) must not silently drop the reply.
+    const fallback: EndpointReply = { v: 1, id: reply.id, ok: false, error: { code: "internal", message: `the reply does not serialize: ${(err as Error).message}`, ...(outcome !== undefined ? { outcome } : {}) } };
+    bytes = enc.encode(JSON.stringify(fallback));
+  }
+  if (steps.mayReply?.() === false) return;
+  const replySubject = steps.replySubject(parsed);
+  try {
+    nc.publish(replySubject, bytes);
+  } catch (err) {
+    // The publish itself refused the message — a reply over the broker's `max_payload` is the
+    // reachable case, and a VALID payload can reach here now that the §13.8 validate budget
+    // reports instead of refusing (that throw used to stop an oversized output before it was
+    // ever encoded, which masked this path). `runRequest()` is invoked from a subscription
+    // callback whose rejection is swallowed by design, so an escaping throw here does not surface
+    // anywhere: it leaves the caller with SILENCE until its own deadline. That is precisely the
+    // outcome the non-serializable branch above already exists to prevent, so it gets the same
+    // treatment. The replacement fits by construction — its message is one integer and a
+    // bounded string — and `resource-exhausted` matches the §13.4 fact preflight, which refuses
+    // an over-`max_payload` acceptance loudly rather than spilling it.
+    const refused: EndpointReply = {
+      v: 1, id: reply.id, ok: false,
+      error: { code: "resource-exhausted", message: `the serialized reply is ${bytes.length} bytes and the broker refused it (${(err as Error)?.message ?? String(err)}); a reply that cannot be published is refused loudly, never dropped`, ...(outcome !== undefined ? { outcome } : {}) },
+    };
+    nc.publish(replySubject, enc.encode(JSON.stringify(refused)));
+  }
 }
 
 // ---- the serve loop ------------------------------------------------------------------------------
@@ -330,6 +489,12 @@ export function serveEndpoint(
   assertServeGrantAuthorized(serve); // §13.9: the serve table consumes ONLY registry-authorized serve authority
   if (serve.space !== space)
     throw new Error(`the serve artifact was authorized for space "${serve.space}", not "${space}" (SPEC 13.9)`);
+  // SPEC 13.21: a command that declares principal-route authority words is served on that route
+  // only. Default deny both ways, as for modes: a service route never serves one.
+  for (const cmd of serve.commands) {
+    if (serve.surface[cmd].authorities !== undefined)
+      throw new Error(`command "${cmd}" declares principal-route authorities; a service route never serves it (SPEC 13.21)`);
+  }
   const identity: EpServeIdentity = { endpoint: serve.endpoint, instanceId: serve.instanceId, epoch: serve.epoch };
   const e = endpointToken(identity.endpoint);
   const iId = assertLifecycleToken(identity.instanceId, "instanceId");
@@ -451,45 +616,16 @@ export function serveEndpoint(
 
   const p = spacePrefix(space);
   const subs: Subscription[] = [];
-
   const pending = new Set<Promise<void>>();
-  const enc = new TextEncoder();
-
-function successReply(id: string, data: unknown): EndpointReply {
-  return { v: 1, id, ok: true, ...(data !== undefined ? { data } : {}) };
-}
-
-function encodeReply(reply: EndpointReply): Uint8Array {
-  return enc.encode(JSON.stringify(reply));
-}
-
-  const dec = new TextDecoder();
-
   const needsDescribeContext = describe.public !== true;
-  const handle = async (def: ActiveDef, msg: { subject: string; data: Uint8Array }): Promise<void> => {
-    const receivedAtMonotonicMs = performance.now();
-    const parsed = parseEpSubject(msg.subject);
-    if (!parsed || parsed.plane !== "request") return; // no sender: MUST NOT be handled (§13.2)
-    let env: EndpointRequest | undefined;
-    let dispatched = false;
-    let returned = false;
-    let reply: EndpointReply;
-    try {
-      const originalEnvelope: unknown = JSON.parse(dec.decode(msg.data));
-      env = parseEndpointRequest(originalEnvelope);
-      checkRequestSubjectAgreement(env, parsed);
-      // §13.2 FIRST among the semantic gates, and deliberately ahead of the command's own class,
-      // contract, and args: whether this instance is the addressee at all is settled before
-      // anything is said about the command it names. It also has to precede the governed gate,
-      // which can consume a one-use priced proof — the refusal claims nothing ran, so nothing may.
-      assertBoundIncarnation(env, identity);
-      assertClassMatches(env, def.class);
-      bindContract(env, def);
-      // §13.2: the command admits only its REGISTERED target modes — before args validation,
-      // so an unadmitted mode learns nothing about the input contract.
-      assertModeAdmitted(parsed, def);
-      // §13.7: args validate against the input schema BEFORE any effect (bad-request).
-      assertArgsValid(def.validate.args, env.args);
+  const steps: RouteSteps<ParsedEpRequest, EpServeContext, ActiveDef> = {
+    parse: (subject) => {
+      const parsed = parseEpSubject(subject);
+      return parsed && parsed.plane === "request" ? parsed : null;
+    },
+    addressed: (env) => assertBoundIncarnation(env, identity),
+    admit: (parsed, def) => assertModeAdmitted(parsed, def),
+    beforeEffect: async (env, parsed, def) => {
       // §13.3/§13.9: target currency resolves against the FRESH mapping immediately before
       // effect — static agreement is not currency; casts have effects too.
       await assertTargetCurrent(env, opts.resolveTarget);
@@ -501,123 +637,56 @@ function encodeReply(reply: EndpointReply): Uint8Array {
       // the handler.
       if (parsed.target?.mode === "child" || parsed.target?.mode === "ledger")
         await assertTargetCurrent(env, opts.resolveTarget);
+      if (!def.governed) return undefined;
       // §13.7/§13.9 governed pre-effect gate, for calls AND casts (casts have effects too):
       // guard-then-priced, every anomalous answer refuses, both seams bounded. Construction
       // refused a governed def without enforcement, so the snapshot is present and total here.
-      let obligations: readonly GuardObligation[] | undefined;
-      if (def.governed) {
-        ({ obligations } = await assertGovernedPreEffect({
-          enforcement: enforcement!,
-          endpoint: identity.endpoint,
-          command: def.command,
-          caller: parsed.caller,
-          requestId: env.id,
-          space,
-          ...(env.auth !== undefined ? { auth: env.auth } : {}),
-          ...(env.deadlineMs !== undefined ? { deadlineMs: env.deadlineMs } : {}),
-        }));
-        // §13.2/§13.3 TOCTOU: the gate AWAITED guard/proof, so a target mapping or child/ledger
-        // grant can have rotated since the last currency read — re-resolve currency, re-run the
-        // dynamic authorization, and then (because the child/ledger authorization is ITSELF an
-        // await the mapping can rotate during) re-resolve currency a FINAL time immediately
-        // before the effect. This is the SAME currency → auth → currency discipline the
-        // pre-gate path above follows; currency → auth alone leaves the last await unfenced.
-        // A one-use priced proof MAY be consumed before this refusal fires: fail-closed, no
-        // effect occurs, and the caller retries with a fresh request id and proof.
+      const { obligations } = await assertGovernedPreEffect({
+        enforcement: enforcement!,
+        endpoint: identity.endpoint,
+        command: def.command,
+        caller: parsed.caller,
+        requestId: env.id,
+        space,
+        ...(env.auth !== undefined ? { auth: env.auth } : {}),
+        ...(env.deadlineMs !== undefined ? { deadlineMs: env.deadlineMs } : {}),
+      });
+      // §13.2/§13.3 TOCTOU: the gate AWAITED guard/proof, so a target mapping or child/ledger
+      // grant can have rotated since the last currency read — re-resolve currency, re-run the
+      // dynamic authorization, and then (because the child/ledger authorization is ITSELF an
+      // await the mapping can rotate during) re-resolve currency a FINAL time immediately
+      // before the effect. This is the SAME currency → auth → currency discipline the
+      // pre-gate path above follows; currency → auth alone leaves the last await unfenced.
+      // A one-use priced proof MAY be consumed before this refusal fires: fail-closed, no
+      // effect occurs, and the caller retries with a fresh request id and proof.
+      await assertTargetCurrent(env, opts.resolveTarget);
+      await assertTargetModeAuthorized(env, parsed, opts);
+      if (parsed.target?.mode === "child" || parsed.target?.mode === "ledger")
         await assertTargetCurrent(env, opts.resolveTarget);
-        await assertTargetModeAuthorized(env, parsed, opts);
-        if (parsed.target?.mode === "child" || parsed.target?.mode === "ledger")
-          await assertTargetCurrent(env, opts.resolveTarget);
-      }
-      const requestId = env.id;
+      return obligations;
+    },
+    context: ({ parsed, env, def, subject, original, receivedAtMonotonicMs, obligations, replyFits }) => {
       const ctx: EpServeContext = {
         identity, subject: parsed, request: env, receivedAtMonotonicMs,
         ...(obligations !== undefined ? { obligations } : {}),
-        replyFits: (data, ceiling) => {
-          const maxPayload = nc.info?.max_payload;
-          if (!Number.isSafeInteger(maxPayload) || maxPayload === undefined || maxPayload <= 0)
-            throw new EpEnvelopeError("unavailable", "the serving connection has no valid payload ceiling");
-          if (!Number.isSafeInteger(ceiling) || ceiling <= 0)
-            throw new EpEnvelopeError("failed-precondition", "reply byte ceiling must be a positive safe integer");
-          return encodeReply(successReply(requestId, data)).byteLength <= Math.min(ceiling, maxPayload);
-        },
+        replyFits,
       };
       if (def.command === "describe" && needsDescribeContext) {
-        const observed = parseDescribeObservation(space, msg.subject, originalEnvelope);
-        describeContexts.set(ctx, Object.freeze({ subject: msg.subject, fingerprint: observed.fingerprint,
+        const observed = parseDescribeObservation(space, subject, original);
+        describeContexts.set(ctx, Object.freeze({ subject, fingerprint: observed.fingerprint,
           identity: Object.freeze({ ...identity }), receivedAtMonotonicMs, replyExpected: observed.replyExpected,
           ...(observed.deadlineMs === undefined ? {} : { deadlineMs: observed.deadlineMs }) }));
       }
-      dispatched = true;
-      if (!env.replyExpected) {
-        await def.handler(ctx);
-        return; // cast: the responder MUST NOT reply (§13.5)
-      }
-      const data = await def.handler(ctx);
-      returned = true;
-      // §13.7: the reply validates against the output schema BEFORE it is published, under the
-      // same fixed budget as args — an invalid reply is a server bug and fails loud, never
-      // reaches the caller as success.
-      assertOutputValid(def.validate.output, data);
-      reply = successReply(env.id, data);
-    } catch (err) {
-      if (env && !env.replyExpected) return; // a failed cast stays silent (§13.5 at-most-once)
-      const error = err instanceof EpEnvelopeError
-        ? err.toEpError()
-        : { code: "internal", message: (err as Error)?.message ?? String(err) };
-      // §13.3: a refusal raised before dispatch MUST say nothing ran, one raised after the handler
-      // returned MUST say it ran, and an omitted outcome reads as `unknown`. Deciding it here, from
-      // where the loop stands, covers every check on either side of the handler, including one
-      // added later and a body that never parsed into an envelope. A handler's own throw keeps
-      // whatever outcome it stated: the loop cannot tell how far it got.
-      // The id echoes the request where one parsed; the reply subject is already nonce-scoped
-      // to exactly this request's caller, so attribution never rides the echo.
-      const stated = !dispatched ? "not-executed" : returned ? "executed" : undefined;
-      reply = { v: 1, id: env?.id ?? "invalid", ok: false, error: stated === undefined ? error : { ...error, outcome: stated } };
-    }
-    // Replacing a reply that cannot be serialized or published changes nothing about whether the
-    // command ran, so each replacement below keeps the outcome the replaced reply stated, and a
-    // success states `executed`.
-    const outcome = reply.ok ? "executed" : reply.error?.outcome;
-    let bytes: Uint8Array;
-    try {
-      bytes = encodeReply(reply);
-    } catch (err) {
-      // A non-serializable payload or refusal detail (cycle, BigInt) must not silently drop the reply.
-      const fallback: EndpointReply = { v: 1, id: reply.id, ok: false, error: { code: "internal", message: `the reply does not serialize: ${(err as Error).message}`, ...(outcome !== undefined ? { outcome } : {}) } };
-      bytes = enc.encode(JSON.stringify(fallback));
-    }
-    const replySubject = deriveReplySubject(space, parsed, identity);
-    try {
-      nc.publish(replySubject, bytes);
-    } catch (err) {
-      // The publish itself refused the message — a reply over the broker's `max_payload` is the
-      // reachable case, and a VALID payload can reach here now that the §13.8 validate budget
-      // reports instead of refusing (that throw used to stop an oversized output before it was
-      // ever encoded, which masked this path). `handle()` is invoked from a subscription callback
-      // whose rejection is swallowed by design, so an escaping throw here does not surface
-      // anywhere: it leaves the caller with SILENCE until its own deadline. That is precisely the
-      // outcome the non-serializable branch above already exists to prevent, so it gets the same
-      // treatment. The replacement fits by construction — its message is one integer and a
-      // bounded string — and `resource-exhausted` matches the §13.4 fact preflight, which refuses
-      // an over-`max_payload` acceptance loudly rather than spilling it.
-      const refused: EndpointReply = {
-        v: 1, id: reply.id, ok: false,
-        error: { code: "resource-exhausted", message: `the serialized reply is ${bytes.length} bytes and the broker refused it (${(err as Error)?.message ?? String(err)}); a reply that cannot be published is refused loudly, never dropped`, ...(outcome !== undefined ? { outcome } : {}) },
-      };
-      nc.publish(replySubject, enc.encode(JSON.stringify(refused)));
-    }
+      return ctx;
+    },
+    replySubject: (parsed) => deriveReplySubject(space, parsed, identity),
   };
 
   for (const def of defs) {
     const cmd = def.command;
     const cb = (_err: unknown, msg: Pick<Msg, "subject" | "data" | "headers">) => {
-      // Stored-message delivery is not a caller publication on this subject. Drop native
-      // provenance before parsing, authorization or replies: there is no authenticated caller
-      // to answer. Match header names, not values; an empty marker is still a marker.
-      for (const [name] of msg.headers ?? [])
-        if (/^Nats-(Stream|Subject|Sequence|Time-Stamp)$/i.test(name)) return;
-      const run = handle(def, msg).catch(() => { /* handle() reports via the reply; never unhandled */ });
+      if (carriesStoredProvenance(msg)) return;
+      const run = runRequest(nc, steps, () => def, msg).catch(() => { /* runRequest() reports via the reply; never unhandled */ });
       pending.add(run);
       void run.finally(() => pending.delete(run));
     };
@@ -642,6 +711,248 @@ function encodeReply(reply: EndpointReply): Uint8Array {
       await Promise.allSettled([...pending]); // in-flight handlers finish before "stopped"
     },
   };
+}
+
+// ---- the principal route (SPEC 13.21) -----------------------------------------------------------
+
+/** What a principal-route handler sees: this process, the broker-authenticated caller and the
+ *  authority word its row covers, beside the validated body. Nothing about who calls comes from
+ *  the body (SPEC 13.21). */
+export interface EpPrincipalServeContext {
+  endpoint: string;
+  /** This process: the head of every request it serves. */
+  principal: EpPrincipal;
+  /** The caller triple, from the subject. */
+  caller: EpCaller;
+  /** The authority word of the caller's row, from the subject. */
+  authority: PrincipalAuthority;
+  request: EndpointRequest;
+  /** This process's `performance.now()` when the request arrived, taken before validation. */
+  receivedAtMonotonicMs: number;
+  /** Measure the complete success reply against this connection and a handler's byte ceiling. */
+  replyFits: (data: unknown, ceiling: number) => boolean;
+  /** Aborts when the serve stops. A handler that is still running then can end early: stop waits
+   *  for it only until its request's deadline, and drops a reply that comes later. */
+  signal: AbortSignal;
+}
+
+/** One principal-route command: its handler plus the compiled contracts, which MUST equal the
+ *  digests the cluster document declares. */
+export interface EpPrincipalCommandDef {
+  command: string;
+  contract: { input: CompiledContract; output: CompiledContract };
+  handler: (ctx: EpPrincipalServeContext) => Promise<unknown> | unknown;
+}
+
+/** A principal-route command in the dispatch table. */
+interface PrincipalDef extends ServedCommand<EpPrincipalServeContext> {
+  /** The authority words the declaration admits. `describe` admits every word of the closed set. */
+  authorities: ReadonlySet<string>;
+}
+
+/** One subscription of a process to its own principal-route subject. */
+export interface EpPrincipalServeHandle {
+  /** The subject this process serves. */
+  readonly filter: string;
+  /** Resolves once the broker accepted the subscription: subscribe, flush, and no refusal of that
+   *  subject. Rejects with the refusal. */
+  readonly ready: Promise<void>;
+  /** Resolves with the broker's refusal of the subscription whenever it arrives, also after the
+   *  library re-subscribed on a reconnect. Never rejects. */
+  readonly refused: Promise<Error>;
+  /** Flush and confirm the subscription still stands: the check `ready` ran, run again. */
+  check(): Promise<void>;
+  /** Unsubscribe, abort every handler's `signal`, then await each handler in flight until its
+   *  request's deadline at most, which the route caps at 30 s. A reply that comes after that is
+   *  dropped. */
+  stop(): Promise<void>;
+}
+
+/**
+ * Serve a principal's own command set on the principal route (SPEC 13.21), on one connection.
+ * `Endpoint.servePrincipal` is the entry point an agent uses: it adds the refusals for an open mesh
+ * and a static credential, re-binds on every replaced connection and owns the presence field.
+ *
+ * The cluster is a core constant, not a registration: construction parses it and refuses a command
+ * that declares no `authorities`, one that is not ephemeral, one with a governed trait (this route
+ * has no governed gate), and a set of defs that is not exactly the cluster's commands with compiled
+ * contracts equal to the declared digests. `describe` is built here: it answers the cluster inline,
+ * the same answer for every caller, and admits every authority word.
+ *
+ * The subscription is this process's own head with no queue group. Each request runs the shared
+ * pipeline: a head that is not this process is dropped with no reply, the subject's authority word
+ * MUST be one the command declares (`permission-denied`), and the reply goes to the subject derived
+ * from this process and the parsed caller, never to a transport reply field.
+ *
+ * Stopping aborts every handler's `signal` and waits for each handler in flight until its request's
+ * `deadlineMs` has passed since the request arrived, and no longer: the caller has stopped waiting
+ * by then. The route refuses a `deadlineMs` over 30 s, so stop waits at most 30 s. A reply that comes
+ * later is dropped.
+ */
+export function servePrincipalRoute(
+  nc: NatsConnection,
+  space: string,
+  self: EpPrincipal,
+  serve: { endpoint: string; cluster: ClusterDocument; handlers: EpPrincipalCommandDef[] },
+): EpPrincipalServeHandle {
+  const filter = epPrincipalServeFilter(space, serve.endpoint, self);
+  const cluster = parseClusterDocument(serve.cluster);
+  const declared = new Map(cluster.commands.map((c) => [c.name, c]));
+  for (const c of cluster.commands) {
+    if (c.authorities === undefined)
+      throw new Error(`command "${c.name}" declares no authorities; a command is served on the principal route only when it lists the words it admits (SPEC 13.21)`);
+    if (c.class !== "ephemeral")
+      throw new Error(`command "${c.name}" is class "${c.class}"; the principal route serves ephemeral commands only (SPEC 13.21)`);
+    const governed = (c.traits ?? []).filter((t) => GOVERNED_TRAIT_URNS.includes(t));
+    if (governed.length > 0)
+      throw new Error(`command "${c.name}" declares governed trait(s) ${governed.join(", ")}; the principal route has no governed gate, and a governed command is never served unenforced (SPEC 13.7)`);
+  }
+  const defs: PrincipalDef[] = [];
+  for (const def of serve.handlers) {
+    assertCommandToken(def.command);
+    if (def.command === "describe")
+      throw new Error("describe is reserved and built from the cluster; a custom describe def is refused (SPEC 13.21)");
+    if (defs.some((d) => d.command === def.command)) throw new Error(`command "${def.command}" is served twice`);
+    const decl = declared.get(def.command);
+    if (decl === undefined)
+      throw new Error(`command "${def.command}" is not in the cluster; the served table is exactly the cluster's commands (SPEC 13.21)`);
+    const input = assertCompiledContract(def.contract?.input, `command "${def.command}" input contract`);
+    const output = assertCompiledContract(def.contract?.output, `command "${def.command}" output contract`);
+    if (input.closureDigest !== decl.inputDigest || output.closureDigest !== decl.outputDigest)
+      throw new Error(`command "${def.command}" compiled contracts ${input.closureDigest}/${output.closureDigest} do not equal the declared ${decl.inputDigest}/${decl.outputDigest} (SPEC 13.7)`);
+    defs.push({
+      command: def.command, class: "ephemeral",
+      digests: { input: decl.inputDigest, output: decl.outputDigest },
+      validate: { args: input.validate, output: output.validate },
+      authorities: new Set(decl.authorities),
+      handler: def.handler,
+    });
+  }
+  for (const c of cluster.commands)
+    if (!defs.some((d) => d.command === c.name))
+      throw new Error(`command "${c.name}" has no def; a declared command nobody serves is a construction bug (SPEC 13.21)`);
+  const answer: DescribeAnswer = deepFreeze({
+    public: true,
+    descriptor: {
+      endpoint: serve.endpoint,
+      owner: self.owner,
+      protocol: { v: 1 as const },
+      clusters: [{
+        digest: singleDocumentClosure(serve.cluster).closureDigest,
+        commands: cluster.commands.map((c) => c.name),
+        document: structuredClone(serve.cluster) as unknown as Record<string, unknown>,
+      }],
+    },
+  });
+  defs.push({
+    command: "describe",
+    class: "ephemeral",
+    validate: describeValidators(),
+    authorities: new Set(EP_PRINCIPAL_AUTHORITIES),
+    handler: () => answer,
+  });
+  const byCommand = new Map(defs.map((d) => [d.command, d]));
+
+  const steps: RouteSteps<ParsedEpPrincipalRequest, EpPrincipalServeContext, PrincipalDef> = {
+    parse: (subject) => {
+      const parsed = parseEpSubject(subject);
+      if (!parsed || parsed.plane !== "principal-request") return null;
+      // The addressee check on this route: a request whose head is not this process was not
+      // addressed to it and is dropped with no reply. It needs only the subject, so it runs here.
+      const h = parsed.principal;
+      if (parsed.endpoint !== serve.endpoint || h.owner !== self.owner || h.actor !== self.actor || h.uid !== self.uid || h.runtimeId !== self.runtimeId)
+        return null;
+      return parsed;
+    },
+    addressed: () => {},
+    admit: (parsed, def) => {
+      if (!isPrincipalAuthority(parsed.authority) || !def.authorities.has(parsed.authority))
+        throw new EpEnvelopeError("permission-denied", `command "${def.command}" does not admit the "${parsed.authority}" authority; a command serves only the words its declaration lists (SPEC 13.21)`);
+    },
+    beforeEffect: async () => undefined,
+    context: ({ parsed, env, receivedAtMonotonicMs, replyFits }) => ({
+      endpoint: serve.endpoint, principal: self, caller: parsed.caller, authority: parsed.authority,
+      request: env, receivedAtMonotonicMs, replyFits, signal: stopping.signal,
+    }),
+    replySubject: (parsed) => derivePrincipalReplySubject(space, parsed, self),
+    mayReply: () => !lateRepliesDropped,
+  };
+
+  const stopping = new AbortController();
+  let lateRepliesDropped = false;
+  /** Each request in flight, with when its caller stops waiting (`performance.now()` time), once
+   *  the request has reached its handler. */
+  const pending = new Map<Promise<void>, { endsAt?: number }>();
+  let refusal: Error | undefined;
+  let markRefused!: (e: Error) => void;
+  const refused = new Promise<Error>((resolve) => { markRefused = resolve; });
+  const sub = nc.subscribe(filter, {
+    callback: (err, msg) => {
+      if (err) {
+        if (refusal === undefined) {
+          refusal = new EpEnvelopeError("permission-denied", `the broker refused this process's subscription to its principal-route subject "${filter}": ${err.message}. The credential holds no serve row for it, which a credential minted before the rows existed does not; reconnect after the auth service runs a release that mints them (SPEC 13.21)`);
+          markRefused(refusal);
+        }
+        return;
+      }
+      if (carriesStoredProvenance(msg)) return;
+      const entry: { endsAt?: number } = {};
+      const timed: typeof steps = {
+        ...steps,
+        context: (a) => {
+          // The agreement check made `deadlineMs` present on this route, and at most 30 s.
+          entry.endsAt = a.receivedAtMonotonicMs + a.env.deadlineMs!;
+          return steps.context(a);
+        },
+      };
+      const run = runRequest(nc, timed, (parsed) => byCommand.get(parsed.command), msg).catch(() => { /* runRequest() reports via the reply; never unhandled */ });
+      pending.set(run, entry);
+      void run.finally(() => pending.delete(run));
+    },
+  });
+  // A refused subscription arrives as the broker's `-ERR`, which it writes before the `PONG` that
+  // answers the flush, and nats-core hands it to the callback above before it settles the flush.
+  const check = async (): Promise<void> => {
+    await nc.flush();
+    if (refusal !== undefined) throw refusal;
+  };
+  const ready = check();
+  ready.catch(() => { /* the caller observes it; this keeps an unobserved refusal from being unhandled */ });
+  return {
+    filter,
+    ready,
+    refused,
+    check,
+    async stop() {
+      stopping.abort(new Error(`stopped serving "${serve.endpoint}" on the principal route`));
+      const gone = nc.closed().then(() => undefined);
+      await Promise.race([sub.drain().catch(() => undefined), gone]);
+      // A request that has not reached its handler finishes without waiting on anything outside
+      // this process: the route has no seam before the effect.
+      await Promise.allSettled([...pending].map(([run, { endsAt }]) =>
+        endsAt === undefined ? run : withinMs(run, endsAt - performance.now())));
+      lateRepliesDropped = true;
+    },
+  };
+}
+
+/** Settle when `p` does or after `ms`, whichever comes first. */
+async function withinMs(p: Promise<unknown>, ms: number): Promise<void> {
+  if (ms <= 0) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([p, new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function deepFreeze<T>(v: T): T {
+  if (v !== null && typeof v === "object") {
+    for (const child of Object.values(v as Record<string, unknown>)) deepFreeze(child);
+    Object.freeze(v);
+  }
+  return v;
 }
 
 // ---- describe (§13.7: reserved, untargeted, ephemeral, authorization-scoped) --------------------
@@ -704,17 +1015,25 @@ const DESCRIBE_ANSWER_SCHEMA = {
   },
 } as const;
 
+let describeCompiled: { input: CompiledContract; output: CompiledContract } | undefined;
 /** The reserved describe's compiled validators (§13.7): the canonical VOID input (a describe
  *  carrying any args is `bad-request` at the same pre-effect seam as every command, BEFORE the
  *  authorization-view lookup) and the declared {@link DescribeAnswer} output. Compiled once,
  *  lazily, through the same profile compiler every registered contract rides. */
-let describeValidate: { args: ContractValidator; output: ContractValidator } | undefined;
 function describeValidators(): { args: ContractValidator; output: ContractValidator } {
-  describeValidate ??= {
-    args: compileContract({ root: VOID_SCHEMA }).validate,
-    output: compileContract({ root: DESCRIBE_ANSWER_SCHEMA }).validate,
-  };
-  return describeValidate;
+  const c = describeContracts();
+  return { args: c.input.validate, output: c.output.validate };
+}
+
+/** The reserved describe's compiled contracts: the canonical void input and the declared
+ *  {@link DescribeAnswer} output. A caller validates a describe answer with the output, and pins
+ *  neither digest on the request (§13.7). */
+export function describeContracts(): { input: CompiledContract; output: CompiledContract } {
+  describeCompiled ??= Object.freeze({
+    input: compileContract({ root: VOID_SCHEMA }),
+    output: compileContract({ root: DESCRIBE_ANSWER_SCHEMA }),
+  });
+  return describeCompiled;
 }
 
 /** The reserved describe handler (internal: {@link serveEndpoint} is the only constructor —

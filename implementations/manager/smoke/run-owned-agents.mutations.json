@@ -13,7 +13,7 @@
   "mutations": [
     {
       "name": "owned persona spawn bypasses catalog visibility",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "if (!this.canReadPersona(def.owner, personaCaller, admin))",
       "replace": "if (false)",
       "expectRed": "U4-3 admitted non-admin run cannot spawn another owner's known persona",
@@ -21,7 +21,7 @@
     },
     {
       "name": "persona visibility uses synthetic run driver instead of admitted principal",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "this.runHosting?.admittedCaller(authenticatedCaller) ?? authenticatedCaller",
       "replace": "authenticatedCaller",
       "expectRed": "U4 persona admitted caller mapping permits its own private content",

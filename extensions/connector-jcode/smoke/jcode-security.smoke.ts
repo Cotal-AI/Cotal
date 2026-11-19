@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -111,7 +111,7 @@ try {
     COTAL_JCODE_HOME: hostHome,
     COTAL_JCODE_TUI: "0",
     COTAL_CONTROL_SOCKET: join(root, "control.sock"),
-    COTAL_CONTROL_TOKEN: "jcode-security-control-token",
+    COTAL_CONTROL_KEY: "jcode-security-control-token", COTAL_CONTROL_VERSION: "1",
   };
   const result = spawnSync(tsx, [host], { cwd: root, env: hostEnv, encoding: "utf8" });
   // Render failures as named assertions instead of throwing inside check's condition. mutation-proof
@@ -120,6 +120,10 @@ try {
   const noCanary = result.status === 1 && !result.stderr.includes(canary);
   check("host launch failure reports the safe SDK startup code", safeCode, { status: result.status, stderr: result.stderr });
   check("host launch failure never prints captured Jcode child stderr canary", noCanary, { status: result.status, stderr: result.stderr });
+  const logReference = /workspace log: ([^\r\n]+)/.exec(result.stderr)?.[1];
+  const diagnostic = logReference && join(hostHome, logReference);
+  check("host launch failure names a readable private diagnostic log", !!diagnostic && existsSync(diagnostic), result.stderr);
+  check("private startup log retains the child error", !!diagnostic && readFileSync(diagnostic, "utf8").includes(canary));
 
   console.log(`\nJCODE SECURITY SMOKE PASSED (${pass} checks)`);
 } finally {

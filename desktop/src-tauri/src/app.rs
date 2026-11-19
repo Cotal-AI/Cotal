@@ -54,6 +54,15 @@ pub(crate) struct RequestSlots(Arc<Semaphore>);
 struct TrayStatus(MenuItem<tauri::Wry>);
 struct TrayUpdate(MenuItem<tauri::Wry>);
 struct PaintState(std::sync::Mutex<FirstPaint>);
+struct ActiveWatch(std::sync::Mutex<Option<(u32, tauri_plugin_shell::process::CommandChild)>>);
+
+pub(crate) fn stop_watch(app: &AppHandle) {
+    if let Ok(mut active) = app.state::<ActiveWatch>().0.lock() {
+        if let Some((_, prev)) = active.take() {
+            let _ = prev.kill();
+        }
+    }
+}
 
 #[tauri::command]
 async fn daemon_request(
@@ -62,19 +71,29 @@ async fn daemon_request(
     request: DesktopRequest,
     on_event: Channel<Value>,
 ) -> Result<Value, String> {
-    let _activity = app.state::<crate::app_activity::Activity>().request()?;
+    let activity = app.state::<crate::app_activity::Activity>().request()?;
+    if request.is_watch() {
+        drop(activity);
+    }
     run_request(&app, &slots, request, Some(on_event)).await
 }
 
 pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: DesktopRequest, on_event: Option<Channel<Value>>) -> Result<Value, String> {
-    let _permit = slots
-        .0
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| "Too many app requests are running. Wait for an operation to finish.")?;
+    let is_watch = request.is_watch();
+    let _permit = if is_watch {
+        None
+    } else {
+        Some(
+            slots
+                .0
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| "Too many app requests are running. Wait for an operation to finish.")?,
+        )
+    };
     request.validate()?;
     let operation = match &request {
-        DesktopRequest::Status {} => "status",
+        DesktopRequest::Status {} | DesktopRequest::StatusWatch {} => "status",
         DesktopRequest::Setup { .. } => "setup",
         _ => "other",
     };
@@ -136,6 +155,7 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
     let (mut events, mut child) = command
         .spawn()
         .map_err(|_| "The packaged daemon client could not start.")?;
+    let watch_pid = child.pid();
     let mut input =
         serde_json::to_vec(&request).map_err(|_| "The request could not be encoded.")?;
     input.push(b'\n');
@@ -143,13 +163,25 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
         let _ = child.kill();
         return Err("The daemon client input closed.".into());
     }
-    let answer = tokio::time::timeout(Duration::from_secs(seconds), async {
+    let mut child = if is_watch {
+        if let Ok(mut active) = app.state::<ActiveWatch>().0.lock() {
+            if let Some((_, prev)) = active.replace((watch_pid, child)) {
+                let _ = prev.kill();
+            }
+        }
+        None
+    } else {
+        Some(child)
+    };
+    let read_events = async {
         let mut result = None;
         let mut output_bytes = 0usize;
         while let Some(event) = events.recv().await {
             match event {
                 CommandEvent::Stdout(line) => {
-                    output_bytes += line.len();
+                    if !is_watch {
+                        output_bytes += line.len();
+                    }
                     if line.len() > MAX_FRAME || output_bytes > 4 * MAX_FRAME { return Err("The daemon client exceeded its response limit.".to_string()); }
                     let frame: Value = serde_json::from_slice(&line).map_err(|_| "The daemon client returned an invalid JSON frame.")?;
                     if frame.get("v").and_then(Value::as_u64) != Some(1) { return Err("The daemon client protocol is unsupported.".into()); }
@@ -166,6 +198,14 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
                             }
                             on_event.as_ref().ok_or("Unexpected progress from the update preference reader.")?.send(frame).map_err(|_| "The application closed its progress view.")?
                         },
+                        Some("status") if is_watch => {
+                            let status = crate::presence::tray_status(&frame);
+                            app.state::<TrayStatus>().0.set_text(&status).map_err(|e| e.to_string())?;
+                            if let Err(message) = native_presence::observe(app, "status", &frame) {
+                                app.emit("desktop-presence-error", message).map_err(|e| e.to_string())?;
+                            }
+                            on_event.as_ref().ok_or("Unexpected status stream without an event channel.")?.send(frame).map_err(|_| "The application closed its status view.")?;
+                        }
                         Some("result") if result.is_none() => {
                             #[cfg(all(feature = "e2e", debug_assertions))]
                             {
@@ -184,6 +224,26 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
                 }
                 CommandEvent::Error(_) => return Err("The daemon client transport failed.".into()),
                 CommandEvent::Terminated(payload) => {
+                    if is_watch {
+                        let still_active = app
+                            .state::<ActiveWatch>()
+                            .0
+                            .lock()
+                            .ok()
+                            .and_then(|mut active| {
+                                if active.as_ref().is_some_and(|(p, _)| *p == watch_pid) {
+                                    active.take().map(|(_, c)| {
+                                        let _ = c.kill();
+                                    })
+                                } else {
+                                    None
+                                }
+                            })
+                            .is_some();
+                        if !still_active {
+                            return Ok(serde_json::json!({"v":1,"event":"result","ok":true,"result":{"closed":true,"watchMode":"push"}}));
+                        }
+                    }
                     if payload.code != Some(0) { return Err("The daemon client exited unsuccessfully. No completed operation is assumed.".into()); }
                     return result.ok_or_else(|| "The daemon client exited without a result.".to_string());
                 }
@@ -191,18 +251,39 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
             }
         }
         Err("The daemon client closed without an exit receipt.".into())
-    }).await;
-    let _ = child.kill();
-    #[cfg(all(feature = "e2e", debug_assertions))]
-    if answer.is_err() { trace.phase = "timeout"; }
-    let frame = answer.map_err(|_| "The daemon client timed out. The operation outcome is unknown; check status before retrying.".to_string())??;
-    if matches!(operation, "status" | "setup") {
+    };
+    let frame = if is_watch {
+        read_events.await
+    } else {
+        let answer = tokio::time::timeout(Duration::from_secs(seconds), read_events).await;
+        #[cfg(all(feature = "e2e", debug_assertions))]
+        if answer.is_err() { trace.phase = "timeout"; }
+        answer
+            .map_err(|_| "The daemon client timed out. The operation outcome is unknown; check status before retrying.".to_string())?
+    };
+    if let Some(c) = child.take() {
+        let _ = c.kill();
+    } else if is_watch {
+        if let Ok(mut active) = app.state::<ActiveWatch>().0.lock() {
+            if active.as_ref().is_some_and(|(p, _)| *p == watch_pid) {
+                if let Some((_, c)) = active.take() {
+                    let _ = c.kill();
+                }
+            }
+        }
+    }
+    let frame = frame?;
+    if (!is_watch && matches!(operation, "status" | "setup"))
+        || (is_watch && frame.get("ok").and_then(Value::as_bool) == Some(false))
+    {
         let status = crate::presence::tray_status(&frame);
         app.state::<TrayStatus>().0.set_text(&status).map_err(|e| e.to_string())?;
     }
     // An OS integration refusal does not conceal the completed daemon operation.
-    if let Err(message) = native_presence::observe(&app, operation, &frame) {
-        app.emit("desktop-presence-error", message).map_err(|e| e.to_string())?;
+    if !is_watch {
+        if let Err(message) = native_presence::observe(app, operation, &frame) {
+            app.emit("desktop-presence-error", message).map_err(|e| e.to_string())?;
+        }
     }
     Ok(frame)
 }
@@ -317,6 +398,7 @@ pub fn run() {
         }))
         .manage(RequestSlots(Arc::new(Semaphore::new(4))))
         .manage(PaintState(std::sync::Mutex::new(FirstPaint::default())))
+        .manage(ActiveWatch(std::sync::Mutex::new(None)))
         .manage(crate::app_activity::Activity::default())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
@@ -412,7 +494,7 @@ pub fn run() {
                     "update" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "settings" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "dashboard" => { show(app); let _ = app.emit("desktop-open-dashboard", ()); }
-                    "quit" => { if app.state::<crate::app_activity::Activity>().request_exit() { app.exit(0); } },
+                    "quit" => { if app.state::<crate::app_activity::Activity>().request_exit() { stop_watch(app); app.exit(0); } },
                     _ => {}
                 })
                 .build(app)?;
@@ -461,6 +543,7 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
                 if !app.state::<crate::app_activity::Activity>().request_exit() { api.prevent_exit(); }
+                else { stop_watch(app); }
             }
             #[cfg(target_os = "macos")]
             match event {

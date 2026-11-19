@@ -30,7 +30,8 @@ Set these choices in the guided flow:
 
 Review the choices before saving.
 Choose **Change** to edit them or **Cancel** to save nothing.
-With `--configure-only`, setup does not start a process.
+With `--configure-only`, setup does not start a process or check for a usable NATS server.
+Starting a local space still requires a supported NATS server.
 Continue with the [Quickstart](getting-started.mdx#2-start-a-local-mesh) after preparation.
 
 Without `--configure-only`, successful interactive setup offers to start the space and open the default agent.
@@ -101,7 +102,8 @@ To define your own team, follow [Define a team](define-a-team.mdx).
 ## Update preparation [#update-preparation]
 
 Running setup with the same choices is safe.
-It reports an existing prepared, started, or registered space and preserves your edited default persona.
+It reports an existing prepared, started, stopped, or registered space and preserves your edited default persona.
+If a previously started local space is stopped, setup suggests `cotal up` from the project folder.
 A project root or space name held by a different space is a conflict.
 
 To create another local space, run `cotal space create <name>` in its own project folder.

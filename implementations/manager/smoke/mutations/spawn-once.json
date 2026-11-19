@@ -29,71 +29,71 @@
   "mutations": [
     {
       "name": "S1 a yield no longer stops the seat",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "    if (p.once) this.endOnceSeat(p, `yielded ${status}`);\n",
+      "file": "implementations/manager/src/turn-relay.ts",
+      "find": "    if (p.once) this.deps.endOnceSeat(p, `yielded ${status}`);\n",
       "replace": "",
       "expectRed": "the seat is gone: its process exited and its slot was freed"
     },
     {
       "name": "S2 the deadline no longer stops the seat",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "      if (p.once) this.endOnceSeat(p, \"turn-deadline\");\n      else await clearGoalIndex(gw.ctx, p.ref);\n",
+      "file": "implementations/manager/src/turn-relay.ts",
+      "find": "      if (p.once) this.deps.endOnceSeat(p, \"turn-deadline\");\n      else await clearGoalIndex(gw.ctx, p.ref);\n",
       "replace": "      if (!p.once) await clearGoalIndex(gw.ctx, p.ref);\n",
       "expectRed": "...and the seat is gone at its deadline"
     },
     {
       "name": "S3 a once seat accepts a second turn",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "    if (target.kind === \"managed\" && target.agent.once)\n",
       "replace": "    if (false)\n",
       "expectRed": "a second turn to a once seat is refused"
     },
     {
       "name": "S4 a connector without the relay is admitted",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "    if (!connector.supportsTurnRelay)\n",
       "replace": "    if (false)\n",
       "expectRed": "a connector without the turn relay is refused, with its own reason"
     },
     {
       "name": "S5 the proved exit no longer cancels the task",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/turn-relay.ts",
       "find": "      await this.commitOnceCancel(owed.ref, owed.reason);\n",
       "replace": "",
       "expectRed": "a despawn ends it: the task is cancelled `despawned` at the proved exit"
     },
     {
       "name": "S6 a seat that never joined is left running",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "          this.stopOnceSeat(managed, \"readiness-timeout\");\n",
+      "file": "implementations/manager/src/seat-start.ts",
+      "find": "          this.endOnceBeforeServe(managed, \"readiness-timeout\");\n",
       "replace": "",
       "expectRed": "...and the seat is stopped, never left running with nothing to do"
     },
     {
       "name": "S7 the debt clears without the connector's proof",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "      const retired = owed.retire === undefined ? undefined : await this.retireOnceSeat(owed.retire);",
+      "file": "implementations/manager/src/turn-relay.ts",
+      "find": "      const retired = owed.retire === undefined ? undefined : await this.deps.retireOnceSeat(owed.retire);",
       "replace": "      const retired = undefined as { discard(): Promise<void> } | undefined;",
       "expectRed": "a refused proof keeps the debt"
     },
     {
       "name": "S8 the readiness stop waits for the spawn's terminal",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "        if (managed.once) {\n          this.agentGoals.delete(managed.name);\n          this.stopOnceSeat(managed, \"readiness-timeout\");\n        }\n        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n",
-      "replace": "        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n        if (managed.once) {\n          this.agentGoals.delete(managed.name);\n          this.stopOnceSeat(managed, \"readiness-timeout\");\n        }\n",
+      "file": "implementations/manager/src/seat-start.ts",
+      "find": "        if (managed.once) {\n          this.endOnceBeforeServe(managed, \"readiness-timeout\");\n        }\n        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n",
+      "replace": "        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n        if (managed.once) {\n          this.endOnceBeforeServe(managed, \"readiness-timeout\");\n        }\n",
       "expectRed": "a seat that never joins is stopped while its spawn's terminal cannot be published"
     },
     {
       "name": "S9 a refused deadline write is not written again",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "        this.pendingTurns.set(key, p);\n        this.endOnceSeat(p, \"turn-deadline\");\n",
-      "replace": "        this.endOnceSeat(p, \"turn-deadline\");\n",
+      "file": "implementations/manager/src/turn-relay.ts",
+      "find": "        this.pendingTurns.set(key, p);\n        this.deps.endOnceSeat(p, \"turn-deadline\");\n",
+      "replace": "        this.deps.endOnceSeat(p, \"turn-deadline\");\n",
       "expectRed": "...and the deadline terminal is written again while the manager runs"
     },
     {
       "name": "S10 a refused deadline write leaves the seat running",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "        this.pendingTurns.set(key, p);\n        this.endOnceSeat(p, \"turn-deadline\");\n",
+      "file": "implementations/manager/src/turn-relay.ts",
+      "find": "        this.pendingTurns.set(key, p);\n        this.deps.endOnceSeat(p, \"turn-deadline\");\n",
       "replace": "        this.pendingTurns.set(key, p);\n",
       "expectRed": "a refused deadline write still stops the seat at its deadline"
     },
@@ -106,49 +106,49 @@
     },
     {
       "name": "S12 a connector that needs a confirmed startup is admitted on a runtime that cannot report it",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "    if (connector.onceNeedsConfirmed !== undefined && !runtime.reportsStartupOutcome)\n      return `once: runtime \"${runtime.kind}\" does not report how a seat's startup ended, which a once seat on the ${connector.name} connector needs`;\n",
       "replace": "",
       "expectRed": "a Claude seat on a runtime that does not report how its startup ended is refused, naming the runtime"
     },
     {
       "name": "S13 a task that fits the turn frame exactly is refused",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      if (text.length > connector.turnFrameLimit)\n",
       "replace": "      if (text.length >= connector.turnFrameLimit)\n",
       "expectRed": "a task that renders to the connector's turn frame exactly is admitted, with and without a deadline"
     },
     {
       "name": "S14 a task one character over the turn frame is admitted",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      if (text.length > connector.turnFrameLimit)\n",
       "replace": "      if (text.length > connector.turnFrameLimit + 1)\n",
       "expectRed": "...and one character over it is refused, naming both sizes"
     },
     {
       "name": "S15 the turn frame is measured without the deadline line",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "payload, spawner: this.spawnerName(spawner), ...(launch.once!.deadlineMs !== undefined ? { deadlineAt: MAX_SCHEDULE_MS } : {}) });",
       "replace": "payload, spawner: this.spawnerName(spawner) });",
       "expectRed": "a task that renders to the connector's turn frame exactly is admitted, with and without a deadline"
     },
     {
       "name": "S16 a startup that skipped the prompt serves the task",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "        if (startup !== \"confirmed\") {\n",
       "replace": "        if (startup !== \"confirmed\" && startup !== \"ready\") {\n",
       "expectRed": "a startup that opened its input screen without the prompt fails, saying why"
     },
     {
       "name": "S17 the readiness verdict does not wait for the startup outcome",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "        const startup = await this.awaitStartupOutcome(managed, launchedAt, readinessTimeoutMs);\n",
       "replace": "        const startup = \"confirmed\" as StartupOutcome;\n",
       "expectRed": "while the notice is awaited the seat has joined, but its pull finds no task"
     },
     {
       "name": "S18 the task is served before its spawn's succeeded terminal is written",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "      if (onceTask && committed === true) this.openOnceDelivery(onceTask.ref);\n      else if (onceTask) {\n",
       "replace": "      if (onceTask) this.openOnceDelivery(onceTask.ref);\n      if (onceTask && committed !== true) {\n",
       "expectRed": "a confirmed spawn whose succeeded terminal cannot be written never serves its task: its seat is stopped"

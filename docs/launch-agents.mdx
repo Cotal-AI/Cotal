@@ -157,9 +157,18 @@ Its reason appears in the manager's status response and a `connector <name> unav
 Available rows record the absolute executable paths the manager found.
 
 Launches and preserved-state resumes use those recorded paths.
-`cotal models` reports the same unavailable reason, so installing or removing an application after boot does not silently change the manager's answer.
+When a launch, `cotal models` or status read asks for an unavailable connector, the Manager
+checks its declared binaries on PATH again and updates its status row. Installing an application
+into a directory already on that PATH needs no restart. Once available, its resolved paths stay pinned.
 Catalog reads run the same recorded absolute binary as a launch. `COTAL_OPENCODE_BIN` and `COTAL_CODEX_BIN` override it.
-Restart the manager to repeat its startup checks, after accounting for its running seats.
+A connector that was available at boot keeps its recorded paths even if PATH later changes.
+Since 0.167.1, a detached launch that no manager can take reports the installed connectors' unavailable reasons, including missing executables.
+Install or repair those applications on the named manager hosts and make them available on the PATH used to start the managers.
+The refusal suggests adding a connector only on managers whose connector inventory is empty.
+If the manager needs a different PATH, restart it under its own supervisor. For a saved manager
+service, use `cotal service restart <name> --yes`. For a foreground `cotal up` stack, run
+`cotal down --yes` from its project folder or press Ctrl-C in its terminal. This stops the broker
+and hosted workflow runs and can stop agents. Repeat the original foreground start with the updated PATH.
 A connector registered after startup has no recorded row, so launch, resume, and model lookup check PATH when called.
 
 ## Manage local personas [#personas-from-the-cli]

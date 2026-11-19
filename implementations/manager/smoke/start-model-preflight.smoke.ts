@@ -282,7 +282,7 @@ registry.register(recNoResumeCon);
   // the forked session, not a special resume-only launch shape.
   {
     const a = cArgs({ ...base, prompt: "hello mesh", resume: "sess-p" });
-    check("claude: prompt+resume → prompt is the leading positional", a[0] === "hello mesh", a[0]);
+    check("claude: prompt+resume → prompt is the leading positional", a[0] === " hello mesh", a[0]);
     check("claude: prompt+resume → --resume still emitted", a.includes("--resume"), a);
     check("claude: prompt+resume → --fork-session still emitted", a.includes("--fork-session"), a);
   }

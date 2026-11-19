@@ -1,5 +1,110 @@
 # @cotal-ai/workspace
 
+## 0.171.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.171.1
+
+## 0.171.0
+
+### Patch Changes
+
+- 00fcd05: Keep the right project in CLI recovery steps for unreachable brokers, stopped spaces, and missing managers, and keep component health consistent when a broker URL has a trailing slash.
+- 11555a1: Fix Linux daemon installation when an owned group-writable systemd unit directory sits below a private directory that other accounts cannot traverse.
+- 1a51b71: List meshes and save preferences without installing connectors, reject malformed commands and conflicting seed modes before seeding, and direct users with a corrupt extension manifest to `cotal ext seed --repair`.
+- f976f2f: Show the restart step for a stopped local space that stays registered, give equivalent broker URLs the same recovery advice, and allow a named reset of an isolated stopped open space.
+- 58dcdc6: `cotal status` and `cotal ps` now tell you to repair an invalid `.cotal/channels.json` before restarting a stopped local stack.
+- 3cae462: Separate the workspace's persisted identity records into an internal module without changing the package API.
+- Updated dependencies [edd19cc]
+- Updated dependencies [7ff146c]
+- Updated dependencies [725bd24]
+- Updated dependencies [bbea1c9]
+- Updated dependencies [3a01e61]
+- Updated dependencies [67a59e9]
+- Updated dependencies [f2f8058]
+  - @cotal-ai/core@0.171.0
+
+## 0.170.0
+
+### Patch Changes
+
+- c701881: Report damaged local stack, process, trust, credential and renewal records without inferring stopped or healthy components, and retain file-specific recovery guidance.
+- 07978b3: On Linux, retrying `cotal update --self` recovers from an interrupted install or reconcile child once its recorded processes are gone.
+- Updated dependencies [ad6d984]
+- Updated dependencies [3afefa8]
+- Updated dependencies [0e42b19]
+- Updated dependencies [dd478d4]
+- Updated dependencies [6170fc9]
+- Updated dependencies [8c965ac]
+- Updated dependencies [b73a8de]
+- Updated dependencies [2b1659e]
+- Updated dependencies [20ff353]
+  - @cotal-ai/core@0.170.0
+
+## 0.169.0
+
+### Patch Changes
+
+- f5aee20: Report foreign listeners and missing broker features accurately, give usable broker selection guidance, and retain identity for equivalent registered broker URLs.
+- a9cb553: Support `--json` and `--plain` on `cotal update --auto` and `--notify`, allow `cotal persona edit --json` and `cotal endpoint describe --refresh`, reject impossible calendar dates in `cotal history --since`, refuse `cotal ps --slots` cleanly on open and user-auth spaces, and report `TARGET_NOT_FOUND` when `cotal attach <name> --on <instance>` names an absent agent.
+- e9bee41: Recognize stopped open stacks in credential diagnosis and name missing project folders or mismatched broker addresses in authentication remedies.
+- 58c16f7: Preserve pnpm dlx command hints and connector state across dlx cache refreshes, quote shell installer lock and PATH remedies, document npm generation store removal, and eliminate the Node 22.10 JSON module experimental warning.
+- 55e3e40: Retire timed bare `join` sessions cleanly at expiry, refuse unsupported `--creds` profiles and control invocations with clear next steps, validate mint channel patterns before creating folders, and preserve provisioning and registered open mode in credential diagnostics.
+- 37a700f: Keep local stack ownership and recovery settings intact across renamed project folders, different Cotal homes, refused starts, and damaged controller journals.
+- e7fa3bf: Keep replacement process records intact when shutdown overlaps a PID reuse or record update.
+- eee44d8: Keep completion remedies safe for paths with spaces, leave clean uninstalls untouched, report the installed extension root before seeding, and preserve a working shell installation when a requested release cannot start.
+- 1360657: Stop child harnesses and retire provisioned credentials when foreground `cotal spawn` receives `SIGTERM` or `SIGHUP`, forward non-secret seat attribution into managed Codex and Jcode sessions so `cotal stop --self` works there, and report the specific field or YAML position when `cotal spawn` rejects an invalid persona file.
+- f5aee20: Preserve the recorded local broker's store write failure and history-preserving repair when it disables JetStream.
+- 3e4862f: Keep update smoke tests reliable on busy machines by timing lock holds from child readiness and allowing daemon startup and recovery up to a minute.
+- f5aee20: Keep status reports available with an unreadable stack journal and report its permission repair as a warning.
+- 1a968ba: Recover unpublished connector copies and abandoned update staging directories so interrupted updates do not block later reconciliation or cleanup.
+- 339d6ee: Verify Linux automatic daemon activation before completing updates and repair abandoned global update markers during manual self-update.
+- a6496a5: Let a verified staged update target decide its pre-install checks, retaining running work when daemon activation cannot be authorized.
+- de57e89: Wait for a killed updater's surviving install child and finish the requested self-update on the first retry.
+- 2a71cc3: Release `web.pid` when a dashboard service fails before publishing its session record, reclaim PID custody slots whose recorded process exited and had its PID reused by a process with a different start token, and remove retired service instance logs, launch scratch files, sidecar receipts, and empty per-space service folders during stack restarts, instance removal, and `space forget`.
+- Updated dependencies [ec01e0a]
+- Updated dependencies [a59864f]
+- Updated dependencies [a3d78c7]
+- Updated dependencies [c2f9729]
+- Updated dependencies [c4ca691]
+- Updated dependencies [71088a6]
+- Updated dependencies [67d9a30]
+- Updated dependencies [4362eb1]
+- Updated dependencies [963db93]
+- Updated dependencies [4050457]
+  - @cotal-ai/core@0.169.0
+
+## 0.168.0
+
+### Patch Changes
+
+- Updated dependencies [4ad482d]
+- Updated dependencies [6546892]
+- Updated dependencies [b0e70a5]
+  - @cotal-ai/core@0.168.0
+
+## 0.167.0
+
+### Patch Changes
+
+- 186fc68: A command that names a space and gives `--server` the address of another space's broker is now refused with the address `--server` named and the step that reaches the named space at its recorded broker. It used to suggest `cotal up` for a space that was already running.
+- dbf310b: A stopped space whose project folder was deleted no longer sends the user to that folder. `status` says the folder no longer exists instead of naming `cotal up` there, and `send` and `history` refuse `TARGET_UNAVAILABLE` instead of reporting a missing seed. Both name moving the folder back or `cotal space forget <space>`. Run with `--space` from the folder it was renamed to, `send` and `history` give the moved-folder refusal they give there without `--space`.
+- ad38504: Protect the installation update lock from project creation and keep the home-record, presence-render, and turn-intake checks current under permissive file modes.
+- 6f3c77d: Software updates leave Managers owned by another home running without requiring that home's continuity or credentials.
+  
+  The update names the proven Manager coordinates and leaves its loaded version running until it is restarted from its own home. For a Manager registered in the calling home, only missing credentials become nonblocking. Other failures remain refusals. Connector sets stay until the authenticated update collector can prove they are unused.
+- c1cf22c: Recover damaged update preferences with a private backup and documented defaults when reading or changing them through the CLI.
+- 70842a1: `cotal service start web` works again after a dashboard crashed, was killed or could not connect. Its `web.pid` named a process that had exited, and every later start refused while `service stop` and `down` found nothing to stop. A start now clears a slot whose process has exited and claims it. A slot that may still front a running process keeps refusing, and the refusal names the file.
+- Updated dependencies [ded2be1]
+- Updated dependencies [211142b]
+- Updated dependencies [eead187]
+- Updated dependencies [6c2c27f]
+- Updated dependencies [7bf5e73]
+- Updated dependencies [d97f549]
+- Updated dependencies [3705c35]
+  - @cotal-ai/core@0.167.0
+
 ## 0.166.3
 
 ### Patch Changes

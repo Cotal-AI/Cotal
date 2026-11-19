@@ -35,6 +35,11 @@ and pass it on every later gateway call. One stdio process owns one connection. 
 connection requires disconnecting the first, or a separate server process. Do not share
 one connection between conversations.
 
+Hosts using the same account's Cotal folder reserve names on each local space before
+publishing presence. If two hosts request the same name together, one keeps it and the
+other receives the next free suffix, such as `twin_2`, reported by `cotal_connect`.
+The reservation remains until the identity is retired, including when cleanup must retry.
+
 The default persona bounds channels, role and capabilities. A `cotal_connect` permission
 selection can narrow those grants, never widen them. A space requiring native activity
 events refuses this host, because it has no native transcript source.
@@ -42,7 +47,8 @@ events refuses this host, because it has no native transcript source.
 ## Listen for messages
 
 Call `cotal_wait` with the connection handle to wait for messages. It returns buffered
-wake-worthy messages immediately, or waits up to 50 seconds. Attention mode controls
+wake-worthy messages immediately, or waits up to 50 seconds. An empty reply while the broker is
+unreachable says the connection is not ready and that only the local buffer was read. Attention mode controls
 which channel messages wake it. Direct messages, role requests and mentions remain
 wake-worthy. `cotal_inbox` reads buffered mail without waiting.
 
@@ -60,7 +66,8 @@ with the terminal horizon in [SPEC §13.15](../SPEC.md#1315-issued-authority).
 They do not expire every 15 minutes and need no in-place renewal. Network reconnects use
 the same identity. Disconnecting, closing stdin or sending SIGINT or SIGTERM stops the
 agent and retires its identity. Failed retirement is reported and its recovery records stay
-for a later connection to clean up.
+for a later connection to clean up. The records are kept in the Cotal folder of your account,
+so a host that a crash or a restart of the computer ended is retired by the next connection.
 
 Signed-in spaces require a native conversation identity and are refused by this generic
 host. Use the space's hosted connector or a supported native connector. The server never

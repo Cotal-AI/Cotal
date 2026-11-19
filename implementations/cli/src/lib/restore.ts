@@ -934,7 +934,9 @@ export function heldRestoreAttempt(root: string): { attemptId: string; journalSt
 
 /** A root with no stopped preserved cut to restore into. Nothing was staged, moved or claimed. */
 function notRestorable(root: string, journal: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
-  const remedy = !journal ? "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root"
+  // `down --preserve-state` only cuts a running stack, so a stack a plain `cotal down` stopped is
+  // started first (#7330).
+  const remedy = !journal ? "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root, and a plain `cotal down` records none: start a stopped stack with `cotal up` first, then stop it with `cotal down --preserve-state` and run the restore again"
     : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, restoreLeftOut(journal))
     : "this root's maintenance attempt must finish first; check it with `cotal status`";
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`, { target: { root, ...(journal ? { state: journal.state } : {}) }, remedy });
@@ -1048,7 +1050,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     try { artifact = stageArtifact(artifactPath, stageParent); }
     catch (error) {
       if (!(error instanceof ArtifactFileFault)) throw error;
-      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: "this copy cannot be restored as it is: check it with `cotal backup verify`, or restore another copy of the same artifact; the preserved cut is unchanged" });
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${codeSpan(`cotal backup verify ${shellPath(artifactPath)}`)}, or restore another copy of the same artifact; the preserved cut is unchanged` });
     }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);

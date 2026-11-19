@@ -1,8 +1,9 @@
 import { assertLifecycleToken, type ControlReply, type FlagSpec } from "@cotal-ai/core";
-import { c, CommandFailure, staleStoreHint, stderrLine } from "@cotal-ai/workspace";
+import { c, CommandFailure, recordOperationSpace, staleStoreHint, stderrLine } from "@cotal-ai/workspace";
 import type { ControlClient } from "@cotal-ai/workspace/control";
 import { compareSemver } from "../seed/reconcile.js";
 import { cliVersion } from "./version.js";
+import { shellWord } from "./endpoint-errors.js";
 
 /** What this CLI hands every manager control call: its own release, for a refusal of an argument the
  *  manager's contract does not declare, and the roster read that names your managers. */
@@ -48,6 +49,17 @@ export function onInstance(on: string | undefined, verb: string): string | undef
   return on;
 }
 
+/** The command an `--on` refusal tells the caller to rerun: the verb, then the words it was given,
+ *  each quoted for a shell, then the `--space` or `--server` given, so following it changes only
+ *  `--on` (#7322, #7644). */
+export function onRerun(verb: string, values: { space?: unknown; server?: unknown }, words: readonly string[] = []): string {
+  return [
+    verb, ...words.map(shellWord),
+    ...(typeof values.space === "string" ? ["--space", shellWord(values.space)] : []),
+    ...(typeof values.server === "string" ? ["--server", shellWord(values.server)] : []),
+  ].join(" ");
+}
+
 /** {@link onInstance} for an `--on` that takes only an instance id: an endpoint's instance, or a
  *  step that runs before the mesh can be read. The value is shape-checked against core's
  *  lifecycle-token grammar, so a malformed id is refused naming the identifier `--on` wants. */
@@ -60,6 +72,21 @@ export function onInstanceId(on: string | undefined, verb: string): string | und
     throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the INSTANCE id as \`cotal ps\` prints it (the \`instance\` it lists for a manager that answered, or the \`manager <id>\` header when several did): \`${verb} --on <instance>\``, { selfContained: true });
   }
   return value;
+}
+
+export function refuseControlCreds(creds: unknown, space?: unknown): void {
+  if (creds === undefined) return;
+  const named = typeof space === "string" && space.trim() ? space : undefined;
+  if (named !== undefined) recordOperationSpace(named);
+  throw new CommandFailure(
+    "refused",
+    "UNSUPPORTED",
+    "this control call has no endpoint-caller triple (owner, actor, lifecycle uid), and a raw --creds invocation cannot mint one; minting the file again changes nothing, and nothing was sent",
+    {
+      ...(named !== undefined ? { target: { space: named } } : {}),
+      remedy: "run the command again without --creds: in the mesh's project folder, or with --space naming its registry entry, the CLI mints the one-shot caller itself",
+    },
+  );
 }
 
 export function failIfNotOk(reply: ControlReply): void {

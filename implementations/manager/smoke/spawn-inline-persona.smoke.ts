@@ -96,16 +96,20 @@ type Seat = { id: string; name: string; lifecycleUid: string; issued?: { generat
 type Internals = {
   managerInstanceId: string;
   agents: Map<string, Seat>;
-  retiring: Map<string, { lastError?: string }>;
-  freeSlot: (a: unknown, floor: boolean, cause: FreeSlotCause) => void;
-  deprovision: (a: unknown) => Promise<void>;
-  deprovisioningFlight: Map<string, Promise<void>>;
   driveStaticRetirement: (a: unknown, surfaceFailure?: boolean) => Promise<void>;
   inventoryReferenceError: (entry: ManagerResumeAgent) => string | undefined;
   resumeEntryOf: (a: Seat) => ManagerResumeAgent;
   spawnPersona: (opts: Record<string, unknown>, spawner: string | undefined, caller: EpCaller | undefined) => Promise<{ error?: string }>;
   opDefinePersona: (args: Record<string, unknown>, caller: string, admin: boolean, authenticated?: EpCaller) => Promise<ControlReply>;
   opRemovePersona: (args: Record<string, unknown>, caller: string, admin: boolean) => ControlReply;
+  retirement: {
+    retiring: Map<string, { lastError?: string }>;
+    deprovision: (a: unknown) => Promise<void>;
+    deprovisioningFlight: Map<string, Promise<void>>;
+  };
+  namesCapacity: {
+    freeSlot: (a: unknown, floor: boolean, cause: FreeSlotCause) => void;
+  };
 };
 
 /** A manager over a fake endpoint and runtime. `spawned` counts launches per seat name; a name in
@@ -171,13 +175,13 @@ const snapshots = (root: string) => (existsSync(inlinePersonaDir(root)) ? readdi
 const catalog = (name: string) => join(agentsDir, `${name}.md`);
 const retire = async (M: Internals, seats: Map<string, FakeSeat>, name: string) => {
   seats.get(name)!.exit();
-  await until(() => seatOf(M, name) === undefined && !M.retiring.has(name));
+  await until(() => seatOf(M, name) === undefined && !M.retirement.retiring.has(name));
 };
 /** Exit a seat and wait for its teardown to settle, however it ends. */
 const exitAndSettle = async (M: Internals, seats: Map<string, FakeSeat>, name: string) => {
   seats.get(name)!.exit();
   await until(() => seatOf(M, name) === undefined);
-  await Promise.allSettled([...M.deprovisioningFlight.values()]);
+  await Promise.allSettled([...M.retirement.deprovisioningFlight.values()]);
 };
 /** What `console.error` printed while `run` ran: a teardown reports there. */
 const errorsDuring = async <T>(run: () => Promise<T>): Promise<{ value: T; lines: string[] }> => {
@@ -390,10 +394,9 @@ try {
     check("a catalog persona naming a command the spawner lacks is refused by name", refused(await spawnAs(epLead, "ep_wide"), /endpoints com\.example\.orders refund/));
     check("a spawner holding no endpoint rows hands on none", refused(await spawnAs(lead, "ep_none", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] } }), /endpoints com\.example\.orders list/));
     const refSpawn = await spawnAs(undefined, "ep_ref");
-    // The manager does not echo a persona file's load error; the parser's own refusal names the rule
-    // (packages/core agent-file smoke).
+    // File and inline persona refusals preserve the validation rule without launching a seat.
     check("a persona file naming a reference endpoint is refused even for an operator instrument, and starts no seat",
-      refused(refSpawn, /invalid native frontmatter/) && seatOf(S.M, "ep_ref") === undefined, refSpawn);
+      refused(refSpawn, /a single-label endpoint/) && seatOf(S.M, "ep_ref") === undefined, refSpawn);
     check("so is a reserved command on an inline record", refused(await spawnAs(epLead, "ep_desc", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["describe"] }] } }), /reserved command "describe"/));
     // The record, the resume entry and a renewal keep the same commands, so the renewed ceiling still
     // equals the evidence the spawn recorded.
@@ -496,7 +499,7 @@ try {
     const d = okData(await spawnAs(undefined, "kept", { persona: { prompt: "x" } }));
     const seat = seatOf(S.M, "kept")!;
     seat.suppressCleanup = true;
-    S.M.freeSlot(seat, false, "process-exit");
+    S.M.namesCapacity.freeSlot(seat, false, "process-exit");
     check("a preservation cut keeps the snapshot", existsSync(inlineSnapshotPath(workspaceRoot, d!.lifecycleUid)));
   }
   {
@@ -509,7 +512,7 @@ try {
       onAccepted: (a: { lifecycleUid: string }) => { uid = a.lifecycleUid; path = inlineSnapshotPath(workspaceRoot, uid); writeFileSync(path, planted); },
     });
     check("a snapshot write that finds a file at its path fails the spawn", !r.ok && /EEXIST/.test(r.error ?? ""), r);
-    await Promise.allSettled([...S.M.deprovisioningFlight.values()]);
+    await Promise.allSettled([...S.M.retirement.deprovisioningFlight.values()]);
     check("control: the rollback's retirement ran", uid !== "" && !existsSync(agentLifecycleSecretFilePaths(workspaceRoot, space, "squatter", uid).creds));
     check("and it leaves the file the write refused", existsSync(path) && readFileSync(path, "utf8") === planted);
   }
@@ -550,7 +553,7 @@ try {
       const reply = await spawnAs(undefined, "stuck", { persona: { prompt: "x" } }, {
         onAccepted: (a: { lifecycleUid: string; identity: { id: string } }) => { accepted = { uid: a.lifecycleUid, actor: a.identity.id }; },
       }).catch((e: unknown): ControlReply => ({ ok: false, error: `the spawn threw: ${String(e)}` }));
-      await Promise.allSettled([...S.M.deprovisioningFlight.values()]);
+      await Promise.allSettled([...S.M.retirement.deprovisioningFlight.values()]);
       return reply;
     });
     chmodSync(dir, 0o700);
@@ -570,10 +573,10 @@ try {
     chmodSync(dir, 0o500);
     await exitAndSettle(S.M, S.seats, "pinned");
     chmodSync(dir, 0o700);
-    const held = S.M.retiring.get("pinned");
+    const held = S.M.retirement.retiring.get("pinned");
     check("a retirement that cannot remove the snapshot keeps the name held and says why", existsSync(path) && (held?.lastError ?? "").includes(path), held);
     await S.M.driveStaticRetirement({ id: seat.id, name: "pinned", lifecycleUid: d!.lifecycleUid }, true);
-    check("and the retried terminal removes it and frees the name", !existsSync(path) && !S.M.retiring.has("pinned"));
+    check("and the retried terminal removes it and frees the name", !existsSync(path) && !S.M.retirement.retiring.has("pinned"));
   }
   {
     // The inline directory replaced by a link to another directory that holds a file of the same name.
@@ -587,7 +590,7 @@ try {
     await exitAndSettle(S.M, S.seats, "linked");
     restore();
     check("a seat's retirement never removes through a linked inline directory", existsSync(bait), d);
-    check("and it keeps the name held, saying why", /symlink/.test(S.M.retiring.get("linked")?.lastError ?? ""), S.M.retiring.get("linked"));
+    check("and it keeps the name held, saying why", /symlink/.test(S.M.retirement.retiring.get("linked")?.lastError ?? ""), S.M.retirement.retiring.get("linked"));
     await S.M.driveStaticRetirement({ id: seat.id, name: "linked", lifecycleUid: d!.lifecycleUid }, true);
     check("control: once the directory is real again, the terminal removes the snapshot", !existsSync(inlineSnapshotPath(workspaceRoot, d!.lifecycleUid)));
   }
@@ -604,7 +607,7 @@ try {
     await spawnAs(undefined, "linkfail", { persona: { prompt: "x" } }, {
       onAccepted: (a: { lifecycleUid: string; identity: { id: string } }) => { accepted = { uid: a.lifecycleUid, actor: a.identity.id }; },
     }).catch(() => undefined);
-    await Promise.allSettled([...S.M.deprovisioningFlight.values()]);
+    await Promise.allSettled([...S.M.retirement.deprovisioningFlight.values()]);
     restore();
     check("a failed spawn's rollback never removes through a linked inline directory", accepted.uid !== "" && existsSync(join(outside, `${accepted.uid}.md`)));
     await S.M.driveStaticRetirement({ id: accepted.actor, name: "linkfail", lifecycleUid: accepted.uid }, true);

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 const source = readFileSync(new URL('../install.sh', import.meta.url), 'utf8');
-const hook = source.match(/  write_launcher\n([\s\S]*?)  setup_path/)[1];
+const hook = source.match(/  if \[ -n "\$PREVIOUS_VERSION" \] \|\| \[ -e[^\n]+\n[\s\S]*?\n  fi\n(?=  setup_path)/)[0];
 assert.match(hook, /"\$BIN_DIR\/cotal" update/);
 assert.doesNotMatch(hook, /update --self/);
 for (const [previous, result, expected] of [['', 1, 0], ['0.164.0', 0, 0], ['0.160.7', 1, 1]]) {

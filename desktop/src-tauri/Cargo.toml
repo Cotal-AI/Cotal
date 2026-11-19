@@ -42,4 +42,3 @@ windows = { version = "0.62.2", features = ["UI_Shell", "Win32_Security", "Win32
 
 [profile.release]
 strip = true
-

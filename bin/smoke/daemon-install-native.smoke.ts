@@ -39,18 +39,21 @@
  */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CommandFailure, spaceSegment } from "@cotal-ai/workspace";
 import { mkSecretDir } from "@cotal-ai/core";
 import type { DaemonPaths } from "../daemon/endpoint.js";
 import { assertScheduledEntry, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
-import { launchAgentLabel, launchAgentService, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
+import { nativeRun } from "../daemon/install-native-run.js";
+import { launchAgentLabel, launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
+import { assertServiceRepairPair, sourceDigest, type ServiceRepairIntent } from "../daemon/service-repair.js";
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
 
 import { recoverPausedTask } from "../daemon/restart-recovery.js";
+import { daemonCommandCopy } from "../daemon/guidance.js";
 
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -82,12 +85,12 @@ const code = (fn: () => unknown): string => {
 };
 const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 
-interface Call { file: string; args: readonly string[]; env?: NodeJS.ProcessEnv }
+interface Call { file: string; args: readonly string[]; env?: NodeJS.ProcessEnv; timeoutMs?: number }
 /** A native runner that records every call and answers from `answer`. */
 function recorder(answer: (call: Call) => Partial<NativeResult>): { run: NativeRun; calls: Call[] } {
   const calls: Call[] = [];
-  return { calls, run: (file, args, env) => {
-    const call = { file, args: [...args], ...(env ? { env } : {}) };
+  return { calls, run: (file, args, env, timeoutMs) => {
+    const call = { file, args: [...args], ...(env ? { env } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}) };
     calls.push(call);
     return { status: 0, stdout: "", detail: "", ...answer(call) };
   } };
@@ -99,6 +102,27 @@ const root = realpathSync.native(mkdtempSync(join(tmpdir(), "dni-")));
 const savedHome = process.env.HOME;
 try {
   const uid = process.getuid?.();
+  {
+    const executable = join(root, "program & test");
+    const source = `<key>ProgramArguments</key><array><string>${xmlText(executable)}</string></array>`;
+    const unitPath = join(root, "repair.plist");
+    writeFileSync(unitPath, source);
+    const receipt: UnitReceipt = { v: 1, mechanism: "launchd-agent", unit: "ai.cotal.daemon", unitPath, unitSha256: sourceDigest(source), installedAt: "2026-11-17T00:00:00Z" };
+    check("repair distinguishes a genuinely missing program", missingLaunchAgentProgram(receipt));
+    writeFileSync(executable, "fixture");
+    check("repair leaves an existing program alone", !missingLaunchAgentProgram(receipt));
+    rmSync(executable); mkdirSync(executable);
+    check("repair refuses a non-file program", code(() => missingLaunchAgentProgram(receipt)) === "CONFLICT");
+    rmSync(executable, { recursive: true });
+    const nextSource = source.replace("program &amp; test", "new-program");
+    const intent: ServiceRepairIntent = { v: 1, receipt, previousSource: source, nextSource, enabled: false, argv: [executable, "/cotal.js", "daemon", "serve"], version: "1.2.3", hostedSpaces: [], phase: "prepared" };
+    const nextReceipt = { ...receipt, unitSha256: sourceDigest(nextSource) };
+    for (const selectedReceipt of [receipt, nextReceipt]) for (const selectedSource of [source, nextSource]) {
+      check("repair resumes either recorded source/receipt crash state", code(() => assertServiceRepairPair(intent, selectedReceipt, selectedSource)) === "none");
+    }
+    check("repair refuses a changed source", code(() => assertServiceRepairPair(intent, receipt, source + "changed")) !== "none");
+    check("repair refuses a changed receipt", code(() => assertServiceRepairPair(intent, { ...receipt, installedAt: "changed" }, source)) !== "none");
+  }
   const node = "/opt/cotal/1.2.3/bin/node";
   const bootstrap = fileURLToPath(new URL("../daemon-cwd.js", import.meta.url));
   const argv = [node, "--max-semi-space-size=1", "/opt/cotal/1.2.3/lib/cotal.js", "daemon", "serve", "--daemon-home", "/Users/a b/&<home>"];
@@ -402,6 +426,16 @@ try {
     const service = scheduledTaskService(r.run);
     const plan = service.plan(paths, undefined, posixArgv, () => { throw new Error("a task pins no PATH"); });
     const ps = r.calls.find((c) => c.file.endsWith("powershell.exe"))!;
+    check("only the install preflight gets a 60-second native timeout", ps.timeoutMs === 60_000 && r.calls[0]!.timeoutMs === undefined);
+    const delayed = (ms: number) => recorder((c) => c.file.endsWith("whoami.exe")
+      ? { stdout: `"host\\user","${sid}"\r\n` }
+      // Exercise the real native runner with a safe child and a shorter time scale.
+      : nativeRun(process.execPath, ["-e", `setTimeout(() => console.log('{"present":false}'), ${ms})`], undefined, c.timeoutMs! / 30));
+    const planWith = (run: NativeRun) => scheduledTaskService(run).plan(paths, undefined, posixArgv, () => "");
+    check("a task read beyond the old budget can finish and plan the install", planWith(delayed(1100).run).unit === name);
+    const stalled = delayed(60_000);
+    check("a task read beyond the new budget still refuses without publishing", code(() => planWith(stalled.run)) === "DEPENDENCY_UNAVAILABLE"
+      && stalled.calls.length === 2 && !existsSync(plan.unitPath));
     const script = Buffer.from(ps.args.at(-1)!, "base64").toString("utf16le");
     // Windows PowerShell 5.1 module manifests. Inspect the actual EncodedCommand from plan,
     // including the conditional instance query, without executing PowerShell on this host.
@@ -585,6 +619,93 @@ try {
   if (process.platform === "linux") {
     const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
     const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
+    // Drive the actual CLI under a stable symlink, then replace only its versioned Node target.
+    // Native commands are recording stand-ins, never the host's service manager.
+    for (const spelling of ["absolute", "relative", "path", "custom", "different-runtime", "fnm-file", "fnm-directory"] as const) {
+      const dir = join(root, `node-${spelling}`);
+      for (const name of ["", "home", "config", "rt", "native", "nodebin", "daemon", "cotal"])
+        mkdirSync(join(dir, name), { mode: 0o700 });
+      const node22 = join(dir, "nodebin", "node-22"), node24 = join(dir, "nodebin", "node-24");
+      const stable = join(dir, "nodebin", "node");
+      copyFileSync(process.execPath, node22);
+      symlinkSync("node-22", stable);
+      const transient = spelling === "fnm-file" || spelling === "fnm-directory";
+      const session = join(dir, "rt", "fnm_multishells", "123_456_789");
+      let invoked = stable;
+      if (transient) {
+        mkdirSync(join(dir, "rt", "fnm_multishells"));
+        if (spelling === "fnm-directory") symlinkSync(dir, session, "dir");
+        else { mkdirSync(session); mkdirSync(join(session, "nodebin")); symlinkSync(node22, join(session, "nodebin", "node")); }
+        invoked = join(session, "nodebin", "node");
+      }
+      const home = join(dir, "daemon");
+      const unit = `cotal-daemon-${sha(home).slice(0, 16)}.service`;
+      const context = { home: join(dir, "home"), config: join(dir, "config"), calls: join(dir, "calls.jsonl"), units: [unit] };
+      const configFile = join(dir, "context.json");
+      writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
+      for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
+      Object.assign(env, { HOME: context.home, USER: "smoke", LOGNAME: "smoke", COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: join(dir, "rt"), XDG_CACHE_HOME: join(dir, "cache"), XDG_DATA_HOME: join(dir, "data"), XDG_STATE_HOME: join(dir, "state"), PATH: `${join(dir, "native")}:${join(dir, "nodebin")}:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
+      const call = (verb: string, flags: string[] = []) => {
+        const args = [cli, "daemon", verb, "--daemon-home", home, "--json", ...flags];
+        const result = spelling === "path"
+          ? spawnSync("/bin/sh", ["-c", 'exec node "$@"', "node-case", ...args], { cwd: dir, env, encoding: "utf8", timeout: 30_000 })
+          : spawnSync(spelling === "relative" ? "./nodebin/node" : invoked, args, { cwd: dir, env, encoding: "utf8", timeout: 30_000, ...(spelling === "custom" ? { argv0: "not-a-node-command" } : spelling === "different-runtime" ? { argv0: process.execPath } : {}) });
+        if (result.error || result.signal) throw new Error(`Node ${spelling} ${verb} did not exit normally: ${result.error ?? result.signal}`);
+        const doc = JSON.parse(result.stdout) as { result?: { alreadyInstalled?: boolean }; error?: { code?: string; remedy?: string } };
+        return { status: result.status, doc };
+      };
+      check(`Node ${spelling} installs through the shipped entry`, call("install").status === 0);
+      const unitPath = join(context.config, "systemd", "user", unit), receiptFile = join(home, "service-unit.json");
+      const source = readFileSync(unitPath, "utf8"), receipt = readFileSync(receiptFile, "utf8");
+      const expectedNode = transient || spelling === "custom" || spelling === "different-runtime" ? node22 : stable;
+      check(`Node ${spelling} keeps only a verified invoked runtime`, source.includes(`ExecStart="${expectedNode}" `));
+      check(`Node ${spelling} positive control verifies its unchanged installation`, call("install").doc.result?.alreadyInstalled === true && call("start").status === 0);
+      if (transient) {
+        if (spelling === "fnm-directory") rmSync(session);
+        else rmSync(join(session, "nodebin", "node"));
+        invoked = node22;
+        check(`Node ${spelling} survives removal of its shell link`, existsSync(node22) && call("install").doc.result?.alreadyInstalled === true && call("start").status === 0 && readFileSync(unitPath, "utf8") === source && readFileSync(receiptFile, "utf8") === receipt);
+        continue;
+      }
+      if (spelling === "custom" || spelling === "different-runtime") continue;
+      copyFileSync(process.execPath, node24);
+      rmSync(stable); symlinkSync("node-24", stable); rmSync(node22);
+      const preview = call("install", ["--dry-run"]), installed = call("install");
+      check(`Node ${spelling} stream switch keeps preview and install idempotent`, preview.status === 0 && preview.doc.result?.alreadyInstalled === true && installed.status === 0 && installed.doc.result?.alreadyInstalled === true);
+      check(`Node ${spelling} stream switch preserves unit and receipt bytes`, readFileSync(unitPath, "utf8") === source && readFileSync(receiptFile, "utf8") === receipt);
+      const status = call("status");
+      check(`Node ${spelling} absent endpoint names the recorded service and selected home`, status.status === 2 && status.doc.error?.code === "TARGET_UNAVAILABLE" && status.doc.error.remedy?.includes(`systemctl --user status ${unit}`) === true && status.doc.error.remedy.includes(home) && !status.doc.error.remedy.includes("daemon serve"), status);
+      check(`Node ${spelling} start still reaches the native adapter`, call("start").status === 0);
+      if (spelling === "absolute") {
+        for (const missing of ["unit", "manager"] as const) {
+          if (missing === "unit") rmSync(unitPath);
+          else writeFileSync(join(dir, "native", "systemctl"), `#!${process.execPath}\nprocess.exit(1);`, { mode: 0o700 });
+          const callsBefore = readFileSync(context.calls, "utf8");
+          const refused = call("status");
+          check(`Absent ${missing} preserves the endpoint refusal without native lookup`, refused.status === 2 && refused.doc.error?.code === "TARGET_UNAVAILABLE" && refused.doc.error.remedy?.includes(`systemctl --user status ${unit}`) === true && readFileSync(context.calls, "utf8") === callsBefore, refused);
+          const plain = spawnSync(stable, [cli, "daemon", "status", "--daemon-home", home, "--plain"], { cwd: dir, env, encoding: "utf8", timeout: 30_000 });
+          check(`Absent ${missing} plain status still names the missing endpoint`, plain.status === 2 && plain.stderr.includes("no daemon endpoint") && plain.stderr.includes("NOT_RUNNING") && !plain.stderr.includes("nothing was removed"), { stdout: plain.stdout, stderr: plain.stderr });
+          if (missing === "unit") writeFileSync(unitPath, source, { mode: 0o600 });
+          else writeFileSync(join(dir, "native", "systemctl"), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
+        }
+      }
+      // Old releases wrote a resolved target. Keep ownership strict and offer explicit replacement.
+      const legacy = source.replace(`ExecStart="${stable}"`, `ExecStart="${node22}"`);
+      writeFileSync(unitPath, legacy, { mode: 0o600 });
+      writeFileSync(receiptFile, JSON.stringify({ ...JSON.parse(receipt), unitSha256: sha(legacy) }), { mode: 0o600 });
+      const refusal = call("install");
+      const repair = `${daemonCommandCopy("uninstall", home, ["--yes"])} && ${daemonCommandCopy("install", home)}`;
+      check(`Node ${spelling} legacy unit refuses with a copyable explicit repair`, refusal.status === 2 && refusal.doc.error?.code === "CONFLICT" && refusal.doc.error.remedy?.includes(repair) === true && readFileSync(unitPath, "utf8") === legacy, refusal);
+      // A changed source still refuses before replacement guidance can grant any native effect.
+      writeFileSync(unitPath, `${legacy}\n# edited\n`);
+      const callsBefore = readFileSync(context.calls, "utf8");
+      const changed = call("install");
+      check(`Node ${spelling} changed source refuses without native mutation`, changed.status === 2 && changed.doc.error?.code === "CONFLICT" && readFileSync(context.calls, "utf8").slice(callsBefore.length).trim().split("\n").every(line => JSON.parse(line).operation === "directory-read"), changed);
+      writeFileSync(unitPath, legacy, { mode: 0o600 });
+      const repaired = spawnSync("/bin/sh", ["-c", `cotal() { "${stable}" "${cli}" "$@"; }\n${repair}`], { cwd: dir, env, encoding: "utf8", timeout: 30_000 });
+      check(`Node ${spelling} copied legacy repair installs the stable runtime`, repaired.status === 0 && readFileSync(unitPath, "utf8").includes(`ExecStart="${stable}" `) && call("install").doc.result?.alreadyInstalled === true, { status: repaired.status, stdout: repaired.stdout, stderr: repaired.stderr });
+    }
     const quotedRoot = join(root, "quoted"); mkdirSync(quotedRoot, { mode: 0o700 });
     const quotedNative = join(quotedRoot, "native"); mkdirSync(quotedNative, { mode: 0o700 });
     const quotedHome = join(quotedRoot, "home with space"); mkdirSync(quotedHome, { mode: 0o700 });
@@ -631,7 +752,7 @@ try {
       const configFile = join(dir, "context.json"); writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
       for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
       const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
-      Object.assign(env, { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: `${join(dir, "native")}:/usr/local/bin:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
+      Object.assign(env, { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: runtime, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: `${join(dir, "native")}:/usr/local/bin:/usr/bin:/bin:${(process.env.PATH ?? "").split(":").filter(path => path.startsWith("/")).join(":")}`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
       const invoke = (verb: string, home: string | undefined, flags: string[] = []) => {
         const child = spawnSync(process.execPath, [cli, "daemon", verb, ...(home ? ["--daemon-home", home] : []), ...flags], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
         if (child.error || child.signal) throw new Error(`N6 ${verb} did not exit normally`);
@@ -640,7 +761,7 @@ try {
       const call = (verb: string, home: string | undefined, flags: string[] = [], plain = false) => {
         const child = invoke(verb, home, [...flags, plain ? "--plain" : "--json"]);
         const doc = (plain ? {} : JSON.parse(child.stdout)) as { outcome?: string; result?: { state: string; unitPath: string; unit?: string; alreadyInstalled?: boolean }; error?: { code: string; remedy?: string } };
-        return { status: child.status, doc, out: child.stdout };
+        return { status: child.status, doc, out: child.stdout, err: child.stderr };
       };
       const effects = (): number => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { operation: string }).filter((c) => !["directory-read", "linger-read"].includes(c.operation)).length : 0;
       const home = kind === "default" || kind === "unrecorded-default" ? undefined : a;
@@ -674,7 +795,7 @@ try {
         continue;
       }
       const installed = call("install", home, [], true);
-      if (installed.status !== 0) throw new Error(`N6 ${kind} install fixture refused ${JSON.stringify(installed.doc)}`);
+      if (installed.status !== 0) throw new Error(`N6 ${kind} install fixture refused: exit=${installed.status} stdout=${installed.out} stderr=${installed.err}`);
       const receipt = JSON.parse(readFileSync(receiptFile, "utf8")) as UnitReceipt;
       if (kind === "lost-source-stop") {
         rmSync(receiptFile);
@@ -781,7 +902,17 @@ try {
   if (process.platform === "linux") {
     const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
     const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
-    for (const kind of ["group-ancestor", "world-ancestor", "group-leaf", "symlink", "file-ancestor", "changed-after-plan", "protected-missing", "protected-existing", "linger-denied", "existing-unit", "source-on-enable", "directory-on-enable", "source-on-read", "directory-on-read"]) {
+    // A group-writable directory is refused only where another account can reach it. An ancestor that
+    // denies group and other accounts search permission protects it, so the refusal cells open the
+    // chain above them and the -private cells keep it closed.
+    const reachable = (path: string): boolean => {
+      for (let parent = dirname(path); ; parent = dirname(parent)) {
+        if ((lstatSync(parent).mode & 0o011) === 0) return false;
+        if (dirname(parent) === parent) return true;
+      }
+    };
+    chmodSync(root, 0o755);
+    for (const kind of ["group-ancestor", "group-ancestor-private", "world-ancestor", "group-leaf", "group-leaf-private", "symlink", "file-ancestor", "changed-after-plan", "protected-missing", "protected-existing", "linger-denied", "existing-unit", "source-on-enable", "directory-on-enable", "source-on-read", "directory-on-read"]) {
       const dir = join(root, `preflight-${kind}`);
       mkdirSync(dir, { mode: 0o700 });
       for (const name of ["home", "cotal", "config", "runtime", "native"]) mkdirSync(join(dir, name), { mode: 0o700 });
@@ -791,10 +922,12 @@ try {
       const receiptFile = join(dir, "cotal", "daemon", "service-unit.json");
       const lingerFile = join(dir, "linger");
       writeFileSync(lingerFile, "Linger=no\n", { mode: 0o600 });
-      if (["group-leaf", "protected-existing", "existing-unit"].includes(kind)) mkdirSync(unitDir, { recursive: true, mode: 0o700 });
-      if (kind === "group-ancestor") chmodSync(config, 0o775);
+      if (["group-leaf", "group-leaf-private", "protected-existing", "existing-unit"].includes(kind)) mkdirSync(unitDir, { recursive: true, mode: 0o700 });
+      if (kind === "group-ancestor" || kind === "group-leaf") chmodSync(dir, 0o755);
+      if (kind === "group-ancestor" || kind === "group-ancestor-private") chmodSync(config, 0o775);
       if (kind === "world-ancestor") chmodSync(config, 0o777);
-      if (kind === "group-leaf") chmodSync(unitDir, 0o775);
+      if (kind === "group-leaf") for (const open of [config, join(config, "systemd")]) chmodSync(open, 0o755);
+      if (kind === "group-leaf" || kind === "group-leaf-private") chmodSync(unitDir, 0o775);
       if (kind === "symlink") symlinkSync(join(dir, "home"), join(config, "systemd"));
       if (kind === "file-ancestor") writeFileSync(join(config, "systemd"), "not a directory");
       if (kind === "existing-unit") writeFileSync(unitPath, "foreign unit", { mode: 0o600 });
@@ -815,7 +948,7 @@ try {
       };
       const operations = (): string[] => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => (JSON.parse(line) as { operation: string }).operation) : [];
       const effects = () => operations().filter((operation) => !["directory-read", "linger-read"].includes(operation));
-      const unsafe = ["group-ancestor", "world-ancestor", "group-leaf", "symlink", "file-ancestor"].includes(kind);
+      const unsafe = ["world-ancestor", "symlink", "file-ancestor"].includes(kind) || kind === "group-ancestor" && reachable(config) || kind === "group-leaf" && reachable(unitDir);
       const directoryExisted = existsSync(unitDir);
       const previewRefusal = kind === "existing-unit" ? "CONFLICT" : kind === "file-ancestor" ? "TARGET_UNAVAILABLE" : unsafe ? "PERMISSION_DENIED" : undefined;
       for (const format of ["plain", "json"]) {
@@ -846,6 +979,7 @@ try {
         check(`N8 ${kind} uninstall recovers recorded installation`, removed.status === 0 && !existsSync(unitPath) && !existsSync(receiptFile), removed);
       }
     }
+    chmodSync(root, 0o700);
   } else console.log(`  ○ UNTESTED N8: Linux unit-directory preflight; this is ${process.platform}`);
 } finally {
   if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;

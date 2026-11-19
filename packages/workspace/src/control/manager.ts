@@ -48,6 +48,7 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { c } from "../colors.js";
 import { controlCaller, type ControlAuth } from "../control-target.js";
 import { staleStoreHint } from "../maintenance.js";
+import { brokerUrlKey, findMesh } from "../mesh-registry.js";
 import { CommandFailure, isCommandFailure, nativeEndpointRefusal, type RefusalCode } from "../output.js";
 import { presenceSeat } from "./seat-presence.js";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, notAdmittedRefusal } from "./dial-retry.js";
@@ -869,6 +870,15 @@ export async function scatterManager(
   return askManagerScatterEp(client, space, server, op, { ...auth, epCaller: who.caller }, spaceAuth, timeoutMs, opts.reportHosts === true);
 }
 
+/** Name the local project only when this machine started the stack at the broker we asked. */
+export function startStackManagerRemedy(space: string, server: string): string {
+  let recorded: ReturnType<typeof findMesh>;
+  try { recorded = findMesh(space); } catch { recorded = undefined; }
+  return recorded && recorded.origin !== "manual" && recorded.origin !== "catalog" && brokerUrlKey(recorded.server) === brokerUrlKey(server)
+    ? `start the stack's manager with bare \`cotal up\` in ${recorded.root}; a stack started with --no-manager has none`
+    : "start this space's manager where its stack runs; a stack started with --no-manager has none";
+}
+
 /** The refusal `ps` gives, raised before an unpinned operator read when the registry lists no live
  *  manager, rather than after the read's describe has waited out its whole deadline. Only the
  *  operator instrument holds the registry rows, so a caller passes a user's manager view or a pinned
@@ -880,7 +890,7 @@ export async function refuseWithoutLiveManager(space: string, server: string, au
     return await liveManagerIds(space, server, auth);
   } catch (e) {
     if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return undefined;
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to ${purpose}`, { target, native: { code: e.code, detail: `${e.code}: ${e.message}` }, remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none" });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space to ${purpose}`, { target, native: { code: e.code, detail: `${e.code}: ${e.message}` }, remedy: startStackManagerRemedy(space, server) });
   }
 }
 
@@ -918,7 +928,7 @@ export async function refuseUnregisteredManager(space: string, server: string, a
   const target = { space, requestedManagerInstance: on };
   // With none running this is the unpinned refusal, which names the same way out.
   if (running.length === 0)
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space, so --on ${on} names none. Nothing was sent`, { target, remedy: "start the stack's manager with bare `cotal up`; a stack started with --no-manager has none" });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `no manager is running for this space, so --on ${on} names none. Nothing was sent`, { target, remedy: startStackManagerRemedy(space, server) });
   const which = running.length === 1 ? `the one running is ${running[0]}` : `the ones running are ${running.join(", ")}`;
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", `--on ${on} names no manager running for space ${space}; ${which}. Nothing was sent`, {
     target,

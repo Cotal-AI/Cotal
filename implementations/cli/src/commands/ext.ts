@@ -28,6 +28,7 @@ export const extFlags = [
 ] as const satisfies readonly FlagSpec[];
 
 const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
+const EXT_USAGE = "usage: cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force]";
 
 /** Parent binding for update's internal isolated re-add. Ordinary `ext add` never reads it. */
 export const EXT_UPDATE_PARENT_ENV = "COTAL_EXT_UPDATE_PARENT";
@@ -48,6 +49,25 @@ function atThisVersion(spec: string): string {
   return /^@cotal-ai\/[^/@]+$/.test(spec) ? `${spec}@${cliVersion()}` : spec;
 }
 
+export function validateExtArguments(args: ParsedArgs): void {
+  const [sub, operand] = args.positionals;
+  const v = args.values as FlagValues<typeof extFlags>;
+  presentationOf(v);
+  if (sub !== "seed" && (v.repair || v.reset || v.force)) {
+    const flag = v.repair ? "--repair" : v.reset ? "--reset" : "--force";
+    throw usage(`${flag} belongs to \`cotal ext seed\``);
+  }
+  if (sub === "seed" && [v.repair, v.reset, v.force].filter(Boolean).length > 1) {
+    throw usage("cotal ext seed takes only one of --repair, --reset, or --force");
+  }
+  // `ext root` stays a raw path for `$(cotal ext root)`.
+  if (sub !== undefined && (sub !== "list" || args.positionals.length !== 1) && (v.json || v.plain)) {
+    throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
+  }
+  if ((sub === "add" || sub === "remove") && (args.positionals.length !== 2 || !operand)) throw usage(EXT_USAGE);
+  if (sub === "seed" && args.positionals.length !== 1) throw usage(EXT_USAGE);
+}
+
 /**
  * `cotal ext` — operator-installed extensions. `add` installs an npm package into the
  * cotal-owned prefix (never the user's project), imports it ONCE so it self-registers into the
@@ -65,15 +85,14 @@ function atThisVersion(spec: string): string {
  */
 
 export async function ext(args: ParsedArgs): Promise<void> {
+  validateExtArguments(args);
   const [sub, ...rest] = args.positionals;
   const v = args.values as FlagValues<typeof extFlags>;
   // Bare `cotal ext` lists the inventory: it is the most natural probe for "what's installed / where",
   // and these extensions never appear in `npm list -g` (they live in a cotal-owned prefix, not npm's
   // global tree), so erroring here left the honest answer undiscoverable.
   if (sub === undefined || (sub === "list" && !rest.length)) return list(presentationOf(v));
-  // `ext root` stays a raw path for `$(cotal ext root)`; a structured form of one path adds nothing.
-  if (v.json || v.plain) throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
-  if (sub === "add" && rest.length === 1 && rest[0]) return addExtension(atThisVersion(rest[0])).catch(exitOnInterruptedAdd);
+  if (sub === "add") return addExtension(atThisVersion(rest[0]!)).catch(exitOnInterruptedAdd);
   if (sub === "__update-add" && rest[0] && rest[1]) {
     if (Number(process.env[EXT_UPDATE_PARENT_ENV]) !== process.ppid)
       throw new Error("internal update extension replay must be launched by its recorded parent");
@@ -88,25 +107,27 @@ export async function ext(args: ParsedArgs): Promise<void> {
     for (const line of lines) console.log(line);
     return;
   }
-  if (sub === "remove" && rest.length === 1 && rest[0]) return remove(rest[0]);
+  if (sub === "remove") return remove(rest[0]!);
   // `cotal ext root` prints just the prefix path — a one-line scripting primitive (cf. `npm root -g`,
   // `brew --prefix`) so tooling can locate the store without parsing the human inventory.
   if (sub === "root" && !rest.length) {
     console.log(extensionsDir());
     return;
   }
-  if (sub === "seed" && !rest.length) {
+  if (sub === "seed") {
     const { repair, reset, force } = args.values as { repair?: boolean; reset?: boolean; force?: boolean };
     return runSeed({ repair, reset, force });
   }
-  throw usage("usage: cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force]");
+  throw usage(EXT_USAGE);
 }
 
 async function npm(args: string[], cwd: string): Promise<{ status: number | null; output: string }> {
   // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
   // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
   // line (shared with the manager's PtyRuntime launch).
-  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
+  // The prefix verifier requires every host-compatible dependency, including native optional
+  // packages. CLI inclusion wins over an ambient omit=optional, also when npm removes a sibling.
+  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", [...args, "--include=optional"]);
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
   const mutation = beginExtensionNpmMutation();
@@ -233,12 +254,28 @@ export async function installExtensionSet(
   const interrupt = (): void => { interrupted = true; };
   process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
   try {
+    // Keep missing local extensions in the inventory for explicit repair/removal, but do not ask npm
+    // to reinstall them while reconciling other packages. Their original download directory may be gone.
+    const absent = manifestBefore.extensions.filter(entry =>
+      !requests.some(request => request.pkg === entry.pkg) &&
+      lstatSync(join(stage.prefix, "node_modules", entry.pkg), { throwIfNoEntry: false }) === undefined);
     // Make all local dependency specs independent of the stage directory's later promotion.
     for (const name of ["package.json", "package-lock.json"]) {
       const path = join(stage.prefix, name);
       if (!existsSync(path)) continue;
       const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) =>
-        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(extensionsDir(), item.slice(5))}` : item);
+        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(extensionsDir(), item.slice(5))}` : item) as {
+          dependencies?: Record<string, string>;
+          packages?: Record<string, { dependencies?: Record<string, string> }>;
+        };
+      const dependencies = name === "package.json" ? value.dependencies : value.packages?.[""]?.dependencies;
+      for (const entry of absent) {
+        if (!dependencies?.[entry.pkg]?.startsWith("file:")) continue;
+        delete dependencies[entry.pkg];
+        for (const key of Object.keys(value.packages ?? {})) {
+          if (key === `node_modules/${entry.pkg}` || key.startsWith(`node_modules/${entry.pkg}/node_modules/`)) delete value.packages![key];
+        }
+      }
       writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
     }
     for (const request of requests) {

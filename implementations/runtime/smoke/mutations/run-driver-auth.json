@@ -44,7 +44,7 @@
     },
     {
       "name": "the settle returns without draining its fire pump (#1460)",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "      await pump;",
       "replace": "      void pump;",
       "expectRed": "a settled wait returns with its fire pump drained: no takeFire in flight when the drive resolves (#1460)",

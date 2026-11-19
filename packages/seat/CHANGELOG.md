@@ -1,5 +1,35 @@
 # @cotal-ai/seat
 
+## 0.171.1
+
+No changes in this release.
+
+## 0.171.0
+
+No changes in this release.
+
+## 0.170.0
+
+No changes in this release.
+
+## 0.169.0
+
+### Patch Changes
+
+- 9ecacd7: Repair a recorded macOS background service when its application executable has been removed.
+  
+  The CLI verifies the original LaunchAgent and receipt before moving the service to the current installation. Interrupted source and receipt publication retain a bounded repair record, disabled services stay disabled, and updater output no longer claims that an untouched foreign service was stopped.
+
+## 0.168.0
+
+### Patch Changes
+
+- 97a8f1a: Show the exit status, signal, stderr and any process error when a Windows native build cannot download the Node SDK.
+
+## 0.167.0
+
+No changes in this release.
+
 ## 0.166.3
 
 No changes in this release.

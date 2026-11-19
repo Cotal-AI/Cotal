@@ -82,6 +82,8 @@ const run = (args: string[], extra: Record<string, string> = {}, cwd = neutral) 
   const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 };
+const runShell = (args: string, extra: Record<string, string> = {}, cwd = neutral) =>
+  spawnSync("sh", ["-c", `exec "$0" "$1" ${args}`, process.execPath, BIN], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 900) });
 const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/Request refused|Code:/.test(r.stderr);
@@ -110,6 +112,16 @@ const dashWord = run(["send", "-c", "general", "-n is a flag here"]);
 check("an unknown option names -- for a word that starts with -", usageShape(dashWord, /Unknown option '-n'/) && /put -- before it/.test(dashWord.stderr), shown(dashWord));
 const dashValue = run(["history", "--from", "-bob"]);
 check("an option value that starts with - is given its --name=value form", usageShape(dashValue, /the value of --from starts with "-"/) && /write it as --from=-bob/.test(dashValue.stderr), shown(dashValue));
+if (process.platform !== "win32") {
+  for (const query of ["-help usage", "-reviewer's $HOME"]) {
+    const refused = run(["docs", "--search", query]);
+    const correction = /^  write it as (.+)$/m.exec(refused.stderr)?.[1];
+    const copied = correction && runShell(`docs ${correction} --json`);
+    check("the printed --search correction keeps the full query in one shell argument",
+      usageShape(refused, /the value of --search starts with "-"/) && !!copied && copied.status === 0 && JSON.parse(copied.stdout).result.query === query,
+      { refused: shown(refused), copied });
+  }
+}
 const noValue = run(["history", "--limit"]);
 check("an option given last with no value is refused naming it and its placeholder", usageShape(noValue, /--limit needs a value/) && /write --limit <n>/.test(noValue.stderr) && !/argument missing/.test(noValue.stderr), shown(noValue));
 const flagValue = run(["history", "--limit", "--from", "bob"]);
@@ -148,6 +160,27 @@ check("clean with no target has the same shape and names the targets", usageShap
 
 const noForce = run(["clean", "store"]);
 check("clean store without --force has the same shape, with the remedy on its own line", usageShape(noForce, /requires --force/) && /cotal clean store --force/.test(noForce.stderr), shown(noForce));
+
+// The command that refusal prints keeps every flag that picks what is deleted. Without --store-dir,
+// following it deleted the default store and left the one the user named (#7517).
+for (const [args, remedy] of [
+  [["clean", "store", "--store-dir", "custom"], "cotal clean store --store-dir custom --force"],
+  [["clean", "all", "--store-dir", "my store"], "cotal clean all --store-dir 'my store' --force"],
+  [["clean", "history", "--space", "s1", "--dms"], "cotal clean history --space s1 --dms --force"],
+  [["clean", "history", "--server", "nats://127.0.0.1:4999", "--creds", "/tmp/a b.creds"], "cotal clean history --server nats://127.0.0.1:4999 --creds '/tmp/a b.creds' --force"],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} without --force prints a command that keeps its target`, usageShape(r, /requires --force/) && r.stderr.includes(`\n  ${remedy}\n`), shown(r));
+}
+const twoStores = join(home, "two-stores");
+mkdirSync(join(twoStores, ".cotal", "nats", "jetstream"), { recursive: true });
+mkdirSync(join(twoStores, "custom", "jetstream"), { recursive: true });
+const asked = run(["clean", "store", "--store-dir", "custom"], {}, twoStores);
+const printed = /\n {2}cotal (clean store [^\n]*--force)\n/.exec(asked.stderr)?.[1].split(" ") ?? [];
+const followed = run(printed, {}, twoStores);
+check("following that printed command removes the store that was named and leaves the default store",
+  followed.status === 0 && !existsSync(join(twoStores, "custom", "jetstream")) && existsSync(join(twoStores, ".cotal", "nats", "jetstream")),
+  { printed, followed: shown(followed) });
 
 const helpPath = run(["help", "service", "nosuch"]);
 check("help with an unknown subcommand names it and lists the command's subcommands", usageShape(helpPath, /cotal service has no subcommand "nosuch"/) && /\bstart\b/.test(helpPath.stderr) && /\bstop\b/.test(helpPath.stderr), shown(helpPath));
@@ -199,8 +232,10 @@ for (const [args, usage, foreign] of [
     return clean(out).split(/\r?\n/);
   };
   const command = "cotal service add <name> --preset exec-endpoint --contract <file> --handler <file>";
+  // The list was given --space, so its next: names it too (#7642).
+  const listedCommand = `${command} --space widenext`;
   const listed = await at80(["service", "--space", "widenext"]);
-  check(`cotal service on 80 columns keeps the ${command.length}-column exec-endpoint next: command on one line`, created.status === 0 && listed.some((line) => line.trim() === command), { created: shown(created), listed });
+  check(`cotal service on 80 columns keeps the ${listedCommand.length}-column exec-endpoint next: command on one line`, created.status === 0 && listed.some((line) => line.trim() === listedCommand), { created: shown(created), listed });
   for (const flags of [[], ["--plain"]]) {
     const refused = await at80(["service", "add", "myep", "--preset", "exec-endpoint", "--space", "widenext", ...flags]);
     check(`the service add refusal on 80 columns${flags.length ? " under --plain" : ""} keeps its remedy command on one line`, refused.some((line) => line.trim() === command.replace("<name>", "myep")), refused.slice(0, 16));
@@ -265,13 +300,15 @@ for (const [args, usage, foreign] of [
     paths.push([cmd.name, ...path]);
     const examples = node.examples ?? [];
     const problems: string[] = [];
-    if (examples.length < 1 || examples.length > 3) problems.push(`declares ${examples.length} examples`);
+    // The work grammar is reserved, but every lease and commit request is refused.
+    const gatedWork = cmd.name === "endpoint" && path[0] === "work";
+    if (gatedWork ? examples.length !== 0 : examples.length < 1 || examples.length > 3) problems.push(`declares ${examples.length} examples`);
     const lines: string[] = [];
     printHelpPath(cmd, path, (line) => lines.push(...line.replace(/\x1b\[[0-9;]*m/g, "").split("\n")), 80);
     const at = lines.indexOf("Examples");
     const end = lines.indexOf("", at);
     const section = lines.slice(at + 1, end === -1 ? undefined : end);
-    if (at === -1 || at < Math.max(lines.indexOf("Usage"), lines.indexOf("Shorthands")) || ["Commands", "Options"].some((title) => lines.includes(title) && lines.indexOf(title) < at)) problems.push(`Examples is not between Usage and Commands or Options: ${lines.join(" | ").slice(0, 300)}`);
+    if (gatedWork ? at !== -1 : at === -1 || at < Math.max(lines.indexOf("Usage"), lines.indexOf("Shorthands")) || ["Commands", "Options"].some((title) => lines.includes(title) && lines.indexOf(title) < at)) problems.push(`unexpected Examples section: ${lines.join(" | ").slice(0, 300)}`);
     for (const example of examples) {
       if (typeof example === "string") { problems.push(`${example}: has no note`); continue; }
       const { command, note } = example;
@@ -279,7 +316,8 @@ for (const [args, usage, foreign] of [
       if (!section.some((line) => line.startsWith(`  ${command}`) && displayWidth(line) <= 80) || !section.join(" ").replace(/\s+/g, " ").includes(`${command} ${note}`)) problems.push(`${command}: is not one line that fits 80 columns with its note: ${section.join(" | ")}`);
       problems.push(...problemsOf(cmd, path, command));
     }
-    check(`${["cotal", cmd.name, ...path].join(" ")} shows one to three examples after its usage, each one line with a note, parsing under its own options`, problems.length === 0, problems);
+    const expectation = gatedWork ? "omits examples for unavailable work operations" : "shows one to three examples after its usage, each one line with a note, parsing under its own options";
+    check(`${["cotal", cmd.name, ...path].join(" ")} ${expectation}`, problems.length === 0, problems);
     for (const sub of node.subcommands ?? []) if (!sub.hidden) census(cmd, [...path, sub.name], sub);
   };
   for (const cmd of commands) census(cmd, [], cmd);
@@ -416,6 +454,19 @@ for (const [args, usage, foreign] of [
   const managerStart = run(["manager", "start", "--help"]);
   const declared = registry.resolve<Command>("command", "manager").subcommands?.find((sub) => sub.name === "start")?.examples ?? [];
   check("cotal manager start --help shows the manager start examples", managerStart.status === 0 && declared.length > 0 && declared.every((example) => typeof example !== "string" && managerStart.stdout.includes(`  ${example.command}`)), shown(managerStart));
+  const rejectedNoOpen = run(["manager", "start", "--no-open", "--dry-run"]);
+  const webStart = run(["service", "start", "web", "--help"]);
+  check("manager start omits the web-only --no-open option even in refusal help, and web start shows it",
+    managerStart.status === 0 && !/^  --no-open\b/m.test(managerStart.stdout) &&
+    rejectedNoOpen.status === 1 && /--no-open belongs to service start web/.test(rejectedNoOpen.stderr) && !/^  --no-open\b/m.test(rejectedNoOpen.stderr) &&
+    webStart.status === 0 && /^  --no-open\b/m.test(webStart.stdout),
+    { manager: shown(managerStart), refused: shown(rejectedNoOpen), web: shown(webStart) });
+
+  for (const path of [["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
+    const help = run([...path, "--help"]);
+    check(`cotal ${path.join(" ")} help states the limit without offering working examples`,
+      help.status === 0 && /unavailable in this CLI/.test(help.stdout) && /^Usage$/m.test(help.stdout) && !/^Examples$/m.test(help.stdout), shown(help));
+  }
 
   // The persona create example, its placeholders filled in, run as written against a fresh Cotal home
   // in the folder of a space prepared there, which needs no stack. Without --subscribe the refusal
@@ -432,6 +483,17 @@ for (const [args, usage, foreign] of [
   const noReadSet = run(["persona", "create", "other", "--prompt", "review the diff"], fresh, project);
   check("persona create without --subscribe is refused with the persona create help, not the persona help",
     usageShape(noReadSet, /provide --subscribe <a,b> or --subscribe "" for none/) && noReadSet.stderr.includes("\nUsage\n  cotal persona create <name> ") && !/^Commands$/m.test(noReadSet.stderr), shown(noReadSet));
+  if (process.platform !== "win32") {
+    for (const [name, prompt, option] of [["short", "Review only", 0], ["long", "Review only", 1], ["dash", "-Review only", 0]] as const) {
+      const refused = run(["persona", "create", name, `-p=${prompt}`, "--subscribe", ""], fresh, project);
+      const corrections = /^  write (.+)$/m.exec(refused.stderr)?.[1]?.split(" or ");
+      const correction = corrections?.[option];
+      const copied = correction && runShell(`persona create ${name} ${correction} --subscribe ''`, fresh, project);
+      check(`the printed ${name} persona correction preserves the prompt in a shell`,
+        usageShape(refused, /gives -p the value/) && corrections?.length === (name === "dash" ? 1 : 2) && !!copied && copied.status === 0
+        && readFileSync(join(project, ".cotal", "agents", `${name}.md`), "utf8").trimEnd().endsWith(`\n${prompt}`), { refused: shown(refused), copied });
+    }
+  }
 }
 
 // No mark at all: the report names the outcome in words, and `!` stays the warning mark.
@@ -596,6 +658,139 @@ if (process.platform !== "win32") {
     check(`${args[0]} still answers there`, version.status === 0 && /^cotal-ai /.test(version.stdout), shown(version));
   }
   check("the file is left as it was", readFileSync(join(notes, ".cotal"), "utf8") === "notes\n");
+}
+
+// The command a missing --yes prints keeps the --space, --server and --creds it was given. Without
+// them, following it removed the selected space's persona, reference or history (#7564).
+{
+  const spaces = mkdtempSync(join(home, "two-spaces-"));
+  for (const space of ["alpha", "beta"]) {
+    mkdirSync(join(spaces, space));
+    run(["space", "create", space, "--root", join(spaces, space)], {}, spaces);
+    run(["persona", "create", "reviewer", "--prompt", `${space} reviewer`, "--subscribe", "general", "--space", space], {}, spaces);
+    writeFileSync(join(spaces, `${space}.json`), JSON.stringify({ schemaVersion: 1, space, endpoint: "com.example.orders" }));
+    run(["endpoint", "add", "orders", "--file", join(spaces, `${space}.json`), "--space", space], {}, spaces);
+  }
+  run(["use", "alpha"], {}, spaces);
+  const persona = (space: string) => existsSync(join(spaces, space, ".cotal", "agents", "reviewer.md"));
+  const reference = (space: string) => run(["endpoint", "show", "orders", "--space", space], {}, spaces).status === 0;
+  check("control: both spaces hold the persona and the reference", persona("alpha") && persona("beta") && reference("alpha") && reference("beta"));
+  for (const [args, remedy] of [
+    [["history", "clear", "--space", "beta", "--dms"], "`cotal history clear --space beta --dms --yes`"],
+    [["persona", "remove", "reviewer", "--space", "beta"], "`cotal persona remove reviewer --space beta --yes`"],
+    [["endpoint", "remove", "orders", "--space", "beta"], "`cotal endpoint remove orders --space beta --yes`"],
+  ] as const) {
+    const r = run([...args, "--no-input"], {}, spaces);
+    check(`${args.join(" ")} without --yes prints a command that keeps --space`, r.status === 1 && r.stderr.includes(remedy), shown(r));
+    if (args[0] === "history") continue;
+    const printed = /`cotal ([^`]*--yes)`/.exec(r.stderr)?.[1].split(" ") ?? [];
+    const followed = run(printed, {}, spaces);
+    const kept = args[0] === "persona" ? persona : reference;
+    check(`following the printed ${args[0]} remove removes beta's and keeps alpha's`, followed.status === 0 && !kept("beta") && kept("alpha"), { printed, followed: shown(followed) });
+  }
+}
+
+// Scoped help and flag/subcommand refusals across config, run, daemon, manager, service,
+// service-endpoint and ext (#7553, #7552, #7550, #7548, #7547, #7540, #7574).
+{
+  const configVerbose = run(["config", "--verbose"]);
+  check("bare config --verbose prints the Storage section", configVerbose.status === 0 && /^Storage$/m.test(configVerbose.stdout), shown(configVerbose));
+  const savedPreference = run(["config", "set", "color", "never"]);
+  const preferencesFile = join(env.XDG_CONFIG_HOME, "cotal", "preferences.json");
+  check("control: a preference is saved before verbose refusals", savedPreference.status === 0 && existsSync(preferencesFile), shown(savedPreference));
+  const preferencesBefore = readFileSync(preferencesFile, "utf8");
+  for (const words of [
+    ["config", "get", "harness"],
+    ["config", "set", "color", "auto"],
+    ["config", "unset", "color"],
+  ]) for (const verbose of ["--verbose", "-v"]) for (const output of [[], ["--json"]]) {
+    const args = [...words, verbose, ...output];
+    const r = run(args, { COTAL_SKIP_CONNECTOR_SEED: "" });
+    const envelope = parsed(r);
+    const refused = output.length
+      ? r.status === 1 && r.stderr === "" && envelope?.error?.code === "USAGE_INVALID" && /--verbose belongs to bare `cotal config`/.test(envelope.error.message ?? "")
+      : usageShape(r, /--verbose belongs to bare `cotal config`/);
+    check(`${args.join(" ")} refuses verbose before seeding or changing preferences`, refused && readFileSync(preferencesFile, "utf8") === preferencesBefore, shown(r));
+  }
+
+  const runShowHelp = run(["run", "show", "--help"]);
+  check("run show --help lists --limit in Usage and Options", runShowHelp.status === 0 && /Usage\n[^\n]*\[--limit <n>\]/.test(runShowHelp.stdout) && /\n {2}--limit <n>\s+/.test(runShowHelp.stdout), shown(runShowHelp));
+  const runCheckHelp = run(["run", "check", "--help"]);
+  check("run check --help lists --file and --local in Usage and Options", runCheckHelp.status === 0 && /Usage[\s\S]*--file <program>[\s\S]*\[--local\]/.test(runCheckHelp.stdout) && /\n {2}-f, --file <program>\s+/.test(runCheckHelp.stdout) && /\n {2}--local\s+/.test(runCheckHelp.stdout), shown(runCheckHelp));
+
+  const daemonHelp = run(["daemon", "--help"]);
+  check("bare daemon --help scopes Options to --daemon-home, --json and --plain", daemonHelp.status === 0 && /--daemon-home <abs dir>/.test(daemonHelp.stdout) && !/\n {2}--(?:refresh|no-manager|wait|cloud|idp)\b/.test(daemonHelp.stdout) && !/--refresh|--no-manager|--wait/.test(daemonHelp.stdout.split("\nCommands\n")[0] ?? ""), shown(daemonHelp));
+  for (const [args, message] of [
+    [["daemon", "--json"], /cotal daemon needs a mode:/],
+    [["daemon", "bogus", "--json"], /cotal daemon has no subcommand "bogus"/],
+    [["daemon", "--bogus", "--json"], /Unknown option '--bogus'/],
+  ] as const) {
+    const r = run([...args]);
+    const envJson = parsed(r) as { outcome?: string; error?: { code?: string; message?: string } } | undefined;
+    check(`${args.join(" ")} writes a USAGE_INVALID JSON envelope on stdout and nothing on stderr`, r.status === 1 && r.stderr === "" && envJson?.outcome === "refused" && envJson.error?.code === "USAGE_INVALID" && message.test(envJson.error.message ?? ""), shown(r));
+  }
+
+  const presetSpace = join(home, "preset-space");
+  mkdirSync(presetSpace, { mode: 0o700 });
+  const createdPresetSpace = run(["space", "create", "presetspace", "--root", presetSpace]);
+  const mgrFlagFirst = run(["manager", "--runtime", "pty", "start", "--dry-run", "--space", "presetspace"], {}, presetSpace);
+  const mgrFlagAfter = run(["manager", "start", "--runtime", "pty", "--dry-run", "--space", "presetspace"], {}, presetSpace);
+  check("manager --runtime pty start --dry-run matches manager start --runtime pty --dry-run", createdPresetSpace.status === 0 && mgrFlagFirst.status === 0 && mgrFlagAfter.status === 0 && mgrFlagFirst.stdout === mgrFlagAfter.stdout, { first: shown(mgrFlagFirst), after: shown(mgrFlagAfter) });
+  const mgrHelpFirst = run(["manager", "--runtime", "pty", "start", "--help"]);
+  const mgrHelpAfter = run(["manager", "start", "--runtime", "pty", "--help"]);
+  check("manager --runtime pty start --help prints manager start help", mgrHelpFirst.status === 0 && mgrHelpFirst.stdout === mgrHelpAfter.stdout && /--runtime/.test(mgrHelpFirst.stdout), shown(mgrHelpFirst));
+  const svcFlagFirst = run(["service", "start", "--runtime", "pty", "manager", "--dry-run", "--space", "presetspace"], {}, presetSpace);
+  const svcFlagAfter = run(["service", "start", "manager", "--runtime", "pty", "--dry-run", "--space", "presetspace"], {}, presetSpace);
+  check("service start --runtime pty manager --dry-run matches service start manager --runtime pty --dry-run", svcFlagFirst.status === 0 && svcFlagAfter.status === 0 && svcFlagFirst.stdout === svcFlagAfter.stdout, { first: shown(svcFlagFirst), after: shown(svcFlagAfter) });
+  const helpSvcStartMgr = run(["help", "service", "start", "manager"]);
+  const svcStartMgrHelp = run(["service", "start", "manager", "--help"]);
+  check("help service start manager prints the same preset-augmented help as service start manager --help", helpSvcStartMgr.status === 0 && helpSvcStartMgr.stdout === svcStartMgrHelp.stdout && /--runtime/.test(helpSvcStartMgr.stdout), shown(helpSvcStartMgr));
+  const svcAddPresetMissingHelp = run(["service", "add", "--preset", "--help"]);
+  const svcAddPresetBogusHelp = run(["service", "add", "x", "--preset", "bogus", "--help"]);
+  const svcAddHelp = run(["service", "add", "--help"]);
+  check("service add --help wins over missing or unknown --preset", svcAddPresetMissingHelp.status === 0 && svcAddPresetMissingHelp.stdout === svcAddHelp.stdout && svcAddPresetBogusHelp.status === 0 && svcAddPresetBogusHelp.stdout === svcAddHelp.stdout, { missing: shown(svcAddPresetMissingHelp), bogus: shown(svcAddPresetBogusHelp) });
+
+  for (const args of [
+    ...["start", "show", "stop", "status", "logs", "remove"].map((mode) => ["service", mode, "myweb", "--preset", "web"]),
+    ["service", "--preset", "web"],
+    ["service", "start", "mymgr", "--preset", "manager"],
+  ]) {
+    const r = run(args);
+    check(`${args.join(" ")} rejects --preset as USAGE_INVALID without recommending ext add`, usageShape(r, /--preset belongs to service add/) && !/ext add|DEPENDENCY_UNAVAILABLE/.test(r.stderr), shown(r));
+  }
+
+  const helpSeApprove = run(["help", "service-endpoint", "approve"]);
+  check("help service-endpoint approve prints approve's scoped help", helpSeApprove.status === 0 && /cotal service-endpoint approve <proposalId>/.test(helpSeApprove.stdout) && /--caller-ceiling/.test(helpSeApprove.stdout) && !/--cursor|--commands/.test(helpSeApprove.stdout), shown(helpSeApprove));
+  const seBogusHelp = run(["service-endpoint", "bogus", "--help"]);
+  check("service-endpoint bogus --help refuses the unknown subcommand", usageShape(seBogusHelp, /cotal service-endpoint has no subcommand "bogus"/), shown(seBogusHelp));
+  const unseededEnv = Object.fromEntries(Object.entries(env).filter(([k]) => k !== "COTAL_SKIP_CONNECTOR_SEED"));
+  const runUnseeded = (args: string[]) => {
+    const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env: unseededEnv, encoding: "utf8", timeout: 120_000 });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  };
+  for (const [args, message] of [
+    [["service-endpoint"], /service-endpoint <approve <proposalId>/],
+    [["service-endpoint", "approve"], /service-endpoint <approve <proposalId>/],
+    [["service-endpoint", "name-bind", "com.example.api"], /service-endpoint <approve <proposalId>/],
+    [["service-endpoint", "bogus"], /cotal service-endpoint has no subcommand "bogus"/],
+    [["service-endpoint", "approv"], /cotal service-endpoint has no subcommand "approv" - did you mean approve\?/],
+    [["service-endpoint", "grant", "p1"], /grant needs --commands <a,b>/],
+  ] as const) {
+    const r = runUnseeded([...args]);
+    check(`unseeded ${args.join(" ")} exits 1 as USAGE_INVALID before target resolution or seeding`, usageShape(r, message) && !/TARGET_NOT_FOUND|operator-global seed store/.test(r.stderr), shown(r));
+  }
+
+  const extBareHelp = run(["ext", "--help"]);
+  check("bare ext --help omits seed-only flags --repair, --reset and --force from Options", extBareHelp.status === 0 && !/\n {2}--(?:repair|reset|force)\b/.test(extBareHelp.stdout), shown(extBareHelp));
+  for (const [args, flag] of [
+    [["ext", "--repair"], "--repair"],
+    [["ext", "list", "--reset"], "--reset"],
+    [["ext", "root", "--repair"], "--repair"],
+    [["ext", "remove", "nonexistent-pkg", "--force"], "--force"],
+  ] as const) {
+    const r = runUnseeded([...args]);
+    check(`${args.join(" ")} refuses ${flag} outside ext seed`, usageShape(r, new RegExp(`${flag} belongs to \`cotal ext seed\``)), shown(r));
+  }
 }
 
 finish();

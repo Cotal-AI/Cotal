@@ -22,6 +22,70 @@ import { compareSemver } from "../src/seed/reconcile.js";
 
 const noop = async (): Promise<void> => {};
 
+// Explicit empty values refuse before selection, account reads, connector seeding or network access.
+// The same isolated CLI also exercises offline simulation refusals.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-empty-args-"));
+  const config = join(root, "config");
+  const home = join(root, "cotal");
+  const env = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    HOME: join(root, "home"), COTAL_HOME: home, XDG_CONFIG_HOME: config,
+    COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1",
+  };
+  const run = (words: string[]) => spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), ...words], {
+    cwd: root, env, encoding: "utf8", timeout: 30_000,
+  });
+  try {
+    const cases: string[][] = [];
+    for (const value of ["", "   "]) {
+      cases.push(
+        ["use", value], ["space", "show", value], ["space", "forget", value],
+        ["spawn", value, "--dry-run"], ["persona", "create", "reviewer", "--file", value],
+        ["persona", "create", "reviewer", "--from", value, "--subscribe", ""],
+        ["history", "general", "--from", value], ["history", "general", "--grep", value],
+        ["models", "--harness", value], ["models", "-H", value], ["sync", "--idp", value],
+      );
+    }
+    for (const url of ["not-a-url", "http://example.test/auth", "https://user:secret@example.test/auth", "https://example.test/auth?q=1", "https://example.test/auth#part"])
+      cases.push(["sync", "--idp", url]);
+    for (const words of cases) {
+      for (const output of ["--json", "--plain", undefined]) {
+        const result = run([...words, ...(output ? [output] : [])]);
+        const label = JSON.stringify([...words, output]);
+        assert.equal(result.error, undefined, label);
+        assert.equal(result.status, 1, `${label}: ${result.stdout}${result.stderr}`);
+        if (output === "--json") {
+          assert.equal(JSON.parse(result.stdout).error.code, "USAGE_INVALID", label);
+          assert.equal(result.stderr, "", label);
+        } else {
+          if (output === "--plain") assert.match(result.stderr, /USAGE_INVALID/, label);
+          assert.match(result.stderr, /Usage|Next/, label);
+        }
+        assert.ok(!existsSync(join(config, "cotal", "extensions")), "invalid input never seeds connectors");
+        assert.ok(!existsSync(join(home, "current-mesh")), "invalid input never selects a space");
+      }
+    }
+    const sync = run(["sync", "--json"]);
+    assert.equal(sync.status, 0, sync.stdout + sync.stderr);
+    assert.deepEqual(JSON.parse(sync.stdout).result.accounts, []);
+    assert.ok(!existsSync(join(config, "cotal", "extensions")), "catalog refresh never seeds connectors");
+    for (const url of ["https://example.test/auth", "http://127.0.0.1:1234/auth", "http://[::1]:1234/auth"])
+      assert.doesNotThrow(() => findCommand(registry.all<Command>("command"), "sync")!.validate!({ values: { idp: url }, positionals: [], raw: [] }));
+
+    writeFileSync(join(root, "workflow.cotal.js"), 'const ok = await checkpoint("approve-plan", "Approve the plan?");\nlog(ok.status);\n');
+    writeFileSync(join(root, "bad-results.json"), '{"checkpoints":{"approve-plan":{"status":"done"}}}');
+    const refused = run(["r", "simulate", "./workflow.cotal.js", "--handler", "./bad-results.json"]);
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    const [diagnostic, next] = refused.stderr.split(/\r?\nNext\s*\r?\n/);
+    assert.match(diagnostic ?? "", /invalid scripted checkpoint 'approve-plan' in \.\/bad-results\.json: status must be "resolved" or "expired"/);
+    assert.match(diagnostic ?? "", /SCHEMA_INVALID/);
+    assert.match(next?.replace(/\s+/g, " ") ?? "", /set checkpoints\.approve-plan\.status in \.\/bad-results\.json to "resolved" or "expired", then rerun the simulation/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // Login's migration option is a value flag on the registered command, not a positional.
 {
   const providersBefore = new Set(registry.all("auth-provider").map(provider => provider.name));
@@ -744,12 +808,10 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.equal((await completionOut(["channel", "set", "ops", "--creds", ""])).trimEnd(), ":default", "channel --creds completes from the shell's file names");
 }
 
-// --- endpoint describe has no contract cache, so --refresh refuses before any request ------------
+// --- endpoint describe accepts --refresh and performs a fresh contract fetch ---------------------
 {
   const endpoint = registry.all<Command>("command").find((cmd) => cmd.name === "endpoint")!;
-  let refused: unknown;
-  try { endpoint.validate?.(parseCommandArgs(endpoint, ["describe", "manager", "--refresh"])); } catch (e) { refused = e; }
-  assert.ok(isCommandFailure(refused) && refused.code === "UNSUPPORTED", "endpoint describe --refresh refuses as UNSUPPORTED instead of being accepted and ignored");
+  assert.doesNotThrow(() => endpoint.validate?.(parseCommandArgs(endpoint, ["describe", "manager", "--refresh"])));
   endpoint.validate?.(parseCommandArgs(endpoint, ["describe", "manager"]));
   for (const name of ["spawn", "status"]) {
     const usage = registry.all<Command>("command").find((cmd) => cmd.name === name)?.usage ?? "";
@@ -764,6 +826,8 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["auto", "notify", "self", "stop-agents", "check", "json", "plain", "space", "server", "creds", "on"]);
   assert.equal(parseCommandArgs(cmd!, ["--self"]).values.self, true);
   assert.equal(parseCommandArgs(cmd!, ["--on", "inst_0123456789abcdefghijklmnopqrs"]).values.on, "inst_0123456789abcdefghijklmnopqrs", "update takes the manager pin every other manager command takes");
+  for (const flags of [["--notify", "--json"], ["--notify", "--plain"], ["--auto", "--json"], ["--auto", "off", "--json"], ["--notify", "on", "--plain"]])
+    assert.doesNotThrow(() => validateUpdateArguments(parseCommandArgs(cmd!, flags)));
   assert.throws(
     () => validateUpdateArguments(parseCommandArgs(cmd!, ["--check", "--on", "x"])),
     (e: unknown) => (e as { code?: string }).code === "USAGE_INVALID",
@@ -1285,7 +1349,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     "@cotal-ai/core": { peerDependencies: { "@cotal-ai/cli": ">=0.1.0" } },
     "@cotal-ai/optional": {},
   };
-  for (const scenario of ["ready", "ready-array", "empty-array", "multiple-array", "null-array", "nested-array", "array-wrong-version", "array-missing-integrity", "root-404", "transitive-404", "metadata-404", "target-missing", "invalid-json", "wrong-version", "missing-integrity", "skewed-dependency", "integrity", "unauthorized", "unstructured"] as const) {
+  for (const scenario of ["ready", "ready-array", "empty-array", "multiple-array", "null-array", "nested-array", "array-wrong-version", "array-missing-integrity", "root-404", "transitive-404", "metadata-404", "target-missing", "date-summary", "date-detail", "date-metadata", "invalid-json", "wrong-version", "missing-integrity", "skewed-dependency", "integrity", "unauthorized", "unstructured", "connection-refused", "unsafe-code"] as const) {
     const downloaded: string[] = [], caches = new Set<string>();
     const fixture = updateRuntime({
       npm: (args) => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
@@ -1306,9 +1370,12 @@ async function completionOut(positionals: string[]): Promise<string> {
             return { status: 1, stdout: JSON.stringify({ error: { code: "E404" } }) };
           if (scenario === "integrity" || scenario === "unauthorized") return { status: 1, stdout: JSON.stringify({ error: { code: scenario === "integrity" ? "EINTEGRITY" : "E401" } }) };
           if (scenario === "target-missing") return { status: 1, stdout: JSON.stringify({ error: { code: "ETARGET" } }) };
+          if (scenario === "date-summary" || scenario === "date-detail") return { status: 1, stdout: JSON.stringify({ error: { code: "ETARGET", [scenario === "date-summary" ? "summary" : "detail"]: `No matching version found for ${spec} with a date before 1/1/2020.` } }) };
           if (scenario === "unstructured") return { status: 1, stderr: "npm error code E404" };
           return { status: 0 };
         }
+        if (name === "@cotal-ai/cli" && ["connection-refused", "unsafe-code"].includes(scenario)) return { status: 1, stdout: JSON.stringify({ error: { code: scenario === "connection-refused" ? "ECONNREFUSED" : "E401\nsecret-token", summary: "https://user:secret@registry.example/?token=secret" } }), stderr: "npm error secret-token" };
+        if (scenario === "date-metadata") return { status: 1, stdout: JSON.stringify({ error: { code: "ETARGET", summary: `No matching version found for ${spec} with a date before 1/1/2020.` } }) };
         if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stdout: JSON.stringify({ error: { code: "E404" } }) };
         if (name === "@cotal-ai/core" && scenario === "invalid-json") return { status: 0, stdout: "not json" };
         const metadata = {
@@ -1340,10 +1407,26 @@ async function completionOut(positionals: string[]): Promise<string> {
       assert.ok(!fixture.events.some(event => /^(global:|claim-global:|reconcile|refresh-connectors)/.test(event)), "refusal starts no installation or reconciliation");
       const error = fixture.events.filter(event => event.startsWith(arriving ? "out:" : "err:")).join("\n");
       if (arriving) assert.ok(error.includes("Waiting for cotal-ai@0.13.2") && error.includes("Keeping cotal-ai@0.13.1"), error);
-      else assert.ok(error.includes("release is still reaching the registry") && error.includes("again in a few minutes"), error);
+      else if (scenario.startsWith("date-")) {
+        assert.match(error, /min-release-age.*before.*Adjust that date filter/);
+        assert.doesNotMatch(error, /still reaching the registry|again in a few minutes/);
+      } else {
+        assert.ok(error.includes("update preflight failed") && error.includes("Correct the reported failure"), error);
+        assert.doesNotMatch(error, /still reaching|in a few minutes/);
+        if (scenario === "connection-refused") assert.match(error, /ECONNREFUSED: registry connection refused.*@cotal-ai:registry.*\.npmrc/);
+        if (scenario === "integrity") assert.match(error, /npm EINTEGRITY/);
+        if (scenario === "unauthorized") assert.match(error, /npm E401/);
+        assert.doesNotMatch(error, /secret-token|user:secret|token=secret/);
+      }
       assert.ok(!error.includes("npm error code E404"), "raw npm errors are not the user-facing diagnostic");
     }
   }
+}
+
+// Real npm can read the root package while a scoped registry refuses every connection.
+{
+  const result = spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/smoke/update-registry-arrival.smoke.mjs"), "closed-scope"], { encoding: "utf8", timeout: 90_000 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
 }
 
 // A listed release that becomes downloadable during the wait installs through the normal path.
@@ -1366,6 +1449,36 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(!fixture.events.some(event => event.includes("Keeping cotal-ai@0.13.1")));
 }
 
+// Connectivity loss before replacement is an unchanged result, never release propagation.
+for (const code of ["ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN", "ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "ESOCKETTIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "EACCES", "E401", "EINTEGRITY", "ENOENT"]) {
+  for (const phase of ["metadata", "archive", "closure", "staging", "preflight"]) {
+    const offline = !["EACCES", "E401", "EINTEGRITY", "ENOENT"].includes(code) && phase !== "preflight";
+    const failed = { status: 1, stdout: JSON.stringify({ error: { code } }), stderr: `npm error code ${code}\nnpm error private registry details` };
+    const fixture = updateRuntime({
+      npm: args => args[0] === "install" && phase === "closure" ? failed : { status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" },
+      releaseNpm: args => {
+        if (phase === "metadata" || phase === "archive" && args[0] === "cache") return failed;
+        const spec = args[0] === "view" ? args[1] : args[2], at = spec.lastIndexOf("@");
+        return { status: 0, stdout: JSON.stringify({ name: spec.slice(0, at), version: spec.slice(at + 1), dist: { tarball: "https://registry.example/package.tgz", integrity: "sha512-fixture" } }) };
+      },
+    });
+    if (phase === "closure") fixture.rt.extensions = () => [{ pkg: "@cotal-ai/web", version: "0.13.1", spec: "@cotal-ai/web@0.13.1", commands: [] }];
+    if (phase === "staging" || phase === "preflight") fixture.rt.prepareExecution = async () => {
+      if (phase === "staging") throw new Error(`target staging failed: ${failed.stderr}`);
+      return { entry: "/target/cotal.js", journal: "/target/journal", async preflight() { throw new Error(failed.stderr); }, publish() {}, restore() {}, verify() {}, discard() { fixture.events.push("discard"); } };
+    };
+    assert.equal(await executeUpdate(true, fixture.rt), offline ? 0 : 1, `${phase}: ${code}`);
+    assert.ok(!fixture.events.some(event => /^(global:|reconcile|refresh-connectors)/.test(event)), "no installed replacement or reconcile begins");
+    const output = fixture.events.filter(event => /^(out:|err:)/.test(event)).join("\n");
+    if (offline) {
+      assert.match(output, /The registry cannot be reached; nothing was changed\./);
+      assert.doesNotMatch(output, /npm error|update preflight failed|still reaching|staged pre-install check refused/);
+    } else assert.doesNotMatch(output, /The registry cannot be reached/);
+    if (phase === "staging" || phase === "preflight") assert.ok(fixture.events.some(event => event.startsWith("release-global:")), "failed preparation releases global reservation");
+    if (phase === "preflight") assert.ok(fixture.events.includes("discard"), "a prepared target failing its checks is still discarded and refused");
+  }
+}
+
 // A staged rollback already retains the complete previous graph and needs no registry copy.
 {
   const fixture = updateRuntime({
@@ -1386,6 +1499,45 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(fixture.events.some(event => event.includes("Switching to cotal-ai@0.13.2")));
   assert.ok(fixture.events.some(event => event.includes("✓ cotal-ai@0.13.2 in use and reconciled")));
   assert.ok(!fixture.events.some(event => event.includes("installed globally") || event.includes("into npm's global installation")));
+}
+
+// A snapshot refusal must discard the verified but unpublished generation on every attempt.
+{
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const xdg = mkdtempSync(join(tmpdir(), "cotal-staged-snapshot-refusal-"));
+  process.env.XDG_CONFIG_HOME = xdg;
+  mkdirSync(join(xdg, "cotal", "seed"), { recursive: true, mode: 0o700 });
+  const blocked = join(xdg, "cotal", "extensions");
+  writeFileSync(blocked, "not a directory");
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const stage = join(xdg, `unpublished-${attempt}`);
+      const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+      let discarded = 0, published = 0, released = 0;
+      fixture.rt.prepareExecution = async () => {
+        mkdirSync(stage, { mode: 0o700 });
+        return {
+          entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: "/private/execution.json",
+          async preflight() {}, verify() {}, restore() {},
+          publish() { published++; },
+          discard() { discarded++; rmSync(stage, { recursive: true }); },
+        };
+      };
+      fixture.rt.prepareReplacement = async () => async () => { released++; };
+      assert.equal(await executeUpdate(true, fixture.rt), 1);
+      assert.equal(discarded, 1);
+      assert.equal(existsSync(stage), false, "unpublished generation is removed after snapshot refusal");
+      assert.equal(published, 0);
+      assert.equal(released, 1);
+      assert.ok(fixture.events.some(event => event.includes("update snapshot refused:")));
+      assert.equal(readUpdateRecovery(), undefined);
+      assert.equal(readFileSync(blocked, "utf8"), "not a directory");
+    }
+  } finally {
+    rmSync(xdg, { recursive: true, force: true });
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
 }
 
 // Staged verification loads the live extension config, so rollback restores its snapshot first.
@@ -1470,6 +1622,21 @@ for (const [code, summary, deferred] of [
   assert.equal(await executeUpdate(true, fixture.rt), deferred ? 0 : 1, `${code}: ${summary}`);
   assert.equal(fixture.events.some(event => event.includes("release is still arriving")), deferred);
   assert.equal(fixture.events.some(event => event === "global:reconcile"), !deferred, "only a real install failure enters repair");
+}
+
+// A waiting updater rechecks the selected release, releases its reservation before re-entry,
+// preserves the user's selection and consent, and never rolls back another updater's result.
+for (const installed of ["0.13.2", "0.13.3"]) {
+  const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+  fixture.rt.globalVersion = () => installed;
+  fixture.rt.spawn = (_file, args) => {
+    assert.ok(fixture.events.includes("release-global:/global/node_modules"));
+    assert.deepEqual(args, ["/global/node_modules/cotal-ai/dist/cotal.js", "update", "--self", "--space", "chosen", "--server", "nats://example:4222", "--creds", "/tmp/selected.creds", "--on", "chosen-manager", "--stop-agents"]);
+    return { status: 7, stdout: "", stderr: "recheck refused" };
+  };
+  assert.equal(await executeUpdate(true, fixture.rt, { space: "chosen", server: "nats://example:4222", creds: "/tmp/selected.creds", on: "chosen-manager", "stop-agents": true }), 7);
+  assert.ok(fixture.events.includes(`verify:/global/node_modules:${installed}`));
+  assert.ok(!fixture.events.some(event => event.startsWith("global:install:") || event === "reconcile"));
 }
 
 // --- --self: exact checked artifact, alternate global root, verified child, status propagation ----
@@ -1694,6 +1861,19 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     assert.equal(await executeUpdate(false, unattended.rt), 0);
     assert.ok(unattended.events.includes("reconcile"), "unattended child still reconciles the installed generation");
     assert.equal(readUpdateRecovery()?.phase, "replacing", "unattended child leaves activation to its parent's cleared journal");
+    clearUpdateRecovery();
+
+    writeUpdateRecovery({ previous: "0.13.0", target: "0.13.1", installed: "0.13.0", phase: "replacing", reason: "scoped parent" });
+    const scoped = updateRuntime({ env: { COTAL_UPDATE_TARGET_VERSION: "0.13.1", COTAL_UPDATE_PARENT: "99", COTAL_AUTO_UPDATE: "1" } });
+    scoped.rt.adoptUpdateChild = async () => true;
+    scoped.rt.waitForInstalledGeneration = async () => {
+      assert.equal(readUpdateRecovery()?.phase, "verified-ready");
+      scoped.events.push("generation-ready");
+    };
+    assert.equal(await executeUpdate(false, scoped.rt), 0);
+    assert.ok(scoped.events.indexOf("generation-ready") > scoped.events.indexOf("reconcile"), "scoped automatic child verifies the restarted daemon after reconciliation");
+    scoped.rt.waitForInstalledGeneration = async () => { throw new Error("target daemon unavailable"); };
+    assert.equal(await executeUpdate(false, scoped.rt), 1, "failed automatic activation returns to parent rollback");
     clearUpdateRecovery();
   } finally {
     if (priorJournalHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = priorJournalHome;

@@ -31,7 +31,7 @@
   "mutations": [
     {
       "name": "N1 accept an unknown key in the record",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "  if (extra.length) throw new Error(`persona: unknown key ${extra[0]}; it takes ${INLINE_PERSONA_KEYS.join(\", \")}`);\n",
       "replace": "",
       "expectRed": "an unknown key in the persona is refused by name",
@@ -39,7 +39,7 @@
     },
     {
       "name": "N2 let a spawn name a snapshot as its persona file",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "    if (!opts.resolved && this.insideInlineDir(configPath))\n",
       "replace": "    if (false && !opts.resolved && this.insideInlineDir(configPath))\n",
       "expectRed": "a config path at a live snapshot is refused",
@@ -47,7 +47,7 @@
     },
     {
       "name": "N3 drop the clash check before allocation",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "        if (taken)\n          return { error: `persona.save:",
       "replace": "        if (false)\n          return { error: `persona.save:",
       "expectRed": "a save under a name the catalog holds is refused, naming both exits",
@@ -55,7 +55,7 @@
     },
     {
       "name": "N4 save the catalog copy before the grant",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "    if (boundRefusal) return { ok: false, error: boundRefusal };\n",
       "replace": "    if (boundRefusal) return { ok: false, error: boundRefusal };\n    if (inline?.save) saveAgentFile(agentFilePath(this.workspaceRoot, ref), { name: ref, subscribe: [] }, { createOnly: true });\n",
       "expectRed": "a refused user-auth grant leaves no catalog file",
@@ -63,7 +63,7 @@
     },
     {
       "name": "N5 save the record's omissions instead of the checked grant",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "          subscribe: [...(ownSubscribe ?? [])],\n          allowSubscribe: [...allowSubscribe],\n          allowPublish: [...(allowPublish ?? [])],\n",
       "replace": "          subscribe: def?.subscribe ?? [],\n          allowSubscribe: def?.allowSubscribe,\n          allowPublish: def?.allowPublish,\n",
       "expectRed": "a later narrower spawner is refused the channels the saved copy names",
@@ -71,31 +71,31 @@
     },
     {
       "name": "N6 restart an inline seat without checking its snapshot",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "    const changed = this.inlineSnapshotChange(a);\n",
+      "file": "implementations/manager/src/session-recovery.ts",
+      "find": "    const changed = this.deps.inlineSnapshotChange(a);\n",
       "replace": "    const changed = undefined as string | undefined;\n",
       "expectRed": "a changed snapshot retires a supervised inline seat instead of restarting it",
       "cell": "a changed snapshot retires a supervised inline seat instead of restarting it"
     },
     {
       "name": "N7 keep the snapshot when the live slot frees",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "      if (a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid)) target.snapshotSettled = true;\n",
+      "file": "implementations/manager/src/names-capacity.ts",
+      "find": "      if (a.launch.source.kind !== \"inline\" || this.deps.dropInlineSnapshot(a.name, a.lifecycleUid)) target.snapshotSettled = true;\n",
       "replace": "      if (a.launch.source.kind !== \"inline\") target.snapshotSettled = true;\n",
       "expectRed": "an open-mesh inline seat's snapshot goes when its seat exits",
       "cell": "an open-mesh inline seat's snapshot goes when its seat exits"
     },
     {
       "name": "N8 keep the snapshot at the static retirement terminal",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "        await attemptCleanup(failed, `file ${snapshot}`, () => removeInlineSnapshot(this.workspaceRoot, a.lifecycleUid));\n",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
+      "find": "        await attemptCleanup(failed, `file ${snapshot}`, () => removeInlineSnapshot(this.deps.workspaceRoot(), a.lifecycleUid));\n",
       "replace": "",
       "expectRed": "the static retirement terminal removes a snapshot by its lifecycle uid",
       "cell": "the static retirement terminal removes a snapshot by its lifecycle uid"
     },
     {
       "name": "N9 keep the snapshot when the spawn rolls back",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "      const snapshotGone = snapshotUid === undefined || this.dropInlineSnapshot(name, snapshotUid);\n",
       "replace": "      const snapshotGone = snapshotUid === undefined;\n",
       "expectRed": "an open-mesh spawn that fails after its snapshot removes it",
@@ -111,7 +111,7 @@
     },
     {
       "name": "N11 key the snapshot by the allocated uid instead of the granted one",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "        configPath = writeInlineSnapshot(this.workspaceRoot, lifecycleUid, {",
       "replace": "        configPath = writeInlineSnapshot(this.workspaceRoot, agentTriple.uid, {",
       "expectRed": "a user-auth snapshot is keyed by the uid the grant settled on",
@@ -135,7 +135,7 @@
     },
     {
       "name": "N13 let the rollback's terminal remove the uid's path",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "        const orphan: TeardownTarget = { ...provisioned, ...(snapshotGone ? { snapshotSettled: true as const } : {}) };\n",
       "replace": "        const orphan: TeardownTarget = { ...provisioned };\n",
       "expectRed": "and it leaves the file the write refused",
@@ -151,7 +151,7 @@
     },
     {
       "name": "N15 write the record's role and model instead of the launched ones",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "writeInlineSnapshot(this.workspaceRoot, lifecycleUid, { name, role, model, variant,",
       "replace": "writeInlineSnapshot(this.workspaceRoot, lifecycleUid, { name, role: def.role, model: def.model, variant: def.variant,",
       "expectRed": "the snapshot carries the role and model the seat launched with",
@@ -159,15 +159,15 @@
     },
     {
       "name": "N16 let the rollback throw when its snapshot removal fails",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "      const snapshotGone = snapshotUid === undefined || this.dropInlineSnapshot(name, snapshotUid);\n",
-      "replace": "      const snapshotGone = snapshotUid === undefined || (removeInlineSnapshot(this.workspaceRoot, snapshotUid), true);\n",
+      "replace": "      const snapshotGone = snapshotUid === undefined || this.dropInlineSnapshot(name, snapshotUid) || (() => { throw new Error(\"inline snapshot removal failed\"); })();\n",
       "expectRed": "and still tears its grant down",
       "cell": "and still tears its grant down"
     },
     {
       "name": "N17 settle the rollback's snapshot when its removal failed",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "        const orphan: TeardownTarget = { ...provisioned, ...(snapshotGone ? { snapshotSettled: true as const } : {}) };\n",
       "replace": "        const orphan: TeardownTarget = { ...provisioned, snapshotSettled: true };\n",
       "expectRed": "and its terminal reports the snapshot it could not remove",
@@ -175,9 +175,9 @@
     },
     {
       "name": "N18 settle a freed seat's snapshot when its removal failed",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "      if (a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid)) target.snapshotSettled = true;\n",
-      "replace": "      if (a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid) || true) target.snapshotSettled = true;\n",
+      "file": "implementations/manager/src/names-capacity.ts",
+      "find": "      if (a.launch.source.kind !== \"inline\" || this.deps.dropInlineSnapshot(a.name, a.lifecycleUid)) target.snapshotSettled = true;\n",
+      "replace": "      if (a.launch.source.kind !== \"inline\" || this.deps.dropInlineSnapshot(a.name, a.lifecycleUid) || true) target.snapshotSettled = true;\n",
       "expectRed": "a retirement that cannot remove the snapshot keeps the name held and says why",
       "cell": "a retirement that cannot remove the snapshot keeps the name held and says why"
     },
@@ -247,7 +247,7 @@
     },
     {
       "name": "N27 save a run's persona for its driver",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "    const savedBy = authenticatedCaller === undefined ? undefined : this.runHosting?.admittedCaller(authenticatedCaller);",
       "replace": "    const savedBy = undefined as EpCaller | undefined;",
       "expectRed": "a run's saved persona is owned by the run's starter, not by the run's driver",

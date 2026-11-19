@@ -39,7 +39,7 @@ function need(name: string): string {
 
 /** Start the mesh agent, the control + bridge servers, and emit the tool descriptors file.
  *  Reads `COTAL_CONTROL_SOCKET`, `COTAL_BRIDGE_SOCKET`, and `COTAL_TOOLS_FILE` from the env, and the
- *  control token from the launch material (see controlFromEnv). */
+ *  control key and version from the launch material (see controlFromEnv). */
 export function startSidecar(): Sidecar {
   const config = configFromEnv();
   config.connector = "hermes"; // advertise the host harness on our AgentCard (meta.connector)
@@ -47,26 +47,24 @@ export function startSidecar(): Sidecar {
   // to the message that started the turn. A peer's reply is therefore never a new task for us.
   config.channelRepliesPullOnly = true;
   const agent = new MeshAgent(config);
-  agent.start(); // background connect with retry
+  let started = false;
+  const startAgent = (): void => {
+    if (started) return;
+    started = true;
+    agent.start();
+  };
 
-  // Socket path from the env, first-frame token from the launch material the launcher merged it
+  // Socket path from the env, key and version from the launch material the launcher merged them
   // into. Absent means the launcher did not mint a control endpoint, which is a broken launch here.
   const control = controlFromEnv();
   if (!control)
     throw new Error("COTAL_CONTROL_SOCKET / the launch material's control token not set - the sidecar must be spawned with bridge/control/tools paths");
-  const controlSock = control.path;
-  const controlToken = control.token;
   const bridgeSock = need("COTAL_BRIDGE_SOCKET");
   const toolsFile = need("COTAL_TOOLS_FILE");
 
-  // Managed listener: own the endpoint (fatal bind) and authenticate every frame against the token.
-  const controlServer = startControlServer(
-    agent,
-    { path: controlSock, token: controlToken },
-    hermesHookHandle,
-    { fatalBind: true },
-  );
-  const bridge = startBridgeServer(agent, config, bridgeSock, controlToken);
+  // Managed listener: own the endpoint (fatal bind) and prove every connection through the exchange.
+  const controlServer = startControlServer(agent, control, hermesHookHandle, { fatalBind: true });
+  const bridge = startBridgeServer(agent, config, bridgeSock, control, startAgent);
 
   // The plugin reads this at register(ctx) time to declare the cotal_* tools (full shared parity).
   writeFileSync(toolsFile, JSON.stringify(hermesToolDescriptors(config)));
@@ -75,16 +73,10 @@ export function startSidecar(): Sidecar {
     agent,
     config,
     async stop() {
-      try {
-        bridge.close();
-      } catch {
-        /* ignore */
-      }
-      try {
-        controlServer.close();
-      } catch {
-        /* ignore */
-      }
+      // Both servers have closed, with every accepted connection ended, before stop resolves, so a
+      // launcher that removes their directory next leaves nothing listening or connected in it. A
+      // control connection ends on its own within the exchange's deadlines.
+      await Promise.all([bridge.close(), new Promise<void>((resolve) => controlServer.close(() => resolve()))]);
       await agent.stop();
     },
   };

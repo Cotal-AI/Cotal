@@ -24,7 +24,7 @@
     },
     {
       "name": "public stop/close race forgets consumer identity before fresh cleanup",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "    watch.consumerStream = info.stream_name;\n    watch.consumerName = info.name;\n",
       "replace": "",
       "expectRed": "public stop concurrent with terminal close resolves after fresh cleanup",
@@ -34,7 +34,7 @@
     },
     {
       "name": "closed epoch delete rejects public stop instead of deferring cleanup",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "          if (timeout || closedEpoch) {\n            this.emit(\"error\", err as Error);\n          } else {\n            throw err;\n          }\n",
       "replace": "          throw err;\n",
       "expectRed": "public stop concurrent with terminal close resolves after fresh cleanup",
@@ -64,7 +64,7 @@
     },
     {
       "name": "delivery durable bind drops the plane lease read",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "    const lease = await this.readDeliveryLease(0);\n    const liveDeliveryPlane = lease?.ready === true;\n    if (!liveDeliveryPlane) this.emit(\"warning\", new Error(\n      `delivery durable \"${durable}\" for space \"${this.space}\" bound while the plane this connection reaches has no ready delivery lease, so the durable delivers nothing until a delivery daemon serves this plane. If a daemon serves this space on another plane, reconnect against it, which re-binds the durable there.`,\n    ));\n",
       "replace": "",
       "expectRed": "a delivery durable binds and warns when the plane has no ready delivery lease",
@@ -74,7 +74,7 @@
     },
     {
       "name": "delivery durable bind inverts ready lease acceptance",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "    const liveDeliveryPlane = lease?.ready === true;\n    if (!liveDeliveryPlane) this.emit(\"warning\", new Error(\n",
       "replace": "    const liveDeliveryPlane = lease?.ready !== true;\n    if (!liveDeliveryPlane) this.emit(\"warning\", new Error(\n",
       "expectRed": "a quiet delivery durable binds while the plane holds a ready lease",
@@ -84,7 +84,7 @@
     },
     {
       "name": "delivery durable bind treats a missing lease row as live",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "    const liveDeliveryPlane = lease?.ready === true;\n",
       "replace": "    const liveDeliveryPlane = lease === undefined || lease.ready === true;\n",
       "expectRed": "a delivery durable binds and warns when the plane has no ready delivery lease",
@@ -94,7 +94,7 @@
     },
     {
       "name": "watch iterator close drops the caller's onClosed notification",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "      watch.onClosed?.(err);\n",
       "replace": "",
       "expectRed": "a watch iterator closed under a live connection reaches the caller's closed callback",

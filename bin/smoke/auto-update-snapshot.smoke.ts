@@ -4,15 +4,14 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSy
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
-import { writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery, claimUpdateClosureAccess } from "@cotal-ai/workspace";
+import { writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery, claimUpdateClosureAccess, connectorConfigDir, retainConnectorConfig, prepareCotalHomeForWrite, ProtectedRecordStore, protectedResolvedDirectory } from "@cotal-ai/workspace";
 import { snapshotUpdateClosure } from "../../implementations/cli/src/lib/update-snapshot.js";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 
 const counted = countedAssert(assertions);
 const assert: typeof assertions = counted.assert as typeof assertions;
 const cells = counted.cells;
-// The physical path: macOS keeps its temporary folder behind the /var symbolic link, which the
-// config protection check refuses.
+// Keep the fixture physical so linked ancestors below belong to the test.
 const root = realpathSync(mkdtempSync(join(tmpdir(), "update-snapshot-")));
 process.env.XDG_CONFIG_HOME = join(root, "config");
 process.env.COTAL_HOME = join(root, "home");
@@ -35,6 +34,64 @@ try {
     process.env.XDG_CONFIG_HOME = linked;
     assert.throws(() => snapshotUpdateClosure());
     assert.equal(existsSync(join(root, "missing-target")), false);
+    const physical = join(root, "physical-home"), home = join(root, "linked-home");
+    mkdirSync(physical, { mode: 0o700 });
+    symlinkSync(physical, home);
+    process.env.XDG_CONFIG_HOME = join(home, ".config");
+    process.env.COTAL_HOME = join(home, ".cotal");
+    prepareCotalHomeForWrite();
+    prepareCotalHomeForWrite();
+    assert.equal(statSync(join(physical, ".cotal")).mode & 0o777, 0o700);
+    const store = new ProtectedRecordStore("services", "linked-home", value => value);
+    const directory = store.directory(true)!;
+    assert.equal(directory, realpathSync(directory), "service children receive a physical state directory");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const linkedSnapshot = snapshotUpdateClosure();
+      assert.ok(existsSync(linkedSnapshot.path));
+      snapshotUpdateClosure(linkedSnapshot.path).discard();
+      assert.equal(existsSync(linkedSnapshot.path), false);
+    }
+    chmodSync(physical, 0o777);
+    assert.throws(() => snapshotUpdateClosure(), /writable/);
+    assert.throws(() => prepareCotalHomeForWrite(), /writable/);
+    chmodSync(physical, 0o700);
+    const linkParent = join(root, "link-parent");
+    mkdirSync(linkParent, { mode: 0o700 });
+    symlinkSync(physical, join(linkParent, "home"));
+    process.env.COTAL_HOME = join(linkParent, "home", ".cotal");
+    process.env.XDG_CONFIG_HOME = join(linkParent, "home", "fresh-config");
+    const linkedStore = new ProtectedRecordStore("services", "link-parent", value => value);
+    chmodSync(linkParent, 0o777);
+    assert.throws(() => snapshotUpdateClosure(), /link-parent.*writable/);
+    assert.equal(existsSync(join(physical, "fresh-config")), false);
+    assert.throws(() => prepareCotalHomeForWrite(), /link-parent.*writable/);
+    assert.throws(() => linkedStore.directory(true), /link-parent.*writable/);
+    assert.throws(() => linkedStore.directory(), /link-parent.*writable/);
+    process.env.COTAL_HOME = join(linkParent, "home", "new-cotal-home");
+    assert.throws(() => prepareCotalHomeForWrite(), /link-parent.*writable/);
+    assert.equal(existsSync(join(physical, "new-cotal-home")), false);
+    process.env.COTAL_HOME = join(linkParent, "home", ".cotal");
+    chmodSync(linkParent, 0o1777);
+    assert.throws(() => protectedResolvedDirectory(join(linkParent, "home")), /link-parent.*writable/);
+    chmodSync(linkParent, 0o700);
+    const safeSnapshot = snapshotUpdateClosure();
+    safeSnapshot.discard();
+    assert.ok(linkedStore.directory(true));
+    chmodSync(linkParent, 0o777);
+    assert.throws(() => snapshotUpdateClosure(), /link-parent.*writable/);
+    assert.throws(() => linkedStore.directory(), /link-parent.*writable/);
+    chmodSync(linkParent, 0o700);
+    const intermediate = join(root, "intermediate");
+    symlinkSync(join(linkParent, "home"), intermediate);
+    assert.equal(protectedResolvedDirectory(intermediate), physical);
+    chmodSync(linkParent, 0o777);
+    assert.throws(() => protectedResolvedDirectory(intermediate), /link-parent.*writable/);
+    chmodSync(linkParent, 0o700);
+    symlinkSync("link-parent/home/..", join(root, "relative-parent"));
+    assert.equal(protectedResolvedDirectory(join(root, "relative-parent")), root);
+    symlinkSync("loop", join(root, "loop"));
+    assert.throws(() => protectedResolvedDirectory(join(root, "loop")), /too many symbolic links/);
+    process.env.COTAL_HOME = join(root, "home");
     process.env.XDG_CONFIG_HOME = join(root, "config");
   }
   assert.equal(existsSync(config), false);
@@ -83,6 +140,38 @@ try {
     assert.equal(readFileSync(external, "utf8"), "untouched");
     assert.equal(readFileSync(join(seed, "stamp"), "utf8"), "previous");
     refused.discard(); clearUpdateRecovery();
+  }
+  if (process.platform === "linux" || process.platform === "darwin") {
+    const legacy = snapshotUpdateClosure();
+    const entry = join(root, "prefix/lib/node_modules/cotal-ai/dist/cotal.js");
+    mkdirSync(join(entry, ".."), { recursive: true, mode: 0o700 });
+    writeFileSync(entry, "// installed entry\n");
+    writeFileSync(join(entry, "../..", "package.json"), JSON.stringify({ name: "cotal-ai", version: "2.0.0", bin: { cotal: "./dist/cotal.js" } }));
+    Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), { value: Object.freeze({ logicalEntry: entry, loadedEntry: entry }) });
+    const retained = retainConnectorConfig();
+    assert.notEqual(retained, config);
+    assert.equal(connectorConfigDir(), retained);
+    for (const name of ["seed", "extensions"]) {
+      writeFileSync(join(config, name, "stamp"), "interrupted canonical");
+      writeFileSync(join(retained, name, "stamp"), "target retained");
+    }
+    writeUpdateRecovery({ previous: "1.0.0", target: "2.0.0", installed: "2.0.0", phase: "paused", snapshot: legacy.path, reason: "interrupted after retained selection" });
+    snapshotUpdateClosure(legacy.path).restore();
+    for (const name of ["seed", "extensions"]) {
+      assert.equal(readFileSync(join(config, name, "stamp"), "utf8"), "previous");
+      assert.equal(readFileSync(join(retained, name, "stamp"), "utf8"), "target retained");
+    }
+    assert.ok(readUpdateRecovery()!.renames!.every(entry => entry.done));
+    legacy.discard(); clearUpdateRecovery();
+    assert.equal(existsSync(legacy.path), false);
+    for (const kind of ["missing", "file", "symlink", "foreign"] as const) {
+      const path = join(kind === "foreign" ? root : config, `.update-snapshot-${kind}`);
+      if (kind === "file") writeFileSync(path, "not a directory");
+      if (kind === "symlink") symlinkSync(retained, path);
+      if (kind === "foreign") mkdirSync(path, { mode: 0o700 });
+      assert.throws(() => snapshotUpdateClosure(path));
+      assert.equal(readFileSync(join(retained, "seed", "stamp"), "utf8"), "target retained");
+    }
   }
   emitSentinel({ passed: cells(), failed: 0 });
 } finally { release(); rmSync(root, { recursive: true, force: true }); }

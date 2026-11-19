@@ -43,7 +43,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -100,6 +100,7 @@ function prompt(n: number): string {
     JSON.stringify({
       type: "user",
       uuid: `u-${n}`,
+      promptId: `prompt-${n}`,
       sessionId: THREAD,
       timestamp: new Date(1_700_000_000_000 + n * 1000).toISOString(),
       origin: { kind: "human" },
@@ -148,12 +149,15 @@ agent.on?.("error", () => {});
 // process entry point that owns a control server and an MCP transport; what is under test is the
 // hook arm above it, and the seam between them is this object.
 let mapper: ClaudeMapper | undefined;
+let eventWalPath = "";
+const emitterErrors: string[] = [];
 const events = new AguiEmitterHolder<ClaudeEntry, unknown>(
   async (transcriptPath: string, sessionSource: unknown) => {
     const workspaceRoot = resolveEventsStateRoot(process.env);
     const threadId = THREAD;
     const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
     const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+    eventWalPath = walPath;
     const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
     const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
     mapper = createClaudeMapper({ threadId, mintRunId: () => randomUUID() });
@@ -166,7 +170,7 @@ const events = new AguiEmitterHolder<ClaudeEntry, unknown>(
     });
   },
   {
-    onError: (e: Error) => console.log(`  [emitter stopped] ${e.message}`),
+    onError: (e: Error) => { emitterErrors.push(e.message); console.log(`  [emitter stopped] ${e.message}`); },
     onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
     sourceEnd: (path: string) => new JsonlFileSource<ClaudeEntry>(path).end(),
   },
@@ -220,7 +224,7 @@ try {
   );
 
   // ---- Turn 2: a real turn that ENDS NORMALLY. The control that says the mapping is not blanket.
-  appendFileSync(transcript, turn(2));
+  appendFileSync(transcript, prompt(2));
   await hook({ hook_event_name: "UserPromptSubmit" });
   await sleep(500);
   check(
@@ -243,20 +247,93 @@ try {
     inputCondition?.code === "input" && inputCondition.source === "agent_needs_input",
     inputCondition,
   );
-  await hook({ hook_event_name: "Stop" });
+  // Claude can start Stop with the final text before the transcript writer appends it.
+  const stopping = hook({ hook_event_name: "Stop", last_assistant_message: "answer-2", prompt_id: "prompt-2" });
+  // Let an immediate Stop finish its queued work before appending. A Stop that waits for the
+  // advertised text stays pending while the test releases the writer.
+  await Promise.race([stopping.then(() => events.settled()), sleep(100)]);
+  appendFileSync(transcript, answer(2));
+  await stopping;
   await sleep(2_000);
   await events.settled();
+
+  // A native wake can be stored during an open run. Both the wake-only string and the
+  // inline delivery's text-block array carry the plugin origin native-wake.js uses.
+  const wakeBodies: string[] = [];
+  for (const n of [3, 4]) {
+    appendFileSync(transcript, turn(n));
+    await hook({ hook_event_name: "UserPromptSubmit" });
+    await events.settled();
+    const before = JSON.parse(readFileSync(eventWalPath, "utf8"));
+    check(`wake-${n}:the preceding run is open with no pending frame`,
+      typeof before.brackets.run === "string" && before.pending === null);
+    const text = n === 3
+      ? "Cotal: a new message for connection_id native-wake. Read it with cotal_inbox."
+      : "Cotal inline peer content: PRIVATE-WAKE-CANARY";
+    wakeBodies.push(text);
+    const record = (entry: ClaudeEntry): string => JSON.stringify(entry) + "\n";
+    appendFileSync(transcript,
+      record({ type: "user", uuid: `wake-${n}`, origin: { kind: "plugin", name: "cotal" },
+        message: { content: n === 3 ? text : [{ type: "text", text }] } }) +
+      record({ type: "assistant", uuid: `tool-${n}`, message: { content: [
+        { type: "tool_use", id: `wake-tool-${n}`, name: "Read", input: { file_path: "sample.txt" } },
+      ] } }) +
+      record({ type: "user", uuid: `result-${n}`, message: { content: [
+        { type: "tool_result", tool_use_id: `wake-tool-${n}`, content: "done" },
+      ] } }) + answer(n + 10));
+    events.flush(transcript);
+    await events.settled();
+    const after = JSON.parse(readFileSync(eventWalPath, "utf8"));
+    check(`wake-${n}:the cursor advanced past the wake and following records`,
+      after.frontier.sourceCursor !== before.frontier.sourceCursor &&
+      (await new JsonlFileSource(transcript).read(after.frontier.sourceCursor)).records.length === 0);
+    check(`wake-${n}:the new run is open and its frames are acknowledged`,
+      typeof after.brackets.run === "string" && after.brackets.run !== before.brackets.run && after.pending === null);
+    await hook({ hook_event_name: "Stop" });
+    await events.settled();
+    const closed = JSON.parse(readFileSync(eventWalPath, "utf8"));
+    check(`wake-${n}:Stop closes the run on disk without a pending frame`,
+      closed.brackets.run === undefined && closed.pending === null);
+  }
+  check("native wakes never stop the emitter", emitterErrors.length === 0, emitterErrors);
+
+  // The same answer on the previous prompt must not release a Stop for the current one.
+  appendFileSync(transcript, turn(5));
+  await hook({ hook_event_name: "UserPromptSubmit" });
+  await hook({ hook_event_name: "Stop", last_assistant_message: "answer-5", prompt_id: "prompt-5" });
+  await events.settled();
+  appendFileSync(transcript, prompt(6));
+  await hook({ hook_event_name: "UserPromptSubmit" });
+  await events.settled();
+  const repeated = hook({ hook_event_name: "Stop", last_assistant_message: "answer-5", prompt_id: "prompt-6" });
+  await Promise.race([repeated.then(() => events.settled()), sleep(100)]);
+  appendFileSync(transcript, answer(5).replace('"a-5"', '"a-6"'));
+  await repeated;
+  await events.settled();
+
+  for (const [n, text] of [[7, ""], [8, "never written"]] as const) {
+    appendFileSync(transcript, prompt(n));
+    await hook({ hook_event_name: "UserPromptSubmit" });
+    const started = performance.now();
+    await hook({ hook_event_name: "Stop", last_assistant_message: text, prompt_id: `prompt-${n}` });
+    const elapsed = performance.now() - started;
+    check(`stop-${n}:${text ? "missing advertised text has a bounded wait" : "no advertised text does not wait"}`,
+      text ? elapsed >= 500 && elapsed < 1_500 : elapsed < 500, elapsed);
+    await events.settled();
+  }
 
   // ---- Read the whole stream back from the broker and grade it as an ORDER.
   const reader = new CotalEndpoint({
     space: SPACE, servers, card: { name: "Reader", kind: "agent", id: "reader" }, channels: [CHANNEL],
   });
   reader.on("error", () => {});
-  type Ev = { type: string; text: string; message: string; code: string };
+  type Ev = { type: string; text: string; message: string; code: string; toolCallId: string; runId: string; turnSource: unknown };
   const seen: Ev[] = [];
+  const wire: string[] = [];
   reader.on("message", (m: { channel?: string; parts?: { data?: unknown }[] }) => {
     if (m?.channel !== CHANNEL) return;
     for (const p of m.parts ?? []) {
+      wire.push(JSON.stringify(p));
       const d = (p as { data?: { events?: unknown[] } }).data ?? p;
       for (const e of ((d as { events?: unknown[] }).events ?? []) as Record<string, unknown>[])
         seen.push({
@@ -264,6 +341,9 @@ try {
           text: String(e.delta ?? ""),
           message: String(e.message ?? ""),
           code: String(e.code ?? ""),
+          toolCallId: String(e.toolCallId ?? (e.value as { toolCallId?: string } | undefined)?.toolCallId ?? ""),
+          runId: String((d as { runId?: string }).runId ?? ""),
+          turnSource: (e.cotal as { turnSource?: string } | undefined)?.turnSource,
         });
     }
   });
@@ -277,7 +357,7 @@ try {
   const idx = (pred: (e: Ev) => boolean): number => seen.findIndex(pred);
   const a1 = idx((e) => e.text.includes("answer-1"));
   const a2 = idx((e) => e.text.includes("answer-2"));
-  check("control:BOTH turns reached the subject, in order — a stream missing one grades nothing below",
+  check("control:both answers reach the subject in order, including the one appended during Stop",
     a1 >= 0 && a2 >= 0 && a1 < a2, { a1, a2 });
 
   const isClose = (e: Ev): boolean => e.type === "RUN_FINISHED" || e.type === "RUN_ERROR";
@@ -287,7 +367,8 @@ try {
   const closesBetween = (from: number, to: number): Ev[] =>
     seen.slice(from + 1, to < 0 ? seen.length : to).filter(isClose);
   const failedTurnCloses = closesBetween(a1, a2);
-  const normalTurnCloses = closesBetween(a2, -1);
+  const a3 = idx((e) => e.text.includes("answer-3"));
+  const normalTurnCloses = closesBetween(a2, a3);
 
   check("fail:the StopFailure turn closed EXACTLY ONCE — `RUN_ERROR` closes a run, so nothing may follow it",
     failedTurnCloses.length === 1, failedTurnCloses);
@@ -301,8 +382,39 @@ try {
   check("stop:and THAT close is RUN_FINISHED — `Stop` is not a failure, and a blanket mapping would fail here",
     normalTurnCloses[0]?.type === "RUN_FINISHED", normalTurnCloses[0]);
 
+  for (const n of [3, 4]) {
+    const before = idx((e) => e.text === `answer-${n}`);
+    const after = idx((e) => e.text === `answer-${n + 10}`);
+    const next = idx((e) => e.text === (n === 3 ? "answer-4" : "prompt 5"));
+    const window = seen.slice(before + 1, next);
+    check(`wake-${n}:assistant text before and after the wake reaches the broker in order`,
+      before >= 0 && after > before);
+    check(`wake-${n}:the following tool start, end and result marker reach the broker`,
+      ["TOOL_CALL_START", "TOOL_CALL_END", "CUSTOM"].every((type) =>
+        window.some((e) => e.type === type && e.toolCallId === `wake-tool-${n}`)));
+    check(`wake-${n}:the wake opens a channel-attributed run for the following assistant text`,
+      window.some((e) => e.type === "RUN_STARTED" && e.turnSource === "channel" && e.runId === seen[after]?.runId));
+    check(`wake-${n}:both runs close once and no error reaches the broker`,
+      window.filter(isClose).length === 2 && window.every((e) => e.type !== "RUN_ERROR"));
+  }
+  check("native wake and inline prompt bodies stay off the event channel",
+    wakeBodies.every((body) => !wire.join("\n").includes(body)));
+
+  const runForPrompt = (n: number): Ev[] => {
+    const prompt = seen.find((e) => e.text === `prompt ${n}`);
+    return prompt ? seen.filter((e) => e.runId === prompt.runId) : [];
+  };
+  for (const n of [5, 6, 7, 8]) {
+    const run = runForPrompt(n);
+    const expected = n <= 6 ? "answer-5" : undefined;
+    const closes = run.filter(isClose);
+    check(`stop-${n}:the correct run closes once after its transcript records`,
+      closes.length === 1 && run.at(-1)?.type === "RUN_FINISHED" &&
+      (expected === undefined || run.some((e) => e.text === expected)), run);
+  }
+
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 11;
+  const EXPECTED = 35;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 

@@ -1,6 +1,6 @@
 {
   "command": "pnpm smoke:liveness-peer",
-  "progressPattern": "\u2713",
+  "progressPattern": "✓",
   "minTicks": 52,
   "mutations": [
     {
@@ -29,7 +29,7 @@
     },
     {
       "name": "a responder whose readState throws answers bound instead of unknown",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "        let responder: ResponderState;\n        try {\n          responder = await readState();\n        } catch {\n          responder = \"unknown\";\n        }",
       "replace": "        let responder: ResponderState;\n        try {\n          responder = await readState();\n        } catch {\n          responder = \"bound\";\n        }",
       "expectRed": "CELL C1",
@@ -53,7 +53,7 @@
     },
     {
       "name": "the responder answers any reply target, not only one under the sender's own subtree",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "        if (!m.reply || !m.reply.startsWith(`${m.subject}.reply.`)) {\n          this.emitRecoverable(new Error(`rejected liveness probe on ${m.subject}: reply target \"${m.reply ?? \"(none)\"}\" is not under the sender's own reply subtree`));\n          continue;\n        }",
       "replace": "        if (!m.reply) continue;",
       "expectRed": "CELL D4b",
@@ -61,7 +61,7 @@
     },
     {
       "name": "the responder reports a plane it was not asked about, so an answer about delivery can arrive for a question about the manager",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "        const answer: LivenessAnswer = { plane, responder, instance };",
       "replace": "        const answer = { plane: plane === \"manager\" ? \"delivery\" : \"manager\", responder, instance } as LivenessAnswer;",
       "expectRed": "CELL B1",
@@ -69,7 +69,7 @@
     },
     {
       "name": "a peer may probe under another principal's identity slots because the subject stops pinning the caller",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "    ...LIVENESS_PLANES.map((plane) => livenessSubject(space, plane, pr.owner, pr.actor)),",
       "replace": "    ...LIVENESS_PLANES.map((plane) => livenessSubject(space, plane, pr.owner, \"*\")),",
       "expectRed": "CELL D2",
@@ -77,15 +77,15 @@
     },
     {
       "name": "an agent is granted the responder's serve filter and can answer a peer's probe for a plane it does not own",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "  const livenessReplies = LIVENESS_PLANES.map((plane) => `${livenessSubject(space, plane, pr.owner, pr.actor)}.>`);",
-      "replace": "  const livenessReplies = [...LIVENESS_PLANES.map((plane) => `${livenessSubject(space, plane, pr.owner, pr.actor)}.>`), ...LIVENESS_PLANES.map((plane) => livenessServeFilter(space, plane))];",
+      "replace": "  const livenessReplies = [...LIVENESS_PLANES.map((plane) => `${livenessSubject(space, plane, pr.owner, pr.actor)}.>`), ...LIVENESS_PLANES.map((plane) => livenessSubject(space, plane, \"*\", \"*\"))];",
       "expectRed": "CELL D3",
       "cell": "CELL D3: a peer CANNOT subscribe the responder's SERVE filter (it cannot answer for a plane)"
     },
     {
       "name": "the supervisor's reply grant widens off the reply leaf so it could forge a probe as a peer",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "        livenessReplyGrant(space, \"manager\"),",
       "replace": "        `${spacePrefix(space)}.live.manager.>`,",
       "expectRed": "CELL E3",
@@ -93,7 +93,7 @@
     },
     {
       "name": "the delivery plane's serve filter is granted to the supervisor too, so planes no longer answer only for themselves",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "        livenessServeFilter(space, \"manager\"),\n      ],",
       "replace": "        livenessServeFilter(space, \"manager\"),\n        livenessServeFilter(space, \"delivery\"),\n      ],",
       "expectRed": "CELL E2",
@@ -101,7 +101,7 @@
     },
     {
       "name": "a plane outside the closed set is answered instead of refused",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "    if (!isLivenessPlane(plane))",
       "replace": "    if (false && !isLivenessPlane(plane))",
       "expectRed": "CELL D9",
@@ -109,15 +109,15 @@
     },
     {
       "name": "the answer carries the lease holder alongside presence, leaking identity to a non-owner peer",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "        const answer: LivenessAnswer = { plane, responder, instance };",
-      "replace": "        const answer = { plane, responder, instance, holder: this.card.id } as LivenessAnswer;",
+      "replace": "        const answer = { plane, responder, instance, holder: this.actor } as LivenessAnswer;",
       "expectRed": "CELL D8",
       "cell": "CELL D8: the wire answer carries EXACTLY {plane, responder, instance} - no holder, pid, root, lease instance id or roster"
     },
     {
       "name": "the rejection notice goes back on the `error` channel, which Node rethrows with no listener attached, so a peer's probe ends the responder process",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "          this.emitRecoverable(new Error(`rejected liveness probe on ${m.subject}: reply target \"${m.reply ?? \"(none)\"}\" is not under the sender's own reply subtree`));",
       "replace": "          this.emit(\"error\", new Error(`rejected liveness probe on ${m.subject}: reply target \"${m.reply ?? \"(none)\"}\" is not under the sender's own reply subtree`));",
       "expectRed": "CELL F1",
@@ -125,7 +125,7 @@
     },
     {
       "name": "the responder mints its token per REPLY rather than per bind, so one responder looks like many and two cannot be told apart",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "        const answer: LivenessAnswer = { plane, responder, instance };",
       "replace": "        const answer: LivenessAnswer = { plane, responder, instance: randomUUID() };",
       "expectRed": "CELL G5",
@@ -133,7 +133,7 @@
     },
     {
       "name": "the answer names no responder at all, so two disagreeing instances are indistinguishable from one that changed state",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-liveness.ts",
       "find": "        const answer: LivenessAnswer = { plane, responder, instance };",
       "replace": "        const answer: LivenessAnswer = { plane, responder };",
       "expectRed": "CELL G1",
@@ -149,7 +149,7 @@
     },
     {
       "name": "the remote-manager credential loses the manager liveness serve subscription, so a bound remote manager is reported unbound",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "        ...(isSupervisorActor ? [livenessServeFilter(space, \"manager\")] : []),",
       "replace": "        ...(false && isSupervisorActor ? [livenessServeFilter(space, \"manager\")] : []),",
       "expectRed": "CELL E6",
@@ -157,7 +157,7 @@
     },
     {
       "name": "the remote-manager credential loses its bounded liveness reply grant, so its responder cannot answer the probe it serves",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "        ...(isSupervisorActor ? [livenessReplyGrant(space, \"manager\")] : []),",
       "replace": "        ...(false && isSupervisorActor ? [livenessReplyGrant(space, \"manager\")] : []),",
       "expectRed": "CELL E7",
@@ -165,7 +165,7 @@
     },
     {
       "name": "the remote-manager liveness rows go to BOTH actors, so the executor carries authority to answer a probe it never serves",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permission-builders.ts",
       "find": "  const isSupervisorActor = pin.actor === `manager_${iid}`;",
       "replace": "  const isSupervisorActor = true;",
       "expectRed": "CELL E9",

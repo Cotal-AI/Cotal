@@ -11,9 +11,9 @@ import { MANAGER_PROCESS } from "./lib/manager-proc.js";
 import { upCommand, upComplete, upFlags, validateUpArguments } from "./commands/up.js";
 import { runtimes, runtimesFlags } from "./commands/runtimes.js";
 import { down, downComplete, validateDownArguments } from "./commands/down.js";
-import { use, useComplete, useFlags } from "./commands/use.js";
+import { use, useComplete, useFlags, validateUseArguments } from "./commands/use.js";
 import { meshes, meshesComplete, meshesFlags } from "./commands/meshes.js";
-import { space, spaceComplete, spaceFlags } from "./commands/space.js";
+import { space, spaceComplete, spaceFlags, validateSpaceArguments } from "./commands/space.js";
 import { setup, setupFlags, validateSetupArguments } from "./commands/setup.js";
 import { setupStartEntry } from "./commands/setup-start.js";
 import { join } from "./commands/join.js";
@@ -21,13 +21,13 @@ import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions, validateSpawnArguments } from "./commands/spawn.js";
 import { appIdentity, appIdentityFlags } from "./commands/app-identity.js";
 import { attach, attachFlags, input, inputFlags, inputArguments, managedAgentComplete, managedTarget, ps, psFlags, stop, stopFlags, validateStopArguments } from "./commands/agents.js";
-import { models, modelsComplete, modelsFlags } from "./commands/models.js";
+import { models, modelsComplete, modelsFlags, validateModelsArguments } from "./commands/models.js";
 import { c } from "./ui.js";
 import { watch, watchComplete, watchFlags, validateWatchArguments } from "./commands/watch.js";
-import { persona, personaComplete, personaFlags } from "./commands/persona.js";
+import { persona, personaComplete, personaFlags, validatePersonaArguments } from "./commands/persona.js";
 import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, completionFlags, complete, validateCompletionArguments } from "./commands/completion.js";
-import { config, configComplete, configFlags, configSubcommands } from "./commands/config.js";
+import { config, configComplete, configFlags, configSubcommands, validateConfigArguments } from "./commands/config.js";
 import { telemetry, telemetryFlags, validateTelemetryArguments } from "./commands/telemetry.js";
 import { mint } from "./commands/mint.js";
 import { revokeCredential } from "./commands/revoke-credential.js";
@@ -38,7 +38,7 @@ import { reset, resetComplete, resetFlags, validateResetArguments } from "./comm
 import { feedback, feedbackFlags, validateFeedbackArguments } from "./commands/feedback.js";
 import { send, sendComplete, sendFlags, sendArguments } from "./commands/send.js";
 import { chat, chatArguments, chatComplete, chatFlags } from "./commands/chat.js";
-import { ext, extFlags } from "./commands/ext.js";
+import { ext, extFlags, validateExtArguments } from "./commands/ext.js";
 import { help, helpFlags, version, versionFlags } from "./commands/help.js";
 import { topology } from "./commands/topology.js";
 import { team, teamComplete, teamFlags, validateTeamArguments } from "./commands/team.js";
@@ -52,7 +52,7 @@ import { describeCmd, describeComplete, describeFlags, invokeCmd, invokeFlags, v
 import { backup, backupComplete, backupFlags, validateBackupArguments } from "./commands/backup.js";
 import { update, updateFlags, validateUpdateArguments } from "./commands/update.js";
 import { service, serviceComplete, serviceFlags, validateServiceArguments } from "./commands/service-registry.js";
-import { sync, syncFlags } from "./commands/sync.js";
+import { sync, syncFlags, validateSyncArguments } from "./commands/sync.js";
 import { AUTH_PROCESS } from "./lib/auth-proc.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
@@ -116,9 +116,11 @@ const baseCommands: Command[] = [
       { name: "__stage-verify", summary: "verify one extension in its parent's staged prefix", hidden: true },
     ],
     flags: extFlags,
+    flagNames: ["json", "plain"],
     outputs: ["json", "plain"],
     examples: [{ command: "cotal ext", note: "list installed extensions" }, { command: "cotal ext add @cotal-ai/tmux", note: "add the tmux runtime" }, { command: "cotal ext remove <name>", note: "uninstall an extension" }],
     reads: true,
+    validate: validateExtArguments,
     run: ext,
   },
   {
@@ -134,6 +136,7 @@ const baseCommands: Command[] = [
     outputs: ["json", "plain"],
     examples: [{ command: "cotal config", note: "show your preferences and their sources" }, { command: "cotal config set harness opencode", note: "make OpenCode your default application" }, { command: "cotal config get harness", note: "show one preference and its source" }],
     reads: true,
+    validate: validateConfigArguments,
     run: config,
     complete: configComplete,
   },
@@ -365,7 +368,16 @@ const baseCommands: Command[] = [
     usage: "cotal space [--json|--plain] | space show [<name>] | space add [<name>] | space create <name> | space forget <name> | space delete <name> [--dry-run|-y] | space export <name> --out <private-file>",
     positionals: "[show [<name>] | add [<name>] | create <name> | forget <name> | delete <name> [--dry-run|-y] | export <name> --out <private-file>]",
     subcommands: [
-      { name: "show", flagNames: ["json", "plain"], summary: "one space in full: broker, mode, root, origin and login; the selected one when no name is given", examples: [{ command: "cotal space show", note: "show the selected space in full" }, { command: "cotal space show <name> --json", note: "one space as a JSON document" }], usage: "cotal space show [<name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
+      {
+        name: "show", flagNames: ["json", "plain"],
+        summary: "show one space in full: broker, mode, root, origin and login. With no name, show this folder's space if it has one, otherwise the selected space.",
+        examples: [
+          { command: "cotal space show", note: "show this folder's space, or the selected one" },
+          { command: "cotal space show alpha", note: "show alpha from any folder" },
+          { command: "cotal space show <name> --json", note: "one space as a JSON document" },
+        ],
+        usage: "cotal space show [<name>] [--json|--plain]", outputs: ["json", "plain"], reads: true,
+      },
       {
         name: "add",
         flagNames: ["server", "root", "mode", "file", "from", "tls", "allow-unencrypted-overlay", "force", "yes", "json", "plain"],
@@ -379,6 +391,7 @@ const baseCommands: Command[] = [
       { name: "delete", flagNames: ["dry-run", "yes", "json", "plain"], summary: "preview native impact or delete the exact space after confirmation; local records stay", examples: [{ command: "cotal space delete <name> --dry-run", note: "show what deleting a space would remove" }, { command: "cotal space delete <name>", note: "delete it after you type its name" }], usage: "cotal space delete <name> [--dry-run] [-y|--yes] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
     ],
     flags: spaceFlags,
+    validate: validateSpaceArguments,
     outputs: ["json", "plain"],
     examples: [{ command: "cotal space", note: "list the spaces on this machine" }, { command: "cotal space show <name>", note: "show one space in full" }, { command: "cotal space add <name> --server <url> --root <dir>", note: "register a space that runs elsewhere" }],
     reads: true,
@@ -393,6 +406,7 @@ const baseCommands: Command[] = [
     examples: [{ command: "cotal sync", note: "refresh the spaces your sign-in gives you" }, { command: "cotal sync --json", note: "the same, as one JSON document" }],
     usage: "cotal sync [--idp <auth base URL>] [--json|--plain]",
     flags: syncFlags,
+    validate: validateSyncArguments,
     outputs: ["json", "plain"],
     run: sync,
   },
@@ -435,6 +449,7 @@ const baseCommands: Command[] = [
     usage: "cotal use [<space> | --clear] [--json|--plain]",
     positionals: "[<space>]",
     flags: useFlags,
+    validate: validateUseArguments,
     outputs: ["json", "plain"],
     examples: [{ command: "cotal use <space>", note: "select the space commands use" }, { command: "cotal use", note: "show the selected space" }, { command: "cotal use --clear", note: "clear the selection" }],
     run: use,
@@ -610,6 +625,7 @@ const baseCommands: Command[] = [
     summary: "list connector model catalogs and variants from the manager",
     usage: "cotal models [--json|--plain] [-H|--harness <connector>] [--refresh] [--on <manager-instance>]",
     flags: modelsFlags,
+    validate: validateModelsArguments,
     outputs: ["json", "plain"],
     examples: [{ command: "cotal models", note: "list the models each application offers" }, { command: "cotal models -H claude", note: "list one application's models" }, { command: "cotal models --refresh", note: "ask the applications to read their catalogs again" }],
     reads: true,
@@ -718,6 +734,7 @@ const baseCommands: Command[] = [
       { name: "remove", flagNames: ["space", "server", "yes", "json", "plain"], aliases: ["rm"], summary: "remove a named local definition after confirmation", examples: [{ command: "cotal persona remove <name>", note: "remove a persona after you confirm" }], usage: "cotal persona remove <name> [-y|--yes] [--json|--plain]", outputs: ["json", "plain"] },
     ],
     flags: personaFlags,
+    validate: validatePersonaArguments,
     outputs: ["json", "plain"],
     reads: true,
     prepareMeshTarget: false,
@@ -772,9 +789,9 @@ const baseCommands: Command[] = [
       { name: "invoke", flagNames: ["space", "server", "creds", "on", "args", "name", "self", "admin", "timeout", "handle", "wait", "cast", "all", "json", "plain"], summary: "invoke one declared command under the existing caller authority", examples: [{ command: "cotal endpoint invoke <target> <command>", note: "call one command" }, { command: "cotal endpoint invoke <target> <command> --args '<json>'", note: "call it with arguments" }], usage: "cotal endpoint invoke <target> <command> [--args '<json>']" },
       { name: "watch", flagNames: ["space", "server", "creds", "on", "since", "json", "plain"], summary: "declared record/event watch; native declaration adapter unavailable in this author", examples: [{ command: "cotal endpoint watch <target> <record-key-or-topic>", note: "watch a declared record or topic" }], usage: "cotal endpoint watch <target> <record-key-or-topic> [--since <native-sequence>]", reads: true },
       { name: "session", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "declared interactive session; native declaration adapter unavailable in this author", examples: [{ command: "cotal endpoint session <target> <command>", note: "open a declared interactive session" }], usage: "cotal endpoint session <target> <command>" },
-      { name: "work", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "declared work pools; native declaration adapter unavailable in this author", examples: [{ command: "cotal endpoint work lease <target> <pool>", note: "lease an item from a work pool" }, { command: "cotal endpoint work commit <target> <pool> --lease <file> --result <json>", note: "commit the leased item's result" }], usage: "cotal endpoint work lease <target> <pool> | work commit <target> <pool> --lease <private-file> --result <JSON>", subcommands: [
-        { name: "lease", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "lease from a declared pool; no lease is created on refusal", examples: [{ command: "cotal endpoint work lease <target> <pool>", note: "lease an item from a work pool" }], usage: "cotal endpoint work lease <target> <pool>" },
-        { name: "commit", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "commit an original native lease tuple; unsupported routes read or consume nothing", examples: [{ command: "cotal endpoint work commit <target> <pool> --lease <file> --result <json>", note: "commit the leased item's result" }], usage: "cotal endpoint work commit <target> <pool> --lease <private-file> --result <JSON>" },
+      { name: "work", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "declared work pools are unavailable in this CLI", usage: "cotal endpoint work lease <target> <pool> | work commit <target> <pool> --lease <private-file> --result <JSON>", subcommands: [
+        { name: "lease", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "leasing from a work pool is unavailable in this CLI", usage: "cotal endpoint work lease <target> <pool>" },
+        { name: "commit", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "committing a work result is unavailable in this CLI", usage: "cotal endpoint work commit <target> <pool> --lease <private-file> --result <JSON>" },
       ] },
       { name: "add", flagNames: ["space", "file", "json", "plain"], summary: "save a validated local reference; launch and invoke nothing", examples: [{ command: "cotal endpoint add <name> --file <reference.json>", note: "save a reference from a file" }], usage: "cotal endpoint add [name] [--file <reference.json>]" },
       { name: "remove", flagNames: ["space", "yes", "json", "plain"], aliases: ["rm"], summary: "forget only a pinned local reference", examples: [{ command: "cotal endpoint remove <name>", note: "forget a saved reference" }], usage: "cotal endpoint remove <name> [--yes]" },

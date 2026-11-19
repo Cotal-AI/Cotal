@@ -8,6 +8,7 @@ import { readEndpointInventory } from "../lib/endpoint-inventory.js";
 import { endpointCapabilityGate, isEndpointCapabilityMode, validateEndpointCapabilityArguments } from "../lib/endpoint-capability-gates.js";
 import { describeCmd, invokeCmd, invokeFlags, validateEndpointArguments } from "./describe.js";
 import { canPrompt } from "./meshes-wizard.js";
+import { targetWords } from "../lib/confirmation-required.js";
 import { commitEndpointReference, importEndpointReference, listEndpointReferences, readEndpointReference, referenceName, validateEndpointReference, type EndpointReference, type ReferenceSnapshot } from "../lib/endpoint-references.js";
 
 export const endpointFlags = [...invokeFlags,
@@ -17,7 +18,7 @@ export const endpointFlags = [...invokeFlags,
   { name: "dry-run", type: "boolean", description: "deregister: inspect the exact offline target and intended guard without connecting or deleting" },
   { name: "dir", type: "string", value: "<directory>", description: "init: create contract and handler files exclusively in this directory" },
   { name: "live", type: "boolean", description: "inventory: also read authorized native service registrations; process controls are not implied" },
-  { name: "refresh", type: "boolean", description: "describe: refused; this CLI keeps no contract cache and every describe resolves fresh" },
+  { name: "refresh", type: "boolean", description: "describe: resolve and fetch the native contract fresh (every describe already does)" },
   { name: "file", short: "f", type: "string", value: "<reference.json>", description: "add: import the version-1 reference object, not a registration" },
   { name: "yes", short: "y", type: "boolean", description: "remove/deregister: confirm only that subcommand's reviewed local or native target" },
 ] as const satisfies readonly FlagSpec[];
@@ -36,7 +37,6 @@ export function validateEndpointReferenceArguments(args: ParsedArgs): void {
     if (args.values.file !== undefined || args.values.yes !== undefined || args.values.live !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--file and --yes belong to local reference changes, not native calls");
     if (mode === "describe" && ["args", "name", "self", "admin", "timeout", "wait", "cast", "all", "handle"].some((flag) => args.values[flag] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "invocation flags do not belong to endpoint describe");
     validateEndpointArguments({ ...args, positionals: args.positionals.slice(1) }, mode);
-    if (mode === "describe" && args.values.refresh !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "endpoint describe keeps no cached contract for --refresh to bypass: every describe already resolves and fetches the native contract; nothing was sent", { remedy: "run the same endpoint describe without --refresh" });
     return;
   }
   if (args.values.live !== undefined && mode !== "list") throw new CommandFailure("refused", "USAGE_INVALID", "--live belongs to the endpoint inventory");
@@ -101,7 +101,7 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
     const row = readEndpointReference(space, suppliedName!);
     if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved reference has this full name in the selected space");
     if (!args.values.yes) {
-      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("forgetting a saved reference outside interactive input requires --yes", { target: { space, name: row.name }, remedy: `confirm with \`cotal endpoint remove ${row.name} --yes\`` });
+      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("forgetting a saved reference outside interactive input requires --yes", { target: { space, name: row.name }, remedy: `confirm with \`cotal endpoint remove ${row.name}${targetWords(args.values)} --yes\`` });
       const answer = await prompts.confirm({ message: `Forget ${oneLine(row.name)} in ${oneLine(space)}? No endpoint, process or credential will be removed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) { writeResult(presentation, { command: "endpoint", target: { space, name: row.name }, result: { kind: "reference-removal", removed: false }, noOp: true }, () => ({ sections: [{ title: "Reference kept", blocks: [{ kind: "lines", lines: ["No local record or remote resource was changed."] }] }] })); return; }
     }

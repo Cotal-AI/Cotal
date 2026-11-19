@@ -106,7 +106,7 @@ has no mesh session, so there is no unread count or connection state to report.
 | Static auth, no signer here | `no-credential` | Nothing without `--creds <file>` |
 | User auth | `user` | The signed-in user's `cli` actor: `read`, `post` and `capabilities` are its ledger row |
 | A `--server` the space is not registered at, whether or not this folder holds its trust | `unknown` | Unknown: `mode` and the access fields are `null`, and the run is `partial` (exit 4) with `BROKER_NOT_PROBED` |
-| A space `space add --force` registered without checking its broker | the kind its recorded mode gives | What that mode allows, if the broker enforces it: `modeChecked` is `false`, and the run is `partial` (exit 4) with `MODE_NOT_CHECKED`, naming how to add it again with the check |
+| A space `space add --force` or `meshes add --force` registered without checking its broker | the kind its recorded mode gives | What that mode allows, if the broker enforces it: `modeChecked` is `false`, and the run is `partial` (exit 4) with `MODE_NOT_CHECKED`, naming how to add it again with the check |
 
 
 ### Identity limits
@@ -526,9 +526,8 @@ An opaque low-level auth string alone does not establish receiver-side attenuati
 static-registry signature inspection also does not establish presenter binding or use authority,
 and is not a substitute for that gate.
 
-`endpoint describe --refresh` refuses as unsupported and sends nothing. This CLI keeps no resolved
-contract between calls: each describe makes a fresh describe request and fetches the contracts
-again, so there is no cache for the flag to bypass.
+`endpoint describe --refresh` performs the same fresh native resolution and contract fetch as bare
+`endpoint describe`, because this CLI keeps no resolved contract cache between calls.
 
 A saved-reference or paired-file invocation uses the described instance and epoch without bind-repair
 to a different handle. A pre-effect bind refusal remains a refusal, not permission to choose another

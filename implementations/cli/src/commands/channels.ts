@@ -15,12 +15,13 @@ import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { batchedRead } from "../lib/transient.js";
 import { MAX_BUFFER } from "@cotal-ai/workspace/chat";
 import { canPrompt } from "./meshes-wizard.js";
-import { yesRequired } from "../lib/confirmation-required.js";
+import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { channelMembers } from "./channel-members.js";
 import { earlierMessages } from "./send.js";
 import { deniedWrite } from "../lib/denied-write.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
+import { channelHistoryCommand } from "../lib/history-command.js";
 import { declaredFrom } from "./send.js";
 
 export const channelFlags = [
@@ -59,7 +60,7 @@ function patch(values: Values): ChannelConfig {
   return {
     ...(values.replay !== undefined ? { replay: values.replay } : {}),
     ...(values["no-replay"] ? { replay: false } : {}),
-    ...(values.window !== undefined ? { replayWindow: values.window } : {}),
+    ...(values.window !== undefined ? { replayWindow: values.window.trim() } : {}),
     ...(delivery !== undefined ? { deliveryClass: delivery } : {}),
     ...(values.desc !== undefined ? { description: values.desc } : {}),
     ...(values.instructions !== undefined ? { instructions: values.instructions } : {}),
@@ -253,7 +254,7 @@ function registryView(result: { action: string; name?: string; space: string; re
     return { sections: [
       { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", undecodable ? "not decoded" : config ? "configured" : "no saved entry"], ...policyFields(config, registry.defaults), ["Description", config?.description || "not set"]] }, ...(undecodable ? [{ kind: "lines" as const, lines: [{ text: `The saved entry does not decode (${undecodable.error}). The key was left as it is, and the channel resolves to the default policy.`, tone: "waiting" as const }] }] : [])] },
       ...(config?.instructions ? [{ title: "Instructions · advisory", blocks: [{ kind: "lines" as const, lines: config.instructions.split(/\r?\n/) }] }] : []),
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch members ${name}`, description: "Read broker-observed membership" }, { command: `cotal history ${name}`, description: "Read retained messages within your grant" }] }] },
+      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch members ${name}`, description: "Read broker-observed membership" }, { command: channelHistoryCommand(name!), description: "Read retained messages within your grant" }] }] },
     ] };
   }
   if (result.action === "defaults") {
@@ -281,7 +282,7 @@ function registryView(result: { action: string; name?: string; space: string; re
 
 async function confirmRemoval(name: string, space: string, values: Values, presentation: Presentation): Promise<boolean> {
   if (values.yes) return true;
-  if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`, { remedy: `confirm with \`cotal channel remove ${name}${values.purge ? " --purge" : ""} --yes\`` });
+  if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(`${yesRequired("channel removal", presentation === "json")}; --purge also deletes retained history for that channel`, { remedy: `confirm with \`cotal channel remove ${name}${targetWords(values)}${values.purge ? " --purge" : ""} --yes\`` });
   const question = `Remove #${name} from ${space}? ${values.purge ? "Its retained history will also be deleted." : "Its retained history will be kept."} Access grants and members are unchanged.`;
   if (presentation === "plain") return (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
   const answer = await prompts.confirm({ message: question, initialValue: false });

@@ -54,13 +54,17 @@ export interface EmitterEndpoint {
   readonly maxPayload: number;
   /** The single-replica preflight. The emitter calls this at startup, before anything can publish. */
   assertExpectationSemantics(): Promise<void>;
-  encodedSize(o: { channel: string; parts: Part[]; id: string; expectedLastSubjectSeq: number }): number;
+  encodedSize(o: { channel: string; parts: Part[]; id: string; expectedLastSubjectSeq: number; expectedLastMsgId?: string }): number;
   multicastExpecting(o: {
     channel: string;
     parts: Part[];
     id: string;
     expectedLastSubjectSeq: number;
+    expectedLastMsgId?: string;
   }): Promise<{ ack: { seq: number; duplicate: boolean } }>;
+  /** The newest messages of a channel this credential may read, oldest first. Used only to tell
+   *  whether a refused retry's frame is the newest one on the event channel. */
+  channelHistoryPage?(channel: string, o: { limit: number }): Promise<{ items: { id: string }[] }>;
 }
 
 /**
@@ -465,6 +469,20 @@ export class AguiEmitter<T> {
     // intact so an operator can restore the rail and recover under the original policy.
     if (wal.pending?.payload && !em.payloadFrontier)
       throw new Error("previously frozen sibling payload requires an available event payload rail; upgrade the space and restart before recovery");
+    // A new thread shares the subject with ended threads. Settle their frozen work through the
+    // same recovery path before this thread can freeze an expectation from the shared record.
+    for (const sibling of await wal.pendingSiblings()) {
+      await sibling.bindSubjectFrontier(opts.subjectFrontier);
+      const previous = new AguiEmitter<T>(endpoint, sibling, opts.source, opts.map, channel, sibling.threadId, opts.onUnreadable);
+      previous.withholdPayloads = em.withholdPayloads;
+      previous.payloadFrontier = em.payloadFrontier;
+      previous.payloadLimit = em.payloadLimit;
+      if (previous.withholdPayloads && sibling.pending?.payload)
+        throw new Error("payload withholding refuses a previously frozen sibling publication; settle it under the prior policy before changing policy");
+      if (sibling.pending?.payload && !previous.payloadFrontier)
+        throw new Error("previously frozen sibling payload requires an available event payload rail; upgrade the space and restart before recovery");
+      await previous.recover();
+    }
     await em.recover();
     // The run the wire has open once the pending frame is settled, which is the last turn the log
     // can name: a terminal reported before any record the first pump reads is that run's.
@@ -1046,13 +1064,16 @@ export class AguiEmitter<T> {
     return { unit: { runId, events: [error], cursor: before }, rest: events.filter((_, i) => i !== at) };
   }
 
-  /** Measure a candidate frame EXACTLY as the wire will, at an upper bound over id and expectation. */
+  /** Measure a candidate frame EXACTLY as the wire will, at an upper bound over id and expectation.
+   *  The guard {@link landedAt} adds to a retry is measured too, so that probe fits whenever the
+   *  frame does. */
   private measure(frame: AguiFrame): number {
     return this.ep.encodedSize({
       channel: this.channel,
       parts: [frame as unknown as Part],
       id: SIZING_ID,
       expectedLastSubjectSeq: SIZING_EXPECTATION,
+      expectedLastMsgId: SIZING_ID,
     });
   }
 
@@ -1118,6 +1139,8 @@ export class AguiEmitter<T> {
    *   fail-loud, and neither is a case where guessing is better than stopping.
    * - CAS loss → HALT. Someone else moved the tip on a subject only this principal may write, or
    *   the subject was purged. Uncertainty plus a moved tip is exactly what must not be guessed at.
+   *   The one exception is a RETRY whose own frame is proven to be the tip, see {@link landedAt}:
+   *   that frame was stored and its ack lost, and it settles at the tip's sequence.
    *
    * A NETWORK error is deliberately none of these: it leaves `pending` as `sent_unacked`, which is
    * the state that means "we do not know", and the next boot retries the same frozen frame.
@@ -1216,10 +1239,22 @@ export class AguiEmitter<T> {
         expectedLastSubjectSeq: o.E,
       }));
     } catch (e) {
-      if (isCasLoss(e))
+      if (isCasLoss(e)) {
+        const landed = o.retry ? await this.landedAt(o, e as Error) : undefined;
+        if (landed !== undefined) {
+          await this.wal.recordAck(landed);
+          await this.wal.fold();
+          return;
+        }
         throw this.halt(
           "cas-loss",
           `event emitter for ${this.channel}: the subject tip is no longer ${o.E} (${(e as Error).message}). ` +
+            (o.retry
+              ? `This retry was not proven to be the frame at the tip: neither the broker's duplicate window ` +
+                `nor a read of the newest frame on ${this.channel} showed this frame there. If it did land ` +
+                `and the two-minute window has closed, a read grant on ${this.channel} lets the next ` +
+                `attempt settle it. `
+              : "") +
             `The broker ACL confines this subject to one principal, so the tip moved for one of: a ` +
             `CONCURRENT emitter under this same principal. The per-principal lock refuses a second ` +
             `one, but the lock FILE lives under a workspace root, so an emitter started against a ` +
@@ -1246,6 +1281,7 @@ export class AguiEmitter<T> {
             `means removing ${dirname(dirname(this.wal.path))} whole, and removing less than that ` +
             `leaves a mixed state the next start refuses.`,
         );
+      }
       throw e;
     }
 
@@ -1266,6 +1302,50 @@ export class AguiEmitter<T> {
 
     await this.wal.recordAck(ack.seq);
     await this.wal.fold();
+  }
+
+  /**
+   * The sequence of a refused retry's frame when that frame is the subject's tip, or `undefined`
+   * when that is not proven (#7513).
+   *
+   * A frame whose first publish was stored and whose ack was lost makes the subject's tip its own
+   * sequence, so the retry's frozen expectation is refused with `wrong last sequence: N`. The frame
+   * is settled at N only on proof that the message at N is this frame:
+   * - The frame is republished with its frozen id, expecting N, and with an expected last message id
+   *   nobody has published. On a single-replica stream the broker checks that guard after its dedup
+   *   cache and before storing, so the probe can never store: an id the cache holds answers
+   *   `duplicate: true` with the sequence it was stored at, and anything else is refused. Within the
+   *   duplicate window a duplicate at N is the proof.
+   * - Otherwise, when this credential may read the event channel, the newest stored frame is read
+   *   back. Only this principal may publish on the channel, and its ids are minted per frame, so
+   *   this id at the newest position is this frame. Without the read nothing is proven.
+   *
+   * N comes from the refusal text, which is the only place the broker states it. A refusal without
+   * one, or an N the subject record has already reached, proves nothing here.
+   */
+  private async landedAt(o: { id: string; body: Part[] }, refusal: Error): Promise<number | undefined> {
+    const tip = Number(/wrong last sequence: (\d+)/.exec(refusal.message)?.[1]);
+    if (!Number.isSafeInteger(tip) || tip <= this.wal.expectedTip) return undefined;
+    try {
+      const { ack } = await this.ep.multicastExpecting({
+        channel: this.channel,
+        parts: o.body,
+        id: o.id,
+        expectedLastSubjectSeq: tip,
+        expectedLastMsgId: randomUUID(),
+      });
+      // A duplicate at another sequence is this frame below a tip someone else wrote.
+      return ack.duplicate && ack.seq === tip ? tip : undefined;
+    } catch {
+      // Refused: the duplicate window no longer holds the id, or the tip moved. The read decides.
+    }
+    if (!this.ep.channelHistoryPage) return undefined;
+    try {
+      const { items } = await this.ep.channelHistoryPage(this.channel, { limit: 1 });
+      return items[items.length - 1]?.id === o.id ? tip : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**

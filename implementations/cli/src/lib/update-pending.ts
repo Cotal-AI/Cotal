@@ -16,12 +16,15 @@ export function readUpdatePending(current: string): UpdatePending {
   } catch (error) {
     return { kind: "unreadable", source: "receipt", error: error instanceof Error ? error.message : String(error), instruction: repair };
   }
-  if (recovery) return { kind: "receipt", recovery, instruction: `Reconciliation pending: ${recoveryDisposition(recovery).instruction}` };
+  if (recovery) {
+    const decision = recoveryDisposition(recovery);
+    return { kind: "receipt", recovery, instruction: decision.action === "active" ? decision.instruction : `Reconciliation pending: ${decision.instruction}` };
+  }
   try {
     const extensions = loadExtensionsManifest().extensions
       .filter(entry => entry.pkg.startsWith("@cotal-ai/") && entry.version !== current)
       .map(entry => ({ package: entry.pkg, version: entry.version }));
-    return extensions.length ? { kind: "version-mismatch", extensions, instruction: `Reconciliation pending: ${repair}` } : { kind: "none" };
+    return extensions.length ? { kind: "version-mismatch", extensions, instruction: "Reconciliation pending: Run `cotal update` to reconcile this home's extensions." } : { kind: "none" };
   } catch (error) {
     return { kind: "unreadable", source: "manifest", error: error instanceof Error ? error.message : String(error), instruction: repair };
   }

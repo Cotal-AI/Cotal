@@ -1,5 +1,77 @@
 # @cotal-ai/registry
 
+## 0.171.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.171.1
+
+## 0.171.0
+
+### Patch Changes
+
+- Updated dependencies [edd19cc]
+- Updated dependencies [7ff146c]
+- Updated dependencies [725bd24]
+- Updated dependencies [bbea1c9]
+- Updated dependencies [3a01e61]
+- Updated dependencies [67a59e9]
+- Updated dependencies [f2f8058]
+  - @cotal-ai/core@0.171.0
+
+## 0.170.0
+
+### Patch Changes
+
+- Updated dependencies [ad6d984]
+- Updated dependencies [3afefa8]
+- Updated dependencies [0e42b19]
+- Updated dependencies [dd478d4]
+- Updated dependencies [6170fc9]
+- Updated dependencies [8c965ac]
+- Updated dependencies [b73a8de]
+- Updated dependencies [2b1659e]
+- Updated dependencies [20ff353]
+  - @cotal-ai/core@0.170.0
+
+## 0.169.0
+
+### Patch Changes
+
+- Updated dependencies [ec01e0a]
+- Updated dependencies [a59864f]
+- Updated dependencies [a3d78c7]
+- Updated dependencies [c2f9729]
+- Updated dependencies [c4ca691]
+- Updated dependencies [71088a6]
+- Updated dependencies [67d9a30]
+- Updated dependencies [4362eb1]
+- Updated dependencies [963db93]
+- Updated dependencies [4050457]
+  - @cotal-ai/core@0.169.0
+
+## 0.168.0
+
+### Patch Changes
+
+- Updated dependencies [4ad482d]
+- Updated dependencies [6546892]
+- Updated dependencies [b0e70a5]
+  - @cotal-ai/core@0.168.0
+
+## 0.167.0
+
+### Patch Changes
+
+- Updated dependencies [ded2be1]
+- Updated dependencies [211142b]
+- Updated dependencies [eead187]
+- Updated dependencies [6c2c27f]
+- Updated dependencies [7bf5e73]
+- Updated dependencies [d97f549]
+- Updated dependencies [3705c35]
+  - @cotal-ai/core@0.167.0
+
 ## 0.166.3
 
 ### Patch Changes

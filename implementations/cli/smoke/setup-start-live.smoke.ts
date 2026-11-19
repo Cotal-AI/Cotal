@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { resolveOnPath } from "@cotal-ai/workspace";
 
 const ROOT = join(import.meta.dirname, "..", "..", "..");
@@ -18,7 +18,7 @@ const env: Record<string, string | undefined> = { ...host, HOME: home, USERPROFI
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 Object.assign(process.env, env);
 const { check, finish } = createSuite();
-interface Receipt { outcome: string; error?: { code: string; message: string }; result?: { server?: string; next?: { command: string }; startup?: { state: string; failure?: { code: string; message?: string } } } }
+interface Receipt { outcome: string; error?: { code: string; message: string; remedy?: string }; result?: { server?: string; spaceState?: string; withAgents?: boolean; signalled?: boolean; next?: { command: string; cwd: string | null }; startup?: { state: string; failure?: { code: string; message?: string } } } }
 const unconfirmed = new Set<string>();
 const anchors = new Map<string, SmokeSandboxAnchor>();
 const run = (cwd: string, ...args: string[]) => {
@@ -62,21 +62,75 @@ try {
     try {
       const seeded = spawnSync(process.execPath, [BIN, "ext", "seed"], { cwd: home, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "", COTAL_ALLOW_CHECKOUT_SEED: "1" }, encoding: "utf8", timeout: 300_000 });
       check("the real OpenCode connector is seeded into the isolated home", seeded.status === 0, seeded.stderr.slice(-1000));
-      const root = project("missing-opencode");
-      const setup = run(root, "setup", "--destination", "local", "--harness", "opencode", "--project", root, "--space", "missing-opencode", "--no-input");
-      check("missing OpenCode leaves setup saved with dependency repair as its next step", setup.status === 4 && setup.receipt?.result?.next?.command === "install or repair opencode, then run the same setup again", shown(setup));
+    for (const agent of ["opencode", "claude"]) {
+      const root = project(`missing-${agent}`);
+      const setup = run(root, "setup", "--destination", "local", "--harness", agent, "--project", root, "--space", `missing-${agent}`, "--no-input");
+      check(`missing ${agent} leaves setup saved with dependency repair as its next step`, setup.status === 4 && setup.receipt?.result?.next?.command === `install or repair ${agent}, then run the same setup again`, shown(setup));
       active.push(root);
       const started = run(root, "up", "--detach");
-      check("the prepared authenticated stack starts without OpenCode", started.status === 0, shown(started));
+      check(`the prepared authenticated stack starts without ${agent}`, started.status === 0, shown(started));
       const credentials = join(root, ".cotal", "auth", "creds");
       const credentialFiles = () => JSON.stringify(existsSync(credentials) ? readdirSync(credentials, { recursive: true }) : []);
       const before = credentialFiles();
       const refused = spawnSync(process.execPath, [BIN, "spawn"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
-      check("bare spawn reports the missing application without an uncaught exception", refused.status === 2 && /DEPENDENCY_UNAVAILABLE/.test(refused.stderr) && /opencode needs opencode on PATH/.test(refused.stderr) && /install or repair opencode/.test(refused.stderr) && !/ENOENT|node:internal|at launch/.test(refused.stderr), refused.stderr);
+      check("bare spawn reports the missing application with its guide and quoted retry command", refused.status === 2 && /DEPENDENCY_UNAVAILABLE/.test(refused.stderr) && refused.stderr.includes(`${agent} needs ${agent} on PATH`) && refused.stderr.includes(`Follow https://docs.cotal.ai/docs/connect-${agent}/ to install ${agent}, then retry: \`pnpm cotal spawn \``) && !/ENOENT|node:internal|at launch/.test(refused.stderr), refused.stderr);
+      const foreground = spawnSync(process.execPath, [BIN, "spawn", "--foreground", "--prompt", "missing app"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+      check("the foreground refusal keeps shell-quoted retry arguments inside backticks", foreground.status === 2 && foreground.stderr.includes(`Follow https://docs.cotal.ai/docs/connect-${agent}/ to install ${agent}, then retry: \`pnpm cotal spawn --foreground --prompt 'missing app'\``), foreground.stderr);
       check("the refused spawn issues no credentials or connector state", credentialFiles() === before && !existsSync(join(root, ".cotal", "opencode")) && !/wrote creds|retired creds/.test(refused.stderr));
+      const detached = spawnSync(process.execPath, [BIN, "spawn", "--detach"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+      check(`detached ${agent} spawn names the missing executable, not an extension to reinstall`, detached.status === 2 && detached.stderr.includes(`${agent} harness needs ${agent} on PATH`) && /DEPENDENCY_UNAVAILABLE/.test(detached.stderr) && /manager .+ on host/.test(detached.stderr) && !/ext add|none has an agent application installed/.test(detached.stderr), detached.stderr);
+      const detachedJson = run(root, "spawn", "--detach");
+      const remedy = detachedJson.receipt?.error?.remedy ?? "";
+      check(`the JSON launch refusal distinguishes saved service and foreground restart remedies for ${agent}`, detachedJson.status === 2 && detachedJson.receipt?.error?.code === "DEPENDENCY_UNAVAILABLE" && detachedJson.receipt.error.message.includes(`${agent} harness needs ${agent} on PATH`) && remedy.includes("`cotal service restart <name> --yes`") && remedy.includes("`cotal down --yes` from its project folder or Ctrl-C") && remedy.includes("hosted workflow runs and can stop agents") && remedy.includes("Repeat the original foreground start with the updated PATH") && !/manager stop|ext add/.test(remedy), shown(detachedJson));
+      check("detached dependency refusals issue no credentials", credentialFiles() === before);
       const status = run(root, "status");
       check("the stack remains available after the dependency refusal", status.status === 0, shown(status));
+      if (agent === "claude") {
+        const confirm = run(root, "down", "--with-agents");
+        const next = confirm.receipt?.error?.remedy ?? "";
+        check("the controller requires confirmation and keeps with-agents in both suggestions",
+          confirm.status === 1 && confirm.receipt?.error?.code === "USAGE_INVALID" && next.includes("`cotal down --with-agents --yes`") && next.includes("`cotal down --with-agents --dry-run`"), shown(confirm));
+        const preview = run(root, "down", "--with-agents", "--dry-run");
+        check("the suggested preview retains the agent policy without signalling the stack", preview.status === 0 && preview.receipt?.result?.withAgents === true && preview.receipt.result.signalled === false, shown(preview));
+      }
+      const stopped = run(root, "down", "--yes");
+      check("the missing-application stack stops cleanly", stopped.status === 0, shown(stopped));
+      active.splice(active.indexOf(root), 1);
+    }
     } finally { env.PATH = path; }
+  }
+
+  if (!selected || selected === "stopped") {
+    // An unprepared project takes the retained launcher and keeps its same-name registration on down.
+    const space = "stopped-project";
+    const root = join(home, space);
+    mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 });
+    anchors.set(root, recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! }));
+    const legacyUp = (...flags: string[]) => spawnSync(process.execPath, [BIN, "up", "--detach", ...flags], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+    const stop = (...flags: string[]) => {
+      assertSmokeSandboxDown(anchors.get(root), ["down", ...flags], { cwd: root, env });
+      return spawnSync(process.execPath, [BIN, "down", ...flags], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+    };
+    const setup = () => run(root, "setup", "--destination", "local", "--harness", "setup-smoke", "--project", root, "--space", space, "--configure-only", "--yes");
+    env.NODE_OPTIONS = `${host.NODE_OPTIONS ?? ""} --import=${pathToFileURL(connector).href}`;
+    try {
+      const started = legacyUp("--open", "--space", space, "--server", `nats://127.0.0.1:${await freePort()}`);
+      check("the local stack starts before configure-only setup", started.status === 0, started.stderr);
+      const running = setup();
+      check("a running local stack suggests spawn without starting anything", running.status === 0 && running.receipt?.result?.spaceState === "started" && running.receipt.result.next?.command.endsWith(` spawn --space ${space}`) === true && running.receipt.result.startup?.state === "not-requested", shown(running));
+      const confirm = stop("--with-agents");
+      check("the retained stack's noninteractive confirmation keeps with-agents in both suggestions", confirm.status === 1 && confirm.stderr.includes("`cotal down --with-agents --yes`") && confirm.stderr.includes("`cotal down --with-agents --dry-run`"), confirm.stderr);
+      const stopped = stop("--yes");
+      check("the retained local stack stops", stopped.status === 0, stopped.stderr);
+      const configured = setup();
+      check("configure-only setup reports the stopped local stack and points to up from that project", configured.status === 0 && configured.receipt?.result?.spaceState === "stopped" && configured.receipt.result.next?.command.endsWith(" up") === true && configured.receipt.result.next.cwd === root && configured.receipt.result.startup?.state === "not-requested", shown(configured));
+      const restarted = legacyUp();
+      check("up from the configured project restarts its local stack", restarted.status === 0, restarted.stderr);
+    } finally {
+      delete env.NODE_OPTIONS;
+      const cleanup = stop("--yes");
+      check("the retained local stack is stopped after the test", cleanup.status === 0, cleanup.stderr);
+    }
   }
 
   if (!selected || selected === "address") {

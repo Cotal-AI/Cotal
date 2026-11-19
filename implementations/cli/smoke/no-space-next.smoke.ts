@@ -1,6 +1,6 @@
 /**
  * With no space to act on, `cotal auth mint` and `cotal doctor auth` name the next step. `auth mint`
- * refuses with TARGET_NOT_FOUND (exit 2) and the remedy the workspace gives for a missing mesh.
+ * refuses with TARGET_NOT_FOUND (exit 2) and says how to find local static signing authority.
  * `doctor auth` in a folder whose root holds no space reports a partial result (exit 4) whose
  * remedy says to run it in a space's root, in JSON and in the text report; in the root of a space
  * registered as open it is a no-op, with or without `--fix`, that says the space issues no
@@ -13,13 +13,13 @@
  * Run: pnpm smoke:no-space-next
  */
 import { strict as nodeAssert } from "node:assert";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { exitCode, findCotalRoot, isCommandFailure, recordMesh, recordPreparedSpace, setCurrent, type CommandFailure } from "@cotal-ai/workspace";
+import { findCotalRoot, isCommandFailure, recordMesh, recordPreparedSpace, setCurrent, type CommandFailure } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
-import { mint } from "../src/commands/mint.js";
 import { persona } from "../src/commands/persona.js";
 
 const counted = countedAssert(nodeAssert);
@@ -88,15 +88,15 @@ try {
 
   // 1. auth mint with no mesh: a target refusal that names the next step, and no file written.
   {
-    process.chdir(bare);
-    let failure: CommandFailure | undefined;
-    try { await mint({ values: {}, positionals: ["alice"], raw: [] }); }
-    catch (error) { if (!isCommandFailure(error)) throw error; failure = error; }
-    finally { process.chdir(startCwd); }
-    assert.ok(failure, "auth mint with no mesh refuses");
-    assert.equal(failure!.code, "TARGET_NOT_FOUND", `auth mint with no mesh: code (${failure!.message})`);
-    assert.equal(exitCode(failure!.outcome, failure!.code), 2, "auth mint with no mesh: exit 2");
-    assert.equal(failure!.remedy, "sign in to Cotal Cloud with `cotal login`, run `cotal up` in a project, or pass `--server`", "auth mint with no mesh: the remedy names the next step");
+    const wt = resolve(import.meta.dirname, "../../..");
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+      HOME: join(base, "home"), COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: join(base, "xdg") };
+    const result = spawnSync(join(wt, "node_modules", ".bin", "tsx"), [join(wt, "bin", "cotal.ts"), "auth", "mint", "alice", "--plain"], { cwd: bare, env, encoding: "utf8", timeout: 30_000 });
+    const out = `${result.stdout}${result.stderr}`.replace(/\s+/g, " ");
+    assert.equal(result.status, 2, `auth mint with no mesh exits 2: ${out}`);
+    assert.match(out, /Code:\s+TARGET_NOT_FOUND/, "auth mint with no mesh refuses the target");
+    assert.match(out, /local static-auth space with `cotal up`.*`--space <name>`.*signing trust on this machine/, "auth mint names both ways to select local signing authority");
+    assert.doesNotMatch(out, /cotal login|--server/, "auth mint does not suggest a login or bare broker address");
     assert.deepEqual(readdirSync(bare), [], "auth mint with no mesh writes nothing");
   }
 

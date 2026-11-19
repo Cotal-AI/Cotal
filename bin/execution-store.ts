@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { claimGlobalNpmUpdateLock, readUpdateRecovery } from "@cotal-ai/workspace";
+import { claimGlobalNpmUpdateLock, readUpdateRecovery, resolveOnPath } from "@cotal-ai/workspace";
 import { inspectLock, processStartToken } from "@cotal-ai/core";
 import { executionBinding, executionDescriptorPath, executionInventory, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
 
@@ -10,6 +10,15 @@ export interface RetainedExecutionGeneration {
   root: string;
   version: string;
   inventorySha256: string;
+}
+
+export function unwritableInstallation(installedRoot: string): Error {
+  const tool = ["sudo", "doas"].find(name => resolveOnPath(name));
+  const prefix = dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''");
+  const install = `npm install -g --prefix '${prefix}' cotal-ai@latest`;
+  const administrator = tool ? `run: ${tool} ${install}` : `run as root: ${install}`;
+  const normalAccount = tool ? `as your normal account, without ${tool}` : "as your normal account";
+  return new Error(`installation is not writable; have an administrator ${administrator}; then run \`cotal update\` ${normalAccount}`);
 }
 
 /** Remove group and other write from a tree this process just created. Node before 24.22 applies the
@@ -34,11 +43,22 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
   }
   executionLocation(installedRoot);
   protectedExecutionEntry(verifiedSource);
-  try {
-    accessSync(installedRoot, constants.W_OK);
-    accessSync(dirname(dirname(installedRoot)), constants.W_OK);
+  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot))]) {
+    const stat = lstatSync(path);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe staged update destination: ${path}`);
+    executionLocation(path);
   }
-  catch { throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run \`cotal update\` as your normal account, without sudo`); }
+  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot))]) {
+    const stat = lstatSync(path);
+    const owned = stat.uid === process.getuid?.();
+    try {
+      if (owned && stat.isDirectory() && (stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
+      accessSync(path, constants.W_OK);
+    } catch {
+      if (owned) throw new Error(`installation directory is not writable: ${path}; restore write access to this user-owned directory, then run \`cotal update --self\` again without sudo`);
+      throw unwritableInstallation(installedRoot);
+    }
+  }
   const store = executionStore(installedRoot), shared = executionShared(installedRoot);
   if (!lstatSync(store, { throwIfNoEntry: false })) { mkdirSync(store, { mode: 0o700 }); if (shared) chmodSync(store, 0o755); }
   if (!lstatSync(store).isDirectory() || lstatSync(store).isSymbolicLink()) throw new Error("unsafe execution generation store");
@@ -162,16 +182,20 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
     };
     const recovery = readUpdateRecovery();
     const protectedJournal = recovery?.execution;
-    const transactions = names.filter(name => /^\.transaction-[A-Za-z0-9]+$/.test(name)).map(name => {
+    const transactions = names.filter(name => /^\.transaction-[A-Za-z0-9]+$/.test(name)).flatMap(name => {
       const directory = join(store, name), stat = lstatSync(directory);
       if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid) throw new Error("unsafe transaction directory");
       const path = join(directory, "execution.json");
+      if (!lstatSync(path, { throwIfNoEntry: false }) && readdirSync(directory).length === 0 && path !== protectedJournal) {
+        rmSync(directory, { recursive: true });
+        return [];
+      }
       const record = executionRecord(path) as { v: number; installed: string; completed?: boolean; target: Generation & { root: string }; previous: { descriptor: ExecutionDescriptor | null } };
       if (record.v !== 1 || typeof record.installed !== "string" || executionStore(record.installed) !== store || !record.previous) throw new Error("invalid execution journal");
       generation(record.target);
       if (record.target.root !== join(store, record.target.id, "cotal-ai")) throw new Error("execution journal target escapes store");
       if (record.previous.descriptor) generation(record.previous.descriptor.generation);
-      return { directory, path, record, finished: record.completed === true && path !== protectedJournal };
+      return [{ directory, path, record, finished: record.completed === true && path !== protectedJournal }];
     });
     // A successful successor supersedes its uniquely identified rollback ancestry. Unlike the
     // absence of this home's recovery record, its explicit completion is installation-wide proof.
@@ -204,6 +228,14 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
       try {
         const stat = lstatSync(path);
         if (stat.uid !== uid || stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`not an owned update directory: ${path}`);
+        const writable = (entry: string): void => {
+          const info = lstatSync(entry);
+          if (info.uid !== uid) throw new Error(`not an owned update entry: ${entry}`);
+          if (!info.isDirectory() || info.isSymbolicLink()) return;
+          chmodSync(entry, (info.mode & 0o777) | 0o700);
+          for (const name of readdirSync(entry)) writable(join(entry, name));
+        };
+        writable(path);
         rmSync(path, { recursive: true, force: true });
       } catch (error) { warn(error); }
     };

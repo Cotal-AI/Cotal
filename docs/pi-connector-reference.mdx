@@ -70,7 +70,9 @@ takes a seat ahead of the channel posts that arrived before it, so it does not w
 for a later turn. DMs keep their place in arrival order. A post that mentions the seat counts as a
 channel post here, so it can wait for a later batch, and it still wakes the seat. That wake names
 the sender by id when the sender's name is missing or only whitespace. A name that contains
-anything else is kept, including a leading space.
+anything else is kept, including a leading space. The wake is one line: control characters, line
+separators and brackets in the sender's name, role or channel are shown as spaces, as in the
+other connectors' frames.
 
 A run turn rides the batch that carries it and counts as shown once the provider takes that batch's
 request: at a successful `after_provider_response`, or, on a transport without that hook, when Pi
@@ -108,7 +110,7 @@ DMs waiting during a reload remain queued and can commit after a clean terminal 
 
 For managed PTY seats, `cotal spawn --harness pi --detach --resume <pi-session-id>` forks that transcript into
 a new meshed Pi session (`pi --fork`; the source is untouched). After readiness, the manager binds
-the exact current Pi session through the token-authenticated local control socket. Automatic recovery
+the exact current Pi session through the authenticated local control socket. Automatic recovery
 requires runtime proof that all prior local work ended, including tools in other sessions or process
 groups. The built-in PTY runtime has no such proof and retires a crashed seat without restarting it.
 A runtime that proves closure may reopen the same session and lifecycle, with three restarts in a

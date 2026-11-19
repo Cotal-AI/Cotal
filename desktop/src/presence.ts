@@ -42,13 +42,14 @@ export async function refreshPresence(connected = false): Promise<void> {
         loginError = document.createElement("p");
         loginError.id = "login-error";
         loginError.setAttribute("role", "alert");
-        const startup = document.getElementById("settings-startup");
-        if (startup) startup.insertBefore(loginError, document.getElementById("pin-offer") ?? document.getElementById("pin-availability"));
+        document.getElementById("settings-startup")?.insertBefore(loginError, document.getElementById("pin-offer") ?? document.getElementById("pin-availability"));
       }
-      loginError.textContent = p.loginError;
-      report(p.preferenceNotice ? `${p.preferenceNotice}\n${p.loginError}` : p.loginError, true);
-    } else if (loginError) {
-      loginError.remove();
+      if (loginError.textContent !== p.loginError) {
+        loginError.textContent = p.loginError;
+        report(p.preferenceNotice ? `${p.preferenceNotice}\n${p.loginError}` : p.loginError, true);
+      }
+    } else {
+      loginError?.remove();
     }
     if (p.relocationOffer && !relocationShown) {
       relocationShown = true;

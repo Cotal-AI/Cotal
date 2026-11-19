@@ -24,7 +24,10 @@ test("markers retain only known fixed stages and timing fields", () => {
 
 test("cold preflight precedes setup actions and cleanup precedes the unchanged scenario", () => {
   const workflow = readFileSync(new URL("../../.github/workflows/desktop.yml", import.meta.url), "utf8").split("  native-build:")[1];
-  assert.match(workflow, /steps:\n      - uses: actions\/checkout@v6\n      - name: Measure cold Windows task stages before setup or scenario\n        if: runner.os == 'Windows'\n        shell: cmd\n        timeout-minutes: 21\n        run: node desktop\/e2e\/windows-task-stage-preflight.mjs measure/);
+  const guard = workflow.indexOf("- name: Refuse a version tag whose commit is not on main");
+  const checkout = workflow.indexOf("- uses: actions/checkout@");
+  assert.ok(guard >= 0 && guard < checkout, "tag admission runs before checkout");
+  assert.match(workflow, /- uses: actions\/checkout@[a-f0-9]{40} # v6\n      - name: Measure cold Windows task stages before setup or scenario\n        if: runner.os == 'Windows'\n        shell: cmd\n        timeout-minutes: 21\n        run: node desktop\/e2e\/windows-task-stage-preflight.mjs measure/);
   assert.ok(workflow.indexOf("windows-task-stage-preflight.mjs measure") < workflow.indexOf("pnpm/action-setup"));
   const scenario = workflow.indexOf("Windows restart recovery cell 1 reconnects without input");
   assert.ok(scenario > 0 && workflow.indexOf("windows-task-stage-preflight.mjs cleanup") < scenario);

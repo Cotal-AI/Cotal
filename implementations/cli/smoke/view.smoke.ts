@@ -182,8 +182,12 @@ check("the waiting view keeps the agent-only signal scope", waitingReport.includ
   const row = marker(feedLine({ ...post, text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
   const dm = marker(feedLine({ ...post, delivery: "unicast", channel: undefined, toIds: [ids.bob], text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
   check("a watch line cut at the row bound names the code units not shown and the history read that carries the whole text",
-    whole?.[1] === String(lost) && whole[2] === "; `cotal history general --json` carries the whole text" && !feedLine(post).includes("END-MARK"));
-  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === "; `cotal history general --json` carries the whole text");
+    whole?.[1] === String(lost) && whole[2] === "; `cotal history '#general' --json` carries the whole text" && !feedLine(post).includes("END-MARK"));
+  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === "; `cotal history '#general' --json` carries the whole text");
+  for (const channel of ["clear", "limit"]) {
+    const hint = marker(feedLine({ ...post, channel }));
+    check(`a cut #${channel} post names a channel read, not a history verb`, hint?.[2] === `; \`cotal history '#${channel}' --json\` carries the whole text`);
+  }
   check("a cut direct message points at cotal history --dms --json", dm?.[1] === String(lost) && dm[2] === "; `cotal history --dms --json` carries the whole text");
   check("control: a message within the bound has no marker", marker(feedLine({ ...post, text: "short" })) === null);
 }

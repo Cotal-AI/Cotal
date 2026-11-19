@@ -27,21 +27,22 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
-import { cloudAuthUrl, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
+import { cloudAuthUrl, isCotalCloudIdp, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, startInstalled } from "./install.js";
+import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
-import { SPACE_PATTERN } from "./protocol.js";
+import { isDaemonSpaceName, SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
+import { readReceipt } from "./install-receipt.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
@@ -129,11 +130,13 @@ const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVA
   LOCK_HELD: { code: "CONFLICT", remedy: "a daemon already holds this lifetime lock; run `cotal daemon status`, with the same --daemon-home when you passed one" },
 };
 
-function asFailure(e: unknown): unknown {
+function asFailure(e: unknown, home?: string): unknown {
   if (e instanceof IdpConfigurationError) return new CommandFailure("refused", "USAGE_INVALID", e.message, { remedy: "correct COTAL_IDP_TIMEOUT_MS in the daemon environment before starting it again" });
   if (!(e instanceof EndpointRefusal)) return e;
   const r = REFUSAL[e.code];
-  const remedy = e.remedy ?? r.remedy;
+  const remedy = e.remedy ?? (e.code === "NOT_RUNNING" && home !== undefined
+    ? `start it with ${codeSpan(daemonCommandCopy("serve", home))}`
+    : r.remedy);
   return new CommandFailure("refused", r.code, e.message, { ...(remedy ? { remedy } : {}), native: { code: e.code } });
 }
 
@@ -161,21 +164,30 @@ function statusView(s: DaemonStatus): Report {
 
 async function status(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
+  const space = (args.values as { space?: string }).space;
+  if (space !== undefined && !isDaemonSpaceName(space)) throw new CommandFailure("refused", "USAGE_INVALID", "space must be 1-64 characters of [A-Za-z0-9_-]", { native: { code: "BAD_FIELD" } });
   const { paths, home } = resolveTarget(args);
   let reply;
   try {
+    await repairMissingInstalledProgram(paths, home);
     reply = await queryDaemon({ paths, peerUid, peerPid });
   } catch (e) {
+    const installed = process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING" ? readReceipt(paths) : undefined;
+    if (e instanceof EndpointRefusal && installed && /^cotal-daemon(?:-[a-f0-9]{16})?\.service$/.test(installed.unit)) {
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
+        remedy: `inspect the recorded service with ${codeSpan(`systemctl --user status ${installed.unit}`)}; run ${codeSpan(daemonCommandCopy("install", home))} to verify its installation and read its repair guidance, then ${codeSpan(daemonCommandCopy("start", home))}`,
+        native: { code: e.code },
+      });
+    }
     if (process.platform === "win32" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
         remedy: `start the owned task with ${daemonCommandCopy("start", home)}; read ${nativeDaemonLog(paths.state)} for its last launch output, and inspect the task's state and last result in Task Scheduler if no log was created`,
         native: { code: e.code },
       });
     }
-    throw asFailure(e);
+    throw asFailure(e, home);
   }
   if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the status request: ${reply.error.code} ${reply.error.message}`);
-  const space = (args.values as { space?: string }).space;
   const result = space ? { ...reply.result, agents: reply.result.agents?.filter(row => row.space === space), managers: [await managerViaDaemon({ paths, peerUid, peerPid }, { op: "manager-status", space }) as import("./protocol.js").HostedManager] } : reply.result;
   writeResult(presentation, { command: "daemon status", target: space ? { space } : null, result }, statusView);
 }
@@ -314,12 +326,12 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
   const presentation = presentationOf(args.values);
   const space = (args.values as { space?: string }).space;
   if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", `cotal daemon ${op} needs --space <s>`);
-  const { paths } = resolveTarget(args);
+  const { paths, home } = resolveTarget(args);
   let reply;
   try {
     reply = await serviceViaDaemon({ paths, peerUid, peerPid, space, op });
   } catch (e) {
-    throw asFailure(e);
+    throw asFailure(e, home);
   }
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the service request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ServiceConnectionResult = reply.result;
@@ -354,6 +366,13 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
   const { paths, home } = resolveTarget(args, true);
   if (op === "install") {
     const dry = values["dry-run"] === true;
+    if (!dry && await repairMissingInstalledProgram(paths, home)) {
+      const result = { ...planUninstall(paths, home), state: "repaired" };
+      writeResult(presentation, { command: "daemon install", target: { unit: result.unit }, result }, () => ({ sections: [
+        { title: "Repaired", blocks: [{ kind: "lines", lines: ["The recorded service's missing program was replaced with this Cotal installation. An operator-disabled service remains stopped."] }] },
+      ] }));
+      return;
+    }
     const r = dry ? { ...planInstall(paths, home), state: "would-install" as const } : applyInstall(paths, home);
     writeResult(presentation, { command: "daemon install", target: { unit: r.unit }, result: r }, () => ({ sections: [
       { title: r.alreadyInstalled ? "Already installed" : dry ? "Would install" : "Installed", blocks: [
@@ -385,13 +404,6 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
 
 /** Connect a headless machine with one command: install, sign in, register, connect. */
 async function setupCommand(args: ParsedArgs): Promise<void> {
-  const { claimUpdateClosureAccess } = await import("@cotal-ai/workspace");
-  const release = claimUpdateClosureAccess();
-  try { await setupUnderClosure(args); }
-  finally { release(); }
-}
-
-async function setupUnderClosure(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const values = args.values as { space?: string; idp?: string; "client-id"?: string; wait?: string; "no-manager"?: boolean };
   const space = values.space;
@@ -436,9 +448,17 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: p => { process.stderr.write(`Approve this machine\nOpen: ${p.verificationUriComplete}\nApproval code: ${p.userCode}\n`); openLoginBrowser(p.verificationUriComplete, args.values); },
     });
-    writeResult(presentation, { command: "daemon setup", target: { idp: idp! }, result: r }, () => ({ sections: [
+    const guidance = r.spaces.length ? undefined : {
+      message: "No space uses this computer yet, so no agents can be launched on it until you connect a space.",
+      next: { command: daemonCommandCopy("setup", home, [["--space", "<space>"], ["--idp", idp!]]), description: "Replace <space> with your space's name to connect it to this computer." },
+      dashboard: isCotalCloudIdp(idp!)
+        ? "Or open the Machines page in the Cotal Cloud dashboard, find this computer under Account computers, and turn on a space."
+        : "You can also choose spaces for this computer in your provider's dashboard.",
+    };
+    writeResult(presentation, { command: "daemon setup", target: { idp: idp! }, result: { ...r, ...guidance } }, () => ({ sections: [
       { title: "Connected to your account", blocks: [{ kind: "fields", rows: [["Account", r.label || "Signed in"], ["Computer", r.computer]] },
-        { kind: "lines", lines: [r.spaces.length ? `Spaces using this computer: ${r.spaces.join(", ")}` : "Turn on the spaces that can use this computer in the dashboard."] }] },
+        { kind: "lines", lines: [guidance?.message ?? `Spaces using this computer: ${r.spaces.join(", ")}`] }] },
+      ...(guidance ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [guidance.next] }, { kind: "lines" as const, lines: [guidance.dashboard] }] }] : []),
     ] }));
     return;
   }
@@ -607,6 +627,7 @@ async function run(args: ParsedArgs): Promise<void> {
     const space = args.values.space;
     if (subcommand.flagNames?.includes("space") && typeof space === "string" && space.trim()) recordOperationContext({ target: { space } });
   }
+  if (mode !== "desktop") presentationOf(args.values);
   if (mode === "desktop") {
     return runDesktopBridge({ resolveTarget: () => target(args), version: binVersion(), peerUid, peerPid });
   }
@@ -666,8 +687,11 @@ const daemonCommand: Command = {
   name: "daemon",
   group: "Manager",
   summary: "connect this computer to an account, manage its persistent daemon, or host a space's Manager",
+  usage: "cotal daemon <name|setup|start|status|serve|install|uninstall|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop> [--daemon-home <dir>] [--json|--plain]",
   positionals: "<name|setup|start|status|serve|install|uninstall|login|spaces|connect-check|register|service-connect|service-disconnect|service-status|desktop>",
   flags: daemonFlags,
+  flagNames: ["daemon-home", "json", "plain"],
+  outputs: ["json", "plain"],
   subcommands: [
     { name: "name", usage: "cotal daemon name [<name>] [--daemon-home <dir>] [--json|--plain]", summary: "read or change this computer's saved name", examples: [{ command: "cotal daemon name", note: "print the saved computer name" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "spaces", usage: "cotal daemon spaces [--refresh] [--daemon-home <dir>] [--json|--plain]", examples: [{ command: "cotal daemon spaces", note: "list registered spaces" }, { command: "cotal daemon spaces --refresh", note: "refresh catalogs before listing spaces" }], summary: "list registered spaces; optionally refresh catalogs using the daemon-held sign-in", flagNames: ["refresh", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },

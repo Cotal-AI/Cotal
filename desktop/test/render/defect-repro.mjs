@@ -1,0 +1,94 @@
+import assert from 'node:assert/strict';
+import { scenarios } from './fixtures.mjs';
+// Reuse the production-renderer harness, with native replies held at its existing boundary.
+scenarios.splice(0, scenarios.length,
+  ...['intent', 'refresh'].map(held => ({ name: `row-add-held-${held}`, state: { installed: true, signedIn: true, account: { mode: 'account', hostSupport: 'supported', spaces: [{ space: 'acme-team', desired: true, observed: 'removed on this computer', lastRefusal: 'another account owns the local space connection' }] } }, act: async page => {
+    await page.evaluate(held => {
+      window.__heldOperation = held;
+    }, held);
+    await page.evaluate(() => {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      window.__TAURI_INTERNALS__.invoke = (command, args) => {
+        if (command === 'daemon_request' && args.request.op === 'space-intent') {
+          window.__rowIntentSeen = true;
+          return window.__heldOperation === 'intent' ? new Promise(() => {}) : Promise.resolve({ v: 1, event: 'result', ok: true, result: {} });
+        }
+        if (command === 'daemon_request' && args.request.op === 'status' && window.__rowIntentSeen) return new Promise(() => {});
+        return invoke(command, args);
+      };
+    });
+    await page.getByRole('button', { name: 'Add Acme team', exact: true }).click();
+  }, expect: async page => {
+    console.log('REPRO Settings disabled during held Add:', await page.locator('#open-settings').isDisabled());
+    assert.equal(await page.locator('#open-settings').isDisabled(), false);
+    assert.match(await page.locator('[data-testid="connected-space-row"]').textContent(), /Adding/);
+    assert.equal(await page.locator('#connection-status').isEnabled(), true);
+    await page.click('#open-settings');
+    assert.equal(await page.locator('#settings-panel').isVisible(), true);
+    await page.click('#open-settings');
+    await page.waitForFunction(() => document.querySelector('#refusal-detail').textContent.includes('did not finish within 15 seconds'), null, { timeout: 20000 });
+    assert.equal(await page.locator('#details').evaluate(el => el.open), true);
+    assert.equal(await page.locator('[data-testid="connected-space-row"] button').isEnabled(), true);
+  } })),
+  ...['content', 'empty', 'error'].map(mode => ({ name: `service-log-${mode}`, state: { installed: true, signedIn: true, connected: true, logText: mode === 'content' ? 'daemon startup refused: local test reason\n' : '', logTruncated: mode === 'content', logError: mode === 'error' }, act: async page => {
+    await page.click('#open-settings'); await page.click('#service-log summary');
+  }, expect: async page => {
+    assert.equal(await page.evaluate(() => window.__renderState.logReads), 1);
+    assert.match(await page.locator('#service-log-status').textContent(), mode === 'content' ? /most recent 8 KB/ : mode === 'empty' ? /No background service log/ : /could not be read/);
+    if (mode === 'content') assert.match(await page.locator('#service-log-text').textContent(), /local test reason/);
+    await page.click('#refresh-log'); assert.equal(await page.evaluate(() => window.__renderState.logReads), 2);
+  } })),
+  { name: 'unknown-refusal-after-ready', state: { installed: true, signedIn: true, connected: true }, act: async page => {
+    await page.locator('#connected-panel:visible').waitFor();
+    await page.evaluate(() => { window.__renderState.offline = true; window.__renderState.offlineCode = 'NEW_SERVICE_REFUSAL'; });
+    await page.click('#open-settings'); await page.click('#open-settings');
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await page.locator('#recovery-panel:visible').waitFor();
+  }, expect: async page => {
+    const detail = await page.locator('#details').isVisible();
+    console.log('REPRO unknown refusal Details visible:', detail);
+    assert.equal(detail, true, 'refusal must retain visible Details after Ready');
+    assert.match(await page.locator('#refusal-detail').textContent(), /NEW_SERVICE_REFUSAL\nThe background service did not answer/);
+    await page.click('#connection-status');
+    assert.equal(await page.locator('#details').evaluate(el => el.open), true);
+  } },
+  { name: 'connected-picker-status-race', state: { installed: true, signedIn: true, connected: true, multiple: true }, act: async page => {
+    await page.click('#another-space');
+    await page.evaluate(() => {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      window.__TAURI_INTERNALS__.invoke = (command, args) => command === 'daemon_request' && args.request.op === 'status' ? new Promise(resolve => { window.__releaseStatus = () => resolve(invoke(command, args)); }) : invoke(command, args);
+      const select = document.querySelector('#space'); select.value = 'acme-team'; select.dispatchEvent(new Event('change'));
+    });
+  }, expect: async page => {
+    const disabled = await page.locator('#connect').isDisabled();
+    console.log('REPRO Add disabled during selected-space status read:', disabled);
+    assert.equal(disabled, true, 'Add must stay disabled while selected-space status is pending');
+  } },
+  { name: 'selection-superseded-by-poll', state: { installed: true, signedIn: true, connected: true, multiple: true }, act: async page => {
+    await page.click('#another-space');
+    await page.evaluate(() => {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      window.__heldStatus = [];
+      window.__TAURI_INTERNALS__.invoke = (command, args) => command === 'daemon_request' && args.request.op === 'status' ? new Promise(resolve => { window.__heldStatus.push(() => resolve(invoke(command, args))); }) : invoke(command, args);
+      const select = document.querySelector('#space'); select.value = 'research'; select.dispatchEvent(new Event('change'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.waitForFunction(() => window.__heldStatus.length >= 2);
+    await page.evaluate(() => window.__heldStatus[0]());
+    await page.waitForTimeout(30);
+    await page.evaluate(() => window.__heldStatus[1]());
+    await page.waitForTimeout(100);
+  }, expect: async page => {
+    assert.equal(await page.locator('#connect').isDisabled(), false, 'superseding status success releases pending Add');
+  } },
+  { name: 'all-spaces-connected', state: { installed: true, signedIn: true, connected: true }, act: page => page.click('#another-space'), expect: async page => {
+    assert.match(await page.locator('#no-other-spaces').textContent(), /Every space in this account is already connected/);
+    assert.equal(await page.locator('#connect').isDisabled(), true);
+  } },
+  { name: 'connected-picker-choice', state: { installed: true, signedIn: true, connected: true, multiple: true }, act: async page => { await page.click('#another-space'); }, expect: async page => {
+    const option = await page.locator('#space option[value="acme-team"]').evaluate(el => ({ hidden: el.hidden, disabled: el.disabled }));
+    console.log('REPRO connected native option:', JSON.stringify(option));
+    assert.equal(option.disabled, true, 'native picker must disable connected spaces instead of relying on hidden');
+  } },
+);
+await import('./run.mjs');

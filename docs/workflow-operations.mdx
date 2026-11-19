@@ -47,6 +47,9 @@ or wrong manager selection refuses rather than borrowing a signed-in user's auth
 parent's `run` grant is restored, the next call checks its new connection's issued authority before
 submitting the workflow.
 
+If the bearer exchange refuses the call, the connector reports `permission-denied` and the
+request never reaches the manager. The connector API reports the outcome as `not-executed`.
+
 Open meshes may expose the tool but refuse hosted runs. A local user-mode host without remote
 run authority and an `execution: "none"` control manager also refuse the family. A legacy
 credential without issued authority must be replaced through the current issuance path.
@@ -56,9 +59,12 @@ credential without issued authority must be replaced through the current issuanc
 The manager hosts runs. `cotal run start` hands the program to the manager of the resolved mesh
 (the usual `--space` / `--server` / `--creds` flags), which validates it, mints the run id, drives
 it in its own process, and answers with the id once the run is recorded. The terminal is free the
-moment the id prints; the run continues on the manager through every pause, and a manager restart
-takes back every run it had recorded running, from the journal, under the next epoch. `resume`
-names a run the manager recorded and is refused while the manager is already driving it, and for
+moment the id prints. The run continues on the manager through every pause. On restart, the manager
+takes back eligible runs recorded as running, using the journal to continue under a new epoch.
+If the startup scan fails, the manager keeps serving requests and retries the scan in the background.
+If it logs that retries are exhausted, use `cotal run resume <runId>` after the broker is reachable.
+
+`resume` names a run the manager recorded and is refused while the manager is already driving it, and for
 a run recorded `completed` or `failed`, whose journal already holds its outcome. Bare
 `run` and `show` read; `answer` resolves an open checkpoint, or an open `ask` attempt, from any terminal
 or agent that holds the `run` capability.
@@ -92,10 +98,16 @@ writes the lines before the resume point again.
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
 cotal run                                               # list run records and their recorded state
 cotal run show run-3f2a90c41b7e0d5a6c884e19b02df4a1                        # print the record and its last 20 journal rows; --limit <n> prints up to 1000, --json all
-cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"yes"'
 cotal run amend run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"no"'   # record a changed position
 cotal run check run-3f2a90c41b7e0d5a6c884e19b02df4a1 build-v2.cotal.js   # check an edited program against the journal
+```
+
+To recover an interrupted run, resume it only after it no longer has an active driver.
+Answer a checkpoint on an active run directly with `cotal run answer`.
+
+```bash
+cotal run resume <runId>
 ```
 
 A program that does not validate is refused before anything is recorded, with every problem in the

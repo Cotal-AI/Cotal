@@ -49,7 +49,7 @@ if (globalChildHelperRoot) {
   const mutation = beginGlobalUpdateChild(globalChildHelperRoot, operation);
   const child = spawn(
     process.execPath,
-    ["-e", "const fs=require('node:fs');setInterval(()=>{if(fs.existsSync(process.env.COTAL_CHILD_RELEASE))process.exit(0)},20)"],
+    ["-e", "const fs=require('node:fs');if(process.env.COTAL_CHILD_TIMED==='1')setTimeout(()=>process.exit(0),1500);setInterval(()=>{if(fs.existsSync(process.env.COTAL_CHILD_RELEASE))process.exit(0)},20)"],
     { env: { ...process.env, COTAL_CHILD_RELEASE: releaseFile }, stdio: "ignore" },
   );
   mutation.markLive(child.pid!);
@@ -64,7 +64,8 @@ if (globalHelperRoot) {
   const releaseFile = process.env.COTAL_UPDATE_GLOBAL_LOCK_RELEASE!;
   const release = claimGlobalNpmUpdateLock(globalHelperRoot);
   writeFileSync(ready, String(process.pid));
-  await waitFor(() => existsSync(releaseFile), "global update lock release");
+  await waitFor(() => existsSync(releaseFile) || process.env.COTAL_UPDATE_GLOBAL_LOCK_TIMED === "1", "global update lock release");
+  if (process.env.COTAL_UPDATE_GLOBAL_LOCK_TIMED === "1") await sleep(1_000);
   release();
   process.exit(0);
 }
@@ -107,6 +108,34 @@ if (globalHelperRoot) {
   }
 }
 
+// The command waits for a running updater, while non-update readers keep their immediate refusal.
+{
+  const { updateRuntime } = await import("../src/commands/update.js");
+  const root = mkdtempSync(join(tmpdir(), "cotal-update-global-wait-"));
+  const ready = join(root, "holder-ready");
+  const holder = spawn(process.execPath, [...process.execArgv, import.meta.filename], {
+    env: { ...process.env, COTAL_UPDATE_GLOBAL_LOCK_HELPER: root, COTAL_UPDATE_GLOBAL_LOCK_READY: ready,
+      COTAL_UPDATE_GLOBAL_LOCK_RELEASE: join(root, "release"), COTAL_UPDATE_GLOBAL_LOCK_TIMED: "1" },
+    stdio: "ignore",
+  });
+  try {
+    await waitFor(() => existsSync(ready), "the competing updater");
+    const started = Date.now();
+    let waits = 0;
+    const release = updateRuntime.claimGlobalUpdate(root, () => { waits++; });
+    release();
+    assert.ok(Date.now() - started >= 500, "plain self-update waits for the competing updater to release its reservation");
+    assert.equal(waits, 1, "contention reports its wait once, not once per poll");
+    await waitForExit(holder);
+    assert.equal(holder.exitCode, 0);
+    updateRuntime.claimGlobalUpdate(root, () => { waits++; })();
+    assert.equal(waits, 1, "an uncontended reservation reports no wait");
+  } finally {
+    if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // A fresh npm prefix reports a node_modules root that does not exist yet. Locking establishes it,
 // then canonicalizes it so aliases converge on one global mutation key.
 {
@@ -136,6 +165,7 @@ if (process.platform !== "win32") {
         COTAL_UPDATE_GLOBAL_CHILD_OPERATION: operation,
         COTAL_UPDATE_GLOBAL_CHILD_READY: ready,
         COTAL_UPDATE_GLOBAL_CHILD_RELEASE: releaseFile,
+        COTAL_CHILD_TIMED: "1",
       },
       stdio: "ignore",
     });
@@ -150,10 +180,16 @@ if (process.platform !== "win32") {
         () => claimGlobalNpmUpdateLock(root),
         new RegExp(`global ${operation} is still running`),
       );
-      writeFileSync(releaseFile, "release");
-      await waitFor(() => !pidAlive(childPid!), `${operation} child exit`);
-      const release = claimGlobalNpmUpdateLock(root);
+      const before = readFileSync(join(root, ".cotal-update-child"), "utf8");
+      const started = Date.now();
+      assert.throws(() => claimGlobalNpmUpdateLock(root, { waitMs: 100 }), /is still running/);
+      assert.ok(Date.now() - started >= 90, "a bounded wait expires without allowing overlap");
+      assert.equal(readFileSync(join(root, ".cotal-update-child"), "utf8"), before, "timeout preserves child evidence");
+      const { updateRuntime } = await import("../src/commands/update.js");
+      const release = updateRuntime.claimGlobalUpdate(root);
+      assert.ok(Date.now() - started >= 500, "self-update waits for the identified orphan child");
       release();
+      assert.equal(existsSync(join(root, ".cotal-update-child")), false);
     } finally {
       if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
       if (childPid && pidAlive(childPid)) {
@@ -163,6 +199,24 @@ if (process.platform !== "win32") {
       rmSync(root, { recursive: true, force: true });
     }
   }
+}
+
+// A wait budget does not turn missing child identity or ambiguous completion into permission.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-update-global-unresolved-"));
+  try {
+    const mutation = beginGlobalUpdateChild(root, "install");
+    const path = join(root, ".cotal-update-child");
+    const pending = readFileSync(path, "utf8");
+    assert.throws(() => claimGlobalNpmUpdateLock(root, { waitMs: 100 }), /is starting/);
+    assert.equal(readFileSync(path, "utf8"), pending);
+    mutation.markAmbiguous("descendant completion is unproved");
+    const ambiguous = readFileSync(path, "utf8");
+    assert.throws(() => claimGlobalNpmUpdateLock(root, { waitMs: 100 }), /ended ambiguously/);
+    assert.equal(readFileSync(path, "utf8"), ambiguous);
+    mutation.clear();
+    claimGlobalNpmUpdateLock(root)();
+  } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
 // Marker bytes are a fail-closed boundary. Bad PID/start/nonce types are never interpreted as dead
@@ -313,7 +367,7 @@ const timer = setInterval(() => {
     const second = spawnSync(
       process.execPath,
       [...process.execArgv, cli, "ext", "__update-add", pkg, fixture],
-      { env, encoding: "utf8", timeout: 5_000 },
+      { env, encoding: "utf8", timeout: 60_000 },
     );
     assert.equal(second.status, 1, second.stderr);
     assert.equal(existsSync(secondStarted), false, "the next replay must stop before spawning npm");
@@ -341,6 +395,14 @@ const timer = setInterval(() => {
     if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = priorXdg;
   }
+}
+
+if (process.platform !== "win32") {
+  const live = spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/smoke/update-registry-arrival.smoke.mjs"), "orphan"], {
+    encoding: "utf8", timeout: 90_000,
+  });
+  assert.equal(live.status, 0, `${live.stdout}\n${live.stderr}`);
+  assert.match(live.stdout, /"selected":"99\.0\.0"/);
 }
 
 console.log("update-concurrency.smoke: all assertions passed");

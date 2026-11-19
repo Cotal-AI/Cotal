@@ -302,7 +302,7 @@ try {
   check("after a forget, status names space create --root with the folder quoted", forgot.status === 0 && shellWords(prepareAgain) === `${root}\n`, prepareAgain);
   const prepared = cli("space", "create", "crash");
   cli("use", "crash");
-  const homeRow = /^ {2}cotal up --root (.+?) {2,}Start this space$/m.exec(cliIn(base).out)?.[1];
+  const homeRow = /^ {2}(?:pnpm )?cotal up --root (.+?) {2,}Start this space$/m.exec(cliIn(base).out)?.[1];
   cli("use", "--clear");
   check("the home screen of a space prepared in another folder quotes that folder in its up --root row", prepared.status === 0 && shellWords(homeRow) === `${root}\n`, homeRow);
   cli("space", "forget", "crash");

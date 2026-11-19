@@ -1,7 +1,7 @@
 /** Exercise update preferences through the shipped CLI without touching the host supervisor. */
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,6 +69,72 @@ for (const text of [enabled, read]) {
 assert.equal(existsSync(nativeLog), false, "missing daemon guidance must not call a service manager");
 assert.match(preference(["--auto"], { XDG_RUNTIME_DIR: undefined }), /cotal daemon install/);
 assert.equal(preference(["--auto"], { COTAL_NO_UPDATE_CHECK: "1" }), "Automatic updates: on (disabled by COTAL_NO_UPDATE_CHECK=1)");
+{
+  const notifyJson = JSON.parse(preference(["--notify", "--json"]));
+  assert.equal(notifyJson.outcome, "ok");
+  assert.deepEqual(notifyJson.result, {
+    kind: "update-preference", preference: "notify", enabled: true, effective: true,
+    disabledByEnv: false, advice: null, file: join(home, "update-settings.json"),
+  });
+  const autoJson = JSON.parse(preference(["--auto", "--json"]));
+  assert.equal(autoJson.outcome, "ok");
+  assert.equal(autoJson.result?.preference, "auto");
+  assert.equal(autoJson.result?.enabled, true);
+  assert.match(String(autoJson.result?.advice ?? ""), /cotal daemon install/);
+  assert.equal(preference(["--notify", "--plain"]), "Update notices: on");
+  const noopJson = JSON.parse(preference(["--notify", "on", "--json"]));
+  assert.equal(noopJson.outcome, "no-op");
+}
+
+const settingsFile = join(home, "update-settings.json");
+const backups = () => readdirSync(home).filter(name => name.startsWith("update-settings.json.corrupt."));
+const damaged = ["{garbage", "", "[]", "null", '{"auto":"yes"}', '{"v":1,"auto":"off","notify":false}', '{"v":2,"auto":false,"notify":false}', Buffer.from([0xff, 0x7b])];
+for (const contents of damaged) {
+  for (const args of [["--notify", "on"], ["--notify", "off"], ["--notify"], ["--auto", "off"], ["--auto", "on"], ["--auto"]]) {
+    const before = backups();
+    writeFileSync(settingsFile, contents, { mode: 0o600 });
+    const text = preference(args);
+    const added = backups().filter(name => !before.includes(name));
+    assert.equal(added.length, 1, "each damaged file gets a separate named copy");
+    const backup = join(home, added[0]!);
+    assert.deepEqual(readFileSync(backup), Buffer.from(contents), "backup preserves original bytes");
+    assert.equal(statSync(backup).mode & 0o777, 0o600);
+    assert.equal(statSync(settingsFile).mode & 0o777, 0o600);
+    assert.equal(text.split("\n").filter(line => line.startsWith("Damaged update settings saved to ")).length, 1);
+    assert.ok(text.includes(backup), "recovery line names the full backup path");
+    const key = args[0] === "--auto" ? "auto" : "notify";
+    const expected = { v: 1, auto: true, notify: true, [key]: args[1] !== "off" };
+    assert.deepEqual(saved(), expected, "requested choice is applied over defaults");
+    assert.equal(preference([args[0]!]).includes("Damaged update settings"), false, "repaired reads do not recover again");
+    assert.deepEqual(readFileSync(backup), Buffer.from(contents), "later reads leave backup intact");
+    assert.equal(backups().length, before.length + 1);
+  }
+}
+preference(["--notify", "off"]);
+preference(["--auto", "off"]);
+assert.deepEqual(saved(), { v: 1, auto: false, notify: false }, "valid choices preserve the independent preference");
+const backupCount = backups().length;
+rmSync(settingsFile);
+mkdirSync(settingsFile, { mode: 0o700 });
+try {
+  const result = run(["update", "--notify", "on"]);
+  assert.notEqual(result.code, 0, "filesystem read errors must not reset settings");
+  assert.equal(statSync(settingsFile).isDirectory(), true);
+  assert.equal(backups().length, backupCount);
+  assert.doesNotMatch(result.text, /Damaged update settings/);
+} finally { rmSync(settingsFile, { recursive: true }); }
+writeFileSync(settingsFile, "{garbage", { mode: 0o600 });
+chmodSync(settingsFile, 0o000);
+try {
+  const result = run(["update", "--auto", "off"]);
+  assert.notEqual(result.code, 0, "an unreadable file must not reset settings");
+  assert.equal(backups().length, backupCount);
+  assert.doesNotMatch(result.text, /Damaged update settings/);
+} finally { chmodSync(settingsFile, 0o600); }
+assert.equal(readFileSync(settingsFile, "utf8"), "{garbage");
+writeFileSync(settingsFile, JSON.stringify({ v: 1, auto: true, notify: true }), { mode: 0o600 });
+assert.equal(existsSync(nativeLog), false, "recovery does not invoke native service tools");
+console.log("PASS damaged preference reads and writes preserve bytes, restore defaults and keep filesystem failures visible");
 
 let child: ChildProcess | undefined;
 async function stop() {
@@ -90,6 +156,23 @@ try {
   await start(false);
   assert.equal(JSON.parse(run(["daemon", "status", "--json"]).text).result.update.automatic, false);
   assert.match(preference(["--auto"]), /cotal daemon install/, "foreground daemon cannot own the unattended schedule");
+  const otherHome = join(root, "other-home");
+  mkdirSync(otherHome, { mode: 0o700 });
+  const otherEnv = { COTAL_HOME: otherHome };
+  const foreign = run(["daemon", "status", "--json"], otherEnv);
+  assert.equal(foreign.code, 2, foreign.text);
+  assert.equal(JSON.parse(foreign.text).error.cause.code, "PEER_NOT_LOCK_OWNER");
+  const ownerSettings = readFileSync(settingsFile, "utf8");
+  assert.equal(JSON.parse(preference(["--auto", "off", "--json"], otherEnv)).result.enabled, false);
+  for (const args of [["--auto", "on", "--json"], ["--auto", "--json"]]) {
+    const result = JSON.parse(preference(args, otherEnv));
+    assert.equal(result.outcome, "ok");
+    assert.equal(result.result.enabled, true);
+    assert.equal(result.result.file, join(otherHome, "update-settings.json"));
+    assert.match(result.result.advice, /^Could not check the automatic update schedule: .*nothing was sent\.$/);
+  }
+  assert.equal(JSON.parse(readFileSync(join(otherHome, "update-settings.json"), "utf8")).auto, true);
+  assert.equal(readFileSync(settingsFile, "utf8"), ownerSettings);
   await stop();
   // Render a receipt and unit only. No install, start or registration command is invoked.
   const originalEnv = { ...process.env }, argv = process.argv, execArgv = process.execArgv;

@@ -492,6 +492,10 @@
           "description": "This incarnation's lifecycle UID (SPEC §6/§13.1: MUST in auth mode from v0.4) — the value the alias currently maps to, published so peers/observers can attribute the alias's live occupant. Advisory observability, never authority (authority is the ledger/broker grants).",
           "type": "string"
         },
+        "prompts": {
+          "$ref": "#/definitions/PresencePrompts",
+          "description": "The prompts this process serves on its `agent` endpoint (SPEC §6, §13.22). Present, with zero, exactly while the endpoint is served and the broker accepted its subscription. Advisory: it carries no prompt content and no authority."
+        },
         "runtime": {
           "$ref": "#/definitions/PresenceRuntime",
           "description": "The process that publishes this record, with its observed start. Status, activity, heartbeats and reconnects inside the process leave it unchanged; a new process publishes a new one. An offline record keeps it to name the process that went away, so it dates a running duration only while the record is live. Missing means the publisher reports none: unknown, not zero."
@@ -557,6 +561,24 @@
         "failed"
       ],
       "type": "string"
+    },
+    "PresencePrompts": {
+      "description": "How many prompts a process holds `open` or `sent`, and a counter that goes up by one each time a prompt opens or changes state. The counter restarts with the process, so it means something only together with `runtime.id`.",
+      "properties": {
+        "open": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "open",
+        "seq"
+      ],
+      "type": "object"
     },
     "PresenceRuntime": {
       "description": "The running process behind a presence record, as that process observed itself. Advisory display data, never authority. It carries no pid, host, path, command line or environment.",

@@ -125,8 +125,9 @@ for (const [label, subject] of PLANE_VECTORS) {
 // The server's derivation. Extracted from web.ts and run against the REAL parsed subjects above, so
 // this measures what the expression computes rather than how it is spelled.
 const webTs = read("../src/web.ts");
-const derivation = /const channel = parsed\?\.[^;]*;/.exec(webTs)?.[0];
-check("web.ts declares the channel derivation in one extractable statement", Boolean(derivation), { derivation });
+const webRequestTs = read("../src/web-request.ts");
+const derivation = /const channel = parsed\?\.[^;]*;/.exec(webRequestTs)?.[0];
+check("web-request.ts declares the channel derivation in one extractable statement", Boolean(derivation), { derivation });
 
 // `const` inside a vm context is a lexical binding and never becomes a property of the context
 // object, so the result is copied out explicitly. Found by this cell failing rather than by
@@ -227,7 +228,7 @@ function finalReturn(src: string, name: string): { text: string; mapsOwnRows: bo
     s.declarationList.declarations.some((d) => ts.isIdentifier(d.name) && d.name.text === "rows"));
   return { text: src.slice(last.getStart(sf), last.end), mapsOwnRows: mapsRows && declaresRows };
 }
-const endpointTs = read("../../../packages/core/src/endpoint.ts");
+const endpointTs = read("../../../packages/core/src/endpoint-history.ts");
 const readReturn = finalReturn(endpointTs, "multiChannelHistory");
 const readMapper = readReturn?.text;
 check("endpoint.ts declares the read's channel derivation in one extractable statement", Boolean(readMapper), { readMapper });

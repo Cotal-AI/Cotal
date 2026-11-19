@@ -79,8 +79,10 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
 
 const M = mgr as unknown as {
   agents: Map<string, unknown>;
-  retiredPrincipals: Set<string>;
   reconcileStaticLifecycles: () => Promise<void>;
+  retirement: {
+    retiredPrincipals: Set<string>;
+  };
 };
 
 /** Write an ACTIVE slot row owned by `ownerInstanceId` (undefined = a legacy pre-3b-2 row), backed by
@@ -130,7 +132,7 @@ try {
   check("the SIBLING instance's active row SURVIVES reconcile (not swept-terminalized) — the demotion",
     (await readSlotPhase("sibling-agent")) === "active", { phase: await readSlotPhase("sibling-agent") });
   check("the sibling's principal is NOT added to this manager's retirement/refusal index",
-    !M.retiredPrincipals.has(principalKey(DEV_OWNER, sibling.actor).key));
+    !M.retirement.retiredPrincipals.has(principalKey(DEV_OWNER, sibling.actor).key));
 
   // OWN + LEGACY rows (no live agent backing them) ARE this instance's to reconcile → terminalized.
   check("this instance's OWN dead-but-active row is reconciled (terminalized)",
@@ -138,7 +140,7 @@ try {
   check("a LEGACY row (pre-3b-2, no owner) is reconciled as the single-manager past",
     await until(async () => (await readSlotPhase("legacy-agent")) === "retired", 30_000), { phase: await readSlotPhase("legacy-agent") });
   check("the OWN row's principal IS in the refusal index after its terminal",
-    M.retiredPrincipals.has(principalKey(DEV_OWNER, own.actor).key));
+    M.retirement.retiredPrincipals.has(principalKey(DEV_OWNER, own.actor).key));
 } finally {
   await mgr.stop({ withAgents: true }).catch(() => {});
   await broker.stop().catch(() => {});

@@ -6,7 +6,7 @@ try {
     const cfg = track(freshCfg());
     const boot = (): Promise<{ code: number; err: string }> =>
       new Promise((resolve) => {
-        const p = spawn("node", [BIN, "sync"], {
+        const p = spawn("node", [BIN, "config", "unset", "color", "--user"], {
           env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
         });
         let err = "";

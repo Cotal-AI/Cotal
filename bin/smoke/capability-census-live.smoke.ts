@@ -78,11 +78,11 @@ try {
   nc = await connect({ servers: SERVER });
 
   // Each case is an argv the census maps and the endpoint commands it issues. The census grades
-  // what a command issues, so a native refusal (an open manager has no static slots, and no
-  // connector is installed here) is still a complete observation.
+  // what a command issues, so a native refusal (no connector is installed here) is still a
+  // complete observation. `ps --slots` refuses before sending on an open space, so it is checked
+  // below among the non-issuing cases.
   const cases: { argv: string[]; expect: Expectation }[] = [
     { argv: ["ps"], expect: { issues: ["ep:manager:ps", "ep:manager:status"] } },
-    { argv: ["ps", "--slots"], expect: { issues: ["ep:manager:slots"] } },
     { argv: ["models", "--harness", "claude", "--refresh"], expect: { issues: ["ep:manager:models"] } },
     { argv: ["spawn", "scout", "--detach", "--agent", "claude", "--opt", "effort=high"], expect: { issues: ["ep:manager:spawn"] } },
   ];
@@ -97,6 +97,15 @@ try {
     check(`${label} issued a manager command`, observed.some((r) => r.endpoint === "manager" && r.command !== "describe"), { observed, output: result?.output });
     const problems = executionProblems(invocationOf(argv, map), observed, map, expect);
     check(`every request ${label} issued matches its owner rows and its case`, problems.length === 0, problems);
+  }
+  const openMgrId = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
+  for (const extra of [[], ["--on", openMgrId]] as const) {
+    let result: { status: number | null; output: string } | undefined;
+    const observed = await observeRequests(nc, SPACE, async () => { result = await cotal("ps", "--slots", ...extra, "--space", SPACE); });
+    const label = extra.length ? "cotal ps --slots --on <instance>" : "cotal ps --slots";
+    check(`${label} on an open space refuses UNSUPPORTED with exit 2 and issues no endpoint request`,
+      result?.status === 2 && observed.length === 0 && Boolean(result.output.includes("Code:") && result.output.includes("UNSUPPORTED") && result.output.includes("cotal ps")),
+      { status: result?.status, observed, output: result?.output.slice(0, 400) });
   }
   // The kernel's own commands answer from local metadata, so against a live mesh they issue nothing.
   for (const argv of [["help"], ["help", "--all"], ["version"], ["version", "--json"]]) {

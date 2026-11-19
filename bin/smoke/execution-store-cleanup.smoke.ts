@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { claimUpdateClosureAccess, clearUpdateRecovery, writeUpdateRecovery } from "@cotal-ai/workspace";
@@ -51,6 +51,7 @@ if (["linux", "darwin"].includes(process.platform)) {
 
     mkdirSync(join(store, ".installing-Ab1234"));
     mkdirSync(join(store, ".preparing-Cd5678"));
+    mkdirSync(join(store, ".transaction-Tr5678"));
     const outside = join(scratch, "outside");
     mkdirSync(outside);
     writeFileSync(join(outside, "sentinel"), "keep");
@@ -58,6 +59,7 @@ if (["linux", "darwin"].includes(process.platform)) {
     clean();
     assert.equal(existsSync(join(store, ".installing-Ab1234")), false);
     assert.equal(existsSync(join(store, ".preparing-Cd5678")), false);
+    assert.equal(existsSync(join(store, ".transaction-Tr5678")), false, "an empty unpublished journal does not block cleanup");
     assert.equal(readFileSync(join(outside, "sentinel"), "utf8"), "keep");
     assert.equal(warnings.length, 0, "generation entries are not removal candidates");
     rmSync(join(store, "e".repeat(32)));
@@ -110,18 +112,23 @@ if (["linux", "darwin"].includes(process.platform)) {
     }
     clean();
     assert.equal(existsSync(join(store, ".installing-Lk1234")), false);
-    const blocked = join(store, ".installing-Err123");
-    mkdirSync(join(blocked, "child"), { recursive: true });
-    writeFileSync(join(blocked, "child", "data"), "held");
-    chmodSync(join(blocked, "child"), 0o500);
-    const beforeWarning = warnings.length;
-    try {
+    const outsideMode = statSync(outside).mode;
+    for (const name of [".installing-Ro1234", ".preparing-Ro5678"]) {
+      const blocked = join(store, name);
+      mkdirSync(join(blocked, "child"), { recursive: true });
+      writeFileSync(join(blocked, "child", "data"), "held");
+      symlinkSync(outside, join(blocked, "external"));
+      chmodSync(join(blocked, "child"), 0o500);
+      chmodSync(blocked, 0o500);
+      const beforeWarning: number = warnings.length;
       clean();
-      if (process.getuid?.() !== 0) {
-        assert.equal(warnings.length, beforeWarning + 1, "actual removal failure reports one line");
-        assert.equal(existsSync(blocked), true, "failed removal remains for a later attempt");
-      }
-    } finally { chmodSync(join(blocked, "child"), 0o700); rmSync(blocked, { recursive: true, force: true }); }
+      assert.equal(warnings.length, beforeWarning, "owned read-only staging is removable");
+      assert.equal(existsSync(blocked), false);
+      assert.equal(readFileSync(join(outside, "sentinel"), "utf8"), "keep", "cleanup never follows staging links");
+      assert.equal(statSync(outside).mode, outsideMode, "cleanup never changes linked target permissions");
+      clean();
+      assert.equal(warnings.length, beforeWarning, "repeated cleanup remains silent");
+    }
 
     const startup = readFileSync(new URL("../daemon/command.ts", import.meta.url), "utf8");
     const update = readFileSync(new URL("../daemon/update-entry.ts", import.meta.url), "utf8");

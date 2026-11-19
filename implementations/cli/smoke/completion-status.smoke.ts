@@ -129,6 +129,11 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
   s.run(["completion"]);
   s.run(["completion", "--plain"]);
   check("the status writes nothing", JSON.stringify(files()) === JSON.stringify(before), { before, after: files() });
+  for (const shell of ["fish", "bash", "zsh"]) {
+    const removed = s.run(["completion", "uninstall", shell, "--json"]);
+    const report = JSON.parse(removed.stdout);
+    check(`uninstall ${shell} on a clean home is a no-op without creating folders`, removed.status === 0 && report.outcome === "no-op" && report.result.changed.length === 0 && JSON.stringify(files()) === JSON.stringify(before), { report, before, after: files() });
+  }
   const tcsh = sandbox("/usr/bin/tcsh");
   check("an unknown $SHELL names no shell", tcsh.json().env?.result.shell === null);
   const tcshPlain = tcsh.run(["completion", "--plain"]);
@@ -421,6 +426,20 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const missingJson = s.run(["completion", "install", "zsh", "--json"], { ZDOTDIR: nowhere });
   const missingEnv = JSON.parse(missingJson.stdout) as { target: { path?: string }; error: { remedy?: string } };
   check("its JSON names the folder as the target and carries the remedy", missingEnv.target.path === nowhere && missingEnv.error.remedy?.includes(`mkdir -p ${nowhere}`) === true, missingEnv);
+  const spaced = join(s.home, "zsh missing dir's");
+  const quotedMissing = s.run(["completion", "install", "zsh", "--json"], { ZDOTDIR: spaced });
+  const mkdirCommand = JSON.parse(quotedMissing.stdout).error.remedy.match(/\(umask 077 && mkdir -p .+\)/)?.[0];
+  const created = spawnSync("/bin/sh", ["-c", mkdirCommand ?? "exit 99"], { cwd: s.home, encoding: "utf8" });
+  check("the printed mkdir remedy creates exactly the ZDOTDIR containing spaces and an apostrophe", created.status === 0 && existsSync(spaced) && !existsSync(join(s.home, "zsh")), { mkdirCommand, stderr: created.stderr });
+  const spacedInstall = s.run(["completion", "install", "zsh"], { ZDOTDIR: spaced });
+  const conflict = s.run(["completion", "uninstall", "zsh", "--json"]);
+  const remedy = JSON.parse(conflict.stdout).error.remedy as string;
+  const assignment = remedy.match(/`(ZDOTDIR=.+) cotal completion`/)?.[1];
+  const assigned = spawnSync("/bin/sh", ["-c", `${assignment ?? "exit 99"} /bin/sh -c 'printf %s "$ZDOTDIR"'`], { cwd: s.home, encoding: "utf8" });
+  check("the printed ZDOTDIR remedy preserves spaces and an apostrophe as one assignment", spacedInstall.status === 0 && conflict.status === 2 && assigned.status === 0 && assigned.stdout === spaced, { remedy, output: assigned.stdout, stderr: assigned.stderr });
+  const spacedStatus = s.run(["completion", "--plain"]);
+  check("completion status carries the same safely quoted ZDOTDIR remedy", spacedStatus.status === 4 && spacedStatus.stderr.includes(remedy), shown(spacedStatus));
+  s.run(["completion", "uninstall", "zsh"], { ZDOTDIR: spaced });
   const relative = s.run(["completion", "install", "zsh"], { ZDOTDIR: "zdot" });
   check("install refuses a relative ZDOTDIR, exit 1, with nothing written", relative.status === 1 && /relative ZDOTDIR/.test(relative.stderr) && !existsSync(stub) && !existsSync(join(s.home, "zdot")), shown(relative));
   if (process.platform !== "win32" && process.getuid?.() !== 0) {

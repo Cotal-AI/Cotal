@@ -438,6 +438,7 @@ mod configured {
             let (update, bytes) = with_pending(state, |pending| {
                 Ok::<_, String>((pending.update.clone().ok_or("The verified update is unavailable.")?, pending.bytes.take().ok_or("The verified download is unavailable.")?))
             })??;
+            crate::app::stop_watch(&app);
             let mut receipt = Receipt { schema: 1, from: app.package_info().version.to_string(), target: update.version.clone(), phase: "installing".into(), reopen: explicit || activity.take_show_request()?, relaunch_pending: true, reason: None };
             #[cfg(target_os = "windows")]
             let update = {

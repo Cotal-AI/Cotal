@@ -1,5 +1,104 @@
 # @cotal-ai/core
 
+## 0.171.1
+
+No changes in this release.
+
+## 0.171.0
+
+### Minor Changes
+
+- edd19cc: An agent owner's interactive session can now list an OpenCode 2.x agent's own commands and skills and run one, such as `/review`, which waits for the agent's next idle turn and can be cancelled until it starts, and the broker refuses every other caller.
+  
+  `@cotal-ai/core` advances the `agent` endpoint's cluster to revision 2 with four commands. `commands` lists `{ name, target, description?, inputHint? }` entries or answers `{ supported: false }`. `command` queues one by `{ target, name, args? }` and answers its `{ id }` at once. `command-cancel` cancels a queued command by id, and `command-state` reads whether it is `queued`, `taken` or `started`, was `cancelled`, was `refused` with `not-found`, `failed-precondition` or `unavailable`, or ended `unknown`. The four declare the `owner` authority word only, so an interactive ledger row gets their caller rows, and no grant row can name them. `@cotal-ai/connector-core` adds `openAgentEndpoint`, the one owner of the agent serve, which replaces `openPromptDesk` and serves the prompt desk beside a command lane. Every `MeshAgent` with a user-auth credential opens it, with the connector's `commands` dispatcher or none. A command starts only while no turn runs. At most 8 are queued, with no time bound, stopping the agent refuses every queued one, and the agent remembers the last 32 to end. A connector takes each queued command with `dispatchNextCommand()` when `MeshAgent` emits `command`. An open or static mesh serves nothing yet. `@cotal-ai/connector-opencode` lists `GET /api/command` by name and `GET /api/skill` by id and runs a command through `/command` and a skill through `/prompt`. A first-turn command carries the persona's `system` field as a first message does, though OpenCode 2.2.5 passes it to the model for neither, and right after a command turn, waiting messages go first.
+
+### Patch Changes
+
+- 7ff146c: Codex setup lists its configuration and plugin files in the JSON receipt, status reports disabled plugins, and updates leave read-only Codex configuration unchanged.
+- 725bd24: Move the endpoint's boot durable self-join and its reconcile into an internal module without changing the endpoint API.
+- bbea1c9: Move the endpoint's stream creation and durable provisioning into an internal module without changing the endpoint API.
+- 3a01e61: Internal refactor: the per-profile permission builders now live in their own module. Credential permissions are unchanged.
+- 67a59e9: Restarting a local stack no longer leaves unused manager goal-index consumers, and channel replay windows are saved without surrounding whitespace.
+- f2f8058: Hosted workflow starts include syntax diagnostics in JSON refusals, and simulations reject invalid handoff destinations, nonnumeric clock starts, and duplicate script keys.
+
+## 0.170.0
+
+### Minor Changes
+
+- 2b1659e: Add a host-only, bounded read-only observer for a space's pending work and authority. The observer uses the current stream layout, reports incomplete or changing state as unknown, and closes its native connection before returning. It does not activate hibernation or migrate data.
+
+### Patch Changes
+
+- ad6d984: Show why persona definitions are unreadable, return exit 4 for an incomplete legacy catalog, and reject invalid roles and null launch options before starting an application.
+- 3afefa8: Move the endpoint's channel registry cache, its replay and delivery-class lookups and the registry watch into an internal module without changing the endpoint API.
+- 0e42b19: Move the endpoint's durable backstop registries, leases and membership writes into an internal module without changing the endpoint API.
+- dd478d4: Move the endpoint's peer-readable liveness responder and probe into an internal module without changing the endpoint API.
+- 6170fc9: Move the endpoint messaging verbs into an internal module without changing the endpoint API.
+- 8c965ac: Move the endpoint's card model and working-directory overlays into its internal presence module without changing the endpoint API.
+- b73a8de: Move the endpoint's channel join, leave and listing calls and its membership feed watches into an internal module without changing the endpoint API.
+- 20ff353: Hosted workflows resume from their journals when JetStream returns after a broker outage interrupts a journal write.
+
+## 0.169.0
+
+### Minor Changes
+
+- a59864f: A connector's local control endpoint no longer trusts whoever holds its name, and sessions launched before this release must be restarted. A hook used to send the endpoint key in its first frame and print whatever came back, so another local user who took the socket or pipe name after the connector's server exited received the key and could answer the hook. Each connection now runs the control exchange: the client and the server each prove with HMAC-SHA256 over fresh nonces that they hold the key, the reply carries a MAC, the hook's delivery receipt carries a MAC over that reply, and neither side sends the key. Every line is bounded in bytes before it is parsed, every reply included. The lifecycle hooks, the Manager's cooperative stop and session calls, and the Hermes Python hooks all move to it. The Hermes bridge adapter now presents a token derived from the key (HMAC-SHA256 over `cotal-hermes-bridge/1`) in place of the key. A client waits at most 1 second for the server's proof, and a server drops a connection that proves nothing within 5 seconds.
+  
+  The exchange has a version, `CONTROL_PROTOCOL_VERSION` (1), that travels with the key: `LaunchSpec.control` is now `{ path, token, version }`. The key moves to new carrier names: the launch material carries `controlKey` and `controlVersion`, and a hand-driven session sets `COTAL_CONTROL_KEY` and `COTAL_CONTROL_VERSION=1`. A hook or connector from an earlier release finds no key in a new launch, so one that requires a control endpoint refuses to start, and this release refuses the old `controlToken` and `COTAL_CONTROL_TOKEN`. An earlier Hermes launcher mints its own key and keeps running its own sidecar and gateway. A key without a version, a version a build does not speak, and a peer of another version are all refused, with no fallback. A hand-set key with whitespace around it and a version set without a key are refused, by the TypeScript and Python readers alike. A Claude Code session that reloads its plugin after the upgrade re-reads launch material written before it, which has no version, so it refuses until the session is restarted. `materialEnv` takes `control` (the endpoint) in place of `controlToken`, and `controlEndpoint` takes the launch's artifact list as its third argument.
+  
+  Off Windows each launch's control socket now sits in a directory of its own, `cotal-ctl-<id>` under the temp directory, named from the key. Minting the endpoint creates it with mode 0700 and refuses one that already exists, the server checks its owner and mode before it binds and never creates it, every client checks it before it connects, and the launcher removes it with the launch's other artifacts. A directory that is missing or fails the check counts as no endpoint, so a hand-driven `COTAL_CONTROL_SOCKET` must point into a private directory that exists. A Hermes stop now waits for the gateway to exit in every mode before it removes that directory, and keeps the directory when it cannot prove the exit. Hermes standalone mode keeps its own `cotal-hermes-*` directory instead, which nothing removes. The Hermes bridge socket moves beside the control socket, and a Hermes adapter whose bridge directory is not private reports a permanent error instead of a connected platform that drops its replies. `@cotal-ai/core` exports the exchange (`clientExchange`, `serverExchange`, `controlCall`, `checkControlSocketDir`, `assertControlSocketDir`, `assertControlEndpoint`), and `clientExchange` and `controlCall` require `maxReplyBytes` as a finite, non-negative whole number; `tokenMatches`, `AUTH_DEADLINE_MS`, `MAX_FRAME_BYTES` and `HANDOFF_RECEIPT` are no longer exported by `@cotal-ai/connector-core`.
+- c4ca691: Stopping a principal-route serve no longer waits forever for a handler that never settles, and `CotalEndpoint.servePrincipal` now serves only the `agent` endpoint.
+  
+  `PrincipalServe.stop()` and `CotalEndpoint.stop()` abort the new `signal` in every principal handler's context, so a handler can end early, and wait for each handler in flight only until its request's `deadlineMs` has passed since the request arrived. The caller has stopped waiting by then, and a reply that comes later is dropped. A principal-route `deadlineMs` is now at most 30000: the serve refuses a larger one as `bad-request` before its handler runs, and `callPrincipal` throws `bad-request` before publishing, so stop waits at most 30 s.
+  
+  Breaking: `servePrincipal` now takes `{ handlers }` and serves the `agent` endpoint with `AGENT_CLUSTER`; it refuses an `endpoint` or `cluster` field. `servePrincipalRoute` and `EpPrincipalServeHandle`, the general serve for any cluster under any endpoint name, are no longer exported from the package root.
+  
+  Each serve of the `agent` endpoint takes a fresh `prompts.seq` from `nextPromptsSeq()` when it starts and shows `{ open: 0, seq }` with it, so one `(runtime.id, seq)` never names two states. A prompt desk's counter therefore starts one higher than before.
+  
+  A call no longer ends `internal` when something other than the broker's no-responders status reaches its no-responders sentinel. Any client that may make a JetStream API request can name that sentinel as its reply subject, so the caller now drops such a message and keeps waiting for the real reply, on the principal route and on service calls.
+  
+  A principal-route request with `replyExpected: false` is now refused before its handler runs. Every command on that route is request/reply, and such a request used to run the handler and send nothing.
+  
+  A principal-route reply the broker refuses to publish is now reported on the endpoint's `error` event. A principal-route call whose reply read the broker refused now throws `permission-denied` even when the flush it waits on never settles, where it used to throw `deadline-exceeded`. A principal serve retires the subscription handle of a replaced connection once that handle's handlers finish. `spec/cotal.schema.json` now gives the presence `prompts.open` and `prompts.seq` as non-negative integers.
+
+### Patch Changes
+
+- ec01e0a: A seat whose event frame reached the broker but whose acknowledgement was lost now settles that frame on its next start instead of stopping its event plane for good, and a halted event plane is retried at a wait that doubles up to five minutes instead of once a second. The retry proves the frame is the channel's newest one with a duplicate-window probe that can never store anything, or, once that window has closed, by reading the newest frame when the seat may read its own event channel; without either proof it halts as before.
+- a3d78c7: Daemon-hosted Managers install and register the Claude Code wake channel without preparing a local space and report Claude Code as unavailable if setup fails.
+- c2f9729: Reject mistyped persona fields and explain missing publish grants or unprovisioned inboxes in interactive joins.
+- 71088a6: Allow history reads beyond 1000 retained messages and include the quoted backup directory in damaged restore verification instructions.
+- 67d9a30: Recover workflow runs after an activation stops before recording its status, reject unsupported check and resume flags before connecting, and keep missing-run remedies on the selected space and manager.
+- 4362eb1: Keep endpoint delivery daemon handling in an internal component without changing its public methods or broker behavior.
+- 963db93: Keep endpoint history reads in an internal component with private reader state. Public history methods and their results are unchanged.
+- 4050457: Fix participant tool payload history reads without widening owner or event-channel access.
+
+## 0.168.0
+
+### Patch Changes
+
+- 4ad482d: Keep credential minting, permission templates, durable provisioning and broker configuration in separate internal modules while preserving their public exports.
+- 6546892: Stopping an endpoint now ends its principal-route serves, and a principal-route call now waits for its own reply instead of failing on a message that is not it.
+  
+  `CotalEndpoint.stop()` ends every serve that `servePrincipal` started: a `ready` still waiting rejects, and the handlers in flight finish before the connection closes. A caller drops a stored message on its reply read, such as one an agent asks a Direct Get to deliver on the caller's sentinel, and keeps waiting past a message from another head for the reply the addressed process derives. The presence `prompts.seq` never goes back under one runtime id: the process keeps the highest it used across serves and endpoint objects, `setPromptsPresence` refuses a lower value with a RangeError, and the new `CotalEndpoint.nextPromptsSeq()` hands out the next one. A second `servePrincipal` of one endpoint for one lifecycle in a process now throws, because both would answer the same subject.
+- b0e70a5: A stopped endpoint no longer keeps its process alive while a boot channel join or a refused membership close waits to retry. With no delivery daemon running, `cotal mcp` and other short-lived clients could take up to 30 seconds to exit after a stop. Stopping now ends that wait, so the process exits as soon as its connection closes.
+
+## 0.167.0
+
+### Minor Changes
+
+- 211142b: An agent can now serve commands about itself, such as its pending harness prompts, to its owner's sessions over the control surface, with no registration and no Manager.
+  
+  Core adds the principal route (SPEC §13.21): requests on `cotal.<space>.ep.prin.<endpoint>.<owner>.<actor>.<lifecycleUid>.<runtimeId>.<command>.<authority>.<caller>.<nonce>`, replies on `ep.prin-reply`, and a no-responders sentinel no serving credential can publish on. A process serves it with `CotalEndpoint.servePrincipal`, whose `ready` resolves only after the broker accepted the subscription and which binds again after every reconnect, and calls it with `CotalEndpoint.callPrincipal`. Both routes now run one shared request pipeline. A cluster command declares the authority words it admits in `authorities` (`owner` or `grant`); a service route refuses such a command. Revision 1 of the `agent` endpoint (`ai.cotal.agent`) defines `prompts`, `prompt` and `prompt-answer` with closed schemas for a prompt, its form profile and its states (SPEC §13.22), and presence gains `prompts: { open, seq }`. The auth callout now mints serve rows into every agent credential of a ledger row, and `owner` caller rows into those of an interactive row, from the row's kind. An agent needs a connection minted by an auth service on this release before it can serve. SPEC §13.2 also now counts seven authorization-mode tokens, not six.
+
+### Patch Changes
+
+- ded2be1: Message frames, preview rows, wake hints and the note naming withheld senders now mark a sender's name and role as `(unverified name)`, or `(unverified role)` when the name is blank and the frame shows the sender's id. The sender writes both itself; the `sender_id` beside them is the identity the broker checked. A long sender label is cut before the marker, and a preview row caps its channel or role label, so the marker stays whole in the 40-character notes and in each preview row. The Claude channel tag's `from` attribute carries the same marked label. A peer label now turns a double quote into a space, as it does a bracket, and the console's recipient completion uses the peer's id when the shown label differs from its name.
+- eead187: Keep endpoint presence state in a dedicated internal component while preserving the public roster, status and freshness APIs.
+- 6c2c27f: A channel replay window too long to be a start time, such as `--window 999999999999999999999999d`, now backfills the whole retained history. A new session received no retained posts at all, with no warning, although `cotal channel set` had accepted the window.
+- 7bf5e73: An agent can post again as soon as its space is back after a long outage. The endpoint retried a lost connection with a backoff that grows to a minute, and a send made while it waited failed after 10 seconds with a stale "connection refused". A call that needs the connection now starts the next attempt at once. Idle endpoints keep the spread-out retries.
+- d97f549: Keep endpoint delivery lease handling in an internal component without changing its public methods or broker behavior.
+- 3705c35: A workflow `wait(message(channel, { from }))` now matches only messages whose subject names the principal the run recorded for the `from` handle, and every message wait ignores a message whose `from.id` differs from its subject's sender. The payload's display name is no longer compared. A `from` handle the run did not spawn or bind refuses the wait. Core exports `isFromSubjectSender`, the receive check every endpoint path already applies.
+
 ## 0.166.3
 
 ### Patch Changes

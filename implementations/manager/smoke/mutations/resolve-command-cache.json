@@ -6,7 +6,7 @@
   "mutations": [
     {
       "name": "narrow invoke handles overwrite the complete discovery cache",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-control-plane.ts",
       "find": "        byCommand.set(cacheKey, svc);",
       "replace": "        byCommand.set(cacheKey, svc);\n        this.resolvedServices.set(endpoint, svc);",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
@@ -15,7 +15,7 @@
     },
     {
       "name": "narrow invoke handles are not retained by command set",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-control-plane.ts",
       "find": "      const cached = commandCache?.get(cacheKey);",
       "replace": "      const cached = undefined as ResolvedService | undefined;",
       "afterRestore": "pnpm --filter @cotal-ai/core build",

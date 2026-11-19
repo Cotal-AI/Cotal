@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   acquireLock,
+  acquireLockAsync,
   agentFilePath,
   checkConversationSelection,
   DEV_OWNER,
@@ -16,6 +17,7 @@ import {
   mkSecretDir,
   newIdentity,
   patternInAllow,
+  processStartToken,
   provisionAgent,
   resolveReadAcl,
   type AgentDef,
@@ -34,9 +36,12 @@ import { defaultPersonaFix } from "../lib/default-persona.js";
 import { liveMeshNames } from "../lib/live-names.js";
 import { ConversationRefusal, ConversationRequestError, isUserAppDir, provisionUserApp, retireDeadUserApps, retireUserApp } from "../lib/app-user-identity.js";
 
-/** Every conversation identity on an open or static mesh has a fresh `mkdtemp` directory under the
- *  OS temp dir with this prefix, which retire removes. */
+/** Every conversation identity on an open or static mesh has a fresh `mkdtemp` directory with this
+ *  prefix, which retire removes. It is made under {@link recordRoot}, which a reboot keeps, so the
+ *  next connection still retires the identity of a host the reboot ended (#7372). Earlier versions
+ *  made it under the OS temp dir, so directories there are still read and retired. */
 const CRED_DIR_PREFIX = "cotal-app-identity-";
+const recordRoot = (): string => join(homeCotalDir(), "app-identities");
 /** The file in that directory that says what to retire. It carries no secret. */
 const RECORD = "identity.json";
 /** A native conversation identity, as the hosts pass it. */
@@ -65,13 +70,15 @@ export const appIdentityFlags = [
 ] as const satisfies readonly FlagSpec[];
 
 /** What the record in a credential directory says. `owner` is the process that ran provision and
- *  `session` the native conversation it serves. `alias` marks an identity issued as a terminal seat
- *  on a static mesh. A record from before native sessions carries neither. */
+ *  `session` the native conversation it serves. `alias` reserves its name before presence starts;
+ *  on a static mesh it also names the issued terminal seat. Older records may lack these fields. */
 interface IdentityRecord {
   space: string;
   id: string;
   lifecycleUid: string;
   owner: number;
+  /** The owner's process start token, so a pid reused after a reboot is not read as the owner. */
+  ownerStart?: string;
   session?: string;
   alias?: string;
 }
@@ -173,11 +180,16 @@ function localGrant(def: AgentDef, selection?: ConversationSelection): { subscri
 async function provisionLocal(t: MeshTarget, name: string, session: string | undefined, events: boolean, selection?: ConversationSelection, retired: ReadonlySet<string> = new Set()): Promise<AppIdentityReply> {
   if (!session || !SESSION.test(session))
     return { ok: false, error: `a conversation needs its native session identity before connecting, and this app supplies none; nothing was opened on "${t.space}"` };
-  const root = join(homeCotalDir(), "app-identities");
+  const root = recordRoot();
   mkSecretDir(root);
   const lock = acquireLock(join(root, `session-${createHash("sha256").update(session).digest("hex")}.lock`), { waitMs: 0 });
-  try { return await provisionLocalLocked(t, name, session, events, selection, retired); }
-  finally { lock.release(); }
+  try {
+    // Different native sessions must serialize their name check and reservation too. The record
+    // keeps the name taken after this lock is released, including while the host starts presence.
+    const nameLock = await acquireLockAsync(join(root, `name-${createHash("sha256").update(JSON.stringify([t.space, name])).digest("hex")}.lock`), { waitMs: 20_000 });
+    try { return await provisionLocalLocked(t, name, session, events, selection, retired); }
+    finally { nameLock.release(); }
+  } finally { lock.release(); }
 }
 
 async function provisionLocalLocked(t: MeshTarget, name: string, session: string, events: boolean, selection?: ConversationSelection, retired: ReadonlySet<string> = new Set()): Promise<AppIdentityReply> {
@@ -185,12 +197,14 @@ async function provisionLocalLocked(t: MeshTarget, name: string, session: string
     return { ok: false, error: `the mesh "${t.space}" takes static credentials, and this account holds no signing authority for it in ${t.root}, so no identity was opened` };
   if (t.policy?.events === "required" && !events)
     return { ok: false, error: "this mesh requires a real native conversation event source; no identity was opened" };
-  const held = localRecords().find(({ record }) => record.session === session && alive(record.owner));
+  const records = localRecords();
+  const held = records.find(({ record }) => record.session === session && ownerAlive(record));
   if (held) return { ok: false, error: `this native conversation already has a live identity on "${held.record.space}"; disconnect it before connecting again` };
   const taken = await liveMeshNames(t, retired);
   // A bare `cotal up` starts this mesh only in its own folder; anywhere else it starts a new space.
   if (!taken) return { ok: false, error: `the mesh "${t.space}" at ${t.server} is not answering. Start it with \`${displayCmd()} up --root ${shellWord(t.root)}\`.` };
-  if (taken.has(name)) return { ok: false, taken: true };
+  if (taken.has(name) || records.some(({ record }) => record.space === t.space && record.alias === name))
+    return { ok: false, taken: true };
   const persona = defaultPersonaRef();
   let def: AgentDef;
   try {
@@ -212,9 +226,10 @@ async function provisionLocalLocked(t: MeshTarget, name: string, session: string
     ...(grant.role ? { COTAL_ROLE: grant.role } : {}), COTAL_WORKSPACE_ROOT: homeCotalDir(), ...(events ? { COTAL_EVENTS: "1" } : {}),
     ...(t.policy?.events === "required" ? { COTAL_EVENTS_REQUIRED: "1" } : {}),
   };
-  const dir = mkdtempSync(join(tmpdir(), CRED_DIR_PREFIX));
+  const dir = mkdtempSync(join(recordRoot(), CRED_DIR_PREFIX));
   // Written before anything reaches the broker, so a provision killed partway still leaves a record.
-  const record: IdentityRecord = { space: t.space, id: identity.id, lifecycleUid, owner: process.ppid, session, ...(t.auth ? { alias: name } : {}) };
+  const ownerStart = processStartToken(process.ppid);
+  const record: IdentityRecord = { space: t.space, id: identity.id, lifecycleUid, owner: process.ppid, ...(ownerStart === undefined ? {} : { ownerStart }), session, alias: name };
   writeFileSync(join(dir, RECORD), JSON.stringify(record), { mode: 0o600 });
   const reply = { ok: true as const, env, retire: { dir }, grant: { ...grant, allowPublish } };
   if (!t.auth) return reply;
@@ -263,7 +278,7 @@ async function reap(values: FlagValues<typeof appIdentityFlags>): Promise<{ ok: 
  *  later attempt still knows what to retire. */
 async function retireDir(dirArg: string): Promise<void> {
   const dir = resolve(dirArg);
-  if (dirname(dir) !== resolve(tmpdir()) || !basename(dir).startsWith(CRED_DIR_PREFIX) || !lstatSync(dir, { throwIfNoEntry: false })?.isDirectory())
+  if (!recordParents().includes(dirname(dir)) || !basename(dir).startsWith(CRED_DIR_PREFIX) || !lstatSync(dir, { throwIfNoEntry: false })?.isDirectory())
     throw new Error(`refusing to remove ${dirArg}: not a credential directory provision made`);
   const record = JSON.parse(readFileSync(join(dir, RECORD), "utf8")) as IdentityRecord;
   const t = await target(record.space);
@@ -284,9 +299,9 @@ async function retireDir(dirArg: string): Promise<void> {
  *  left for a later provision. */
 function localRecords(): Array<{ dir: string; record: IdentityRecord }> {
   const uid = process.getuid?.();
-  return readdirSync(tmpdir()).flatMap((name) => {
+  return recordParents().flatMap((parent) => (existsSync(parent) ? readdirSync(parent) : []).flatMap((name) => {
     if (!name.startsWith(CRED_DIR_PREFIX)) return [];
-    const dir = join(tmpdir(), name);
+    const dir = join(parent, name);
     try {
       const st = lstatSync(dir);
       if (!st.isDirectory() || (uid !== undefined && st.uid !== uid)) return [];
@@ -294,7 +309,12 @@ function localRecords(): Array<{ dir: string; record: IdentityRecord }> {
     } catch {
       return [];
     }
-  });
+  }));
+}
+
+/** Where credential directories are: {@link recordRoot}, then the OS temp dir earlier versions used. */
+function recordParents(): string[] {
+  return [...new Set([resolve(recordRoot()), resolve(tmpdir())])];
 }
 
 /** Retire every credential directory of this user's whose owning process is gone: a host killed
@@ -302,7 +322,7 @@ function localRecords(): Array<{ dir: string; record: IdentityRecord }> {
 async function retireOrphans(): Promise<Set<string>> {
   const retired = new Set<string>();
   for (const { dir, record } of localRecords()) {
-    if (alive(record.owner)) continue;
+    if (ownerAlive(record)) continue;
     try {
       await retireDir(dir);
       retired.add(record.lifecycleUid);
@@ -313,7 +333,16 @@ async function retireOrphans(): Promise<Set<string>> {
   return retired;
 }
 
-/** Whether `pid` names a running process. A reused pid reads as alive, so its directory is kept. */
+/** Whether the record's owner still runs. A pid that runs with another start token was reused, as
+ *  after a reboot, so its owner is gone. Without a token to compare, a running pid reads as alive
+ *  and its directory is kept. */
+function ownerAlive(record: IdentityRecord): boolean {
+  if (!alive(record.owner)) return false;
+  const start = record.ownerStart === undefined ? undefined : processStartToken(record.owner);
+  return start === undefined || start === record.ownerStart;
+}
+
+/** Whether `pid` names a running process. */
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);

@@ -1,3 +1,9 @@
+import { handleExchange, LOOPBACK_POLICY, makePublicPolicy, ManagerSelectionRefusal } from "./service-exchange-routes.js";
+import type { ExchangePolicy } from "./service-exchange-routes.js";
+export type { ExchangePolicy } from "./service-exchange-routes.js";
+import { handleInteractiveLifecycleRetirement, handleManagedLifecycleRetirement, handleManagedLifecycleActivation, handleVerifyManagedAgentEnrollment, handleManagerInstances, handleManagerServiceAuthority } from "./service-manager-routes.js";
+export { dispatchManagerAuthorityRequest, handleManagerServiceAuthority, type ManagerServiceAuthorityCtx } from "./service-manager-routes.js";
+import { send, RequestBodyError, sendRequestError, refuseCapability, refuseExchange, REFUSAL_STATUS, readJsonBody } from "./service-http.js";
 import { registryStores } from "./lifecycle-registry.js";
 import { drainAndClose } from "@cotal-ai/core";
 import { createToolResultConsentSigner, makeToolResultConsentRecorder, type ToolResultConsentRecorder, type ToolResultConsentSignerOptions } from "./tool-result-consent.js";
@@ -68,8 +74,7 @@ import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { VOID_SCHEMA, CotalEndpoint, isDerivedOwner, dialerFor, deprovisionAgent, fenceLifecycleAcl, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isChannelFamily, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, commitSiblingIssuance, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, credentialIdOf, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, RECORD_KINDS, recordsBucket, remoteManagerActors, remoteManagerServePrincipal, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, holdIssuerSession, acceptedReadGrant, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
-import { findCotalRoot, loadManagerInstanceIdentity, parseSpaceManifest, runSpaceHost, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, type SpaceLane, type SpaceSettings, type SpaceSettingsManifest, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
-import type { JournalEntry } from "@cotal-ai/lang";
+import { findCotalRoot, loadManagerInstanceIdentity, runSpaceHost, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, type SpaceLane, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 import { makePlatformControlAuthority, makePlatformControlReadiness, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
@@ -79,10 +84,9 @@ import { calloutLimits, type AuthCalloutLimits } from "./callout.js";
 import { runCalloutHost } from "./callout-host.js";
 import { runAuthCalloutReplica } from "./callout-replica.js";
 import { calloutAuthority, managerGateReads, serveCallout, type CalloutAuthority } from "./callout-authority.js";
-import { ConnectLimiter, ConnectRateLimited, type ConnectLimits } from "./connect-limit.js";
+import { ConnectLimiter, type ConnectLimits } from "./connect-limit.js";
 import { createIdpBridge, verifyIdpToken, verifyToolResultHumanProof, type IdpBridge } from "./idp.js";
-import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, validateUserToken, type UserTokenView } from "./token.js";
-import { grantCoordinates } from "./session-redemption.js";
+import { validateUserToken } from "./token.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { bootstrapServiceCallerPayload, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
 import { handleRemoteRunCancel, parseRemoteRunCancelRequest, admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteManagerRenewal, isRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
@@ -127,14 +131,12 @@ import { registry as extensionRegistry, type RegistryService } from "@cotal-ai/c
 import { AUTH_SERVICE_ENDPOINT, authClusterArtifacts, authContractArtifactValues } from "./auth-service-contract.js";
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
 import {
-  AGENT_BEARER_TTL_SEC,
   assertWithinRunDelegation,
   assertWithinSpawnerGrant,
   findInteractiveActor,
   findManagedActor,
   findActorUnified,
   ledgerActorSourceIsLive,
-  ledgerAuthorizeAgentExchange,
   ledgerAuthorizeGrant,
   revokeManagedActorIf,
   withManagedGrantTransaction,
@@ -155,6 +157,11 @@ import {
   spaceIssuer,
   type ServiceKeys,
 } from "./store.js";
+import { authServiceConfiguration, authHostSettings, checkPublicFace, type PublicFaceInput } from "./service-config.js";
+import { managedRetirementAuthority } from "./service-managed-retirement.js";
+export { authServiceConfiguration, parseAuthHostManifest, checkAdvertisedServer, checkAgentProvisioningUrl } from "./service-config.js";
+export type { AuthHostEntry, PublicFaceInput } from "./service-config.js";
+
 
 /** JWKS max-age seconds — the cache contract's knob. Exported so a rotation tool can compute the
  *  retire floor (max-age + max bearer TTL) from it. */
@@ -200,34 +207,6 @@ export const TOOL_RESULT_HUMAN_PROOF_PATH = "/tool-result-human-proof/verify";
 
 /** Host-only signed consent issuance, never private result content. */
 export const TOOL_RESULT_CONSENT_PATH = "/tool-result-consent/issue";
-
-/** Failed-exchange rate limit: at most this many REFUSED exchanges per rolling minute; further
- *  attempts get 429 until the window drains. Successes are unthrottled (the CLI's normal path). */
-const FAILED_EXCHANGE_PER_MIN = 30;
-
-/** Invalid-capability attempts get their OWN window (same size): an unauthenticated local prober
- *  is throttled AND audited, but never consumes the refused-exchange budget of a caller holding
- *  the real capability — a cap-less process must not be able to starve legitimate exchanges. */
-const BAD_CAP_PER_MIN = 30;
-
-/** PUBLIC-face budgets — their own pools entirely, so public probing can never consume the
- *  loopback face's windows (and vice versa). A full per-peer probing bucket never refuses a
- *  request that would have succeeded, matching the loopback stance. */
-const PUBLIC_FAILED_PER_MIN = 30; // per-PEER refused-exchange window (rolling minute)
-const PUBLIC_PEER_BUCKETS_MAX = 1024; // bounded LRU of per-peer failure buckets
-/** PUBLIC-face per-principal authenticated manager-selection refusal budget (#3959): once a
- *  caller's credential and actor grant verify, manager-selection refusals are tracked in two
- *  rolling windows per authenticated principal keyed by principal and request class (`pinned`
- *  when the request names a manager instance, `unpinned` when it does not, never by the requested
- *  instance id) in a 1024-key LRU. Each class counts only its own selection refusals and, once
- *  full, sheds `selectManagerInstance` for that class (refusing requests of that class, including
- *  ones that would have succeeded, with its class remedy while leaving the other class open). */
-const PUBLIC_SELECTION_FAILED_PER_MIN = 30; // per-principal-class selection-refusal window (rolling minute)
-const PUBLIC_SELECTION_BUCKETS_MAX = 1024; // bounded LRU of per-principal-class selection-refusal buckets
-const PUBLIC_UNPINNED_SELECTION_THROTTLED_REASON =
-  "too many manager-caller selection refusals - name a manager instance (--on <id> or --manager-instance <id>) or start one with `cotal manager start`, then wait a minute and retry";
-const PUBLIC_PINNED_SELECTION_THROTTLED_REASON =
-  "too many pinned manager-caller selection refusals - check that the pinned manager instance is live and registered to you, then wait a minute and retry";
 const PUBLIC_MAX_IN_FLIGHT = 64; // global concurrent-admission cap on the public listener
 const PUBLIC_DEADLINE_MS = 10_000; // hard wall-clock deadline per public request
 const HOST_FENCE_POLL_MS = 1_000; // how often awaitHostFence re-reads the host gate
@@ -240,8 +219,6 @@ const MANAGED_ALIAS_CHAINS = new Map<string, Promise<unknown>>();
 const serializedForAlias = <T>(dir: string, owner: string, actor: string, fn: () => Promise<T>): Promise<T> =>
   serializedFor(MANAGED_ALIAS_CHAINS, `${resolve(dir)}:${principalKey(owner, actor).key}`, fn);
 
-type Values = Record<string, string | undefined>;
-
 /** Which exchange arm asks for a manager-caller view. */
 export type ManagerCaller = "human" | "agent";
 
@@ -253,11 +230,6 @@ const MANAGER_PIN_REMEDY: Record<ManagerCaller | "wire", string> = {
   agent: "name one with --manager-instance <instanceId>",
   wire: "name one as managerInstanceId",
 };
-
-/** An unpinned manager-caller selection that found no single live manager. It is raised only after
- *  the exchange's credential verified, and it describes the caller's own owner, so it is not probing:
- *  the exchange arms neither count it against the refused-exchange budget nor hide it behind 429. */
-class ManagerSelectionRefusal extends Error {}
 
 /** One Manager instance of an owner, as `/manager-instances` lists it. `state` is the verdict
  *  selection reads: `candidate` is an open gate of this owner whose current service registration and
@@ -1227,6 +1199,10 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   const stopChatSweep = async (): Promise<void> => { clearTimeout(chatSweepTimer); await chatSweepFlight; };
   unwind.push(async () => { closing = true; await stopChatSweep(); });
   scheduleChatSweep();
+  const managedRetirement = managedRetirementAuthority({
+    dir: opts.dir, space, dataAccount, barrierReg, retirement, retirementFlights, observeLegacyManagerGate, refuseIfFenced,
+    deprovisionManagedFootprint, serializedForAlias,
+  });
   const callout = calloutAuthority({
     space, issuer, dir: opts.dir, dataAccount, registry, reader: () => reader.current(), chat, gate: gateReads, recordsJsm,
     ...(verifyCallerPayload !== undefined ? { checkCallerPayload } : {}),
@@ -1287,36 +1263,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       }, retirement);
       return { retired: true, lifecycleUid };
     },
-    retireManagedLifecycle: async (args) => {
-      refuseIfFenced();
-      const owner = assertDerivedOwnerToken(args.owner);
-      const actor = assertValidOwnerToken(args.actor);
-      const lifecycleUid = assertLifecycleToken(args.lifecycleUid);
-      // The `prepareAgentRetirement` contract: the host revokes the managed grant FIRST. Only a
-      // grant still live AT THIS uid blocks; a row at another uid is a successor the head decides.
-      if (findManagedActor(opts.dir, owner, actor)?.lifecycleUid === lifecycleUid)
-        throw new EpEnvelopeError("conflict", `managed actor "${owner}/${actor}" is still granted at lifecycle ${lifecycleUid}; revoke the grant before retiring it`);
-      const head = await readLifecycleHeadForOperation(barrierReg, owner, actor);
-      if (head === undefined)
-        return { retired: false, lifecycleUid, notStarted: true };
-      if (head.mapping.lifecycleUid !== lifecycleUid) {
-        if (head.mapping.state === "retired")
-          return { retired: false, lifecycleUid, notStarted: true };
-        throw new EpEnvelopeError("conflict", `managed lifecycle retirement for "${owner}/${actor}" names ${lifecycleUid}, but the authority head is ${head.mapping.state} at ${head.mapping.lifecycleUid}`);
-      }
-      if (head.mapping.state === "retired")
-        return { retired: true, lifecycleUid, alreadyRetired: true };
-      // The rail's opId, not the interactive digest: a host door call and a late participant rail call
-      // create or resume ONE barrier operation and join ONE in-process flight.
-      const opId = managedRetirementOpId(lifecycleUid);
-      const flight = joinOrStartRetirement(retirementFlights, barrierReg, {
-        owner, actor, lifecycleUid, opId, frontierStreams: retirementFrontierStreams(space),
-      }, retirement);
-      if (flight === undefined)
-        throw new EpEnvelopeError("conflict", `managed retirement operation ${opId} is already in flight for different coordinates`);
-      await flight;
-      return { retired: true, lifecycleUid };
-    },
+    retireManagedLifecycle: managedRetirement.retireManagedLifecycle,
     activateManagedLifecycle: async (args) => {
       refuseIfFenced();
       await activateLifecycleAtUid(registry, {
@@ -1885,41 +1832,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         },
       };
     },
-    prepareManagedAgentRetirement: async ({ owner, scope, request }) => {
-      refuseIfFenced();
-      const r = await authorizeRemoteManagedAgentPrepareRetirement({ owner, scope, proofSecret: dataAccount.signingSeed, space, request, observeManagerGate: observeLegacyManagerGate });
-      const { actor, lifecycleUid } = r.target;
-      await serializedForAlias(opts.dir, owner, actor, async () => {
-        // Only a grant still at the target uid is this lifecycle's. A row at another uid belongs to a
-        // successor, and an absent row means an earlier attempt already released both halves.
-        const row = findManagedActor(opts.dir, owner, actor);
-        if (row?.lifecycleUid === lifecycleUid) {
-          // Footprint before grant: while the row stands, a retry still knows which channels to purge.
-          // The footprint work is async, so it runs outside the grant lock.
-          await deprovisionManagedFootprint(owner, actor, lifecycleUid, row.allowSubscribe.filter(isConcreteChannel));
-          // The decision and the write are one transaction: the row removed is the one read above
-          // only if it still names this uid and the custody it carried then. A row written before
-          // custody existed is removed by uid alone, as before.
-          withManagedGrantTransaction(opts.dir, (tx) => {
-            if (row.custody !== undefined) tx.revokeManagedIf(owner, actor, { lifecycleUid, custody: row.custody });
-            else tx.revokeManagedAt(owner, actor, lifecycleUid);
-          });
-        }
-      });
-      return {
-        v: 1,
-        kind: "manager-managed-agent-prepare-retirement",
-        space,
-        owner,
-        actor: r.actor,
-        instanceId: r.instanceId,
-        managerLifecycleUid: r.managerLifecycleUid,
-        requestId: r.requestId,
-        target: r.target,
-        opId: r.opId,
-        prepared: true,
-      };
-    },
+    prepareManagedAgentRetirement: managedRetirement.prepareManagedAgentRetirement,
     verifyManagedAgentRuntime: async ({ owner, request }) => {
       refuseIfFenced();
       const args = {
@@ -2118,8 +2031,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           });
           onConnection?.(readerNc, `cotal:run-attempt-reader:${space}`);
           try {
-            const replay = await replayRunJournal(jetstream(readerNc), await jetstreamManager(readerNc), space, runId, takeoverId);
-            return replay.records.flatMap((stored) => stored.record.kind === "step" ? [stored.record.entry as JournalEntry] : []);
+            return await replayRunJournal(jetstream(readerNc), await jetstreamManager(readerNc), space, runId, takeoverId);
           } finally {
             await drainAndClose(readerNc);
           }
@@ -2324,81 +2236,6 @@ async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: Evic
   }
 }
 
-/** Pure native daemon input validation, shared with its explicit service launch plan. */
-export function authServiceConfiguration(args: ParsedArgs) {
-  const v = args.values as Values;
-  // A callout replica serves no HTTP and hosts no service endpoint, so a flag for either is a
-  // config error rather than a silently ignored option.
-  const calloutOnly = v["callout-only"] !== undefined;
-  // `--spaces` names a manifest of spaces one process serves, one lane each: callout lanes with
-  // `--callout-only`, full services without. It stands in for `--space` rather than defaulting
-  // beside it, so neither mode is ever entered by omission.
-  const spaces = v.spaces;
-  if (spaces !== undefined) {
-    if (v.space !== undefined) throw new Error("auth-service: --space and --spaces are alternatives - name one space or a manifest of spaces, not both");
-    if (spaces.trim() === "") throw new Error("auth-service: --spaces needs the path of a space manifest");
-    // Each space's listeners are its own: an ephemeral loopback port, and the public face its
-    // manifest entry names. A flag would set one value for every space.
-    const perSpace = ["port", "exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url"]
-      .filter((name) => v[name] !== undefined);
-    if (!calloutOnly && perSpace.length > 0)
-      throw new Error(`auth-service: --spaces gives each space an ephemeral loopback port and sets its public face in its manifest entry - drop ${perSpace.map((name) => `--${name}`).join(", ")}`);
-    // Whether a space hosts service endpoints is its own setting too, so the flag would turn them on
-    // for every space. The manifest entry alone says it, and the flag refuses rather than defaulting.
-    if (!calloutOnly && v["service-endpoints"] !== undefined)
-      throw new Error('auth-service: --spaces takes service endpoints per space - set "serviceEndpoints": true on the manifest entry of each space that hosts them and drop --service-endpoints');
-    if (!calloutOnly && v.registry !== undefined)
-      throw new Error('auth-service: --spaces takes registry per space - set "registry": true on each intended manifest entry and drop --registry');
-  } else if (!v.space) {
-    throw new Error("auth-service: --space is required (or --spaces <manifest> to serve several spaces from this one process)");
-  }
-  const space = v.space ?? "";
-  const server = v.server;
-  if (!server) throw new Error("auth-service: --server is required (the broker this callout serves)");
-  if (calloutOnly) {
-    const http = ["port", "exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "service-endpoints", "registry"]
-      .filter((name) => v[name] !== undefined);
-    if (http.length > 0)
-      throw new Error(`auth-service: --callout-only answers the callout alone and serves no HTTP or service endpoint - drop ${http.map((name) => `--${name}`).join(", ")}`);
-  }
-  const port = v.port === undefined ? 0 : Number(v.port);
-  if (!Number.isInteger(port) || port < 0 || port > 65535)
-    throw new Error(`auth-service: --port must be a port number, got "${v.port}"`);
-  // The optional PUBLIC exchange face (see the module header). The three flags travel together:
-  // a public URL or trusted-proxy setting without a listener to apply them to is a config error.
-  const publicPortRaw = v["exchange-public-port"];
-  const publicPort = publicPortRaw === undefined ? undefined : Number(publicPortRaw);
-  if (publicPort !== undefined && (!Number.isInteger(publicPort) || publicPort < 0 || publicPort > 65535))
-    throw new Error(`auth-service: --exchange-public-port must be a port number, got "${publicPortRaw}"`);
-  const publicUrlFlag = v["exchange-public-url"];
-  const trustedProxy = v["exchange-trusted-proxy"] !== undefined;
-  if (publicPort === undefined && (publicUrlFlag !== undefined || trustedProxy))
-    throw new Error("auth-service: --exchange-public-url/--exchange-trusted-proxy require --exchange-public-port");
-  const advertisedServer = v["advertised-server"];
-  if (advertisedServer !== undefined && publicPort === undefined)
-    throw new Error("auth-service: --advertised-server rides the public bundle - it requires --exchange-public-port");
-  const agentProvisioningUrl = v["agent-provisioning-url"];
-  if (agentProvisioningUrl !== undefined && publicPort === undefined)
-    throw new Error("auth-service: --agent-provisioning-url rides the public bundle - it requires --exchange-public-port");
-  const publicFace = publicPort === undefined ? undefined : { port: publicPort, url: publicUrlFlag, trustedProxy, advertisedServer, agentProvisioningUrl };
-  const badFace = publicFace && checkPublicFace(publicFace);
-  if (badFace) throw new Error(badFace);
-  // Service endpoints are off unless the flag names them (or, under --spaces, a space's manifest
-  // entry): an absent flag opens no engine, no discovery connection and no door, and the routes
-  // answer 404 as before.
-  const serviceEndpoints = v["service-endpoints"] !== undefined;
-  // The broker's `authorization { timeout }`, which `cotal up` renders and passes here from the same
-  // value. Absent: the callout's default, which is nats-server's.
-  const authTimeoutRaw = v["auth-timeout"];
-  const authTimeout = authTimeoutRaw === undefined ? undefined : Number(authTimeoutRaw);
-  if (authTimeout !== undefined && (!/^[1-9][0-9]*$/.test(authTimeoutRaw!) || !Number.isSafeInteger(authTimeout)))
-    throw new Error(`auth-service: --auth-timeout must be a positive whole number of seconds, got "${authTimeoutRaw}"`);
-  const limits: AuthCalloutLimits | undefined = authTimeout === undefined ? undefined : { authTimeoutMs: authTimeout * 1000 };
-  if (limits !== undefined) calloutLimits(limits);
-
-  return { space, spaces, server, port, publicFace, serviceEndpoints, registry: v.registry !== undefined, calloutOnly, calloutLimits: limits };
-}
-
 /** Trusted local embedding hooks. They carry no prepared key material or loopback capability. */
 interface AuthDaemonLifecycle extends AuthServiceRuntimeOptions {
   readonly root: string;
@@ -2534,81 +2371,6 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
   }
   await lifecycle?.onClosed();
   process.exit(0);
-}
-
-/** The public-face fields of an `auth-service --spaces` manifest entry: the public-face flags of
- *  `auth-service --space`, under the same names in camel case. */
-const AUTH_HOST_FACE_FIELDS = ["exchangePublicPort", "exchangePublicUrl", "exchangeTrustedProxy", "advertisedServer", "agentProvisioningUrl"] as const;
-
-/** The fields of an `auth-service --spaces` manifest entry besides `space`: the public face, and
- *  `serviceEndpoints`, the per-space form of `--service-endpoints`. */
-const AUTH_HOST_ENTRY_FIELDS = [...AUTH_HOST_FACE_FIELDS, "serviceEndpoints", "registry"] as const;
-
-/** One space's settings in an `auth-service --spaces` manifest, read from its entry. */
-export interface AuthHostEntry {
-  /** The space's public face, or `null` for an entry without `exchangePublicPort`. */
-  publicFace: PublicFaceInput | null;
-  /** Whether the space's lane hosts service endpoints, as `--service-endpoints` does for one space.
-   *  An absent field is `false`. */
-  serviceEndpoints: boolean;
-  /** Default off; only this lane hosts the registry when true. */
-  registry?: boolean;
-}
-
-/** Reads one space's public face from its entry's public-face fields, under the rules the flags
- *  follow. `null` is a space with no public face. */
-function authHostPublicFace(fields: Readonly<Record<string, unknown>>): PublicFaceInput | null {
-  const { exchangePublicPort: port, exchangePublicUrl: url, exchangeTrustedProxy: trustedProxy, advertisedServer, agentProvisioningUrl } = fields;
-  if (port === undefined) {
-    const riders = AUTH_HOST_FACE_FIELDS.slice(1).filter((k) => fields[k] !== undefined);
-    if (riders.length) throw new Error(`${riders.join(", ")} ride${riders.length === 1 ? "s" : ""} the public face - set exchangePublicPort too`);
-    return null;
-  }
-  if (typeof port !== "number") throw new Error(`exchangePublicPort must be a port number, got ${JSON.stringify(port)}`);
-  for (const [name, value] of [["exchangePublicUrl", url], ["advertisedServer", advertisedServer], ["agentProvisioningUrl", agentProvisioningUrl]] as const)
-    if (value !== undefined && typeof value !== "string") throw new Error(`${name} must be a string, got ${JSON.stringify(value)}`);
-  if (trustedProxy !== undefined && typeof trustedProxy !== "boolean") throw new Error(`exchangeTrustedProxy must be true or false, got ${JSON.stringify(trustedProxy)}`);
-  const face: PublicFaceInput = {
-    port,
-    ...(url !== undefined ? { url: url as string } : {}),
-    trustedProxy: trustedProxy === true,
-    ...(advertisedServer !== undefined ? { advertisedServer: advertisedServer as string } : {}),
-    ...(agentProvisioningUrl !== undefined ? { agentProvisioningUrl: agentProvisioningUrl as string } : {}),
-  };
-  const bad = checkPublicFace(face);
-  if (bad) throw new Error(bad.replace(/^auth-service: /, ""));
-  return face;
-}
-
-/** Reads one space's settings from its version 2 manifest entry, under the rules the flags follow,
- *  and refuses two spaces naming one port. */
-const authHostSettings: SpaceSettings<AuthHostEntry> = {
-  parse(_space, fields) {
-    const unknown = Object.keys(fields).filter((k) => !(AUTH_HOST_ENTRY_FIELDS as readonly string[]).includes(k));
-    if (unknown.length) throw new Error(`unknown field(s) ${unknown.join(", ")}; an entry takes space, ${AUTH_HOST_ENTRY_FIELDS.join(", ")}`);
-    const publicFace = authHostPublicFace(fields);
-    const { serviceEndpoints, registry } = fields;
-    if (serviceEndpoints !== undefined && typeof serviceEndpoints !== "boolean") throw new Error(`serviceEndpoints must be true or false, got ${JSON.stringify(serviceEndpoints)}`);
-    if (registry !== undefined && typeof registry !== "boolean") throw new Error("registry must be true or false");
-    return { publicFace, serviceEndpoints: serviceEndpoints === true, registry: registry === true };
-  },
-  across(settings) {
-    const ports = new Map<number, string>();
-    for (const [space, { publicFace: face }] of settings) {
-      if (face === null || face.port === 0) continue;
-      const other = ports.get(face.port);
-      if (other !== undefined) throw new Error(`spaces "${other}" and "${space}" both name exchangePublicPort ${face.port}; each space's public face needs its own port`);
-      ports.set(face.port, space);
-    }
-  },
-};
-
-/** Parse an `auth-service --spaces` manifest with the rules the host applies to every read of it:
- *  the version 2 grammar, each entry's fields and the checks across entries. Throws naming what is
- *  wrong, with the message the host logs. A writer checks a manifest with it before renaming the
- *  file into place. */
-export function parseAuthHostManifest(text: string): SpaceSettingsManifest<AuthHostEntry> {
-  return parseSpaceManifest(text, authHostSettings);
 }
 
 /** One space's full auth service held by a multi-space host ({@link runAuthServiceHost}): the
@@ -2797,16 +2559,6 @@ export interface AuthServiceHandle extends HostedServiceHandle {
    *  stops serving when it resolves. It rejects once the context is no longer ready or a read
    *  fails. */
   awaitHostFence?(instanceId: string, processEpoch: number): Promise<EpGateState | null>;
-}
-
-/** The optional public exchange face: the CLI's `--exchange-public-*`, `--advertised-server` and
- *  `--agent-provisioning-url` flags, or the hosted `publicFace` input. */
-export interface PublicFaceInput {
-  port: number;
-  url?: string;
-  trustedProxy: boolean;
-  advertisedServer?: string;
-  agentProvisioningUrl?: string;
 }
 
 /** The platform composition's input for the platform control door. */
@@ -3347,7 +3099,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
 /** The HTTP routes authenticate a human, so they only ever supply the human arm. */
 type HumanHolder = Extract<ManagerAuthorityHolder, { scope: string[] }>;
 
-interface HandlerCtx {
+export interface HandlerCtx {
   deregisterEndpoint: AuthAuthorityPlane["deregisterEndpoint"];
   /** The callout's connect limits, which the exchange checks before it mints. */
   connectLimiter: ConnectLimiter;
@@ -3400,195 +3152,12 @@ interface HandlerCtx {
   retireChatSession: AuthAuthorityPlane["retireChatSession"];
 }
 
-type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "authorizeManagerParticipation" | "admitManagerRun" | "submitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun" | "cancelManagerRun">;
-
-/** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
-export async function dispatchManagerAuthorityRequest(
-  ctx: ManagerAuthorityDispatchCtx,
-  owner: string,
-  body: { request: unknown },
-): Promise<unknown> {
-  if (body.request === null || typeof body.request !== "object" || Array.isArray(body.request))
-    throw new Error("manager-service authority request must be an object");
-  const request = body.request as { kind?: unknown; actor?: unknown };
-  if (typeof request.actor !== "string") throw new Error("manager-service authority request requires an actor");
-  const row = ledgerAuthorizeGrant(ctx.dir)(owner, request.actor);
-  // #1972: this service owns the ledger and the space's provisioning authority, so it is the host
-  // that enrolls a remote manager's managed agent and prepares its terminal release.
-  if (request.kind === "manager-managed-agent-enrollment")
-    return ctx.enrollManagedAgent({ owner, scope: row.scope ?? [], request: body.request as RemoteManagedAgentEnrollmentRequest });
-  if (request.kind === "manager-managed-agent-prepare-retirement")
-    return ctx.prepareManagedAgentRetirement({ owner, scope: row.scope ?? [], request: body.request as RemoteManagedAgentPrepareRetirementRequest });
-  // The hosted runtime kinds read and drive host-owned intent state that stock does not hold.
-  if (request.kind === "manager-managed-agent-runtime-create" || request.kind === "manager-managed-agent-runtime-status")
-    throw new EpEnvelopeError("unimplemented", "managed agent runtime create and status must be handled by host platform interception");
-  // A delegated user intent creates and consumes a record in the host's intent store, which stock does not hold.
-  if (request.kind === "delegated-user-intent" || request.kind === "manager-delegated-user-intent-execution")
-    throw new EpEnvelopeError("unimplemented", "delegated user intent admission and execution must be handled by host platform interception");
-  if (request.kind === "manager-retained-agent-validation") {
-    const retained = await ctx.validateRetainedAgent({
-      owner,
-      scope: row.scope ?? [],
-      request: body.request as RemoteRetainedAgentValidationRequest,
-    });
-    const authority = await validateRetainedManagedAgent({
-      store: ctx.secrets,
-      dir: ctx.dir,
-      space: ctx.space,
-      owner: retained.target.owner,
-      actor: retained.target.actor,
-      actorToken: retained.actorToken,
-      sentinelCreds: retained.sentinelCreds,
-    });
-    return completeRemoteRetainedAgentValidation(retained, owner, authority);
-  }
-  if (request.kind === "manager-goal-index-scan")
-    return ctx.scanManagerGoalIndex({ owner, scope: row.scope ?? [], request: body.request as import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest });
-  if (request.kind === "manager-admin-authorization")
-    return ctx.authorizeManagerAdmin({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAdminAuthorizationRequest });
-  if (request.kind === "manager-participation-authorization")
-    return ctx.authorizeManagerParticipation
-      ? ctx.authorizeManagerParticipation({ owner, scope: row.scope ?? [], request: body.request as import("@cotal-ai/core").RemoteManagerParticipationAuthorizationRequest })
-      : Promise.reject(new EpEnvelopeError("unimplemented", "manager participation authorization is unavailable"));
-  if (request.kind === "manager-run-admission")
-    return ctx.admitManagerRun({ owner, scope: row.scope ?? [], request: body.request });
-  if (request.kind === "manager-run-submission") {
-    if (!ctx.submitManagerRun) throw new EpEnvelopeError("unimplemented", "issuing host has no keyed submission handler");
-    return ctx.submitManagerRun({ owner, scope: row.scope ?? [], request: body.request });
-  }
-  if (request.kind === "manager-run-cancel") {
-    if (!ctx.cancelManagerRun) throw new EpEnvelopeError("unimplemented", "this issuing host has no run-cancel handler");
-    return ctx.cancelManagerRun({ owner, scope: row.scope ?? [], request: body.request });
-  }
-  if (request.kind === "manager-run-revoke") {
-    if (ctx.revokeManagerRun === undefined) throw new EpEnvelopeError("unimplemented", "this issuing host has no run revoke handler");
-    return ctx.revokeManagerRun({ owner, scope: row.scope ?? [], request: body.request });
-  }
-  if (request.kind === "manager-run-attempt")
-    return ctx.issueManagerRunAttempt({ owner, scope: row.scope ?? [], request: body.request });
-  if (request.kind === "manager-service-maintenance")
-    return ctx.maintainRemoteManager({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerMaintenanceRequest });
-  return ctx.managerServiceAuthority({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAuthorityRequest });
-}
-
-/** Per-listener policy for `POST /exchange` — how a caller is proven, attributed, and throttled on
- *  the face the request arrived on. The loopback face demands the per-start capability (a same-uid
- *  file-ACL boundary via the 0600 discovery file) and attributes peers by socket address; the
- *  public face demands no capability (it has no remote meaning — the credential is the proof) and
- *  buckets failures per peer. Each face owns its budgets — neither can starve the other.
- *  `POST /manager-service-authority` takes the same policy and spends the same budgets. */
-interface ExchangePolicy {
-  /** Demand `Authorization: Bearer <cap>` (the discovery-file capability) before anything else. */
-  requireCapability: boolean;
-  /** Refuse `view` requests that are not in {@link PUBLIC_EXCHANGE_VIEWS}. Loopback leaves this
-   *  false so every view still reaches the bridge; the public face keeps god-view, history-purge,
-   *  deployer, and manager-service loopback-only. */
-  refuseViews: boolean;
-  /** Name the requesting peer for failure attribution. */
-  peerKey(req: IncomingMessage): string;
-  /** True when this face's refused-exchange budget (for `peer`) is exhausted; prunes the window. */
-  throttled(ctx: Pick<HandlerCtx, "failures">, peer: string): boolean;
-  /** Record a refused exchange against this face's budget (for `peer`). */
-  recordFailure(ctx: Pick<HandlerCtx, "failures">, peer: string): void;
-  /** Public face only: rolling window of authenticated manager-selection refusals for `key`
-   *  (`${principal}:pinned` or `${principal}:unpinned`). Absent on loopback, which keeps its
-   *  existing refusal classification and shared probing window. */
-  selectionWindow?(key: string): number[];
-}
-
-/** The loopback face: capability-gated; peers keyed by socket remote address; one shared
- *  refused-exchange window (the pre-public behavior, unchanged). */
-const LOOPBACK_POLICY: ExchangePolicy = {
-  requireCapability: true,
-  refuseViews: false,
-  peerKey: (req) => req.socket.remoteAddress ?? "loopback",
-  throttled: (ctx) => {
-    const now = Date.now();
-    while (ctx.failures.length && now - ctx.failures[0] > 60_000) ctx.failures.shift();
-    return ctx.failures.length >= FAILED_EXCHANGE_PER_MIN;
-  },
-  recordFailure: (ctx) => ctx.failures.push(Date.now()),
-};
-
-/** Bounded LRU of 60-second rolling timestamp windows, shared by per-peer public throttling and
- *  per-principal public selection throttling. */
-function makeRollingBuckets(max: number): (key: string) => number[] {
-  const buckets = new Map<string, number[]>(); // insertion order = recency (touched keys re-insert)
-  return (key: string): number[] => {
-    const existing = buckets.get(key);
-    let b: number[];
-    if (existing !== undefined) {
-      buckets.delete(key); // re-insert → most-recently-used
-      buckets.set(key, existing);
-      b = existing;
-    } else {
-      if (buckets.size >= max) buckets.delete(buckets.keys().next().value as string);
-      b = [];
-      buckets.set(key, b);
-    }
-    const now = Date.now();
-    while (b.length && now - b[0] > 60_000) b.shift();
-    return b;
-  };
-}
-
-/** The public face's policy: no capability, views other than {@link PUBLIC_EXCHANGE_VIEWS}
- *  refused, and failures bucketed per peer in a
- *  bounded LRU — peer A's refusal flood throttles peer A, not peer B, and never the loopback
- *  face. With `trustedProxy`, the peer is the LAST X-Forwarded-For hop (the one address the
- *  operator's own reverse proxy appended — earlier hops are attacker-writable); without it the
- *  header is ignored entirely and the socket remote address attributes the peer. */
-function makePublicPolicy(trustedProxy: boolean): ExchangePolicy {
-  const bucket = makeRollingBuckets(PUBLIC_PEER_BUCKETS_MAX);
-  const selectionBucket = makeRollingBuckets(PUBLIC_SELECTION_BUCKETS_MAX);
-  return {
-    requireCapability: false,
-    refuseViews: true,
-    peerKey: (req) => {
-      if (trustedProxy) {
-        const xff = req.headers["x-forwarded-for"];
-        const last = (Array.isArray(xff) ? xff[xff.length - 1] : xff)?.split(",").pop()?.trim();
-        if (last) return last;
-      }
-      return req.socket.remoteAddress ?? "unknown";
-    },
-    throttled: (_ctx, peer) => {
-      const b = bucket(peer);
-      return b.length >= PUBLIC_FAILED_PER_MIN;
-    },
-    recordFailure: (_ctx, peer) => bucket(peer).push(Date.now()),
-    selectionWindow: (principal) => selectionBucket(principal),
-  };
-}
-
-/** JSON reply helper. No CORS headers, ever — a browser context must never be granted a readable
- *  response here. */
-function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
-  res.writeHead(status, { "content-type": "application/json", ...headers });
-  res.end(JSON.stringify(body));
-}
-
-/** An HTTP-shaped request refusal found while reading the body. Keeping the status on the error
- *  lets both listeners return the SAME exact wire response rather than collapsing a deliberate
- *  size refusal into the generic malformed-request 400. */
-class RequestBodyError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
-  }
-}
-
 /** `e`, raised before any write, as a refusal that states so (SPEC 13.3). An envelope error keeps
  *  its code; any other error takes `code`. */
 function notExecuted(e: unknown, code: EpErrorCode): EpEnvelopeError {
   return e instanceof EpEnvelopeError
     ? new EpEnvelopeError(e.code, e.message, e.details, "not-executed")
     : new EpEnvelopeError(code, e instanceof Error ? e.message : String(e), undefined, "not-executed");
-}
-
-function sendRequestError(res: ServerResponse, e: unknown): void {
-  if (e instanceof RequestBodyError) return send(res, e.status, { error: e.message });
-  console.error("auth-service: unexpected request error", e);
-  send(res, 500, { error: "internal server error" });
 }
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx) => void | Promise<void>;
@@ -3635,535 +3204,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx
   }
 }
 
-const INTERACTIVE_RETIRE_KEYS = new Set(["owner", "actor", "lifecycleUid"]);
-
-/** The interactive retirement door. Every refusal before the barrier starts retired nothing and
- *  answers `outcome: "not-executed"` (SPEC 13.3), with the plane's native `code` when the plane
- *  raised it. A failure inside the barrier answers 400 with no outcome, which reads as unknown. */
-async function handleInteractiveLifecycleRetirement(
-  req: IncomingMessage,
-  res: ServerResponse,
-  ctx: HandlerCtx,
-): Promise<void> {
-  const before = { outcome: "not-executed" } as const;
-  if (req.method !== "POST") return send(res, 405, { error: "POST only", ...before });
-  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here", ...before });
-  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
-    return send(res, 415, { error: "content-type must be application/json", ...before });
-  if (req.headers.authorization !== `Bearer ${ctx.cap}`)
-    return refuseCapability(res, ctx, "missing/invalid exchange capability - interactive lifecycle retirement is a loopback operator action", { ...before });
-  const body = await readJsonBody(req);
-  if (body === null || typeof body !== "object" || Array.isArray(body))
-    return send(res, 400, { error: "interactive lifecycle retirement needs { owner, actor, lifecycleUid }", ...before });
-  for (const key of Object.keys(body))
-    if (!INTERACTIVE_RETIRE_KEYS.has(key))
-      return send(res, 400, { error: `interactive lifecycle retirement carries the unknown field "${key}"`, ...before });
-  const raw = body as { owner?: unknown; actor?: unknown; lifecycleUid?: unknown };
-  if (typeof raw.owner !== "string" || typeof raw.actor !== "string" || typeof raw.lifecycleUid !== "string")
-    return send(res, 400, { error: "interactive lifecycle retirement needs string { owner, actor, lifecycleUid }", ...before });
-  let owner: string, actor: string, lifecycleUid: string;
-  try {
-    owner = assertDerivedOwnerToken(raw.owner);
-    actor = assertValidOwnerToken(raw.actor);
-    lifecycleUid = assertLifecycleToken(raw.lifecycleUid);
-  } catch (e) {
-    return send(res, 400, { error: e instanceof Error ? e.message : String(e), ...before });
-  }
-  const row = findInteractiveActor(ctx.dir, owner, actor);
-  if (!row) return send(res, 404, { error: `interactive actor "${owner}/${actor}" is not granted`, ...before });
-  if (row.lifecycleUid !== lifecycleUid)
-    return send(res, 409, { error: `interactive actor "${owner}/${actor}" is current at lifecycle ${row.lifecycleUid ?? "<missing>"}, not ${lifecycleUid}`, ...before });
-  try {
-    return send(res, 200, await ctx.retireInteractiveLifecycle({ owner, actor, lifecycleUid }));
-  } catch (e) {
-    if (e instanceof EpEnvelopeError && e.outcome === "not-executed")
-      return send(res, REFUSAL_STATUS[e.code] ?? 500, { error: e.message, code: e.code, outcome: e.outcome });
-    throw e;
-  }
-}
-
-/** The host's terminal step for a managed lifecycle whose remote manager is gone: the same request
- *  guards as the interactive door, but it requires the managed grant to be REVOKED first (the
- *  `prepareAgentRetirement` contract) and runs the rail's `managedRetirementOpId(uid)` operation. */
-async function handleManagedLifecycleRetirement(
-  req: IncomingMessage,
-  res: ServerResponse,
-  ctx: HandlerCtx,
-): Promise<void> {
-  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
-  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
-  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
-    return send(res, 415, { error: "content-type must be application/json" });
-  if (req.headers.authorization !== `Bearer ${ctx.cap}`)
-    return refuseCapability(res, ctx, "missing/invalid exchange capability - managed lifecycle retirement is a loopback host action");
-  const body = await readJsonBody(req);
-  if (body === null || typeof body !== "object" || Array.isArray(body))
-    return send(res, 400, { error: "managed lifecycle retirement needs { owner, actor, lifecycleUid }" });
-  for (const key of Object.keys(body))
-    if (!INTERACTIVE_RETIRE_KEYS.has(key))
-      return send(res, 400, { error: `managed lifecycle retirement carries the unknown field "${key}"` });
-  const raw = body as { owner?: unknown; actor?: unknown; lifecycleUid?: unknown };
-  if (typeof raw.owner !== "string" || typeof raw.actor !== "string" || typeof raw.lifecycleUid !== "string")
-    return send(res, 400, { error: "managed lifecycle retirement needs string { owner, actor, lifecycleUid }" });
-  const owner = assertDerivedOwnerToken(raw.owner);
-  const actor = assertValidOwnerToken(raw.actor);
-  const lifecycleUid = assertLifecycleToken(raw.lifecycleUid);
-  try {
-    return send(res, 200, await ctx.retireManagedLifecycle({ owner, actor, lifecycleUid }));
-  } catch (e) {
-    if (e instanceof EpEnvelopeError && e.code === "conflict") return send(res, 409, { error: e.message });
-    throw e;
-  }
-}
-
-const MANAGED_ACTIVATE_KEYS = new Set(["accountPublicKey", "owner", "actor", "lifecycleUid"]);
-
-/** The separate host process's exact activation door. The capability selects this running auth
- *  authority, while `accountPublicKey` binds the request to the account assignment the host meant
- *  to address. Every route and parser refusal precedes the plane call. The plane then supplies the
- *  existing readiness fence and UID-exact lifecycle semantics unchanged. */
-async function handleManagedLifecycleActivation(
-  req: IncomingMessage,
-  res: ServerResponse,
-  ctx: HandlerCtx,
-): Promise<void> {
-  const before = { outcome: "not-executed" } as const;
-  if (req.method !== "POST") return send(res, 405, { error: "POST only", code: "bad-request", ...before });
-  if (req.headers.origin !== undefined)
-    return send(res, 403, { error: "browser-origin requests are not served here", code: "permission-denied", ...before });
-  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
-    return send(res, 415, { error: "content-type must be application/json", code: "bad-request", ...before });
-  if (req.headers.authorization !== `Bearer ${ctx.cap}`)
-    return refuseCapability(res, ctx, "missing/invalid exchange capability - managed lifecycle activation is a loopback host action", { code: "unauthenticated", ...before });
-  let body: unknown;
-  try {
-    body = await readJsonBody(req);
-  } catch (e) {
-    if (e instanceof RequestBodyError)
-      return send(res, e.status, { error: e.message, code: "bad-request", ...before });
-    return send(res, 400, { error: e instanceof Error ? e.message : String(e), code: "bad-request", ...before });
-  }
-  const malformed = (why: string) => send(res, 400, { error: `managed lifecycle activation ${why}`, code: "bad-request", ...before });
-  if (body === null || typeof body !== "object" || Array.isArray(body))
-    return malformed("needs { accountPublicKey, owner, actor, lifecycleUid }");
-  for (const key of Object.keys(body))
-    if (!MANAGED_ACTIVATE_KEYS.has(key)) return malformed(`carries the unknown field "${key}"`);
-  const raw = body as Partial<Record<keyof ManagedLifecycleActivationRequest, unknown>>;
-  if (typeof raw.accountPublicKey !== "string" || typeof raw.owner !== "string" || typeof raw.actor !== "string" || typeof raw.lifecycleUid !== "string")
-    return malformed("needs string { accountPublicKey, owner, actor, lifecycleUid }");
-  if (raw.accountPublicKey !== ctx.accountPublicKey)
-    return send(res, 403, { error: "managed lifecycle activation names a foreign account authority", code: "permission-denied", ...before });
-  let target: { owner: string; actor: string; lifecycleUid: string };
-  try {
-    target = {
-      owner: assertDerivedOwnerToken(raw.owner),
-      actor: assertValidOwnerToken(raw.actor),
-      lifecycleUid: assertLifecycleToken(raw.lifecycleUid),
-    };
-  } catch (e) {
-    return malformed(e instanceof Error ? e.message : String(e));
-  }
-  try {
-    await ctx.activateManagedLifecycle(target);
-    const result: ManagedLifecycleActivationResult = { accountPublicKey: ctx.accountPublicKey, ...target, activated: true };
-    return send(res, 200, result);
-  } catch (e) {
-    if (e instanceof EpEnvelopeError)
-      return send(res, e.code === "already-exists" ? 409 : (REFUSAL_STATUS[e.code] ?? 500), {
-        error: e.message,
-        code: e.code,
-        outcome: e.outcome ?? "unknown",
-        ...(e.details !== undefined ? { details: e.details } : {}),
-      });
-    return send(res, 500, {
-      error: e instanceof Error ? e.message : String(e),
-      code: "internal",
-      outcome: "unknown",
-    });
-  }
-}
-
-/** The envelope-error to HTTP mapping this door answers with. A code the catalog grows but this
- *  table does not name becomes 403 rather than a 500: a refusal is a refusal, and a door that
- *  answered 500 to a new permission code would read as a host fault to the platform calling it. */
-const VERIFY_ENROLLMENT_STATUS: Partial<Record<string, number>> = {
-  "unauthenticated": 401,
-  "permission-denied": 403,
-  "conflict": 409,
-  "failed-precondition": 412,
-  "bad-request": 400,
-};
-
-const VERIFY_ENROLLMENT_KEYS = new Set(["owner", "request"]);
-
-/**
- * #1972 §2.2 item 3: the host platform's decision door for a remote manager's managed-agent
- * enrollment or terminal-release preparation.
- *
- * The platform that owns the database, the durables, and the ledger terminates its own public
- * route, authenticates the human there, and POSTs the resulting owner token plus the participant's
- * verbatim request here. This process answers because it is the only one holding the manager gate
- * connection and the data-account signing seed: the proof check and the gate read happen inside it,
- * and no secret crosses back.
- *
- * The caller supplies an OWNER and a REQUEST, and nothing else. The caller's scope is derived from
- * this machine's ledger (`ledgerAuthorizeGrant`), never accepted from the body — a platform bug that
- * forwarded a participant-supplied scope array could otherwise hand `supervise` to any caller.
- */
-async function handleVerifyManagedAgentEnrollment(
-  req: IncomingMessage,
-  res: ServerResponse,
-  ctx: HandlerCtx,
-): Promise<void> {
-  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
-  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
-  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
-    return send(res, 415, { error: "content-type must be application/json" });
-  if (req.headers.authorization !== `Bearer ${ctx.cap}`)
-    return refuseCapability(res, ctx, "missing/invalid exchange capability - managed agent enrollment verification is a loopback host action");
-  const body = await readJsonBody(req);
-  if (body === null || typeof body !== "object" || Array.isArray(body))
-    return send(res, 400, { error: "managed agent enrollment verification needs { owner, request }" });
-  for (const key of Object.keys(body))
-    if (!VERIFY_ENROLLMENT_KEYS.has(key))
-      return send(res, 400, { error: `managed agent enrollment verification carries the unknown field "${key}"` });
-  const raw = body as { owner?: unknown; request?: unknown };
-  if (typeof raw.owner !== "string" || raw.request === null || typeof raw.request !== "object" || Array.isArray(raw.request))
-    return send(res, 400, { error: "managed agent enrollment verification needs a string owner and an object request" });
-  const request = raw.request as { kind?: unknown; actor?: unknown };
-  const runtimeKind = request.kind === "manager-managed-agent-runtime-create" || request.kind === "manager-managed-agent-runtime-status";
-  if (request.kind !== "manager-managed-agent-enrollment" && request.kind !== "manager-managed-agent-prepare-retirement" && !runtimeKind)
-    return send(res, 400, { error: 'managed agent enrollment verification serves only kind "manager-managed-agent-enrollment", "manager-managed-agent-prepare-retirement", "manager-managed-agent-runtime-create" or "manager-managed-agent-runtime-status"' });
-  if (typeof request.actor !== "string")
-    return send(res, 400, { error: "managed agent enrollment verification request requires an actor" });
-  try {
-    const owner = assertDerivedOwnerToken(raw.owner);
-    // The SCOPE DERIVATION, internal by construction: the interactive row for this exact
-    // (owner, actor) on this machine's ledger decides, so `supervise` cannot be asserted by the
-    // caller. An ungranted actor throws the ledger's own operator-exact sentence.
-    const row = ledgerAuthorizeGrant(ctx.dir)(owner, request.actor);
-    const scope = row.scope ?? [];
-    if (runtimeKind) {
-      // The plane re-reads the same ledger row itself: the runtime decision never takes a scope.
-      const decision = await ctx.verifyManagedAgentRuntime({
-        owner,
-        request: raw.request as import("@cotal-ai/core").RemoteManagedAgentRuntimeRequest,
-      });
-      return send(res, 200, { authorized: true, ...decision });
-    }
-    if (request.kind === "manager-managed-agent-enrollment") {
-      const { request: verified, parent } = await ctx.verifyManagedAgentEnrollment({
-        owner,
-        scope,
-        request: raw.request as import("@cotal-ai/core").RemoteManagedAgentEnrollmentRequest,
-      });
-      return send(res, 200, {
-        authorized: true,
-        owner,
-        actor: verified.target.actor,
-        instanceId: verified.instanceId,
-        serveEpoch: verified.serveEpoch,
-        parent,
-      });
-    }
-    const verified = await ctx.verifyManagedAgentPrepareRetirement({
-      owner,
-      scope,
-      request: raw.request as import("@cotal-ai/core").RemoteManagedAgentPrepareRetirementRequest,
-    });
-    return send(res, 200, {
-      authorized: true,
-      owner,
-      actor: verified.target.actor,
-      instanceId: verified.instanceId,
-      serveEpoch: verified.serveEpoch,
-    });
-  } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-    console.error(`auth-service: refused managed agent enrollment verification: ${reason}`);
-    const status = e instanceof EpEnvelopeError ? (VERIFY_ENROLLMENT_STATUS[e.code] ?? 403) : 403;
-    return send(res, status, { error: reason });
-  }
-}
-
-/** Refuse a missing/invalid loopback capability, audited and counted in its own window (see
- *  BAD_CAP_PER_MIN): 401 with `reason` until the window is full, then 429. */
-function refuseCapability(res: ServerResponse, ctx: Pick<HandlerCtx, "badCaps">, reason: string, extra: { code?: string; outcome?: string } = {}): void {
-  const now = Date.now();
-  while (ctx.badCaps.length && now - ctx.badCaps[0] > 60_000) ctx.badCaps.shift();
-  ctx.badCaps.push(now);
-  console.error("auth-service: rejected an exchange with a missing/invalid capability");
-  if (ctx.badCaps.length > BAD_CAP_PER_MIN)
-    return send(res, 429, { error: "too many invalid-capability attempts - wait a minute and retry", ...extra });
-  send(res, 401, { error: reason, ...extra });
-}
-
-/** Refuse an exchange against the face's refused-exchange budget (see {@link ExchangePolicy}): record
- *  the failure, audit it, then answer 429 when the peer was already throttled, or else `status` with
- *  `body`. Every refusal that spends the budget goes through here, so the mask and the audit line
- *  exist once. `throttledExtra` rides on the 429 for a route whose answers carry a code. */
-function refuseExchange(
-  res: ServerResponse,
-  ctx: Pick<HandlerCtx, "failures">,
-  policy: ExchangePolicy,
-  peer: string,
-  peerThrottled: boolean,
-  audit: string,
-  status: number,
-  body: { error: string; code?: string; outcome?: string },
-  throttledExtra: { code?: string; outcome?: string } = {},
-): void {
-  policy.recordFailure(ctx, peer);
-  console.error(`auth-service: ${audit}`);
-  if (peerThrottled) return send(res, 429, { error: "too many refused exchanges - wait a minute and retry", ...throttledExtra });
-  send(res, status, body);
-}
-
-/** Public-face authenticated manager-selection (#3959): called ONLY after the caller's
- *  credential (IdP JWT or actor secret) and ledger actor grant have verified. On loopback
- *  (`policy.selectionWindow === undefined`), selection runs directly inside the caller's try and
- *  keeps its existing refusal classification: unpinned selection misses do not spend the probing
- *  budget. On the
- *  public face, each verified principal has two selection-refusal windows keyed by principal and
- *  request class (`pinned` when `requested !== undefined`, `unpinned` when `requested === undefined`,
- *  never by the requested instance id): each class checks its own window BEFORE
- *  `selectManagerInstance` runs, sheds only its own selection work with its class remedy when
- *  full (refusing requests of that class that would have succeeded while leaving the other class
- *  open), and records in-budget selection refusals into that class window without touching the
- *  per-peer probing budget. */
-async function selectExchangeManagerInstance(
-  res: ServerResponse,
-  ctx: Pick<HandlerCtx, "selectManagerInstance">,
-  policy: ExchangePolicy,
-  principal: string,
-  owner: string,
-  requested: string | undefined,
-  caller: ManagerCaller,
-  logLabel: string,
-): Promise<string | undefined> {
-  if (!policy.selectionWindow) return ctx.selectManagerInstance(owner, requested, caller);
-  const selectionClass = requested !== undefined ? "pinned" : "unpinned";
-  const window = policy.selectionWindow(`${principal}:${selectionClass}`);
-  if (window.length >= PUBLIC_SELECTION_FAILED_PER_MIN) {
-    const throttledReason =
-      selectionClass === "pinned" ? PUBLIC_PINNED_SELECTION_THROTTLED_REASON : PUBLIC_UNPINNED_SELECTION_THROTTLED_REASON;
-    console.error(`auth-service: ${logLabel}: ${throttledReason}`);
-    send(res, 429, { error: throttledReason });
-    return undefined;
-  }
-  try {
-    return await ctx.selectManagerInstance(owner, requested, caller);
-  } catch (e) {
-    window.push(Date.now());
-    const reason = e instanceof Error ? e.message : String(e);
-    console.error(`auth-service: ${logLabel}: ${reason}`);
-    send(res, 401, { error: reason });
-    return undefined;
-  }
-}
-
-/** The exchange body, shared by every face; `policy` says how this face proves and attributes the
- *  caller, and whether authenticated manager-selection refusals use the public face's two
- *  per-principal class windows (`pinned` and `unpinned`) or the loopback face's existing
- *  refusal classification. */
-async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
-  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
-  // Browser exclusion: a cross-site page CAN reach loopback, but its requests carry `Origin`
-  // (and can't strip it). The CLI never sends one. Reject before touching anything else.
-  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
-  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
-    return send(res, 415, { error: "content-type must be application/json" });
-  if (policy.requireCapability) {
-    // The capability gate: same-user file ACL on the 0600 discovery file is the boundary. An
-    // invalid/missing cap is still a failed exchange attempt — audited and throttled, in its own
-    // window (see BAD_CAP_PER_MIN), before anything downstream is touched.
-    const auth = req.headers.authorization ?? "";
-    if (auth !== `Bearer ${ctx.cap}`)
-      return refuseCapability(res, ctx, "missing/invalid exchange capability - read it from the space's auth-service.json");
-  }
-  // Refused-exchange rate limit (probing protection): count only FAILURES, on THIS face's budget.
-  //
-  // The gate is evaluated here but NOT enforced here. Enforcing before the body was read meant a
-  // full bucket refused every request from that peer key, including ones carrying a valid IdP JWT
-  // or actor token - and on the public face the default peer key is the socket address, so in the
-  // reverse-proxy topology `run-a-mesh.md` recommends, every client shares one bucket. Thirty
-  // unauthenticated garbage POSTs then denied the public mint path for a rolling minute (#802).
-  //
-  // Peer throttling exists to slow PROBING, and a valid credential is not probing. So a throttled
-  // peer still gets its credential evaluated: if it is good, it mints; if it is bad, the refusal
-  // arms below answer 429 instead of the specific reason, because the reason is what makes probing
-  // cheap and withholding it is the whole point of the peer budget. A full peer bucket never
-  // refuses a request that would have succeeded; on the public face, only a principal's own full
-  // `pinned` or `unpinned` selection-refusal window sheds `selectManagerInstance` for that class
-  // (refusing requests of that class before selection, including ones that would have succeeded,
-  // while leaving the other class open).
-  const peer = policy.peerKey(req);
-  const peerThrottled = policy.throttled(ctx, peer);
-  const body = await readJsonBody(req);
-  if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    const reason = "exchange body must be a JSON object";
-    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused an exchange: ${reason}`, 400, { error: reason });
-  }
-  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter } = body as {
-    idpToken?: unknown;
-    actor?: unknown;
-    actorToken?: unknown;
-    owner?: unknown;
-    ttlSec?: unknown;
-    view?: unknown;
-    managerInstanceId?: unknown;
-    sessionGrant?: unknown;
-    transferWriter?: unknown;
-  };
-  if ((view === "session-caller") !== (sessionGrant !== undefined))
-    return send(res, 400, { error: 'view "session-caller" and sessionGrant come together or not at all' });
-  if ((view === "transfer-writer") !== (transferWriter !== undefined))
-    return send(res, 400, { error: 'view "transfer-writer" and transferWriter come together or not at all' });
-  if (ttlSec !== undefined && typeof ttlSec !== "number") return send(res, 400, { error: "ttlSec must be a number" });
-  if (view !== undefined && typeof view !== "string") return send(res, 400, { error: "view must be a string when present" });
-  if (managerInstanceId !== undefined && typeof managerInstanceId !== "string") return send(res, 400, { error: "managerInstanceId must be a string when present" });
-  if (managerInstanceId !== undefined && view !== "manager-caller") return send(res, 400, { error: 'managerInstanceId is valid only with view "manager-caller"' });
-  // Public face: channel-writer / channel-purger and the narrowing manager-caller view.
-  // admin, purger, deployer, and manager-service stay loopback-only, whatever the credential.
-  // A refused view is a refused exchange, answered through refuseExchange like the neighbouring
-  // denial sites. A served view stays unthrottled.
-  if (policy.refuseViews && view !== undefined && !(PUBLIC_EXCHANGE_VIEWS as readonly string[]).includes(view)) {
-    const reason = "elevated views are a loopback operator surface - the public exchange never serves them";
-    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused an exchange: ${reason}`, 403, { error: reason });
-  }
-  // TWO grant types, disjoint by construction: a HUMAN exchange proves an IdP session
-  // (idpToken), an AGENT exchange proves a spawn-time ledger secret (owner + actorToken).
-  // A request presenting both is malformed — refuse rather than pick.
-  if (idpToken !== undefined && actorToken !== undefined)
-    return send(res, 400, { error: "exchange takes idpToken (human) OR owner+actorToken (agent), never both" });
-  if (actorToken !== undefined) {
-    // The actor-secret exception is manager-caller only: it adds no command capability.
-    // Elevated views still require a signed-in human, whatever this agent's row carries.
-    if (view !== undefined && view !== "manager-caller")
-      return send(res, 400, { error: "the managed (agent-secret) exchange never mints elevated views - views ride a signed-in human exchange" });
-    if (typeof owner !== "string" || !owner || typeof actor !== "string" || !actor || typeof actorToken !== "string" || !actorToken)
-      return send(res, 400, { error: "agent exchange needs { owner: string, actor: string, actorToken: string, ttlSec?: number }" });
-    try {
-      const grant = ledgerAuthorizeAgentExchange(ctx.dir, owner, actor, actorToken);
-      if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)
-        throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - respawn it (bearers are lifecycle-bound from v0.4)`);
-      ctx.connectLimiter.check({ owner, actor });
-      let selectedManagerInstanceId: string | undefined;
-      if (view === "manager-caller") {
-        selectedManagerInstanceId = await selectExchangeManagerInstance(
-          res,
-          ctx,
-          policy,
-          `${owner}.${actor}`,
-          owner,
-          managerInstanceId as string | undefined,
-          "agent",
-          "refused an agent exchange",
-        );
-        if (selectedManagerInstanceId === undefined) return;
-      }
-      // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential is
-      // ensured (minted release-last on first exchange) BEFORE the bearer bytes are signed,
-      // and rides act.credentialId — the connect arm requires it against the LIVE cred row.
-      const credentialId = await ctx.mintConnectCredential({ owner, actor, lifecycleUid: grant.lifecycleUid });
-      const token = await ctx.issuer.issue({
-        owner,
-        space: ctx.space,
-        actor,
-        scope: grant.scope,
-        parent: grant.parent,
-        // Lifecycle-BIND the bearer (SPEC 13.1): the row's uid rides act.lifecycleUid, and the
-        // callout refuses a mismatch against the CURRENT row at connect — a predecessor's
-        // still-unexpired bearer dies at the alias's respawn instead of minting the
-        // successor's broker authority.
-        lifecycleUid: grant.lifecycleUid,
-        credentialId,
-        ...(view === "manager-caller" ? { view, managerInstanceId: selectedManagerInstanceId } : {}),
-        ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
-      });
-      const { exp } = decodeJwt(token);
-      return send(res, 200, { token, owner, exp });
-    } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e);
-      if (e instanceof ConnectRateLimited) return sendRateLimited(res, e);
-      if (e instanceof ManagerSelectionRefusal) {
-        console.error(`auth-service: refused an agent exchange: ${reason}`);
-        return send(res, 401, { error: reason });
-      }
-      return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused an agent exchange: ${reason}`, 401, { error: reason });
-    }
-  }
-  if (typeof idpToken !== "string" || !idpToken || typeof actor !== "string" || !actor)
-    return send(res, 400, { error: "exchange needs { idpToken: string, actor: string, ttlSec?: number, view?: string }" });
-  try {
-    // The bridge validates `view` against the closed enum and the fresh ledger grant — an
-    // unknown or under-scoped view is a refused exchange (audited + throttled like any other).
-    let selectedManagerInstanceId: string | undefined;
-    if (view === "manager-caller") {
-      assertValidOwnerToken(actor);
-      const derivedOwner = deriveOwnerForIdpSubject(
-        ctx.ownerSecret,
-        ctx.bridgeIdp.issuer,
-        (await verifyIdpToken(idpToken, ctx.bridgeIdp)).sub,
-      );
-      ctx.authorizeActor(derivedOwner, actor);
-      selectedManagerInstanceId = await selectExchangeManagerInstance(
-        res,
-        ctx,
-        policy,
-        derivedOwner,
-        derivedOwner,
-        managerInstanceId as string | undefined,
-        "human",
-        "refused an exchange",
-      );
-      if (selectedManagerInstanceId === undefined) return;
-    }
-    // #2312: a session-caller bearer is signed only once the identity plane has decided that THIS
-    // principal holds THAT redeemed session. The bridge's `verifySession` hook runs the decision on
-    // the principal it derived, before signing; the callout re-runs it at the mint.
-    const session = view === "session-caller" ? grantCoordinates(sessionGrant) : undefined;
-    if (transferWriter !== undefined) assertTransferWriterClaim(transferWriter);
-    const r = await ctx.bridge.exchange(idpToken, {
-      actor,
-      ttlSec,
-      view: view as UserTokenView | undefined,
-      managerInstanceId: selectedManagerInstanceId,
-      ...(session ? { verifySession: (p: { owner: string; actor: string; lifecycleUid: string }) => ctx.verifySession(p, session) } : {}),
-      ...(transferWriter !== undefined ? { transferWriter } : {}),
-    });
-    return send(res, 200, r);
-  } catch (e) {
-    // A refused exchange (bad IdP token, ungranted actor, expired proof) is an AUTHENTICATED
-    // denial with the reason — the client shows it to the operator verbatim.
-    const reason = e instanceof Error ? e.message : String(e);
-    if (e instanceof ConnectRateLimited) return sendRateLimited(res, e);
-    if (e instanceof ManagerSelectionRefusal) {
-      console.error(`auth-service: refused an exchange: ${reason}`);
-      return send(res, 401, { error: reason });
-    }
-    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused an exchange: ${reason}`, 401, { error: reason });
-  }
-}
-
-/** An authenticated exchange whose actor the connect limits refuse. It is not probing, so it spends
- *  no refused-exchange budget; it answers 429 with the typed body and `Retry-After` (SPEC §10). */
-function sendRateLimited(res: ServerResponse, e: ConnectRateLimited): void {
-  console.error(`auth-service: refused an exchange: ${e.code} retry-after ${e.retryAfterSeconds}s: ${e.message}`);
-  send(res, 429, { code: e.code, retryAfterSeconds: e.retryAfterSeconds, limit: e.limit, error: `${e.message} - retry in ${e.retryAfterSeconds}s` }, { "retry-after": String(e.retryAfterSeconds) });
-}
-
 /** Each chat-session route's CLOSED body: an unknown or missing field refuses before any read. */
 const CHAT_SESSION_FIELDS: Readonly<Record<"open" | "bearer" | "retire", { required: readonly string[]; optional: readonly string[] }>> = {
   open: { required: ["idpToken", "holderHash", "read", "post", "ttlSec"], optional: ["label"] },
   bearer: { required: ["idpToken", "actor", "holderProof"], optional: [] },
   retire: { required: ["idpToken", "actor", "lifecycleUid", "holderProof"], optional: [] },
-};
-
-/** HTTP status for a door refusal's native code; the body carries the code itself. */
-const REFUSAL_STATUS: Readonly<Record<string, number>> = {
-  "bad-request": 400, unauthenticated: 401, "permission-denied": 403, "not-found": 404, conflict: 409,
-  "failed-precondition": 412, "resource-exhausted": 429, unimplemented: 501, unavailable: 503,
 };
 
 /**
@@ -4226,38 +3271,6 @@ async function handleChatSession(req: IncomingMessage, res: ServerResponse, ctx:
     if (e instanceof EpEnvelopeError) return refuse(REFUSAL_STATUS[e.code] ?? 500, e.message, e.code, e.outcome ?? "unknown");
     // Anything else came from a store, broker or file read partway through: its effect is unknown.
     return refuse(503, e instanceof Error ? e.message : String(e), "unavailable", "unknown");
-  }
-}
-
-/** The signed-in person's own Manager instances, read-only, on both faces. The proof is the IdP JWT
- *  the human exchange verifies, and the owner is derived from it the same way, so a caller lists only
- *  its own owner's gates. A browser-origin request is refused as on every exchange route; an
- *  embedding's server-side bridge forwards the person's proof. Issuance still re-checks the chosen
- *  instance. */
-async function handleManagerInstances(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
-  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
-  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
-  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
-    return send(res, 415, { error: "content-type must be application/json" });
-  if (policy.requireCapability && req.headers.authorization !== `Bearer ${ctx.cap}`)
-    return refuseCapability(res, ctx, "missing/invalid exchange capability - read it from the space's auth-service.json");
-  const peer = policy.peerKey(req);
-  const peerThrottled = policy.throttled(ctx, peer);
-  const body = await readJsonBody(req) as { idpToken?: unknown } | null;
-  if (typeof body?.idpToken !== "string" || !body.idpToken)
-    return send(res, 400, { error: "the manager instance list needs { idpToken: string }" });
-  let owner: string;
-  try {
-    owner = deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, (await verifyIdpToken(body.idpToken, ctx.bridgeIdp)).sub);
-  } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused a manager instance list: ${reason}`, 401, { error: reason });
-  }
-  try {
-    return send(res, 200, await ctx.listManagerInstances(owner));
-  } catch (e) {
-    // The proof was good and the gate read was not: unavailable, never an empty list.
-    return send(res, 503, { error: `the manager instance list is unavailable: ${e instanceof Error ? e.message : String(e)}` });
   }
 }
 
@@ -4395,12 +3408,6 @@ async function handleServiceEndpointAuthority(req: IncomingMessage, res: ServerR
   }
 }
 
-/** What {@link handleManagerServiceAuthority} reads. Exported so a host that serves the route with a
- *  context it builds itself is held by the compiler to every arm the dispatcher calls. `failures`
- *  and `badCaps` are the face's refusal windows, shared with its `/exchange` so neither route is a
- *  way around the other's budget. */
-export type ManagerServiceAuthorityCtx = ManagerAuthorityDispatchCtx & Pick<HandlerCtx, "cap" | "bridgeIdp" | "ownerSecret" | "failures" | "badCaps">;
-
 /** Same-account human removal. Operator authority exists only on the trusted in-process door. */
 async function handleEndpointDeregister(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
@@ -4433,39 +3440,6 @@ async function handleEndpointDeregister(req: IncomingMessage, res: ServerRespons
     return send(res, 200, await ctx.deregisterEndpoint(body.request, { kind: "owner", owner }), { "cache-control": "no-store" });
   } catch {
     return send(res, 503, { error: "endpoint deregistration did not return a confirmed result; inspect the same registration before another request" });
-  }
-}
-
-/** Authenticated manager issuance and maintenance on the selected exchange face. */
-export async function handleManagerServiceAuthority(req: IncomingMessage, res: ServerResponse, ctx: ManagerServiceAuthorityCtx, policy: ExchangePolicy): Promise<void> {
-  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
-  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
-  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
-    return send(res, 415, { error: "content-type must be application/json" });
-  if (policy.requireCapability && req.headers.authorization !== `Bearer ${ctx.cap}`)
-    return refuseCapability(res, ctx, "missing/invalid exchange capability - manager-service authority requires the operator exchange capability on this face");
-  // A valid token is not probing, so a throttled peer is still verified and only its refusal
-  // answers 429, as on /exchange.
-  const peer = policy.peerKey(req);
-  const peerThrottled = policy.throttled(ctx, peer);
-  let body: { idpToken?: unknown; request?: unknown } | null;
-  try {
-    body = await readJsonBody(req) as typeof body;
-  } catch (e) {
-    // A host may serve this export without the route tables' catch, so the body refusals are
-    // answered here; an escaped rejection would end that host's process.
-    return sendRequestError(res, e);
-  }
-  if (typeof body?.idpToken !== "string" || !body.idpToken)
-    return send(res, 400, { error: "manager-service authority needs { idpToken, request }" });
-  try {
-    const verified = await verifyIdpToken(body.idpToken, ctx.bridgeIdp);
-    const owner = deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, verified.sub);
-    return send(res, 200, await dispatchManagerAuthorityRequest(ctx, owner, { request: body.request }));
-  } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-    // A conflict, such as a name another lifecycle holds or a stale serve epoch, answers 409.
-    return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused manager-service authority: ${reason}`, e instanceof EpEnvelopeError && e.code === "conflict" ? 409 : 403, { error: reason });
   }
 }
 
@@ -4521,32 +3495,6 @@ export async function handleToolResultConsent(req: IncomingMessage, res: ServerR
   }
 }
 
-/** The advertised broker address the public bundle carries — the URL participants will dial, so
- *  the same scheme family `cotal meshes add` accepts. Exported for the producer/consumer contract
- *  smoke; returns the refusal sentence, or undefined when the address is usable. */
-export function checkAdvertisedServer(raw: string): string | undefined {
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return `auth-service: --advertised-server is not a URL, got "${raw}"`;
-  }
-  if (!["nats:", "tls:", "ws:", "wss:"].includes(u.protocol))
-    return `auth-service: --advertised-server must be a broker URL (nats://, tls://, ws:// or wss://), got ${u.protocol}//`;
-  return undefined;
-}
-
-/** The public face's value rules, one set for the CLI flags and the hosted input. A public face
- *  without a port has no listener for the rest to apply to. */
-function checkPublicFace(face: PublicFaceInput): string | undefined {
-  if (!Number.isInteger(face.port) || face.port < 0 || face.port > 65535)
-    return `auth-service: a public face needs a port number, got ${face.port}`;
-  if (face.url !== undefined && !/^https:\/\//.test(face.url))
-    return `auth-service: --exchange-public-url must be an https:// URL (TLS terminates at the reverse proxy), got "${face.url}"`;
-  return (face.advertisedServer !== undefined ? checkAdvertisedServer(face.advertisedServer) : undefined)
-    ?? (face.agentProvisioningUrl !== undefined ? checkAgentProvisioningUrl(face.agentProvisioningUrl) : undefined);
-}
-
 /** Compose the user bundle the public face serves at /.well-known/cotal-mesh. ONE producer,
  *  exported so the consumer contract (`checkUserBundle` in the CLI) can be asserted against the
  *  real composition rather than a copy. The trust pins ride a `userAuth` arm because that is the
@@ -4594,22 +3542,6 @@ export function finalizeUserBundleEndpoint(bundle: Record<string, unknown>, publ
   const endpoints = (bundle.userAuth as { endpoints: { url: string; managerAuthorityUrl: string } }).endpoints;
   endpoints.url = publicUrl;
   endpoints.managerAuthorityUrl = `${publicUrl.replace(/\/$/, "")}/manager-service-authority`;
-}
-
-/** The advertised agent-provisioning endpoint: HTTPS only — spawn sends the login bearer to it,
- *  and a plaintext or non-URL value must be refused at startup, not discovered by a participant.
- *  Exported for the producer/consumer contract smoke; returns the refusal, or undefined when
- *  usable. */
-export function checkAgentProvisioningUrl(raw: string): string | undefined {
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return `auth-service: --agent-provisioning-url is not a URL, got "${raw}"`;
-  }
-  if (u.protocol !== "https:")
-    return `auth-service: --agent-provisioning-url must be https:// (the login bearer rides the request), got ${u.protocol}//`;
-  return undefined;
 }
 
 /** Build the PUBLIC listener's request handler: its own closed route table (/health, /jwks,
@@ -4681,36 +3613,4 @@ function makePublicHandler(
       }
     })();
   };
-}
-
-/** Read + parse a small JSON body, bounded — the exchange payload is an IdP JWT plus an actor name;
- *  64 KB clears any sane JWT while keeping the loopback surface un-floodable. A route with a larger
- *  protocol envelope passes its own bound. */
-function readJsonBody(req: IncomingMessage, max = 64 * 1024): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    let size = 0;
-    let tooLarge = false;
-    const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => {
-      size += c.length;
-      if (size > max) {
-        // Stop retaining bytes immediately, but keep draining the request so the client receives
-        // the explicit 413 JSON response. Destroying the socket hid the server's decision behind
-        // an undici transport error and made the size-bound smoke unable to prove this guard.
-        tooLarge = true;
-        chunks.length = 0;
-        return;
-      }
-      if (!tooLarge) chunks.push(c);
-    });
-    req.on("end", () => {
-      if (tooLarge) return reject(new RequestBodyError(413, `request body too large (maximum ${max} bytes)`));
-      try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-      } catch {
-        reject(new RequestBodyError(400, "request body is not valid JSON"));
-      }
-    });
-    req.on("error", reject);
-  });
 }

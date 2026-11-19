@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isMainEntry } from './main-entry.mjs';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
 
@@ -17,6 +17,7 @@ export async function automaticUpdateRetainedReads(A, B, C, newPrivateRoot, mode
   const hash = bytes => createHash('sha256').update(bytes).digest('hex'), json = file => JSON.parse(readFileSync(file, 'utf8'));
   const save = () => writeFileSync(join(root, 'report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
   const prefix = join(root, 'prefix'), entry = join(prefix, 'bin/cotal'), config = join(root, 'config/cotal');
+  const bootstrap = join(prefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
   for (const dir of ['home', 'config', 'cotal', 'runtime', 'tmp', 'cache', 'data', 'state', 'project']) mkdirSync(join(root, dir), { mode: 0o700 });
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(COTAL_|XDG_|npm_|NPM_|NODE_OPTIONS$|NODE_PATH$|HOME$|.*(?:TOKEN|PASSWORD|SECRET|CREDENTIAL).*$)/i.test(k)));
   Object.assign(env, { HOME: join(root, 'home'), COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: join(root, 'config'),
@@ -38,7 +39,7 @@ export async function automaticUpdateRetainedReads(A, B, C, newPrivateRoot, mode
     });
     record.finishedAt = new Date().toISOString(); save(); return record;
   }
-  const cli = (label, args) => call(label, process.execPath, [entry, ...args]);
+  const cli = (label, args) => call(label, entry, args);
   const ok = r => { assert.equal(r.code, 0, JSON.stringify(r)); assert(!r.error && !r.signal && !r.timedOut); return r; };
   function snapshot(base) {
     const result = {};
@@ -54,7 +55,7 @@ export async function automaticUpdateRetainedReads(A, B, C, newPrivateRoot, mode
     walk(base, ''); return result;
   }
   function selection(version) {
-    const logicalEntry = realpathSync(entry), sets = join(config, 'installs', hash(logicalEntry), 'sets');
+    const logicalEntry = realpathSync(bootstrap), sets = join(config, 'installs', hash(logicalEntry), 'sets');
     const currentPath = join(sets, 'current.json'), selectionPath = join(sets, version, 'selection.json');
     const current = json(currentPath), selected = json(selectionPath), expected = { v: 1, entry: logicalEntry, version, root: join(sets, version, 'cotal') };
     const evidence = { logicalEntry, currentPath, selectionPath, current, selected }; report.selectors ??= []; report.selectors.push(evidence); save();
@@ -136,6 +137,6 @@ export async function automaticUpdateRetainedReads(A, B, C, newPrivateRoot, mode
   }
   return report;
 }
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMainEntry(import.meta.url)) {
   automaticUpdateRetainedReads(...process.argv.slice(2)).then(report => { console.log(JSON.stringify(report)); process.exitCode = report.passed ? 0 : 1; }).catch(error => { console.error(error); process.exitCode = 1; });
 }

@@ -84,6 +84,10 @@ pub enum DesktopRequest {
     About {},
     #[serde(rename = "status")]
     Status {},
+    #[serde(rename = "status-watch")]
+    StatusWatch {},
+    #[serde(rename = "log")]
+    Log {},
     #[serde(rename = "install")]
     Install {},
     #[serde(rename = "name")]
@@ -154,6 +158,10 @@ impl DesktopRequest {
         Ok(())
     }
 
+    pub fn is_watch(&self) -> bool {
+        matches!(self, Self::StatusWatch {})
+    }
+
     pub fn timeout_seconds(&self) -> u64 {
         if matches!(self, Self::Login { .. } | Self::Setup { .. }) {
             1200
@@ -217,26 +225,9 @@ pub fn daemon_env_key(key: &str) -> bool {
     )
 }
 
-/// A Windows `Run` deletion status chooses the login notice.
-/// Status 5 means access denied. The owned machine-wide entry remains, so the administrator sentence stays.
-pub fn windows_machine_login_notice(status: u32) -> Result<(), &'static str> {
-    match status {
-        0 | 2 => Ok(()),
-        5 => Err("An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there."),
-        _ => Err("Machine-wide Open at login entry could not be removed."),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn machine_login_access_denied_keeps_the_administrator_sentence() {
-        assert!(windows_machine_login_notice(0).is_ok());
-        assert!(windows_machine_login_notice(2).is_ok());
-        assert_eq!(windows_machine_login_notice(5), Err("An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there."));
-        assert!(windows_machine_login_notice(1).is_err());
-    }
     #[test]
     fn runtime_sidecar_matches_bundle_configuration() {
         let config: serde_json::Value = serde_json::from_str(if cfg!(windows) {
@@ -252,10 +243,18 @@ mod tests {
     }
     #[test]
     fn only_closed_requests_are_admitted() {
-        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"status"}"#).is_ok());
+        let status = serde_json::from_str::<DesktopRequest>(r#"{"op":"status"}"#).unwrap();
+        assert!(!status.is_watch());
+        let watch = serde_json::from_str::<DesktopRequest>(r#"{"op":"status-watch"}"#).unwrap();
+        assert!(watch.is_watch());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"log"}"#).is_ok());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"log","path":"/foreign"}"#).is_err());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"log","limit":1000000}"#).is_err());
+        assert!(DesktopRequest::Log {}.validate().is_ok());
         for input in [
             r#"{"op":"exec","command":"sh"}"#,
             r#"{"op":"status","args":[]}"#,
+            r#"{"op":"status-watch","args":[]}"#,
             r#"{"op":"install","path":"/tmp/foreign"}"#,
             r#"{"op":"setup","space":"team","idp":"https://example.com","PATH":"/foreign"}"#,
             r#"{"op":"setup","space":"team","idp":"https://example.com","command":"sh"}"#,

@@ -116,36 +116,26 @@ fn connection_tray_status(frame: &serde_json::Value) -> String {
     if result["launchReady"] == true { "Connected".into() } else { "Needs attention".into() }
 }
 
-/// Format the current-user Windows `Run` registry value for this executable.
+/// Quote the executable path in a Windows `Run` command.
+#[cfg(any(windows, test))]
 pub fn windows_login_command(executable: &Path) -> String {
-    format!("{} --background", executable.display())
+    format!("\"{}\" --background", executable.display())
 }
 
-/// Extract the executable path from a Windows `Run` registry command string.
-pub fn windows_run_executable(command: &str) -> Option<&str> {
-    let trimmed = command.trim_start();
-    if let Some(rest) = trimmed.strip_prefix('"') {
-        let end = rest.find('"')?;
-        let exe = &rest[..end];
-        (!exe.is_empty()).then_some(exe)
-    } else if let Some((exe, _)) = trimmed.rsplit_once(" --background") {
-        let exe = exe.trim();
-        (!exe.is_empty()).then_some(exe)
-    } else {
-        let exe = trimmed.split_whitespace().next()?;
-        (!exe.is_empty()).then_some(exe)
-    }
-}
-
-/// Match a Windows `Run` registry value to this executable only when both canonical paths match.
+/// Match both the previous unquoted command and the current quoted command.
+#[cfg(any(windows, test))]
 pub fn windows_run_matches_executable(command: &str, executable: &Path) -> bool {
-    let Some(recorded) = windows_run_executable(command) else { return false; };
-    let Ok(recorded_canonical) = std::fs::canonicalize(Path::new(recorded)) else { return false; };
-    let Ok(current_canonical) = std::fs::canonicalize(executable) else { return false; };
-    recorded_canonical == current_canonical
+    let Some(path) = command.trim().strip_suffix(" --background") else { return false; };
+    let path = path.strip_prefix('"').and_then(|path| path.strip_suffix('"')).unwrap_or(path);
+    let path = Path::new(path);
+    if !path.is_absolute() { return false; }
+    let Ok(recorded) = std::fs::canonicalize(path) else { return false; };
+    let Ok(current) = std::fs::canonicalize(executable) else { return false; };
+    recorded == current
 }
 
-/// Windows Task Manager `StartupApproved\Run` records 12+ bytes where the trailing 8 bytes are zero when enabled.
+/// The startup approval record ends in eight zero bytes when enabled.
+#[cfg(any(windows, test))]
 pub fn windows_startup_approved_enabled(bytes: &[u8]) -> bool {
     bytes.len() < 8 || bytes.iter().rev().take(8).all(|&byte| byte == 0)
 }
@@ -153,6 +143,25 @@ pub fn windows_startup_approved_enabled(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_login_scope_matches_only_the_installed_executable() {
+        let dir = std::env::temp_dir().join(format!("cotal login scope {}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let exe = dir.join("cotal-desktop.exe");
+        let other = dir.join("another-cotal.exe");
+        std::fs::write(&exe, b"exe").unwrap();
+        std::fs::write(&other, b"other").unwrap();
+        let quoted = windows_login_command(&exe);
+        assert_eq!(quoted, format!("\"{}\" --background", exe.display()));
+        assert!(windows_run_matches_executable(&quoted, &exe));
+        assert!(windows_run_matches_executable(&format!("{} --background", exe.display()), &exe));
+        assert!(!windows_run_matches_executable(&windows_login_command(&other), &exe));
+        assert!(!windows_run_matches_executable("cotal-desktop.exe --background", &exe));
+        assert!(!windows_run_matches_executable(&format!("\"{}\" --other", exe.display()), &exe));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(windows_startup_approved_enabled(&[2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        assert!(!windows_startup_approved_enabled(&[3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]));
+    }
     #[test]
     fn startup_recovers_invalid_preferences_without_overwriting_backups() {
         let directory = std::env::temp_dir().join(format!("cotal-preferences-{}", std::process::id()));
@@ -259,38 +268,5 @@ mod tests {
         for source in ["/Applications/Cotal.app", "/Users/a/Downloads-foreign/Cotal.app", "/Volumes/Cotal/cotal", "/Users/a/Applications/Cotal.app"] {
             assert!(!relocation_source(Path::new(source), downloads));
         }
-    }
-    #[test]
-    fn windows_run_value_matches_only_canonical_current_executable() {
-        let dir = std::env::temp_dir().join(format!("cotal-presence-test-{}", std::process::id()));
-        let sub = dir.join("nested");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&sub).unwrap();
-        let exe = sub.join("cotal-desktop.exe");
-        let other = sub.join("other-app.exe");
-        std::fs::write(&exe, b"exe").unwrap();
-        std::fs::write(&other, b"other").unwrap();
-        assert_eq!(
-            windows_login_command(&exe),
-            format!("{} --background", exe.display())
-        );
-        let alt_path = sub.join("..").join("nested").join("cotal-desktop.exe");
-        for value in [
-            format!("{} --background", exe.display()),
-            format!("\"{}\" --background", exe.display()),
-            format!("\"{}\" --background", alt_path.display()),
-        ] {
-            assert!(windows_run_matches_executable(&value, &exe), "{value}");
-        }
-        for foreign in [
-            format!("{} --background", other.display()),
-            format!("\"{}\" --background", sub.join("missing.exe").display()),
-            String::new(),
-        ] {
-            assert!(!windows_run_matches_executable(&foreign, &exe), "{foreign}");
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(windows_startup_approved_enabled(&[2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
-        assert!(!windows_startup_approved_enabled(&[3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]));
     }
 }

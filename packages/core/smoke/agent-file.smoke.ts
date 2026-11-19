@@ -173,8 +173,36 @@ const throws = (name: string, body: string) => {
 };
 throws("launchOptions as scalar throws", "---\nname: x\nlaunchOptions: nope\n---\n");
 throws("launchOptions as sequence throws", "---\nname: x\nlaunchOptions:\n  - a\n---\n");
+throws("launchOptions with an empty YAML value throws", "---\nname: x\nlaunchOptions:\n---\n");
+const emptyOptions = join(dir, "empty-options.md");
+writeFileSync(emptyOptions, "---\nname: x\nrole: worker_1-a\nlaunchOptions: {}\n---\n");
+const empty = loadAgentFile(emptyOptions);
+ok("an empty launchOptions mapping and a valid role are retained", JSON.stringify(empty.launchOptions) === "{}" && empty.role === "worker_1-a");
+ok("omitting launchOptions leaves it unset", bare.launchOptions === undefined);
 throws("renamed field 'channels' still fails loud", "---\nname: x\nchannels: [general]\n---\n");
 throws("malformed YAML fails loud", "---\nname: x\n  bad: : indent\n\t- weird\n---\n");
+
+for (const key of ["name", "role", "description", "model", "variant", "agent", "owner", "kind"]) {
+  for (const [value, type] of [["42", "number"], ["false", "boolean"], ["{}", "mapping"], ["[]", "array"], ["null", "null"]]) {
+    const file = join(dir, "wrong-type.md");
+    writeFileSync(file, `---\n${key === "name" ? "" : "name: typed\n"}${key}: ${value}\n---\n`);
+    let error = "";
+    try { loadAgentFile(file); } catch (e) { error = (e as Error).message; }
+    ok(`${key} refuses YAML ${type} with file and expected type`, error.includes(file) && error.includes(`"${key}" must be a string`) && error.includes(`got ${type}`), error);
+  }
+}
+for (const key of ["subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "tags", "capabilities"]) {
+  for (const [value, type] of [["42", "number"], ["true", "boolean"], ["general", "string"], ["{}", "mapping"], ["null", "null"], ["[42]", "number"], ["[false]", "boolean"], ["[{}]", "mapping"], ["[[]]", "array"], ["[null]", "null"]]) {
+    const file = join(dir, "wrong-list.md");
+    writeFileSync(file, `---\nname: typed\n${key}: ${value}\n---\n`);
+    let error = "";
+    try { loadAgentFile(file); } catch (e) { error = (e as Error).message; }
+    ok(`${key} refuses ${value} with file and expected type`, error.includes(file) && error.includes(`"${key}"`) && error.includes("array of strings") && error.includes(`got ${type}`), error);
+  }
+}
+writeFileSync(join(dir, "quoted.md"), '---\nname: "42"\nmodel: "false"\nsubscribe: ["true"]\nallowPublish: ["true"]\ntags: ["42", "false"]\n---\n');
+const quoted = loadAgentFile(join(dir, "quoted.md"));
+ok("quoted scalar-like strings retain their declared types", quoted.name === "42" && quoted.model === "false" && quoted.subscribe?.[0] === "true" && quoted.tags?.join() === "42,false", quoted);
 
 // 6b) #869: a HAND-WRITTEN `agent:` pin parses as a modelled field, not meta. Half this fleet's
 //     personas already carry the key; before the fix it swept into the verbatim meta bag and no

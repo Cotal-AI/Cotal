@@ -77,11 +77,13 @@ test("presence events report close explanation, presence errors and taskbar pin 
   const callbacks = new Map<number, (event: { event: string; payload: string }) => void>(); let next = 0;
   const listeners = new Map<string, number>();
   const notices: { message: string; error: boolean }[] = [];
+  let loginError: string | undefined;
+  let loginEnabled = false;
   dom.window.__TAURI_INTERNALS__ = {
     transformCallback(fn: (event: { event: string; payload: string }) => void) { callbacks.set(++next, fn); return next; },
     async invoke(cmd: string, args: { event?: string; handler?: number } = {}) {
       if (cmd === "plugin:event|listen") { listeners.set(args.event!, args.handler!); return ++next; }
-      if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "Cotal is pinned to your taskbar.", preferenceNotice: "Desktop preferences could not be read. The original file was kept aside." };
+      if (cmd === "desktop_presence") return { loginEnabled, loginError, relocationOffer: false, pinOffer: false, pinMessage: "Cotal is pinned to your taskbar.", preferenceNotice: "Desktop preferences could not be read. The original file was kept aside." };
       throw new Error(`Unexpected command ${cmd}`);
     },
   };
@@ -99,6 +101,18 @@ test("presence events report close explanation, presence errors and taskbar pin 
     await api.refreshPresence(true);
     assert.equal(doc.querySelector("#pin-availability")?.textContent, "Cotal is pinned to your taskbar.");
     assert.equal(notices.length, 3, "startup recovery is reported only once");
+    loginError = "The earlier machine-wide login entry needs an administrator to remove it.";
+    await api.refreshPresence(true);
+    assert.equal(doc.querySelector("#login-error")?.textContent, loginError);
+    assert.equal(doc.querySelector<HTMLInputElement>("#autostart")?.checked, false);
+    assert.match(notices.at(-1)!.message, /original file was kept aside/);
+    loginEnabled = true;
+    await api.refreshPresence(true);
+    assert.equal(doc.querySelector<HTMLInputElement>("#autostart")?.checked, true);
+    assert.equal(notices.length, 4, "an unchanged login warning is not announced repeatedly");
+    loginError = undefined;
+    await api.refreshPresence(true);
+    assert.equal(doc.querySelector("#login-error"), null);
   } finally { dom.window.close(); }
 });
 
