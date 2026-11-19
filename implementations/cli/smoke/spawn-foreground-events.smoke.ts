@@ -390,7 +390,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 26;
+const EXPECTED = 28;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
