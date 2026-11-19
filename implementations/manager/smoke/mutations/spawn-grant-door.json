@@ -16,7 +16,7 @@
   "mutations": [
     {
       "name": "D1 drop the served caller from the handoff",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/start-doors.ts",
       "find": "      caller,\n      hooks,\n      authenticatedCaller,\n    );\n  }",
       "replace": "      caller,\n      hooks,\n    );\n  }",
       "expectRed": "a served spawn wider than the spawner is refused at the door, naming the part",
