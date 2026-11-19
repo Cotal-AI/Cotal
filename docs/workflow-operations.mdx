@@ -47,6 +47,9 @@ or wrong manager selection refuses rather than borrowing a signed-in user's auth
 parent's `run` grant is restored, the next call checks its new connection's issued authority before
 submitting the workflow.
 
+If the bearer exchange refuses the call, the connector reports `permission-denied` and the
+request never reaches the manager. The connector API reports the outcome as `not-executed`.
+
 Open meshes may expose the tool but refuse hosted runs. A local user-mode host without remote
 run authority and an `execution: "none"` control manager also refuse the family. A legacy
 credential without issued authority must be replaced through the current issuance path.

@@ -91,22 +91,28 @@ try {
   suite.check("fixture PATH has no cotal, pnpm, npm or node", ["cotal", "pnpm", "npm", "node"].every((name) => !resolveOnPath(name, env)));
   const customCache = join(sandbox, "custom-pnpm-cache"), empty = join(sandbox, "empty-project");
   mkdirSync(empty);
-  for (const [name, modules, prefix] of [
-    ["default pnpm dlx", join(sandbox, "pnpm", "dlx", "hash", "run", "node_modules"), "pnpm dlx cotal-ai"],
-    ["custom-cache pnpm dlx", join(customCache, "dlx", "hash", "run", "node_modules"), "pnpm dlx cotal-ai"],
-    ["npx", join(sandbox, "_npx", "hash", "node_modules"), "npx cotal-ai"],
+  // pnpm 11 links a dlx package from its global virtual store, so the entry names the store, and it
+  // exports its user agent but no cache directory.
+  const store11 = join(sandbox, "pnpm-store", "v11", "links", "@", "cotal-ai", version, "hash", "node_modules");
+  for (const [name, modules, prefix, stored] of [
+    ["default pnpm dlx", join(sandbox, "pnpm", "dlx", "hash", "run", "node_modules"), "pnpm dlx cotal-ai", undefined],
+    ["custom-cache pnpm dlx", join(customCache, "dlx", "hash", "run", "node_modules"), "pnpm dlx cotal-ai", undefined],
+    ["pnpm 11 dlx", join(sandbox, "pnpm", "dlx", "hash11", "run", "node_modules"), "pnpm dlx cotal-ai", store11],
+    ["npx", join(sandbox, "_npx", "hash", "node_modules"), "npx cotal-ai", undefined],
   ] as const) {
-    const pkg = join(modules, "cotal-ai"), shims = join(modules, ".bin");
+    const pkg = join(stored ?? modules, "cotal-ai"), shims = join(modules, ".bin");
     mkdirSync(shims, { recursive: true });
-    mkdirSync(pkg);
+    mkdirSync(pkg, { recursive: true });
+    if (stored) symlinkSync(pkg, join(modules, "cotal-ai"));
     cpSync(join(repo, "bin", "dist"), join(pkg, "dist"), { recursive: true });
     cpSync(join(repo, "bin", "package.json"), join(pkg, "package.json"));
     symlinkSync(join(repo, "bin", "node_modules"), join(pkg, "node_modules"));
     const entry = join(pkg, "dist", "cotal.js");
     chmodSync(entry, 0o755);
     symlinkSync(entry, join(shims, "cotal"));
+    const runner = stored ? { npm_config_user_agent: "pnpm/11.28.13 npm/? node/v24.22.0 linux x64" } : { npm_config_cache_dir: customCache };
     const runFromCache = (args: string[], path = `${shims}:${tools}`) => spawnSync(process.execPath, [entry, ...args], {
-      cwd: empty, env: { ...env, PATH: path, npm_config_cache_dir: customCache }, encoding: "utf8", timeout: 60_000,
+      cwd: empty, env: { ...env, PATH: path, ...runner }, encoding: "utf8", timeout: 60_000,
     });
     const card = runFromCache([]);
     suite.check(`${name} card keeps its runner for every command row`, card.status === 0 &&
