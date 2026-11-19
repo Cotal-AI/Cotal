@@ -134,7 +134,13 @@ const roleFile = join(root, "badrole.md");
 writeFileSync(roleFile, "---\nname: badrole\nrole: bad role!\nsubscribe: []\n---\n");
 const roleInFile = cotal("persona", "create", "badrole", "--file", roleFile, "--json");
 check("persona create --file whose role send -r refuses is SCHEMA_INVALID naming the file and the role",
-  roleInFile.status === 1 && roleInFile.envelope?.error?.code === "SCHEMA_INVALID" && (roleInFile.envelope.error.message ?? "").includes(`invalid persona definition ${roleFile}: invalid role "bad role!"`) && !existsSync(agentFilePath(root, "badrole")), shown(roleInFile));
+  roleInFile.status === 1 && roleInFile.envelope?.error?.code === "SCHEMA_INVALID" && (roleInFile.envelope.error.message ?? "").includes(`invalid persona definition ${roleFile}: "role" must be a single token`) && !roleInFile.envelope.error.message?.includes("bad role!") && !existsSync(agentFilePath(root, "badrole")), shown(roleInFile));
+const nullOptions = agentFilePath(root, "null-options");
+writeFileSync(nullOptions, "---\nname: null-options\nlaunchOptions: null\n---\n");
+const badOptions = cotal("persona", "show", "null-options", "--json");
+check("persona show refuses null launchOptions and names the file and mapping rule",
+  badOptions.status === 1 && badOptions.envelope?.error?.code === "SCHEMA_INVALID" && badOptions.envelope.error.message?.includes(`${nullOptions}: "launchOptions" must be a mapping of key: value pairs`) === true, shown(badOptions));
+rmSync(nullOptions);
 const roleOk = cotal("persona", "create", "goodrole", "--prompt", "x", "--role", "reviewer", "--subscribe", "", "--json");
 check("control: a valid role token is created", roleOk.status === 0 && existsSync(agentFilePath(root, "goodrole")), shown(roleOk));
 
@@ -253,6 +259,8 @@ for (const [label, body, reason] of [
   ["an empty file", "", 'missing "---" frontmatter block'],
   ["a blank model", '---\nname: badspawn\nmodel: "   "\n---\n', '"model" must not be empty'],
   ["a blank variant", '---\nname: badspawn\nvariant: "   "\n---\n', '"variant" must not be empty'],
+  ["a null options mapping", "---\nname: badspawn\nlaunchOptions: null\n---\n", '"launchOptions" must be a mapping of key: value pairs'],
+  ["an invalid role", "---\nname: badspawn\nrole: secret-role value\n---\n", '"role" must be a single token using letters, digits, underscores or hyphens'],
   ["an invalid channel declaration", "---\nname: badspawn\nsubscribe: [ops]\nallowSubscribe: [general]\n---\n", 'subscribe "ops" is not within allowSubscribe [general]'],
   ["malformed YAML with a secret value", "---\nname: badspawn\nrole: [secret-value\n---\n", "the frontmatter is not valid YAML at line 3"],
 ] as const) {
@@ -288,6 +296,14 @@ const managed = cotal("spawn", "-d", "nosuch", "--dry-run", "--json");
 const managedResult = (managed.envelope as unknown as { result?: Preview; completeness?: string } | undefined);
 check("a managed spawn --dry-run exits 0, not-checked, with the name's source as argument",
   managed.status === 0 && managed.envelope?.outcome === "ok" && managedResult?.completeness === "not-checked" && managedResult.result?.requested?.source === "argument", shown(managed));
+for (const mode of [[], ["--dry-run"]]) {
+  for (const resume of ["--resume=", "--resume=   "]) {
+    const invalid = cotal("spawn", "-d", resume, ...mode, "--json");
+    check(`managed ${mode.length ? "preview" : "launch"} rejects ${JSON.stringify(resume)} with one usage envelope`,
+      invalid.status === 1 && invalid.envelope?.outcome === "refused" && invalid.envelope.error?.code === "USAGE_INVALID"
+        && invalid.envelope.error.message?.includes("--resume needs a session id") === true && invalid.stderr === "", shown(invalid));
+  }
+}
 const managedHarness = cotal("spawn", "-d", "--harness", "nosuch", "--dry-run", "--plain");
 check("a managed preview warns about an unknown harness and labels the default persona in words",
   managedHarness.status === 0 && managedHarness.stderr.includes('! no harness "nosuch"; known harnesses:') && managedHarness.stdout.includes("Persona source:            the default persona") && !managedHarness.stdout.includes("explicit-or-product-default"), shown(managedHarness));

@@ -448,7 +448,9 @@ replacement. `--dry-run` creates no instance and sends no process signal.
 cannot adopt an already running background instance into the terminal. Before allocation it prints
 the terminal lifetime and output policy on stderr. Native auth and Linear presets use their installed signal
 handlers through this same flow; neither endpoint readiness nor native cleanup is inferred from
-process exit. A foreground manager stops through the same request-bound native stop as
+process exit. After an external `service stop` of a foreground process service, the stop records
+its receipt before the foreground command adds the child's exit code or signal.
+A foreground manager stops through the same request-bound native stop as
 `service stop`, keeping its agents: the SIGINT or SIGTERM the CLI receives is the confirmation.
 Ctrl-C also reaches the native child, which ignores a `SIGINT` that carries no stop request and
 prints one warning line for it. A plain `SIGTERM` stops it with the default agent policy.
@@ -664,10 +666,14 @@ To connect directly to a space, use `cotal daemon setup --space <s> [--idp <url>
 `--no-manager` and `--wait` require `--space`; `--wait` also requires `--no-manager`.
 Space-specific daemon commands require an explicit `--space <s>` even when `cotal use`
 has selected a space. `daemon status` can omit it to read the daemon and all hosted Managers.
+If supplied, the name must be 1 to 64 characters using ASCII letters, digits, underscores or
+hyphens. Status rejects a malformed name with `USAGE_INVALID` before contacting the daemon.
 After setup, use `cotal daemon service-status --space <s>` to read the machine connection and
 `cotal daemon service-disconnect --space <s>` to close it and remove its local service credentials
 and identity records. The command lists the records it removed. A remote computer record may remain;
 remove the computer in the dashboard to revoke its authority there.
+Disconnecting a space with no connection, Manager or retained Manager records does not add a
+Manager to status or suggest hosting one again.
 Setup prints these commands with `--space=<s>` so names beginning with a hyphen also work.
 
 The daemon owns this computer's name. Read it with `cotal daemon name`, or set it with
@@ -831,6 +837,7 @@ The desktop app uses these same controls. Its source and native build instructio
 If desktop preferences cannot be parsed, the app keeps the original file beside `presence.json`
 with a fresh `.invalid.<number>` suffix, opens with defaults, and reports the saved file's location.
 Recovery leaves Open at login unchanged until the person chooses that setting explicitly.
+On Windows, Open at login applies only to the current user, even when the desktop app runs as an administrator.
 Its first run offers Continue with Cotal Cloud or a custom host, opens browser approval after a
 click, then offers Connect this computer. Its four steps are Welcome, Sign in, Connect and Ready.
 A connection link prefills its host and space without starting setup. The app selects the linked
@@ -855,7 +862,9 @@ or changing connector state. Space names use 1 to 64 letters, digits, underscore
 It makes a computer ready to launch agents from a space with one command. It installs the user
 service, discovers the space through the daemon-held sign-in, signs in by device code when needed,
 and asks the daemon to start the space's Manager. Before starting it, the daemon reconciles stock
-connectors in its own environment and refuses if that preparation fails. The hosted Manager gets
+connectors in its own environment, allowing up to ten minutes for a cold home before starting the
+separate Manager readiness wait. If preparation fails, the refusal names the exit code or signal
+on one line. A timeout also names the reconciliation bound. The hosted Manager gets
 the stock default persona in its own catalog, without replacing an existing file, so
 `cotal spawn --on <instance> --space <space>` can launch it. Setup succeeds when that registered
 instance answers `status` with an available connector. With no available connector it refuses with
@@ -933,6 +942,7 @@ successful Manager readiness probe.
 Manager state stays under the daemon's own per-space directory. Its `manager.log` captures stdout
 and stderr with mode `0600`, rotates at 1 MiB, and retains one previous file as `manager.log.1`.
 Status includes `lastExit` after a crash and `lastStop` for graceful, terminated or killed shutdowns.
+A successful pinned Manager status probe clears a superseded `lastRefusal` from current status.
 A Manager that exits before readiness reports its exit code or signal and its last stderr line.
 A stopped row keeps its instance and last observation, clears the PID, and names setup as its next
 step. Status emits a PID only for a retained child, never from a saved refusal record.
@@ -1199,7 +1209,11 @@ Each local JSON request line is limited to 64 KiB of UTF-8 text, including its n
 line receives `LINE_TOO_LONG` and the connection closes without processing later requests. This
 also applies to an unfinished tail after valid requests. Multiple valid lines are checked separately.
 Already accepted finite replies have up to five seconds to flush before close. Device sign-in streams
-are cancelled on close.
+are cancelled on close. A local client can send `status-watch` with only `v`, `id`, and `op`.
+The daemon replies with a `status` event carrying the request `id` and the status snapshot in
+`result`. The daemon pushes another snapshot when its computer name, account state, hosted
+Manager state, hosted agent inventory, update status or pending generation changes. The stream
+ends when the connection closes.
 
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
 SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
@@ -1429,7 +1443,9 @@ A sign-in proof returned by the provider that has already expired by this machin
 same `credential-expired` diagnosis. `connect-check`, registration and setup stop before contacting
 the space authority. Other unusable proofs retain their existing refusal.
 
-Every other answer is a refusal and nothing is connected. Not yet approved is `LIFECYCLE_BLOCKED`
+Every other answer is a refusal and nothing is connected. An unregistered space is
+`TARGET_NOT_FOUND` (`NOT_REGISTERED`). Check the name or run `cotal space` to list registered spaces.
+Not yet approved is `LIFECYCLE_BLOCKED`
 (`APPROVAL_PENDING`). A refused registration is `PERMISSION_DENIED`, and so is a space that ended the
 daemon's authority, with its code as the native code, such as `APPROVAL_REVOKED`; connecting again
 does not reconnect it. A space or broker that cannot be reached is `DEPENDENCY_UNAVAILABLE`, and

@@ -96,6 +96,7 @@ interface ProbeSession {
 }
 interface Live {
   view: HostedManager;
+  agents?: HostedAgents;
   child?: ChildProcess;
   exited?: Promise<void>;
   starting?: Promise<HostedManager>;
@@ -113,7 +114,8 @@ interface Live {
   healthFailures?: number;
 }
 
-export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string) {
+export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, onChange?: () => void) {
+  const notify = () => { try { onChange?.(); } catch {} };
   const homeArg = daemonHome === undefined ? undefined : /^[A-Za-z0-9_./-]+$/.test(daemonHome) ? daemonHome : JSON.stringify(daemonHome);
   const command = (text: string) => homeArg === undefined ? text : text.replace(/cotal daemon (setup|status|login|serve)\b(?! --daemon-home)/g, (match) => `${match} --daemon-home ${homeArg}`);
   let reconcileTask: Promise<void> | undefined;
@@ -209,6 +211,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     reason = safeDiagnostic(reason).slice(0, 1500);
     l.view = { ...l.view, state: "refused", reason, lastRefusal: reason, next };
     persistRefusal(l);
+    notify();
     return l.view;
   };
   const status = (space: string): HostedManager => {
@@ -327,7 +330,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         // This includes caller issuance, broker admission and contract resolution, not only status.
         const reply = await Promise.race([probe(l, selected), new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("the pinned Manager status observation did not complete within 15000ms")), 15_000); })]);
         if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager did not answer status");
-        if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+        if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, lastRefusal: undefined, next: undefined, observedAt: new Date().toISOString() };
       } catch (error) {
         if (l.child === child && !l.stopping && !closed && !generationPending) {
           const reason = safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500);
@@ -358,11 +361,29 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           }
           // Parent IPC proves child responsiveness without the daemon obtaining mesh credentials.
           await generationCall(child, randomUUID(), "inspect");
-          if (current()) l.healthFailures = 0;
+          if (current()) {
+            l.healthFailures = 0;
+            try {
+              const agents = await readHostedAgents(child);
+              if (current()) {
+                const prevKey = l.agents?.state === "read" ? JSON.stringify(l.agents.agents) : l.agents?.state;
+                const nextKey = JSON.stringify(agents);
+                l.agents = { space: l.view.space, observedAt: new Date().toISOString(), state: "read", agents };
+                if (prevKey !== nextKey) notify();
+              }
+            } catch {
+              if (current()) {
+                const prevState = l.agents?.state;
+                l.agents = { space: l.view.space, observedAt: new Date().toISOString(), state: "unreadable", message: "Could not read agents for this space." };
+                if (prevState !== "unreadable") notify();
+              }
+            }
+          }
         } catch (error) {
           if (!current()) return;
           l.healthFailures = (l.healthFailures ?? 0) + 1;
           l.view = { ...l.view, state: "starting", reason: "the hosted Manager parent IPC probe did not answer", observedAt: new Date().toISOString(), next: `inspect \`cotal daemon status --space ${l.view.space}\`; restore the Manager connection or stop its seats before running \`cotal daemon setup --space ${l.view.space}\`` };
+          notify();
           if (l.healthFailures < 3) return;
           const attempt = randomUUID();
           try {
@@ -422,12 +443,15 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       }
     }
     l.child = undefined;
+    l.agents = undefined;
+    notify();
   }
   const schedule = (l: Live) => {
     if (closed || l.stopping || l.view.state === "refused") return;
     l.view = { ...l.view, state: "restarting", pid: l.child?.pid };
-    if (generationPending) return;
+    if (generationPending) { notify(); return; }
     l.view = { ...l.view, restarts: l.view.restarts + 1 };
+    notify();
     const delay = Math.min(30_000, 1000 * 2 ** Math.min(l.failures++, 5));
     l.timer = setTimeout(() => {
       l.timer = undefined;
@@ -606,8 +630,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
             writeManagerCleanup(home, { ...cleanup, phase: "hosted" });
             writeSecretFileAtomic(path, JSON.stringify({ v: 1, space }));
             rmSync(refusalFile(space), { force: true });
-            l.view = { ...l.view, state: "answering", registrationCleanup: undefined, connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+            l.view = { ...l.view, state: "answering", registrationCleanup: undefined, connectors: connectors(reply.data), reason: undefined, lastRefusal: undefined, next: undefined, observedAt: new Date().toISOString() };
             l.failures = 0;
+            try { l.agents = { space, observedAt: new Date().toISOString(), state: "read", agents: await readHostedAgents(child) }; } catch {}
+            notify();
             observe(l);
             return { ...l.view };
           }
@@ -657,7 +683,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         if (closed || l.stopping || !l.child) throw new Error("the hosted Manager is stopping");
         writeSecretFileAtomic(daemonManagerIntentFile(space, home), JSON.stringify({ v: 1, space }));
         rmSync(refusalFile(space), { force: true });
-        l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+        l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, lastRefusal: undefined, next: undefined, observedAt: new Date().toISOString() };
         const retryClaudeSetup = l.view.connectors?.some(connector => connector.agent === "claude" && connector.state === "unavailable" && connector.reason?.startsWith("Claude wake channel setup failed:"));
         if (retryClaudeSetup || !l.view.connectors?.some(connector => connector.state === "available")) {
           const child = l.child;
@@ -719,17 +745,22 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   };
   return {
     start, status, refresh,
-    async agents(): Promise<HostedAgents[]> {
+    async agents(cachedOnly = false): Promise<HostedAgents[]> {
       const observations = await Promise.all([...live.values()].filter(l => l.view.state !== "stopped").map(async l => {
+        if (cachedOnly && l.agents && l.child && !l.stopping) return l.agents;
         const child = l.child;
         const space = l.view.space;
         try {
           if (!child) throw new Error("Manager unavailable");
           const agents = await readHostedAgents(child);
           if (l.child !== child || l.stopping) throw new Error("Manager changed");
-          return { space, observedAt: new Date().toISOString(), state: "read" as const, agents };
+          const row: HostedAgents = { space, observedAt: new Date().toISOString(), state: "read" as const, agents };
+          l.agents = row;
+          return row;
         } catch {
-          return { space, observedAt: new Date().toISOString(), state: "unreadable" as const, message: "Could not read agents for this space." };
+          const row: HostedAgents = { space, observedAt: new Date().toISOString(), state: "unreadable" as const, message: "Could not read agents for this space." };
+          l.agents = row;
+          return row;
         }
       }));
       let bytes = 0;
@@ -830,8 +861,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     all: () => [...new Set([...spaces(true), ...live.keys()])].map(status),
     async disconnect(space: string, options?: { account?: boolean }) {
       // A crash during child shutdown must not restore a withdrawn hosting intent.
-      rmSync(daemonManagerIntentFile(space, home), { force: true });
-      let l = live.get(space);
+      const intent = daemonManagerIntentFile(space, home);
+      const hadIntent = existsSync(intent);
+      rmSync(intent, { force: true });
+      const l = live.get(space);
       if (l) {
         l.stopping = true;
         if (l.timer) clearTimeout(l.timer);
@@ -840,13 +873,13 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         await l.healthTask;
         await l.starting;
       }
-      if (!l) { l = { view: status(space), stopping: true, failures: 0 }; live.set(space, l); }
-      const held = l;
+      const held = l ?? { view: status(space), stopping: true, failures: 0 };
       let instanceId = held.view.instanceId ?? readManagerCleanup(home, space)?.instanceId;
       const remedy = () => instanceId
         ? `inspect the registration, then run \`cotal endpoint deregister manager ${instanceId} --space ${space} --yes\``
         : `inspect the recorded Manager identity for ${space}, then remove its registration with \`cotal endpoint deregister manager <instance-id> --space ${space} --yes\``;
       const incomplete = (reason: string): never => {
+        live.set(space, held);
         refuse(held, reason, remedy());
         if (held.view.registrationCleanup === "pending") {
           held.view = { ...held.view, state: "stopped", pid: undefined };
@@ -860,6 +893,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         instanceId = remoteManagerClient.loadRemoteManagerInstanceId(daemonManagerRoot(space, home), space) ?? instanceId;
       }
       catch { incomplete("the recorded Manager identity could not be read; its registration may be left behind"); }
+      if (!l && !hadIntent && !instanceId && !existsSync(refusalFile(space))) return;
+      live.set(space, held);
       if (instanceId) {
         held.view = { ...held.view, instanceId };
         let cleanup = readManagerCleanup(home, space);
@@ -908,7 +943,9 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         held.view = { ...held.view, registrationCleanup: undefined };
       }
       held.view = { ...held.view, state: "stopped", pid: undefined, reason: undefined, lastRefusal: undefined, next: options?.account ? "enable this space for this computer in the dashboard to host its Manager again" : `run \`cotal daemon setup --space ${space}\` to host its Manager again` };
+      held.agents = undefined;
       rmSync(refusalFile(space), { force: true });
+      notify();
     },
     async resume() {
       const recordRefusal = (space: string, error: unknown) => {

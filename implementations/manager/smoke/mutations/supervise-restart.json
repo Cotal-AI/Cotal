@@ -29,7 +29,7 @@
     },
     {
       "name": "user-mode accepts supervise",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      if (this.userMode)\n        return { ok: false, error: \"supervise is a restart policy this host cannot enforce: a user-mode seat has no static slot to keep the incarnation owned across a process death\" };",
       "replace": "      if (false)\n        return { ok: false, error: \"supervise is a restart policy this host cannot enforce: a user-mode seat has no static slot to keep the incarnation owned across a process death\" };",
       "expectRed": "user-mode refuses supervise at accept",

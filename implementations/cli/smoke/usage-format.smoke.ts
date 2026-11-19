@@ -82,6 +82,8 @@ const run = (args: string[], extra: Record<string, string> = {}, cwd = neutral) 
   const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 };
+const runShell = (args: string, extra: Record<string, string> = {}, cwd = neutral) =>
+  spawnSync("sh", ["-c", `exec "$0" "$1" ${args}`, process.execPath, BIN], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 900) });
 const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/Request refused|Code:/.test(r.stderr);
@@ -110,6 +112,16 @@ const dashWord = run(["send", "-c", "general", "-n is a flag here"]);
 check("an unknown option names -- for a word that starts with -", usageShape(dashWord, /Unknown option '-n'/) && /put -- before it/.test(dashWord.stderr), shown(dashWord));
 const dashValue = run(["history", "--from", "-bob"]);
 check("an option value that starts with - is given its --name=value form", usageShape(dashValue, /the value of --from starts with "-"/) && /write it as --from=-bob/.test(dashValue.stderr), shown(dashValue));
+if (process.platform !== "win32") {
+  for (const query of ["-help usage", "-reviewer's $HOME"]) {
+    const refused = run(["docs", "--search", query]);
+    const correction = /^  write it as (.+)$/m.exec(refused.stderr)?.[1];
+    const copied = correction && runShell(`docs ${correction} --json`);
+    check("the printed --search correction keeps the full query in one shell argument",
+      usageShape(refused, /the value of --search starts with "-"/) && !!copied && copied.status === 0 && JSON.parse(copied.stdout).result.query === query,
+      { refused: shown(refused), copied });
+  }
+}
 const noValue = run(["history", "--limit"]);
 check("an option given last with no value is refused naming it and its placeholder", usageShape(noValue, /--limit needs a value/) && /write --limit <n>/.test(noValue.stderr) && !/argument missing/.test(noValue.stderr), shown(noValue));
 const flagValue = run(["history", "--limit", "--from", "bob"]);
@@ -455,6 +467,17 @@ for (const [args, usage, foreign] of [
   const noReadSet = run(["persona", "create", "other", "--prompt", "review the diff"], fresh, project);
   check("persona create without --subscribe is refused with the persona create help, not the persona help",
     usageShape(noReadSet, /provide --subscribe <a,b> or --subscribe "" for none/) && noReadSet.stderr.includes("\nUsage\n  cotal persona create <name> ") && !/^Commands$/m.test(noReadSet.stderr), shown(noReadSet));
+  if (process.platform !== "win32") {
+    for (const [name, prompt, option] of [["short", "Review only", 0], ["long", "Review only", 1], ["dash", "-Review only", 0]] as const) {
+      const refused = run(["persona", "create", name, `-p=${prompt}`, "--subscribe", ""], fresh, project);
+      const corrections = /^  write (.+)$/m.exec(refused.stderr)?.[1]?.split(" or ");
+      const correction = corrections?.[option];
+      const copied = correction && runShell(`persona create ${name} ${correction} --subscribe ''`, fresh, project);
+      check(`the printed ${name} persona correction preserves the prompt in a shell`,
+        usageShape(refused, /gives -p the value/) && corrections?.length === (name === "dash" ? 1 : 2) && !!copied && copied.status === 0
+        && readFileSync(join(project, ".cotal", "agents", `${name}.md`), "utf8").trimEnd().endsWith(`\n${prompt}`), { refused: shown(refused), copied });
+    }
+  }
 }
 
 // No mark at all: the report names the outcome in words, and `!` stays the warning mark.

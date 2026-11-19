@@ -53,12 +53,19 @@ async function reconcileInstalledGeneration(): Promise<void> {
     let error = "";
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => { error = (error + chunk).slice(-1500); });
-    const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
+    // A cold home reconciles every built-in before Manager readiness is bounded.
+    const timeoutMs = 10 * 60_000;
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
     child.once("error", (cause) => { clearTimeout(timer); reject(cause); });
-    child.once("close", (code) => {
+    child.once("close", (code, signal) => {
       clearTimeout(timer);
       if (code === 0) resolve();
-      else reject(new Error(`replacement connector reconciliation failed (exit ${code}): ${error.trim()}; run \`cotal ext seed --repair\` with the installed CLI`));
+      else {
+        const cause = timedOut ? `timed out after ${timeoutMs}ms, signal ${signal ?? "unknown"}` : signal ? `signal ${signal}` : `exit ${code}`;
+        const detail = error.trim().split(/\r?\n/).at(-1)?.replace(/\s+/g, " ").trim();
+        reject(new Error(`replacement connector reconciliation failed (${cause})${detail ? `: ${detail}` : ""}; run \`cotal ext seed --repair\` with the installed CLI`));
+      }
     });
   });
 }
