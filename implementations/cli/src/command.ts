@@ -454,7 +454,8 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     parsed = parseCommandArgs(grammar, rest);
   } catch (e) {
     if (isArgError(e)) {
-      const refusal = parseRefusal(e as Error & { code?: string }, grammar, rest, reservedConfig);
+      // The reserved spelling still marks an option boundary in a missing-value diagnostic.
+      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, reservedConfig);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
     throw e;

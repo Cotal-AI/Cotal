@@ -316,6 +316,10 @@ const fileTypo = cotal("spawn", "--flie", "./pv.md", "--dry-run", "--json");
 check("spawn still suggests the public --file flag for a typo",
   fileTypo.status === 1 && fileTypo.envelope?.error?.code === "USAGE_INVALID"
     && fileTypo.envelope.error.message?.includes("did you mean --file?") === true, shown(fileTypo));
+const missingFile = cotal("spawn", "--file", "--config", "--json");
+check("spawn treats the reserved option as an option boundary when diagnosing a missing --file value",
+  missingFile.status === 1 && missingFile.envelope?.error?.code === "USAGE_INVALID"
+    && missingFile.envelope.error.message === "--file needs a value" && !missingFile.stdout.includes("--file=--config"), shown(missingFile));
 const spawnOptions = cotal("__complete", "spawn", "--");
 check("spawn option completion offers --file but does not suggest the reserved flag",
   spawnOptions.status === 0 && /^--file\t/m.test(spawnOptions.stdout) && !/^--config\b/m.test(spawnOptions.stdout), shown(spawnOptions));
