@@ -536,7 +536,8 @@ export class EndpointSubscriptions {
         this.finishMembershipWatchStop(watch);
       } catch (err) { this.emit("error", err as Error); }
     }));
-  }}
+  }
+}
 
 /** A membership-watch delete that leaves nothing to retry: the consumer or its stream is already
  *  gone, or the broker refused the delete because the reading profile holds no stream-wide
