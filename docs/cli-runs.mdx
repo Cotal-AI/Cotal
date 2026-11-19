@@ -130,9 +130,11 @@ An equal token never admits a different holder.
 If a broker outage prevents a hosted run's final status write, the manager retries that write
 while the attempt's connection remains open, including when NATS returns before JetStream
 can answer. The program does not advance during this repair.
-Once JetStream answers, `run` and `run show` report the recorded terminal state. A newer
-attempt's status is never overwritten. If the manager stops first, its next boot takes back
-runs still recorded `running`.
+Once JetStream answers, `run` and `run show` report the recorded state. If the outage also
+interrupted a journal append, the same manager can resume the run after recording the release.
+It replays the journal under a new attempt instead of retrying the interrupted append. It does
+not take over a run that was revoked or that another attempt already holds. If the manager
+stops first, its next boot takes back runs still recorded `running`.
 
 A run recorded `released` has no recorded reason. Its `Released` section points to the executing
 manager's log for a hosted run or the driving process's output for a locally driven run. A journal

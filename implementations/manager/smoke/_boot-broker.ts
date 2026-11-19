@@ -25,6 +25,8 @@ export interface Broker {
   servers: string;
   /** `http://127.0.0.1:<port>` of the monitoring endpoint — present iff booted with `monitor`. */
   monitorUrl?: string;
+  /** Stop and restart the owned broker without removing its JetStream store. */
+  interrupt: (during: () => Promise<void>) => Promise<void>;
   /** Stop the broker and clean up its store dir. */
   stop: () => Promise<void>;
 }
@@ -45,30 +47,36 @@ export async function bootBrokerAccounts(auth: BrokerAuth, accounts: readonly Sp
   const conf = serverConfig(auth, accounts, { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") })
     + (monitorPort !== undefined ? `http: 127.0.0.1:${monitorPort}\n` : "");
   writeFileSync(join(dir, "server.conf"), conf);
-  const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
-  // Owned from the moment it exists, so the boot loop below is covered too: a suite killed while
-  // waiting for readiness has spawned a broker and has no `stop` to call yet.
-  const release = teardownOnSignal(srv, dir);
-  let up = false;
-  for (let i = 0; i < 25; i++) {
-    if (srv.exitCode !== null) break; // died (bind failure / bad config)
-    if (await isReachable(servers)) { up = true; break; }
-    await wait(200);
-  }
-  if (!up || srv.exitCode !== null) {
-    srv.kill("SIGKILL");
+  async function boot() {
+    const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+    // Own the broker from spawn, including during startup.
+    const release = teardownOnSignal(srv, dir);
+    for (let i = 0; i < 25; i++) {
+      if (srv.exitCode !== null) break;
+      if (await isReachable(servers) && srv.exitCode === null) return { srv, release };
+      await wait(200);
+    }
+    await killAndAwaitExit(srv, "SIGKILL");
     rmSync(dir, { recursive: true, force: true });
     release();
     throw new Error(`bootBroker: nats-server did not come up on ${port}`);
   }
+  let current = await boot();
   return {
-    pid: srv.pid!,
+    get pid() { return current.srv.pid!; },
     servers,
     ...(monitorPort !== undefined ? { monitorUrl: `http://127.0.0.1:${monitorPort}` } : {}),
+    interrupt: async (during) => {
+      await killAndAwaitExit(current.srv);
+      try { await during(); } finally {
+        current.release();
+        current = await boot();
+      }
+    },
     stop: async () => {
-      await killAndAwaitExit(srv);
+      await killAndAwaitExit(current.srv);
       rmSync(dir, { recursive: true, force: true });
-      release(); // last: ownership is held until this teardown has actually finished
+      current.release();
     },
   };
 }
