@@ -175,7 +175,11 @@ try {
   const refresh = run(["up", "--plain"]);
   suite.check("controller up next steps keep the installed off-PATH prefix", refresh.code === 0 && !/^\s+cotal (?:spawn|down)\b/m.test(refresh.stdout) && refresh.stdout.includes("Launch your default agent"), refresh);
   const unconfirmed = run(["down"]);
-  suite.check("controller down confirmation remedy keeps the installed prefix", unconfirmed.code === 1 && !unconfirmed.output.includes("`cotal down"), unconfirmed);
+  const controllerPrefix = unconfirmed.output.match(/`([^`\n]+) down --yes`/)?.[1];
+  suite.check("controller down confirmation remedy keeps the installed prefix", unconfirmed.code === 1 && Boolean(controllerPrefix) && controllerPrefix !== "cotal", unconfirmed);
+  const controllerReap = run(["down", "--with-agents"]);
+  suite.check("controller down keeps the installed prefix and --with-agents in both confirmation commands", controllerReap.code === 1 && Boolean(controllerPrefix) &&
+    ["--yes", "--dry-run"].every((flag) => controllerReap.output.includes(`\`${controllerPrefix} down --with-agents ${flag}\``)), controllerReap);
 
   const npxEntry = join(sandbox, "_npx", "fixture", "cotal.js");
   mkdirSync(join(sandbox, "_npx", "fixture"), { recursive: true });
@@ -196,6 +200,9 @@ try {
       suite.check("legacy up summary and Next use one runnable invocation prefix", started.status === 0 && Boolean(prefix) && output.includes(`stop with: \`${prefix} down\``) && output.includes(`${prefix} spawn --space`) && !/^\s+cotal (?:spawn|down)\b/m.test(output), output);
       const refused = command(["down"]);
       suite.check("legacy down confirmation remedy preserves the invocation", refused.status === 1 && (refused.stdout + refused.stderr).includes(`\`${prefix} down --yes\``), refused.stderr);
+      const reap = command(["down", "--with-agents"]);
+      suite.check("legacy down keeps the invocation and --with-agents in both confirmation commands", reap.status === 1 && Boolean(prefix) &&
+        ["--yes", "--dry-run"].every((flag) => (reap.stdout + reap.stderr).includes(`\`${prefix} down --with-agents ${flag}\``)), reap.stderr);
       // npx's command prefix is checked above without contacting a package registry. The installed
       // prefix is followed unchanged, including its shell quoting and pinned runtime environment.
       if (!npx && prefix) {
