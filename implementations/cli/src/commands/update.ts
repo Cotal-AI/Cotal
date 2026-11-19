@@ -689,10 +689,7 @@ async function reconcileCurrent(
       rt.err(c.red(`✗ could not read installed extensions: ${message(e)}`));
       return finish(false);
     }
-    if (!entries.length) {
-      rt.out(c.dim("operator extensions: none installed"));
-      return finish(ok);
-    }
+    if (!entries.length) rt.out(c.dim("operator extensions: none installed"));
 
     for (const entry of entries) {
       if (!entry.pkg.startsWith("@cotal-ai/")) {
@@ -736,6 +733,9 @@ async function reconcileCurrent(
         continue;
       }
       rt.out(c.green(`✓ ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
+    }
+    if (ok && rt.env.COTAL_AUTO_UPDATE !== "1") {
+      rt.out("Cotal updates the managed pi connector, not your standalone pi extension. If you copied it, wait for the update to succeed, then reinstall `@cotal-ai/pi` at the version shown by `cotal --version` and repeat the copy. See https://docs.cotal.ai/docs/connect-pi/#load-the-extension-into-your-own-host");
     }
     return finish(ok);
   } finally {
