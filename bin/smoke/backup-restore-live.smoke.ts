@@ -206,7 +206,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       }
 
       // A copy whose file no longer matches its manifest is refused as backup verify refuses it, by name.
-      const tampered = join(root, "full-backup-tampered");
+      const tampered = join(root, "full backup 'tampered'");
       cpSync(artifact, tampered, { recursive: true });
       const snapshot = readdirSync(tampered).find((name) => name.endsWith(".snap"))!;
       writeFileSync(join(tampered, snapshot), "X", { flag: "a" });
@@ -217,6 +217,14 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
         assert.equal(envelope.error?.code, "SCHEMA_INVALID", `backup ${command} of a tampered copy is SCHEMA_INVALID`);
         assert.equal(envelope.target?.file, snapshot, `backup ${command} of a tampered copy names the file`);
         assert.equal(envelope.target?.fault, "mismatch", `backup ${command} of a tampered copy names the fault`);
+        if (command === "restore") {
+          const remedy = JSON.parse(refused.stdout).error?.remedy as string;
+          const commandText = /`(cotal backup verify .*?)`/.exec(remedy)?.[1];
+          assert.ok(commandText, "restore verification remedy includes the artifact directory");
+          const verified = spawnSync("sh", ["-c", commandText.replace(/^cotal /, '"$COTAL_TEST_TSX" "$COTAL_TEST_CLI" ') + " --json"], { cwd: root, env: { ...env, COTAL_TEST_TSX: tsx, COTAL_TEST_CLI: cliPath }, encoding: "utf8" });
+          assert.equal(verified.status, 1, "the printed verify command reports damaged integrity");
+          assert.equal(JSON.parse(verified.stdout).target?.fault, "mismatch", "the printed command checks the quoted artifact, not usage");
+        }
       }
       assert.equal(readFileSync(journalPath, "utf8"), journalBefore, "a tampered restore leaves the ready journal byte-identical");
       assert.equal(existsSync(attemptsPath) && readdirSync(attemptsPath).length > 0, false, "a tampered restore leaves no staged copy");

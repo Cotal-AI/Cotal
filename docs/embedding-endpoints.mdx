@@ -162,25 +162,43 @@ The complete reply, responder-state, grant, reply-target validation, and rebindi
 
 ## Principal route [#principal-route]
 
-`servePrincipal({ endpoint, cluster, handlers })` serves a core-defined command set about this
-process on the principal route. Revision 1 defines one endpoint, `agent`, whose cluster and compiled
-contracts are `AGENT_CLUSTER` and `AGENT_CONTRACTS`. It throws on an open mesh, under a static
-credential, without a lifecycle UID, and for a cluster command that declares no `authorities`.
+`servePrincipal({ handlers })` serves this process's `agent` endpoint on the principal route: the
+core-defined command set about this process, whose cluster and compiled contracts are
+`AGENT_CLUSTER` and `AGENT_CONTRACTS`. The cluster is at revision 2: `prompts`, `prompt` and
+`prompt-answer` admit the `owner` and `grant` words, and `commands`, `command`, `command-cancel` and
+`command-state` admit `owner` only.
+It takes no endpoint or cluster, and refuses either. It throws on an open mesh, under a static
+credential, without a lifecycle UID, for handlers that are not the cluster's commands with those
+contracts, and when another endpoint in the process already serves `agent` for the lifecycle.
 The returned `ready` resolves only after the broker accepted the subscription. It rejects when the
 credential holds no serve row, which a credential minted before this release does not. The serve
 subscribes again after every reconnect, and a refusal there resolves `failed` and is reported on
-`warning`. `stop()` unsubscribes and waits for the handlers in flight.
+`warning`. `stop()` unsubscribes and waits for the handlers in flight, and the endpoint's own
+`stop()` does the same for every serve before it closes the connection. Each handler gets a `signal`
+in its context that aborts when the serve stops, so it can end early. Stop waits for a handler only
+until its request's `deadlineMs` has passed since the request arrived, because the caller has
+stopped waiting by then, and a reply that comes later is dropped. The route refuses a `deadlineMs`
+over 30000, so a handler that never settles cannot hold `stop()` open more than 30 s. A reply the
+broker refuses to let the serve publish is reported on `error`, because no call or serve waits for
+that refusal.
 
 `setPromptsPresence({ open, seq })` sets the presence field above and writes presence at once. It
-throws while the `agent` endpoint is not served.
+throws while the `agent` endpoint is not served, and for a `seq` below one this process already used
+under its runtime id. `nextPromptsSeq()` hands out the next `seq` for that runtime id: the process
+keeps the highest it used across serves and endpoints of the lifecycle, so `seq` never goes back.
+Each serve of `agent` takes a fresh `seq` when it starts and shows `{ open: 0, seq }` with it until
+`setPromptsPresence` is called, so one `(runtime.id, seq)` never names two states.
 
 `callPrincipal({ endpoint, principal, command, authority, args, deadlineMs })` calls one command as
 this endpoint's caller. `principal` is the addressed process: owner, actor, lifecycle UID and the
 `runtime.id` its presence publishes. `authority` is `owner` or `grant`, the word this credential's
 row covers. The `agent` contracts and `describe` are built in; another endpoint needs `contract`.
-The agent's own refusal comes back as a reply with `ok: false`. The call throws `unavailable` when
+The agent's own refusal comes back as a reply with `ok: false`. A message from another head, a
+stored message on the reply read, and any message on the no-responders sentinel other than the
+broker's no-responders status are not the reply, and the call keeps waiting. It throws `unavailable` when
 no process serves that address, `permission-denied` when this credential holds no row, and
-`deadline-exceeded` when no reply came. The subjects, rows and refusals are in
+`deadline-exceeded` when no reply came. A `deadlineMs` over 30000 throws `bad-request` before
+anything is published. The subjects, rows and refusals are in
 [SPEC §13.21](../SPEC.md#1321-principal-route), and the commands in
 [SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
 

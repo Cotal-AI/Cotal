@@ -1,54 +1,36 @@
 """Hermes lifecycle hooks → Cotal presence (the relay.ts pattern, in Python).
 
 Each hook makes a one-shot connection to connector-core's control socket
-(``COTAL_CONTROL_SOCKET``), sends ``{"token": ..., "event": {"hook_event_name": ...}}``, and
-ignores the reply — the TS ``hermesHookHandle`` turns it into a presence change. The control server
-validates ``token`` (constant-time) before doing anything, so a frame without it is dropped. The
-socket PATH comes from the launch env; the TOKEN comes from the launch-material file that env points
-at (``COTAL_LAUNCH_MATERIAL``), which is where a managed launch now carries it so that every
-descendant of the gateway stops inheriting a control-plane bearer. Standalone mode still mints and
-exports ``COTAL_CONTROL_TOKEN`` itself, so that path is read as a fallback and is not deprecated.
+(``COTAL_CONTROL_SOCKET``) and runs the control exchange (``control_exchange.py``): the hook and
+the sidecar each prove they hold the launch's control key without sending it, then the hook sends
+``{"event": {"hook_event_name": ...}}`` and reads the MAC'd reply, which the TS ``hermesHookHandle``
+produced while turning the event into a presence change. The socket PATH comes from the launch env;
+the KEY and its version come from the launch-material file that env points at
+(``COTAL_LAUNCH_MATERIAL``), so that no descendant of the gateway inherits a control-plane secret.
+Standalone mode mints and exports ``COTAL_CONTROL_KEY`` and ``COTAL_CONTROL_VERSION`` itself, so
+that path is read first and is not deprecated. Before each dial the hook checks that the socket's
+directory is private to this user; a directory that is not counts as no endpoint.
 
 Hooks must never block the gateway, so the connection has a short timeout and every socket error is
-swallowed. A token that cannot be resolved is NOT swallowed the same way: it means presence relays
-silently do nothing for the life of the session, which looks exactly like a healthy seat that never
-does anything, so it warns once on stderr (the launcher's log) and then stays quiet.
+swallowed. A key that cannot be resolved, a directory that is not private, or a server that does not
+prove itself is NOT swallowed the same way: each means presence relays silently do nothing, which
+looks exactly like a healthy seat that never does anything, so it warns once on stderr (the
+launcher's log) and then stays quiet.
 
 Hermes hook callback signatures vary by version; these take ``*args, **kwargs`` and best-effort
 extract what they need, so a signature change degrades to "no detail" rather than an exception.
 """
 from __future__ import annotations
 
-import json
 import os
 import socket
 import sys
 from typing import Any
 
+from .control_exchange import ClientExchange, ControlConfigError, ExchangeRefused, control_key, socket_dir_problem
+
 _TIMEOUT_S = 2.0
 _warned = False
-
-
-def _material_token() -> str | None:
-    """The control token out of this launch's material file, or ``None``.
-
-    Refuses a file other local users can read, for the same reason the TypeScript reader does: a
-    material file readable beyond its owner is the disclosure the file carrier exists to prevent.
-    Every failure here returns ``None`` and lets the caller warn, because a hook is not allowed to
-    raise into the gateway.
-    """
-    path = os.environ.get("COTAL_LAUNCH_MATERIAL")
-    if not path:
-        return None
-    try:
-        if os.name != "nt" and (os.stat(path).st_mode & 0o077):
-            return None
-        with open(path, encoding="utf-8") as fh:
-            material = json.load(fh)
-    except (OSError, ValueError):
-        return None
-    token = material.get("controlToken") if isinstance(material, dict) else None
-    return token if isinstance(token, str) and token else None
 
 
 def _warn_once(message: str) -> None:
@@ -64,28 +46,41 @@ def relay(event_name: str, **fields: Any) -> None:
     path = os.environ.get("COTAL_CONTROL_SOCKET")
     if not path:
         return  # not a Cotal-managed gateway at all; nothing to relay to
-    # Managed launches carry the token in the launch material; standalone mode exports it directly.
-    token = os.environ.get("COTAL_CONTROL_TOKEN") or _material_token()
-    if not token:
+    try:
+        key = control_key()
+    except ControlConfigError as exc:
+        _warn_once(f"{exc} - presence relays are disabled for this session")
+        return
+    if not key:
         # This is the failure that has no other symptom: the seat joins, the sidecar and the bridge
         # work, and presence never moves off its first value. Say so once rather than never.
         _warn_once(
-            "control socket is configured but no control token could be resolved "
-            "(neither COTAL_CONTROL_TOKEN nor a readable COTAL_LAUNCH_MATERIAL with one) - "
+            "control socket is configured but no control key could be resolved "
+            "(neither COTAL_CONTROL_KEY nor COTAL_LAUNCH_MATERIAL carries one) - "
             "presence relays are disabled for this session"
         )
         return
-    payload = {"token": token, "event": {"hook_event_name": event_name, **fields}}
+    problem = socket_dir_problem(path)
+    if problem:
+        absent, reason = problem
+        if not absent:
+            _warn_once(f"{reason}, so the hook connected to nothing - presence relays are disabled for this session")
+        return
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(_TIMEOUT_S)
-        s.connect(path)
-        s.sendall((json.dumps(payload) + "\n").encode())
         try:
-            s.recv(65536)  # read + discard the reply
-        except OSError:
-            pass
-        s.close()
+            s.settimeout(_TIMEOUT_S)
+            s.connect(path)
+            exchange = ClientExchange(s, key)
+            exchange.open({"event": {"hook_event_name": event_name, **fields}})
+            try:
+                exchange.reply(_TIMEOUT_S)  # verified and discarded: the event is what mattered
+            except (OSError, ExchangeRefused):
+                pass
+        finally:
+            s.close()
+    except ExchangeRefused:
+        _warn_once("the control socket did not prove it holds this session's key, so nothing was relayed")
     except OSError:
         pass
 

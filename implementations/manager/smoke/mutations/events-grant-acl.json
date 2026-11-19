@@ -39,7 +39,7 @@
   "mutations": [
     {
       "name": "G1 key the grant on the display name, the mistake the whole derivation exists to prevent",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];",
       "replace": "if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: name })];",
       "expectRed": "the display name does NOT appear in the granted channel",
@@ -48,7 +48,7 @@
     },
     {
       "name": "G2 mint the grant for every spawn, armed or not",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];",
       "replace": "allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];",
       "expectRed": "no event channel is granted after the explicit opt-out",
@@ -57,7 +57,7 @@
     },
     {
       "name": "G3 no grant at all",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];",
       "replace": "void events;",
       "expectRed": "exactly one event channel is granted",
@@ -74,9 +74,9 @@
     },
     {
       "name": "G5 the refusal keeps the reserved name",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "    const eventsRefused = this.eventsRefusal(connector, opts.events);\n    if (eventsRefused) return { ok: false, error: eventsRefused };",
-      "replace": "    const eventsRefused = this.eventsRefusal(connector, opts.events);\n    if (eventsRefused && this.reserved.add(identityName)) return { ok: false, error: eventsRefused };",
+      "replace": "    const eventsRefused = this.eventsRefusal(connector, opts.events);\n    if (eventsRefused) {\n      this.namesCapacity.reserve(identityName, this.launchOwner(opts, spawner));\n      return { ok: false, error: eventsRefused };\n    }",
       "expectRed": "the refusal releases the reserved name",
       "cell": "the refusal releases the reserved name",
       "note": "The shape this refusal had when it ran after the reservation and released it by hand, with the hand release forgotten. A leaked reserve is silent: the next spawn of that persona is auto-numbered and nothing says why."
@@ -92,7 +92,7 @@
     },
     {
       "name": "G7 arming grants the channel on the READ side too, so an armed agent can subscribe to a plane",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "      if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];",
       "replace": "      if (events) { allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })]; allowSubscribe = [...allowSubscribe, connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })]; }",
       "expectRed": "arming grants no event channel on the READ side",
@@ -101,7 +101,7 @@
     },
     {
       "name": "G8 the manager's read-set default reverts to general, so a channel-less persona carries the row",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? scoped?.allowSubscribe ?? [];",
       "replace": "      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? scoped?.allowSubscribe ?? [\"general\"];",
       "expectRed": "an omitted read set mints NO channel read row at the manager door — general included",

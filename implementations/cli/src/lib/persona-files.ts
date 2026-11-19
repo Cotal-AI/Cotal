@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { isUtf8 } from "node:buffer";
+import { spawn, type StdioOptions } from "node:child_process";
 import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
@@ -8,8 +9,8 @@ import {
   type AgentDef,
 } from "@cotal-ai/core";
 import {
-  cachedPreferences, CommandFailure, ConfirmationRequired, inputDisabledByFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes, movedProject,
-  localWriteFailure, resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
+  cachedPreferences, CommandFailure, ConfirmationRequired, explicitNoInputFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes, movedProject,
+  localWriteFailure, personaDefinitionProblem, resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -100,27 +101,16 @@ export function requirePersonaSource(path: string): PersonaSource {
   return source;
 }
 
-/** Why the agent-file parser refused a definition. A YAML error keeps only its position: the
- *  parser's own text can quote the document's sensitive values. */
-function definitionProblem(error: unknown, path: string): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const prefix = `agent file ${path}: `;
-  const reason = message.startsWith(prefix) ? message.slice(prefix.length) : message;
-  if (!reason.startsWith("invalid YAML frontmatter")) return reason;
-  // The parser counts lines from the first line after the opening `---`.
-  const at = /at line (\d+), column (\d+)/.exec(reason);
-  return `the frontmatter is not valid YAML${at ? ` at line ${Number(at[1]) + 1}, column ${at[2]}` : ""}`;
-}
-
 /** `name` is required of a new definition only. A stored one may launch under another name: the
  *  seeded `default` persona launches as `default_agent`. */
 export function validatePersona(bytes: Buffer, path: string, name?: string): AgentDef {
   // Its encoding names no value from the file, so it is the one reason given.
-  const encoding = utf16Problem(bytes.toString("utf8"));
+  const source = bytes.toString("utf8");
+  const encoding = utf16Problem(source) ?? (isUtf8(bytes) ? undefined : "it is not valid UTF-8");
   if (encoding) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition: ${path}: ${encoding}`, { remedy: `save ${path} as UTF-8` });
   let def: AgentDef;
-  try { def = parseAgentFileSource(bytes.toString("utf8"), path); }
-  catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${path}: ${definitionProblem(error, path)}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
+  try { def = parseAgentFileSource(source, path); }
+  catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${path}: ${personaDefinitionProblem(error, path)}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
   if (name !== undefined && def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'`);
   return def;
 }
@@ -255,15 +245,17 @@ function editorProgram(editor: string): string | undefined {
 interface EditorExit { status: number | null; signal: NodeJS.Signals | null; error?: NodeJS.ErrnoException; received?: InterruptSignal }
 
 /** Run the editor on the draft and wait for it to exit. A SIGINT, SIGTERM or SIGHUP the CLI receives
- *  meanwhile is passed to the editor, so the editor does not outlive the CLI. */
-function runEditor(editor: string, draft: string): Promise<EditorExit> {
+ *  meanwhile is passed to the editor, so the editor does not outlive the CLI. Under `--json` stdout
+ *  carries only the final JSON envelope, so the editor's output goes to stderr. */
+function runEditor(editor: string, draft: string, json = false): Promise<EditorExit> {
   const program = editorProgram(editor);
   const quoted = process.platform === "win32" ? `"${draft.replaceAll('"', '""')}"` : `'${draft.replaceAll("'", "'\\''")}'`;
   let received: InterruptSignal | undefined;
   // The editor starts running as soon as it is spawned, so the CLI holds the signals first.
   const pass = (signal: InterruptSignal) => { received ??= signal; child.kill(signal); };
   for (const signal of INTERRUPT_SIGNALS) process.on(signal, pass);
-  const child = program ? spawn(program, [draft], { stdio: "inherit" }) : spawn(`${editor} ${quoted}`, { shell: true, stdio: "inherit" });
+  const stdio: StdioOptions = json ? ["inherit", process.stderr, "inherit"] : "inherit";
+  const child = program ? spawn(program, [draft], { stdio }) : spawn(`${editor} ${quoted}`, { shell: true, stdio });
   return new Promise(resolve => {
     const done = (exit: EditorExit) => {
       for (const signal of INTERRUPT_SIGNALS) process.off(signal, pass);
@@ -283,8 +275,8 @@ export type PersonaEdit = { action: "saved" } | { action: "unchanged" } | { acti
  *  An interrupt that stops the edit saves nothing, removes an unchanged draft, names a changed one, and
  *  exits with the signal's code. */
 export async function editPersona(path: string, name: string, catalog: PersonaCatalog, json = false): Promise<PersonaEdit> {
-  if (json || inputDisabledByFlag())
-    throw new ConfirmationRequired("persona edit opens an editor, --no-input forbids one, as does --json", { remedy: "edit interactively without --json or --no-input" });
+  if (explicitNoInputFlag())
+    throw new ConfirmationRequired("persona edit opens an editor, and --no-input forbids one", { remedy: "edit interactively without --no-input" });
   const source = requirePersonaSource(path);
   validatePersona(source.bytes, path);
   assertCatalogWritable(dirname(path));
@@ -294,7 +286,7 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
   let keep = false;
   const edit = await withDraft(name, async (draft): Promise<PersonaEdit | { action: "interrupted"; signal: InterruptSignal; draft?: string }> => {
     writeSecretFile(draft, source.bytes);
-    const result = await runEditor(editor, draft);
+    const result = await runEditor(editor, draft, json);
     // SIGTERM or SIGHUP stops the edit. Ctrl-C reaches the editor too, and stops the edit only when
     // it ends the editor, since an editor such as vim takes Ctrl-C as a key.
     if (result.received && (result.received !== "SIGINT" || result.signal)) {

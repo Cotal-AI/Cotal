@@ -2,8 +2,8 @@
  * The short service commands, with no broker: `service add --exec` word splitting, preset option
  * defaults, the refusal that names an option with no default, the built-in presets' own defaults,
  * which recorded adapter pins this release still controls after an upgrade, `cotal manager <verb>`
- * dispatch onto the manager preset, and the help listing that names `manager` and `service` under
- * Services.
+ * dispatch onto the manager preset, the help listing that names `manager` and `service` under
+ * Services, and the confirmation command a refused remove prints, which acts on the space it named.
  *
  * The in-process cells register a fixture adapter and preset of their own. The CLI cells run the real
  * binary from a sandboxed HOME, COTAL_HOME and project root against a registered space whose broker
@@ -36,6 +36,7 @@ type LocalProcess = import("@cotal-ai/workspace").LocalProcess;
 type ServicePreset = import("@cotal-ai/workspace").ServicePreset;
 const { cacheServicePreset, isCommandFailure, recordMesh } = await import("@cotal-ai/workspace");
 const { execWords } = await import("../../implementations/cli/src/lib/exec-words.js");
+const { serviceConfirmCommand } = await import("../../implementations/cli/src/lib/confirmation-required.js");
 const { serviceDefinitionStore } = await import("../../implementations/cli/src/lib/service-definitions.js");
 const { presetDefaultOptions, presetMaterialPath, presetOptionRefusal, resolveServicePreset, servicePresetDefinition, servicePresetFlags } = await import("../../implementations/cli/src/lib/service-presets.js");
 const { controlsRecordedAdapter, resolveServiceAdapter } = await import("../../implementations/cli/src/lib/service-adapters.js");
@@ -179,6 +180,12 @@ check("a third-party adapter controls its record at its own version and declarat
 check("  and refuses one under a changed declaration or another version",
   !controlsRecordedAdapter({ adapter: { ...thirdParty.pin, declarationSha256: "b".repeat(64) } }, thirdParty) && !controlsRecordedAdapter({ adapter: { ...thirdParty.pin, version: "1.1.0" } }, thirdParty));
 
+// ---- A stop's confirmation keeps the instance and --with-agents it was refused for -------------
+check("a stop's confirmation command names the space, the instance and --with-agents as given",
+  serviceConfirmCommand("stop", "worker", "beta", { instance: "6a01a71b-45a1-472e-afff-f7d2c444145e", "with-agents": true }) === "cotal svc stop worker --space beta --instance 6a01a71b-45a1-472e-afff-f7d2c444145e --with-agents --yes"
+    && serviceConfirmCommand("restart", "worker", "beta", {}) === "cotal svc restart worker --space beta --yes",
+  [serviceConfirmCommand("stop", "worker", "beta", { instance: "6a01a71b-45a1-472e-afff-f7d2c444145e", "with-agents": true }), serviceConfirmCommand("restart", "worker", "beta", {})]);
+
 // ---- Help lists manager and service under Services; supervise is hidden ------------------------
 const command = (name: string) => registry.all<Command>("command").find((row) => row.name === name);
 check("manager and service are listed under Services", command("manager")?.group === "Services" && command("service")?.group === "Services" && !command("manager")?.hidden && !command("service")?.hidden, [command("manager")?.group, command("service")?.group]);
@@ -244,7 +251,8 @@ try {
     try { return (JSON.parse(run.stdout) as { result: { services: { name: string; next: string }[] } }).result.services.find((row) => row.name === "broker")?.next; }
     catch { return out(run); }
   })();
-  check("bare service offers the broker with --server <url> when the space has no registered broker", brokerRow === "cotal service start broker --config <file> --binary <file> --server <url>", brokerRow);
+  // The list was given --space, so its Next names it too (#7642).
+  check("bare service offers the broker with --server <url> when the space has no registered broker", brokerRow === `cotal service start broker --config <file> --binary <file> --server <url> --space ${PREPARED}`, brokerRow);
   const unready = cotal(["service", "add", "b0", "--preset", "broker", "--space", PREPARED]);
   const printed = out(unready).split("\n").map((line) => line.trim()).find((line) => line.startsWith("cotal service add b0 --preset broker")) ?? "";
   check("a broker add missing its options names --server too, and prints a line with all three",
@@ -294,6 +302,18 @@ try {
   let removedName: unknown;
   try { removedName = (JSON.parse(removed.stdout) as { result: { kind: string; name: string } }).result; } catch { removedName = out(removed); }
   check("service remove manager --yes forgets m1", removed.status === 0 && JSON.stringify(removedName).includes('"kind":"service-definition-removed","name":"m1"') && JSON.stringify(definitions()) === '["hello"]', removedName);
+
+  // ---- A confirmation command keeps the space it was refused for (#7543) ------------------------
+  // `hello` is saved in both spaces, and this folder's space is SPACE, so a printed command without
+  // --space forgot SPACE's `hello` instead.
+  const second = cotal(["service", "add", "hello", "--exec", "echo hi", "--space", PREPARED]);
+  const unconfirmed = cotal(["service", "remove", "hello", "--space", PREPARED, "--no-input"]);
+  const confirm = /`(cotal svc remove [^`]*)`/.exec(out(unconfirmed))?.[1] ?? "";
+  check("service remove --space <other> --no-input prints a confirmation that names that space",
+    second.status === 0 && unconfirmed.status === 1 && confirm === `cotal svc remove hello --space ${PREPARED} --yes`, out(unconfirmed));
+  const confirmed = cotal(confirm.split(" ").slice(1));
+  check("  and running it forgets that space's service and keeps this folder's",
+    confirmed.status === 0 && serviceDefinitionStore(PREPARED).read("hello") === undefined && serviceDefinitionStore(SPACE).read("hello") !== undefined, out(confirmed));
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {

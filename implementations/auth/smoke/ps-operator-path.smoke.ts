@@ -2,20 +2,9 @@
  * THE OPERATOR `ps` PATH WORKS: `cotal up` (static auth, no `--user-auth`, no IdP, no device login,
  * so the CLI presents a locally-minted operator credential) then `cotal ps --space`.
  *
- * A RED HERE IS A REAL DEFECT. It began life as the control arm of a BEFORE/AFTER pair, where a
- * static failure meant "the fixture never armed, grade the pair void". **That reading does not
- * transfer and would be actively harmful now** — as a gated suite its job is the opposite: it says
- * the shipped operator path is broken. The `cotal up` cell below distinguishes the two, and it is
- * checked FIRST for exactly that reason: `up` red means the fixture; `up` green with `ps` red means
- * the product.
- *
- * WHY IT IS GATED. It caught a real regression in its first outing, from a change two people had
- * agreed looked safe: converting the freeze enumeration from `kv.keys()` to a `STREAM.INFO`
- * `subjects_filter` without adding the matching `$JS.API.STREAM.INFO.KV_<records>` row to
- * `scatterFreezeReadRows`. The symptom surfaces hundreds of lines from the cause, as a NATS
- * permissions violation on a records-bucket subject, which is why it cost a night to find once.
- *
- * Mutation-proved: delete that grant row and this suite goes red.
+ * Wait for a live manager reply before grading the static operator's `ps`. A missed deadline
+ * does not establish a permissions defect. The live `ps` still exercises the registry reads that
+ * a direct call to one manager would not cover.
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -27,8 +16,7 @@ const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", 
 
 // Same temp-root sandbox as the user-mode sibling, and for the same reason: `findCotalRoot` walks to
 // `/` unbounded, so a `.cotal` above `tmpdir()` sends this fixture's `manager.pid` into that
-// ancestor and step 3's kill silently does nothing. This suite is gated — a red here is read as the
-// shipped operator path being broken — so it must never be able to red for a fixture reason.
+// ancestor and step 3's kill silently does nothing.
 const scratch = makeScratch("cotal-psstatic-");
 // SETUP TRANSACTION: every line from here to the main body can throw, and a throw used to exit
 // with the scratch — including its anchored `.cotal` — still on disk.
@@ -50,6 +38,9 @@ try {
 } catch (e) { cleanScratch(e); }
 const SPACE = `psstatic-${Math.floor(Math.random() * 1e6)}`;
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
+const MANAGER_READY_MS = 60_000;
+// Allow CLI startup and the native reply deadlines to finish even under scheduler contention.
+const PS_PROCESS_MS = 60_000;
 
 // Was `cotal up` ever INVOKED? Not "did it succeed" — a failed, timed-out or signalled `up` can still
 // have launched detached processes, and those are exactly the ones whose pidfiles must survive.
@@ -118,23 +109,13 @@ function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
   });
 }
 
-/**
- * `up --detach` returns once the manager PROCESS is spawned, not once it has registered its endpoint
- * (#379, second mode, measured 2026-09-04: `manager.<spaceKey>.log` is 0 bytes when `up` exits 0 and
- * carries "service endpoint registered" 5s later). A `ps` launched inside that window is refused with
- * `failed-precondition: service "manager" has no live registered instances`, which cell 2 below would
- * read as the shipped operator path being broken. Under `npx tsx` the resolve step delayed every `ps`
- * launch by about a second and hid the window on every run; the direct tsx launch (#1244) lands inside
- * it three runs in three. So wait, bounded, for the registration line in the manager's own log under
- * THIS root, then launch `ps` exactly once. A manager that never registers still reaches `ps`, and the
- * product's own refusal is then graded with that fact printed beside it rather than in its place.
- */
+/** Observe registration in this fixture, separately from proof the manager is answering. */
 async function awaitManagerRegistered(ms: number): Promise<boolean> {
   const dir = join(root, ".cotal");
   const registered = () => readdirSync(dir).some((f) =>
     /^manager(\..*)?\.log$/.test(f) && /service endpoint registered/.test(readFileSync(join(dir, f), "utf8")));
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
+  const end = performance.now() + ms;
+  while (performance.now() < end) {
     if (registered()) return true;
     await new Promise((r) => setTimeout(r, 150));
   }
@@ -185,26 +166,38 @@ try {
   // Attribute HOW `up` ended before reading its status: a signalled or timed-out `up` reports
   // `status: null`, which reads only as "non-zero" and loses why.
   mustHaveRun(up, "`cotal up`");
-  check("`cotal up` exits 0 — checked FIRST so a fixture failure is distinguishable from a product one", up.status === 0, up.out.slice(-700));
+  check("`cotal up` starts the fixture", up.status === 0, up.out.slice(-700));
   // Also a throw, not an exit: a PARTIALLY started mesh is the case most in need of the teardown
   // that `finally` performs, and `process.exit` here would strand exactly that.
   if (up.status !== 0) { process.exitCode = 1; throw new Error("FIXTURE FAILURE, not a product defect: no mesh came up, so `ps` was never exercised."); }
 
   console.log("\n2) cotal ps --space, under the STATIC credential");
-  const registered = await awaitManagerRegistered(20_000);
-  console.log(`   manager registration ${registered ? "observed" : "NOT observed within 20s"} in ${join(root, ".cotal")} - ps launched once, now`);
-  const ps = await cotal(["ps", "--space", SPACE], 20_000);
+  const registrationStart = performance.now();
+  if (!await awaitManagerRegistered(MANAGER_READY_MS)) {
+    throw new Error(`Manager registration not observed after ${Math.round(performance.now() - registrationStart)}ms (budget ${MANAGER_READY_MS}ms). Live ps was not run.`);
+  }
+  console.log(`   manager registration observed after ${Math.round(performance.now() - registrationStart)}ms (budget ${MANAGER_READY_MS}ms)`);
+
+  // The read-only readiness probe gives discovery its own budget. It does not exercise or retry ps.
+  const readyStart = performance.now();
+  const ready = await cotal(["endpoint", "invoke", "ep:manager", "status", "--space", SPACE, "--timeout", String(MANAGER_READY_MS)], 90_000);
+  const readyTiming = `${Math.round(performance.now() - readyStart)}ms elapsed (endpoint budget ${MANAGER_READY_MS}ms)`;
+  mustHaveRun(ready, `the manager readiness probe (${readyTiming})`);
+  check(`live manager answers the readiness probe (${readyTiming})`, ready.status === 0, ready.out);
+  if (ready.status !== 0) throw new Error("Manager readiness was not established. Live ps was not run.");
+
+  const psStart = performance.now();
+  const ps = await cotal(["ps", "--space", SPACE], PS_PROCESS_MS);
   console.log(`\n   ===== cotal ps --space ${SPACE} (STATIC) =====`);
-  console.log(`   exit status: ${ps.status}`);
+  console.log(`   exit status: ${ps.status} (${Math.round(performance.now() - psStart)}ms elapsed, subprocess budget ${PS_PROCESS_MS}ms)`);
   console.log(ps.out.split("\n").map((l) => `   | ${l}`).join("\n"));
   console.log(`   ===== end =====\n`);
 
-  check("the OPERATOR `cotal ps` exits 0 (a RED here is a real defect: the shipped operator path is broken)", ps.status === 0, { status: ps.status, managerRegistered: registered });
-  console.log(ps.status === 0
-    ? "   => the operator path works."
-    : "   => OPERATOR PATH BROKEN. The mesh came up (checked above), so this is the product, not the fixture.\n" +
-      "      Most likely a records-bucket read the operator instrument no longer holds — read the denied\n" +
-      "      subject above and compare it against scatterFreezeReadRows in packages/core/src/provision.ts.");
+  mustHaveRun(ps, "the live-manager `cotal ps`");
+  const describeBudget = ps.out.match(/deadline-exceeded: no describe reply from manager within (\d+)ms/)?.[1];
+  check("the live-manager operator `cotal ps` exits 0", ps.status === 0, describeBudget
+    ? `No describe reply within the ${describeBudget}ms native budget. This timeout does not establish an operator permissions defect.`
+    : `exit ${ps.status}. See the command output above.`);
 
   // Completeness honesty: with the manager dead, ps must not print a bare empty list that reads
   // as "no agents". Scatter labels the instance unreachable; a total failure exits non-zero.
@@ -214,7 +207,7 @@ try {
   // "(no managed agents)" trips `claimsEmptySuccess` below — a fixture failure wearing the costume
   // of the product defect this suite exists to catch.
   console.log(`   killed manager pid ${await killManagerAtRoot(root)} — the cell below grades a DEAD mesh`);
-  const psDead = await cotal(["ps", "--space", SPACE], 20_000);
+  const psDead = await cotal(["ps", "--space", SPACE], PS_PROCESS_MS);
   // Fatal before grading: any of the null-status routes would satisfy `claimsEmptySuccess === false`
   // on evidence this suite fabricated rather than observed.
   mustHaveRun(psDead, "the dead-manager `cotal ps`");

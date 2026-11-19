@@ -24,6 +24,8 @@ import {
   parsePrincipalKey,
   principalKey,
   writeLaunchMaterial,
+  discardLaunchArtifacts,
+  type ControlEndpoint,
   type LaunchMaterial,
   type McpServerSpec,
   type UserAuthLaunch,
@@ -264,7 +266,9 @@ export function connectorLaunchOptions(
  * The file's private directory is appended to `artifacts`, the launch's artifact list (core
  * launch-artifacts), so the launcher that spawns the spec removes it once the child has exited, the
  * same way it removes a persona carrier. Call it after the connector's last refusal: a launch that
- * throws returns no spec, and then nothing owns the directory.
+ * throws returns no spec, and then nothing owns the directory. When it fails, it removes every
+ * artifact recorded so far (the control socket's directory included) before the error propagates,
+ * as `writeLaunchArtifact` does.
  *
  * Refuses a creds+userAuth combination here (one launch, one identity plane - U10), which is where
  * `userAuthEnv` refused it.
@@ -274,20 +278,32 @@ export function materialEnv(
     creds?: string;
     servers?: string;
     token?: string;
-    controlToken?: string;
+    control?: ControlEndpoint;
     eventsRequired?: boolean;
     eventPayloads?: boolean;
     userAuth?: UserAuthLaunch;
   },
   artifacts: string[],
 ): Record<string, string> {
+  try {
+    return writeMaterial(opts, artifacts);
+  } catch (e) {
+    discardLaunchArtifacts(artifacts);
+    throw e;
+  }
+}
+
+function writeMaterial(opts: Parameters<typeof materialEnv>[0], artifacts: string[]): Record<string, string> {
   if (opts.userAuth && opts.creds)
     throw new Error("launch: creds (static auth) and userAuth (user-mode auth) are mutually exclusive — one launch carries one identity plane");
   const material: LaunchMaterial = {};
   if (opts.creds) material.creds = opts.creds;
   if (opts.servers) material.servers = opts.servers;
   if (opts.token) material.token = opts.token;
-  if (opts.controlToken) material.controlToken = opts.controlToken;
+  if (opts.control) {
+    material.controlKey = opts.control.token;
+    material.controlVersion = opts.control.version;
+  }
   if (opts.eventsRequired) material.eventsRequired = true;
   if (opts.eventPayloads === false) material.eventPayloadsWithheld = true;
   if (opts.userAuth) material.userAuth = opts.userAuth;

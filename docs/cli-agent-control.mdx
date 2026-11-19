@@ -29,7 +29,7 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 | `--wide` (`ps`) | off | Print each seat as a labeled record that adds the operational facts the manager records: the provider the connector reported serving the model, `cwd`, `pid`, spawner, lifecycle uid, the owning manager's instance id and host, and for a `--resume` seat the session it forked (`forked from <id>`, with the source title and transcript SHA-256 once a Hermes or Jcode seat has recorded its fork; a carried Claude session prints `forked from <host>:<id>` with its title, SHA-256 and `carried <time>`, the time its bytes reached the manager). Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process, a Windows seat whose process ConPTY has not created yet, or a connector that reported no provider) prints nothing, never a placeholder |
 | `--json` / `-j` (`ps`) | off | One JSON document (see below). Mutually exclusive with `--wide` and `--plain` |
 | `--plain` (`ps`) | off | The same report without color or marks |
-| `--slots` (`ps`) | off | List the durable static slot rows this manager owns instead of live seats, through the `slots` command. Mutually exclusive with `--wide`. A row that is not in the live roster still prints, with `LIVE` false; a retired row never prints |
+| `--slots` (`ps`) | off | List the durable static slot rows this manager owns instead of live seats, through the `slots` command. Static-auth spaces only; open and user-auth spaces refuse with `UNSUPPORTED`, exit 2, naming `cotal ps`. Mutually exclusive with `--wide`. A row that is not in the live roster still prints, with `LIVE` false; a retired row never prints |
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
 
@@ -54,7 +54,11 @@ reads that list and refuses the same way. Named `cotal status <agent>` instead r
 peer's holding manager, as the [agent view reference](cli-agent-views.mdx#named-agent-status) describes.
 The refusal does not show that no manager process runs, because a manager that is still starting or cannot register is not listed.
 The registry's own answer stays under `error.cause`. A registry that could not be read is reported
-as it was.
+as it was. When a default local stack's manager PID record proves its process died, `ps` and
+`ps --slots` instead say no manager runs and name bare `cotal up`. When that recorded process is
+still alive but does not answer, they name its PID and, if it stays unresponsive, the step to end
+that process with `kill -KILL <pid>` before starting it again with bare `cotal up`. Neither command
+stops or restarts the manager.
 
 When no manager runs or is registered, the refusal's Next names the root of this machine's own stack
 for the space, as bare `cotal up` in that folder, because bare `up` in another project acts on that
@@ -63,9 +67,14 @@ it through a `--server` other than the broker its registration records, it canno
 stack runs. The Next then says to start the space's manager where its stack runs and names no local
 command.
 
-A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
-that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
-entry, is the route that does.
+When a recorded local stack is stopped, `ps` still refuses `TARGET_UNAVAILABLE`,
+exit 2. If the recorded root's default `.cotal/channels.json` would prevent `up` from restarting the
+stack, the refusal names the file and the repair instead of recommending a restart. `ps` does not
+change the file.
+
+A raw `--creds` file is refused as `UNSUPPORTED` before dialing by `status <agent>`, `ps`, `stop`, `attach`, `input` and `models`, because
+that route mints no endpoint-caller triple. Run the command without `--creds` from the project folder, or pass `--space` against its registry
+entry, so the CLI mints the one-shot caller itself.
 
 The stock auth provider gives each hosted manager admin-authorization decision a single
 5-second dependency budget, covering IdP token acquisition, the authority POST and its complete
@@ -300,8 +309,8 @@ concludes nothing.
   When none of your managers answers, or none is live, `ps` lists your agents as presence shows
   them, read-only, with their state, application and host, and exits 0. It says that no manager
   answered, and its Next starts one: bare `cotal up` on the root of the space's own stack, as for a
-  static stack above, and `cotal manager start` anywhere else. `--on` and `--slots` keep refusing
-  `TARGET_UNAVAILABLE`, exit 2, when their manager does not answer. Your ledger row needs the `admin` scope to
+  static stack above, and `cotal manager start` anywhere else. `--on` keeps refusing
+  `TARGET_UNAVAILABLE`, exit 2, when its manager does not answer, and `--slots` refuses `UNSUPPORTED`, exit 2, because user-auth and open spaces own no durable static slot rows. Your ledger row needs the `admin` scope to
   reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary). A broker-refused
   read keeps that refusal and adds the documented scope requirement and `cotal auth grants` remedy.
   The broker does not identify whether the missing permission is for the route, command or target;
@@ -309,6 +318,9 @@ concludes nothing.
 
 
 ### Terminal attachment
+
+Since 0.167.1, `attach` does not install or repair local application connectors. Missing npm or a
+previous connector seed failure does not block the native manager terminal route.
 
 `attach` streams and drives an agent's terminal on the `pty` runtime; detach with the escape key
 (Ctrl-] by default; see the [`detach-key` preference](config.mdx#preferences)). The key is recognised
@@ -413,6 +425,11 @@ remote manager regardless of the bind address. A
 bare `cotal supervise` and an embedded manager stay machine-local. Set it directly with
 `supervise --console-host <host>`.
 
+The browser console removes its launch token from the address bar after its page scripts load.
+Its page sends `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`.
+Content-Security-Policy allows scripts from its own origin, inline styles for the terminal,
+and WebSocket connections for broker sessions. Inline scripts are refused.
+
 That address is **recorded on the mesh** and carried forward, because it is a decision rather than
 something later commands can work out for themselves (a broker dial address is not a manager bind
 address). Every later manager launch for the same mesh reuses it, including a same-root `cotal up` repair
@@ -487,8 +504,10 @@ A write the manager cannot confirm, such as a terminal write that failed partway
 the seat before you send it again.
 
 With no manager running, as after `cotal service stop stack-manager`, `input` refuses
-`TARGET_UNAVAILABLE` (exit 2) before it sends anything and names bare `cotal up`, as `ps` does.
-`stop` and `attach` find their seat the same way and refuse the same. A manager that stays
+`TARGET_UNAVAILABLE` (exit 2) before it sends anything. `stop` and `attach` find their seat the
+same way and refuse the same. Like `ps`, they name the local project where `cotal up` starts the
+manager. For a space that runs elsewhere, they tell you to start the manager where its stack runs.
+A manager that stays
 registered but does not answer, such as one that crashed, leaves `input` and `stop` waiting out its
 answer deadline. They then refuse `TARGET_UNAVAILABLE` too, since nothing was sent, with
 `cotal status` as the next step.
@@ -537,8 +556,9 @@ reports `classSpawn: false`, the refusal is `DEPENDENCY_UNAVAILABLE`: it names e
 host, says none has an agent application installed, and names the `cotal ext add` that adds one.
 A registered manager whose rail the broker reports empty is skipped without waiting and named
 in a `MANAGER_SILENT` warning; the reason comes from the managers that answered.
-Both refusals say to add the application where the manager runs, not on your machine. A manager
-reads its applications when it starts, so restart it after adding one. A failure after the manager reserved
+Both refusals say to add the application where the manager runs, not on your machine. If you install
+it in a directory already on the manager's PATH, a status read can discover it without a restart.
+A failure after the manager reserved
 the name or wrote a launch file keeps its native outcome, and the CLI never reclassifies it from
 its message.
 

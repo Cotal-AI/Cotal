@@ -17,6 +17,9 @@ Modes:
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import inspect
 import json
 import os
@@ -118,11 +121,17 @@ sys.modules.update(
 _tmp = tempfile.mkdtemp()
 _sockpath = os.path.join(_tmp, "bridge.sock")
 os.environ["COTAL_BRIDGE_SOCKET"] = _sockpath
-# The control token the client must present on the first frame of every connect and reconnect.
-# Set before BridgeClient is ever constructed, so its resolution (COTAL_CONTROL_TOKEN or
-# _material_token()) finds this value rather than raising for a missing token.
+# The control key the client derives its bridge token from, presented on the first frame of every
+# connect and reconnect. Set before BridgeClient is ever constructed, so its resolution
+# (COTAL_CONTROL_KEY with COTAL_CONTROL_VERSION, or the launch material) finds this value rather
+# than raising for a missing key. The expected token is derived here from the documented bytes, not
+# through the plugin, so the cell also pins the derivation.
 _TOKEN = "reconnect-effect-smoke-token"
-os.environ["COTAL_CONTROL_TOKEN"] = _TOKEN
+os.environ["COTAL_CONTROL_KEY"] = _TOKEN
+os.environ["COTAL_CONTROL_VERSION"] = "1"
+_BRIDGE_TOKEN = base64.urlsafe_b64encode(
+    hmac.new(_TOKEN.encode("utf-8"), b"cotal-hermes-bridge/1", hashlib.sha256).digest()
+).rstrip(b"=").decode("ascii")
 sys.path.insert(0, PLUGIN_PARENT)
 
 _srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -266,7 +275,7 @@ def main() -> None:
     print(
         "FIRST_FRAMES_TOKENED",
         len(_first_frames) >= 2
-        and all(f.get("t") == "subscribe" and f.get("token") == _TOKEN for f in _first_frames),
+        and all(f.get("t") == "subscribe" and f.get("token") == _BRIDGE_TOKEN for f in _first_frames),
     )
 
     if MODE == "subject":
@@ -279,6 +288,8 @@ def main() -> None:
             for name, ok in _handle_rows():
                 print(name, ok)
             for name, ok in _fatal_rows():
+                print(name, ok)
+            for name, ok in _refused_dir_rows():
                 print(name, ok)
             for name, ok in _socket_fence_rows():
                 print(name, ok)
@@ -321,7 +332,9 @@ def main() -> None:
                          "ADAPTER_CYCLE_READER_REACHED_ITS_READ",
                          "DEAD_READER_REPORTS_FATAL",
                          "DEAD_READER_FATAL_IS_RETRYABLE", "DEAD_READER_NOT_MARKED_CONNECTED",
-                         "HEALTHY_READER_REPORTS_NO_FATAL"):
+                         "HEALTHY_READER_REPORTS_NO_FATAL",
+                         "OPEN_BRIDGE_DIR_CONNECT_REFUSED", "OPEN_BRIDGE_DIR_FATAL_IS_PERMANENT",
+                         "OPEN_BRIDGE_DIR_SEND_FAILS_LOUD", "ABSENT_BRIDGE_DIR_IS_NOT_REFUSED"):
                 print(name, False)
         try:
             responsive, elapsed = _loop_stays_responsive()
@@ -540,6 +553,46 @@ def _fatal_rows() -> list[tuple[str, bool]]:
     adapter2._mark_connected = lambda: healthy.__setitem__("connected", True)
     ok2 = asyncio.run(adapter2.connect())
     rows.append(("HEALTHY_READER_REPORTS_NO_FATAL", ok2 is True and healthy["connected"] and not adapter2.has_fatal_error))
+    return rows
+
+
+def _refused_dir_rows() -> list[tuple[str, bool]]:
+    """A bridge socket in a directory that exists and is not private to this user is a permanent
+    refusal, never a platform reported connected while its reader retries for ever.
+
+    Before: ``_connect`` slept and retried on any directory problem, so ``connect`` marked the
+    platform connected and returned True, and every reply ``send`` handed the bridge was dropped
+    while reporting success. Accept control: an ABSENT directory (a sidecar not up yet) is still
+    retried, not refused.
+    """
+    rows: list[tuple[str, bool]] = []
+    open_dir = os.path.join(_tmp, "open-bridge-dir")
+    os.mkdir(open_dir)
+    os.chmod(open_dir, 0o755)
+    adapter = CotalAdapter(PlatformConfig())
+    adapter._client = BridgeClient(os.path.join(open_dir, "bridge.sock"))
+    marked = {"connected": False}
+    adapter._mark_connected = lambda: marked.__setitem__("connected", True)
+    notified = {"n": 0}
+    adapter._notify_fatal_error = lambda: _async_noop(notified)
+    ok = asyncio.run(adapter.connect())
+    rows.append(("OPEN_BRIDGE_DIR_CONNECT_REFUSED", ok is False and not marked["connected"]))
+    rows.append((
+        "OPEN_BRIDGE_DIR_FATAL_IS_PERMANENT",
+        adapter.has_fatal_error and adapter.fatal_error_retryable is False and notified["n"] == 1
+        and "not private" in (getattr(adapter, "_fatal_error_message", "") or ""),
+    ))
+    try:
+        asyncio.run(adapter.send("dm:peer", "hello"))
+        sent = "reported success"
+    except RuntimeError as exc:
+        sent = str(exc)
+    rows.append(("OPEN_BRIDGE_DIR_SEND_FAILS_LOUD", "not private" in sent))
+    adapter._client.close()
+
+    absent = BridgeClient(os.path.join(_tmp, "not-yet", "bridge.sock"))
+    rows.append(("ABSENT_BRIDGE_DIR_IS_NOT_REFUSED", absent.refusal() is None))
+    absent.close()
     return rows
 
 

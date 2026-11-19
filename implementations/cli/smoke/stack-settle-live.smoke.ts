@@ -640,6 +640,8 @@ try {
     const status = cli(root, "status", "--json");
     const full = status.env?.result?.store as { state?: string; used?: number; cap?: number; path?: string } | undefined;
     check("status --json shows the store full with its bytes, cap and path", status.status === 0 && full?.state === "full" && full.cap === 70000000 && (full.used ?? 0) > 70000000 && full.path === store, { status: status.status, store: full });
+    const components = cli(root, "status", "--components");
+    check("component health grades a reachable broker with a full store not-serving", components.status !== 0 && /broker\s+not-serving/.test(components.stdout) && components.stdout.includes("store full:"), shown(components));
     const plain = cli(root, "status", "--plain");
     const fullNext = plain.stdout.slice(plain.stdout.indexOf("\nNext\n"));
     check("status shows a full Store row, and its Next names the larger cap and no history clear", /Store: +full - \d+ bytes stored, over its --max-file-store cap of 70000000/.test(plain.stdout) && fullNext.includes("up --max-file-store <bytes>") && !fullNext.includes("history clear"), plain.stdout);
@@ -858,6 +860,22 @@ try {
     track(space);
     check("up --server with that address starts it", named.status === 0, shown(named));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
+  for (const open of [false, true]) {
+    const space = open ? "recover-open-store" : "recover-auth-store", root = prepare(space);
+    const store = join(projects, `${space}-history`);
+    mkdirSync(store, { mode: 0o700 });
+    const first = cli(root, "up", ...(open ? ["--open"] : []), "--store-dir", store, "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
+    track(space);
+    check(`custom store starts, open=${open}`, first.status === 0, shown(first));
+    check("custom store stops before journal recovery", cli(root, "down", "--yes", "--json").status === 0);
+    rmSync(join(root, ".cotal", "stack-controller.json"));
+    const recovered = cli(root, "up", "--json");
+    track(space);
+    const journal = readStackJournal(root)?.journal;
+    check(`saved definition recovery retains mode and store, open=${open}`, recovered.status === 0 && journal?.mode === (open ? "open" : "auth") && journal.broker?.storeDir === store && !existsSync(join(root, ".cotal", "nats")), shown(recovered));
+    check("recovered custom stack stops", cli(root, "down", "--yes", "--json").status === 0);
   }
 
   // 3d. A project folder renamed while its stack runs.
@@ -1634,7 +1652,10 @@ try {
       { preview: shown(preview), stop: shown(stop), set: shown(setPreview) });
   }
 
-  // 11. A first up whose broker cannot create the space's streams.
+  // 11. A first up under a low open-file limit. Which step runs out first depends on how many files
+  // the CLI's Node runtime holds open: on Node 22 the broker starts and cannot create the space's
+  // streams, so it is stopped again; on Node 24 the CLI cannot run the nats-server version check, so
+  // nothing starts. Either way the failure is a known one, and down has nothing to refuse.
   {
     const space = "fewfiles";
     const root = prepare(space);
@@ -1643,7 +1664,7 @@ try {
     let failed: Envelope | undefined;
     try { failed = JSON.parse(limited.stdout) as Envelope; } catch { failed = undefined; }
     track(space);
-    check(`${space}: under ulimit -n 32 the up stops the broker it started, fails OPERATION_FAILED, exit 5, and names the open-file limit`,
+    check(`${space}: under ulimit -n 32 the up fails OPERATION_FAILED, exit 5, names the open-file limit, and leaves no broker running`,
       limited.status === 5 && failed?.error?.code === "OPERATION_FAILED" && /ran out of open files/.test(failed.error.message) && (failed.error.remedy ?? "").includes("ulimit -n") && gone(space, "stack-broker"),
       { status: limited.status, envelope: failed, stderr: limited.stderr.slice(-1500) });
     const recovered = cli(root, "up", "--json");

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { COTAL_CLOUD_IDP, isCotalCloudIdp, initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel, statusPollDelayMs } from "../src/model.ts";
+import { COTAL_CLOUD_IDP, isCotalCloudIdp, initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel } from "../src/model.ts";
 
 test("a blank space label is the space id and a label with a character stays", () => {
   assert.equal(shownSpaceLabel(" ", "team"), "team");
@@ -25,16 +25,6 @@ test("a blank account label is the subject and a label with a character stays", 
   assert.equal(shownAccountLabel(" ", " "), undefined);
   assert.equal(shownAccountLabel(" ada", "user-1"), " ada");
   assert.equal(shownAccountLabel("Ada", "user-1"), "Ada");
-});
-
-test("status poll delay uses 60 s while hidden and 1 s or 10 s while visible", () => {
-  assert.equal(statusPollDelayMs(false, "supported"), 1000);
-  for (const hostSupport of ["unsupported", "unknown", undefined]) {
-    assert.equal(statusPollDelayMs(false, hostSupport), 10_000);
-  }
-  for (const hostSupport of ["supported", "unsupported", "unknown", undefined]) {
-    assert.equal(statusPollDelayMs(true, hostSupport), 60_000);
-  }
 });
 
 test("Cloud identity recognizes only the canonical and legacy auth URLs", () => {

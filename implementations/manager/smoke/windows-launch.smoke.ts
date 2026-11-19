@@ -25,13 +25,16 @@
  *   G. a managed listener whose endpoint is squatted exits(1) — fatal bind, no degraded plane. [WS3,
  *      win32-only: a named pipe is the only transport where a live squatter yields EADDRINUSE]
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, delimiter } from "node:path";
+import { dirname, join, delimiter } from "node:path";
 import { connect, createServer } from "node:net";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolveOnPath } from "@cotal-ai/workspace";
+import { CONTROL_PROTOCOL_VERSION, controlCall } from "@cotal-ai/core";
+import { controlTranscriptMac } from "@cotal-ai/smoke-kit";
 import { launchEnv, controlEndpoint, startControlServer, type MeshAgent } from "@cotal-ai/connector-core";
 import { quoteCmdArg, buildCmdCommandLine, resolveComspec, preparePtyLaunch } from "../src/runtime/windows-launch.js";
 import { controlShutdown } from "../src/control-shutdown.js";
@@ -41,6 +44,8 @@ import type { Win32ProcessPin, Win32TreePin } from "@cotal-ai/workspace";
 import { createRuntime } from "../src/index.js";
 
 const isWin = process.platform === "win32";
+/** The control sockets' per-launch directories, removed at the end. */
+const controlDirs: string[] = [];
 let failures = 0;
 function check(label: string, cond: boolean): void {
   console.log(`${cond ? "✓" : "✗"} ${label}`);
@@ -344,32 +349,14 @@ if (isWin) {
 }
 
 // =================================================================================================
-// F. authenticated control plane — first-frame auth + shutdown routing. Runs EVERYWHERE (node:net
+// F. authenticated control plane — the control exchange + shutdown routing. Runs EVERYWHERE (node:net
 //    abstracts the AF_UNIX socket / named pipe, so the auth + routing logic exercises identically).
 // =================================================================================================
-function sendFrame(path: string, frame: unknown): Promise<string> {
-  return new Promise((resolve) => {
-    const sock = connect(path);
-    let reply = "";
-    let settled = false;
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      try {
-        sock.destroy();
-      } catch {
-        /* ignore */
-      }
-      resolve(reply);
-    };
-    sock.setEncoding("utf8");
-    sock.on("connect", () => sock.write(JSON.stringify(frame) + "\n"));
-    sock.on("data", (d) => (reply += d));
-    sock.on("end", finish);
-    sock.on("close", finish);
-    sock.on("error", finish);
-    setTimeout(finish, 2000);
-  });
+/** One request through the control exchange, keyed with `token`: the proven reply, or "" when the
+ *  two ends do not hold the same key (the connection is dropped before any request is sent). */
+function sendFrame(path: string, frame: { token: string } & Record<string, unknown>): Promise<string> {
+  const { token, ...request } = frame;
+  return controlCall({ path, token, version: CONTROL_PROTOCOL_VERSION }, request, { timeoutMs: 2000, maxReplyBytes: 1 << 20 }).catch(() => "");
 }
 function waitListening(server: ReturnType<typeof startControlServer>): Promise<void> {
   return new Promise((resolve) => {
@@ -379,7 +366,7 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
 }
 {
   const stubAgent = {} as unknown as MeshAgent;
-  const ep = controlEndpoint("smoke", "ctl");
+  const ep = controlEndpoint("smoke", "ctl", controlDirs);
 
   // F1: endpoint shape — a named pipe on win32 / a tmpdir .sock on POSIX, a 256-bit base64url token,
   // and a token-derived (so unguessable) path.
@@ -388,7 +375,7 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
     isWin ? ep.path.startsWith("\\\\.\\pipe\\cotal-") : ep.path.startsWith(join(tmpdir(), "cotal-")) && ep.path.endsWith(".sock"),
   );
   check("controlEndpoint token is a 43-char base64url string (32 random bytes)", /^[A-Za-z0-9_-]{43}$/.test(ep.token));
-  check("controlEndpoint path is token-derived (different token → different path)", controlEndpoint("smoke", "ctl").path !== ep.path);
+  check("controlEndpoint path is token-derived (different token → different path)", controlEndpoint("smoke", "ctl", controlDirs).path !== ep.path);
 
   const events: unknown[] = [];
   let shutdowns = 0;
@@ -441,13 +428,47 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
   eq("shutdown: wrong token → onShutdown NOT fired", shutdowns, 1);
 
   // F7: the manager's controlShutdown client round-trips to a server's onShutdown (the WS4 wire path).
-  const ep2 = controlEndpoint("smoke", "ws4");
+  const ep2 = controlEndpoint("smoke", "ws4", controlDirs);
   let ws4 = false;
   const server2 = startControlServer(stubAgent, ep2, handle, { onShutdown: () => (ws4 = true) });
   await waitListening(server2);
   controlShutdown(ep2);
   for (let i = 0; i < 40 && !ws4; i++) await sleep(25);
   check("WS4: controlShutdown(endpoint) reaches the server's onShutdown", ws4);
+
+  // F8: controlShutdown bounds the reply. A server that proves it holds the key and then streams one
+  // reply line that never ends gets read only to the small cap (the acknowledgement is `{"ok":true}`),
+  // not until the call's 2 s timeout.
+  const ep3 = controlEndpoint("smoke", "ws4-flood", controlDirs);
+  let written = 0;
+  let floodDone = false;
+  const flood = createServer((sock) => {
+    sock.on("error", () => {});
+    sock.once("data", (hello) => {
+      const nc = (JSON.parse(hello.toString().split("\n")[0]) as { nonce: string }).nonce;
+      const ns = randomBytes(32).toString("base64url");
+      sock.write(JSON.stringify({ v: CONTROL_PROTOCOL_VERSION, nonce: ns, mac: controlTranscriptMac(ep3.token, "server", nc, ns) }) + "\n");
+      sock.once("data", () => {
+        const chunk = Buffer.alloc(1 << 16, 0x61);
+        sock.on("close", () => (floodDone = true));
+        sock.write(`${"A".repeat(43)} `);
+        const pump = (): void => {
+          while (!floodDone) {
+            written += chunk.length;
+            if (!sock.write(chunk)) return void sock.once("drain", pump);
+          }
+        };
+        pump();
+      });
+    });
+  });
+  // This cell grades the reply cap, so it does not lean on minting having made the directory.
+  if (!isWin) mkdirSync(dirname(ep3.path), { recursive: true, mode: 0o700 });
+  await new Promise<void>((resolve) => flood.listen(ep3.path, () => resolve()));
+  controlShutdown(ep3);
+  for (let i = 0; i < 100 && !floodDone; i++) await sleep(25);
+  check(`controlShutdown stops reading a proven reply that never ends near its small cap (took ${written} bytes)`, floodDone && written < 1 << 20);
+  flood.close();
 
   server.close();
   server2.close();
@@ -459,7 +480,7 @@ function waitListening(server: ReturnType<typeof startControlServer>): Promise<v
 //    stale socket first). A managed listener must then exit(1), never serve a hijacked/no-op plane.
 // =================================================================================================
 if (isWin) {
-  const ep = controlEndpoint("squat", "test");
+  const ep = controlEndpoint("squat", "test", controlDirs);
   const squatter = createServer(() => {});
   await new Promise<void>((resolve) => squatter.listen(ep.path, () => resolve()));
   const probe = fileURLToPath(new URL("./fatal-bind-probe.ts", import.meta.url));
@@ -478,7 +499,7 @@ if (isWin) {
 // =================================================================================================
 {
   const stubAgent = {} as unknown as MeshAgent;
-  const ep = controlEndpoint("smoke", "dos");
+  const ep = controlEndpoint("smoke", "dos", controlDirs);
   let hits = 0;
   const handle = async (): Promise<Record<string, unknown>> => {
     hits++;
@@ -665,5 +686,6 @@ if (isWin) {
   eq("I4: late PID is never opened after exit", pinCalled4, false);
 }
 
+for (const dir of controlDirs) rmSync(dir, { recursive: true, force: true });
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

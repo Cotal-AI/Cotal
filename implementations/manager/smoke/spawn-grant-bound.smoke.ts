@@ -81,10 +81,12 @@ type Seat = { id: string; name: string; lifecycleUid: string; issued?: { generat
 const M = mgr as unknown as {
   managerInstanceId: string;
   agents: Map<string, Seat>;
-  freeSlot: (a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause) => void;
   retirement: {
     retiring: Map<string, unknown>;
     deprovision: (a: Seat) => Promise<void>;
+  };
+  namesCapacity: {
+    freeSlot: (a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause) => void;
   };
 };
 M.managerInstanceId = mintLifecycleUid();
@@ -217,7 +219,7 @@ try {
     const before = await spawnAs(gone, "inside");
     check("control: before retirement its evidence resolves", before.ok === true, before);
     const seat = seatOf("retiree");
-    M.freeSlot(seat, false, "process-exit");
+    M.namesCapacity.freeSlot(seat, false, "process-exit");
     await M.retirement.deprovision(seat);
     for (let i = 0; i < 300 && M.retirement.retiring.has("retiree"); i++) await new Promise((r) => setTimeout(r, 100));
     check("control: the retirement completed", !M.retirement.retiring.has("retiree"));

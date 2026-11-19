@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,15 +12,20 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** Runs real npm and the built public entry against a registry with a listed, initially missing archive. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
-  assert(['arrives', 'unavailable', 'integrity', 'reset'].includes(scenario));
+  assert(['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'pending', 'reconcile-killed', 'min-release-age', 'before'].includes(scenario));
+  const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const root = mkdtempSync(join(parent, 'registry-arrival-'));
   const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
   const target = '99.0.0', archives = new Map(), requests = [];
+  const extension = '@cotal-ai/cache-fixture';
   const prefix = join(root, 'prefix'), home = join(root, 'home');
-  for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
+  const marker = join(prefix, 'lib/node_modules/.cotal-update-child');
+  const ready = join(root, 'reconcile.pid');
+  for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   for (const version of [previous, target]) {
     writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
-    writeFileSync(join(root, 'payload/package/dist/cotal.js'), '#!/usr/bin/env node\nconsole.log("fixture reconciled");\n', { mode: 0o755 });
+    const hold = scenario === 'reconcile-killed' && version === target ? `if (process.argv[2] === 'update' && !existsSync(${JSON.stringify(ready)})) { writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setTimeout(() => process.exit(99), 60000); }\n` : '';
+    writeFileSync(join(root, 'payload/package/dist/cotal.js'), '#!/usr/bin/env node\nimport { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";\nimport { tmpdir } from "node:os";\nimport { join } from "node:path";\n' + hold + 'const scratch = mkdtempSync(join(tmpdir(), "reconcile-child-"));\nrmSync(scratch, { recursive: true });\nconsole.log("fixture reconciled with writable temporary directory");\n', { mode: 0o755 });
     const packed = spawnSync('tar', ['-czf', join(root, `${version}.tgz`), '-C', join(root, 'payload'), 'package']);
     assert.equal(packed.status, 0);
     archives.set(version, readFileSync(join(root, `${version}.tgz`)));
@@ -40,22 +45,29 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       }
       return response.end(archives.get(version));
     }
+    if (decodeURIComponent(request.url?.split('?')[0] ?? '') === `/${extension}`) {
+      const bytes = archives.get(target);
+      response.setHeader('content-type', 'application/json');
+      return response.end(JSON.stringify({ name: extension, 'dist-tags': { latest: target }, versions: { [target]: { name: extension, version: target, dist: { tarball: `${origin}/${target}.tgz`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` } } } }));
+    }
     const versions = Object.fromEntries([...archives].map(([version, bytes]) => [version, { name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' }, dist: { tarball: `${origin}/${version}.tgz`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` } }]));
     response.setHeader('content-type', 'application/json');
-    response.end(JSON.stringify({ name: 'cotal-ai', 'dist-tags': { latest: target }, versions }));
+    response.end(JSON.stringify({ name: 'cotal-ai', 'dist-tags': { latest: target }, versions, time: { [previous]: '2019-01-01T00:00:00.000Z', [target]: new Date().toISOString() } }));
   });
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   origin = `http://127.0.0.1:${server.address().port}`;
   env.npm_config_registry = origin;
+  let interrupted, orphan, abandoned;
   const run = async (file, args, timeoutMs) => {
     const child = spawn(file, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     child.stdout.on('data', bytes => output += bytes);
     child.stderr.on('data', bytes => output += bytes);
+    interrupted = child;
     const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
     try {
-      const code = await new Promise((done, reject) => { child.once('error', reject); child.once('close', done); });
-      return { code, output };
+      const { code, signal } = await new Promise((done, reject) => { child.once('error', reject); child.once('close', (code, signal) => done({ code, signal })); });
+      return { code, signal, output };
     } finally { clearTimeout(timer); }
   };
   try {
@@ -65,19 +77,121 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const before = readFileSync(join(packageRoot, 'dist/cotal.js'));
     writeFileSync(join(packageRoot, 'preserve'), 'unchanged');
     armed = true;
+    // The real npm archive reads, global install and target reconcile child must
+    // receive writable scratch even when the caller's TMPDIR cannot be used.
+    if (scenario === 'reset') env.TMPDIR = join(root, 'missing-temp');
+    const configuredCache = join(root, 'configured-cache');
+    if (scenario === 'cache') {
+      delete env.npm_config_cache;
+      mkdirSync(configuredCache, { mode: 0o500 });
+      writeFileSync(join(home, '.npmrc'), `cache=${configuredCache}\n`);
+      const extensions = join(root, 'config/cotal/extensions');
+      mkdirSync(extensions, { recursive: true });
+      writeFileSync(join(extensions, 'extensions.json'), JSON.stringify({ extensions: [{ pkg: extension, version: previous, spec: `${extension}@${previous}`, provides: [], commands: [] }] }));
+    }
+    const filterConfig = scenario === 'before' ? 'before=2020-01-01\n' : 'min-release-age=365\n';
+    if (dateFiltered) writeFileSync(join(home, '.npmrc'), filterConfig);
     const started = Date.now();
+    if (scenario === 'orphan') {
+      const first = run(process.execPath, [entry, 'update', '--self'], 60000);
+      const updater = interrupted;
+      const deadline = Date.now() + 30000;
+      let record;
+      while (Date.now() < deadline && updater.exitCode === null) {
+        if (existsSync(marker)) {
+          record = JSON.parse(readFileSync(marker, 'utf8'));
+          if (record.phase === 'live' && record.operation === 'global install') break;
+        }
+        await new Promise(done => setTimeout(done, 5));
+      }
+      assert.equal(record?.phase, 'live', 'the actual updater published its install child');
+      abandoned = first;
+      orphan = record.pid;
+      process.kill(record.pid, 'SIGSTOP');
+      updater.kill('SIGKILL');
+      if (updater.signalCode === null) await new Promise(done => updater.once('exit', done));
+      process.kill(record.pid, 0);
+      console.log(`killed updater ${updater.pid}; install child ${record.pid} survives`);
+      setTimeout(() => { try { process.kill(record.pid, 'SIGCONT'); } catch {} }, 5000);
+      // Do not await close: the detached npm child still owns the parent's output pipes.
+      first.catch(() => {});
+    }
+    if (scenario === 'pending' || scenario === 'reconcile-killed') {
+      const pending = scenario === 'pending';
+      const preload = join(root, 'pause.cjs');
+      // Stop after spawn returned but before the parent could publish or authorize the child.
+      if (pending) writeFileSync(preload, `const fs = require('node:fs'); const cp = require('node:child_process'); const spawn = cp.spawn; cp.spawn = (...args) => { const child = spawn(...args); const marker = ${JSON.stringify(marker)}; if (fs.existsSync(marker) && JSON.parse(fs.readFileSync(marker, 'utf8')).phase === 'pending') process.kill(process.pid, 'SIGSTOP'); return child; }; require('node:module').syncBuiltinESMExports();`);
+      const first = run(process.execPath, [...(pending ? ['--require', preload] : []), entry, 'update', '--self'], 60000);
+      const updater = interrupted;
+      abandoned = first;
+      const deadline = Date.now() + 30000;
+      let record;
+      while (Date.now() < deadline && updater.exitCode === null && updater.signalCode === null) {
+        const row = existsSync(marker) ? JSON.parse(readFileSync(marker, 'utf8')) : undefined;
+        if (row?.owner === updater.pid && (pending
+          ? row.phase === 'pending' && /^State:\s*T/m.test(readFileSync(`/proc/${updater.pid}/status`, 'utf8'))
+          : row.phase === 'live' && row.operation === 'global reconcile' && existsSync(ready) && +readFileSync(ready, 'utf8') === row.pid)) {
+          record = row;
+          break;
+        }
+        await new Promise(done => setTimeout(done, 5));
+      }
+      assert(record, 'the real updater reached the requested interruption window');
+      if (pending) {
+        assert.equal(record.pid, undefined);
+        const children = readFileSync(`/proc/${updater.pid}/task/${updater.pid}/children`, 'utf8').trim();
+        assert.match(children, /^[1-9]\d*$/, 'exactly one direct child is waiting for publication');
+        assert.equal(readFileSync(`/proc/${children}/cmdline`, 'utf8').split('\0')[0], '/bin/sh');
+        updater.kill('SIGKILL');
+        assert.equal((await first).signal, 'SIGKILL');
+        assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, previous, 'the unauthorized child did not replace npm packages');
+      } else {
+        assert.deepEqual(readFileSync(`/proc/${record.pid}/cmdline`, 'utf8').split('\0').filter(Boolean).slice(1), [join(packageRoot, 'dist/cotal.js'), 'update']);
+        process.kill(record.pid, 'SIGKILL');
+        const result = await first;
+        assert.equal(result.code, 1, result.output);
+        const evidence = JSON.parse(readFileSync(marker, 'utf8'));
+        assert.equal(evidence.phase, 'ambiguous');
+        assert.equal(evidence.custody?.pid, record.pid);
+        assert.throws(() => process.kill(record.pid, 0), { code: 'ESRCH' });
+      }
+      assert.throws(() => process.kill(record.owner, 0), { code: 'ESRCH' });
+    }
     const update = await run(process.execPath, [entry, 'update', '--self'], 660000);
+    if (abandoned) await abandoned;
     const elapsedMs = Date.now() - started;
     const selected = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
-    if (scenario === 'integrity') {
+    if (dateFiltered) {
+      assert.equal(update.code, 1, update.output);
+      assert(elapsedMs < 60000, `date exclusions must not wait for propagation: ${elapsedMs}`);
+      assert.match(update.output, /min-release-age.*before/);
+      assert.doesNotMatch(update.output, /Waiting for cotal-ai|Keeping cotal-ai|still reaching the registry|again in a few minutes/);
+      assert.equal(readFileSync(join(home, '.npmrc'), 'utf8'), filterConfig);
+      assert.equal(missing, 0, 'npm excludes the release before downloading its archive');
+    } else if (scenario === 'integrity') {
       assert.equal(update.code, 1, update.output);
       assert.doesNotMatch(update.output, /Waiting for cotal-ai|Keeping cotal-ai/);
     } else {
       assert.equal(update.code, 0, update.output);
-      if (scenario !== 'reset') assert.match(update.output, /Waiting for cotal-ai@99\.0\.0 release archives/);
-      if (scenario === 'reset') {
+      if (!['reset', 'cache', 'orphan', 'pending', 'reconcile-killed'].includes(scenario)) assert.match(update.output, /Waiting for cotal-ai@99\.0\.0 release archives/);
+      if (scenario === 'cache') {
+        assert.equal(selected, target, update.output);
+        assert.match(update.output, /installed globally and reconciled/);
+        assert.doesNotMatch(update.output, /EACCES|sudo chown|root-owned files/);
+        assert.equal(statSync(configuredCache).mode & 0o777, 0o500);
+        assert.deepEqual(readdirSync(configuredCache), []);
+        assert.equal(readFileSync(join(home, '.npmrc'), 'utf8'), `cache=${configuredCache}\n`);
+        assert.deepEqual(readdirSync(join(root, 'tmp')).filter(name => name.startsWith('cotal-')), [], 'all private update caches and closure staging are removed');
+        assert(requests.some(request => decodeURIComponent(request.path).startsWith(`/${extension}`)), 'the installed extension closure was downloaded');
+      } else if (['orphan', 'pending', 'reconcile-killed'].includes(scenario)) {
+        assert.equal(selected, target, update.output);
+        assert.match(update.output, /installed globally and reconciled/);
+        assert.equal(existsSync(join(prefix, 'lib/node_modules/.cotal-update-child')), false);
+      } else if (scenario === 'reset') {
         assert.equal(selected, target);
         assert.match(update.output, /installed globally and reconciled/);
+        assert.match(update.output, /fixture reconciled with writable temporary directory/);
+        assert.equal(existsSync(env.TMPDIR), false, 'update does not create the unavailable caller TMPDIR');
         assert(missing >= 2 && elapsedMs < 60000, `bounded transient retry: ${elapsedMs}`);
       } else if (scenario === 'arrives') {
         assert.equal(selected, target);
@@ -88,22 +202,34 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
         assert(elapsedMs >= 600000 && elapsedMs < 660000, `real wait bound: ${elapsedMs}`);
       }
     }
-    if (scenario !== 'arrives' && scenario !== 'reset') {
+    if (!['arrives', 'reset', 'cache', 'orphan', 'pending', 'reconcile-killed'].includes(scenario)) {
       assert.equal(selected, previous);
       assert.deepEqual(readFileSync(join(packageRoot, 'dist/cotal.js')), before);
       assert.equal(readFileSync(join(packageRoot, 'preserve'), 'utf8'), 'unchanged');
     }
     const recovery = join(root, 'cotal/update-recovery.json');
     assert.equal(existsSync(recovery) ? JSON.parse(readFileSync(recovery, 'utf8')) : null, null);
-    return { scenario, code: update.code, elapsedMs, selected, missing, requests, output: update.output };
+    let retry;
+    if (dateFiltered) {
+      writeFileSync(join(home, '.npmrc'), '');
+      retry = await run(process.execPath, [entry, 'update', '--self'], 60000);
+      assert.equal(retry.code, 0, retry.output);
+      assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, target);
+      assert.match(retry.output, /installed globally and reconciled/);
+    }
+    return { scenario, code: update.code, elapsedMs, selected, missing, requests, output: update.output, ...(retry ? { retry } : {}) };
   } finally {
+    if (orphan) { try { process.kill(orphan, 'SIGCONT'); } catch {} }
+    if (interrupted?.exitCode === null && interrupted?.signalCode === null) interrupted.kill('SIGKILL');
+    if (abandoned) await abandoned.catch(() => {});
     await new Promise(done => server.close(done));
+    if (existsSync(join(root, 'configured-cache'))) chmodSync(join(root, 'configured-cache'), 0o700);
     rmSync(root, { recursive: true, force: true });
   }
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'integrity', 'reset'];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'integrity', 'reset', 'min-release-age', 'before', ...(process.platform === 'linux' ? ['pending', 'reconcile-killed'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }

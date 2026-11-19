@@ -466,8 +466,8 @@ try {
   const coreRoot = join(import.meta.dirname, "..");
   const repoRoot = join(coreRoot, "..", "..");
   const provisionSurfaces = [
-    join(coreRoot, "src/provision.ts"),
-    ...(existsSync(join(coreRoot, "dist/provision.js")) ? [join(coreRoot, "dist/provision.js")] : []),
+    join(coreRoot, "src/provision-jwt.ts"),
+    ...(existsSync(join(coreRoot, "dist/provision-jwt.js")) ? [join(coreRoot, "dist/provision-jwt.js")] : []),
   ].map((p) => readFileSync(p, "utf8"));
   const serviceSurfaces = [
     join(coreRoot, "src/endpoint-service.ts"),
@@ -477,8 +477,12 @@ try {
     join(repoRoot, "implementations/manager/src/manager.ts"),
     ...(existsSync(join(repoRoot, "implementations/manager/dist/manager.js")) ? [join(repoRoot, "implementations/manager/dist/manager.js")] : []),
   ].map((p) => readFileSync(p, "utf8"));
+  const serveSurfaces = [
+    join(repoRoot, "implementations/manager/src/serve-plane.ts"),
+    ...(existsSync(join(repoRoot, "implementations/manager/dist/serve-plane.js")) ? [join(repoRoot, "implementations/manager/dist/serve-plane.js")] : []),
+  ].map((p) => readFileSync(p, "utf8"));
 
-  c("provision.ts and dist/provision.js omit the false fresh exp/iat per-issuance uniqueness claim and name the epoch-pinned grant and same-second active retry",
+  c("provision-jwt.ts and dist/provision-jwt.js omit the false fresh exp/iat per-issuance uniqueness claim and name the epoch-pinned grant and same-second active retry",
     provisionSurfaces.every((t) =>
       !t.includes("has distinct bytes (fresh exp/iat)")
       && t.includes("epoch-pinned serve grant (`endpointServe.epoch` in the permission rows)")
@@ -490,11 +494,13 @@ try {
       && !t.includes("unique per JWT so a\n   *  standing renewal never overwrites the prior row.")
       && t.includes("byte-identical same-second re-mint at one")));
   c("manager.ts and dist/manager.js attribute goal-writer and session-ledger per-issuance uniqueness to the random issuance: tag in userTags",
-    managerSurfaces.every((t) =>
-      !t.includes("every renewal stages a distinct ledger")
-      && t.includes("`mintCreds` stamps a random `issuance:` tag on `goal-writer` (`userTags`)")
-      && t.includes("Because `mintCreds` stamps a random `issuance:` tag on")
-      && t.includes("`session-ledger` (`userTags`)")));
+    [...managerSurfaces, ...serveSurfaces].every((t) =>
+      !t.includes("every renewal stages a distinct ledger"))
+      && managerSurfaces.every((t) =>
+        t.includes("`mintCreds` stamps a random `issuance:` tag on `goal-writer` (`userTags`)"))
+      && serveSurfaces.every((t) =>
+        t.includes("Because `mintCreds` stamps a random `issuance:` tag on")
+        && t.includes("`session-ledger` (`userTags`)")));
 }
 
 console.log(`\n${fail === 0 ? "ENDPOINT-SERVE GATE SMOKE OK ✅" : "ENDPOINT-SERVE GATE SMOKE FAILED"}  (${ok} passed, ${fail} failed)`);

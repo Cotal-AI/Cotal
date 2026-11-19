@@ -216,10 +216,9 @@ try {
   const internals = manager as unknown as {
     staticLifecycleEvict?: (principal: string) => Promise<EvictionResult>;
     staticReconcileRetryDelaysMs: readonly number[];
-    staticReconcileItems: Map<string, { timer?: ReturnType<typeof setTimeout>; nextRetryAt?: string; attempts: number; disposition: string }>;
+    staticLifecycle: { retryStaticReconcile(key: string): Promise<void>; staticReconcileItems: Map<string, { timer?: ReturnType<typeof setTimeout>; nextRetryAt?: string; attempts: number; disposition: string }> };
     managerStatusData(): ManagerStatus;
     reconcileStaticLifecycles(): Promise<void>;
-    retryStaticReconcile(key: string): Promise<void>;
   };
   internals.staticReconcileRetryDelaysMs = [1_000, 80, 80];
   internals.staticLifecycleEvict = async (principal): Promise<EvictionResult> => {
@@ -285,17 +284,17 @@ try {
   await internals.reconcileStaticLifecycles();
   const persistentIdentity = identities.get("orphan-persistent")!;
   const persistentKey = JSON.stringify([DEV_OWNER, "orphan-persistent", persistentIdentity.uid]);
-  const persistentItem = internals.staticReconcileItems.get(persistentKey)!;
+  const persistentItem = internals.staticLifecycle.staticReconcileItems.get(persistentKey)!;
   if (persistentItem.timer) clearTimeout(persistentItem.timer);
   persistentItem.timer = undefined;
   persistentItem.nextRetryAt = undefined;
-  await Promise.all([internals.retryStaticReconcile(persistentKey), internals.retryStaticReconcile(persistentKey)]);
+  await Promise.all([internals.staticLifecycle.retryStaticReconcile(persistentKey), internals.staticLifecycle.retryStaticReconcile(persistentKey)]);
   check("two retry triggers join one durable re-read and exact-terminal flight", attempts.get("orphan-persistent") === 2 && persistentItem.attempts === 2, { attempts: attempts.get("orphan-persistent"), item: persistentItem });
   for (let expected = 3; expected <= 4; expected++) {
     if (persistentItem.timer) clearTimeout(persistentItem.timer);
     persistentItem.timer = undefined;
     persistentItem.nextRetryAt = undefined;
-    await internals.retryStaticReconcile(persistentKey);
+    await internals.staticLifecycle.retryStaticReconcile(persistentKey);
     check(`persistent failure completed bounded attempt ${expected}/4`, attempts.get("orphan-persistent") === expected && persistentItem.attempts === expected, { attempts: attempts.get("orphan-persistent"), item: persistentItem });
   }
   const exhausted = internals.managerStatusData().staticReconciliation.failures.some((row) => row.alias === "orphan-persistent" && row.disposition === "retry-exhausted");

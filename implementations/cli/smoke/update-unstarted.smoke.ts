@@ -3,7 +3,7 @@ import nodeAssert from "node:assert/strict";
 import { countedAssert } from "@cotal-ai/smoke-kit";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -94,6 +94,30 @@ try {
     process.chdir(cwd);
     assert.equal(await readManagerContinuity({ space: target.space }), "none", "a named stopped controller is eligible from another folder");
   } finally { process.chdir(cwd); }
+  // Native sudo regression: the controller journal belongs to a different account, and
+  // its member records are not in the updater's home. Run this cell on the root test machine.
+  if (process.getuid?.() === 0) {
+    const ownHome = process.env.COTAL_HOME;
+    const cwd = process.cwd();
+    const before = readFileSync(join(root, ".cotal", "stack-controller.json"));
+    try {
+      process.env.COTAL_HOME = join(other, "foreign-reader");
+      process.chdir(root);
+      chownSync(join(root, ".cotal"), 65534, 65534);
+      assert.equal(await readManagerContinuity({}), "none", "sudo leaves another account's implicit controller target untouched");
+      assert.equal(await readManagerContinuity({}, { readOnly: true, retainGraph: true }), "none", "staged reads leave another account's controller untouched");
+      await assert.rejects(readManagerContinuity({ server: target.server }), "an explicit server still refuses");
+      await assert.rejects(readManagerContinuity({ space: target.space }), "an explicit space still refuses");
+      await assert.rejects(readManagerContinuity({ creds: join(root, "missing.creds") }), "explicit credentials still refuse");
+      chownSync(join(root, ".cotal"), 0, process.getgid!());
+      await assert.rejects(readManagerContinuity({}), "missing member records in the same account still refuse");
+      assert.deepEqual(readFileSync(join(root, ".cotal", "stack-controller.json")), before, "cross-account reads preserve the controller journal");
+    } finally {
+      chownSync(join(root, ".cotal"), 0, process.getgid!());
+      process.env.COTAL_HOME = ownHome;
+      process.chdir(cwd);
+    }
+  }
   const ambient = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
   // Use the public CLI to prepare and select a space that never starts, then delete
   // its project. Neither ordinary reconciliation nor repeated self-update needs it.
@@ -196,6 +220,67 @@ try {
     }
   } finally {
     if (started) stoppedCli("down", "--yes");
+  }
+  // A controller down leaves a journal bound to its original root. Copies and renamed
+  // folders must not become a prerequisite for updating software in this home.
+  let controllerProject = join(root, "controller-old");
+  const originalProject = controllerProject;
+  const controllerSpace = `controller-${randomUUID()}`;
+  const temp = join(root, "readonly-temp");
+  mkdirSync(controllerProject, { mode: 0o700 });
+  mkdirSync(temp, { mode: 0o500 });
+  const controllerCli = (args: string[], temporary?: string) => spawnSync(process.execPath, [bin, ...args], {
+    cwd: controllerProject, encoding: "utf8", timeout: 180_000,
+    env: { ...ambient, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", ...(temporary ? { TMPDIR: temporary, TMP: temporary, TEMP: temporary } : {}) },
+  });
+  const expectSuccess = (args: string[], temporary?: string) => {
+    const result = controllerCli(args, temporary);
+    assert.equal(result.status, 0, `${args.join(" ")} succeeds${temporary ? ` with TMPDIR=${temporary}` : ""}\n${result.stdout}\n${result.stderr}`);
+    assert.doesNotMatch(result.stdout + result.stderr, /OPERATION_UNKNOWN|Outcome unconfirmed|registry cannot be reached|version check failed/);
+    return result;
+  };
+  try {
+    expectSuccess(["space", "create", controllerSpace]);
+    const up = controllerCli(["up", "--detach", "--server", target.server]);
+    started = up.status === 0;
+    assert.equal(up.status, 0, `${up.stdout}\n${up.stderr}`);
+    expectSuccess(["down", "--yes"]);
+    started = false;
+    expectSuccess(["use", "--clear"]);
+    const journalPath = join(".cotal", "stack-controller.json");
+    const journalBefore = readFileSync(join(controllerProject, journalPath));
+    for (const kind of ["copy", "move", "forgotten"] as const) {
+      if (kind === "copy") {
+        controllerProject = join(root, "controller-copy");
+        cpSync(originalProject, controllerProject, { recursive: true });
+      } else if (kind === "move") {
+        controllerProject = join(root, "controller-moved");
+        renameSync(originalProject, controllerProject);
+      } else expectSuccess(["space", "forget", controllerSpace]);
+      const cwd = process.cwd();
+      try {
+        process.chdir(controllerProject);
+        assert.equal(await readManagerContinuity({}, { readOnly: true, retainGraph: true }), "none", `${kind}: staged pre-install skips the foreign-root controller journal`);
+        await assert.rejects(readManagerContinuity({ creds: join(root, "missing.creds") }), `${kind}: explicit credentials still refuse`);
+      } finally { process.chdir(cwd); }
+      for (const args of [["update"], ["update", "--self"]]) {
+        const result = expectSuccess(args);
+        assert.match(result.stdout, /records and processes untouched, continuity not checked/);
+        assert.ok(result.stdout.includes(controllerProject) && result.stdout.includes(originalProject), "skip names both roots");
+        assert.doesNotMatch(result.stdout, /no manager running/, "foreign-root records do not prove custody is absent");
+        assert.deepEqual(readFileSync(join(controllerProject, journalPath)), journalBefore, "update preserves the controller journal");
+      }
+    }
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      for (const temporary of [temp, "/usr"]) {
+        for (const args of [["update", "--self"], ["update", "--self"], ["update"], ["update", "--check"], ["status"]]) expectSuccess(args, temporary);
+      }
+      assert.deepEqual(readdirSync(temp), [], "update never writes to the unwritable TMPDIR");
+      assert.equal(statSync(temp).mode & 0o777, 0o500, "update does not chmod the caller's TMPDIR");
+    }
+  } finally {
+    if (started) controllerCli(["down", "--yes"]);
+    chmodSync(temp, 0o700);
   }
   console.log(`COTAL_SMOKE_SENTINEL cells=${counted.cells()} passed=${counted.cells()} failed=0`);
 } finally {

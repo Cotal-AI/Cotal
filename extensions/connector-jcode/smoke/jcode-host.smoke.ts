@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { once } from "node:events";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -115,11 +115,15 @@ function managedHome(space: string, name: string): string {
   return join(root, ".cotal", "jcode", `${slug || "agent"}-${key}`);
 }
 
-function connectorLog(home: string): string {
+function connectorLogPath(home: string): string {
   const logs = join(home, "logs");
   const files = readdirSync(logs).filter((file) => /^connector-.*\.log$/.test(file));
   assert.equal(files.length, 1, `expected one connector log in ${logs}, found ${files.join(", ")}`);
-  return readFileSync(join(logs, files[0]!), "utf8");
+  return join(logs, files[0]!);
+}
+
+function connectorLog(home: string): string {
+  return readFileSync(connectorLogPath(home), "utf8");
 }
 
 type JcodeMcpEntry = { command: string; args: string[]; env: Record<string, string> };
@@ -335,8 +339,11 @@ try {
       ]),
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
+      COTAL_MANAGER_INSTANCE: "j".repeat(30),
       COTAL_NAME: "jcodepeer",
       COTAL_ID: "jcodepeer",
+      COTAL_LIFECYCLE_UID: "k".repeat(30),
+      COTAL_HOME: join(root, "cotal-home"),
       COTAL_SERVERS: servers,
       COTAL_SUBSCRIBE: "team",
       COTAL_ALLOW_SUBSCRIBE: "team",
@@ -347,7 +354,7 @@ try {
       COTAL_MODEL: "fake-model",
       COTAL_VARIANT: "high",
       COTAL_CONTROL_SOCKET: controlSock("control.sock"),
-      COTAL_CONTROL_TOKEN: "jcode-host-smoke-control-token",
+      COTAL_CONTROL_KEY: "jcode-host-smoke-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -372,7 +379,27 @@ try {
   );
   const argv = entries().find((entry) => entry.ev === "argv") as { argv?: string[]; env?: Record<string, string> };
   check("host uses api-bridge with its private socket", argv.argv?.[0] === "api-bridge" && argv.argv?.[1] === "--api-socket", argv);
-  check("host scrubs Cotal material before launching Jcode", Object.keys(argv.env ?? {}).every((key) => !key.startsWith("COTAL_")), argv.env);
+  const allowedSeatCotal = new Set([
+    "COTAL_SPACE",
+    "COTAL_MANAGER_INSTANCE",
+    "COTAL_NAME",
+    "COTAL_ID",
+    "COTAL_LIFECYCLE_UID",
+    "COTAL_ACCEPTED_TOKEN",
+    "COTAL_HOME",
+  ]);
+  check(
+    "host scrubs Cotal material before launching Jcode while preserving seat attribution (#7594)",
+    Object.keys(argv.env ?? {}).filter((key) => key.startsWith("COTAL_")).every((key) => allowedSeatCotal.has(key)) &&
+      argv.env?.COTAL_SPACE === "jcodehost" &&
+      argv.env?.COTAL_MANAGER_INSTANCE === "j".repeat(30) &&
+      argv.env?.COTAL_NAME === "jcodepeer" &&
+      argv.env?.COTAL_ID === "jcodepeer" &&
+      argv.env?.COTAL_LIFECYCLE_UID === "k".repeat(30) &&
+      argv.env?.COTAL_ACCEPTED_TOKEN === undefined &&
+      argv.env?.COTAL_HOME === join(root, "cotal-home"),
+    argv.env,
+  );
   check("private JCODE_HOME is passed to the harness", Boolean(argv.env?.JCODE_HOME?.includes("/tmp/jc-") && argv.env?.JCODE_HOME?.endsWith("/home")), argv.env);
   check("host disables SDK symlinked credential inheritance", argv.env?.JCODE_HOME !== undefined && !Object.keys(argv.env ?? {}).some((key) => key === "COTAL_JCODE_HOME"), argv.env);
   // A seat that updates its own binary restarts its process tree, which drops the only connection
@@ -421,7 +448,7 @@ try {
       COTAL_EVENTS: "1",
       COTAL_JCODE_PROMPT: "JCODE-JOURNAL-PRIME-1984",
       COTAL_CONTROL_SOCKET: controlSock("fold-control.sock"),
-      COTAL_CONTROL_TOKEN: "fold-control-token",
+      COTAL_CONTROL_KEY: "fold-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -714,7 +741,7 @@ try {
       COTAL_JCODE_TUI: "0",
       COTAL_VARIANT: "high",
       COTAL_CONTROL_SOCKET: controlSock("variant-only-control.sock"),
-      COTAL_CONTROL_TOKEN: "variant-only-control-token",
+      COTAL_CONTROL_KEY: "variant-only-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -769,7 +796,7 @@ try {
       COTAL_MODEL: "lagged-model-pin",
       COTAL_VARIANT: "high",
       COTAL_CONTROL_SOCKET: controlSock("lagged-variant-control.sock"),
-      COTAL_CONTROL_TOKEN: "lagged-variant-control-token",
+      COTAL_CONTROL_KEY: "lagged-variant-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -835,7 +862,7 @@ try {
       COTAL_JCODE_TUI: "0",
       COTAL_MODEL: "model-only-pin",
       COTAL_CONTROL_SOCKET: controlSock("model-only-control.sock"),
-      COTAL_CONTROL_TOKEN: "model-only-control-token",
+      COTAL_CONTROL_KEY: "model-only-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -913,7 +940,7 @@ try {
       COTAL_JCODE_TUI: "0",
       COTAL_MODEL: "fake-model",
       COTAL_CONTROL_SOCKET: controlSock("no-provider-control.sock"),
-      COTAL_CONTROL_TOKEN: "no-provider-control-token",
+      COTAL_CONTROL_KEY: "no-provider-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -960,7 +987,7 @@ try {
       COTAL_MODEL: "requested-route-model",
       COTAL_VARIANT: "high",
       COTAL_CONTROL_SOCKET: controlSock("missing-route-control.sock"),
-      COTAL_CONTROL_TOKEN: "missing-route-control-token",
+      COTAL_CONTROL_KEY: "missing-route-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1019,7 +1046,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("race-control.sock"),
-      COTAL_CONTROL_TOKEN: "race-control-token",
+      COTAL_CONTROL_KEY: "race-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1060,7 +1087,7 @@ try {
       COTAL_JCODE_TUI: "0",
       COTAL_JCODE_PROMPT: "KICKOFF-WITHOUT-ANY-INBOX-WAKE",
       COTAL_CONTROL_SOCKET: controlSock("idle-only-control.sock"),
-      COTAL_CONTROL_TOKEN: "idle-only-token",
+      COTAL_CONTROL_KEY: "idle-only-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1098,7 +1125,7 @@ try {
       COTAL_JCODE_TUI: "0",
       COTAL_JCODE_PROMPT: "KICKOFF-MUST-SURVIVE-REFUSED-NOTICE",
       COTAL_CONTROL_SOCKET: controlSock("busy-control.sock"),
-      COTAL_CONTROL_TOKEN: "busy-control-token",
+      COTAL_CONTROL_KEY: "busy-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1220,7 +1247,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("absent-control.sock"),
-      COTAL_CONTROL_TOKEN: "absent-control-token",
+      COTAL_CONTROL_KEY: "absent-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1234,6 +1261,51 @@ try {
   check("a permanently absent cotal tool gets exactly two readiness turns", absentTurns.length === 2, absentTurns);
   check("a permanently absent cotal tool ends the launch", absentCode !== null && absentCode !== 0, { code: absentCode, stderr: absentErr });
   check("a permanently absent cotal tool never reaches the roster", !announced.has("absentpeer"), [...announced]);
+
+  // A model on Jcode's deferred MCP surface calls orientation through a wrapper: `mcp_call` up to
+  // Jcode 0.99.0, `mcp` with action "call" from 0.99.1. Either proves readiness on its first turn.
+  // An `mcp` call with another action names the tool without calling it, so it proves nothing.
+  const deferredLaunch = (name: string, via: string) => {
+    const log = join(root, `readiness-${name}.jsonl`);
+    const proc = spawnHost({
+      cwd: root,
+      env: {
+        ...env,
+        PATH: `${shimDir}:${env.PATH ?? ""}`,
+        FAKE_JCODE_LOG: log,
+        FAKE_JCODE_ORIENTATION_VIA: via,
+        JCODE_HOME: inheritedJcodeHome,
+        COTAL_SPACE: "jcodehost",
+        COTAL_NAME: name,
+        COTAL_ID: name,
+        COTAL_SERVERS: servers,
+        COTAL_SUBSCRIBE: "team",
+        COTAL_ALLOW_SUBSCRIBE: "team",
+        COTAL_ALLOW_PUBLISH: "team",
+        COTAL_JCODE_HOME: root,
+        COTAL_JCODE_TUI: "0",
+        COTAL_CONTROL_SOCKET: controlSock(`${name}-control.sock`),
+        COTAL_CONTROL_KEY: `${name}-control-token`, COTAL_CONTROL_VERSION: "1",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    proc.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+    const turns = () => readJsonLines<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(log)
+      .filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("Call the cotal_orientation tool exactly once"));
+    return { proc, turns, stderr: () => stderr };
+  };
+  for (const [name, via] of [["mcpcallpeer", "mcp_call"], ["mcppeer", "mcp"]] as const) {
+    const launch = deferredLaunch(name, via);
+    await Promise.race([waitFor(`${via} readiness join`, () => (announced.has(name) ? true : undefined)), once(launch.proc, "exit")]).catch(() => {});
+    check(`a cotal_orientation call through Jcode's ${via} wrapper proves readiness on the first turn`, announced.has(name) && launch.turns().length === 1, { code: launch.proc.exitCode, turns: launch.turns(), stderr: launch.stderr() });
+    await stopHostTree(launch.proc, "SIGTERM");
+  }
+  const searchLaunch = deferredLaunch("mcpsearchpeer", "mcp-search");
+  await Promise.race([once(searchLaunch.proc, "exit"), sleep(20_000)]);
+  const searchCode = searchLaunch.proc.exitCode;
+  await stopHostTree(searchLaunch.proc, "SIGKILL");
+  check("an mcp call with an action other than call never proves readiness", searchCode !== null && searchCode !== 0 && searchLaunch.turns().length === 2 && !announced.has("mcpsearchpeer"), { code: searchCode, turns: searchLaunch.turns(), stderr: searchLaunch.stderr() });
 
   // A structured downstream effort rejection is untrusted. Before the repair, this exact canary
   // reached the external observer/UI because host-main rendered the host-composed refusal verbatim.
@@ -1265,7 +1337,7 @@ try {
       COTAL_MODEL: "fake-model",
       COTAL_VARIANT: "xhigh",
       COTAL_CONTROL_SOCKET: controlSock("refused-control.sock"),
-      COTAL_CONTROL_TOKEN: "refused-control-token",
+      COTAL_CONTROL_KEY: "refused-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1330,7 +1402,7 @@ try {
       COTAL_MODEL: "capability-model",
       COTAL_VARIANT: "high",
       COTAL_CONTROL_SOCKET: controlSock("unsupported-control.sock"),
-      COTAL_CONTROL_TOKEN: "unsupported-control-token",
+      COTAL_CONTROL_KEY: "unsupported-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1396,7 +1468,7 @@ try {
         COTAL_JCODE_TUI: "0",
         COTAL_MODEL: modelCase.model,
         COTAL_CONTROL_SOCKET: controlSock(`${modelCase.name}-control.sock`),
-        COTAL_CONTROL_TOKEN: `${modelCase.name}-control-token`,
+        COTAL_CONTROL_KEY: `${modelCase.name}-control-token`, COTAL_CONTROL_VERSION: "1",
       },
       stdio: ["ignore", "ignore", "pipe"],
     });
@@ -1405,9 +1477,10 @@ try {
     await Promise.race([once(failed, "exit"), sleep(20_000)]);
     const failedCode = failed.exitCode;
     await stopHostTree(failed, "SIGKILL");
-    const expected = `Jcode host startup failed (${modelCase.code})`;
-    const persisted = connectorLog(managedHome("jcodehost", modelCase.name));
-    check(`${modelCase.code} names the connector-owned refusal`, failedCode === 1 && failedErr.includes(expected), { failedCode, failedErr });
+    const logPath = connectorLogPath(managedHome("jcodehost", modelCase.name));
+    const expected = `[cotal-jcode] fatal: Jcode startup failed (${modelCase.code}); workspace log: ${relative(root, logPath)}\n`;
+    const persisted = readFileSync(logPath, "utf8");
+    check(`${modelCase.code} names the connector-owned refusal and its private log`, failedCode === 1 && failedErr.includes(expected), { failedCode, failedErr });
     check(`${modelCase.code} fatal is persisted in the seat connector log`, persisted.includes(expected), persisted);
     check(`${modelCase.code} keeps downstream model text scrubbed`, !failedErr.includes(modelCanary) && !persisted.includes(modelCanary), { failedErr, persisted });
     const caseEntries = readFileSync(caseLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev?: string; frame?: { req?: string } }>;
@@ -1437,7 +1510,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("outage-control.sock"),
-      COTAL_CONTROL_TOKEN: "outage-control-token",
+      COTAL_CONTROL_KEY: "outage-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1482,6 +1555,7 @@ try {
       PATH: `${shimDir}:${env.PATH ?? ""}`,
       FAKE_JCODE_LOG: tuiLog,
       FAKE_JCODE_TURN_DELAY_MS: "1000",
+      FAKE_JCODE_TUI_RESPAWN: "1",
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "tuipeer",
@@ -1493,19 +1567,66 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "1",
       COTAL_CONTROL_SOCKET: controlSock("tui-control.sock"),
-      COTAL_CONTROL_TOKEN: "tui-control-token",
+      COTAL_CONTROL_KEY: "tui-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
   let foregroundErr = "";
   foreground.stderr?.on("data", (chunk: Buffer) => (foregroundErr += chunk.toString()));
   await waitFor("foreground readiness proof", () => existsSync(tuiLog) && readFileSync(tuiLog, "utf8").includes('"ev":"orientation_done"') ? true : undefined);
-  const tuiEntries = readJsonLines<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(tuiLog);
+  const tuiEntries = readJsonLines<{ ev: string; companionAutostart?: string | null; frame?: { req?: string; content?: string; no_reply?: boolean } }>(tuiLog);
   const tuiAt = tuiEntries.findIndex((entry) => entry.ev === "tui");
   const readinessDoneAt = tuiEntries.findIndex((entry) => entry.ev === "orientation_done");
   check("foreground TUI starts before its readiness turn finishes", tuiAt >= 0 && tuiAt < readinessDoneAt, { tuiAt, readinessDoneAt, entries: tuiEntries });
   await stopHostTree(foreground, "SIGTERM");
   check("the early foreground TUI launch exits cleanly", foreground.exitCode === 0, { code: foreground.exitCode, stderr: foregroundErr });
+  check("the foreground TUI starts with Jcode's companion autostart off", tuiEntries.find((entry) => entry.ev === "tui")?.companionAutostart === "0", tuiEntries.filter((entry) => entry.ev === "tui"));
+
+  // #7950: from Jcode 0.99.1 a TUI that outlives its server starts a new one on the seat's socket,
+  // which blocks the next launch of the same name. A stop, and a failed launch, must end the TUI
+  // before the server it is watching.
+  const respawnedServers = (log: string): number[] => {
+    const pids = readJsonLines<{ ev: string; pid?: number }>(log).filter((entry) => entry.ev === "respawned_server").map((entry) => entry.pid!);
+    for (const pid of pids) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+    return pids;
+  };
+  await sleep(500);
+  const stoppedTui = readJsonLines<{ ev: string }>(tuiLog).filter((entry) => ["tui", "tui_watching", "respawned_server"].includes(entry.ev));
+  check("a stopped seat's TUI was watching its server and starts no replacement", stoppedTui.some((entry) => entry.ev === "tui_watching") && respawnedServers(tuiLog).length === 0, stoppedTui);
+  const tuiFailLog = join(root, "tui-failed-launch.jsonl");
+  const tuiFail = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: tuiFailLog,
+      // Slow turns give the TUI time to start and connect before the launch fails.
+      FAKE_JCODE_TURN_DELAY_MS: "1000",
+      FAKE_JCODE_NEVER_ORIENTATION: "1",
+      FAKE_JCODE_TUI_RESPAWN: "1",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "tuifailpeer",
+      COTAL_ID: "tuifailpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "1",
+      COTAL_CONTROL_SOCKET: controlSock("tuifail-control.sock"),
+      COTAL_CONTROL_KEY: "tuifail-control-token", COTAL_CONTROL_VERSION: "1",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let tuiFailErr = "";
+  tuiFail.stderr?.on("data", (chunk: Buffer) => (tuiFailErr += chunk.toString()));
+  await Promise.race([once(tuiFail, "exit"), sleep(20_000)]);
+  const tuiFailCode = tuiFail.exitCode;
+  await stopHostTree(tuiFail, "SIGKILL");
+  await sleep(500);
+  const tuiFailEntries = readJsonLines<{ ev: string }>(tuiFailLog);
+  check("a failed launch's TUI was watching its server and starts no replacement", tuiFailCode !== null && tuiFailCode !== 0 && tuiFailEntries.some((entry) => entry.ev === "tui_watching") && respawnedServers(tuiFailLog).length === 0, { code: tuiFailCode, entries: tuiFailEntries.filter((entry) => ["tui", "tui_watching", "respawned_server"].includes(entry.ev)), stderr: tuiFailErr });
 
   // Deliberate failing case: project MCP files would override Jcode's private cotal config, so the
   // host must refuse before it starts an API bridge rather than silently loading another server.
@@ -1525,7 +1646,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("blocked-control.sock"),
-      COTAL_CONTROL_TOKEN: "blocked-control-token",
+      COTAL_CONTROL_KEY: "blocked-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1533,6 +1654,14 @@ try {
   blocked.stderr?.on("data", (chunk: Buffer) => (blockedErr += chunk.toString()));
   await Promise.race([once(blocked, "exit"), sleep(10_000)]);
   check("project MCP config is refused rather than overlaid", blocked.exitCode !== 0 && /Jcode host startup failed \(project_mcp_config\)/.test(blockedErr), blockedErr);
+  // No log holds this refusal, so the public line itself names the file found and the remedy, and
+  // never the directory.
+  check(
+    "the project MCP refusal names the file and where to start the agent instead",
+    /\(project_mcp_config\): the working directory has \.mcp\.json; start the agent in another directory\n/.test(blockedErr)
+      && !blockedErr.includes("private Jcode logs") && !blockedErr.includes(root),
+    blockedErr,
+  );
 
   // The readiness turn is a provider call. A refusal there used to be collapsed to `(unknown)`,
   // forcing an external observer/UI to inspect private Jcode logs for the connector-originated
@@ -1556,7 +1685,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("refused-control.sock"),
-      COTAL_CONTROL_TOKEN: "refused-control-token",
+      COTAL_CONTROL_KEY: "refused-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1621,7 +1750,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("wrapped-control.sock"),
-      COTAL_CONTROL_TOKEN: "wrapped-control-token",
+      COTAL_CONTROL_KEY: "wrapped-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1667,7 +1796,7 @@ try {
       COTAL_AGENT_FILE: personaFile,
       COTAL_JCODE_PROMPT: "KICKOFF-1216-DO-THE-REVIEW",
       COTAL_CONTROL_SOCKET: controlSock("slow-control.sock"),
-      COTAL_CONTROL_TOKEN: "slow-control-token",
+      COTAL_CONTROL_KEY: "slow-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -1783,7 +1912,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock("early-control.sock"),
-      COTAL_CONTROL_TOKEN: "early-control-token",
+      COTAL_CONTROL_KEY: "early-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });

@@ -96,7 +96,6 @@ type Seat = { id: string; name: string; lifecycleUid: string; issued?: { generat
 type Internals = {
   managerInstanceId: string;
   agents: Map<string, Seat>;
-  freeSlot: (a: unknown, floor: boolean, cause: FreeSlotCause) => void;
   driveStaticRetirement: (a: unknown, surfaceFailure?: boolean) => Promise<void>;
   inventoryReferenceError: (entry: ManagerResumeAgent) => string | undefined;
   resumeEntryOf: (a: Seat) => ManagerResumeAgent;
@@ -107,6 +106,9 @@ type Internals = {
     retiring: Map<string, { lastError?: string }>;
     deprovision: (a: unknown) => Promise<void>;
     deprovisioningFlight: Map<string, Promise<void>>;
+  };
+  namesCapacity: {
+    freeSlot: (a: unknown, floor: boolean, cause: FreeSlotCause) => void;
   };
 };
 
@@ -392,10 +394,9 @@ try {
     check("a catalog persona naming a command the spawner lacks is refused by name", refused(await spawnAs(epLead, "ep_wide"), /endpoints com\.example\.orders refund/));
     check("a spawner holding no endpoint rows hands on none", refused(await spawnAs(lead, "ep_none", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] } }), /endpoints com\.example\.orders list/));
     const refSpawn = await spawnAs(undefined, "ep_ref");
-    // The manager does not echo a persona file's load error; the parser's own refusal names the rule
-    // (packages/core agent-file smoke).
+    // File and inline persona refusals preserve the validation rule without launching a seat.
     check("a persona file naming a reference endpoint is refused even for an operator instrument, and starts no seat",
-      refused(refSpawn, /invalid native frontmatter/) && seatOf(S.M, "ep_ref") === undefined, refSpawn);
+      refused(refSpawn, /a single-label endpoint/) && seatOf(S.M, "ep_ref") === undefined, refSpawn);
     check("so is a reserved command on an inline record", refused(await spawnAs(epLead, "ep_desc", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["describe"] }] } }), /reserved command "describe"/));
     // The record, the resume entry and a renewal keep the same commands, so the renewed ceiling still
     // equals the evidence the spawn recorded.
@@ -498,7 +499,7 @@ try {
     const d = okData(await spawnAs(undefined, "kept", { persona: { prompt: "x" } }));
     const seat = seatOf(S.M, "kept")!;
     seat.suppressCleanup = true;
-    S.M.freeSlot(seat, false, "process-exit");
+    S.M.namesCapacity.freeSlot(seat, false, "process-exit");
     check("a preservation cut keeps the snapshot", existsSync(inlineSnapshotPath(workspaceRoot, d!.lifecycleUid)));
   }
   {

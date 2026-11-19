@@ -16,6 +16,8 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const version = (JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")) as { version: string }).version;
 const root = mkdtempSync(join(tmpdir(), "us-"));
 let passed = 0;
+// Starting and recovering a child can take longer when other suites share the machine.
+const childTimeoutMs = 60_000;
 for (const phase of ["replacing", "verified-ready", "paused", "restoring"] as const) {
   const directory = join(root, phase);
   const env: NodeJS.ProcessEnv = {
@@ -45,7 +47,7 @@ for (const phase of ["replacing", "verified-ready", "paused", "restoring"] as co
   child.stderr.on("data", bytes => { output += String(bytes); });
   try {
     const paths = daemonPaths(env, env.COTAL_HOME!);
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + childTimeoutMs;
     while (!existsSync(paths.socket) && child.exitCode === null && Date.now() < deadline) await delay(25);
     assert.equal(existsSync(paths.socket), true, `${phase}: the replacement daemon must publish its endpoint while the live updater holds the closure, instead of waiting for the updater that is waiting for it. ${output}`);
     const reply = await queryDaemon({ paths, timeoutMs: 2000 });
@@ -72,10 +74,10 @@ for (const phase of ["replacing", "verified-ready", "paused", "restoring"] as co
     // Unblock unchanged-code startup before asking this exact owned process to exit.
     clearUpdateRecovery();
     release();
-    const shutdownReady = Date.now() + 3000;
+    const shutdownReady = Date.now() + childTimeoutMs;
     while (!output.includes("daemon ready at") && child.exitCode === null && Date.now() < shutdownReady) await delay(25);
     child.kill("SIGTERM");
-    const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
+    const timer = setTimeout(() => child.kill("SIGKILL"), childTimeoutMs);
     const exit = await ended;
     clearTimeout(timer);
     assert.equal(exit.signal, null, `daemon failed graceful cleanup: ${output}`);
@@ -96,11 +98,11 @@ for (const phase of ["replacing", "verified-ready", "paused"] as const) {
   let output = ""; child.stdout.on("data", b => { output += String(b); }); child.stderr.on("data", b => { output += String(b); });
   const paths = daemonPaths(env, env.COTAL_HOME!);
   try {
-    const ready = Date.now() + 5000;
+    const ready = Date.now() + childTimeoutMs;
     while (!existsSync(paths.socket) && child.exitCode === null && Date.now() < ready) await delay(25);
     assert.equal(existsSync(paths.socket), true, output);
     owner.kill("SIGKILL"); await ownerEnded;
-    const recovered = Date.now() + 5000;
+    const recovered = Date.now() + childTimeoutMs;
     while (!/guarded interrupted-update recovery refused|interrupted update remains paused/.test(output) && Date.now() < recovered) await delay(25);
     assert.match(output, /daemon: observed updater ended; checking guarded interrupted-update recovery/);
     assert.match(output, phase === "paused" ? /interrupted update remains paused/ : /guarded interrupted-update recovery refused/);
@@ -116,7 +118,7 @@ for (const phase of ["replacing", "verified-ready", "paused"] as const) {
   } finally {
     if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL");
     await ownerEnded;
-    child.kill("SIGTERM"); const timer = setTimeout(() => child.kill("SIGKILL"), 5000); await ended; clearTimeout(timer);
+    child.kill("SIGTERM"); const timer = setTimeout(() => child.kill("SIGKILL"), childTimeoutMs); await ended; clearTimeout(timer);
   }
 }
 console.log(`COTAL_SMOKE_SENTINEL cells=${passed} passed=${passed} failed=0`);

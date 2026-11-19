@@ -26,7 +26,7 @@ function cotalHome(): string {
 }
 
 /** The local marketplace root Codex records. */
-export function codexMarketplaceDir(): string {
+function codexMarketplaceDir(): string {
   return join(cotalHome(), "codex-plugin");
 }
 
@@ -60,7 +60,7 @@ function pluginVersion(files: Readonly<Record<string, string>>): string {
 }
 
 /** Write the marketplace and the plugin, replacing an earlier copy whole. Returns its version. */
-export function materializeCodexPlugin(cotal: readonly string[]): string {
+function materializeCodexPlugin(cotal: readonly string[]): string {
   for (const asset of ASSETS) if (!existsSync(join(PACKAGE_ROOT, asset))) throw new Error(`plugin asset missing: ${join(PACKAGE_ROOT, asset)}; build the Codex connector`);
   const market = codexMarketplaceDir();
   const plugins = join(market, "plugins");
@@ -178,14 +178,16 @@ export const codexSetupProvider: ConnectorSetupProvider = {
     run({ cotal }: ConnectorSetupInput) {
       return withLock(() => {
         if (!hasCachedPlugin()) return "not installed";
+        let installed: string | undefined;
         try {
-          if (installedVersion() === undefined) return "not installed";
+          installed = installedVersion();
+          if (installed === undefined) return "not installed";
         } catch (error) {
           if (((error as Error).cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return "Codex not installed; cached plugin left unchanged";
           throw error;
         }
         const version = materializeCodexPlugin(cotal);
-        install(version);
+        if (installed !== version) install(version);
         return `${PLUGIN}@${MARKETPLACE} ${version}; new Codex conversations load it`;
       });
     },

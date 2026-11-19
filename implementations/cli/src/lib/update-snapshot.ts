@@ -1,6 +1,6 @@
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { ensureDirNoSymlink } from "@cotal-ai/core";
+import { ensureDirNoSymlink, globalConfigDir } from "@cotal-ai/core";
 import { connectorConfigDir, protectedResolvedDirectory, readUpdateRecovery, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { acquireReconcileLock } from "../seed/lock.js";
@@ -13,7 +13,8 @@ export interface UpdateSnapshot {
 
 /** Capture the seed and operator prefix under their native writer barriers. */
 export function snapshotUpdateClosure(existing?: string): UpdateSnapshot {
-  const config = connectorConfigDir();
+  // An older updater captured the canonical prefix before the target selected a retained set.
+  const config = existing && dirname(resolve(existing)) === resolve(globalConfigDir()) ? globalConfigDir() : connectorConfigDir();
   const missing: string[] = [];
   let ancestor = config;
   while (!lstatSync(ancestor, { throwIfNoEntry: false })) {
@@ -30,7 +31,7 @@ export function snapshotUpdateClosure(existing?: string): UpdateSnapshot {
   let path: string;
   const present = new Set<string>();
   try {
-    if (existing && (dirname(resolve(existing)) !== resolve(config) || !basename(existing).startsWith(".update-snapshot-") || lstatSync(existing).isSymbolicLink())) throw new Error("invalid update snapshot directory");
+    if (existing && (dirname(resolve(existing)) !== resolve(config) || !basename(existing).startsWith(".update-snapshot-") || !lstatSync(existing).isDirectory() || lstatSync(existing).isSymbolicLink())) throw new Error("invalid update snapshot directory");
     release = claimExtensionMutation({ waitMs: 30000 });
     path = existing ?? mkdtempSync(join(config, ".update-snapshot-"));
     chmodSync(path, 0o700);

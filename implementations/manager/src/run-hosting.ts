@@ -86,6 +86,9 @@ import {
   openRecordsBucket,
   readRunProgram,
   readRunRecord,
+  replayRunJournal,
+  lastActivation,
+  type RunJournalActivation,
   registry,
   standaloneConnectOpts,
   walkKvEntries,
@@ -711,12 +714,16 @@ export class RunHosting {
    *  arriving during it is a conflict rather than a second attempt. */
   async resume(args: { runId: string; timeout?: string }, ctx?: EpServeContext): Promise<{ runId: string }> {
     this.assertReconciled();
+    return await this.resumeRun(args, this.served(ctx, "run-resume"));
+  }
+
+  private async resumeRun(args: { runId: string; timeout?: string }, served?: string,
+    previous?: Pick<RunStatusValue, "holder" | "epoch" | "fencingToken">): Promise<{ runId: string }> {
     const host = this.host();
-    const served = this.served(ctx, "run-resume");
     const slot = this.claim(args.runId);
-    let found: { status: RunStatusValue | undefined; program: RunProgramValue | undefined; admission: RunAdmissionView } | undefined;
+    let found: { status: RunStatusValue | undefined; activation: RunJournalActivation | undefined; program: RunProgramValue | undefined; admission: RunAdmissionView } | undefined;
     try {
-      found = await this.withOperator({ runId: args.runId }, async (planes, kv) => {
+      found = await this.withOperator({ runId: args.runId }, async (planes, kv, takeoverId) => {
         const record = await readRunRecord(kv, this.ctx.endpoint, args.runId);
         if (record === undefined) return undefined;
         const program = await readRunProgram(kv, this.ctx.endpoint, args.runId);
@@ -725,10 +732,14 @@ export class RunHosting {
         const admission = await readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, args.runId);
         if (admission.revoked !== undefined)
           throw new EpEnvelopeError("permission-denied", `run ${args.runId} was revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed`);
-        return { status: record.status?.value, program, admission };
+        const activation = lastActivation((await replayRunJournal(planes.js, planes.jsm, this.ctx.space, args.runId, takeoverId)).records);
+        return { status: record.status?.value, activation, program, admission };
       });
       if (found === undefined)
         throw new EpEnvelopeError("not-found", `run ${args.runId}: no record on endpoint ${this.ctx.endpoint}; a run that was never started cannot be resumed`);
+      if (previous !== undefined && (found.status?.state !== "released" || [found.status, found.activation].some(record =>
+        record?.holder !== previous.holder || record.epoch !== previous.epoch || record.fencingToken !== previous.fencingToken)))
+        throw new EpEnvelopeError("conflict", `run ${args.runId}: its released attempt no longer holds the journal`);
       // A completed or failed run's journal already holds its outcome. Driving it again would only
       // replay that outcome under a new epoch and holder, as the boot reconcile never does.
       const state = found.status?.state;
@@ -754,8 +765,8 @@ export class RunHosting {
       source: found.program.source,
       ...(found.program.file !== undefined ? { file: found.program.file } : {}),
       admission: found.admission,
-      epoch: (found.status?.epoch ?? 0) + 1,
-      fencingToken: (found.status?.fencingToken ?? 0) + 1,
+      epoch: Math.max(found.status?.epoch ?? 0, found.activation?.epoch ?? 0) + 1,
+      fencingToken: Math.max(found.status?.fencingToken ?? 0, found.activation?.fencingToken ?? 0) + 1,
       timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT,
       ...(served !== undefined ? { served } : {}),
     }, slot);
@@ -907,7 +918,9 @@ export class RunHosting {
             this.ctx.log(`! run ${runId} stays parked: revoked by ${admission.revoked.by} (${admission.revoked.reason})`);
             continue;
           }
-          out.push({ runId, epoch: status.epoch + 1, fencingToken: status.fencingToken + 1, source: program.source, ...(program.file !== undefined ? { file: program.file } : {}), admission });
+          const activation = await this.withOperator({ runId }, async (reader, _kv, takeoverId) =>
+            lastActivation((await replayRunJournal(reader.js, reader.jsm, this.ctx.space, runId, takeoverId)).records));
+          out.push({ runId, epoch: Math.max(status.epoch, activation?.epoch ?? 0) + 1, fencingToken: Math.max(status.fencingToken, activation?.fencingToken ?? 0) + 1, source: program.source, ...(program.file !== undefined ? { file: program.file } : {}), admission });
         }
         return out;
       });
@@ -1199,14 +1212,26 @@ export class RunHosting {
     holder.drive = drive;
     holder.activated = false;
     const activation = this.activated(mediator.kv, req, drive).then(() => { holder.activated = true; });
-    void drive.done.then(async (out) => {
+    void drive.done.then(async ({ brokerInterrupted, ...out }) => {
       holder.outcome = out;
       this.ctx.log(`run ${req.runId}: ${describeOutcome(out)}`);
+      const recover = out.status === "released" && brokerInterrupted && holder.activated
+        && !this.cancelPending(req.runId);
       this.free(holder);
       // The activation wait reads the record over this connection; it finishes before the drain.
       await activation.catch(() => undefined);
       await drainAndClose(nc);
       if (mediatorNc) await drainAndClose(mediatorNc);
+      if (recover && !this.stopping) {
+        try {
+          // Read the original admission and replay under fresh attempt authority. Never retry
+          // the ambiguous append or supersede an operator or another manager that took over.
+          await this.resumeRun({ runId: req.runId, timeout: req.timeout }, undefined,
+            { holder: attemptHolder.id, epoch: req.epoch, fencingToken: req.fencingToken });
+        } catch (error) {
+          this.ctx.log(`! run ${req.runId} could not resume after the broker interruption: ${rejectionText(error)}`);
+        }
+      }
     });
     try {
       await activation;

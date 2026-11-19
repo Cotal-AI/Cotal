@@ -194,7 +194,12 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   reset();
   const got3 = await attempt(["resume", "run-0"], { file: "p.cotal.js" });
   c("hosted `resume --file` is refused, and the sentence hands back a command with the run id in it",
-    got3 instanceof Exited && got3.code === 1 && ERR.some((l) => l.includes("cotal run resume run-0 --local --file <program>")), ERR);
+    usageRefusal(got3, "--file is not taken") && isCommandFailure(got3)
+      && got3.remedy?.includes("omit --file") === true && got3.remedy.includes("cotal run resume run-0 --local --file <program>"), got3);
+  for (const verb of ["check", "migrate"]) for (const [flag, value] of [["adopt", "h1"], ["release", "h1"], ["discard-approvals", true]] as const) {
+    const got = await attempt([verb, "run-0", "p.cotal.js"], { [flag]: value });
+    c(`${verb} --${flag} is a usage refusal before a connection`, usageRefusal(got, `--${flag} decides what a commit does`), got);
+  }
   reset();
   const got4 = await attempt(["answer", "run-0", "/checkpoint:approve#0"], { by: "dana" });
   c("hosted `answer --by` is refused: the manager records the caller", usageRefusal(got4, "--by is only for the local path"), got4);
@@ -278,11 +283,12 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const dir = mkdtempSync(join(tmpdir(), "run-simulate-script-"));
   const program = join(dir, "p.cotal.js");
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
-  const simulate = (script: unknown, values: Record<string, string | boolean> = {}) => {
+  const simulateText = (text: string, values: Record<string, string | boolean> = {}) => {
     const handler = join(dir, "results.json");
-    writeFileSync(handler, JSON.stringify(script));
+    writeFileSync(handler, text);
     return runWorkflow({ values: { handler, ...values }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
   };
+  const simulate = (script: unknown, values: Record<string, string | boolean> = {}) => simulateText(JSON.stringify(script), values);
   const scriptRefusal = (got: unknown, says: string) =>
     isCommandFailure(got) && got.code === "SCHEMA_INVALID" && exitCode(got.outcome, got.code) === 1 && got.message.includes(says);
   const maybe = await simulate({ checkpoints: { go: { status: "maybe" } } });
@@ -291,6 +297,12 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const at = await simulate({ checkpoints: { go: { status: "resolved", at: 5 } } });
   c("a scripted checkpoint at is refused, since the simulator stamps it from virtual time",
     scriptRefusal(at, "at is stamped from virtual time"), at);
+  const handler = join(dir, "results.json");
+  const invalidList = await simulate({ checkpoints: { go: [{ status: "resolved" }, { status: "done" }] } });
+  c("a wrong checkpoint status in a list names the results file and indexes the result to correct",
+    isCommandFailure(invalidList) && scriptRefusal(invalidList, `in ${handler}: status must be "resolved" or "expired"`)
+    && (invalidList.target as { file?: string })?.file === handler
+    && invalidList.remedy === `set checkpoints.go[1].status in ${handler} to "resolved" or "expired", then rerun the simulation`, invalidList);
   // A scripted turn result goes to the program as written, so a status no live turn yields is
   // refused like a malformed checkpoint, in any entry of a list, and a documented one still runs.
   const fertig = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: { status: "fertig" } } });
@@ -299,15 +311,38 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const turnAt = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: [{ status: "done" }, { status: "done", at: 5 }] } });
   c("a scripted turn at, in any entry of a list, is refused, since the simulator stamps it from virtual time",
     scriptRefusal(turnAt, "invalid scripted turn 'build': at is stamped from virtual time"), turnAt);
+  for (const to of [42, "ana", null, { agent: "sim.ana" }, { agent: "sim.ana", persona: "ana", worktree: 1 }]) {
+    const invalid = await simulate({ turns: { build: [{ status: "blocked" }, { status: "handoff", to }] } });
+    c(`a malformed scripted handoff names turns.build.to (${JSON.stringify(to)})`, scriptRefusal(invalid, "turns.build.to must be an agent handle"), invalid);
+  }
+  for (const text of ['{"clock":{"start":"1000"}}', '{"clock":{"start":null}}', '{"clock":{"start":1e999}}']) {
+    const invalid = await simulateText(text);
+    c(`an invalid clock start is refused (${text})`, scriptRefusal(invalid, "clock.start must be a finite number in milliseconds"), invalid);
+  }
+  for (const text of ['{"turns":{"build":{"status":"blocked"},"build":{"status":"done"}}}',
+    String.raw`{"turns":{"build":{"status":"blocked"},"b\u0075ild":{"status":"done"}}}`]) {
+    const duplicate = await simulateText(text);
+    c("duplicate scripted results name the key and suggest an array", scriptRefusal(duplicate, 'names "build" twice')
+      && isCommandFailure(duplicate) && duplicate.remedy?.includes("array") === true, duplicate);
+  }
   {
     const shown: string[] = [];
     const write = process.stdout.write;
     process.stdout.write = ((chunk: string | Uint8Array) => { shown.push(String(chunk)); return true; }) as typeof process.stdout.write;
-    let handoff: unknown;
-    try { handoff = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: { status: "handoff", to: "ana", note: "yours" } } }, { json: true }); }
-    finally { process.stdout.write = write; }
-    c("a documented turn result, a handoff with to and note, is accepted", handoff === undefined && shown.join("").includes('"outcome":"completed"'), { handoff, out: shown.join("").slice(0, 300) });
+    const to = { kind: "spawned", agent: "sim.ana", persona: "ana" };
+    let handoff: unknown, clock: unknown;
+    try {
+      writeFileSync(program, 'const builder = await spawn("builder");\nconst ana = await spawn("ana");\nfor (const attempt of [1, 2]) {\n  const result = await turn(builder, { name: "build" });\n  log(result.status, result.to?.agent === ana.agent);\n}\n');
+      handoff = await simulate({ turns: { build: [{ status: "blocked" }, { status: "handoff", to, note: "yours" }] } }, { json: true });
+      writeFileSync(program, 'await sleep("1ms");\nlog("done");\n');
+      clock = await simulate({ clock: { start: 1000 } }, { json: true });
+    } finally { process.stdout.write = write; }
+    const [turnOut, clockOut] = shown.join("").trim().split("\n").map((line) => JSON.parse(line));
+    c("sequential turn results preserve their order and carry the agent handle", handoff === undefined && turnOut.result?.outcome === "completed"
+      && JSON.stringify(turnOut.result.log.map((entry: { values: unknown }) => entry.values)) === JSON.stringify([["blocked", false], ["handoff", true]]), { handoff, turnOut });
+    c("a finite nonzero clock start still measures elapsed time from that start", clock === undefined && clockOut.result?.elapsedMs === 1, { clock, clockOut });
   }
+  writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
   // A simulation that stops says why and where: a missing entry is the script's gap, named with the
   // entry to add. An expired gate under the default onExpiry is a completed simulation whose program
   // failed with L4007 at that gate.
@@ -512,6 +547,31 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   rmSync(dir, { recursive: true, force: true });
 }
 
+// Plans use the parser's line breaks in both formats, including in a file with mixed endings.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-plan-lines-"));
+  const program = join(dir, "mixed.cotal.js");
+  const text: string[] = [], json: string[] = [];
+  const log = console.log, write = process.stdout.write;
+  try {
+    writeFileSync(program, 'log(1)\rlog(2)\r\nlog(3)\nlog(4)\u2028log(5)\u2029log(6); log(7)');
+    console.log = (...args: unknown[]) => { text.push(args.map(String).join(" ")); };
+    process.stdout.write = ((chunk: string | Uint8Array) => { json.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    await runWorkflow({ values: { plain: true }, positionals: ["plan", program], raw: [] });
+    await runWorkflow({ values: { json: true }, positionals: ["plan", program], raw: [] });
+  } finally {
+    console.log = log;
+    process.stdout.write = write;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const expected = [1, 2, 3, 4, 5, 6, 6];
+  const rows = Array.from(text.join("\n").matchAll(/^[ \t]*(\d+)[ \t]+log[ \t]*$/gm), (match) => Number(match[1]));
+  const envelope = JSON.parse(json.join("")) as { outcome: string; result: { calls: unknown } };
+  c("plan text counts each JavaScript line break once", rows.join() === expected.join(), rows);
+  c("plan JSON counts each JavaScript line break once", envelope.outcome === "ok"
+    && JSON.stringify(envelope.result.calls) === JSON.stringify(expected.map((line) => ({ call: "log", line }))), envelope);
+}
+
 // A workflow source that cannot be read is refused naming its path and the cause, before any plane.
 {
   const dir = mkdtempSync(join(tmpdir(), "run-source-"));
@@ -703,8 +763,14 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
 {
   const finished = { code: "failed-precondition", message: "run run-1 is already completed, so there is nothing to resume; a resume continues a run that is running or released" };
   const blocked = managerRefusal("run-resume", "s", { runId: "run-1" }, finished);
-  c("a resume of a completed run is LIFECYCLE_BLOCKED with the manager's sentence, and Next reads the run", blocked.code === "LIFECYCLE_BLOCKED" && blocked.message === finished.message && blocked.remedy === "read the run's recorded state with `cotal run show run-1`", blocked);
-  c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, "mgr-1").remedy === "read the run's recorded state with `cotal run show run-1 --on mgr-1`");
+  for (const amend of [false, true]) {
+    const missing = managerRefusal("run-answer", "beta", { runId: "run-missing", amend }, { code: "not-found", message: "run run-missing: no run is recorded under that id" }, "mgr-1");
+    c(`a missing run on ${amend ? "amend" : "answer"} lists the same space and manager`, missing.remedy === "list the recorded runs with `cotal run --space beta --on mgr-1`", missing);
+    const step = managerRefusal("run-answer", "beta", { runId: "run-1", endpoint: "other", amend }, { code: "not-found", message: "no step is recorded under that key" }, "mgr-1");
+    c(`a missing step on ${amend ? "amend" : "answer"} reads the run on the same target`, step.remedy === `read the run's ${amend ? "answers" : "open requests"} with \`cotal run show run-1 --space beta --on mgr-1 --endpoint other\``, step);
+  }
+  c("a resume of a completed run is LIFECYCLE_BLOCKED with the manager's sentence, and Next reads the run", blocked.code === "LIFECYCLE_BLOCKED" && blocked.message === finished.message && blocked.remedy === "read the run's recorded state with `cotal run show run-1 --space s`", blocked);
+  c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, "mgr-1").remedy === "read the run's recorded state with `cotal run show run-1 --space s --on mgr-1`");
   c("a start refused as a precondition gets no run show Next", managerRefusal("run-start", "s", { source: "log(1)" }, { code: "failed-precondition", message: "no" }).remedy === undefined);
 }
 

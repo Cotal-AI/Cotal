@@ -1,8 +1,9 @@
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, isCommandFailure, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, isCommandFailure, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
+import { metadataPositionals } from "./command-path.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
 import { cliVersion } from "./version.js";
 
@@ -220,6 +221,12 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
     if (!isCommandFailure(error) || error.code !== "SCHEMA_INVALID" || error.remedy !== undefined) throw error;
     throw new CommandFailure(error.outcome, error.code, error.message, { target: error.target, remedy: `see what each option takes with \`${line} --help\`` });
   }
+  // The dashboard posts only with a separate posting credential, so each posting flag needs the other.
+  // Its launch refuses one without the other, and a saved definition would offer a start that cannot run.
+  if (preset.adapter === WEB_SERVICE_ADAPTER && (options["read-only"] === false) !== (typeof options["posting-creds"] === "string")) {
+    const given = options["read-only"] === false ? "--no-read-only" : "--posting-creds";
+    throw new CommandFailure("refused", "USAGE_INVALID", `${given} requires ${given === "--no-read-only" ? "--posting-creds <file>" : "--no-read-only"}: the dashboard posts only when it is not read-only, with a separate posting credential; nothing was saved or started`, { remedy: `${line} --no-read-only --posting-creds <file>`, selfContained: true, remedyIsCommand: true });
+  }
   // Saving the native auth preset must not offer a start its hosting root cannot support.
   // Read only the existing marker, without preparing authority or importing provider code.
   if (preset.adapter === "auth-service" && (findMesh(space)?.mode !== "user" || !hasUserAuthState(String(options.root), space, { readOnly: true })))
@@ -229,29 +236,45 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   return { schemaVersion: 1, space, launch: { type: "adapter", adapter: preset.adapter, options }, readiness: { type: "adapter", timeoutMs: preset.timeoutMs } };
 }
 
+function knownPresetFlags(): FlagSpec[] {
+  const byName = new Map<string, FlagSpec>();
+  try {
+    for (const { preset } of servicePresets()) {
+      try {
+        for (const flag of servicePresetFlags(preset)) if (!byName.has(flag.name)) byName.set(flag.name, flag);
+      } catch { /* resolved when selected */ }
+    }
+  } catch { /* resolved when selected */ }
+  return [...byName.values()];
+}
+
 /** The preset a service invocation names: `--preset <name>` on add, or the name a start gives when
  *  that name is a preset's, so `service start web --creds <file>` takes the web preset's flags. */
 function requestedPreset(cmd: Command, argv: readonly string[]): { name: string; verb: "add" | "start" } | undefined {
+  const flags = [...(cmd.flags ?? []), ...knownPresetFlags()];
+  const [mode, service] = metadataPositionals({ flags }, argv).positionals.map((item) => item.value);
   let name: string | undefined;
-  const positionals: string[] = [];
+  let presetCount = 0;
+  let missingPreset = false;
   for (let index = 0; index < argv.length; index++) {
     const word = argv[index]!;
-    if (word === "--") { positionals.push(...argv.slice(index + 1)); break; }
+    if (word === "--") break;
     if (word === "--preset" || word.startsWith("--preset=")) {
-      if (name !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--preset cannot be supplied more than once");
-      name = word === "--preset" ? argv[++index] : word.slice("--preset=".length);
-      if (!name || name.startsWith("-")) throw new CommandFailure("refused", "USAGE_INVALID", "--preset needs one declared preset name");
+      presetCount++;
+      const value = word === "--preset" ? argv[++index] : word.slice("--preset=".length);
+      if (!value || value.startsWith("-")) missingPreset = true;
+      else name = value;
       continue;
     }
-    if (word.startsWith("-")) {
-      const flag = cmd.flags?.find((flag) => word === `--${flag.name}` || flag.short && word === `-${flag.short}`);
-      if (flag?.type === "string") index++;
-      continue;
-    }
-    positionals.push(word);
+    const flag = flags.find((item) => word === `--${item.name}` || (item.short && word === `-${item.short}`));
+    if (flag?.type === "string") index++;
   }
-  if (name !== undefined) return { name, verb: "add" };
-  const [mode, service] = positionals;
+  if (presetCount > 0) {
+    if (mode !== "add") return undefined;
+    if (presetCount > 1) throw new CommandFailure("refused", "USAGE_INVALID", "--preset cannot be supplied more than once");
+    if (missingPreset || !name) throw new CommandFailure("refused", "USAGE_INVALID", "--preset needs one declared preset name");
+    return { name, verb: "add" };
+  }
   return mode === "start" && service !== undefined && findServicePreset(service) ? { name: service, verb: "start" } : undefined;
 }
 

@@ -9,6 +9,7 @@ import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isMainEntry } from './main-entry.mjs';
 import { observeMacHandoff, handoffEvidence } from './mac-transition-observer.mjs';
 import { foreignStackEnded } from './foreign-stack-cleanup.mjs';
 import { createPreResultKill } from './mac-pre-result-kill.mjs';
@@ -639,6 +640,8 @@ export async function matrixCell(options) {
         'COPY --from=broker /nats-server /usr/local/bin/nats-server',
         'ENV DO_NOT_TRACK=1 COTAL_TELEMETRY=off',
         `RUN npm install -g cotal-ai@${report.source} --no-audit --no-fund`,
+        // 0.169.0 refuses `cotal up` on a host with no machine id, and this image has none.
+        ...(report.source === '0.169.0' ? ['RUN tr -d - < /proc/sys/kernel/random/uuid > /etc/machine-id'] : []),
         'USER 23001:23001',
       ].join('\n') + '\n');
       ok(await call('build stock foreign container fixture', 'docker', ['build', '--tag', tag, directory], 600000), 'foreign container image');
@@ -974,7 +977,7 @@ export async function matrixCell(options) {
             const bareDaemon = bareDaemonStatus.exit === 0 ? JSON.parse(bareDaemonStatus.stdout).result : undefined;
             const bareRuntimes = await cotal('bare manual npm runtimes observation', ['runtimes', '--json']);
             const bareTmuxRow = [0, 4].includes(bareRuntimes.exit) ? JSON.parse(bareRuntimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
-            const remedyPresent = /Reconciliation pending: Run `cotal update --self` to reconcile this installation\./.test(bareVersion.stdout);
+            const remedyPresent = /Reconciliation pending: Run `cotal update` to reconcile this home's extensions\./.test(bareVersion.stdout);
             const bareExtensionsAccounted = bareExtensions.length >= 8 && bareExtensions.every(entry => {
               const installed = bareInstalledExtensions.find(row => row.pkg === entry.pkg);
               if (!installed || installed.version !== entry.version) return false;
@@ -1063,7 +1066,7 @@ export async function matrixCell(options) {
               staleTmuxRefusedWithRemedyBeforeReconcile: [0, 4].includes(bareRuntimes.exit) && typeof bareTmuxRow?.error === 'string' && bareTmuxRow.error.includes(`@cotal-ai/tmux is ${report.candidateNext.targetVersion} and this cotal is ${report.target} - run \`cotal update --self\` to reconcile this installation`),
               launchGateRefusesWhenUnreachableWithRemedy: launchGateRefusal.exit === 1 && /run `cotal update --self` to reconcile this installation/.test(launchGateRefusal.stdout + launchGateRefusal.stderr) && refusalExtensions.some(entry => entry.pkg === '@cotal-ai/tmux' && entry.version === report.candidateNext.targetVersion) && refusalInstalledExtensions.some(entry => entry.pkg === '@cotal-ai/tmux' && entry.version === report.candidateNext.targetVersion),
               launchGateReconcilesOfficialExtensionsAndLoadsTmux: launchGateVersion.exit === 0 && cliReportsVersion(launchGateVersion.stdout, report.target) && !/Reconciliation pending/.test(launchGateVersion.stdout) && launchGateTmuxRow?.state === 'installed' && launchGateTmuxRow?.package === '@cotal-ai/tmux' && launchGateTmuxRow?.error === null && launchGateExtensions.length >= 8 && launchGateExtensions.every(entry => entry.version === report.target && launchGateInstalledExtensions.find(row => row.pkg === entry.pkg)?.version === report.target),
-              scheduledCheckReconcilesPendingExtensionsAndLoadsTmux: /Reconciliation pending: Run `cotal update --self` to reconcile this installation\./.test(pendingBeforeScheduled.stdout) && scheduledAttempt?.version === report.target && scheduledAttempt?.result === `updated to ${report.target}` && scheduledVersion.exit === 0 && cliReportsVersion(scheduledVersion.stdout, report.target) && !/Reconciliation pending/.test(scheduledVersion.stdout) && scheduledTmuxRow?.state === 'installed' && scheduledTmuxRow?.package === '@cotal-ai/tmux' && scheduledTmuxRow?.error === null && scheduledExtensions.length >= 8 && scheduledExtensions.every(entry => entry.version === report.target && scheduledInstalledExtensions.find(row => row.pkg === entry.pkg)?.version === report.target),
+              scheduledCheckReconcilesPendingExtensionsAndLoadsTmux: /Reconciliation pending: Run `cotal update` to reconcile this home's extensions\./.test(pendingBeforeScheduled.stdout) && scheduledAttempt?.version === report.target && scheduledAttempt?.result === `updated to ${report.target}` && scheduledVersion.exit === 0 && cliReportsVersion(scheduledVersion.stdout, report.target) && !/Reconciliation pending/.test(scheduledVersion.stdout) && scheduledTmuxRow?.state === 'installed' && scheduledTmuxRow?.package === '@cotal-ai/tmux' && scheduledTmuxRow?.error === null && scheduledExtensions.length >= 8 && scheduledExtensions.every(entry => entry.version === report.target && scheduledInstalledExtensions.find(row => row.pkg === entry.pkg)?.version === report.target),
             };
             const bareBytes = Buffer.from(JSON.stringify({
               version: bareVersion,
@@ -1677,6 +1680,7 @@ export function summarize(directory) {
   const reports = readdirSync(directory, { recursive: true }).filter(name => String(name).endsWith('.json')).flatMap(name => {
     const file = join(directory, name);
     const row = json(file);
+    if (row === null || typeof row !== 'object') return [];
     if (String(name).endsWith('runner-admission.json')) {
       assert(['admitted', 'unrun'].includes(row.result) && typeof row.runner === 'string', 'invalid runner admission receipt');
       admissions.push(row);
@@ -1705,7 +1709,7 @@ export function summarize(directory) {
   return summary;
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMainEntry(import.meta.url)) {
   if (process.argv[2] === '--list') {
     console.log(JSON.stringify(coordinates(process.argv[3] ?? process.platform), null, 2));
   } else if (process.argv[2] === '--summary') {

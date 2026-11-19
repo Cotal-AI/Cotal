@@ -18,7 +18,7 @@
  *
  * Run: pnpm smoke:temp-containment
  */
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -261,17 +261,21 @@ try {
   console.log("\nPART B — an over-long control socket path fails by name, not by EINVAL");
 
   // The limit the guard applies is the platform's: 108 on Linux, 104 on darwin, and the usable root
-  // budget is that minus the fixed 44-byte socket name (64 on Linux, 60 on darwin). Measured at the
-  // graded head: 64 bytes was the last passing root and 65 CRASHED the suite mid-run. The cell reads
-  // the
-  // same figure back so a run on either platform grades the message it would actually get.
+  // budget is that minus the fixed socket tail, `/cotal-ctl-<22-char id>/ctl.sock` (42 bytes). When
+  // this cell was written the tail was 44 bytes: 64 bytes was the last passing root and 65 CRASHED
+  // the suite mid-run. The cell reads the same figures back so a run on either
+  // platform grades the message it would actually get.
   const SUN_PATH_LIMIT = process.platform === "darwin" ? 104 : 108;
+  const CONTROL_TAIL_BYTES = "/cotal-ctl-".length + 22 + "/ctl.sock".length;
+  // Minting makes the control socket's directory and records it here; the cells below remove what
+  // they minted.
+  const controlDirs: string[] = [];
   let deep = root;
-  while (deep.length <= 64) deep = join(deep, "dddddddddd");
+  while (Buffer.byteLength(deep) <= SUN_PATH_LIMIT - CONTROL_TAIL_BYTES) deep = join(deep, "dddddddddd");
   mkdirSync(deep, { recursive: true });
 
   process.env.TMPDIR = deep;
-  const overlong = refusal(() => controlEndpoint("space", "name"));
+  const overlong = refusal(() => controlEndpoint("space", "name", controlDirs));
   process.env.TMPDIR = originalTmp;
   check(
     "a control socket path over the sun_path limit is refused with its path, length and limit",
@@ -320,7 +324,6 @@ try {
   // carrying an excellent message look nearly identical in captured stdout and are OPPOSITE
   // outcomes. That is why the cells below check that the SUMMARY LINE STILL PRINTS and that TEARDOWN
   // STILL RAN, not merely that the text appeared.
-  const CONTROL_TAIL_BYTES = "/cotal-".length + 32 + ".sock".length;
   const rootBudget = SUN_PATH_LIMIT - CONTROL_TAIL_BYTES;
   const tempRootBytes = Buffer.byteLength(TEMP_ROOT);
   if (tempRootBytes > rootBudget) {
@@ -333,7 +336,7 @@ try {
     );
   } else {
     process.env.TMPDIR = TEMP_ROOT;
-    const minted = refusal(() => controlEndpoint("space", "name"));
+    const minted = refusal(() => controlEndpoint("space", "name", controlDirs));
     process.env.TMPDIR = originalTmp;
     check(
       "a control socket path within the limit is still minted",
@@ -343,8 +346,9 @@ try {
     // Graded separately from the refusal above, so "it did not throw" and "what it returned is
     // actually bindable" cannot pass for each other.
     process.env.TMPDIR = TEMP_ROOT;
-    const path = controlEndpoint("space", "name").path;
+    const path = controlEndpoint("space", "name", controlDirs).path;
     process.env.TMPDIR = originalTmp;
+    for (const dir of controlDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
     check(
       "the minted control socket path is within the limit and is a .sock",
       Buffer.byteLength(path) <= SUN_PATH_LIMIT && path.endsWith(".sock"),

@@ -409,39 +409,54 @@ try {
   const refusals: { code?: string; message?: string; remedy?: string }[] = [];
   process.chdir(namedRoot);
   try {
-    for (const [target, values] of [["store", { space: "other", "dry-run": true }], ["store", { space: "other", force: true }], ["all", { space: "other", force: true }], ["store", { server: "nats://127.0.0.1:4999", force: true }], ["all", { creds: "absent.creds", "dry-run": true }], ["restore-attempt", { space: "other", attempt: "restore-00000000-0000-4000-8000-000000000000", force: true }]] as const) {
+    for (const [target, values] of [
+      ["store", { space: "other", "dry-run": true }],
+      ["store", { space: "other", force: true }],
+      ["all", { space: "other", force: true }],
+      ["store", { server: "nats://127.0.0.1:4999", force: true }],
+      ["all", { creds: "absent.creds", "dry-run": true }],
+      ["restore-attempt", { space: "other", attempt: "restore-00000000-0000-4000-8000-000000000000", force: true }],
+      ["store", { server: "nats://127.0.0.1:4999", creds: "absent.creds", "store-dir": "other store", "dry-run": true }],
+    ] as const) {
       try { await clean({ positionals: [target], values: { ...values }, raw: [] }); refusals.push({}); }
       catch (error) { refusals.push(error as { code?: string; message?: string; remedy?: string }); }
     }
   } finally { process.chdir(namedCwd); }
   check("store, all and restore-attempt with --space, --server or --creds each refuse USAGE_INVALID before any read",
-    refusals.length === 6 && refusals.every((r) => r.code === "USAGE_INVALID" && /the mesh for clean history only; clean [a-z-]+ acts on the root of the folder it runs in, so nothing was removed$/.test(r.message ?? "")), refusals);
-  check("the refusal names its flag and the folder to run it in", refusals[0]?.message?.startsWith("--space picks ") === true && refusals[0].remedy === "run `cotal clean store` in the project folder of the root to clean, without --space", refusals[0]);
+    refusals.length === 7 && refusals.every((r) => r.code === "USAGE_INVALID" && /the mesh for clean history only; clean [a-z-]+ acts on the root of the folder it runs in, so nothing was removed$/.test(r.message ?? "")), refusals);
+  check("the refusal names both spellings of the space selector",
+    refusals[0]?.remedy === "if you ran this from the project you intend to clean, rerun from the same directory, removing only --space (-s) and its value", refusals[0]);
+  check("the refusal tells the operator to keep the directory and remove only the refused server flag and value",
+    refusals[3]?.message?.startsWith("--server picks ") === true && refusals[3].remedy === "if you ran this from the project you intend to clean, rerun from the same directory, removing only --server and its value", refusals[3]);
+  check("the refusal names every refused mesh flag and keeps the directory and other options",
+    refusals[6]?.message?.startsWith("--server, --creds pick ") === true && refusals[6].remedy === "if you ran this from the project you intend to clean, rerun from the same directory, removing only --server, --creds and their values", refusals[6]);
   check("...and the store and the space identity stay", existsSync(join(namedRoot, ".cotal", "nats", "jetstream", "stream.dat")) && existsSync(join(namedRoot, ".cotal", "auth", "auth.json")));
   rmSync(namedRoot, { recursive: true, force: true });
 
-  // --- a removal that stops inside the moved-aside store names that folder ---------------------
-  // The store is moved to a .cotal-clean-<id> folder beside it before its entries are removed. A
-  // removal that stopped there used to end with the raw error, or "did not confirm" through reset,
-  // and the folder that holds what is left was named nowhere.
+  // A predictable permission failure must refuse before the store is moved aside.
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
-    const stuckRoot = meshRoot();
-    const shut = join(stuckRoot, ".cotal", "nats", "jetstream", "ACC", "streams", "CHAT");
-    mkdirSync(shut, { recursive: true });
-    writeFileSync(join(shut, "1.blk"), "x");
-    chmodSync(shut, 0o555);
-    let stuck: { outcome?: string; code?: string; message?: string; remedy?: string; target?: { movedTo?: string; remaining?: string[] }; changed?: readonly unknown[] } | undefined;
-    try { await removeLocalState(stuckRoot, { includeAuth: false }); } catch (error) { stuck = error as typeof stuck; }
-    const moved = stuck?.target?.movedTo ?? "";
-    const store = join(realpathSync(stuckRoot), ".cotal", "nats");
-    check("a removal stopped inside the moved store ends OPERATION_PARTIAL naming the folder that holds what is left",
-      stuck?.outcome === "partial" && stuck.code === "OPERATION_PARTIAL" && /^\.cotal-clean-[0-9a-f-]{36}$/.test(moved.split("/").pop() ?? "") && stuck.message === `the store ${store} was moved to ${moved} for removal, and removing it stopped (EACCES) with jetstream left there; ${store} no longer exists, so a later clean or reset finds no store` && JSON.stringify(stuck.target?.remaining) === '["jetstream"]', stuck);
-    check("...records the move, and its Next makes that folder removable and removes it", JSON.stringify(stuck?.changed) === JSON.stringify([`moved ${store} to ${moved}`]) && stuck?.remedy === `make it removable by you with chmod -R u+w ${moved} and then remove it with rm -r ${moved}`, stuck);
-    check("...the store path is gone and the moved folder still holds the entry", !existsSync(store) && existsSync(join(moved, "jetstream", "ACC", "streams", "CHAT", "1.blk")));
-    const step = spawnSync("sh", ["-c", `chmod -R u+w ${moved} && rm -r ${moved}`], { encoding: "utf8" });
-    check("running that step removes only the moved folder", step.status === 0 && !existsSync(moved) && existsSync(join(stuckRoot, ".cotal", "auth", "auth.json")), { status: step.status, stderr: step.stderr });
-    if (moved && existsSync(moved)) spawnSync("chmod", ["-R", "u+w", moved]);
-    rmSync(stuckRoot, { recursive: true, force: true });
+    for (const locked of ["root", "nested"] as const) {
+      const stuckRoot = meshRoot();
+      const store = join(realpathSync(stuckRoot), ".cotal", "nats");
+      const shut = locked === "root" ? store : join(store, "jetstream", "ACC", "streams", "CHAT");
+      mkdirSync(shut, { recursive: true });
+      writeFileSync(join(shut, "1.blk"), "x");
+      // A root marker must remain a recognized store entry.
+      if (locked === "root") rmSync(join(shut, "1.blk"));
+      chmodSync(shut, 0o500);
+      try {
+        let stuck: { outcome?: string; code?: string; message?: string; remedy?: string; changed?: readonly unknown[] } | undefined;
+        try { await removeLocalState(stuckRoot, { includeAuth: false }); } catch (error) { stuck = error as typeof stuck; }
+        check(`a read-only ${locked} directory refuses PERMISSION_DENIED before moving the store`,
+          stuck?.outcome === "refused" && stuck.code === "PERMISSION_DENIED" && stuck.message?.includes(shut) === true && !stuck.changed?.length, stuck);
+        check("the store and identity remain at their original paths", existsSync(join(store, "jetstream", "stream.dat")) && existsSync(join(stuckRoot, ".cotal", "auth", "auth.json")));
+        const step = spawnSync("chmod", ["-R", "u+rwX", store]);
+        check("restoring permissions permits the same cleanup", step.status === 0 && (await removeLocalState(stuckRoot, { includeAuth: false })).length === 1 && !existsSync(store));
+      } finally {
+        spawnSync("chmod", ["-R", "u+rwX", stuckRoot]);
+        rmSync(stuckRoot, { recursive: true, force: true });
+      }
+    }
   }
 
   const empty = mkdtempSync(join(tmpdir(), "cotal-empty-"));

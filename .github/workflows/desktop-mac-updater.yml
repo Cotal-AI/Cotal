@@ -18,15 +18,15 @@ jobs:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - run: pnpm install --frozen-lockfile
       - name: Build actual N and N+1 debug app bundles
         run: pnpm exec node desktop/test/mac-updater-build.mjs
@@ -52,7 +52,7 @@ jobs:
         run: pnpm exec tsx desktop/test/mac-updater-proof.mjs "$APPLY_MODE"
       - name: Upload native updater acceptance evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mac-updater-${{ inputs.runner }}-${{ inputs.mode }}
           path: |

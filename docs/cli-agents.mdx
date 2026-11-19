@@ -50,9 +50,15 @@ cotal spawn [<persona>] [--file <persona-file>] [-d | --foreground] [--dry-run] 
 ```
 
 A bare `spawn` runs the application in this terminal, on every kind of mesh, and no manager is
-involved unless you name one with `--on` or request `--detach`. Its exit, or the terminal's, may end the agent. A manager runs the launch only when you
+involved unless you name one with `--on` or request `--detach`. An explicit empty or whitespace-only
+persona refuses with `USAGE_INVALID`, exit 1, before resolving a target. Its exit, or the terminal's,
+may end the agent. On `SIGTERM` or `SIGHUP`, a spawn in this terminal forwards the signal to its
+child process, waits for it to stop, retires the seat's provisioned credentials and launch files,
+and exits with the signal's status. A manager runs the launch only when you
 ask for one. `--detach` (`-d`) hands it to a manager, waits until the agent joins, and returns
-without attaching. `--on <instance>` hands it to that manager and attaches this terminal to the
+without attaching. If no manager is running, the launch starts nothing and names the local project
+where `cotal up` starts the manager. For a space that runs elsewhere, start its manager there.
+`--on <instance>` hands it to that manager and attaches this terminal to the
 agent (see [Managed launch view](cli-agent-views.mdx#managed-launch-view)), when that manager's runtime streams a
 terminal. The built-in `pty` runtime streams one. The `tmux`, `cmux`, `orca` and `herdr` runtimes
 start the agent in a surface they do not own and stream none, so a launch on one of those managers
@@ -65,7 +71,7 @@ checks its persona and connector before it starts the application: a missing per
 with `TARGET_NOT_FOUND` and a missing connector with `DEPENDENCY_UNAVAILABLE`, both with exit 2,
 and the connector refusal names the `cotal ext add` that installs it. `--file` (`-f`) names a
 persona file, never a manifest: manifests deploy with `cotal team deploy <file>`, and a manifest
-passed to `--file` is refused with that command.
+passed to `--file` is refused with that command. An invalid persona file is refused with `SCHEMA_INVALID` (exit 1), naming the field or YAML position without echoing YAML source excerpts.
 
 On a terminal, a bare `spawn` uses this terminal without asking where to run. When several of
 your Managers are live, one line lists them with the `--on <name>` selectors that launch there.
@@ -240,6 +246,7 @@ whether it came from `--harness`, the persona or a preference. Harness names are
 Known names can be previewed without importing a connector or checking its binary or login.
 A managed preview warns about an unknown local harness and reports `not-checked`, since the
 selected manager checks its own connectors at launch.
+Both launch and preview reject a blank `--resume` value with `USAGE_INVALID` (exit 1) before preparing the launch.
 
 `spawn` refuses `--allow-stale` with "manifest deployment options belong to `cotal team deploy <file>`, not spawn".
 `--runtime` is a per-seat choice on a managed launch. Omitted, the seat uses the runtime that manager
@@ -288,8 +295,11 @@ persona file against the working directory. A missing
 persona is refused in one line with the catalog directory or the file that was checked, and the
 line names `--file <persona.md>` for a persona file elsewhere. A missing `default` persona also
 names the command that writes one: `cotal up` in the root of a space this machine started, or
-`cotal persona create default` for any other space. `--dry-run` refuses a missing persona with
-the same text, as `TARGET_NOT_FOUND` (exit 2). When a managed launch is refused because the chosen
+`cotal persona create default --file <persona.md>` for any other space. The file must name the
+persona `default`. Add `--space <name>` if the target space is not selected. If you use `--prompt`
+or `--from` instead of `--file`, pass `--subscribe` explicitly (use `--subscribe ""` for no channels).
+`--dry-run` refuses a missing persona with the same text, as `TARGET_NOT_FOUND` (exit 2).
+When a managed launch is refused because the chosen
 manager's catalog has no such persona, the refusal names that manager, its host and the catalog file
 to create there, and the Next gives the spawn again with `--on` for each of your other live managers
 whose catalog lists it. The launch flags
@@ -420,7 +430,9 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 | `--plain` | off | The same report without color |
 
 Asks the selected manager for each application's model catalog (model ids plus their variants)
-for connectors that expose one. Claude Code, OpenCode, Codex and pi ask the installed application.
+for connectors that expose one. An empty or whitespace-only `--harness` or `-H` refuses with
+`USAGE_INVALID`, exit 1, before selecting a space or contacting a manager.
+Claude Code, OpenCode, Codex and pi ask the installed application.
 Claude Code lists the models its login can use, and pi lists the models of providers it holds
 credentials for. Jcode reads providers that enable `model_catalog = true` in the operator Jcode
 `config.toml`. Jcode's listed effort tiers render as `<tiers> (declared, not provider-verified)`,
@@ -452,7 +464,7 @@ cotal persona [--json|--plain]
 cotal persona show <name> [--json|--plain]
 cotal persona create <name> --file <persona.md>
 cotal persona create <name> --prompt <text> --subscribe <a,b> [--allow-subscribe <a,b>] [--allow-publish <a,b>]
-cotal persona edit <name>
+cotal persona edit <name> [--json|--plain]
 cotal persona remove <name> --yes
 ```
 
@@ -474,8 +486,11 @@ belongs to `persona create --on`; without `--on` it refuses with `USAGE_INVALID`
 A persona name uses letters, digits, `_` and `-`, up to 128 characters, and a name refusal says
 which rule it broke.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or
-`--from` (body file, or `-` for explicit stdin). Complete files validate all supported fields,
-must name the requested persona and keep their original bytes. A file that names another persona is
+`--from` (body file, or `-` for explicit stdin). Empty or whitespace-only `--file` and `--from`
+paths refuse with `USAGE_INVALID`, exit 1, before reading files or resolving the catalog.
+Complete files must be valid UTF-8, pass validation for all supported fields and name the requested
+persona. Creation keeps their original bytes. An invalid encoding refuses with `SCHEMA_INVALID`,
+names the source and asks you to save it as UTF-8. It writes nothing. A file that names another persona is
 refused with `SCHEMA_INVALID`, naming the file's own name and the `persona create` that keeps it.
 A file the agent-file rules refuse is `SCHEMA_INVALID` naming the file, the field and the reason,
 such as a missing frontmatter block, the renamed `channels` key or a `subscribe` channel outside
@@ -499,8 +514,10 @@ naming the flag and the entry. `--harness` must name a harness this machine know
 `config set harness` requires, or creation refuses with `USAGE_INVALID` and writes nothing.
 Create and edit refuse a definition over 1 MiB with `SCHEMA_INVALID`, the bound a create on a
 manager applies to its input, and an edit keeps that draft and names it.
-Creation refuses an existing definition, and with `CONFLICT` a name that differs from an existing
-one only in case, since a case-insensitive file system holds the two as one file. Mutation receipts contain names and paths, not bodies.
+Creation refuses an existing definition with `CONFLICT`. The suggested edit and removal commands
+keep any explicit `--space` or `--server` flags. A name that differs from an existing one only in
+case also refuses with `CONFLICT`, since a case-insensitive file system holds the two as one file.
+Mutation receipts contain names and paths, not bodies.
 A persona file that is a symbolic link is listed with a `PERMISSION_DENIED` warning that names the
 file it links to. `spawn` reads that file, but `persona show`, `edit` and `remove` refuse the link
 with `PERMISSION_DENIED`, and the next step names the file to copy in its place.
@@ -536,7 +553,8 @@ editor or confirmation is open. Manager and external writes do not participate i
 Create, edit and remove refuse a catalog folder you cannot write, such as one set to mode 0500,
 with `PERMISSION_DENIED`, and leave it and its files as they were. An edit whose save fails for
 this or any other reason keeps your edited draft and names it, so the edit is not lost.
-`--json` and `--no-input` refuse editing before an editor opens. That refusal, and a removal
+`--no-input` refuses editing before an editor opens. Under `--json`, the editor's output goes to
+stderr so stdout carries only the JSON receipt. That `--no-input` refusal, and a removal
 refused for want of `--yes`, give the fix without the command's help.
 
 A catalog file that is not a regular file, such as a FIFO, is not opened: show, edit and remove
@@ -545,7 +563,8 @@ refuse it with `PERMISSION_DENIED`, and the list marks it unreadable and names i
 
 List, show and mutation receipts support one-document `--json` and line-oriented `--plain`.
 Show explicitly returns the full definition and source. List does not return the body or launch
-options. A malformed entry produces a partial inventory (exit 4); an unreadable catalog refuses
+options. A malformed entry produces a partial inventory (exit 4) and a warning with the file and
+the validation reason. An unreadable catalog refuses
 with `PERMISSION_DENIED` (exit 2) rather than reporting it empty. A catalog folder that lists its
 file names but cannot be searched, such as one set to mode 0600, is refused the same way, empty or
 not, and its personas are not reported as malformed. Its next step is
@@ -568,7 +587,8 @@ Its `new` requires `--subscribe`, reads `--from -` from
 stdin, and overwrites an existing persona only with `--force`. Its local writes share the same
 draft validation and commit fence. Its `list` refuses a catalog folder it cannot read with
 `PERMISSION_DENIED` (exit 2), naming the space and giving the next step `persona` gives, rather
-than reporting it empty, and still lists a persona file that does not parse as unparseable. It
+than reporting it empty. It lists malformed files alongside readable definitions and exits 4 if any
+definition could not be read. It
 escapes control characters in the names, fields and bodies it prints, as `persona show` does, and
 shows each persona's description or first prompt line whole, wrapped to the terminal's width. Its
 `show` does the same on a terminal, under the file's path, and writes only the file, byte for byte,

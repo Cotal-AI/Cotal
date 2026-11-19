@@ -69,6 +69,22 @@ for (const text of [enabled, read]) {
 assert.equal(existsSync(nativeLog), false, "missing daemon guidance must not call a service manager");
 assert.match(preference(["--auto"], { XDG_RUNTIME_DIR: undefined }), /cotal daemon install/);
 assert.equal(preference(["--auto"], { COTAL_NO_UPDATE_CHECK: "1" }), "Automatic updates: on (disabled by COTAL_NO_UPDATE_CHECK=1)");
+{
+  const notifyJson = JSON.parse(preference(["--notify", "--json"]));
+  assert.equal(notifyJson.outcome, "ok");
+  assert.deepEqual(notifyJson.result, {
+    kind: "update-preference", preference: "notify", enabled: true, effective: true,
+    disabledByEnv: false, advice: null, file: join(home, "update-settings.json"),
+  });
+  const autoJson = JSON.parse(preference(["--auto", "--json"]));
+  assert.equal(autoJson.outcome, "ok");
+  assert.equal(autoJson.result?.preference, "auto");
+  assert.equal(autoJson.result?.enabled, true);
+  assert.match(String(autoJson.result?.advice ?? ""), /cotal daemon install/);
+  assert.equal(preference(["--notify", "--plain"]), "Update notices: on");
+  const noopJson = JSON.parse(preference(["--notify", "on", "--json"]));
+  assert.equal(noopJson.outcome, "no-op");
+}
 
 const settingsFile = join(home, "update-settings.json");
 const backups = () => readdirSync(home).filter(name => name.startsWith("update-settings.json.corrupt."));

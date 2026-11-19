@@ -58,13 +58,13 @@ jobs:
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           # The shard-stability check reads ci-suites.txt at the base commit, which a
           # depth-1 clone does not contain.
           fetch-depth: 0
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
           cache: pnpm
@@ -145,17 +145,17 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           # egress-guard-differential resolves the predecessor commit of the egress classifier and
           # diffs HEAD's verdicts against it. A depth-1 clone reaches no role-carrying ancestor of
           # agui.ts, so the resolver cell fails with "deepen the checkout" and takes shard 0 with
           # it. Same reason the unit job pins this.
           fetch-depth: 0
-      - uses: pnpm/action-setup@v6.0.8
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           standalone: true
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
           cache: pnpm
@@ -176,7 +176,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Cache nats-server
         id: nats
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/nats-bin
           key: nats-server-v2.12.12-${{ runner.os }}
@@ -192,19 +192,19 @@ jobs:
         run: echo "$HOME/nats-bin" >> "$GITHUB_PATH"
       - name: Build
         run: pnpm build
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: workspace-native-x64
           path: ${{ runner.temp }}/workspace-native-x64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: workspace-native-arm64
           path: ${{ runner.temp }}/workspace-native-arm64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: workspace-native-darwin-x64
           path: ${{ runner.temp }}/workspace-native-darwin-x64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: workspace-native-darwin-arm64
           path: ${{ runner.temp }}/workspace-native-darwin-arm64
@@ -215,19 +215,19 @@ jobs:
           WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/workspace-native-arm64
           WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/workspace-native-darwin-x64
           WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/workspace-native-darwin-arm64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: seat-native-linux-x64
           path: ${{ runner.temp }}/seat-native-linux-x64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: seat-native-linux-arm64
           path: ${{ runner.temp }}/seat-native-linux-arm64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: seat-native-darwin-*
           path: ${{ runner.temp }}/seat-host-native
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: seat-native-win32-*
           path: ${{ runner.temp }}/seat-host-native
@@ -250,16 +250,16 @@ jobs:
     timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Cache nats-server
         id: nats
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/nats-bin
           key: nats-server-v2.12.12-${{ runner.os }}
@@ -373,13 +373,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
           cache: pnpm
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: runner.os == 'Windows'
         with:
           name: workspace-native-x64
@@ -387,7 +387,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Cache nats-server
         id: nats
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/nats-bin
           key: nats-server-v2.12.12-${{ runner.os }}-${{ runner.arch }}-verified
@@ -445,16 +445,16 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build host native
         run: pnpm --filter @cotal-ai/seat build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: seat-native-linux-x64
           path: packages/seat/build/Release/linux-x64/peercred.node
@@ -467,16 +467,16 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build host native
         run: pnpm --filter @cotal-ai/seat build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: seat-native-linux-arm64
           path: packages/seat/build/Release/linux-arm64/peercred.node
@@ -490,28 +490,28 @@ jobs:
     needs: [seat-native-linux-x64, seat-native-linux-arm64, workspace-native]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: TypeScript dist only
         run: pnpm --filter @cotal-ai/seat exec tsc -p tsconfig.json
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: seat-native-linux-x64
           path: ${{ runner.temp }}/seat-native-linux-x64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: seat-native-linux-arm64
           path: ${{ runner.temp }}/seat-native-linux-arm64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: seat-native-darwin-*
           path: ${{ runner.temp }}/seat-host-native
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: seat-native-win32-*
           path: ${{ runner.temp }}/seat-host-native
@@ -525,7 +525,7 @@ jobs:
           SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/seat-host-native/seat-native-win32-arm64/peercred.node
           SEAT_PACK_DEST: ${{ runner.temp }}/seat-pack
         run: sh scripts/ci-seat-pack.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: seat-npm-pack
           path: ${{ runner.temp }}/seat-pack/*.tgz
@@ -539,10 +539,10 @@ jobs:
     needs: [seat-pack]
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: seat-npm-pack
           path: ${{ runner.temp }}/seat-pack
@@ -625,7 +625,7 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Classify a cancelled live job
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -656,21 +656,21 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           version: 11.28.2
           run_install: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
       - name: Generate fixed validator lock for review
         env:
           ACQUISITION_MODE: ${{ inputs.acquisition }}
         run: node scripts/ci-validator-lock-acquisition.mjs
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: validator-lock-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

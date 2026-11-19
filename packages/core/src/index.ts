@@ -25,6 +25,7 @@ export * from "./endpoint-journal.js";
 export * from "./endpoint-binding.js";
 export * from "./endpoint-schema-diff.js";
 export * from "./space-resource-definitions.js";
+export * from "./space-quiescence-resources.js";
 export * from "./space-deletion-targets.js";
 export * from "./authority-store-config.js";
 export * from "./broker-identity.js";
@@ -36,7 +37,14 @@ export * from "./space-schema-diff.js";
 export * from "./endpoint-service.js";
 export * from "./endpoint-deregister.js";
 export * from "./remote-endpoint-deregister.js";
-export * from "./endpoint-serve.js";
+// The general principal-route serve (`servePrincipalRoute`, any cluster under any endpoint name)
+// stays internal: `CotalEndpoint.servePrincipal` serves the `agent` endpoint only (SPEC 13.22).
+export {
+  serveEndpoint, describeContracts,
+  type EpServeIdentity, type EpServeContext, type EpCommandDef, type EpTargetResolver, type EpChildAuthority,
+  type EpLedgerAuthority, type EpServeHandle, type EpPrincipalServeContext, type EpPrincipalCommandDef,
+  type DescribeView, type DescribeAuthorization, type DescribeAnswer,
+} from "./endpoint-serve.js";
 export * from "./endpoint-describe-observation.js";
 export * from "./endpoint-verbs.js";
 export * from "./endpoint-invoke.js";
@@ -105,6 +113,7 @@ export {
   writeSecretFileCreateOnly,
 } from "./secret-fs.js";
 export * from "./launch-material.js";
+export * from "./control-exchange.js";
 export * from "./launch-artifacts.js";
 export * from "./connector-config.js";
 export * from "./kv-scan.js";

@@ -17,6 +17,7 @@ import {
 
 import { staticMintAuthority } from "../lib/credential-authority.js";
 import { recordCredentialExport } from "../lib/credential-exports.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { noExpiryRecordPath, noExpiryRecordText } from "../lib/no-expiry-record.js";
 import { mintEndpointCaller } from "./mint-endpoint-caller.js";
@@ -24,6 +25,8 @@ export { resolveMintTarget } from "../lib/credential-authority.js";
 
 /** A fixed-profile credential's lifetime when no lifetime flag names one: 24 hours. */
 const DEFAULT_LIFETIME_SECONDS = 86_400;
+// NATS rounds the issue time down to a whole second, so one second can leave almost no usable time.
+const MIN_PROVISIONED_LIFETIME_SECONDS = 2;
 const expiry = (seconds: number | undefined): string => {
   if (seconds === undefined) return "no expiry claim in the native result";
   const date = new Date(seconds * 1000);
@@ -120,6 +123,10 @@ export async function mint(args: ParsedArgs): Promise<void> {
   const values = args.values as FlagValues<typeof credentialMintFlags>;
   const name = args.positionals[0]!;
   const profile = (values.profile ?? "agent") as Profile;
+  if (values.provision && values["expires-in"] !== undefined && Number(values["expires-in"]) < MIN_PROVISIONED_LIFETIME_SECONDS)
+    throw new CommandFailure("refused", "USAGE_INVALID", `--provision needs an --expires-in lifetime of at least ${MIN_PROVISIONED_LIFETIME_SECONDS} seconds; no credential or inbox was created`, {
+      remedy: `use --expires-in ${MIN_PROVISIONED_LIFETIME_SECONDS} or longer, or omit --provision for a file-only mint`, selfContained: true,
+    });
   const changed: Record<string, unknown>[] = [];
   let mayHaveProvisioned = false, publicationStarted = false;
   let identity: Identity | undefined, lifecycleUid: string | undefined, carried: AgentGrants | undefined;
@@ -152,8 +159,12 @@ export async function mint(args: ParsedArgs): Promise<void> {
     target = { ...target, path: out };
     if (values.out !== undefined) assertExternalCredentialExport(out, [root, currentRoot]);
     const parent = dirname(out), volume = parse(parent).root;
-    try { ensureDirNoSymlink(volume, ...parent.slice(volume.length).split(sep).filter(Boolean)); }
-    catch (error) { throw outFolderRefusal(target, out, error) ?? error; }
+    try {
+      let existing = parent;
+      while (existing !== volume && !lstatSync(existing, { throwIfNoEntry: false })) existing = dirname(existing);
+      if (existing !== parent) protectedLocalDirectory(existing);
+      ensureDirNoSymlink(volume, ...parent.slice(volume.length).split(sep).filter(Boolean));
+    } catch (error) { throw outFolderRefusal(target, out, error) ?? error; }
     protectedLocalDirectory(parent);
     held = acquireLock(`${out}.mint.lock`, { label: "credential output", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another credential writer holds this output") });
     let previous: Buffer | undefined, standing: string | undefined, replaced: Replaced | undefined, replacedGrants: AgentGrants | undefined;
@@ -180,7 +191,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       // A persona that cannot be used names its file and the command that says why; its values stay unprinted.
       const unusable = (problem: string, remedy: string) => new CommandFailure("refused", "SCHEMA_INVALID", `the persona file ${path} for this label ${problem}, so no credential was minted; file values and secret material were not printed`, { target: { ...target, persona: path }, remedy });
       let definition;
-      try { definition = !values["no-persona"] && existsSync(path) ? loadAgentFile(path) : undefined; }
+      try { definition = !values["no-persona"] && existsSync(path) ? loadAgentFile(path, { deferRoleValidation: true }) : undefined; }
       catch { throw unusable("could not be read as a persona", `see what is wrong with it with \`cotal persona show ${name}\`, then fix it and mint again`); }
       // A flag wins, then the grants of the --identity credential, then the persona.
       const readFlag = parseCommaList(values["allow-subscribe"]);
@@ -199,15 +210,22 @@ export async function mint(args: ParsedArgs): Promise<void> {
     const defaultLifetime = values["expires-in"] === undefined && values["expires-at"] === undefined && !values["no-expiry"];
     const options = { allowSubscribe, allowPublish, role, lifecycleUid, expiresInSeconds: values["expires-in"] !== undefined ? Number(values["expires-in"]) : defaultLifetime ? DEFAULT_LIFETIME_SECONDS : undefined, expiresAt: values["expires-at"] === undefined ? undefined : Number(values["expires-at"]) };
     const creds = await mintCreds(auth, identity, profile, options);
+    const claims = credsClaims(creds);
+    const checkProvisionedExpiry = () => {
+      if (values.provision && claims.exp !== undefined && Date.now() >= claims.exp * 1000)
+        throw new CommandFailure("refused", "USAGE_INVALID", "the credential expired before provisioning and publication could finish", { target, remedy: "use a longer lifetime or a later expiry" });
+    };
     if (values.provision) {
       if (!resolvedTarget.auth || resolvedTarget.auth.account.pub !== auth.account.pub) throw new CommandFailure("refused", "CONFLICT", "the broker target and credential signer do not share one account authority", { target });
       const preflight = await preflightTarget(resolvedTarget);
       if (!preflight.ok) throw new CommandFailure("refused", preflight.kind.includes("creds") || preflight.kind === "stale-auth" ? "AUTH_REQUIRED" : "TARGET_UNAVAILABLE", "the selected broker did not pass the native authenticated provisioning preflight; no stale registration was pruned", { target });
+      checkProvisionedExpiry();
       mayHaveProvisioned = true;
       const provisionedIdentity = identity;
       await provisionForMint(auth, identity, { ...options, lifecycleUid: lifecycleUid! }, resolvedTarget, () => {
         changed.push({ kind: "native-agent-footprint", identity: provisionedIdentity.id, lifecycleUid, space, acknowledged: true });
       });
+      checkProvisionedExpiry();
     }
     publicationStarted = true;
     if (values.out !== undefined) {
@@ -251,11 +269,13 @@ export async function mint(args: ParsedArgs): Promise<void> {
     }
     // The record lets doctor auth find this file again; it holds no credential.
     if (values.out !== undefined) {
-      try { recordCredentialExport(space, { label: name, profile, path: out, root, identity: identity.id }); }
-      catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", `the credential was written to ${out}, but its export record was not, so doctor auth does not list it`, { target, remedy: `mint it again with the same --identity ${out} --out ${out} to record it` }); }
+      try { recordCredentialExport(space, { label: name, profile, path: out, root, identity: identity.id, provisioned: values.provision === true }); }
+      catch {
+        const quoted = shellWord(out);
+        throw new CommandFailure("partial", "OPERATION_PARTIAL", `the credential was written to ${out}, but its export record was not, so doctor auth does not list it`, { target, remedy: `mint it again with the same --identity ${quoted} --out ${quoted}${values.provision ? " --provision" : ""} to record it` });
+      }
       changed.push({ kind: "credential-export-record", path: out, acknowledged: true });
     }
-    const claims = credsClaims(creds);
     const fromIdentity = carried ? ([["read", values["allow-subscribe"]], ["post", values["allow-publish"]], ["role", values.role]] as const).filter(([, flag]) => flag === undefined).map(([grant]) => grant) : [];
     const grants = profile === "agent" ? { read: allowSubscribe ?? [], post: allowPublish ?? [], role: role ?? null, fromIdentity } : null;
     const result = { kind: "credential-minted", name, space, profile, identity: identity.id, principal: principalKey(DEV_OWNER, identity.id).key, lifecycleUid: lifecycleUid ?? null, output: out, provisioned: values.provision === true, identityReused: requestedIdentity !== undefined, grants, lifecycleReused: false, expiresAt: claims.exp ?? null, defaultLifetime, noExpiryRecord, replaced: replaced ?? null, secretOnStdout: false, changed };
@@ -265,6 +285,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       ...(values.replace ? replaceNotes(replaced, standing !== undefined, profile, space, name, root) : []),
       ...replacedGrantsChanged(replacedGrants, grants, space, name),
     ];
+    checkProvisionedExpiry();
     writeResult(presentationOf(values), { command: "auth mint", target: { space, name }, result, warnings }, (data): Report => ({ sections: [
       { title: "Private credential written", blocks: [{ kind: "fields", rows: [["Label", data.name], ["Space", data.space], ["Profile", data.profile], ["Principal", data.principal], ["Lifecycle", data.lifecycleUid ?? "not an agent lifecycle"], ...(data.grants ? grantRows(data.grants) : []), ["Private file", data.output], ...(data.replaced ? [["Replaced", `${data.replaced.state === "expired" ? `a credential that expired at ${expiry(data.replaced.expiresAt ?? undefined)}` : data.replaced.state === "revoked" ? `a credential whose key was revoked at ${expiry(data.replaced.revokedAt ?? undefined)}` : "a credential with no expiry claim"}, key ${data.replaced.publicKey}`]] as [string, string][] : []), ["Expiry", data.noExpiryRecord ? `no expiry claim, as --no-expiry asked; recorded in ${data.noExpiryRecord}` : `${expiry(data.expiresAt ?? undefined)}${data.defaultLifetime ? " (the 24-hour default)" : ""}`], ["Broker footprint", data.provisioned ? "native provisioning acknowledged" : "not provisioned by this command"]] }, { kind: "lines", lines: [{ text: "Credential contents were written privately, not printed. Provisioning is not presence, a joined agent or task completion. Fixed observer/admin profiles do not accept agent ACL overrides.", tone: "hint" }] }] },
     ] }));

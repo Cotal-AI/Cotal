@@ -26,8 +26,12 @@ to pass one URL for the new broker to listen on. The refusal does not repeat the
 
 ## Invocation [#running-it]
 
+Install as your own user, without sudo. The npm global prefix must be user-writable and its
+executable directory must be on PATH. With distribution Node on macOS or Linux, follow the
+[user-owned prefix and PATH steps](installation.mdx#install-with-npm), or use the shell installer.
+
 ```bash
-npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 22.10+)
+npm install -g cotal-ai   # needs Node 22.10+ and the prefix/PATH prerequisites above
 cotal                     # the selected space, common commands, and where to start
 cotal help                # the same, then every command group (also `cotal --help`)
 cotal help <command> [<subcommand>]   # one command's or subcommand's usage and flags
@@ -46,10 +50,11 @@ connectors after an old executable rebuilt them, run the verified newer absolute
 When an installed CLI is off PATH, `status` and `ps` suggestions use the absolute Node runtime
 and installed entry, with paths quoted for a POSIX shell. For the POSIX installer, the suggestions
 also preserve its private Node/npm PATH and npm install prefix, so setup can seed connectors.
-They do not require a source checkout or pnpm. PATH invocations keep `cotal`, npx invocations keep
-`npx cotal-ai`, and checkout invocations keep `pnpm cotal`.
+They do not require a source checkout or pnpm. The entry card and status next steps use `cotal`
+when a permanent launcher is on PATH. Otherwise, `npx` runs suggest `npx cotal-ai`, `pnpm dlx`
+runs suggest `pnpm dlx cotal-ai` even with a custom cache directory, and checkouts suggest `pnpm cotal`.
 
-`npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
+`npx cotal-ai <command>` and `pnpm dlx cotal-ai <command>` run it without a global install. Bare `cotal` starts nothing: it names
 the explicit `cotal use` selection first, else the space this folder has registered, else an
 automatically adopted selection, else, with nothing selected, the space
 this folder prepared, and lists common commands. It reads no
@@ -160,7 +165,8 @@ still checks and uses the whole value. A usage error is found before any effect,
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
 `--`, which the refusal names, and an option value that starts with one is written `--limit=-1`,
-which the refusal gives. An option given with no value, last or just before another option, is
+which the refusal gives. The refusal quotes values that a POSIX shell would split or expand, as in
+`--search='-help usage'`. An option given with no value, last or just before another option, is
 refused naming the option and its placeholder. A short option takes its value after a space, so `-c=general` is refused
 rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
 typeset text, is refused naming the option it meant, rather than read as a positional. Before the
@@ -273,6 +279,8 @@ control character in the text it quotes, such as a file's bytes or an argument, 
 its own fix prints that line and its next step without the help: an `--on` value that is empty, a
 principal id or not an instance id, a `spawn --on` that needs a terminal or `-d`, `attach` with no
 name and no terminal, and a `run` command given no run id.
+The command an `--on` refusal tells you to rerun keeps the agent, endpoint, command, text or persona
+you gave, quoted for a shell, and the `--space` and `--server`, so only `--on` changes.
 Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
 terminal is written as one labeled record per row, so no value is cut off. A warning on stderr wraps
 to the terminal at spaces, each continuation line under its text.
@@ -313,6 +321,11 @@ alone, any other text, Esc or Ctrl-C keeps No, so a word typed at the prompt by 
 confirms a step you cannot undo. `space delete` asks you to type the space's name instead. A
 question that defaults to Yes is a Yes and No choice: the arrow keys move the selection, `y` and `n`
 answer at once, and Enter takes the selection.
+
+Without a terminal, or with `--no-input` or `--json`, `history clear`, `channel remove`,
+`persona remove` and `endpoint remove` refuse and print the command that confirms them with
+`--yes`. That command keeps the `--space`, `--server` and `--creds` you gave, so it acts on the
+same space.
 
 A usage line breaks only between options, never between an option and its argument. A ` | ` stays
 on the line before it whenever it fits there. A compact `|`, such as the one in

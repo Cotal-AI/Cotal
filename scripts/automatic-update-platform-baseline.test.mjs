@@ -517,7 +517,7 @@ test('workflow bounds diagnostics and preserves every immutable release head wit
   assert.deepEqual(installer.strategy.matrix.os, ['macos-15-intel', 'macos-15']);
   assert.equal(installer.strategy['max-parallel'], 2);
   assert.equal(installer.steps[0].id, 'admission');
-  assert.equal(installer.steps[0].uses, 'actions/github-script@v8');
+  assert.equal(installer.steps[0].uses, 'actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd');
   assert(installer.steps[0].with.script.includes('15 * 60 * 1000'));
   for (const step of installer.steps.slice(1).filter(step => !step.uses?.startsWith('actions/upload-artifact'))) assert.equal(step.if, "steps.admission.outputs.admitted == 'true'");
   assert(installer.steps.some(step => step.run?.includes('b4f30205f54cd468bf1914095b09974a5f17dee6') && step.run.includes('c0098825508fe4138c811f7f9ccf351b871593167578de35afc77d15d4df323c')));
@@ -804,6 +804,14 @@ test('Mac admission gate records late arm64 unrun before any installation', asyn
     { env: {} }, { now: () => 1, parse: Date.parse },
   ), /run creation time unavailable/);
   assert.equal(outputWritten, false);
+});
+
+test('summary skips a JSON file that holds no object', async () => {
+  const { summarize } = await import('./automatic-update-platform-baseline.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'null-summary-'));
+  writeFileSync(join(root, 'cell.json'), JSON.stringify({ id: 'cell', tier: 'published', result: 'passed', target: '0.164.5' }));
+  writeFileSync(join(root, 'state.json'), 'null');
+  assert.deepEqual(summarize(root).counts, { passed: 1 });
 });
 
 test('summary preserves unrun runner receipts separately from product verdicts and does not count matched known refusals as unexpected failures', async () => {

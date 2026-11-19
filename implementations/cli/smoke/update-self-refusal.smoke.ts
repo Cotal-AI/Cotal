@@ -1,6 +1,8 @@
 import "./update-isolation.js";
 import nodeAssert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countedAssert } from "@cotal-ai/smoke-kit";
 import { CommandFailure } from "@cotal-ai/workspace";
@@ -10,9 +12,18 @@ const assert: typeof nodeAssert = counted.assert;
 
 const reason = "installation is not writable; use the owning command: npm install -g --prefix /fixture cotal-ai@latest";
 let preflight = 0, later = 0;
+let scratch = "";
+const temporaryBefore = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP };
 await assert.rejects(update({ values: { self: true }, positionals: [], raw: ["--self"] }, {
   ...updateRuntime,
-  preflightExecution() { preflight++; throw new Error(reason); },
+  preflightExecution() {
+    preflight++;
+    scratch = tmpdir();
+    assert.equal(process.env.TMP, scratch);
+    assert.equal(process.env.TEMP, scratch);
+    if (process.platform !== "win32") assert.equal(statSync(scratch).mode & 0o777, 0o700, "update scratch is private");
+    throw new Error(reason);
+  },
   version() { later++; return "0.164.18"; },
   npm() { later++; throw new Error("must not reach npm after a preflight refusal"); },
 }), (error: unknown) => {
@@ -25,6 +36,8 @@ await assert.rejects(update({ values: { self: true }, positionals: [], raw: ["--
 });
 assert.equal(preflight, 1);
 assert.equal(later, 0, "no update work follows the refused preflight");
+assert.equal(existsSync(scratch), false, "refusal cleans up private update scratch");
+assert.deepEqual({ TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP }, temporaryBefore, "refusal restores the caller's temporary-directory environment");
 const run = (kind: string, json = false) => spawnSync(process.execPath, [...process.execArgv,
   join(import.meta.dirname, "update-self-refusal.fixture.ts"), "update", "--self", ...(json ? ["--json"] : [])], {
   env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), UPDATE_REFUSAL_FIXTURE: kind, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", DO_NOT_TRACK: "1" },

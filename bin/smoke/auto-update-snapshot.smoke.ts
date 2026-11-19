@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSy
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
-import { writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery, claimUpdateClosureAccess, prepareCotalHomeForWrite, ProtectedRecordStore, protectedResolvedDirectory } from "@cotal-ai/workspace";
+import { writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery, claimUpdateClosureAccess, connectorConfigDir, retainConnectorConfig, prepareCotalHomeForWrite, ProtectedRecordStore, protectedResolvedDirectory } from "@cotal-ai/workspace";
 import { snapshotUpdateClosure } from "../../implementations/cli/src/lib/update-snapshot.js";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 
@@ -140,6 +140,38 @@ try {
     assert.equal(readFileSync(external, "utf8"), "untouched");
     assert.equal(readFileSync(join(seed, "stamp"), "utf8"), "previous");
     refused.discard(); clearUpdateRecovery();
+  }
+  if (process.platform === "linux" || process.platform === "darwin") {
+    const legacy = snapshotUpdateClosure();
+    const entry = join(root, "prefix/lib/node_modules/cotal-ai/dist/cotal.js");
+    mkdirSync(join(entry, ".."), { recursive: true, mode: 0o700 });
+    writeFileSync(entry, "// installed entry\n");
+    writeFileSync(join(entry, "../..", "package.json"), JSON.stringify({ name: "cotal-ai", version: "2.0.0", bin: { cotal: "./dist/cotal.js" } }));
+    Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), { value: Object.freeze({ logicalEntry: entry, loadedEntry: entry }) });
+    const retained = retainConnectorConfig();
+    assert.notEqual(retained, config);
+    assert.equal(connectorConfigDir(), retained);
+    for (const name of ["seed", "extensions"]) {
+      writeFileSync(join(config, name, "stamp"), "interrupted canonical");
+      writeFileSync(join(retained, name, "stamp"), "target retained");
+    }
+    writeUpdateRecovery({ previous: "1.0.0", target: "2.0.0", installed: "2.0.0", phase: "paused", snapshot: legacy.path, reason: "interrupted after retained selection" });
+    snapshotUpdateClosure(legacy.path).restore();
+    for (const name of ["seed", "extensions"]) {
+      assert.equal(readFileSync(join(config, name, "stamp"), "utf8"), "previous");
+      assert.equal(readFileSync(join(retained, name, "stamp"), "utf8"), "target retained");
+    }
+    assert.ok(readUpdateRecovery()!.renames!.every(entry => entry.done));
+    legacy.discard(); clearUpdateRecovery();
+    assert.equal(existsSync(legacy.path), false);
+    for (const kind of ["missing", "file", "symlink", "foreign"] as const) {
+      const path = join(kind === "foreign" ? root : config, `.update-snapshot-${kind}`);
+      if (kind === "file") writeFileSync(path, "not a directory");
+      if (kind === "symlink") symlinkSync(retained, path);
+      if (kind === "foreign") mkdirSync(path, { mode: 0o700 });
+      assert.throws(() => snapshotUpdateClosure(path));
+      assert.equal(readFileSync(join(retained, "seed", "stamp"), "utf8"), "target retained");
+    }
   }
   emitSentinel({ passed: cells(), failed: 0 });
 } finally { release(); rmSync(root, { recursive: true, force: true }); }

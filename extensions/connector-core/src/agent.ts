@@ -22,12 +22,7 @@ import {
   EpEnvelopeError,
   isPublishPermissionDenied,
   unansweredRequest,
-  undeclaredArg,
-  undeclaredArgInstance,
   EP_UNANSWERED,
-  controlReplyFrom,
-  controlReplyFromThrown,
-  runAgentBearer,
   type EpAttributedReply,
   type RegistryEndpointsInput,
   type RegistryEndpointsOutput,
@@ -36,10 +31,6 @@ import {
   type ControlReply,
   type Delivery,
   type AnycastStatus,
-  type AnycastTakeOutcome,
-  ANYCAST_NOTICE_KEY,
-  MENTION_NOTICE_KEY,
-  partsToText,
   canonicalJson,
   assertValidRole,
   type MessageMeta,
@@ -50,7 +41,6 @@ import {
   type AttentionMode,
   type ChannelMode,
   type CotalMessage,
-  type GoalResultFact,
   type InlinePersona,
   type PersonaEndpoint,
   turnNoticeFilter,
@@ -61,8 +51,12 @@ import { checkEventStartup, EventStateConflictError } from "./event-startup.js";
 import { TURN_PULL_RETRY_MS } from "./turn-poll.js";
 import { ONCE_HANDOFF_MS, claimOnceHandoff, confirmOnceHandoff, endOnceHandoff, exitOnceSeat, onOnceHandoffTimeout, onceHandoffState, sealOnceHandoff, stopOnceHandoffTimer } from "./once.js";
 import { attributionSafe } from "./framing.js";
-import { invokeUserManager, withUserManagerListing } from "./manager-call.js";
-import { CONNECTOR_VERSION } from "./version.generated.js";
+import { AgentManagerCalls, invokeUserManager } from "./manager-call.js";
+import { openAgentEndpoint, type AgentEndpoint } from "./agent-endpoint.js";
+import type { CommandDispatch, CommandDispatcher } from "./agent-commands.js";
+import { AgentInbox, deliveryNoticeOf, type InboxItem, type InboxSnapshot, type InboxScope, type ExactDrainResult, type RecallMark } from "./agent-inbox.js";
+export { afterRecallMark, MAX_INBOX } from "./agent-inbox.js";
+export type { InboxItem, InboxSnapshot, InboxScope, ExactDrainResult, RecallMark, DeliveryNotice } from "./agent-inbox.js";
 
 // Attention modes + per-channel overrides are defined in core (they're published in presence now);
 // re-exported so connector consumers keep importing them from `@cotal-ai/connector-core`.
@@ -73,12 +67,6 @@ export type { AttentionMode, ChannelMode };
  *  delivery margin. This floor still outlives the manager's generic 30s default and protects
  *  older responders whose acceptance predates that field. */
 export const SPAWN_TIMEOUT_MS = 40_000;
-/** A manager-call bearer is reused only while more than this remains before its `exp`, so a
- *  control connection opened with it outlives the longest call it carries ({@link SPAWN_TIMEOUT_MS}). */
-const MANAGER_BEARER_MARGIN_MS = 120_000;
-
-/** A short reconnect or modest sender-clock skew must not turn a current request into history. */
-const CHANNEL_CATCHUP_AGE_MS = 5 * 60_000;
 
 /** Grace for a mesh op issued while the link is still coming up. `start()` deliberately returns
  *  immediately so the connector's MCP surface boots while the broker is absent — which means a
@@ -144,6 +132,9 @@ export interface MeshAgentOptions {
    *  reported. For a connector whose wake for the task is a push it cannot confirm, so a dead push
    *  cannot hold a served task. */
   onceClaimBound?: boolean;
+  /** Lists and starts the harness commands and skills this agent's `agent` endpoint offers. Without
+   *  one, `commands` answers `supported: false` and `command` is refused. */
+  commands?: CommandDispatcher;
 }
 
 /** Host-authorized participation for one native personal connection. The connector validates the
@@ -157,54 +148,6 @@ export interface NativeTurnParticipationLease {
   expiresAt: number;
 }
 
-/** A message that has arrived for us, normalized for the agent to read. */
-export interface InboxItem {
-  id: string;
-  /** Opaque per-delivery RECEIVE key (#624): the address a host uses to drain/ack THIS buffered
-   *  delivery. It is the wire `id` for every message that carries one; a message whose `id` is the
-   *  empty string gets a minted key, because an empty id is never a dedup key and never a
-   *  selectable one. It is NOT wire identity and NOT dedup authority: nothing coalesces on it, so
-   *  a redelivered copy of an id-less message mints its own key and surfaces again (at-least-once,
-   *  the disclosed cost). It exists so the exact-id drains and in-flight protection can select the
-   *  DELIVERY rather than an id value that two distinct messages share. */
-  recvKey: string;
-  ts: number;
-  fromId: string;
-  fromName: string;
-  fromRole?: string;
-  kind: "channel" | "dm" | "anycast";
-  /** Set when kind === "channel". */
-  channel?: string;
-  /** Set when kind === "anycast" (the role addressed). */
-  service?: string;
-  /** Lowercased names called out on a channel message (priority hint). */
-  mentions?: string[];
-  /** True iff this message mentions us by name — computed once, here. Drives high-priority wake. */
-  mentionsMe: boolean;
-  /** True iff this is backfilled history (a "catching up" block on join), not a live message. */
-  historical: boolean;
-  text: string;
-  replyTo?: string;
-  contextId?: string;
-  /** How many times the broker has delivered this copy, 1 on the first; absent on a live copy.
-   *  Broker-derived, never read from the payload: above 1, an earlier delivery of this message went
-   *  unacked past its ack wait and may have run, here or on another reader. */
-  deliveryCount?: number;
-  /** Set on a DM from the space's delivery daemon about one of this session's own role requests
-   *  (`anycast`, SPEC §8.1) or about a channel post whose mention the daemon could not deliver
-   *  (`mention`, SPEC §8): its sender was checked against the delivery lease holder. A notice asks
-   *  for no reply and answers no question. */
-  notice?: DeliveryNotice;
-}
-
-/** A bounded, non-consuming view of the currently buffered inbox for presentation-only surfaces. */
-export interface InboxSnapshot {
-  /** Total buffered deliveries, including rows beyond {@link items}. */
-  unread: number;
-  /** Oldest buffered rows, copied without receive/ack handles. */
-  items: InboxItem[];
-}
-
 /** Reply correlation for outgoing messages (SPEC §5): `contextId` is the asker's conversation id,
  *  `replyTo` the id of the message being answered. */
 export interface Correlation {
@@ -214,121 +157,6 @@ export interface Correlation {
    *  that peer answers it, and a DM to any other peer is a new question. */
   peerId?: string;
 }
-
-/** An inbox entry: the normalized message plus its JetStream ack handle. */
-interface Pending {
-  item: InboxItem;
-  /** Ack the backing stream message — called only once the item is actually surfaced. */
-  ack: () => void;
-  /** The current copy's redelivery state, and the time until which this reader can vouch it still
-   *  holds that copy. Both absent on a live copy. */
-  redelivery?: Delivery["redelivery"];
-  ownedUntil?: number;
-  /** Delivery class, set at receive time. Quiet ambient stays pull-only even if the mode later
-   *  changes, and an automatic entry becomes pull-only when its channel is quieted, muted or left. */
-  pullOnly: boolean;
-  /** Local receive time. Distinct from `item.ts`, which is the sender's stamp. */
-  receivedAt: number;
-  /** Its place in this session's arrival order. A held role request keeps it while held and once
-   *  taken, so it is offered and shown where it arrived. */
-  arrival: number;
-  /** #662: the focus tally a buffered id-less channel message is counted in, its digest there, and
-   *  the copy it is counted as. Evicting it un-counts that copy only, so recall can hand its stream
-   *  copy back while an identical copy with another disposition stays counted. */
-  idless?: { tally: Map<string, IdlessTally>; digest: string; copy: IdlessCopy };
-  /** A role request on an auth mesh (SPEC §8.1): the take of the current copy, the take in flight,
-   *  and the delivery count a recorded take is for. Such an entry is shown only once its take of
-   *  the copy it holds is recorded. */
-  take?: Delivery["take"];
-  taking?: Promise<void>;
-  /** The link drops counted when {@link taking} began. A take that began before the latest drop is
-   *  the old link's, so a read asks again instead of waiting on it. */
-  takingDrops?: number;
-  takenCount?: number;
-  /** A take was recorded for it once, so a host may have shown it. Only such an entry is acked from
-   *  the held set by an exact drain. */
-  takenOnce?: boolean;
-  /** How many reads are waiting on its take in {@link MeshAgent.takeChosen}. Such a read shows the
-   *  request itself, so its admission is announced as an arrival only when no read waits. */
-  awaited?: number;
-}
-
-/** #662: the copies of one id-less channel message (by content) a focus episode has settled
- *  locally. A live copy carries no stream sequence, so recall binds each settled copy to one
- *  retained stream copy at or below its frontier the first time a read can see it, and two
- *  identical copies never share a sequence. A tally with nothing left in it is deleted. */
-interface IdlessTally {
-  channel: string;
-  /** Settled copies no read has bound yet. */
-  unbound: IdlessCopy[];
-  /** Stream sequences of the copies settled here or handed back. */
-  bound: Set<number>;
-}
-
-/** #662: one settled id-less copy. Its stream copy is at or below the chat stream's last sequence
- *  read after it arrived. While the connection stays up, every stream copy at or below that read
- *  reached this session before the read answered, so the read bounds no copy sent in a reconnect
- *  gap. A read that answers only after the connection dropped bounds nothing. */
-interface IdlessCopy {
-  /** The recall epoch it was settled in. */
-  epoch: number;
-  /** The chat stream's last sequence read after it arrived, once that read answers on the same
-   *  connection. */
-  frontier?: number;
-  /** Settles when that read answers or fails. Never rejects. */
-  ready: Promise<void>;
-  /** The stream sequence a read bound it to. */
-  seq?: number;
-  /** The inbox evicted it before a read bound it. It keeps its place in arrival order, and the
-   *  stream copy a read binds it to is left for recall to hand back. */
-  evicted?: boolean;
-}
-
-/** Where a session's focus-mode recall has been read to: a timestamp plus the id that breaks its ties. */
-export interface RecallMark {
-  ts: number;
-  id: string;
-}
-
-/** Total order on {@link RecallMark}: by time, then by id, so items sharing a millisecond still queue. */
-export function afterRecallMark(a: RecallMark, b: RecallMark): boolean {
-  // #624: recall marks and items are addressed by RECEIVE key (never the wire id), and a minted
-  // key is never the empty string, so the tie-break comparator never sees an empty id on either
-  // side: the only empty id in a RecallMark is the initial cursor {ts: 0, id: ""}, whose ts
-  // differs from every real item and so never reaches the id comparison. (The empty-id guard this
-  // comparator once carried was removed after a root chase showed it unreachable: with the wire id
-  // out of the marks, no real path can put two empty ids, or an empty id against a real one, into
-  // the comparison.)
-  return a.ts !== b.ts ? a.ts > b.ts : a.id > b.id;
-}
-
-/** How many pending messages one session buffers before the overflow valve in
- *  {@link MeshAgent.buffer} evicts. Exported so the overflow smokes read the bound they exercise. */
-export const MAX_INBOX = 200;
-/** How long {@link MeshAgent.takeChosen} waits for the delivery daemon before it lets a caller show
- *  what is already taken. A take not decided by then stays held for a later read. */
-const TAKE_WAIT_MS = 2_000;
-/** How long a role request whose take could not be decided waits before it is asked about again. */
-const TAKE_RETRY_MS = 10_000;
-/** How many receive keys {@link MeshAgent.holdInFlight} protects at once. The overflow valve never
- *  evicts a held entry, so this ceiling also bounds the inbox while holds are open, which is why it
- *  is derived from {@link MAX_INBOX}. It sits above the inbox because a frame keeps its holds until
- *  its own verdict, even on entries an overlapping frame has already committed. */
-const MAX_IN_FLIGHT = MAX_INBOX * 2;
-/** How many future-stamped recall ids one session will remember having handed over. See
- *  {@link MeshAgent.recallAheadRoom}. */
-const MAX_AHEAD = 256;
-/** How many overflow-evicted ambient messages {@link MeshAgent.evictedClassifications} remembers
- *  the class of. */
-const CLASSIFICATION_CAP = 4096;
-/** How many ids one focus episode keeps out of recall in {@link MeshAgent.focusExcludedIds}, and,
- *  bounded separately, how many id-less copies it counts in {@link MeshAgent.focusIdlessEntries}. */
-const FOCUS_EXCLUSION_CAP = 4096;
-/** #662: history reads one channel's recall makes while an id-less copy keeps arriving mid-read. */
-const IDLESS_READS = 3;
-/** How many ids each of {@link MeshAgent.protectedPullOnlyIds} and
- *  {@link MeshAgent.protectedDropIds} holds. */
-const PROTECTED_DISPOSITION_CAP = 4096;
 /** How many unanswered directed messages, asked questions, and DM or anycast senders one session
  *  remembers for reply correlation. */
 const MAX_CORRELATIONS = 1024;
@@ -356,13 +184,6 @@ function settledTurnError(goalId: string, t: { deadlineAt?: number; once?: unkno
     return `turn "${goalId}" was already yielded ${t.yielded} by this seat${t.yielded === "done" ? " (ending a session turn yields done)" : ""}, so this yield was not recorded`;
   const deadline = t.deadlineAt !== undefined ? ` (deadline ${new Date(t.deadlineAt).toISOString()})` : "";
   return `turn "${goalId}" was already settled ${t.once !== undefined ? "by its manager" : "by the run"}${deadline}, so this yield was not recorded`;
-}
-
-/** Order two `x.y.z` releases by their numbers, ignoring a prerelease or build suffix. */
-function compareRelease(a: string, b: string): number {
-  const [x, y] = [a, b].map((v) => v.split(/[-+]/)[0]!.split(".").map(Number));
-  for (let i = 0; i < 3; i++) if (x![i] !== y![i]) return (x![i] ?? 0) - (y![i] ?? 0);
-  return 0;
 }
 
 /** One relayed run turn this seat has pulled and not yet yielded. `surfaced` flips when the
@@ -402,46 +223,9 @@ function onceSpawner(payload: string): string | undefined {
   } catch { return undefined; }
 }
 
-export type InboxScope = "all" | "automatic" | "pull-only";
-
-export interface ExactDrainResult {
-  items: InboxItem[];
-  missingKeys: string[];
-}
-
-import { createHash, randomUUID } from "node:crypto";
-
-/** What a delivery daemon's notice is about. */
-export type DeliveryNotice = "anycast" | "mention";
-
-/** Which delivery daemon notice part a DM carries, anycast (SPEC §8.1) or mention (SPEC §8), if any.
- *  Its sender is still to be checked against the delivery lease. */
-function deliveryNoticeOf(m: CotalMessage): DeliveryNotice | undefined {
-  for (const p of m.parts) {
-    if (p.kind !== "data" || typeof p.data !== "object" || p.data === null || Array.isArray(p.data)) continue;
-    if (ANYCAST_NOTICE_KEY in p.data) return "anycast";
-    if (MENTION_NOTICE_KEY in p.data) return "mention";
-  }
-  return undefined;
-}
-
-/** #662: what an id-less channel delivery shares with its stream copy. Both are the same published
- *  bytes, read through the same authentication, so their content is all that links them. */
-function idlessDigest(m: CotalMessage): string {
-  return createHash("sha256").update(JSON.stringify(m)).digest("base64url");
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-/** The dedup key a received message id contributes to ingest's coalescing, or undefined when the id
- *  is EMPTY: an empty id is never a dedup key (#624). Undefined means "no identity to coalesce on",
- *  so every id-keyed lookup in {@link MeshAgent.ingest} is skipped for such a message and it flows to
- *  the buffer on its own merits. Real ids are returned unchanged: their coalescing (live/durable
- *  copies of one message, and redelivery after handle) is untouched. */
-function ingestDedupKey(id: string): string | undefined {
-  return id === "" ? undefined : id;
 }
 
 /**
@@ -507,28 +291,6 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
     + `\nAnswer with: \`cotal run answer ${String(p.run)} ${String(p.step)} --value '<json>'\``;
 }
 
-/** A bearer JWT's `exp` in milliseconds, or undefined when it names none. */
-function bearerExpiryMs(token: string): number | undefined {
-  try {
-    const exp = (JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as { exp?: unknown }).exp;
-    return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** `p`, or the signal's reason as soon as it aborts. A shared exchange keeps running for the
- *  other callers when one of them gives up. */
-function abortable<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return p;
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    p.then((v) => { signal.removeEventListener("abort", onAbort); resolve(v); }, (e) => { signal.removeEventListener("abort", onAbort); reject(e); });
-  });
-}
-
 /**
  * A thin, mesh-native agent: a {@link CotalEndpoint} plus a buffered inbox and
  * name-based peer resolution. This is the shared core behind the MCP server
@@ -542,7 +304,8 @@ function abortable<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
  * (InboxItem) when a `focus`-mode agent is @-mentioned on a channel — the body was
  * acked-and-dropped (not buffered), so this
  * only asks the push layer to *wake* the agent to pull it; `"wake"` (no payload) to ask that
- * layer to wake the session now (the Stop→idle flush of held messages); `"stopping"` (no payload)
+ * layer to wake the session now (the Stop→idle flush of held messages); `"command"` (no payload)
+ * when a command waits for {@link MeshAgent.dispatchNextCommand}; `"stopping"` (no payload)
  * once, when {@link MeshAgent.stop} begins, whatever the transport's state; `"error"` (Error) for
  * endpoint faults.
  */
@@ -550,45 +313,18 @@ export class MeshAgent extends EventEmitter {
   readonly ep: CotalEndpoint;
   readonly config: AgentConfig;
   private readonly launchEnv?: NodeJS.ProcessEnv;
+  private readonly managerCalls: AgentManagerCalls;
   private readonly options: MeshAgentOptions;
-
-  private inbox: Pending[] = [];
-  /** Role requests delivered on an auth mesh whose take is not recorded for the copy held (SPEC §8.1).
-   *  They count toward a wake and are never shown: {@link takeChosen} asks the delivery daemon to
-   *  record the take of each one a host chose to show, and a recorded one moves to {@link inbox}. */
-  private gated: Pending[] = [];
-  /** Counts arrivals, to number each entry's {@link Pending.arrival}. */
-  private arrivals = 0;
-  /** Why the last take could not be decided, when it could not, and when a held request may be
-   *  asked about again. Reported by `cotal_inbox`. */
-  private heldTake?: { reason: string; detail: string; retryAt: number };
-  /** Re-announces the held role requests once {@link heldTake} lets them be asked about again. */
-  private takeRetry?: ReturnType<typeof setTimeout>;
-  /** Ids already SURFACED to the model (handled) — bounded, commit-aware dedup ACROSS a drain. The
-   *  live↔durable transition window can deliver the two copies of one message far enough apart that the
-   *  first is already drained (removed from {@link inbox}) when the second arrives; the pending-inbox
-   *  check alone would then re-buffer and double-surface it. Recorded at HANDLE time ({@link drainInbox}),
-   *  never at receive time — so a later durable duplicate of an already-handled id is safe to ack (the
-   *  logical message was delivered), which is exactly what the removed endpoint-level `firstSeenChat`
-   *  got wrong (it acked at receive time, before handling). Two rotating windows bound memory. */
-  private handledIds = new Set<string>();
-  private handledIdsPrev = new Set<string>();
-  /** Receive-time classes for overflow-evicted, unhandled channel ambient. Capacity exhaustion
-   *  permanently degrades unknown ambient to pull-only for this session rather than risk a late
-   *  live/durable copy changing from quiet to automatic. */
-  private evictedClassifications = new Map<string, { pullOnly: boolean; channel: string }>();
-  /** Surfaced to the host but not yet committed or abandoned, counted per holding frame because
-   *  frames overlap. See {@link holdInFlight}. */
-  private inFlightIds = new Map<string, number>();
-  /** Ack-wait renewal timers of held durable deliveries, by receive key. See {@link keepOwned}. */
-  private renewals = new Map<string, ReturnType<typeof setInterval>>();
-  private classificationUnsafe = false;
-  /** Terminal receive-time decisions that must survive the live→durable transition: successfully
-   *  surfaced pull-only messages and hard drops under muted/focus. Capacity loss degrades the
-   *  corresponding whole class fail-closed for the rest of the session. */
-  private protectedPullOnlyIds = new Set<string>();
-  private protectedDropIds = new Set<string>();
-  private dropUnsafe = false;
+  private readonly inboxState = new AgentInbox({
+    endpoint: () => this.ep,
+    config: () => this.config,
+    transportConnected: () => this._transportConnected,
+    emit: (event, item) => this.emit(event, item),
+    warning: (error) => this.handleEndpointWarning(error),
+    noteDirected: (item) => this.noteDirected(item),
+    inOrder: (write) => this.inOrder(write),
+    requireConnected: () => this.requireConnected(),
+  });
   /** How many times the endpoint saw this session's stored copies at their limit (#5404) since a
    *  cotal_inbox reply last carried the notice. */
   private _storedCopiesFull = 0;
@@ -597,42 +333,11 @@ export class MeshAgent extends EventEmitter {
   private _connected = false;
   /** Raw NATS transport liveness, separate from `_connected` (the full Cotal bind/readiness). */
   private _transportConnected = false;
-  /** Wall-clock time of the latest inbox drain that actually committed at least one delivery.
-   *  This is measured only after the backing acknowledgements succeed, never inferred from a read
-   *  attempt or from an empty inbox. */
-  private _lastInboxDrainedAt?: number;
-  /** Wall-clock time of the latest drain that committed at least one AUTOMATIC delivery.
-   *
-   *  Deliberately separate from {@link _lastInboxDrainedAt}, and #1233 is why: on a host-mode
-   *  connector the tool inbox and the connector-managed automatic queue are different queues, and
-   *  the measured seat was draining the first every few minutes while the second had not moved in
-   *  13.8 hours. A progress mark that counts a pull-only drain as progress would have reported that
-   *  seat as making progress, which is the exact lie this field exists to refuse. */
-  private _lastAutomaticDrainedAt?: number;
-  /** The latest commit that took the OLDEST automatic delivery then queued (#1526).
-   *
-   *  Distinct from {@link _lastAutomaticDrainedAt}, and the distinction is the defect: any automatic
-   *  commit used to count, so a seat that kept committing fresh arrivals over a head it could not
-   *  deliver reset its own stall clock on every turn and reported `ready` indefinitely, while the
-   *  entries at the front of its queue aged past two hours. A queue drains when its head moves; a
-   *  queue that serves only its newest arrivals is not draining, it is skipping. */
-  private _lastAutomaticHeadDrainedAt?: number;
   /** Latest connection failure, retained until the endpoint binds so a bounded readiness gate can
    * explain why an otherwise healthy host never joined the mesh. */
   private lastConnectionError?: string;
   private endpointNoticeLog = new Map<string, { lastLoggedAt: number; suppressed: number }>();
   private _status: PresenceStatus = "idle";
-  private _attention: AttentionMode = "open"; // F3: fail-open default; reset to open on SessionStart
-  private _recallCursor: RecallMark = { ts: 0, id: "" };
-  /** Recall items stamped ahead of this session's clock that it has already handed over. They are
-   *  tracked by id rather than by {@link _recallCursor}, because a sender's clock must not be able to
-   *  move this session's mark. Bounded by {@link MAX_AHEAD}. */
-  private aheadDelivered = new Set<string>();
-  /** Per-channel attention overrides — the AUTHORITATIVE runtime state (read by {@link ingest} on
-   *  every message). Seeded from the agent-file default; mutated by {@link setChannelMode}; mirrored
-   *  to presence for peers. An absent key ⇒ that channel follows the global {@link _attention}. Reset
-   *  on restart (rebuilt from config; presence sweep clears the mirror). */
-  private channelModes = new Map<string, ChannelMode>();
   /** The turn relay's seat-side intake: every pulled-and-unyielded run turn, by goal id. Fed by
    *  {@link pollTurns}; surfaced into host context by {@link surfacePendingTurns}; drained by
    *  {@link yieldTurn} (explicit) and the working→idle boundary in {@link setStatus} (automatic
@@ -678,37 +383,6 @@ export class MeshAgent extends EventEmitter {
   /** By `contextId`, the questions this seat asked inside a {@link withCorrelation} scope, and whom
    *  they went to (bounded). See {@link answersQuestion}. */
   private readonly asked = new Map<string, { peerId?: string; role?: string }>();
-  /** Chat-stream frontier captured when this agent entered `focus` — recall surfaces ambient
-   *  published after it ("since you entered focus"). Undefined unless in focus. */
-  private focusSince?: number;
-  private enteringFocus = false;
-  /** The receive-key namespace secret (#624): a per-session random value minted at construction,
-   *  never written to any wire or log. Minted receive keys are `${secret}.${seq}`, so they are
-   *  DISJOINT from wire ids by construction: an attacker-chosen wire id cannot equal one, so one
-   *  verdict can never select two entries through a forged collision. Recognition is FUNCTIONAL
-   * (the key starts with the secret), so it cannot saturate the way a bounded set would: every
-   * minted key stays recognizable for the session's life, with nothing to expire or overflow. */
-  private readonly recvKeySecret = randomUUID().replace(/-/g, "");
-  private recvKeySeq = 0;
-  private focusExcludedIds = new Map<string, string>();
-  /** #662: id-less channel deliveries settled this focus episode, per content digest. Live ingest has
-   *  no stream sequence, so content is all an id-less delivery shares with its stream copy, and
-   *  identical copies may each have had a different disposition. So recall binds each settled copy
-   *  to a stream sequence and hands back only the copies no settled copy is bound to. Replaced, never
-   *  cleared, per episode, so a hold from an earlier episode cannot un-count a later one. */
-  private focusIdless = new Map<string, IdlessTally>();
-  /** Unbound copies plus bound sequences in {@link focusIdless}, bounded by
-   *  {@link FOCUS_EXCLUSION_CAP}. */
-  private focusIdlessEntries = 0;
-  /** Bumped as each channel's recall read starts: a copy settled before a read that the read could
-   *  not bind is behind the focus frontier or out of retention, and no later read will see it. */
-  private idlessEpoch = 0;
-  /** Recall runs one at a time, so an older read can never settle over a newer one (#662). */
-  private recallLock: Promise<unknown> = Promise.resolve();
-  /** Bumped each time the transport goes down, so a settled copy's frontier read can tell whether
-   *  the connection stayed up from the copy's arrival to the answer (#662). */
-  private transportDrops = 0;
-  private focusRecallUnsafeChannels = new Set<string>();
   private _stopping = false;
   /** Presence writes go out IN CALL ORDER (#636, #2055). setStatus is two awaited puts and every
    *  connector fires it without awaiting, so two overlapping calls interleave their puts and the
@@ -727,10 +401,15 @@ export class MeshAgent extends EventEmitter {
     this.config = config;
     this.options = options;
     this.launchEnv = env === undefined ? undefined : { ...env };
+    this.managerCalls = new AgentManagerCalls(
+      () => this.config,
+      () => this.ep,
+      () => this.launchEnv,
+      (...args) => this.invokeEndpoint(...args),
+    );
     // Seed per-channel attention from the operator's file default (one-way: the runtime never writes
     // back — the persona file is a shared template). muted/quiet are validated disjoint at file load.
-    for (const c of config.quiet ?? []) this.channelModes.set(c, "quiet");
-    for (const c of config.muted ?? []) this.channelModes.set(c, "muted");
+    this.inboxState.seedChannelModes(config);
     const userAuth = config.userAuth;
     this.ep = new CotalEndpoint({
       space: config.space,
@@ -752,7 +431,7 @@ export class MeshAgent extends EventEmitter {
       ackWaitMs: config.ackWaitMs, // undefined → endpoint default (60s); shortened in tests to observe redelivery
       channels: config.subscribe, // the endpoint's live filter = the active read set
       allowSubscribe: config.allowSubscribe, // the complete ACL decides whether a DLV durable exists
-      channelModes: Object.fromEntries(this.channelModes), // seed presence so file defaults are visible at boot
+      channelModes: this.channelModeEntries(), // seed presence so file defaults are visible at boot
       // A seat reads the roster when it acts (readRoster) instead of watching it: a watch delivers
       // every member's heartbeat to every member, K² per heartbeat in a space of K (SPEC §6).
       watchPresence: false,
@@ -793,8 +472,8 @@ export class MeshAgent extends EventEmitter {
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => {
       const notice = meta?.kind === "dm" ? deliveryNoticeOf(m) : undefined;
-      if (notice !== undefined) void this.ingestNotice(m, d, meta!, notice);
-      else this.ingest(m, d, meta);
+      if (notice !== undefined) void this.inboxState.ingestNotice(m, d, meta!, notice);
+      else this.inboxState.ingest(m, d, meta);
     });
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
     // A warning is a condition the endpoint is already surviving. Log it through the same bounded
@@ -810,19 +489,7 @@ export class MeshAgent extends EventEmitter {
       if (this._stopping) return;
       if (this._transportConnected === e.connected) return;
       this._transportConnected = e.connected;
-      if (!e.connected) {
-        this.transportDrops++;
-        // This reader cannot vouch for a copy across a drop, so a role request taken and not yet
-        // handed to a host is taken again before it is shown.
-        for (const p of this.inbox.filter((x) => x.take && !this.inFlightIds.has(x.item.recvKey))) this.regate(p);
-      }
-      // No take is asked while the link is down (see mayAskTakes), so a host that read then was offered
-      // none of the held requests. Each whose take is not out, and whose copy is still this reader's,
-      // is announced again now.
-      if (e.connected && this.mayAskTakes()) {
-        this.dropLapsedTakes();
-        for (const p of this.gated) if (p.taking === undefined) this.emit("incoming", p.item);
-      }
+      this.inboxState.onTransport(e.connected);
       this.emit("transport", e);
       // A notice lost while the transport was down can only matter to a turn this seat holds: the
       // manager repeats the notice for a turn the seat has not pulled yet. So only a holder pulls.
@@ -890,12 +557,12 @@ export class MeshAgent extends EventEmitter {
 
   /** The latest successful, non-empty inbox drain in this session. */
   get lastInboxDrainedAt(): number | undefined {
-    return this._lastInboxDrainedAt;
+    return this.inboxState.lastInboxDrainedAt;
   }
 
   /** The latest drain that committed at least one AUTOMATIC (connector-managed) delivery. */
   get lastAutomaticDrainedAt(): number | undefined {
-    return this._lastAutomaticDrainedAt;
+    return this.inboxState.lastAutomaticDrainedAt;
   }
 
   /** The latest drain that committed the automatic delivery that was then at the FRONT of the queue
@@ -903,26 +570,7 @@ export class MeshAgent extends EventEmitter {
    *  {@link lastAutomaticDrainedAt} is still reported beside it, because the two disagreeing is
    *  precisely the shape of a wedged head being served around. */
   get lastAutomaticHeadDrainedAt(): number | undefined {
-    return this._lastAutomaticHeadDrainedAt;
-  }
-
-  /** The receive key of the oldest still-queued automatic delivery: the queue's head, and the entry
-   *  whose commit counts as progress. */
-  private oldestAutomaticKey(): string | undefined {
-    let head: Pending | undefined;
-    for (const pending of this.inbox) {
-      if (pending.pullOnly) continue;
-      if (head === undefined || pending.receivedAt < head.receivedAt) head = pending;
-    }
-    return head?.item.recvKey;
-  }
-
-  /** Record head progress when this batch takes the current head of the automatic queue. Call
-   *  BEFORE the batch leaves {@link inbox}, since the head is read from the live queue. */
-  private noteAutomaticHeadProgress(selected: readonly Pending[]): void {
-    const head = this.oldestAutomaticKey();
-    if (head === undefined) return;
-    if (selected.some((p) => !p.pullOnly && p.item.recvKey === head)) this._lastAutomaticHeadDrainedAt = Date.now();
+    return this.inboxState.lastAutomaticHeadDrainedAt;
   }
 
   /**
@@ -946,11 +594,7 @@ export class MeshAgent extends EventEmitter {
    * timed out.
    */
   automaticQueueStalledForMs(now = Date.now()): number | undefined {
-    const oldest = this.oldestAutomaticReceivedAt();
-    if (oldest === undefined) return undefined;
-    const since = Math.max(oldest, this._lastAutomaticHeadDrainedAt ?? 0);
-    const held = now - since;
-    return held > 0 ? held : 0;
+    return this.inboxState.automaticQueueStalledForMs(now);
   }
 
   /** Whether {@link stop} has been called. Terminal, and never cleared: a stopped session does not
@@ -980,9 +624,7 @@ export class MeshAgent extends EventEmitter {
 
   /** Session-local channel degradation, independent of transport liveness. */
   get channelDeliveryIssue(): string | undefined {
-    return this.dropUnsafe
-      ? "Channel drop tracking exhausted. Ambient channel traffic is suppressed until restart; non-historical mentions on unmuted channels wake to pull their buffered body. Focus recall may be incomplete."
-      : undefined;
+    return this.inboxState.channelDeliveryIssue;
   }
 
   /** The connection, write-health and channel-delivery facts combined. Repeated presence write
@@ -1002,7 +644,7 @@ export class MeshAgent extends EventEmitter {
   get connectionState(): ConnectionState {
     if (this._stopping) return "stopped";
     if (this._connected) {
-      if (this.dropUnsafe) return "degraded";
+      if (this.channelDeliveryIssue) return "degraded";
       if ((this.presenceWriteFailure?.consecutiveFailures ?? 0) >= 2) return "degraded";
       if (!this._transportConnected) return "degraded";
       const held = this.automaticQueueStalledForMs();
@@ -1137,6 +779,8 @@ export class MeshAgent extends EventEmitter {
 
   private consumerClaim?: HeldLock;
   private connectFlight?: Promise<void>;
+  private agentEndpoint?: AgentEndpoint;
+  private agentEndpointOpened = false;
   private eventStartupChecked = false;
   private eventPlaneBlocked?: string;
 
@@ -1157,6 +801,7 @@ export class MeshAgent extends EventEmitter {
             (this.config.backfillFloor !== undefined ? ` (backfill floor ${this.config.backfillFloor})` : ""),
         );
         this.armTurnRelay();
+        void this.serveAgentEndpoint();
       } catch (e) {
         const error = e instanceof Error ? e : new Error(String(e));
         // stop() can win while the initial endpoint start is still pending. A rejection arriving
@@ -1195,6 +840,37 @@ export class MeshAgent extends EventEmitter {
     }
   }
 
+  /** Only a user-auth credential names who may call (SPEC 13.21), so an open or static mesh serves
+   *  nothing. */
+  private async serveAgentEndpoint(): Promise<void> {
+    if (this.agentEndpointOpened || !this.config.userAuth) return;
+    this.agentEndpointOpened = true;
+    try {
+      const served = await openAgentEndpoint(this.ep, {
+        warn: (msg) => this.log(msg),
+        dispatcher: this.options.commands,
+        onQueued: () => this.emit("command"),
+      });
+      if (this._stopping) return void served.close();
+      this.agentEndpoint = served;
+      // A command that arrived before the broker confirmed the serve was announced to a connector
+      // that could not take it yet.
+      if (served.commands.queued > 0) this.emit("command");
+    } catch (e) {
+      this.log(`the agent endpoint is not served: ${(e as Error).message}`);
+    }
+  }
+
+  /** Commands waiting for {@link dispatchNextCommand}. */
+  get queuedCommands(): number {
+    return this.agentEndpoint?.commands.queued ?? 0;
+  }
+
+  /** Hand the oldest waiting command to the connector's dispatcher. Call it only while no turn runs. */
+  dispatchNextCommand(): Promise<CommandDispatch> {
+    return this.agentEndpoint?.commands.dispatchNext() ?? Promise.resolve("empty");
+  }
+
   private stopFlight?: Promise<void>;
 
   stop(): Promise<void> {
@@ -1204,10 +880,8 @@ export class MeshAgent extends EventEmitter {
   private async stopOnce(): Promise<void> {
     this._stopping = true;
     this.emit("stopping");
-    for (const key of [...this.renewals.keys()]) this.stopRenewal(key);
-    clearTimeout(this.takeRetry);
-    this.takeRetry = undefined;
-    this.managerBearers.clear();
+    this.inboxState.stop();
+    this.managerCalls.clear();
     if (this.turnRetryTimer !== undefined) {
       clearTimeout(this.turnRetryTimer);
       this.turnRetryTimer = undefined;
@@ -1216,6 +890,7 @@ export class MeshAgent extends EventEmitter {
       clearInterval(this.legacyTurnPoll);
       this.legacyTurnPoll = undefined;
     }
+    const agentEndpointClosed = this.agentEndpoint?.close();
     // stop() is a local terminal fact. Do not wait for an endpoint event that intentionally ignores
     // its own stopped close, or leave a cleanly stopped session reporting either state as live.
     this._connected = false;
@@ -1223,6 +898,10 @@ export class MeshAgent extends EventEmitter {
       this._transportConnected = false;
       this.emit("transport", { connected: false });
     }
+    // The close answers every prompt caller at once, and those replies must go out before the
+    // departure closes the connection. A drain on a connection that is down settles only on its
+    // close, so the wait is bounded.
+    await Promise.race([agentEndpointClosed, sleep(3_000)]);
     // Unconditional: a background self-heal can flip _connected without us, so a `_connected`
     // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop()
     // coalesces its retained shutdown outcome, including an earlier closure refusal.
@@ -1286,155 +965,6 @@ export class MeshAgent extends EventEmitter {
     }
   }
 
-  // ---- inbox ---------------------------------------------------------------
-
-  /** A DM shaped as a delivery daemon's notice is one only when its authenticated sender holds the
-   *  space's delivery lease. Any other sender's copy is an ordinary DM. */
-  private async ingestNotice(m: CotalMessage, delivery: Delivery, meta: MessageMeta, notice: DeliveryNotice): Promise<void> {
-    const holder = await this.ep.deliveryLeaseHolder(0);
-    this.ingest(m, delivery, meta, holder !== undefined && holder === m.from.id ? notice : undefined);
-  }
-
-  private ingest(m: CotalMessage, delivery: Delivery, meta?: MessageMeta, notice?: DeliveryNotice): void {
-    // #624: an EMPTY id is never a dedup key. The id-keyed coalescing below exists to collapse the
-    // copies of ONE message across the live/durable paths, and identity is what makes that safe. A
-    // message that carries an empty id asserts no identity (SPEC §5 requires a unique id; the sender
-    // already violated it), so keying the coalescing on "" reads empty-equals-empty as a duplicate
-    // and silently drops every empty-id message after the first: measured live, two distinct
-    // empty-id messages arrived and only the first ever buffered. Treating an empty id as NO id
-    // costs the coalescing for those messages only (a redelivered copy can surface twice), which is
-    // the wire contract's at-least-once stance; collapsing distinct messages is not a stance at all.
-    const key = ingestDedupKey(m.id);
-    // Already SURFACED and drained? This is a post-handle cross-path duplicate (the transition window's
-    // second copy, arriving after the first was handled). Don't surface it again; if it's the durable
-    // copy, ack it so JetStream stops redelivering — safe because the logical message was already
-    // handled (handledIds is recorded at drain time, never at receive time).
-    if (key !== undefined && (this.handledIds.has(key) || this.handledIdsPrev.has(key))) {
-      if (delivery.durable) delivery.ack();
-      return;
-    }
-    if (key !== undefined && (this.protectedPullOnlyIds.has(key) || this.protectedDropIds.has(key))) {
-      if (delivery.durable) delivery.ack();
-      return;
-    }
-    // Duplicate id still PENDING — keep ONE entry. Take the freshest ack handle, but NEVER downgrade a
-    // durable (committing) ack to a live no-op. Two cases produce a duplicate: same-path JetStream
-    // redelivery (always durable → upgrade to the fresh handle), and the cross-path live/durable
-    // transition window. There, if the DURABLE copy arrived first and a LIVE copy lands second,
-    // overwriting with the live no-op would leave the durable copy uncommitted → JS redelivers it → it
-    // double-surfaces. So only a durable delivery may replace the stored handle; a live duplicate is
-    // dropped as-is. A durable duplicate also re-announces the still-pending item through the
-    // ordinary `incoming` policy path. That turns JetStream redelivery into a timer-free retry for
-    // a wake the host dropped, without bypassing quiet/attention or adapter in-flight guards.
-    const existing = key === undefined ? undefined : this.inbox.find((p) => p.item.id === key) ?? this.gated.find((p) => p.item.id === key);
-    if (existing) {
-      if (delivery.durable) {
-        existing.ack = delivery.ack;
-        // A fresh copy is a fresh ownership: a hold that outlived the copy it renewed keeps this one.
-        this.own(existing, delivery.redelivery);
-        if (delivery.take) existing.take = delivery.take;
-        if (this.inFlightIds.has(existing.item.recvKey)) this.keepOwned(existing.item.recvKey);
-        // A role request taken for an earlier copy and not yet shown needs a take of this one: the
-        // broker redelivered it, so the earlier take may have lost it to another holder.
-        else if (existing.take && existing.takenCount !== existing.item.deliveryCount) this.regate(existing);
-        this.emit("incoming", existing.item);
-      }
-      return;
-    }
-    if (!meta)
-      throw new Error(`message ${m.id} delivered without MessageMeta — its class is unauthenticated`);
-    // Only an aged durable channel copy is catch-up. Live copies and brief transport gaps must
-    // still wake, even when the sender's clock is a few seconds behind. Already buffered copies
-    // retain their classification through the dedupe above. DMs and role requests are unchanged.
-    const historical = meta.historical || (meta.kind === "channel" && delivery.durable && Date.now() - m.ts > CHANNEL_CATCHUP_AGE_MS);
-    const item = this.toInboxItem(m, meta.kind, historical);
-    if (notice) item.notice = notice;
-    // A notice asks for nothing and answers nothing. A role request awaiting its take is recorded
-    // as asked of us only once it is taken, since a refused take drops it unseen.
-    else if (!delivery.take) this.noteDirected(item);
-    // Per-channel override is the FINAL word for a channel message (DMs/anycast are never channel-
-    // scoped, so they bypass this entirely and always buffer). Evaluated BEFORE the global mode:
-    //  - `muted` → hard drop, incl. @mention (a mention rides the channel; you can't keep it if you
-    //    dropped the channel). Acking does NOT delete (Limits-retained) but it's not locally recallable.
-    //  - `quiet` → buffer ambient as pull-only; an @mention remains automatic. Overrides global
-    //    `focus` so "retain this channel, but only surface ambient on explicit pull" stays expressible.
-    // Focus (global, only when NOT overridden): channel ambient AND @mentions are acked-and-dropped —
-    // they stay recallable via cotal_inbox (recallAmbient), or if recall itself cannot vouch for the
-    // channel (replay=off, or a wildcard join — #977), that is reported rather than left silent; an
-    // @mention still *wakes* (mention-wake), body pulled (F4=B), never auto-injected (the mention
-    // tag is payload-forgeable).
-    if (item.kind === "channel") {
-      const cm = this.channelModes.get(item.channel ?? "");
-      // #662: an id-less delivery is counted, not excluded, since recall can only match it by content.
-      // Content cannot tell a late copy of one recall handed back from a new identical message, so
-      // every copy takes its own disposition, and a late copy surfaces again rather than a new one
-      // losing its lane (#624: an empty id asserts no identity).
-      const digest = item.id === "" && (this.enteringFocus || this._attention === "focus") ? idlessDigest(m) : undefined;
-      const tally = digest === undefined ? undefined : this.reserveIdless(digest, item.channel ?? "");
-      const copy = tally ? this.settleIdless(tally) : undefined;
-      const idless = copy && { digest: digest as string, copy };
-      // chatFrontier() is asynchronous. Channel traffic retained while entering focus must not also
-      // appear in post-watermark recall if it lands after the server captured the frontier.
-      if (this.enteringFocus) this.excludeFromFocus(item);
-      if (this.dropUnsafe) {
-        this.excludeFromFocus(item);
-        if (cm !== "muted" && item.mentionsMe && !item.historical) {
-          // Mentions are an untrusted wake hint, never authority to inject a channel body.
-          // Keep the body in the bounded pull lane while normal ambient stays fail-closed.
-          // After exhaustion an unknown late copy can surface once, disclosed by the warning.
-          this.buffer(item, delivery, true, idless);
-          this.emit("mention-wake", item);
-        } else delivery.ack();
-        return;
-      }
-      if (cm === "muted") {
-        this.evictedClassifications.delete(item.id);
-        this.excludeFromFocus(item);
-        this.protectDisposition(item.id, "drop");
-        delivery.ack();
-        return;
-      }
-      const remembered = item.id === "" ? undefined : this.evictedClassifications.get(item.id); // #624: an empty id never carries a remembered classification
-      if (remembered) this.evictedClassifications.delete(item.id);
-      const snapshottedPullOnly = item.historical || (!item.mentionsMe && (remembered?.pullOnly ?? cm === "quiet"));
-      if (cm === "quiet" || snapshottedPullOnly) this.excludeFromFocus(item);
-      // An unsafe channel cannot recall even a fresh mention. Keep that body in the existing
-      // bounded pull lane, never the automatic lane, including on quiet channels. Muted and
-      // historical traffic retain their earlier gates. Exclude this id so recall cannot repeat it.
-      if (this._attention === "focus" && item.mentionsMe && !item.historical && this.focusRecallUnsafeChannels.has(item.channel ?? "")) {
-        this.excludeFromFocus(item);
-        this.buffer(item, delivery, true, idless);
-        this.emit("mention-wake", item);
-        return;
-      }
-      // Current normal+focus remains the stronger hard gate unless this exact id was previously
-      // received pull-only. classificationUnsafe must not turn focus-dropped traffic into a buffer.
-      if (cm !== "quiet" && !snapshottedPullOnly && this._attention === "focus") {
-        this.protectDisposition(item.id, "drop");
-        delivery.ack();
-        // #662: recall cannot pick this copy out from an identical one with another disposition, so
-        // its body is held here, pull-only, and recall hands back only copies nothing is bound to.
-        if (item.id === "") this.buffer(item, { ack: () => {} }, true, idless);
-        if (item.mentionsMe) this.emit("mention-wake", item);
-        return;
-      }
-      // Every historical channel message is pull-only, including mentions. Joining a channel must
-      // not revive an old request as a fresh turn. This is decided before focus handling too, so
-      // history stays recallable without emitting mention-wake.
-      // A reply on a channel is pull-only too when the host answers every turn on the channel
-      // (config.channelRepliesPullOnly): that answer replies to the message that started the turn,
-      // so a turn on a peer's reply is a turn on its automatic output, and two such seats on one
-      // channel would answer each other without end (#2395).
-      const automaticReply = this.config.channelRepliesPullOnly === true && !!item.replyTo;
-      const pullOnly =
-        snapshottedPullOnly || (!item.mentionsMe && (automaticReply || this.classificationUnsafe));
-      if (pullOnly) this.excludeFromFocus(item);
-      this.buffer(item, delivery, pullOnly, idless);
-      return;
-    }
-    this.buffer(item, delivery, false);
-  }
-
   /** Record a DM or role request as a peer's message to us: its sender becomes addressable by name,
    *  and it waits for an answer unless it answers our own question. */
   private noteDirected(item: InboxItem): void {
@@ -1449,278 +979,20 @@ export class MeshAgent extends EventEmitter {
     }
   }
 
-  private buffer(
-    item: InboxItem,
-    delivery: Pick<Delivery, "ack" | "redelivery" | "take">,
-    pullOnly: boolean,
-    idless?: { digest: string; copy: IdlessCopy },
-  ): void {
-    const pending: Pending = { item, ack: delivery.ack, pullOnly, receivedAt: Date.now(), arrival: this.arrivals++ };
-    this.own(pending, delivery.redelivery);
-    if (idless) pending.idless = { tally: this.focusIdless, ...idless };
-    if (delivery.take) {
-      // Held until its take is recorded. A copy beyond the bound is left unacked, so the broker
-      // redelivers it once there is room, as the overflow valve below does for directed mail.
-      pending.take = delivery.take;
-      this.gated.push(pending);
-      if (this.gated.length > MAX_INBOX) this.gated.shift();
-      this.emit("incoming", item);
-      return;
-    }
-    this.admit(pending);
-    this.emit("incoming", item);
-  }
-
-  /** Put one entry in the shown inbox at its arrival place, running the overflow valve. */
-  private admit(pending: Pending): void {
-    let at = this.inbox.length;
-    while (at > 0 && this.inbox[at - 1]!.arrival > pending.arrival) at--;
-    this.inbox.splice(at, 0, pending);
-    if (this.inbox.length > MAX_INBOX) {
-      // Prefer sacrificing pull-only backlog so it cannot crowd out DMs/mentions. Overflow is bounded
-      // local loss for channel traffic only: an evicted channel item is acked without being marked
-      // handled. An evicted directed item is never acked (below).
-      let excess = this.inbox.length - MAX_INBOX;
-      while (excess-- > 0) {
-        // Eviction order, weakest claim first. The tiers below `pullOnly` also protect against live
-        // mention floods: `mentionsMe` derives from the payload `mentions` field, forgeable by the
-        // sender. A peer that stamps every flooded message with the victim's name
-        // makes none of its traffic pull-only, so `findIndex` returned -1, the old code fell through
-        // to index 0, and index 0 is the OLDEST entry: a directed message waiting to be handled. It
-        // was spliced out and acked unhandled, which is unrecoverable (#791). Ambient channel chatter
-        // at volume did the same thing with no forgery at all.
-        //
-        // So directedness decides who gets sacrificed, and directedness is read from `kind`, which is
-        // derived from the delivering subject and broker-policed rather than from the payload.
-        //
-        // A held entry is never sacrificed: the host's verdict commits through its ack handle, and its
-        // renewal is what keeps the broker from redelivering it meanwhile. Evicting one would drop
-        // both, handing a long turn's role request to a second worker while the first still runs it
-        // and leaving the first one's completion nothing to ack. Holds are capped at
-        // {@link MAX_IN_FLIGHT}, so the buffer stays bounded.
-        const evictable = (p: Pending) => !this.inFlightIds.has(p.item.recvKey);
-        let index = this.inbox.findIndex((p) => p.pullOnly && evictable(p));
-        // Channel traffic before anything addressed to us specifically, forged mentions included.
-        if (index < 0) index = this.inbox.findIndex((p) => p.item.kind === "channel" && evictable(p));
-        // Only when the whole buffer is directed mail does the oldest lose, and that case carries no
-        // attacker advantage: a peer cannot force DMs it is not authorised to send.
-        if (index < 0) index = this.inbox.findIndex(evictable);
-        if (index < 0) break;
-        const [evicted] = this.inbox.splice(index, 1);
-        const sacrificingDirected = evicted.item.kind !== "channel";
-        this.rememberEvicted(evicted);
-        // #662: a held id-less message is no longer settled here, so recall may hand it back.
-        if (evicted.idless?.tally === this.focusIdless) this.unsettleIdless(evicted.idless.digest, evicted.idless.copy);
-        // A directed message is never acked on overflow: leaving it un-acked lets JetStream redeliver
-        // it once we have room, which turns unrecoverable loss into a delay. Channel ambient is still
-        // acked, because replaying it is what the history flood was (#775).
-        //
-        // The broker paces that delay, so nothing here has to end it. An un-acked message comes
-        // back only after its durable's ack wait, so an inbox that stays full costs one redelivery
-        // per parked message per ack wait, and the message stays pending until a redelivery finds
-        // room: a DM on the recipient's own durable (`cotal deliver pending` counts it), a role
-        // request on its role's shared queue (which that command does not read). Giving up on
-        // it instead, as a per-id eviction count once did (#807), acked a message the sender had
-        // seen stored and the live recipient never read, with one stderr line as the only trace:
-        // a seat whose turn ran long lost its oldest DMs exactly that way (#2215).
-        if (!sacrificingDirected) evicted.ack();
-      }
-    }
-  }
-
-  private rememberEvicted(p: Pending): void {
-    if (p.item.kind !== "channel" || p.item.mentionsMe || !p.item.channel) return;
-    if (p.item.id === "") return; // #624: an empty id is never a key; one delivery's classification must not inherit to another
-    if (this.classificationUnsafe) return;
-    if (!this.evictedClassifications.has(p.item.id) && this.evictedClassifications.size >= CLASSIFICATION_CAP) {
-      this.classificationUnsafe = true;
-      this.evictedClassifications.clear();
-      return;
-    }
-    this.evictedClassifications.set(p.item.id, { pullOnly: p.pullOnly, channel: p.item.channel });
-  }
-
-  private excludeFromFocus(item: InboxItem): void {
-    if ((!this.enteringFocus && this._attention !== "focus") || item.kind !== "channel" || !item.channel) return;
-    if (item.id === "") return; // #662: an id-less delivery is counted in focusIdless instead
-    if (!this.focusExcludedIds.has(item.id) && this.focusExcludedIds.size >= FOCUS_EXCLUSION_CAP) {
-      const oldest = this.focusExcludedIds.entries().next().value as [string, string] | undefined;
-      if (oldest) {
-        this.focusExcludedIds.delete(oldest[0]);
-        this.focusRecallUnsafeChannels.add(oldest[1]);
-      }
-    }
-    this.focusExcludedIds.set(item.id, item.channel);
-  }
-
-  /** #662: the tally for one more settled or handed-back copy of an id-less message; the caller adds
-   *  the copy. At the bound, the channel's recall is reported incomplete rather than risk handing
-   *  back a copy it no longer counts. */
-  private reserveIdless(digest: string, channel: string): IdlessTally | undefined {
-    if (this.focusIdlessEntries >= FOCUS_EXCLUSION_CAP) {
-      this.focusRecallUnsafeChannels.add(channel);
-      return undefined;
-    }
-    let tally = this.focusIdless.get(digest);
-    if (!tally) this.focusIdless.set(digest, (tally = { channel, unbound: [], bound: new Set() }));
-    this.focusIdlessEntries++;
-    return tally;
-  }
-
-  /** #662: add one settled copy, bounded by the chat frontier read after it arrived. If that read
-   *  fails, or answers only after the transport dropped, nothing bounds the copy, so the channel's
-   *  recall is reported incomplete instead. */
-  private settleIdless(tally: IdlessTally): IdlessCopy {
-    const episode = this.focusIdless;
-    const drops = this.transportDrops;
-    const unbounded = () => {
-      if (episode === this.focusIdless) this.focusRecallUnsafeChannels.add(tally.channel);
-    };
-    const copy: IdlessCopy = { epoch: this.idlessEpoch, ready: Promise.resolve() };
-    copy.ready = this.ep.chatFrontier().then((frontier) => {
-      if (drops === this.transportDrops) copy.frontier = frontier;
-      else unbounded();
-    }, unbounded);
-    tally.unbound.push(copy);
-    return copy;
-  }
-
-  /** #662: forget a tally with nothing left in it, so the map is bounded by the entries it counts. */
-  private dropEmptyIdless(digest: string, tally: IdlessTally): void {
-    if (!tally.unbound.length && !tally.bound.size) this.focusIdless.delete(digest);
-  }
-
-  /** #662: one buffered copy of an id-less message left the inbox unhandled. Only that copy is
-   *  un-counted, or the sequence it was bound to freed: an identical copy may have been muted. A copy
-   *  no read has bound yet stays in arrival order, marked, so the read binds it to its own stream
-   *  copy rather than letting an earlier identical copy take that one. */
-  private unsettleIdless(digest: string, copy: IdlessCopy): void {
-    const tally = this.focusIdless.get(digest);
-    if (!tally) return;
-    if (tally.unbound.includes(copy)) {
-      copy.evicted = true;
-      return;
-    }
-    if (copy.seq === undefined || !tally.bound.delete(copy.seq)) return;
-    this.focusIdlessEntries--;
-    this.dropEmptyIdless(digest, tally);
-  }
-
-  /** #662: after a complete read of `channel` that started at `epoch`, a copy settled before it that
-   *  it could not bind will not be in a later read either, so it is dropped. The read is the
-   *  channel's whole retained window, so a bound sequence it lacks aged out. */
-  private settleIdlessRead(channel: string, epoch: number, retained: Set<number>): void {
-    for (const [digest, tally] of this.focusIdless) {
-      if (tally.channel !== channel) continue;
-      const before = tally.unbound.length + tally.bound.size;
-      tally.unbound = tally.unbound.filter((c) => c.epoch >= epoch);
-      for (const seq of tally.bound) if (!retained.has(seq)) tally.bound.delete(seq);
-      this.focusIdlessEntries -= before - tally.unbound.length - tally.bound.size;
-      this.dropEmptyIdless(digest, tally);
-    }
-  }
-
-  /** #662: the frontier reads of every copy of `channel` settled so far have answered. */
-  private async idlessReady(tallies: Map<string, IdlessTally>, channel: string): Promise<void> {
-    const reads: Promise<void>[] = [];
-    for (const tally of tallies.values()) if (tally.channel === channel) for (const c of tally.unbound) reads.push(c.ready);
-    await Promise.all(reads);
-  }
-
-  /** #662: bind the copies settled before the read that started at `epoch` to its unbound stream
-   *  copies `free` (ascending). Identical copies share a sender subject, so they arrive in stream
-   *  order, and a frontier, read after its copy arrived, bounds that copy and every copy before it.
-   *  Frontier reads can answer out of order, so their sizes say nothing about arrival order. So the
-   *  copies bind in arrival order, latest first, each to the latest free stream copy at or below the
-   *  lowest frontier from it on, and a stream copy none of them takes (a reconnect gap) stays free.
-   *  An evicted copy takes its own stream copy and leaves it free, so recall hands that one back. */
-  private bindIdless(tally: IdlessTally, epoch: number, free: number[]): void {
-    let bound = Infinity;
-    for (let i = tally.unbound.length - 1; i >= 0; i--) {
-      const copy = tally.unbound[i];
-      if (copy.frontier === undefined) continue;
-      bound = Math.min(bound, copy.frontier);
-      if (copy.epoch >= epoch) continue;
-      let at = free.length - 1;
-      while (at >= 0 && free[at] > bound) at--;
-      if (at < 0) continue;
-      const [seq] = free.splice(at, 1);
-      tally.unbound.splice(i, 1);
-      if (copy.evicted) {
-        this.focusIdlessEntries--;
-        continue;
-      }
-      copy.seq = seq;
-      tally.bound.add(seq);
-    }
-  }
-
-  /** #662: a copy settled after the read that started at `epoch` began may or may not be in it, so it
-   *  binds nothing there, and an unbound stream copy at `seq` it could be is neither free nor bound. */
-  private idlessUnsure(tally: IdlessTally | undefined, epoch: number, seq: number): boolean {
-    if (!tally || tally.bound.has(seq)) return false;
-    return tally.unbound.some((c) => c.epoch >= epoch && c.frontier !== undefined && c.frontier >= seq);
-  }
-
-  private protectDisposition(id: string, disposition: "pull-only" | "drop"): void {
-    if (id === "") return; // #624: an empty id is never a dedup key, so it is never recorded as one
-    const ids = disposition === "drop" ? this.protectedDropIds : this.protectedPullOnlyIds;
-    if ((disposition === "drop" ? this.dropUnsafe : this.classificationUnsafe) || ids.has(id)) return;
-    if (ids.size >= PROTECTED_DISPOSITION_CAP) {
-      if (disposition === "drop") this.dropUnsafe = true;
-      else this.classificationUnsafe = true;
-      // Keep known hard drops suppressed across later mode changes. The set stays bounded.
-      if (disposition !== "drop") ids.clear();
-      return;
-    }
-    ids.add(id);
-  }
-
-  /** Normalize a wire message into an {@link InboxItem}. `kind` is the **authenticated** class
-   *  from {@link MessageMeta} (subject-derived), never the forgeable payload `to`/`toService`;
-   *  core has already normalized `channel` and `toService` from the authenticated chat and svc
-   *  subjects. Shared by live ingest and focus recall ({@link recallAmbient}). */
-  private toInboxItem(m: CotalMessage, kind: InboxItem["kind"], historical: boolean): InboxItem {
-    const text = partsToText(m.parts);
-    return {
-      id: m.id,
-      // The wire id when there is one; a minted opaque key when the id is the empty string (#624:
-      // an empty id is never a dedup key, so it is never an address either; but the delivery still
-      // needs to be individually drainable/ackable, or it can never clear and never commit).
-      recvKey: m.id !== "" ? m.id : `${this.recvKeySecret}.${++this.recvKeySeq}`,
-      ts: m.ts,
-      fromId: m.from.id,
-      fromName: m.from.name,
-      fromRole: m.from.role,
-      kind,
-      channel: m.channel,
-      service: m.toService,
-      mentions: m.mentions,
-      mentionsMe: m.mentions?.includes(this.config.name.toLowerCase()) ?? false,
-      historical,
-      text,
-      replyTo: m.replyTo,
-      contextId: m.contextId,
-    };
-  }
-
   /** Return pending messages in stable receive order. Automatic delivery excludes quiet ambient;
    *  pull-only is the explicit cotal_inbox lane.
    *
    *  A role request whose take is not yet recorded is never returned (SPEC §8.1): a host shows one
    *  only through {@link takeChosen}. */
   peekInbox(scope: InboxScope = "all"): InboxItem[] {
-    this.dropLapsedTakes();
-    return this.inbox.filter((p) => this.inScope(p, scope)).map((p) => p.item);
+    return this.inboxState.peekInbox(scope);
   }
 
   /** Every pending message in scope as {@link peekInbox} will return it once the held role requests
    *  that may be asked about now are taken, in that order. It is for choosing what to show, never for
    *  showing: hand the choice to {@link takeChosen}. */
   inboxPreview(scope: InboxScope = "all"): InboxItem[] {
-    this.dropLapsedTakes();
-    const askable = scope === "pull-only" ? [] : this.gated.filter((p) => this.mayOffer(p));
-    return [...this.inbox.filter((p) => this.inScope(p, scope)), ...askable].sort((a, b) => a.arrival - b.arrival).map((p) => p.item);
+    return this.inboxState.inboxPreview(scope);
   }
 
   /** Choose what to show from {@link inboxPreview}, ask the delivery daemon to record the take of
@@ -1732,135 +1004,14 @@ export class MeshAgent extends EventEmitter {
   async takeChosen(
     scope: InboxScope,
     choose: (preview: InboxItem[]) => readonly InboxItem[],
-    waitMs = TAKE_WAIT_MS,
+    waitMs?: number,
   ): Promise<InboxItem[]> {
-    const chosen = choose(this.inboxPreview(scope));
-    const keys = new Set(chosen.map((i) => i.recvKey));
-    const asked = scope === "pull-only" ? [] : this.gated
-      .filter((p) => keys.has(p.item.recvKey) && this.mayOffer(p));
-    for (const p of asked) p.awaited = (p.awaited ?? 0) + 1;
-    const runs = asked.map((p) => (p.taking !== undefined && p.takingDrops === this.transportDrops ? p.taking : this.startTake(p)));
-    if (runs.length) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const waited = new Promise<void>((resolve) => { timer = setTimeout(resolve, waitMs); timer.unref?.(); });
-      await Promise.race([Promise.allSettled(runs), waited]);
-      clearTimeout(timer);
-    }
-    for (const p of asked) p.awaited = (p.awaited ?? 1) - 1;
-    const showable = new Map(this.peekInbox(scope).map((i) => [i.recvKey, i]));
-    return chosen.flatMap((i) => showable.get(i.recvKey) ?? []);
+    return this.inboxState.takeChosen(scope, choose, waitMs);
   }
 
   /** How many role requests are held because their take is pending or could not be decided, and why. */
   heldTakes(): { count: number; detail?: string } {
-    const count = this.gated.filter((p) => p.taking === undefined).length;
-    const waiting = this.gated.filter((p) => p.taking !== undefined && p.takingDrops === this.transportDrops).length;
-    if (waiting) return {
-      count: waiting + (this.heldTake ? count : 0),
-      detail: "the delivery daemon has not answered the take yet",
-    };
-    return count && this.heldTake ? { count, detail: this.heldTake.detail } : { count };
-  }
-
-  /** Whether a held role request may be asked about now: the link is up, and no take nobody could
-   *  decide is being waited out ({@link heldTake}). */
-  private mayAskTakes(): boolean {
-    return this._transportConnected && (!this.heldTake || Date.now() >= this.heldTake.retryAt);
-  }
-
-  /** Whether a read may be offered a held role request now: the link is up and its take is out
-   *  already, or a take may be asked ({@link mayAskTakes}). A take that is out when the link drops
-   *  cannot admit the request until the link is back, so a read then is offered nothing of it. */
-  private mayOffer(p: Pending): boolean {
-    return (p.taking !== undefined && this._transportConnected) || this.mayAskTakes();
-  }
-
-  private startTake(p: Pending): Promise<void> {
-    const run: Promise<void> = this.runTake(p).catch((e) => this.handleEndpointWarning(e as Error)).finally(() => {
-      if (p.taking === run) p.taking = undefined;
-    });
-    p.taking = run;
-    p.takingDrops = this.transportDrops;
-    return run;
-  }
-
-  /** Take one held role request for the copy it holds, and admit it only if it still holds that copy
-   *  once the take is recorded: the same delivery, its ack wait not run out, the link not dropped. */
-  private async runTake(p: Pending): Promise<void> {
-    const take = p.take;
-    if (!take) return;
-    // The copy is renewed before the take is asked for, so the take cannot outlive it. A copy whose
-    // ack wait already ran out may be another holder's now: drop it unacked and let the broker redeliver.
-    if (!this._transportConnected) return;
-    if (!this.renewOwned(p)) {
-      this.dropGated(p);
-      return;
-    }
-    const count = p.item.deliveryCount;
-    const drops = this.transportDrops;
-    const outcome: AnycastTakeOutcome = await take();
-    if (!this.gated.includes(p) || p.take !== take) return;
-    // An answer that crossed a link drop is the old link's, so the request stays held and a read
-    // waiting on this take shows nothing of it. Its host is told again once the link is up, so the
-    // next read takes it on the new link. While the link is down a read could not take it, and the
-    // read that waited on this take may still be running, so the reconnect announces it. A read
-    // that asked again on the new link owns the request now, so this take says nothing.
-    if (this.transportDrops !== drops) {
-      if (p.takingDrops !== drops) return;
-      if (this._transportConnected) this.emit("incoming", p.item);
-      return;
-    }
-    if (outcome.taken) {
-      this.heldTake = undefined;
-      const current = p.item.deliveryCount === count && p.ownedUntil !== undefined && Date.now() < p.ownedUntil;
-      if (!current) return; // a newer copy arrived meanwhile and needs its own take
-      p.takenCount = count;
-      p.takenOnce = true;
-      this.gated.splice(this.gated.indexOf(p), 1);
-      this.noteDirected(p.item);
-      this.admit(p);
-      // Its arrival was announced already. A read waiting on this take shows it next; one that
-      // stopped waiting is told it may be shown now, as of a new arrival.
-      if (!p.awaited) this.emit("incoming", p.item);
-      return;
-    }
-    if (outcome.drop) {
-      this.dropGated(p);
-      return;
-    }
-    const first = this.heldTake?.reason !== outcome.reason;
-    this.heldTake = { reason: outcome.reason, detail: outcome.detail, retryAt: Date.now() + TAKE_RETRY_MS };
-    // Nothing asks about a held request on its own, so its host hears of it again when it may.
-    this.takeRetry ??= setTimeout(() => {
-      this.takeRetry = undefined;
-      for (const held of this.gated) this.emit("incoming", held.item);
-    }, TAKE_RETRY_MS);
-    this.takeRetry.unref?.();
-    if (first && outcome.reason !== "daemon-busy") this.handleEndpointWarning(new Error(outcome.detail));
-  }
-
-  /** Forget a role request whose take was refused or whose copy ran out. It is never acked: a
-   *  cancelled one is gone already, and one another holder took must stay with that holder. */
-  private dropGated(p: Pending): void {
-    const i = this.gated.indexOf(p);
-    if (i >= 0) this.gated.splice(i, 1);
-  }
-
-  /** Move a taken role request back to the held set when its copy changed before it was shown. */
-  private regate(p: Pending): void {
-    const i = this.inbox.indexOf(p);
-    if (i < 0) return;
-    this.inbox.splice(i, 1);
-    p.takenCount = undefined;
-    this.gated.push(p);
-  }
-
-  /** Drop every taken role request not yet shown whose copy ran out: the broker may have handed it
-   *  to another holder, whose take of the later copy wins. One the host holds is renewed and kept. */
-  private dropLapsedTakes(): void {
-    const now = Date.now();
-    this.inbox = this.inbox.filter((p) => !p.take || this.inFlightIds.has(p.item.recvKey) || (p.ownedUntil !== undefined && now < p.ownedUntil));
-    this.gated = this.gated.filter((p) => p.taking !== undefined || p.ownedUntil === undefined || now < p.ownedUntil);
+    return this.inboxState.heldTakes();
   }
 
   /** Mark a surfaced batch as mid-delivery, so the overflow valve will not evict it out from under
@@ -1878,19 +1029,7 @@ export class MeshAgent extends EventEmitter {
    *  with the overflow valve free to ack them. Declining to surface costs a deferral: the messages
    *  stay buffered and go out on a later frame, once a verdict releases capacity. */
   holdInFlight(ids: readonly string[]): boolean {
-    // #624: the keys here are RECEIVE keys. An id-less delivery's wire id is "", so raw-id keying
-    // merged the counts of DISTINCT empty-id deliveries, and the eviction valve's in-flight check
-    // then deferred acking an evicted id-less item while any other id-less batch was held:
-    // cross-delivery interference in the safe direction, but interference. Receive keys are unique
-    // per delivery, so each is protected exactly for the frames holding it.
-    let fresh = 0;
-    for (const id of ids) if (!this.inFlightIds.has(id)) fresh++;
-    if (this.inFlightIds.size + fresh > MAX_IN_FLIGHT) return false;
-    for (const id of ids) {
-      this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1);
-      this.keepOwned(id);
-    }
-    return true;
+    return this.inboxState.holdInFlight(ids);
   }
 
   /** Whether this id is currently protected from the overflow valve — i.e. some frame is mid-delivery
@@ -1898,90 +1037,18 @@ export class MeshAgent extends EventEmitter {
    *  that needs a batch to actually BE in flight before it acts must wait on this, never on a sleep:
    *  the handoff runs through a real relay process whose latency is not the caller's to predict. */
   isInFlight(id: string): boolean {
-    return this.inFlightIds.has(id);
+    return this.inboxState.isInFlight(id);
   }
 
   /** One frame's verdict is in (either way). The id is ordinary backlog again only once EVERY frame
    *  holding it has reported — a release from one must not speak for another still in flight. */
   releaseInFlight(ids: readonly string[]): void {
-    for (const id of ids) {
-      const held = this.inFlightIds.get(id);
-      if (held === undefined) continue;
-      if (held <= 1) {
-        this.inFlightIds.delete(id);
-        this.stopRenewal(id);
-      } else this.inFlightIds.set(id, held - 1);
-    }
-  }
-
-  private own(p: Pending, redelivery: Delivery["redelivery"]): void {
-    p.redelivery = redelivery;
-    p.ownedUntil = redelivery && Date.now() + redelivery.ackWaitMs;
-    p.item.deliveryCount = redelivery?.deliveryCount;
-  }
-
-  /** Keep a held durable delivery with this reader for as long as the hold lasts, by restarting its
-   *  ack wait at half the wait. Only a HELD delivery is renewed: a queued one keeps the broker's
-   *  timer, so a reader busy with other work does not sit on a role request another reader could
-   *  take, and an abandoned one (released) runs out and redelivers. */
-  private keepOwned(key: string): void {
-    if (this.renewals.has(key)) return;
-    const p = this.inbox.find((x) => x.item.recvKey === key);
-    if (!p?.redelivery || !this.renewOwned(p)) return;
-    const timer = setInterval(() => {
-      const held = this.inbox.find((x) => x.item.recvKey === key);
-      if (!held || !this.renewOwned(held)) this.stopRenewal(key);
-    }, p.redelivery.ackWaitMs / 2);
-    timer.unref?.();
-    this.renewals.set(key, timer);
-  }
-
-  private stopRenewal(key: string): void {
-    clearInterval(this.renewals.get(key));
-    this.renewals.delete(key);
-  }
-
-  /** Restart one copy's ack wait, unless this reader can no longer vouch that it still holds that
-   *  copy. JetStream acks by stream sequence rather than by delivery, so a renewal sent after the
-   *  wait may have run out (a stalled loop, a link down for longer than the wait) would extend the
-   *  copy the broker has since handed to another reader. Renewal stops instead and the copy is the
-   *  broker's to redeliver. Nothing is sent while the link is down, because the client buffers a
-   *  publish and would replay it after the wait had run out; a handle whose connection was torn
-   *  down throws, which is the same lost ownership. */
-  private renewOwned(p: Pending): boolean {
-    if (!p.redelivery || p.ownedUntil === undefined || Date.now() >= p.ownedUntil) return false;
-    if (!this._transportConnected) return true;
-    try {
-      p.redelivery.working();
-    } catch {
-      return false;
-    }
-    p.ownedUntil = Date.now() + p.redelivery.ackWaitMs;
-    return true;
+    return this.inboxState.releaseInFlight(ids);
   }
 
   /** Return scoped pending messages and ack them — call only when they're actually surfaced. */
   drainInbox(limit?: number, scope: InboxScope = "all"): InboxItem[] {
-    this.dropLapsedTakes();
-    const eligible = this.inbox.filter((p) => this.inScope(p, scope));
-    const n = limit && limit > 0 ? Math.min(limit, eligible.length) : eligible.length;
-    const selected = eligible.slice(0, n);
-    // Head progress is read from the LIVE queue, so it must be recorded while the batch is still in
-    // it (#1526).
-    this.noteAutomaticHeadProgress(selected);
-    // Remove by OBJECT IDENTITY, not by a set of wire ids (#624): the id-less entries share "", so
-    // an id set would remove every id-less neighbor beyond the limit and outside the scope while
-    // acking only the selected — silent loss by selection. Identity removes exactly what was taken.
-    const taken = new Set(selected);
-    this.inbox = this.inbox.filter((p) => !taken.has(p));
-    const automatic = selected.some((p) => !p.pullOnly);
-    const items = this.commitPending(selected);
-    if (items.length) this._lastInboxDrainedAt = Date.now();
-    // Automatic progress is recorded from the SELECTED entries' own classification, not from the
-    // returned items: `commitPending` returns `InboxItem`s, which do not carry `pullOnly`, and
-    // counting a pull-only drain as automatic progress is the #1233 lie in miniature.
-    if (items.length && automatic) this._lastAutomaticDrainedAt = Date.now();
-    return items;
+    return this.inboxState.drainInbox(limit, scope);
   }
 
   /** Ack exact surfaced deliveries without assuming they still form the physical inbox prefix.
@@ -1992,84 +1059,24 @@ export class MeshAgent extends EventEmitter {
    *  requested key whose item is present is acked and (for a real id) marked handled, including an
    *  item overflow-evicted during the turn. */
   drainInboxDeliveries(keys: readonly string[]): ExactDrainResult {
-    const requested = [...new Set(keys)];
-    const wanted = new Set(requested);
-    // A role request the host surfaced can be back in the held set when its copy changed since. The
-    // host showed it, so its commit acks it from there too. One never taken was never shown, so it
-    // stays held: it is not acked, marked handled or reported missing.
-    const regated = this.gated.filter((p) => wanted.has(p.item.recvKey) && p.takenOnce);
-    const unshown = new Set(this.gated.filter((p) => wanted.has(p.item.recvKey) && !p.takenOnce).map((p) => p.item.recvKey));
-    if (regated.length) this.gated = this.gated.filter((p) => !regated.includes(p));
-    const selected = [...this.inbox.filter((p) => wanted.has(p.item.recvKey)), ...regated];
-    this.noteAutomaticHeadProgress(selected);
-    const present = new Set(selected.map((p) => p.item.recvKey));
-    const pullOnly = new Map(selected.map((p) => [p.item.recvKey, p.pullOnly]));
-    for (const id of requested) {
-      const remembered = id !== "" ? this.evictedClassifications.get(id) : undefined;
-      if (!pullOnly.has(id) && remembered) pullOnly.set(id, remembered.pullOnly);
-    }
-    this.inbox = this.inbox.filter((p) => !present.has(p.item.recvKey));
-    const automatic = selected.some((p) => !p.pullOnly);
-    const items = this.commitPending(selected);
-    if (items.length) this._lastInboxDrainedAt = Date.now();
-    if (items.length && automatic) this._lastAutomaticDrainedAt = Date.now();
-    for (const id of requested) {
-      // A MINTED key (an id-less delivery) is never handled-authority: its wire id is "", which
-      // markHandled already refuses, so skipping it here is the same at-least-once stance rather
-      // than a new one. Recording the minted key itself would pollute handledIds with a string a
-      // future REAL id could legitimately equal, arming the exact suppression this change removes.
-      if (!present.has(id) && !unshown.has(id) && !id.startsWith(`${this.recvKeySecret}.`)) {
-        this.markHandled(id, pullOnly.get(id) ?? false);
-        this.evictedClassifications.delete(id);
-      }
-    }
-    return { items, missingKeys: requested.filter((key) => !present.has(key) && !unshown.has(key)) };
-  }
-
-  private commitPending(taken: Pending[]): InboxItem[] {
-    for (const p of taken) {
-      p.ack();
-      this.markHandled(p.item.id, p.pullOnly);
-      this.evictedClassifications.delete(p.item.id);
-    }
-    return taken.map((p) => p.item);
-  }
-
-  private inScope(p: Pending, scope: InboxScope): boolean {
-    return scope === "all" || (scope === "pull-only" ? p.pullOnly : !p.pullOnly);
-  }
-
-  /** Record an id as surfaced/handled, for {@link ingest}'s commit-aware cross-path dedup. Bounded via
-   *  two rotating windows: when the live set fills, it becomes the previous window and a fresh one
-   *  starts — so memory stays ~2× the cap while the lookup horizon never shrinks below it. */
-  private markHandled(id: string, pullOnly = false): void {
-    if (id === "") return; // #624: an empty id is never a dedup key, so it is never recorded as one
-    if (pullOnly) this.protectDisposition(id, "pull-only");
-    this.handledIds.add(id);
-    if (this.handledIds.size >= 4096) {
-      this.handledIdsPrev = this.handledIds;
-      this.handledIds = new Set();
-    }
+    return this.inboxState.drainInboxDeliveries(keys);
   }
 
   /** Receive keys of the pending messages in scope, role requests held for their take included,
    *  for bookkeeping that shows no body. */
   inboxKeys(scope: InboxScope = "all"): string[] {
-    const held = scope === "pull-only" ? [] : this.gated;
-    return [...this.inbox.filter((p) => this.inScope(p, scope)), ...held].map((p) => p.item.recvKey);
+    return this.inboxState.inboxKeys(scope);
   }
 
   /** The pending messages in scope, role requests held for their take included, for a notice that
    *  counts them and shows no body. A held request is shown only through {@link takeChosen}. */
   inboxPending(scope: InboxScope = "all"): InboxItem[] {
-    const held = scope === "pull-only" ? [] : this.gated;
-    return [...this.inbox.filter((p) => this.inScope(p, scope)), ...held].map((p) => p.item);
+    return this.inboxState.inboxPending(scope);
   }
 
   /** Pending messages in scope, counting role requests still held for their take. */
   inboxCount(scope: InboxScope = "all"): number {
-    const held = scope === "pull-only" ? 0 : this.gated.length;
-    return held + (scope === "all" ? this.inbox.length : this.inbox.filter((p) => this.inScope(p, scope)).length);
+    return this.inboxState.inboxCount(scope);
   }
 
   /**
@@ -2079,22 +1086,12 @@ export class MeshAgent extends EventEmitter {
    * read-only.
    */
   inboxSnapshot(limit = 3): InboxSnapshot {
-    if (!Number.isInteger(limit) || limit < 0 || limit > 8)
-      throw new Error(`inbox preview limit must be a whole number from 0 to 8, got ${limit}`);
-    // A held role request is counted and never previewed: its body is shown only once a host takes
-    // it to show it (SPEC §8.1).
-    this.dropLapsedTakes();
-    return { unread: this.inbox.length + this.gated.length, items: this.inbox.slice(0, limit).map((p) => ({ ...p.item })) };
+    return this.inboxState.inboxSnapshot(limit);
   }
 
   /** Local receive time of the oldest still-buffered automatic delivery, if any. */
   oldestAutomaticReceivedAt(): number | undefined {
-    let oldest: number | undefined;
-    for (const pending of [...this.inbox, ...this.gated]) {
-      if (pending.pullOnly) continue;
-      if (oldest === undefined || pending.receivedAt < oldest) oldest = pending.receivedAt;
-    }
-    return oldest;
+    return this.inboxState.oldestAutomaticReceivedAt();
   }
 
   /**
@@ -2118,7 +1115,7 @@ export class MeshAgent extends EventEmitter {
    * so no sender can push it past the messages it has not read yet.
    */
   get recallCursor(): RecallMark {
-    return this._recallCursor;
+    return this.inboxState.recallCursor;
   }
 
   /**
@@ -2130,7 +1127,7 @@ export class MeshAgent extends EventEmitter {
    * its own, so the next call resumes strictly after the last one delivered.
    */
   noteRecalled(mark: RecallMark): void {
-    if (afterRecallMark(mark, this._recallCursor)) this._recallCursor = mark;
+    return this.inboxState.noteRecalled(mark);
   }
 
   /**
@@ -2156,12 +1153,12 @@ export class MeshAgent extends EventEmitter {
    * rather than reasoning about it.
    */
   recallAhead(item: { ts: number }): boolean {
-    return item.ts > Date.now();
+    return this.inboxState.recallAhead(item);
   }
 
   /** Has this future-stamped recall item already been handed over in this session? */
   recallAheadSeen(id: string): boolean {
-    return this.aheadDelivered.has(id);
+    return this.inboxState.recallAheadSeen(id);
   }
 
   /**
@@ -2174,41 +1171,25 @@ export class MeshAgent extends EventEmitter {
    * ITS OWN messages and cannot use it to silence anyone else's.
    */
   recallAheadRoom(): number {
-    return MAX_AHEAD - this.aheadDelivered.size;
+    return this.inboxState.recallAheadRoom();
   }
 
   /** Record that a future-stamped recall item was actually handed to the caller. */
   noteRecalledAhead(id: string): void {
-    if (this.aheadDelivered.size < MAX_AHEAD) this.aheadDelivered.add(id);
-  }
-
-  /**
-   * Forget how far a recall walk had read, because the thing it was walking is gone.
-   *
-   * The mark is session-local, which is a longer life than it can honestly carry: it describes a
-   * position in ONE walk over ONE frontier, and {@link setAttention} both drops the frontier on the
-   * way out of focus and captures a new one on the way in. Measured before this reset, a mark left
-   * over from an earlier focus episode filtered a new episode's messages out of recall whenever they
-   * were stamped behind it, which a lagging or a chosen clock produces. The focus watermark was
-   * already cleared here; the mark that walks it was not.
-   */
-  private resetRecallWalk(): void {
-    this._recallCursor = { ts: 0, id: "" };
-    this.aheadDelivered.clear();
+    return this.inboxState.noteRecalledAhead(id);
   }
 
   /** Buffered receive-time lane for one delivery, addressed by its receive key. Undefined means it
    *  is no longer pending. */
   inboxScope(key: string): Exclude<InboxScope, "all"> | undefined {
-    const pending = this.inbox.find((p) => p.item.recvKey === key) ?? this.gated.find((p) => p.item.recvKey === key);
-    return pending ? (pending.pullOnly ? "pull-only" : "automatic") : undefined;
+    return this.inboxState.inboxScope(key);
   }
 
   /** Count of automatic messages that count as directed for a wake decision: real dm/anycast
    *  (authenticated kind) or a live channel @mention. Pull-only history never counts, including
    *  mentions retained while focused. The Stop→idle flush uses this in `dnd`/`focus`. */
   directedPendingCount(): number {
-    return this.gated.length + this.inbox.filter((p) => !p.pullOnly && (p.item.kind !== "channel" || (!p.item.historical && p.item.mentionsMe))).length;
+    return this.inboxState.directedPendingCount();
   }
 
   /** Buffered items that should WAKE a Stop→idle flush — the mode-and-channel-aware predicate the
@@ -2230,20 +1211,7 @@ export class MeshAgent extends EventEmitter {
    *  turns. A surface that cannot surface a run turn, such as the remote gateway, waits on this, so
    *  a turn it can never clear does not end every wait at once. */
   inboxWake(skip?: (item: InboxItem) => boolean): number {
-    // A role request held for its take wakes when a read could take it: the read the wake leads to
-    // takes it. While the link is down, or a take nobody could decide is waited out, none wakes, and
-    // each is announced again when the link is back or the wait ends (see runTake). An in-flight take
-    // already owns its next announcement; an old-link take must not block a new read after reconnect.
-    // A copy whose ack wait ran out is dropped first, as a read drops it.
-    this.dropLapsedTakes();
-    const held = this.mayAskTakes() ? this.gated.filter((p) =>
-      (p.taking === undefined || p.takingDrops !== this.transportDrops) && !skip?.(p.item)).length : 0;
-    return held + this.inbox.filter((p) => {
-      const it = p.item;
-      if (p.pullOnly || (it.kind === "channel" && it.historical) || skip?.(it)) return false;
-      if (it.kind !== "channel" || it.mentionsMe) return true;
-      return this._attention === "open";
-    }).length;
+    return this.inboxState.inboxWake(skip);
   }
 
   /** Ask any push layer (the channel) to wake the session now — used by the Stop→idle flush
@@ -2259,17 +1227,17 @@ export class MeshAgent extends EventEmitter {
   /** This agent's global attention mode. Authoritative here; mirrored to presence (advisory) so peers
    *  can see it. Delivery never reads it back from presence — local state wins. */
   get attention(): AttentionMode {
-    return this._attention;
+    return this.inboxState.attention;
   }
 
   /** This agent's per-channel override for `channel` (undefined ⇒ follow the global mode). */
   channelMode(channel?: string): ChannelMode | undefined {
-    return channel ? this.channelModes.get(channel) : undefined;
+    return this.inboxState.channelMode(channel);
   }
 
   /** A snapshot of every per-channel override (for the at-a-glance views). */
   channelModeEntries(): Record<string, ChannelMode> {
-    return Object.fromEntries(this.channelModes);
+    return this.inboxState.channelModeEntries();
   }
 
   /** Set (or clear, with `"normal"`) one channel's attention override. Validates the channel is
@@ -2283,31 +1251,7 @@ export class MeshAgent extends EventEmitter {
    *  enters another turn and both stay readable with cotal_inbox. `normal` makes nothing automatic
    *  again. */
   async setChannelMode(channel: string, mode: ChannelMode | "normal"): Promise<void> {
-    if (!isConcreteChannel(channel))
-      throw new Error(`"${channel}" must be a concrete channel (no wildcard) to set its attention`);
-    if (!channelInAllow(this.config.allowSubscribe, channel))
-      throw new Error(`"${channel}" is not within your read ACL (allowSubscribe) [${this.config.allowSubscribe.join(", ")}]`);
-    await this.inOrder(() => {
-      if (mode === "normal") this.channelModes.delete(channel);
-      else {
-        this.channelModes.set(channel, mode);
-        this.lowerBuffered(channel, mode === "muted");
-      }
-      return this.ep.setChannelModes(this.channelModeEntries());
-    });
-  }
-
-  /** Make the automatic entries buffered from `channel` (a concrete channel or a pattern) pull-only,
-   *  mentions of this agent too when `mentions` is set, except on a channel `keep` still covers. An
-   *  entry a host is handing over keeps its lane, since the turn carrying it acks it. */
-  private lowerBuffered(channel: string, mentions: boolean, keep: string[] = []): void {
-    for (const p of this.inbox) {
-      if (p.pullOnly || p.item.kind !== "channel" || !p.item.channel || !channelInAllow([channel], p.item.channel)) continue;
-      if (channelInAllow(keep, p.item.channel)) continue;
-      if ((p.item.mentionsMe && !mentions) || this.inFlightIds.has(p.item.recvKey)) continue;
-      p.pullOnly = true;
-      this.excludeFromFocus(p.item);
-    }
+    return this.inboxState.setChannelMode(channel, mode);
   }
 
   /** Set the attention mode. Entering `focus` captures the chat frontier as the focus-watermark
@@ -2318,40 +1262,7 @@ export class MeshAgent extends EventEmitter {
     *  it landed just before or after the captured frontier. Only ambient arriving after the local
     *  switch is ack-dropped. */
   async setAttention(mode: AttentionMode): Promise<void> {
-    await this.inOrder(async () => {
-    if (mode === "focus") {
-      await this.requireConnected();
-      this.focusExcludedIds.clear();
-      this.focusIdless = new Map();
-      this.focusIdlessEntries = 0;
-      this.focusRecallUnsafeChannels.clear();
-      this.enteringFocus = this._attention !== "focus";
-      try {
-        this.focusSince = await this.ep.chatFrontier();
-      } catch (error) {
-        this.enteringFocus = false;
-        this.focusExcludedIds.clear();
-        this.focusIdless = new Map();
-        this.focusIdlessEntries = 0;
-        this.focusRecallUnsafeChannels.clear();
-        throw error;
-      }
-      this.enteringFocus = false;
-      this.resetRecallWalk();
-    } else {
-      this.enteringFocus = false;
-      this.focusSince = undefined;
-      this.focusExcludedIds.clear();
-      this.focusIdless = new Map();
-      this.focusIdlessEntries = 0;
-      this.focusRecallUnsafeChannels.clear();
-      this.resetRecallWalk();
-    }
-    this._attention = mode;
-    // Mirror to presence (advisory observability — peers can see "they're in focus"). Best-effort:
-    // a no-op until the KV is bound, and never read back into delivery.
-    await this.ep.setAttention(mode);
-    });
+    return this.inboxState.setAttention(mode);
   }
 
   /** Focus recall: the channel ambient + @mentions ack-dropped since this agent entered focus,
@@ -2367,104 +1278,7 @@ export class MeshAgent extends EventEmitter {
    *  part: an exclusion that lands after that does not hide one, since recall would then move past
    *  the rest of it (#613). */
   async recallAmbient(underway: ReadonlySet<string> = new Set()): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
-    const run = this.recallLock.then(() => this.recallAmbientOnce(underway));
-    this.recallLock = run.catch(() => {});
-    return run;
-  }
-
-  private async recallAmbientOnce(underway: ReadonlySet<string>): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {
-    if (this._attention !== "focus" || this.focusSince === undefined)
-      return { items: [], droppedChannels: [] };
-    const items: InboxItem[] = [];
-    const droppedChannels: string[] = [];
-    for (const channel of this.ep.joinedChannels()) {
-      if (!isConcreteChannel(channel)) {
-        droppedChannels.push(channel);
-        continue;
-      }
-      if (this.focusRecallUnsafeChannels.has(channel)) {
-        droppedChannels.push(channel);
-        continue;
-      }
-      const tallies = this.focusIdless;
-      let epoch = 0;
-      let read!: Awaited<ReturnType<CotalEndpoint["recallChannel"]>>;
-      // #662: a copy settled while a read runs may or may not be in it, so the read is retried with
-      // that copy settled first, a bounded number of times.
-      for (let attempt = 1; attempt <= IDLESS_READS; attempt++) {
-        epoch = ++this.idlessEpoch;
-        // The read starts after every copy settled before it knows its frontier, so a copy it
-        // cannot bind is behind the focus start or out of retention.
-        await this.idlessReady(tallies, channel);
-        read = await this.ep.recallChannel(channel, this.focusSince);
-        if (read.unanswered) break;
-        await this.idlessReady(tallies, channel); // copies settled during the read
-        const unsure = read.messages.some(
-          (m, i) => m.id === "" && this.idlessUnsure(tallies.get(idlessDigest(m)), epoch, read.seqs[i]),
-        );
-        if (!unsure) break;
-      }
-      const { messages, seqs, dropped, unanswered } = read;
-      // A read that did not answer says nothing about what the channel retains, so nothing settles.
-      if (unanswered) {
-        droppedChannels.push(channel);
-        continue;
-      }
-      if (this.focusRecallUnsafeChannels.has(channel)) {
-        droppedChannels.push(channel);
-        continue;
-      }
-      // #662: each copy settled before the read is bound to one retained stream copy at or below its
-      // frontier. A copy no settled copy is bound to was never received (a reconnect gap) or was
-      // evicted; it is handed back into the inbox, which acks each by receive key, since the recall
-      // mark cannot order identical copies.
-      const retained = new Set<number>();
-      const digests: string[] = [];
-      const free = new Map<string, number[]>();
-      for (const [i, m] of messages.entries()) {
-        if (m.id !== "" || tallies !== this.focusIdless) continue;
-        retained.add(seqs[i]);
-        const digest = (digests[i] = idlessDigest(m));
-        if (tallies.get(digest)?.bound.has(seqs[i])) continue;
-        const list = free.get(digest);
-        if (list) list.push(seqs[i]);
-        else free.set(digest, [seqs[i]]);
-      }
-      for (const [digest, list] of free) {
-        const tally = tallies.get(digest);
-        if (tally) this.bindIdless(tally, epoch, list);
-      }
-      let incomplete = dropped;
-      for (const [i, m] of messages.entries()) {
-        if (m.id !== "") {
-          if (underway.has(m.id) || !this.focusExcludedIds.has(m.id)) items.push(this.toInboxItem(m, "channel", true));
-          continue;
-        }
-        if (tallies !== this.focusIdless) continue; // focus was left or re-entered during the read
-        const seq = seqs[i];
-        const digest = digests[i];
-        const tally = tallies.get(digest);
-        if (tally?.bound.has(seq)) continue;
-        // Still unsure after the last read: neither claimed nor handed back, and reported.
-        if (this.idlessUnsure(tally, epoch, seq)) {
-          incomplete = true;
-          continue;
-        }
-        // A full inbox leaves it in the stream for a later call, rather than evict something else.
-        const fresh = this.inbox.length < MAX_INBOX ? this.reserveIdless(digest, channel) : undefined;
-        if (!fresh) {
-          incomplete = true;
-          continue;
-        }
-        const copy: IdlessCopy = { epoch, frontier: seq, ready: Promise.resolve(), seq };
-        fresh.bound.add(seq);
-        this.buffer(this.toInboxItem(m, "channel", true), { ack: () => {} }, true, { digest, copy });
-      }
-      if (tallies === this.focusIdless) this.settleIdlessRead(channel, epoch, retained);
-      if (incomplete) droppedChannels.push(channel);
-    }
-    items.sort((a, b) => a.ts - b.ts);
-    return { items, droppedChannels };
+    return this.inboxState.recallAmbient(underway);
   }
 
   // ---- sending -------------------------------------------------------------
@@ -2854,49 +1668,21 @@ export class MeshAgent extends EventEmitter {
     | { unbound: true }
     | { unbound?: false; reply: EpAttributedReply; page?: RegistryEndpointsOutput }
   > {
-    const user = this.config.userAuth;
-    if (!user) return { none: "manager calls ride this session's own credential on this mesh, so the session view covers them" };
-    if (!user.bearerCmd) return { none: "this session's bearer comes from its host, which issues no manager-call bearer, so the manager view has no credential" };
-    const managerInstanceId = instance ?? this.config.managerInstanceId;
-    const token = await this.managerCallBearer([...user.bearerCmd, "--manager-call", ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : [])]).catch((e: unknown) => {
-      throw e instanceof Error ? new Error(e.message.replace("--manager-instance <instanceId>", "the instance argument")) : e;
-    });
-    const exp = bearerExpiryMs(token);
-    return withUserManagerListing({ ...this.config, managerInstanceId }, token, exp === undefined ? undefined : exp / 1000, async (nc, listing) =>
-      listing === undefined ? { unbound: true as const } : this.ep.listEndpointsOver(nc, listing, input));
+    return this.managerCalls.listManagerEndpoints(input, instance);
   }
 
-  /** Manager-call bearers this session holds, by the exact bearer argv (so by selected manager;
-   *  the space, owner, actor and lifecycle are this session's own). One exchange serves every call
-   *  until {@link MANAGER_BEARER_MARGIN_MS} before the bearer expires, and concurrent calls share it.
-   *  Each call still presents the bearer to the broker and checks its binding, so this keeps no
-   *  authorization decision; any failed call drops the entry, so the next one exchanges afresh. */
-  private managerBearers = new Map<string, { flight: Promise<string>; refreshAt?: number }>();
-
   private managerCallBearer(argv: string[], signal?: AbortSignal): Promise<string> {
-    const key = JSON.stringify(argv);
-    const held = this.managerBearers.get(key);
-    if (held && (held.refreshAt === undefined || Date.now() < held.refreshAt)) return abortable(held.flight, signal);
-    const entry: { flight: Promise<string>; refreshAt?: number } = { flight: this.execBearerCmd(argv) };
-    this.managerBearers.set(key, entry);
-    entry.flight.then((token) => {
-      const exp = bearerExpiryMs(token);
-      if (exp === undefined || exp - MANAGER_BEARER_MARGIN_MS <= Date.now()) { if (this.managerBearers.get(key) === entry) this.managerBearers.delete(key); }
-      else entry.refreshAt = exp - MANAGER_BEARER_MARGIN_MS;
-    }, () => { if (this.managerBearers.get(key) === entry) this.managerBearers.delete(key); });
-    return abortable(entry.flight, signal);
+    return this.managerCalls.managerCallBearer(argv, signal);
   }
 
   /** Run the spawner's bearer command with this session's environment on every credential path. */
   private async execBearerCmd(argv: string[], signal?: AbortSignal, timeoutMs?: number): Promise<string> {
-    const bearer = await runAgentBearer(argv, { env: this.launchEnv, signal, timeoutMs });
-    if (!bearer) throw new Error(`bearer command printed nothing (${argv[0]})`);
-    return bearer;
+    return this.managerCalls.execBearerCmd(argv, signal, timeoutMs);
   }
 
   /** Named seat reads use presence to select a manager, never the class queue. Presence confers
-   *  no authority: an instance route the credential cannot publish remains permission-denied.
-   *  Generic user-auth invocation keeps its existing credential path. */
+   *  no authority: an instance route or manager-call exchange the caller cannot obtain remains
+   *  permission-denied. Other user-auth invocations keep their existing credential path. */
   async invokeEndpoint(
     endpoint: string,
     command: string,
@@ -2904,12 +1690,15 @@ export class MeshAgent extends EventEmitter {
     opts: Parameters<CotalEndpoint["invokeService"]>[3] = {},
   ): Promise<EpAttributedReply> {
     let ownerInstance = opts.instanceId;
-    const seatRead = endpoint === BASELINE_LIFECYCLE_ENDPOINT && !this.config.userAuth &&
+    const seatRead = endpoint === BASELINE_LIFECYCLE_ENDPOINT &&
       command === "inspect" && typeof args?.name === "string";
     let selected: Presence | undefined;
+    let dropBearer: (() => void) | undefined;
     if (seatRead) {
       const roster = await this.ep.readPresence();
-      const peer = resolvePeerInRoster(roster.filter(p => p.status !== "offline"), args!.name as string);
+      const live = roster.filter(p => p.status !== "offline" &&
+        (!this.config.userAuth || p.card.id.startsWith(`${this.config.userAuth.owner}.`)));
+      const peer = resolvePeerInRoster(live, args!.name as string);
       if (!peer) throw new EpEnvelopeError("not-found", `no agent ${JSON.stringify(args!.name)} is held in live presence`, undefined, "not-executed");
       const instance = peer.card.meta?.["ai.cotal.manager.instance"];
       if (typeof instance !== "string")
@@ -2922,7 +1711,23 @@ export class MeshAgent extends EventEmitter {
       args = { ...args, name: peer.card.name };
     }
     try {
-      const reply = await this.ep.invokeService(endpoint, command, args, opts);
+      let reply: EpAttributedReply;
+      if (seatRead && this.config.userAuth) {
+        const bearerCmd = this.config.userAuth.bearerCmd;
+        if (!bearerCmd)
+          throw new EpEnvelopeError("failed-precondition", `${command}: this agent's bearer comes from its host, which issues no manager-call bearer, so manager operations are unavailable`, undefined, "not-executed");
+        const bearerArgv = [...bearerCmd, "--manager-call", "--manager-instance", ownerInstance!];
+        const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal).catch((e: unknown) => {
+          if (e instanceof Error && e.message.startsWith("agent-bearer: exchange refused:"))
+            throw new EpEnvelopeError("permission-denied", e.message, undefined, "not-executed");
+          throw e;
+        });
+        dropBearer = () => { this.managerCalls.dropBearer(bearerArgv); };
+        const { instanceId: _instanceId, classInstanceId: _classInstanceId, follow: _follow, ...invokeOpts } = opts;
+        reply = await invokeUserManager({ ...this.config, managerInstanceId: ownerInstance }, bearer, command, args, invokeOpts);
+      } else {
+        reply = await this.ep.invokeService(endpoint, command, args, opts);
+      }
       if (selected && reply.reply.ok) {
         const row = reply.reply.data as { id?: string; lifecycleUid?: string };
         if ((row.id !== selected.card.id && `${this.ep.principal.owner}.${row.id}` !== selected.card.id) || row.lifecycleUid !== selected.lifecycleUid)
@@ -2930,6 +1735,7 @@ export class MeshAgent extends EventEmitter {
       }
       return reply;
     } catch (error) {
+      dropBearer?.();
       if (seatRead && ownerInstance !== undefined && unansweredRequest(error))
         throw new EpEnvelopeError("unavailable", `TARGET_UNAVAILABLE: manager instance ${ownerInstance} did not answer ${endpoint}.${command}`, (error as EpEnvelopeError).details, (error as EpEnvelopeError).outcome);
       throw error;
@@ -2948,123 +1754,7 @@ export class MeshAgent extends EventEmitter {
     args: Record<string, unknown> | undefined,
     opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; instanceId?: string } = {},
   ): Promise<ControlReply & { instanceId?: string; outcome?: "executed" | "not-executed" | "unknown" }> {
-    const clean = args === undefined ? undefined : Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
-    let r: EpAttributedReply;
-    let dropBearer: (() => void) | undefined;
-    try {
-      const input = clean && Object.keys(clean).length ? clean : undefined;
-      if (this.config.userAuth) {
-        const bearerCmd = this.config.userAuth.bearerCmd;
-        if (!bearerCmd)
-          return { ok: false, error: `${command}: this agent's bearer comes from its host, which issues no manager-call bearer, so manager operations are unavailable` };
-        const managerInstanceId = opts.instanceId ?? this.config.managerInstanceId;
-        const { instanceId: _instanceId, follow, ...invokeOpts } = opts;
-        // An ambiguity refusal names the bearer command's own selector. This caller passes it from
-        // the tool's `instance` argument, so the tool's caller is told that argument instead.
-        const bearerArgv = [...bearerCmd, "--manager-call", ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : [])];
-        const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal).catch((e: unknown) => {
-          throw e instanceof Error ? new Error(e.message.replace("--manager-instance <instanceId>", "the instance argument")) : e;
-        });
-        dropBearer = () => { this.managerBearers.delete(JSON.stringify(bearerArgv)); };
-        // Subscribe before submission on the renewing main connection. A long accepted launch
-        // must not inherit the short-lived control credential's expiry.
-        r = await invokeUserManager({ ...this.config, managerInstanceId }, bearer, command, input, {
-          ...invokeOpts,
-          follow: follow ? (submit, prepare) => this.ep.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, submit, opts.deadlineMs, {
-            prepare,
-            reconcile: async (goalId, attributed, context) => {
-              const instanceId = attributed.responder?.instanceId;
-              if (!instanceId) throw new Error("accepted goal has no broker-attributed manager instance");
-              const bearer = (signal?: AbortSignal) => this.execBearerCmd([
-                ...bearerCmd,
-                "--manager-call", "--manager-instance", instanceId,
-              ], signal, Math.min(30_000, context.deadlineMs));
-              // Validate the renewed bearer against the accepting identity, not mutable session state.
-              const config = {
-                ...this.config, managerInstanceId: instanceId, lifecycleUid: context.caller.uid,
-                userAuth: { ...this.config.userAuth!, owner: context.caller.owner, actor: context.caller.actor },
-              };
-              const queryRes = await invokeUserManager(config, bearer, "goal-result", { goalId }, {
-                signal: context.signal, deadlineMs: Math.min(invokeOpts.deadlineMs ?? 10_000, context.deadlineMs),
-              });
-              if (queryRes.reply.ok !== true) throw new Error(queryRes.reply.error?.message ?? "goal-result query refused");
-              return queryRes.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
-            },
-          }) : undefined,
-        });
-      } else {
-        // Static launches keep their class-only grants. Resolve the launching manager's
-        // attributed describe, then use the existing bind fence to refuse sibling deliveries
-        // before effects. An explicit instance retains its existing route and grant rules.
-        const launchLocal = command === "stop" || command === "spawn" || command === "define-persona";
-        const classInstanceId = this.config.creds && launchLocal && opts.instanceId === undefined
-          ? this.config.managerInstanceId : undefined;
-        r = await this.invokeEndpoint(BASELINE_LIFECYCLE_ENDPOINT, command, input, {
-          ...opts, ...(classInstanceId !== undefined ? { classInstanceId } : {}),
-        });
-      }
-    } catch (e) {
-      // The verdict "nobody answered" comes from core's answer-provenance marker, NEVER from the
-      // catalog code. `deadline-exceeded` has two producers that call for opposite responses: the
-      // describe drew no reply at all (nothing ran, and the likely causes are a manager down or a
-      // capability this credential does not hold), or a goal was ACCEPTED and its terminal did not
-      // arrive in time - where a responder took the request and the effect may already have landed.
-      // Keying on the code told every caller the first story for both, which is the peer-side twin
-      // of the blanket "no manager reachable" the CLI used to print, and it is the more dangerous
-      // half: this surface is read by agents, and "no responder answered" invites the retry that
-      // duplicates a spawn. Only the marker distinguishes them, and core sets it exactly where it
-      // observed silence.
-      dropBearer?.();
-      if (e instanceof EpEnvelopeError) {
-        const submitted = command === "spawn" && e.outcome === "unknown"
-          ? e.details?.find(d => d.kind === EP_UNANSWERED && d.endpoint === BASELINE_LIFECYCLE_ENDPOINT && d.command === command && typeof d.requestId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(d.requestId))
-          : undefined;
-        if (submitted) return {
-          ...controlReplyFromThrown(e, `${e.code}: ${e.message}`),
-          outcome: "unknown",
-          data: { goalId: submitted.requestId, submissionUnknown: true },
-        };
-        const undeclared = undeclaredArg(e);
-        if (undeclared !== undefined && command !== "status")
-          return { ...controlReplyFromThrown(e, await this.undeclaredArgMessage(command, e, undeclared)), ...(e.outcome ? { outcome: e.outcome } : {}) };
-        const unknownDefinition = command === "define-persona" && e.outcome !== "not-executed" &&
-          e.code === "deadline-exceeded" && e.details?.some(d => d.kind === EP_UNANSWERED && d.command === command);
-        const unknownYield = command === "turn-yield" && e.code === "deadline-exceeded" && e.outcome === "unknown" &&
-          e.details?.some(d => d.kind === EP_UNANSWERED && d.endpoint === BASELINE_LIFECYCLE_ENDPOINT && d.command === command);
-        const message = unknownYield
-          ? `${e.code}: ${e.message}. The yield may already have been recorded. After reconnecting, retry cotal_yield with the same turn id and intended status. An already-settled reply confirms the turn is terminal, not which attempt settled it. A successful reply records the yield if it is still active. This retry is not a read-only check.`
-          : unknownDefinition
-          ? `${e.code}: ${e.message}`
-          : unansweredRequest(e)
-          ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
-          : `${e.code}: ${e.message}`;
-        return { ...controlReplyFromThrown(e, message), ...(e.outcome ? { outcome: e.outcome } : {}) };
-      }
-      return { ok: false, error: (e as Error).message };
-    }
-    if (r.reply.ok !== true) dropBearer?.();
-    return {
-      ...controlReplyFrom(r.reply),
-      instanceId: r.responder?.instanceId,
-      ...(r.reply.error?.outcome ? { outcome: r.reply.error.outcome } : {}),
-    };
-  }
-
-  /** The refusal of an argument the manager's contract does not declare. This connector built the
-   *  args from its own release's schema, so the manager runs a different release. The version the
-   *  bound manager reports says which side to update; an unbound request names no manager to ask. */
-  private async undeclaredArgMessage(command: string, e: EpEnvelopeError, key: string): Promise<string> {
-    const head = `${e.code}: ${e.message}. The manager's ${command} does not take "${key}", which this connector at Cotal ${CONNECTOR_VERSION} sends`;
-    const instanceId = undeclaredArgInstance(e);
-    const answer = instanceId === undefined ? undefined : await this.managerInvoke("status", undefined, { instanceId }).catch(() => undefined);
-    const reported = answer?.ok === true && answer.instanceId === instanceId ? (answer.data as { version?: unknown } | undefined)?.version : undefined;
-    const manager = typeof reported === "string" && /^\d+\.\d+\.\d+/.test(reported) ? reported : undefined;
-    const updateManager = `on the manager's host run \`cotal update --self\`, then \`cotal manager restart\`, or, if you set "${key}", call again without it`;
-    if (manager === undefined) return `${head}, so the manager most likely runs an older Cotal: ${updateManager}`;
-    const order = compareRelease(CONNECTOR_VERSION, manager);
-    if (order > 0) return `${head}. The manager runs Cotal ${manager}, the older side: ${updateManager}`;
-    if (order < 0) return `${head}. The manager runs Cotal ${manager}, so this connector is the older side: run \`cotal update --self\` here and start a new session`;
-    return `${head}. The manager also reports Cotal ${manager}, so one side is another build of that version: reinstall that side`;
+    return this.managerCalls.managerInvoke(command, args, opts);
   }
 
   /** Resolve a managed agent's CURRENT principal triple (owner-mode targets are (owner, actor,
@@ -4036,7 +2726,7 @@ export class MeshAgent extends EventEmitter {
       ? undefined
       : "this space's host runs an older delivery service, so this durable leave was not applied and the channel stays joined; the host must update the delivery service";
     const result = await this.ep.leaveChannel(channel, legacyDiscoveryMessage);
-    if (result.left) this.lowerBuffered(channel, false, this.joinedChannels());
+    if (result.left) this.inboxState.lowerBuffered(channel, false, this.joinedChannels());
     return result;
   }
 

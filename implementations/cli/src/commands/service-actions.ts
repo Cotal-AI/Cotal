@@ -20,7 +20,7 @@ import { serviceUnitActionFor } from "../lib/service-unit-action.js";
 import { followServiceJournal, readServiceJournal } from "../lib/service-journal.js";
 import { followServiceLog } from "./service-log-follow.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { yesRequired } from "../lib/confirmation-required.js";
+import { serviceConfirmCommand, yesRequired } from "../lib/confirmation-required.js";
 import { fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, recordedStore, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { brokerStopBlocked } from "../lib/broker-service.js";
 import { controlsRecordedAdapter, resolveServiceAdapter } from "../lib/service-adapters.js";
@@ -172,7 +172,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     if (prompts.isCancel(selected)) return cancelled();
     id = selected;
   }
-  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "install");
+  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "install" || mode === "status");
   // A preset name resolved to another saved name keeps the name the person typed beside it.
   const target = { space, name, instanceId: selected?.name ?? null, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
   if (["start", "stop", "restart"].includes(mode)) assertNoServiceUnitAttempts(space, name);
@@ -210,7 +210,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   if (mode === "uninstall") {
     if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "native service removal currently needs the supported Linux user manager; no unit or private store was touched", { target });
-    if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("native uninstall", presentation === "json"), { target, remedy: `confirm with \`cotal svc uninstall ${name} --yes\`, or inspect it with --dry-run` });
+    if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("native uninstall", presentation === "json"), { target, remedy: `confirm with \`${serviceConfirmCommand("uninstall", name, space, values)}\`, or inspect it with --dry-run` });
     if (!values.yes) {
       const answer = await prompts.confirm({ message: `Disable and remove the exact owned unit for ${oneLine(name)} instance ${selected!.name}? The saved definition remains.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -223,17 +223,22 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     return;
   }
   if (mode === "status") {
-    const result = instanceProjection(selected!);
-    const pending = serviceInstallIntentFor(space, selected!.name)?.record.value;
+    if (!selected) {
+      const result = { kind: "service-status", space, definition: name, instanceId: null, recordedState: "not started" };
+      writeResult(presentation, { command: commandName, target, result }, (row): Report => ({ sections: [{ title: "Service status", blocks: [{ kind: "fields", rows: [["Definition", row.definition], ["Space", row.space], ["Recorded state", row.recordedState]] }] }] }));
+      return;
+    }
+    const result = instanceProjection(selected);
+    const pending = serviceInstallIntentFor(space, selected.name)?.record.value;
     const installIntent = pending ? serviceInstallIntentProjection(pending) : null;
-    const removal = serviceUninstallIntentFor(space, selected!.name)?.record.value;
+    const removal = serviceUninstallIntentFor(space, selected.name)?.record.value;
     const uninstallIntent = removal ? serviceUninstallIntentProjection(removal) : null;
-    const action = serviceUnitActionFor(space, selected!.name)?.record.value;
+    const action = serviceUnitActionFor(space, selected.name)?.record.value;
     const unitAction = action ? { attemptId: action.attemptId, unit: action.unit, unitPath: action.unitPath, operation: action.operation, position: action.position, targetGeneration: action.targetGeneration ?? null, updatedAt: action.updatedAt } : null;
     const installObservation = pending ? observeSystemdAttempt(pending) : null;
     const uninstallObservation = removal ? observeSystemdAttempt(removal) : null;
     const actionObservation = action ? observeSystemdAttempt(action) : null;
-    const nativeSupervisor = observeRecordedSupervisor(selected!.record.value, result.supervisorRecord);
+    const nativeSupervisor = observeRecordedSupervisor(selected.record.value, result.supervisorRecord);
     const incomplete = installIntent !== null || uninstallIntent !== null || unitAction !== null || result.supervisorRecord.mechanism !== "none-recorded" && (nativeSupervisor.state !== "observed" || nativeSupervisor.daemonReloadRequired || nativeSupervisor.dropInsReported || nativeSupervisor.mainProcessAttribution === "different-or-unattributed" || nativeSupervisor.mainProcessAttribution === "not-reported" && result.observedProcess === "running");
     writeResult(presentation, { command: commandName, target, result: { kind: "service-status", ...result, listeners: result.observedProcess === "running" ? definitionListeners(definition) ?? null : [], executable: runningExecutable(result), nativeSupervisor, installIntent, uninstallIntent, unitAction, installObservation, uninstallObservation, actionObservation }, warnings: await readinessAddressSurvivors(space, [name]), ...(incomplete ? { completeness: "partial" as const, partial: { message: installIntent ? "A service installation attempt is retained; its submitted or acknowledged effects are not a completed owned supervisor. Inspect its private store and native unit before any retry." : uninstallIntent ? "A native removal attempt is retained; a disabled or missing unit is not proof its private store and receipt were cleaned. Inspect each named step before reconciliation." : unitAction ? "A native service action is retained; its submission and unit state require reconciliation before a new control request." : "The recorded supervisor could not be established as the unchanged complete loaded configuration with an attributed main process. No direct-process fallback or readiness was inferred." } } : {}) }, (row): Report => ({ sections: [
       ...instanceView(row, "Service instance").sections,
@@ -287,7 +292,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       writeResult(presentation, { command: commandName, target, result: { kind: "service-native-operation-preview", operation: mode, dryRun: true, instance: row, native, changed: false }, completeness: "partial", partial: { message: "This exact-unit status read reserves no native state or process identity. A real action rechecks its receipt, source and native invocation before submission." } }, (): Report => ({ sections: [{ title: "Native service operation preview", blocks: [{ kind: "fields", rows: [["Action", mode], ["Definition", name], ["Instance", selected!.name], ["Unit", row.supervisorRecord.unit ?? "not recorded"], ["Unit state", native.activeState ?? native.state], ["Autostart", native.unitFileState ?? "not checked"], ["Process", row.observedProcess]] }, { kind: "lines", lines: ["No native request, process signal or private-store seed ran. This observation does not authorize a later action without fresh checks."] }] }] }));
       return;
     }
-    if ((mode === "stop" || mode === "restart") && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(`${mode} requires --yes outside an interactive terminal`, { target, remedy: `confirm with \`cotal svc ${mode} ${name} --yes\`, or preview it with --dry-run` });
+    if ((mode === "stop" || mode === "restart") && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(`${mode} requires --yes outside an interactive terminal`, { target, remedy: `confirm with \`${serviceConfirmCommand(mode, name, space, values)}\`, or preview it with --dry-run` });
     if ((mode === "stop" || mode === "restart") && !values.yes) {
       const answer = await prompts.confirm({ message: `${mode === "stop" ? "Stop" : "Restart"} the exact owned unit ${supervisor.unit} for ${oneLine(name)} instance ${selected!.name}?`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -337,7 +342,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   // A restart whose original process is already gone stops nothing, so it asks for nothing.
   const confirmStop = mode === "stop" || mode === "restart" && !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(selected!.record.value));
-  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`cotal svc ${mode} ${name} --yes\`, or preview it with --dry-run` });
+  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`${serviceConfirmCommand(mode, name, space, values)}\`, or preview it with --dry-run` });
   if (mode === "restart") assertRestartAdmitted(definition);
   let nativePlan: Awaited<ReturnType<typeof prepareNativeServiceStop>> | undefined;
   try { nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined; }
@@ -426,10 +431,12 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     // A background child reports how to reach it, such as the dashboard's bootstrap file, in its own log.
     if (values.foreground) return view;
     // One instance of a definition needs no instance or space on the line that reads it. A space named
-    // with --space stays on the stop line, since a bare one from this folder can resolve to another (#7346).
+    // with --space stays on the stop line and the manager's lines, since a bare one from this folder can
+    // resolve to another (#7346, #7642).
     const only = serviceInstances(space, name).length === 1;
-    const logs = commandName === "manager" ? "cotal manager logs" : only && !args.values.space ? `cotal service logs ${row.definition}` : `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`;
-    const stop = commandName === "manager" ? "cotal manager stop" : `cotal service stop ${row.definition}${args.values.space ? ` --space ${oneLine(row.space)}` : ""}`;
+    const named = args.values.space ? ` --space ${oneLine(row.space)}` : "";
+    const logs = commandName === "manager" ? `cotal manager logs${named}` : only && !args.values.space ? `cotal service logs ${row.definition}` : `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`;
+    const stop = commandName === "manager" ? `cotal manager stop${named}` : `cotal service stop ${row.definition}${named}`;
     return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: logs, description: "Read the service's own startup output, including how to reach it when it reports that" }, { command: stop, description: "Stop it" }] }] }] };
   });
   if (values.foreground && started.child && started.exit) {
@@ -459,9 +466,15 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       await Promise.race([started.exit.done, shutdownDone]);
       if (shutdown) await shutdown;
       if (signal && !started.exit.observed()) { process.exitCode = signal === "SIGINT" ? 130 : 143; return; }
-      const exit = started.exit.result(), current = serviceInstanceStore(space).read(started.instance.name);
-      // A retained native stop keeps its record: only that stop's own receipt settles it.
-      if (current && current.record.value.process?.pid === started.instance.record.value.process?.pid && current.record.value.process?.token === started.instance.record.value.process?.token && !retainedStopRequest(current.record.value)) serviceInstanceStore(space).commit(current.name, current, { ...current.record.value, state: "stopped", readiness: "not-checked", adapterReadiness: undefined, exit, updatedAt: new Date().toISOString() });
+      const exit = started.exit.result();
+      // Wait for a concurrent stop to record its receipt before adding the child's exit status.
+      const hold = store.pin(definition);
+      try {
+        const instances = serviceInstanceStore(space), current = instances.read(started.instance.name);
+        const value = current?.record.value, startedValue = started.instance.record.value;
+        // A stop still unsettled after releasing the hold keeps its record.
+        if (current && value && value.launchRequestId === startedValue.launchRequestId && value.process?.pid === startedValue.process?.pid && value.process?.token === startedValue.process?.token && value.state !== "stopping" && !retainedStopRequest(value)) instances.commit(current.name, current, { ...value, state: "stopped", readiness: "not-checked", adapterReadiness: undefined, exit, updatedAt: new Date().toISOString() });
+      } finally { hold.release(); }
       process.exitCode = signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : exit.code === 0 ? 0 : 5;
     } catch (error) {
       if (isCommandFailure(error)) process.stderr.write(`${renderReport(commandFailureReport(error), presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);

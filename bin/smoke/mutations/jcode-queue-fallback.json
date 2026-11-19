@@ -49,7 +49,7 @@
     },
     {
       "name": "M4 any inbox drain counts as automatic progress",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    const automatic = selected.some((p) => !p.pullOnly);\n    const items = this.commitPending(selected);\n    if (items.length) this._lastInboxDrainedAt = Date.now();\n    if (items.length && automatic) this._lastAutomaticDrainedAt = Date.now();\n    for (const id of requested) {",
       "replace": "    const items = this.commitPending(selected);\n    if (items.length) this._lastInboxDrainedAt = Date.now();\n    if (items.length) this._lastAutomaticDrainedAt = Date.now();\n    for (const id of requested) {",
       "expectRed": "draining pull-only traffic is not automatic progress, so the stall stands",
