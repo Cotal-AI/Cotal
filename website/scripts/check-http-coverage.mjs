@@ -118,7 +118,7 @@ const audiences = [
   { id: 'manager-console', spec: 'implementations/manager/openapi.json', operations: dispatch('implementations/manager/src/attach-endpoint.ts', ['/favicon.ico']) },
   { id: 'feedback-intake', spec: 'implementations/delivery/openapi.json', operations: dispatch('implementations/delivery/src/feedback-intake.ts', []) },
 ];
-const applicationListeners = new Set(['implementations/auth/src/service.ts', 'implementations/web/src/web.ts', 'implementations/manager/src/attach-endpoint.ts', 'implementations/delivery/src/feedback-intake.ts']);
+const applicationListeners = new Set(['implementations/auth/src/service-host.ts', 'implementations/web/src/web.ts', 'implementations/manager/src/attach-endpoint.ts', 'implementations/delivery/src/feedback-intake.ts']);
 const exclusions = new Map([
   ['extensions/connector-codex/src/mcp.ts', 'Ephemeral loopback /mcp is standard MCP Streamable HTTP, owned by the MCP SDK.'],
   ['implementations/linear/src/oauth.ts', 'Ephemeral /callback is the one-use OAuth PKCE login callback.'],
