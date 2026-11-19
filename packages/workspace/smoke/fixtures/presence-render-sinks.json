@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1090,
+    "total": 1092,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 868
+    "non-render/control": 870
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -6602,6 +6602,20 @@
       "anchor": "eeds a manager.\", tone: \"waiting\" }] },\n      result.item",
       "class": "non-render/control",
       "rationale": "ps presence fallback: \"waiting\" is the color tone for the no-manager notice, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "status + \" `cotal endpoint describe manager` reads its commands.\"",
+      "class": "non-render/control",
+      "rationale": "The status variable holds command guidance for inspecting the manager, not an agent's presence or reported progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
+      "anchor": " from ${p.root}`, tone: \"waiting\" },\n      { text: movedR",
+      "class": "non-render/control",
+      "rationale": "The waiting tone styles a moved-project warning. It does not report any agent's presence or progress."
     },
     {
       "path": "implementations/cli/src/commands/service-registry.ts",
