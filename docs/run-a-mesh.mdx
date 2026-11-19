@@ -47,6 +47,10 @@ Background startup is also the default for bare `cotal up`.
 For a terminal or service manager that must own the stack's lifetime, use `cotal up --foreground`.
 See [Supervise the stack](supervise-processes.mdx) before creating a systemd unit.
 
+On Linux, a prepared stack needs a readable, persistent `/etc/machine-id` and access to the kernel's boot ID at `/proc/sys/kernel/random/boot_id` to record which host owns its processes. It does not need systemd.
+If `/etc/machine-id` is missing, a host administrator can create it with `dbus-uuidgen --ensure=/etc/machine-id` (`dbus` package on Alpine), then retry `cotal up`.
+If the file exists but cannot be read or is invalid, have the administrator restore the original valid ID or its permissions. Do not replace a valid ID.
+
 Static authentication is the default.
 For per-user authentication, use `--user-auth --idp <url>` and follow [Identity](identity-and-auth.mdx).
 This also starts the space's auth service. Participants log in, and the operator grants their agents on the actor ledger.

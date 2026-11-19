@@ -82,6 +82,17 @@ const SID = /^S-1-\d+(-\d+){1,15}$/;
 /** The capability file a custody record names: a random name in the instance store's directory. */
 const CAPABILITY = /^custody-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.key$/;
 
+function readLinuxServiceIdentity(path: string, format: RegExp, remedy: string): string {
+  let problem = "is invalid";
+  try {
+    const value = readFileSync(path, "utf8").trim();
+    if (format.test(value)) return value;
+  } catch (error) {
+    problem = (error as NodeJS.ErrnoException).code === "ENOENT" ? "is missing" : "could not be read";
+  }
+  throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${path} ${problem}; no process-service effect was attempted`, { remedy });
+}
+
 /** This driver refuses without an OS machine identity; no PID-only ownership substitute. Linux
  *  reads its machine and boot IDs; macOS reads its hardware UUID and boot session UUID through the
  *  bundled binding, whose absence is an installation error. Windows reads its system ID for this
@@ -104,17 +115,19 @@ export function processServiceHost(): ServiceHost {
   if ((process.platform !== "linux" && process.platform !== "darwin") || process.getuid === undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this process-service driver currently requires Linux, macOS or Windows machine identity; another platform is not silently treated as one of them");
   const native = process.platform === "darwin" ? darwinProcessBinding() : undefined;
   let machine: string, boot: string;
-  try {
-    if (native) {
+  if (native) {
+    try {
       ({ machine, boot } = native.hostIdentity());
       if (!UUID.test(machine) || !UUID.test(boot)) throw new Error();
       boot = boot.toLowerCase();
-    } else {
-      machine = readFileSync("/etc/machine-id", "utf8").trim();
-      boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-      if (!/^[0-9a-f]{32}$/i.test(machine) || !/^[0-9a-f-]{36}$/i.test(boot)) throw new Error();
-    }
-  } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the host's stable machine/boot identity could not be established; no process-service effect was attempted"); }
+    } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the host's stable machine/boot identity could not be established; no process-service effect was attempted"); }
+  } else {
+    machine = readLinuxServiceIdentity("/etc/machine-id", /^[0-9a-f]{32}$/i,
+      "ask a host administrator to restore a readable, persistent 32-hex-character machine ID. " +
+      "If the file is missing, the administrator can create it with `dbus-uuidgen --ensure=/etc/machine-id` from the D-Bus package, without systemd. Do not replace an existing valid ID");
+    boot = readLinuxServiceIdentity("/proc/sys/kernel/random/boot_id", /^[0-9a-f-]{36}$/i,
+      "run from a Linux environment that exposes a readable kernel boot ID at /proc/sys/kernel/random/boot_id");
+  }
   return host = { machine: createHash("sha256").update(machine.toLowerCase()).digest("hex"), boot, name: hostname(), uid: process.getuid() };
 }
 

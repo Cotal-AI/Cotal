@@ -4,9 +4,11 @@
  *  name is refused. */
 import { strict as assert } from "node:assert";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import fs, { mkdtempSync, rmSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mock } from "node:test";
 
 const home = mkdtempSync(join(tmpdir(), "service-host-record-"));
 process.env.COTAL_HOME = join(home, ".cotal");
@@ -22,6 +24,36 @@ const refused = (fn: () => unknown) => { try { fn(); return false; } catch (erro
 
 try {
   assert.notEqual(process.platform, "win32", "this suite reads Windows records from a POSIX host");
+  if (process.platform === "linux") {
+    const read = fs.readFileSync;
+    for (const [code, problem] of [["ENOENT", "is missing"], ["EACCES", "could not be read"], ["invalid", "is invalid"], ["invalid-boot", "is invalid"]] as const) {
+      const boot = code === "invalid-boot";
+      const reader = mock.method(fs, "readFileSync", (file: fs.PathOrFileDescriptor, options?: unknown) => {
+        if (file === "/etc/machine-id") {
+          if (boot) return "a".repeat(32);
+          if (code === "invalid") return "invalid";
+          throw Object.assign(new Error("test read failure"), { code });
+        }
+        if (file === "/proc/sys/kernel/random/boot_id") return boot ? "invalid" : "a8b18105-989b-4d68-8f36-7d199b101c03";
+        return read(file, options as Parameters<typeof read>[1]);
+      });
+      syncBuiltinESMExports();
+      try {
+        assert.throws(processServiceHost, (error: Record<string, unknown>) => {
+          assert.equal(error.outcome, "refused");
+          assert.equal(error.code, "DEPENDENCY_UNAVAILABLE");
+          const path = boot ? "/proc/sys/kernel/random/boot_id" : "/etc/machine-id";
+          assert.equal(error.message, `${path} ${problem}; no process-service effect was attempted`);
+          assert.match(String(error.remedy), boot ? /readable kernel boot ID/ : /dbus-uuidgen --ensure=\/etc\/machine-id/);
+          return true;
+        });
+        check(`Linux refuses ${code} identity with the path and its own remedy`, true);
+      } finally {
+        reader.mock.restore();
+        syncBuiltinESMExports();
+      }
+    }
+  }
   const space = "hostrecords", ts = new Date().toISOString(), self = requireProcessIdentity(process.pid);
   const custody = { custodian: self, pipe: `\\\\.\\pipe\\cotal-custody-${"a".repeat(32)}`, capability: `custody-${randomUUID()}.key` };
   const windowsHost = { platform: "win32" as const, machine: "b".repeat(64), machineSource: "uefi" as const, sid: "S-1-5-21-1004336348-1177238915-682003330-1001", name: "winhost" };
