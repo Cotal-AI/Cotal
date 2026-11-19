@@ -92,7 +92,9 @@ confirm, then stops manager, delivery and broker in that order. `--yes` acknowle
 scripts and prints no plan. The receipt names the mesh once, lists each member with its result in
 stop order, and names `cotal up` as the next step. `--with-agents`
 requests the manager's native retirement policy. If a noninteractive stop needs confirmation, its
-confirmation and preview commands keep `--with-agents` when you requested it. Pending native lifecycle work refuses before any
+confirmation and preview commands keep `--with-agents` when you requested it. A stack started with
+`up --no-manager` refuses `down --with-agents` with `LIFECYCLE_BLOCKED` and stops nothing. To stop
+that stack without requesting agent retirement, run `cotal down --yes`. Pending native lifecycle work refuses before any
 stop. The refusal lists each blocker and its count and names `cotal ps` to inspect the agents before
 retrying. Another live service instance in the space
 refuses `LIFECYCLE_BLOCKED` before the first stop; the Next names the

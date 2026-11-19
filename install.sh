@@ -27,9 +27,14 @@
 #   install was verified against is what makes that failure impossible rather than rare.
 #
 # UNINSTALL
+#   Stop the spaces and agents that use this installation.
 #   rm -rf ~/.local/share/cotal ~/.local/bin/cotal   # this installer's files
-#   rm -rf ~/.cotal                                  # your meshes, agents and credentials
 #   then delete the `# cotal` block from your shell rc.
+#   This leaves settings, installed extensions, and the connector seed store in
+#   $XDG_CONFIG_HOME/cotal (if set and non-empty), otherwise ~/.config/cotal.
+#   Back up settings you want to keep. Delete that directory only if no other
+#   Cotal installation or running Cotal process uses it.
+#   Delete ~/.cotal separately only to remove your meshes, agents and credentials.
 #
 # Apache-2.0. Everything below runs inside main(), invoked by the brace-wrapped last line.
 # A compound command is not executed until its closing brace is parsed, so any prefix that is

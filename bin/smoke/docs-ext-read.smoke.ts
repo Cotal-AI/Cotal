@@ -89,6 +89,15 @@ let specBody = "";
 }
 
 {
+  const installation = run(["docs", "installation", "--plain"]);
+  const removal = installation.stdout.split("\n## Remove Cotal\n")[1]?.split("\n## ")[0] ?? "";
+  check("the bundled uninstall guide names the retained connector store and when to leave it in place",
+    installation.status === 0 && removal.includes("`$XDG_CONFIG_HOME/cotal`") && removal.includes("`~/.config/cotal`") &&
+    removal.includes("connector seed store") && removal.includes("only if no other Cotal installation or running Cotal process uses it"),
+    removal || shown(installation));
+}
+
+{
   const plain = run(["docs", "cli-processes.mdx#daemon", "--plain"]);
   const piped = run(["docs", "cli-installation"]);
   const json = run(["docs", "cli-installation", "--json"]);

@@ -68,7 +68,7 @@ export function validateExtArguments(args: ParsedArgs): void {
   if (sub === "remove" && operand && !/^(?:@[a-z0-9-][a-z0-9._~-]*\/)?[a-z0-9-][a-z0-9._~-]*$/i.test(operand)) {
     throw usage(`invalid extension package name "${oneLine(operand)}". Give the package name as shown by \`cotal ext list\``);
   }
-  if (sub === "seed" && args.positionals.length !== 1) throw usage(EXT_USAGE);
+  if (sub === "seed" && args.positionals.length !== 1) throw usage("cotal ext seed takes no operands");
 }
 
 /**

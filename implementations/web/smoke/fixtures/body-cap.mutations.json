@@ -123,7 +123,7 @@
     },
     {
       "name": "C16 the send route swallows the size refusal into a body it could not parse, so an oversized post is answered as a malformed one and the size is never mentioned",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "    (e: unknown) => {\n      if (e instanceof PayloadTooLarge) throw e;\n      return undefined;\n",
       "replace": "    (e: unknown) => {\n      return undefined;\n",
       "expectRed": "10.3 a post with NO declared length is refused on the read loop as a size, never as a body it read and disliked",

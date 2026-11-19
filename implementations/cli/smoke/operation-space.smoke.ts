@@ -246,6 +246,14 @@ check("removing the seeded default says so and names what writes a fresh copy",
 
 // A launch preview refuses a missing persona as the launch does, naming where it looked: the catalog
 // for a name, the file for a path, and for the default also the command that writes one.
+const spawnHelp = cotal("spawn", "--help");
+check("public spawn help shows the two persona forms, not the persisted config option", spawnHelp.status === 0 &&
+  spawnHelp.stdout.includes("[<persona> | --file <persona-file>]") && !spawnHelp.stdout.includes("--config"), shown(spawnHelp));
+const publicConfig = cotal("spawn", "-d", "--config", "default", "--name", "cfg-test");
+check("public spawn config refuses with both supported forms and the public help", publicConfig.status === 1 && publicConfig.stdout === "" &&
+  publicConfig.stderr.includes("--config is reserved for persisted internal launch callers") &&
+  publicConfig.stderr.includes("`cotal spawn <persona>` for a catalog name") && publicConfig.stderr.includes("`cotal spawn --file <persona-file>` for a file") &&
+  publicConfig.stderr.endsWith(spawnHelp.stdout), shown(publicConfig));
 const catalog = dirname(agentFilePath(root, "default"));
 const noName = cotal("spawn", "nosuch", "--dry-run", "--json");
 check("spawn --dry-run of a missing name is TARGET_NOT_FOUND, naming the catalog and --file",

@@ -747,10 +747,12 @@ try {
     const signedOutStatus = await cotal(["status", "--space", signedOutSpace], 30_000);
     console.log(`   #1832 signed-out bare status (exit=${signedOutStatus.status}):\n` +
       signedOutStatus.out.split("\n").filter((l) => /login|live snapshot/.test(l.replace(/\x1b\[[0-9;]*m/g, ""))).map((l) => `   | ${l}`).join("\n"));
-    check("discovered space, signed out: status says not signed in with the exact login command",
+    // The source CLI uses bare cotal with an installed executable on PATH and pnpm cotal otherwise.
+    const pinnedIdp = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    check("manual remote space, signed out: status says not signed in with the pinned login command",
       signedOutStatus.status === 0 &&
         /^ +Account: +● not signed in$/m.test(signedOutStatus.out) &&
-        new RegExp(`^Next\n(?: .*\n)* +cotal login --idp ${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +Sign in to the selected space$`, "m").test(signedOutStatus.out) &&
+        new RegExp(`^Next\n(?: .*\n)* +(?:pnpm )?cotal login --idp ${pinnedIdp} +Sign in to the selected space$`, "m").test(signedOutStatus.out) &&
         !signedOutStatus.out.includes("no user-auth material"),
       signedOutStatus.out.slice(-600));
     const signedOutPs = await cotal(["ps", "--json", "--space", signedOutSpace], 30_000);
