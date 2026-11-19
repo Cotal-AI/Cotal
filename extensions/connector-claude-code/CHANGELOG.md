@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.171.1
+
+### Patch Changes
+
+- c5d830a: Publish Claude Code's final assistant reply before closing its activity run when the transcript write arrives after the Stop hook.
+
 ## 0.171.0
 
 No changes in this release.

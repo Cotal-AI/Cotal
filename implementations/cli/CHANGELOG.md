@@ -1,5 +1,13 @@
 # @cotal-ai/cli
 
+## 0.171.1
+
+### Patch Changes
+
+- 6f43df3: Channel details and watch output suggest history reads that work even for channels named `clear` or `limit`. The suggested commands quote the `#channel` argument so it stays distinct from a history subcommand.
+- @cotal-ai/core@0.171.1
+  - @cotal-ai/workspace@0.171.1
+
 ## 0.171.0
 
 ### Patch Changes
