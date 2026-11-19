@@ -250,7 +250,7 @@ async function provisionLocalLocked(t: MeshTarget, name: string, session: string
     });
     writeFileSync(join(dir, "agent.creds"), creds, { mode: 0o600 });
   } catch (e) {
-    await retireDir(dir).catch(() => {});
+    await retireLocalAppIdentity(dir).catch(() => {});
     throw e;
   }
   return { ...reply, env: { ...env, COTAL_CREDS: join(dir, "agent.creds"), COTAL_ACCEPTED_TOKEN: acceptedToken! } };
@@ -259,7 +259,7 @@ async function provisionLocalLocked(t: MeshTarget, name: string, session: string
 async function retire(values: FlagValues<typeof appIdentityFlags>): Promise<{ ok: true } | AppIdentityReply> {
   if (!values.dir) return { ok: false, error: "retire needs --dir <dir>" };
   if (isUserAppDir(values.dir)) await retireUserApp(values.dir);
-  else await retireDir(values.dir);
+  else await retireLocalAppIdentity(values.dir);
   return { ok: true };
 }
 
@@ -276,7 +276,7 @@ async function reap(values: FlagValues<typeof appIdentityFlags>): Promise<{ ok: 
  *  the directory. The directory must have provision's shape, and only those two files go, so a wrong
  *  path removes nothing else. When the broker footprint cannot be removed the files stay, so a
  *  later attempt still knows what to retire. */
-async function retireDir(dirArg: string): Promise<void> {
+export async function retireLocalAppIdentity(dirArg: string): Promise<void> {
   const dir = resolve(dirArg);
   if (!recordParents().includes(dirname(dir)) || !basename(dir).startsWith(CRED_DIR_PREFIX) || !lstatSync(dir, { throwIfNoEntry: false })?.isDirectory())
     throw new Error(`refusing to remove ${dirArg}: not a credential directory provision made`);
@@ -324,7 +324,7 @@ async function retireOrphans(): Promise<Set<string>> {
   for (const { dir, record } of localRecords()) {
     if (ownerAlive(record)) continue;
     try {
-      await retireDir(dir);
+      await retireLocalAppIdentity(dir);
       retired.add(record.lifecycleUid);
     } catch {
       // Keep both the recovery record and the name reservation until retirement succeeds.
