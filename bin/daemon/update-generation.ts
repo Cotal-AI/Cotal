@@ -1,9 +1,9 @@
 /** A replacement updater observes activation. The daemon remains the sole automatic restart owner. */
 import { existsSync } from "node:fs";
 import { CommandFailure, homeCotalDir } from "@cotal-ai/workspace";
-import { queryDaemon } from "./client.js";
+import { openVerified, queryDaemon } from "./client.js";
 import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
-import { installedDaemonIdentity, reconcileMissingShellRuntime, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, reconcileMissingShellRuntime, requestInstalledDaemon, unitReceiptFile } from "./install.js";
 import { daemonManagerIntentFile } from "./manager.js";
 
 /** Test hooks: the installed-service check, the daemon query and the wait bound. */
@@ -13,6 +13,8 @@ interface GenerationWaitProbe {
   readonly timeoutMs?: number;
   /** A child whose parent will print the same line waits without printing it. */
   readonly quiet?: boolean;
+  /** A verified manual reconcile child has authority to release the already fenced Linux daemon. */
+  readonly restartPrepared?: boolean;
   readonly lifecycle?: (paths: DaemonPaths, deadline: number) => Promise<{
     poll(remainingMs: number): Promise<boolean | void>;
     close(): void;
@@ -51,6 +53,7 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
   if (!probe.quiet) console.log(waitLine);
   const deadline = Date.now() + bound;
   let waiting = "the recorded daemon has not answered";
+  let restartRequested = false;
   const lifecycle = await probe.lifecycle?.(paths, deadline);
   try {
   for (;;) {
@@ -67,6 +70,21 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
       if (!reply.ok) waiting = `the daemon could not answer status: ${reply.error.code} ${reply.error.message}`;
       else if (reply.result.version !== version) {
         waiting = `daemon PID ${reply.result.pid} still runs Cotal ${reply.result.version}${reply.result.generation ? ` (${reply.result.generation.waiting})` : ""}`;
+        const evidence = reply.result.update?.restartEvidence;
+        if (probe.restartPrepared && !restartRequested && evidence?.prepared && evidence.managers.every(row => row.fenced && row.seats === 0)) {
+          // The updater already verified this installed entry. Do not wait for the old daemon
+          // to repeat that check with its shorter watchdog. Its authenticated shutdown lets
+          // the existing native unit restart it without a competing stop/start request.
+          const budget = () => Math.max(1, deadline - Date.now());
+          const socket = await openVerified({ paths, timeoutMs: Math.min(5000, budget()) });
+          try {
+            const ready = await requestInstalledDaemon(socket, "daemon-stop", false, Math.min(20_000, budget()));
+            if (ready.pid === reply.result.pid && ready.startedAt === reply.result.startedAt && ready.version === reply.result.version && Date.now() < deadline) {
+              restartRequested = true;
+              await requestInstalledDaemon(socket, "daemon-stop", true, Math.min(5000, budget()));
+            }
+          } finally { socket.destroy(); }
+        }
       } else {
         const pending = (reply.result.managers ?? []).filter(manager =>
           (manager.pid !== undefined || existsSync(daemonManagerIntentFile(manager.space, homeCotalDir()))) && manager.state !== "answering");
