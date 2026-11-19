@@ -153,6 +153,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const needing = useMemo(() => waiting(everyone).length, [everyone]);
   const busy = useMemo(() => roster.filter((p) => p.card.kind === "agent" && p.status === "working").length, [roster]);
   const lastSeen = useStore(store, (s) => s.stale.some((m) => m.name === "roster"));
+  const dmReadFailed = useStore(store, (s) => s.stale.some((m) => m.kind === "refused" && m.name === "direct messages"));
   const badgeOf = useMemo(() => badgeLookup(everyone), [everyone]);
   const panel = usePanel(route, phone);
   const shown = panelShown(panel, paneOpen);
@@ -173,7 +174,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
         controller={controller}
         paneOpen={shown}
         panel={panelBody}
-        places={places}
+        places={dmReadFailed ? { ...places, dmUnavailable: "This dashboard couldn't read direct messages." } : places}
         phone={phone}
         waiting={needing}
         working={busy}

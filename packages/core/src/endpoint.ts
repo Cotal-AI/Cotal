@@ -2721,9 +2721,8 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Fetch recent DMs (any sender→any recipient) from the space's DM backlog. `signal` cancels the
-   *  active pull and reclaims its ephemeral consumer. God-view only:
-   *  a normal agent/observer's ACL denies CONSUMER.CREATE on DM_<space>, so this throws-and-
-   *  skips for them — only an `admin`-profile cred can read it. Returns `HistoryMessage[]`
+   *  active pull and reclaims its ephemeral consumer. The read rejects if the broker denies access
+   *  to the DM backlog. Returns `HistoryMessage[]`
    *  (#1413): every field present on a row was checked by the drain before the row was
    *  returned — a stored row missing `ts` / `space` / `parts` / `from.name` is dropped, never
    *  returned with that member silently `undefined`. */
@@ -2734,8 +2733,8 @@ export class CotalEndpoint extends EventEmitter {
   /** The newest `limit` DMs (100 by default) sent to or by any of `principals`, oldest first. Each
    *  principal is a concrete `<owner>.<actor>`; anything else throws, because a wildcard would widen
    *  the read to other principals' DMs. The broker filters on the DM subject, so every row's `to` or
-   *  `from.id` is one of them. Only an `admin` credential may read the DM backlog. Where
-   *  {@link dmHistory} returns an empty list for any other, this returns `denied`. */
+   *  `from.id` is one of them. Only an `admin` credential may read the DM backlog. This returns
+   *  `denied` for a broker refusal, while {@link dmHistory} rejects. */
   async dmHistoryOf(principals: readonly string[], opts?: { limit?: number; signal?: AbortSignal }): Promise<DmHistoryRead> {
     const keys = [...new Set(principals)].map((p) => {
       const key = parsePrincipalKey(p);

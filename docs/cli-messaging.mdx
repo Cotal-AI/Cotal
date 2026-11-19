@@ -613,7 +613,9 @@ is stored when the chat stream is gone. That report warns `CHAT_STREAM_ABSENT` a
 because channel history was not read, and it does not say to create the space's streams again. A
 read that did not ask for direct messages, and a `--dms` read that found none stored, still refuses
 `TARGET_UNAVAILABLE` when the chat stream is gone. `history --dms` warns `DM_STREAM_ABSENT` and is
-partial when the direct-message stream is not on the broker. Channel history is still shown. When the space's broker runs on this machine and logged
+partial when the direct-message stream is not on the broker. If the broker refuses the DM read,
+the report is partial and warns `DM_STREAM_UNREAD` with the refusal. Channel history is still shown.
+When the space's broker runs on this machine and logged
 damage in a stored file since it started, `history` warns `STORE_DAMAGE_LOGGED` with the broker's
 words, because it serves only what it can still read. The read stays complete, as it read the stream
 the broker serves. A broker whose log is not on this machine is not checked. `--limit` bounds the read, and `--since`, `--from` and `--grep` then

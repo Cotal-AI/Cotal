@@ -245,7 +245,8 @@ try {
     const activity = (await activityRes.json()) as { entries?: { mode: string; msg: Message }[]; partial?: boolean };
     ok("the activity feed carries the message from a complete read", activityRes.status === 200 && activity.partial === false && activity.entries?.some((e) => e.mode === "chat" && isNonce(e.msg)) === true, activity);
     const dms = await web("/api/dms", { headers: authed });
-    ok("the direct-message history answers for the admin credential", dms.status === 200 && Array.isArray(await dms.json()), dms.status);
+    const emptyDms = await dms.json();
+    ok("an authorized empty DM history is still a successful empty list", dms.status === 200 && Array.isArray(emptyDms) && emptyDms.length === 0, emptyDms);
     const del = await web("/api/channel/delete", {
       method: "POST",
       headers: { ...authed, origin: `http://127.0.0.1:${WEB_PORT}`, "content-type": "application/json" },
@@ -282,6 +283,34 @@ try {
     const stopAgain = cotal(["service", "stop", "web", "--instance", liveBoot!.log.instanceId, "--space", SPACE, "--yes"]);
     for (let i = 0; i < 50 && alive(livePid); i++) await sleep(100);
     ok("the explicit stop ends the dashboard and removes its bootstrap file before the stack", stopAgain.status === 0 && !alive(livePid) && !existsSync(liveBoot!.path) && meshPids.every(alive), out(stopAgain).slice(-500));
+
+    const remove = cotal(["service", "remove", "web", "--space", SPACE, "--yes"]);
+    ok("the stopped admin dashboard definition can be removed", remove.status === 0, out(remove));
+    const addDefault = cotal(["service", "add", "web", "--preset", "web", "--space", SPACE, "--root", root, "--port", String(WEB_PORT)]);
+    ok("the dashboard definition accepts the space's default observer credential", addDefault.status === 0, out(addDefault));
+    const startDefault = cotal(["service", "start", "web", "--space", SPACE, "--no-open"]);
+    const defaultPid = pidOf(startDefault);
+    if (Number.isFinite(defaultPid)) ownPids.push(defaultPid);
+    ok("the dashboard starts with the default observer credential", startDefault.status === 0, out(startDefault));
+    const defaultBoot = await bootstrapAfter([sessionPath, liveBoot!.path]);
+    ok("the observer dashboard writes a private launch link", typeof defaultBoot?.session.launchUrl === "string");
+    const defaultSession = await fetch(defaultBoot!.session.launchUrl as string, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
+    const defaultCookie = defaultSession.headers.get("set-cookie")?.split(";")[0];
+    ok("the observer dashboard authenticates a browser session", defaultSession.status === 302 && defaultCookie !== undefined);
+    const headers = { cookie: defaultCookie! };
+
+    const deniedDms = await web("/api/dms", { headers });
+    const dmError = (await deniedDms.json()) as { error?: string };
+    const dmRefusal = /^direct messages: the read failed:.*permissions? violation/i;
+    ok("the default observer's refused DM read is a named 503", deniedDms.status === 503 && dmRefusal.test(dmError.error ?? ""), dmError);
+    const partialRes = await web("/api/activity", { headers });
+    const partial = (await partialRes.json()) as typeof activity & { read: number; of: number; missing: string[]; reasons: Record<string, string> };
+    ok("activity retains chat and names the refused DM source", partialRes.status === 200 && partial.partial === true && partial.read === 1 && partial.of === 2 &&
+      partial.missing.length === 1 && partial.missing[0] === "direct messages" && /permissions? violation/i.test(partial.reasons["direct messages"] ?? "") &&
+      partial.entries?.some((e) => e.mode === "chat" && isNonce(e.msg)) === true, partial);
+    const stopDefault = cotal(["service", "stop", "web", "--space", SPACE, "--yes"]);
+    ok("the observer dashboard stops before the stack", stopDefault.status === 0, out(stopDefault));
+
     const down = cotal(["down", "--yes"]);
     ok("bare down then stops the auth mesh", down.status === 0 && meshPids.every((pid) => !alive(pid)), out(down).slice(-500));
   }

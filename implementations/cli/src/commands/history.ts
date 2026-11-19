@@ -411,16 +411,22 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     olderRetained = retained === undefined ? null : retained > read.length;
     if (req.dms) {
       const dmLimit = Math.min(req.limit + 1, Number.MAX_SAFE_INTEGER);
-      const dms = await ep.dmHistory({ limit: dmLimit });
-      const merged = [...read, ...dms.slice(-req.limit).map((msg) => itemOf(msg, {}))].sort((a, b) => a.ts.localeCompare(b.ts));
-      if (dms.length > req.limit || merged.length > req.limit) olderRetained = true;
-      read = merged.slice(-req.limit);
-      // An absent stream reads as no messages. That is a missing read, not an empty history.
-      try {
-        if (!(await ep.dmStreamPresent()))
-          warnings.push({ code: "DM_STREAM_ABSENT", target: req.target, message: `the direct-message stream of ${conn.space} is not on its broker, so direct messages are not shown` });
-      } catch (e) {
-        warnings.push({ code: "DM_STREAM_UNREAD", target: req.target, message: `the direct-message stream could not be read, so whether it is present is unknown: ${(e as Error).message}` });
+      const dms = await ep.dmHistory({ limit: dmLimit }).catch((e: unknown) => {
+        if (!denial(e)) throw e;
+        warnings.push({ code: "DM_STREAM_UNREAD", target: req.target, message: `direct-message history could not be read: ${(e as Error).message}` });
+        return undefined;
+      });
+      if (dms !== undefined) {
+        const merged = [...read, ...dms.slice(-req.limit).map((msg) => itemOf(msg, {}))].sort((a, b) => a.ts.localeCompare(b.ts));
+        if (dms.length > req.limit || merged.length > req.limit) olderRetained = true;
+        read = merged.slice(-req.limit);
+        // An absent stream reads as no messages. That is a missing read, not an empty history.
+        try {
+          if (!(await ep.dmStreamPresent()))
+            warnings.push({ code: "DM_STREAM_ABSENT", target: req.target, message: `the direct-message stream of ${conn.space} is not on its broker, so direct messages are not shown` });
+        } catch (e) {
+          warnings.push({ code: "DM_STREAM_UNREAD", target: req.target, message: `the direct-message stream could not be read, so whether it is present is unknown: ${(e as Error).message}` });
+        }
       }
     }
   } else {

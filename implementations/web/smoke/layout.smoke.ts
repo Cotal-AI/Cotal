@@ -77,7 +77,9 @@ const go = (hash: string) => {
 };
 const controller = { open: async () => undefined, openSession: () => undefined, closeSession: () => undefined } as unknown as Controller;
 let patch: Partial<DashboardState> = seed;
+let store: Store<DashboardState>;
 const start = (s: Store<DashboardState>) => {
+  store = s;
   s.set(patch);
   return { controller, stop: () => undefined };
 };
@@ -190,6 +192,10 @@ let m: Mounted = await app("#/channel/review");
     [dms.tagName.toLowerCase(), dms.getAttribute("aria-label") ?? dms.textContent, dms.getAttribute("aria-disabled"), said, tooltip()],
     ["button", "DMs", "true", "No direct messages yet.", "No direct messages yet."]);
   await m.run(() => dms.blur());
+  await m.run(() => store.set({ stale: [{ kind: "refused", name: "direct messages", reason: "Permissions Violation" }] }));
+  same("the disabled DM tab names a failed read instead of claiming no messages", description(dms), "This dashboard couldn't read direct messages.");
+  await m.run(() => store.set({ stale: [] }));
+  same("the DM tab restores the empty explanation after the read recovers", description(dms), "No direct messages yet.");
   await m.run(() => go("#/needs"));
   same("2.6 the Needs route draws the Agents view, so Agents is the current tab", tabs().filter((t) => t.current === "page").map((t) => t.text), ["Agents"]);
   await m.run(() => go("#/channel/review"));

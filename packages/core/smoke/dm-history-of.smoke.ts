@@ -6,7 +6,7 @@
  * for two principals' DMs: each answer holds every DM to or from them once, oldest first, and no
  * other, with `to` and `from.id` taken from the subject. A limit keeps the newest DMs across both
  * directions. A principal with no DMs reads as an empty answer. An observer's read answers `denied`,
- * while its `dmHistory` keeps the documented empty list. A principal with a wildcard, an extra dot
+ * while its `dmHistory` rejects with the broker's reason. A principal with a wildcard, an extra dot
  * or no dot throws before any read.
  *
  * Run: pnpm smoke:dm-history-of   (needs `nats-server` on PATH)
@@ -97,8 +97,8 @@ try {
 
   const denied = await observer.dmHistoryOf([alice.principal]);
   check("observer: the read answers denied, with the broker's reason", denied.state === "denied" && /permissions? violation/i.test(denied.reason), denied);
-  const godView = await observer.dmHistory();
-  check("observer: dmHistory keeps its documented empty list", Array.isArray(godView) && godView.length === 0, godView.length);
+  const allDenial = await observer.dmHistory().then(() => undefined, (e: Error) => e.message);
+  check("observer: dmHistory rejects with the broker's reason", /permissions? violation/i.test(allDenial ?? ""), allDenial);
 
   for (const bad of [`${DEV_OWNER}.*`, `${DEV_OWNER}.a.b`, "alice", ""]) {
     let refused: string | undefined;

@@ -275,8 +275,10 @@ the agent page show. The dashboard shows only data the observer can read.
 ## Check visibility limits
 
 The service uses the space's `web.creds` or the protected credential file you supplied, and its grants.
-It does not mint a replacement admin credential. A chat-only file hides DM views.
-A restricted read is not an empty mesh and does not prove that a hidden DM is absent.
+It does not mint a replacement admin credential. The default observer credential cannot read DM history.
+If the broker refuses that read, Direct messages is marked stale, and Activity is marked partial with
+direct messages named as missing. When there is no conversation to open, the Direct messages button
+says that the dashboard could not read direct messages instead of saying there are none.
 
 See [Identity](identity-and-auth.mdx) for credential scopes and [MeshView](mesh-view.mdx) for the terminal observer API.
 The [wire specification](../SPEC.md) defines delivery and visibility guarantees.

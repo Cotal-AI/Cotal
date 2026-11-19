@@ -335,6 +335,9 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
     bare.slice(1, 3).map((i) => [i.tag, i.type, i.disabled, i.href]), [["button", "button", "true", null], ["button", "button", "true", null]]);
   same("5.2 each is described by the empty state the reader would find, which its Tooltip shows, keeping its name as its label",
     bare.slice(1, 3).map((i) => [i.label, i.description]), [["Channels", "No channels yet. One appears with its first message."], ["Direct messages", "No direct messages yet."]]);
+  const unreadable = railItems(parse(renderShell({ stale: [{ kind: "refused", name: "direct messages", reason: "Permissions Violation" }] })));
+  same("the disabled Direct messages item distinguishes a failed read from an empty history",
+    [unreadable[2].disabled, unreadable[2].description], ["true", "This dashboard couldn't read direct messages."]);
   ok("5.3 an item with somewhere to go is a link named by its label", bare[0].tag === "a" && bare[0].label === "Activity" && bare[0].href === "#/activity" && bare[0].disabled === null, bare[0]);
 
   let goTo!: (r: Route) => void;

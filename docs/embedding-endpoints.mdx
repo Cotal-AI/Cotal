@@ -12,6 +12,9 @@ The wire requirements are in [SPEC §6](../SPEC.md#6-presence-and-discovery) and
 Each endpoint keeps its roster, watch freshness and write diagnosis in one internal presence component.
 Applications use the `CotalEndpoint` methods and events described here.
 
+`dmHistory()` rejects if the broker refuses access to the space's DM backlog. An empty successful read
+does not represent a refusal. `dmHistoryOf()` reports a broker refusal as `denied` instead.
+
 ## Channel history [#channel-history]
 
 `multiChannelHistory(channels, { limit, signal })` returns the newest matching chat messages,
