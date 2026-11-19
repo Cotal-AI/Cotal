@@ -740,6 +740,15 @@ export async function registerServingInstance(
   },
 ): Promise<{ registrationRevision: number; processEpoch: number; grant: EpServeGrant }> {
   const { registrationRevision, processEpoch } = await registerServiceInstance(kv, args);
+  return finishServingRegistration(kv, args, { registrationRevision, processEpoch });
+}
+
+/** Finish serving at an already committed registration coordinate without taking another freeze. */
+export async function finishServingRegistration(
+  kv: KV,
+  args: Parameters<typeof registerServingInstance>[1],
+  { registrationRevision, processEpoch }: { registrationRevision: number; processEpoch: number },
+): ReturnType<typeof registerServingInstance> {
   const { endpoint } = args.spec;
   const readProcessEpoch = async (): Promise<number> => {
     const gate = await args.barrier.observe();

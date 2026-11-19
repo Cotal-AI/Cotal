@@ -113,7 +113,9 @@ Recovery requires a complete CONNZ sweep proving that the freeze-holder is gone:
 For a remote Manager, the host must also prove its separate registration executor gone before changing the gate or its credential family.
 The target gate determines both identities, including when another owner's supervisor requests recovery.
 A live holder or executor, an incomplete sweep, or an unreachable delivery daemon refuses recovery.
-A sweep proves broker connection absence at that observation, not process death or exclusion of a later reconnect during credential refresh.
+Remote registration also holds a host-owned renewable lease. Recovery refuses with `registration-leased` while that attempt remains active, even when credential replacement temporarily disconnects its executor.
+After the lease expires, recovery claims it durably before changing the family or gate. The old attempt cannot renew after that claim.
+The lease outlives every executor credential issued under it, so a disconnected expired attempt cannot reconnect with its old authority while recovery runs.
 Silence is not proof of death, and waiting out a TTL does not reopen the gate.
 
 The recovery result depends on the registration's durable state:
@@ -124,6 +126,7 @@ The recovery result depends on the registration's durable state:
 Boot healing and re-registration use separate one-shot executor windows.
 Healing a large predecessor family cannot consume the takeover's credential lifetime.
 If re-registration outlasts a connection's credential lifetime, it retries the same frozen operation with fresh authority and retains verified-holder progress.
+The participant renews its registration lease through the host while work or credential replacement is in progress. A host refusal stops registration. Upgrade the host before using a participant that requires registration leases.
 An interrupted holder check resumes only after another liveness check.
 Its progress is bound to that operation, gate revision, and holder set, so a later freeze cannot reuse it.
 

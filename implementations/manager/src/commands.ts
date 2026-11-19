@@ -26,7 +26,9 @@ import {
   type FlagSpec,
   type ParsedArgs,
   type RemoteManagerMaintenanceRequest,
+  type RemoteManagerAuthorityMaterial,
   rejectionText,
+  lifecycleBlockedFrom,
 } from "@cotal-ai/core";
 import {
   assertManagerName, authDir, canonicalLocalProcessPath, canonicalRoot, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
@@ -383,7 +385,18 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
         throw new Error(`registered space "${space}" has no pinned public exchange URL for retained managed agents`);
       console.error(`manager startup: requesting remote authority for ${state.instanceId}`);
-      let material = await provider.managerServiceAuthority({ ...providerCall, request });
+      let material: RemoteManagerAuthorityMaterial;
+      try {
+        material = await provider.managerServiceAuthority({ ...providerCall, request });
+      } catch (error) {
+        const blocked = lifecycleBlockedFrom(error)
+          ?? lifecycleBlockedFrom((error as { body?: unknown })?.body);
+        if (blocked?.blockedOp !== "registration" || blocked.gateState !== "frozen") throw error;
+        const repair = remoteManagerMaintenanceRequest(state, "cli", "reconcile-registration", state.instanceId);
+        const response = await provider.maintainRemoteManager({ ...providerCall, request: repair });
+        remoteManagerMaintenanceResult(response, repair, response.owner);
+        material = await provider.managerServiceAuthority({ ...providerCall, request });
+      }
       const actors = remoteManagerActors(state.instanceId);
       if (material.owner.length === 0 || material.instanceId !== state.instanceId || material.lifecycleUid !== state.lifecycleUid ||
           JSON.stringify(material.actors) !== JSON.stringify(actors))
@@ -393,6 +406,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         const response = await provider.maintainRemoteManager!({ ...providerCall, request: maintenanceRequest });
         return remoteManagerMaintenanceResult(response, maintenanceRequest, material.owner);
       };
+      if (!material.registrationLease) throw new Error("host prepare returned no registration lease; upgrade the host before registering");
       const registered = await registerRemoteManagerAuthority({
         space,
         server,
@@ -400,14 +414,17 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         instanceId: state.instanceId,
         serveActor: actors.serve,
         prepareCreds: materialCredential(material, "executor", state.identities.executor),
+        registrationLease: material.registrationLease,
         refreshPrepareCreds: async () => {
           const refreshed = await provider.managerServiceAuthority!({
-            ...providerCall, request: remoteManagerAuthorityRequest(state, "cli", "prepare"),
+            ...providerCall, request: remoteManagerAuthorityRequest(state, "cli", "prepare", { registrationLeaseId: material.registrationLease!.leaseId }),
           });
           if (refreshed.owner !== material.owner || refreshed.instanceId !== state.instanceId ||
               refreshed.lifecycleUid !== state.lifecycleUid || JSON.stringify(refreshed.actors) !== JSON.stringify(actors))
             throw new Error("the host returned manager-service material for different lifecycle coordinates");
           const creds = materialCredential(refreshed, "executor", state.identities.executor);
+          if (!refreshed.registrationLease || refreshed.registrationLease.leaseId !== material.registrationLease!.leaseId)
+            throw new Error("host prepare refresh changed or omitted the registration lease");
           material = refreshed;
           return creds;
         },
@@ -1003,12 +1020,16 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "manager", target, result, ...(native.repairCursorCleanup === "retained" ? { completeness: "partial" as const, partial: { message: "The native gate reopened, but its freeze-bound repair cursor was retained. No cursor cleanup success was inferred." } } : {}) }, (row): Report => ({ sections: [{ title: "Issuance gate reopened", blocks: [{ kind: "fields", rows: [["Space", space], ["Endpoint", endpoint], ["Full instance", instanceId], ["Native operation", row.opId], ["Holder", row.holderPrincipal], ["Liveness", row.liveness], ["Gate generation", String(row.reopenedAtGeneration)], ["Process epoch", String(row.after.processEpoch)], ["Registration revision", String(row.after.registrationRevision)], ["Revoked this attempt", String(row.revokedCredentialIds.length)], ["Verified this attempt", String(row.holdersVerifiedThisAttempt.length)], ["Already verified", String(row.holdersVerifiedBeforeAttempt.length)], ["Unverified holders", String(row.holdersRemaining.length)], ["Repair cursor", row.repairCursorCleanup], ["Manager", "not started"]] }, { kind: "lines", lines: ["This receipt describes the native gate repair. It does not establish that a manager is now running or serving."] }] }] }));
   } catch (error) {
     if (isCommandFailure(error)) throw error;
-    const beforeEffects = error instanceof GateReconcileRefused && ["no-gate", "not-frozen", "wrong-op-kind", "holder-alive", "holder-unknown", "liveness-unestablishable"].includes(error.condition);
+    const beforeEffects = error instanceof GateReconcileRefused && ["no-gate", "not-frozen", "wrong-op-kind", "holder-alive", "registration-leased", "registration-lease-unestablishable", "holder-unknown", "liveness-unestablishable"].includes(error.condition);
     // An open gate, or no gate, is a healthy coordinate: there is nothing to repair there.
     const nothing = error instanceof GateReconcileRefused && (error.condition === "not-frozen" || error.condition === "no-gate");
     if (nothing) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${error.condition === "not-frozen" ? `the ${endpoint} gate for instance ${instanceId} is open` : `there is no ${endpoint} gate for instance ${instanceId}`}, so there is nothing to repair`, { target: { ...target, condition: error.condition }, native: { code: error.condition, detail: error.message }, remedy: "nothing to do; if you meant another gate, name it with --endpoint and --instance" });
     // The guard's own sentence names the freeze-holder and the next step for this condition.
-    if (beforeEffects) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the native gate-repair guard refused (${error.condition}); the repair did not pass its pre-effect guard`, { target: { ...target, condition: error.condition }, native: { code: error.condition, detail: error.message }, remedy: "inspect the selected gate and the delivery liveness oracle; a timeout is not proof that its holder is gone" });
+    if (beforeEffects) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the native gate-repair guard refused (${error.condition}); the repair did not pass its pre-effect guard`, { target: { ...target, condition: error.condition }, native: { code: error.condition, detail: error.message }, remedy: error.condition === "registration-leased"
+      ? "let registration finish; a dead attempt requires host lease expiry and complete liveness sweeps before recovery"
+      : error.condition === "registration-lease-unestablishable"
+        ? "inspect the host registration lease with its operator; do not delete it or infer that registration is dead"
+        : "inspect the selected gate and the delivery liveness oracle; a timeout is not proof that its holder is gone" });
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native gate repair did not confirm completion; revocation, eviction or reopen work may have occurred. No mutation was retried", { target: { ...target, ...(error instanceof GateReconcileRefused ? { condition: error.condition } : {}) }, remedy: "re-observe this gate and its operation-bound native repair cursor before another explicit repair" });
   } finally { await drainAndClose(nc); }
 }

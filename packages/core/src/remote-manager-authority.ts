@@ -31,6 +31,8 @@ export interface RemoteManagerAuthorityRequest {
   instanceId: string;
   managerLifecycleUid: string;
   requestId: string;
+  /** Prepare renewal only: the host-selected registration attempt, never a credential. */
+  registrationLeaseId?: string;
   /** Activate/renew proves the registration phase that preceded it. The opaque digest is minted
    * and validated by the host; it never carries permissions itself. */
   registrationProof?: string;
@@ -115,6 +117,8 @@ export interface RemoteManagerAuthorityMaterial {
   identities: RemoteManagerAuthorityRequest["identities"];
   /** Prepare returns the deterministic proof that the host will require on activate/renew. */
   nextRegistrationProof?: string;
+  /** Prepare only. Recovery is excluded until this host-owned attempt expires or completes. */
+  registrationLease?: { leaseId: string; expiresAt: number };
   /** `prepare` returns the supervisor; `activate` returns serve+goal/session; `renew` may
    * return every credential. An absent key is absent authority, never an implicit fallback. */
   credentials: Partial<{
