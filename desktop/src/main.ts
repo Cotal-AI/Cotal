@@ -7,7 +7,7 @@ import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, in
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, shownAccountLabel, statusPollDelayMs, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -340,9 +340,17 @@ let editing = false;
 let completedSetup = false;
 let observedReadySpaces: string[] = [];
 let poll: ReturnType<typeof setTimeout> | undefined;
+let watchReconnect: ReturnType<typeof setTimeout> | undefined;
 let windowHidden = false;
 let tickRunning = false;
 let lastTickAt = 0;
+let watchActive = false;
+let watchStarting = false;
+let watchMode = "";
+function setWatchMode(mode: string): void {
+  watchMode = mode;
+  document.documentElement.dataset.watchMode = mode;
+}
 let connection: { space: string; state: string } | undefined;
 let refreshGeneration = 0;
 const accountSpaces = new Map<string, AccountSpace>();
@@ -500,7 +508,7 @@ function showStage(next: Stage, focus = false): void {
   else if (setupActive) { title = "Connecting this computer"; description = "Keep this window open while we check your connection and agent applications."; }
   else if (connection?.space === selectedSpace() && connection.state !== "ready" && connection.state !== "disconnected") { const view = connectionView(connection.state); title = view.title; description = view.description; }
   else { title = "Ready to connect"; description = "You are signed in. Choose Connect when you are ready."; }
-  const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && selectedSpace() ? "VERSION_MISMATCH" : undefined);
+  const issue = problem ?? (!setupActive && applicationRefusals.has(selectedSpace()) ? "NO_AVAILABLE_CONNECTOR" : !setupActive && upgradeNeeded && (selectedSpace() || computerAccount?.hostSupport === "supported" || watchMode === "refused-unknown-op" || watchMode === "version-mismatch") ? "VERSION_MISMATCH" : undefined);
   const recovery = issue ? refusalView(issue, applications) : undefined;
   if (recovery) { title = recovery.title; description = recovery.description; }
   el("recovery-panel").hidden = !recovery;
@@ -832,62 +840,129 @@ function state(value: string, space = selectedSpace()): void {
   else showStage(stage);
   if (isTauri()) void refreshPresence(verified).catch(refusal);
 }
+async function applyStatus(status: Record<string, unknown>, current: () => boolean): Promise<void> {
+  if (!current()) return;
+  selectionPending = false;
+  serviceStatus = status;
+  ready = status.state === "ready";
+  daemonVersion = String(status.version);
+  upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
+  if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version:"))))) clearDetails();
+  renderAgents(status, el("running-agents"));
+  requestAnimationFrame(sizeSpaceList);
+  updateStatus = status.update as UpdateStatus | undefined;
+  renderSettings();
+  if (typeof status.computer === "string") renderComputerName(status.computer);
+  observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
+  const space = selectedSpace();
+  computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
+  if (computerAccount?.hostSupport === "supported") {
+    computerRows.clear(); connections.clear();
+    for (const row of computerSpaces(computerAccount)) {
+      computerRows.set(row.space, row);
+      connections.set(row.space, row.observed === "connected" && observedReadySpaces.includes(row.space) ? "launch-ready" : row.observed);
+    }
+    const manager = Array.isArray(status.managers) ? status.managers.find(item => item.space === space) : undefined;
+    if (launchReady(manager)) { instances.set(space, manager.instanceId); showApplications(manager); }
+    else instances.delete(space);
+    connection = { space, state: connections.get(space) ?? "ready" };
+    if (computerAccount.mode === "account" || computerAccount.mode === "sign-in-required" || computerRows.size || listOpened) { listOpened = true; showStage("finished"); buttons(); return; }
+  }
+  for (const name of observedReadySpaces) connections.set(name, "launch-ready");
+  for (const name of accountSpaces.keys()) {
+    if (observedReadySpaces.includes(name) || name === space) continue;
+    const service = await request({ op: "service-status", space: name });
+    if (!current()) return;
+    if (service.state === "approval-pending") connections.set(name, "approval-pending");
+    else connections.delete(name);
+  }
+  if (connections.size && !editing && !linked) listOpened = true;
+  if (upgradeNeeded) {
+    state("ready", space);
+    showStage(stage);
+    buttons(); return;
+  }
+  if (space) {
+    const manager = Array.isArray(status.managers) ? status.managers.find((item) => item.space === space) : undefined;
+    if (launchReady(manager)) { instances.set(space, manager.instanceId); showApplications(manager); state("launch-ready", space); buttons(); return; }
+    instances.delete(space);
+    const service = await request({ op: "service-status", space });
+    if (!current()) return;
+    state(applicationRefusals.has(space) ? "no-application" : String(service.state) === "connected" ? "ready" : String(service.state), space);
+    if (manager?.reason) refusal(new DaemonRefusal("DEPENDENCY_UNAVAILABLE", `${manager.reason}${manager.next ? `\nNext: ${manager.next}` : ""}`));
+  } else { state("ready", space); if (stage === "connect") showStage("connect"); }
+  buttons();
+}
+function startStatusWatch(): void {
+  if (!isTauri() || watchActive || watchStarting) return;
+  watchStarting = true;
+  const events = new Channel<Frame>();
+  events.onmessage = (frame) => {
+    if (frame.event !== "status" || !frame.result) return;
+    watchStarting = false;
+    watchActive = true;
+    setWatchMode(typeof frame.watchMode === "string" ? frame.watchMode : "push");
+    if (busy || rowOperation || selectionPending || appApplyRunning) return;
+    lastTickAt = Date.now();
+    const space = selectedSpace();
+    const generation = ++refreshGeneration;
+    const current = () => generation === refreshGeneration && space === selectedSpace();
+    void applyStatus(frame.result, current).then(async () => {
+      if (!current()) return;
+      await refreshPresence(connected());
+      void checkAppUpdates();
+      if (appUpdate?.version && ["available", "ready"].includes(appUpdate.phase)) void applyAppUpdate(false, true);
+    }).catch(error => refusal(error, true));
+  };
+  void invoke<Frame>("daemon_request", { request: { op: "status-watch" }, onEvent: events }).then((frame) => {
+    watchStarting = false;
+    watchActive = false;
+    const result = requireResult(frame);
+    if (initialized && result.closed === true && !upgradeNeeded) {
+      if (watchReconnect) clearTimeout(watchReconnect);
+      watchReconnect = setTimeout(() => {
+        watchReconnect = undefined;
+        if (!watchActive && !watchStarting && !tickRunning && !busy && !rowOperation && !appApplyRunning) void refresh();
+      }, 1000);
+    }
+  }).catch(async (error) => {
+    watchStarting = false;
+    watchActive = false;
+    if (error instanceof DaemonRefusal && error.code === "VERSION_MISMATCH") {
+      const mode = typeof error.detail?.watchMode === "string" ? error.detail.watchMode : "version-mismatch";
+      setWatchMode(mode);
+      const statusObj = error.result?.status;
+      if (statusObj && typeof statusObj === "object" && !Array.isArray(statusObj)) {
+        const space = selectedSpace();
+        const generation = ++refreshGeneration;
+        await applyStatus(statusObj as Record<string, unknown>, () => generation === refreshGeneration && space === selectedSpace());
+      } else {
+        upgradeNeeded = true;
+        if (typeof error.detail?.daemonVersion === "string") daemonVersion = error.detail.daemonVersion;
+      }
+      statusProblem = true;
+      showStage(stage);
+      buttons();
+      return;
+    }
+    if (!busy && !loginActive && !setupActive) {
+      ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
+      if (!(problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING")) {
+        if (!(error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && (stage === "welcome" || stage === "sign-in"))) refusal(error, true);
+      }
+      buttons();
+    }
+  });
+}
 async function refresh(): Promise<void> {
   const space = selectedSpace();
   const generation = ++refreshGeneration;
   const current = () => generation === refreshGeneration && space === selectedSpace();
   try {
     const status = await request({ op: "status" });
+    await applyStatus(status, current);
     if (!current()) return;
-    selectionPending = false;
-    serviceStatus = status;
-    ready = status.state === "ready";
-    if (statusProblem || (ready && problem === "NOT_ANSWERING")) clearDetails();
-    renderAgents(status, el("running-agents"));
-    requestAnimationFrame(sizeSpaceList);
-    daemonVersion = String(status.version);
-    updateStatus = status.update as UpdateStatus | undefined;
-    renderSettings();
-    if (typeof status.computer === "string") renderComputerName(status.computer);
-    observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
-      computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
-      if (computerAccount?.hostSupport === "supported") {
-        computerRows.clear(); connections.clear();
-        for (const row of computerSpaces(computerAccount)) {
-          computerRows.set(row.space, row);
-          connections.set(row.space, row.observed === "connected" && observedReadySpaces.includes(row.space) ? "launch-ready" : row.observed);
-        }
-        const manager = Array.isArray(status.managers) ? status.managers.find(item => item.space === space) : undefined;
-        if (launchReady(manager)) { instances.set(space, manager.instanceId); showApplications(manager); }
-        else instances.delete(space);
-        connection = { space, state: connections.get(space) ?? "ready" };
-        upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
-        if (computerAccount.mode === "account" || computerAccount.mode === "sign-in-required" || computerRows.size || listOpened) { listOpened = true; showStage("finished"); buttons(); return; }
-      }
-    for (const name of observedReadySpaces) connections.set(name, "launch-ready");
-    for (const name of accountSpaces.keys()) {
-      if (observedReadySpaces.includes(name) || name === space) continue;
-      const service = await request({ op: "service-status", space: name });
-      if (!current()) return;
-      if (service.state === "approval-pending") connections.set(name, "approval-pending");
-      else connections.delete(name);
-    }
-    if (connections.size && !editing && !linked) listOpened = true;
-    upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
-    if (upgradeNeeded) {
-      state("ready", space);
-      showStage(stage);
-      buttons(); return;
-    }
-    if (space) {
-      const manager = Array.isArray(status.managers) ? status.managers.find((item) => item.space === space) : undefined;
-      if (launchReady(manager)) { instances.set(space, manager.instanceId); showApplications(manager); state("launch-ready", space); buttons(); return; }
-      instances.delete(space);
-      const service = await request({ op: "service-status", space });
-      if (!current()) return;
-      state(applicationRefusals.has(space) ? "no-application" : String(service.state) === "connected" ? "ready" : String(service.state), space);
-      if (manager?.reason) refusal(new DaemonRefusal("DEPENDENCY_UNAVAILABLE", `${manager.reason}${manager.next ? `\nNext: ${manager.next}` : ""}`));
-    } else { state("ready", space); if (stage === "connect") showStage("connect"); }
+    if (initialized && ready && !upgradeNeeded && !watchActive && !watchStarting) startStatusWatch();
   } catch (error) {
     if (!current()) return;
     selectionPending = false;
@@ -1169,7 +1244,8 @@ async function start(): Promise<void> {
   }
   const schedulePoll = () => {
     if (poll) clearTimeout(poll);
-    poll = setTimeout(() => void tick(), statusPollDelayMs(windowHidden, computerAccount?.hostSupport));
+    const delayMs = !ready && appliedUpdate ? 1000 : 60_000;
+    poll = setTimeout(() => void tick(), delayMs);
   };
   const tick = async () => {
     if (tickRunning) return;
@@ -1178,7 +1254,7 @@ async function start(): Promise<void> {
     try {
       if (!busy && !appApplyRunning) {
         lastTickAt = Date.now();
-        await refresh();
+        if (!watchActive) await refresh();
         void checkAppUpdates();
         if (appUpdate?.version && ["available", "ready"].includes(appUpdate.phase)) void applyAppUpdate(false, true);
       }
@@ -1203,16 +1279,15 @@ async function start(): Promise<void> {
     });
     await listen("desktop-hidden", () => {
       windowHidden = true;
-      if (initialized && !tickRunning) schedulePoll();
       void applyAppUpdate();
     });
     await listen("desktop-shown", () => {
       const wasHidden = windowHidden;
       windowHidden = false;
-      if (wasHidden && initialized && !tickRunning) void tick();
+      if (wasHidden && initialized && !watchActive && !tickRunning) void tick();
     });
     await listen("desktop-tray-open", () => {
-      if (windowHidden && initialized && !tickRunning && Date.now() - lastTickAt >= 1000) void tick();
+      if (windowHidden && initialized && !watchActive && !tickRunning && Date.now() - lastTickAt >= 1000) void tick();
     });
     try {
       appliedUpdate = await invoke<AppUpdateReceipt | undefined>("app_update_receipt") ?? undefined;
@@ -1234,6 +1309,7 @@ async function start(): Promise<void> {
   lastTickAt = Date.now();
   document.querySelector(".app")!.classList.remove("loading");
   if (computerAccount?.hostSupport !== "supported") text("tray-label", [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");
+  if (ready) startStatusWatch();
   schedulePoll();
 }
 document.querySelector(".connection-card")!.addEventListener("transitionend", event => {
@@ -1268,7 +1344,7 @@ document.addEventListener("keydown", event => {
   const primary = [...document.querySelectorAll<HTMLButtonElement>(".connection-card .primary:not(:disabled):not([hidden])")].find(button => !button.closest("[hidden]"));
   if (primary) { event.preventDefault(); primary.click(); }
 });
-window.addEventListener("beforeunload", () => { if (poll) clearTimeout(poll); if (countdown) clearInterval(countdown); });
+window.addEventListener("beforeunload", () => { if (poll) clearTimeout(poll); if (watchReconnect) clearTimeout(watchReconnect); if (countdown) clearInterval(countdown); });
 if (isTauri()) {
   void reportFirstPaint(document.querySelector<HTMLImageElement>(".brand-mark")!, document.querySelector<HTMLElement>(".sidebar")!, () => invoke<boolean | null>("first_paint"))
     .then(visible => { if (visible === false) windowHidden = true; return start(); }, error => { notice(String(error), true); return start(); });
