@@ -72,7 +72,9 @@ with a directory parent; no attempt was started and the preservation journal is 
 A destination inside the preserved store refuses `USAGE_INVALID` (exit 1). So does one
 inside a path `clean all` removes, such as `.cotal/auth` or the space's `.cotal/space.<hex>`
 folder, because that cleanup would remove the backup with them. One in a
-folder this account cannot write refuses `PERMISSION_DENIED` (exit 2) and names that folder. A `--store-dir` that is not the cut's preserved store, such as an empty folder,
+folder this account cannot write refuses `PERMISSION_DENIED` (exit 2) and names that folder.
+Its Next gives a shell-quoted `chmod` command when the path can be displayed unchanged, or you can
+choose a writable folder. A `--store-dir` that is not the cut's preserved store, such as an empty folder,
 refuses `CONFLICT` (exit 2) and names both stores. A process that listens at the cut's recorded
 address refuses `CONFLICT` (exit 2), as `backup restore` and a resuming `up` refuse it, and its Next
 says to stop the process that listens there and run the same `backup create` again. Any other
