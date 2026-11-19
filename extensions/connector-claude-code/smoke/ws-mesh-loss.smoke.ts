@@ -7,12 +7,15 @@
  *
  *   1. Every failed dial was reported as a bare `ConnectionError`, with no address and no reason.
  *      Node's WebSocket gives its error event no message, and nats-core builds its error from it.
+ *      A failed manual reconnect also told its caller to run `/reconnect`, which Claude Code does
+ *      not have. That reply only ever answers a `cotal_reconnect` call.
  *   2. A silently dead websocket never came back. nats-core's ping check found it stale and closed
  *      the socket, then waited for a close event that nobody answering the closing handshake ever
  *      sends. The library neither reconnected nor closed, so the endpoint never rebuilt either, and
  *      the session stayed down after the network returned.
  *   3. `cotal_disconnect` hung on the same wait: the agent stop closes the connection, and that
- *      close never finished.
+ *      close never finished. While it hung, `cotal_connect` refused the conversation because its
+ *      old connection was still held, so no recovery inside the session was left.
  *
  * The broker is a real nats-server with a websocket listener. Between it and each client sits a
  * TCP proxy this file controls: `refuse` stops listening and resets what is open; `blackhole` holds
@@ -133,6 +136,8 @@ async function namedFailure(): Promise<void> {
     check("refused: a failed rebuild names its dial target", dial.length > 0 && dial.every((w) => w.message.includes(net.url)), dial);
     const reconnect = await agent.reconnect();
     check("refused: a manual reconnect that fails names the target", !reconnect.ok && reconnect.message.includes(net.url), reconnect);
+    check("refused: its retry advice names cotal_reconnect, which every host has",
+      reconnect.message.includes("call cotal_reconnect again") && !reconnect.message.includes("/reconnect"), reconnect.message);
     check("refused: the connection status names the target", (agent.connectionIssue ?? "").includes(net.url), agent.connectionIssue);
     // Positive control for the rig: a refused network that comes back is rebuilt, as before.
     await net.set("pass");
@@ -210,6 +215,14 @@ console.log(JSON.stringify(args[1] === "provision" ? { ok: true, env: ${JSON.str
     check("disconnect: cotal_disconnect completes while the websocket is silently dead", closed === true,
       { closed, ms: Date.now() - started });
     check("disconnect: the conversation is gone once it returns", closed === true && (await host.find("local", conn.id)) === undefined);
+    // The conversation can connect again. While the stop hung, cotal_connect refused it because the
+    // old connection was still held.
+    await net.set("pass-keep");
+    const again = await withDeadline(host.open("local", id, session).catch((e: Error) => e), 30_000, "connect after disconnect");
+    const rejoined = again instanceof Error ? undefined : again;
+    check("disconnect: the conversation connects again once the network returns",
+      rejoined !== undefined && await until(() => rejoined.agent.connected, 20_000),
+      again instanceof Error ? again.message : again === undefined ? "the connect did not finish" : { connected: again.agent.connected });
   } finally {
     await withDeadline(host.closeAll().catch(() => {}), 15_000, "host closeAll");
     net.close();
