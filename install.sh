@@ -865,14 +865,14 @@ setup_path() {
   fi
 
   _shell=$(basename "${SHELL:-sh}")
+  _bin_quoted=$(shquote "$BIN_DIR")
+  _path_command="export PATH=$_bin_quoted:\"\$PATH\""
   _login_rc=""
   case "$_shell" in
     zsh)
       PATH_RC="${ZDOTDIR:-$HOME}/.zshrc"
-      _line="export PATH=$(shquote "$BIN_DIR"):\"\$PATH\""
       ;;
     bash)
-      _line="export PATH=$(shquote "$BIN_DIR"):\"\$PATH\""
       if [ "$OS" = "linux" ]; then
         # An interactive non-login shell reads .bashrc. A login shell reads the first
         # readable login file, which need not source .bashrc. Default to .profile so
@@ -885,8 +885,6 @@ setup_path() {
             break
           fi
         done
-        # A login profile can also source .bashrc. Add the directory only once.
-        _line="case \":\$PATH:\" in *:$(shquote "$BIN_DIR"):*) ;; *) $_line ;; esac"
       elif [ -f "$HOME/.bash_profile" ] || [ ! -f "$HOME/.bashrc" ]; then
         PATH_RC="$HOME/.bash_profile"
       else
@@ -895,13 +893,19 @@ setup_path() {
       ;;
     fish)
       PATH_RC="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
-      _line="fish_add_path $(shquote "$BIN_DIR")"
+      _path_command="fish_add_path $_bin_quoted"
       ;;
     *)
       PATH_STATE="manual"
       return 0
       ;;
   esac
+
+  _line="$_path_command"
+  if [ -n "$_login_rc" ]; then
+    # A login profile can also source .bashrc. Add the directory only once.
+    _line="case \":\$PATH:\" in *:$_bin_quoted:*) ;; *) $_path_command ;; esac"
+  fi
 
   write_path_block || PATH_MANUAL=$(tildify "$PATH_RC")
   if [ -n "$_login_rc" ]; then
@@ -921,7 +925,7 @@ setup_path() {
   fi
 }
 
-# Append one marked block per startup file, even when the installer is run again.
+# Append the marked block unless this startup file already has one for this launcher.
 write_path_block() {
   _marker="# cotal"
 
@@ -976,7 +980,7 @@ write_path_block() {
       ;;
   esac
 
-  # Checking for the marker and then appending is a read-modify-write, and two installers
+  # Checking for the block and then appending is a read-modify-write, and two installers
   # racing can both see "absent" and both append, leaving two blocks. mkdir is atomic on
   # every POSIX filesystem, so it is the lock. A stale lock is not worth a reaper: fall back
   # to printing the line rather than risk a duplicate.
@@ -985,9 +989,21 @@ write_path_block() {
     return 1
   fi
 
-  if [ -f "$PATH_RC" ] && grep -qF "$_marker" "$PATH_RC" 2>/dev/null; then
-    rmdir "$_lock" 2>/dev/null || true
-    return 0
+  if [ -f "$PATH_RC" ]; then
+    if ! _rc_contents=$(cat "$PATH_RC" 2>/dev/null); then
+      rmdir "$_lock" 2>/dev/null || true
+      return 1
+    fi
+    # Match the marker and command verbatim on adjacent lines. Also accept the plain
+    # export from before Bash on Linux started guarding against duplicate PATH entries.
+    _nl='
+'
+    case "$_nl$_rc_contents$_nl" in
+      *"$_nl$_marker$_nl$_line$_nl"* | *"$_nl$_marker$_nl$_path_command$_nl"*)
+        rmdir "$_lock" 2>/dev/null || true
+        return 0
+        ;;
+    esac
   fi
   if ! { printf '\n%s\n%s\n' "$_marker" "$_line" >>"$PATH_RC"; } 2>/dev/null; then
     rmdir "$_lock" 2>/dev/null || true

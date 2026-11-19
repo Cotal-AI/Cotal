@@ -147,6 +147,22 @@ regression() {
 # shellcheck disable=SC2016  # bodies are single-quoted ON PURPOSE: they expand inside the
 # container, not here. Expanding them in the harness would substitute the host's values.
 regressions() {
+  regression path-block-comments node:22-bookworm-slim '
+    useradd -m -s /bin/bash tester
+    su tester -c "cd \$HOME &&
+      printf \"%s\\n\" \"# cotal is not installed yet\" > .bashrc &&
+      printf \"%s\\n\" \"# cotal\" \"# PATH still needs setup\" > .profile &&
+      sh /install.sh --no-setup" >/tmp/o 2>&1 || { cat /tmp/o; exit 1; }
+    grep -qxF "# cotal is not installed yet" /home/tester/.bashrc || exit 1
+    grep -qxF "# PATH still needs setup" /home/tester/.profile || exit 1
+    for rc in .bashrc .profile; do
+      su tester -c ". \"\$HOME/$rc\" &&
+        test \"\$(command -v cotal)\" = \"\$HOME/.local/bin/cotal\" &&
+        cotal --version" || exit 1
+    done
+    echo VERDICT=ok
+  '
+
   # A $HOME containing a space used to word-split the bash rc candidate list, so the
   # fallback named a TRUNCATED path outside the home directory and the PATH block was
   # appended there. Containment is the claim; this is the case that broke it.
