@@ -49,6 +49,7 @@ import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurren
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, nodePty } from "./_console-pty.js";
 import { credentialEnded } from "../src/lib/connect.js";
+import { execWords } from "../src/lib/exec-words.js";
 import { MAX_BUFFER } from "@cotal-ai/workspace/chat";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -506,6 +507,42 @@ try {
     longPlain.status === 0 && longPlain.stdout.includes(`long ${"y".repeat(495)}`) && !longPlain.stdout.includes("y".repeat(496))
       && longPlain.stdout.includes(`${long.length - 500} text code units not shown; --json carries the whole text`) && texts(longJson)[0] === long,
     { plain: longPlain.stdout.slice(-300), json: texts(longJson)[0]?.length });
+
+  // Follow the emitted reads with a private open space selected explicitly for every command.
+  {
+    const args = ["--space", openSpace];
+    const readArgs = (command: string | undefined, expected: string) =>
+      command === expected ? execWords(command).slice(1) : undefined;
+    for (const name of ["clear", "limit", "-ops", "history-control"]) {
+      const marker = `retained recommendation marker for #${name}`;
+      const posted = await run(["send", "-c", `#${name}`, marker, ...args]);
+      const card = await run(["channel", "show", `#${name}`, "--plain", ...args]);
+      const command = /^\s+(cotal history .+?) {2,}Read retained messages within your grant$/m.exec(card.stdout)?.[1];
+      const words = readArgs(command, `cotal history '#${name}'`);
+      const read = words && await run([...words, "--json", ...args]);
+      const items = read?.envelope?.result?.items;
+      check(`channel show recommends a read of #${name} alone`,
+        posted.status === 0 && card.status === 0 && read?.status === 0 && items?.length === 1 && items[0]?.channel === name && items[0].text === marker,
+        { posted: shown(posted), card: shown(card), read: read && shown(read) });
+    }
+
+    const body = `watch recommendation marker ${"x".repeat(17_000)} watch end`;
+    const posted = await run(["send", "-c", "clear", body, ...args]);
+    const watch = follow(["watch", "--view", "messages", "--plain", ...args]);
+    try {
+      const marker = "watch recommendation marker";
+      const saw = await watch.until((line) => line.includes(marker));
+      const line = watch.lines.find((row) => row.includes(marker));
+      const command = /`([^`]+)` carries the whole text/.exec(line ?? "")?.[1];
+      const words = readArgs(command, "cotal history '#clear' --json");
+      const read = words && await run([...words, ...args]);
+      check("watch's cut #clear line recommends a channel read that returns the entire message",
+        posted.status === 0 && saw && !line?.includes("watch end") && read?.status === 0 && read.envelope?.result?.items.some((item) => item.channel === "clear" && item.text === body) === true,
+        { posted: shown(posted), line: line?.slice(-200), stderr: watch.stderr(), read: read && shown(read) });
+    } finally {
+      await killAndAwaitExit(watch.child);
+    }
+  }
 
   // ── a retention gap ─────────────────────────────────────────────────────────────────────────────
   {

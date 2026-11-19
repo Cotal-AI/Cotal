@@ -220,7 +220,7 @@ is allowed, and nothing creates registry metadata.
 When the channel's replay is on, the session holds its retained messages in the replay window in
 its inbox. The inbox keeps at most 500 unread messages, so a channel that holds more replays only
 its newest 500 and the oldest are dropped. One `inbox` gap reports how many were dropped.
-`cotal history <channel> --limit <n>` reads further back. `channel show` names the bound in its
+`cotal history '#<channel>' --limit <n>` reads further back. `channel show` names the bound in its
 `Chat replay` row.
 
 
@@ -493,6 +493,7 @@ channel resolves to the default policy, as an endpoint's registry watch does. `s
 channel and `defaults` when the defaults key does not decode say the same. A `set` or `defaults`
 that would write such a key refuses with `CONFLICT` and leaves the bytes as they are. `remove`
 of that key removes the entry. `show` includes resolved replay, window and delivery settings.
+Its `Next` section gives a history read with the channel written as a quoted `#` name.
 Each value with no per-channel override is marked `inherited`, whether it comes from space
 defaults or the built-in policy. The inventory uses the same mark for replay and delivery.
 Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the
@@ -601,8 +602,10 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | `--dm-per-sender <n\|none>` | none | `limit`: keep this many of each sender's newest DMs to each recipient, at least 1, or `none` |
 
 Reads the newest retained messages in the selected space, newest last: one channel, or every
-channel the identity may read. The channel may be written as `#general`, and a name holding `*` or
-`>` is refused with `name one concrete channel, without wildcards` before connecting. A channel with
+channel the identity may read. Use a quoted `#` name for channels named `clear` or `limit`, for
+example `cotal history '#clear'`, or for a channel whose name starts with `-`. The quotes keep the
+shell from treating `#` as a comment. A name holding `*` or `>` is refused with
+`name one concrete channel, without wildcards` before connecting. A channel with
 no retained messages and no saved entry warns `CHANNEL_NOT_FOUND`, names the channels that hold
 messages, and reports no replay policy for it. `history --dms` still returns a direct message that
 is stored when the chat stream is gone. That report warns `CHAT_STREAM_ABSENT` and is partial,

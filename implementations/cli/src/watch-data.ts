@@ -1,5 +1,6 @@
-import { oneLine, type Report } from "@cotal-ai/workspace";
+import { codeSpan, oneLine, type Report } from "@cotal-ai/workspace";
 import type { FeedEntry, MeshSnapshot } from "@cotal-ai/workspace/view";
+import { channelHistoryCommand } from "./lib/history-command.js";
 
 export const watchViews = ["activity", "events", "messages", "roster", "channels", "waiting", "dms", "topology"] as const;
 export type WatchFilter = typeof watchViews[number];
@@ -39,7 +40,7 @@ export function scriptLine(ts: number | string, sender: string, destination: str
 /** The `cotal history` read whose JSON document carries a cut message's whole text. A text or plain
  *  history row cuts again, so the line names the read that does not. */
 export function wholeTextRead(entry: { channel?: string; events?: boolean; delivery?: string }): string {
-  if (entry.channel && !entry.events) return `\`cotal history ${entry.channel} --json\``;
+  if (entry.channel && !entry.events) return codeSpan(`${channelHistoryCommand(entry.channel)} --json`);
   if (entry.delivery === "unicast") return "`cotal history --dms --json`";
   return "";
 }
