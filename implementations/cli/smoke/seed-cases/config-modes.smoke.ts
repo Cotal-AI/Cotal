@@ -16,9 +16,10 @@ try {
   writeFileSync(join(bin, "npm"), `#!/bin/sh\nif [ "$1" = view ]; then printf '"%s"\\n' '${version}'; exit 0; fi\nexec '${realpathSync(npmOnPath)}' "$@"\n`);
   chmodSync(join(bin, "npm"), 0o755);
   const env = { PATH: bin };
+  // Use a searchable parent for the refusal controls, even if the runner's TMPDIR is private.
+  const reachableCfg = () => track(mkdtempSync(join(process.platform === "linux" ? "/tmp" : tmpdir(), "cotal-seed-modes-config-")));
   /** A config folder whose extension tree an earlier seed created under a umask of 0002. */
-  const seededUnder0002 = (): { cfg: string; tree: string[] } => {
-    const cfg = track(freshCfg());
+  const seededUnder0002 = (cfg = track(freshCfg())): { cfg: string; tree: string[] } => {
     const tree = ["", "extensions", "extensions/node_modules", "extensions/node_modules/@cotal-ai"].map((path) => join(cfg, "cotal", path));
     const prior = process.umask(0o002);
     try { mkdirSync(tree.at(-1)!, { recursive: true }); } finally { process.umask(prior); }
@@ -37,7 +38,7 @@ try {
   }
 
   {
-    const { cfg } = seededUnder0002();
+    const { cfg } = seededUnder0002(reachableCfg());
     // XDG_CONFIG_HOME itself is a folder the operator chose, not one Cotal manages.
     chmodSync(cfg, 0o775);
     const run = cotal(cfg, ["update"], env);
@@ -52,7 +53,7 @@ try {
   }
 
   {
-    const cfg = track(freshCfg());
+    const cfg = reachableCfg();
     chmodSync(cfg, 0o775);
     const run = cotal(cfg, ["ext", "seed"], env);
     check("config modes: seed refusal keeps its permission code and readable next command",

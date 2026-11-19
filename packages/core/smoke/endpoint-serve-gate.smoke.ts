@@ -481,6 +481,10 @@ try {
     join(repoRoot, "implementations/manager/src/serve-plane.ts"),
     ...(existsSync(join(repoRoot, "implementations/manager/dist/serve-plane.js")) ? [join(repoRoot, "implementations/manager/dist/serve-plane.js")] : []),
   ].map((p) => readFileSync(p, "utf8"));
+  const goalWriterSurfaces = [
+    join(repoRoot, "implementations/manager/src/goal-writer.ts"),
+    ...(existsSync(join(repoRoot, "implementations/manager/dist/goal-writer.js")) ? [join(repoRoot, "implementations/manager/dist/goal-writer.js")] : []),
+  ].map((p) => readFileSync(p, "utf8"));
 
   c("provision-jwt.ts and dist/provision-jwt.js omit the false fresh exp/iat per-issuance uniqueness claim and name the epoch-pinned grant and same-second active retry",
     provisionSurfaces.every((t) =>
@@ -494,9 +498,9 @@ try {
       && !t.includes("unique per JWT so a\n   *  standing renewal never overwrites the prior row.")
       && t.includes("byte-identical same-second re-mint at one")));
   c("manager.ts and dist/manager.js attribute goal-writer and session-ledger per-issuance uniqueness to the random issuance: tag in userTags",
-    [...managerSurfaces, ...serveSurfaces].every((t) =>
+    [...managerSurfaces, ...serveSurfaces, ...goalWriterSurfaces].every((t) =>
       !t.includes("every renewal stages a distinct ledger"))
-      && managerSurfaces.every((t) =>
+      && goalWriterSurfaces.every((t) =>
         t.includes("`mintCreds` stamps a random `issuance:` tag on `goal-writer` (`userTags`)"))
       && serveSurfaces.every((t) =>
         t.includes("Because `mintCreds` stamps a random `issuance:` tag on")

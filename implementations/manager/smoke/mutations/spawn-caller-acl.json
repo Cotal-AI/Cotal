@@ -16,21 +16,21 @@
   "mutations": [
     {
       "name": "M1 scope to the caller even when the persona names channels",
-      "file": "implementations/manager/src/seat-launch.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "        scoped = !personaNamesChannels && opts.callerAcl && bound.kind !== \"none\" ? {",
       "replace": "        scoped = opts.callerAcl && bound.kind !== \"none\" ? {",
       "expectRed": "a persona naming only subscribe keeps its empty post ACL despite callerAcl"
     },
     {
       "name": "M2 drop join from the joined set",
-      "file": "implementations/manager/src/seat-launch.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "      subscribe = opts.join?.length ? [...new Set([...(base ?? []), ...opts.join])] : base;",
       "replace": "      subscribe = base;",
       "expectRed": "the seat joins only what join named"
     },
     {
       "name": "M3 carry the spawner's event channel into the child's ACL",
-      "file": "implementations/manager/src/seat-launch.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "        const own = channels.filter((ch) => eventChannelPrincipal(ch) === null);",
       "replace": "        const own = channels;",
       "expectRed": "a channel-less persona spawns under its spawner's ACL"

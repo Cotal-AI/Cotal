@@ -28,6 +28,7 @@ export const extFlags = [
 ] as const satisfies readonly FlagSpec[];
 
 const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
+const EXT_USAGE = "usage: cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force]";
 
 /** Parent binding for update's internal isolated re-add. Ordinary `ext add` never reads it. */
 export const EXT_UPDATE_PARENT_ENV = "COTAL_EXT_UPDATE_PARENT";
@@ -49,13 +50,22 @@ function atThisVersion(spec: string): string {
 }
 
 export function validateExtArguments(args: ParsedArgs): void {
-  const [sub] = args.positionals;
+  const [sub, operand] = args.positionals;
   const v = args.values as FlagValues<typeof extFlags>;
   presentationOf(v);
   if (sub !== "seed" && (v.repair || v.reset || v.force)) {
     const flag = v.repair ? "--repair" : v.reset ? "--reset" : "--force";
     throw usage(`${flag} belongs to \`cotal ext seed\``);
   }
+  if (sub === "seed" && [v.repair, v.reset, v.force].filter(Boolean).length > 1) {
+    throw usage("cotal ext seed takes only one of --repair, --reset, or --force");
+  }
+  // `ext root` stays a raw path for `$(cotal ext root)`.
+  if (sub !== undefined && (sub !== "list" || args.positionals.length !== 1) && (v.json || v.plain)) {
+    throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
+  }
+  if ((sub === "add" || sub === "remove") && (args.positionals.length !== 2 || !operand)) throw usage(EXT_USAGE);
+  if (sub === "seed" && args.positionals.length !== 1) throw usage(EXT_USAGE);
 }
 
 /**
@@ -82,9 +92,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
   // and these extensions never appear in `npm list -g` (they live in a cotal-owned prefix, not npm's
   // global tree), so erroring here left the honest answer undiscoverable.
   if (sub === undefined || (sub === "list" && !rest.length)) return list(presentationOf(v));
-  // `ext root` stays a raw path for `$(cotal ext root)`; a structured form of one path adds nothing.
-  if (v.json || v.plain) throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
-  if (sub === "add" && rest.length === 1 && rest[0]) return addExtension(atThisVersion(rest[0])).catch(exitOnInterruptedAdd);
+  if (sub === "add") return addExtension(atThisVersion(rest[0]!)).catch(exitOnInterruptedAdd);
   if (sub === "__update-add" && rest[0] && rest[1]) {
     if (Number(process.env[EXT_UPDATE_PARENT_ENV]) !== process.ppid)
       throw new Error("internal update extension replay must be launched by its recorded parent");
@@ -99,18 +107,18 @@ export async function ext(args: ParsedArgs): Promise<void> {
     for (const line of lines) console.log(line);
     return;
   }
-  if (sub === "remove" && rest.length === 1 && rest[0]) return remove(rest[0]);
+  if (sub === "remove") return remove(rest[0]!);
   // `cotal ext root` prints just the prefix path — a one-line scripting primitive (cf. `npm root -g`,
   // `brew --prefix`) so tooling can locate the store without parsing the human inventory.
   if (sub === "root" && !rest.length) {
     console.log(extensionsDir());
     return;
   }
-  if (sub === "seed" && !rest.length) {
+  if (sub === "seed") {
     const { repair, reset, force } = args.values as { repair?: boolean; reset?: boolean; force?: boolean };
     return runSeed({ repair, reset, force });
   }
-  throw usage("usage: cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force]");
+  throw usage(EXT_USAGE);
 }
 
 async function npm(args: string[], cwd: string): Promise<{ status: number | null; output: string }> {
