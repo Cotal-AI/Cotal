@@ -402,6 +402,8 @@ async function approveDeviceLogin(opts: DeviceLoginOpts): Promise<{ session: Idp
     await sleepUnlessCancelled(intervalSec * 1000, opts.signal);
     if (Date.now() > deadline) throw new Error(expired);
     const poll = await post(tokenUrl, { grant_type: DEVICE_GRANT, device_code: grant.device_code, client_id: opts.clientId });
+    if (oidc && poll.status >= 300 && poll.status < 400)
+      throw new Error(`idp OIDC: device polling failed (HTTP ${poll.status}); redirects are not followed`);
     if (poll.ok) {
       const tok = await idpJson<{ access_token: string; expires_in: number; refresh_token?: unknown } | null>(tokenUrl, poll, opts.signal);
       if (oidc) {
@@ -589,26 +591,35 @@ export async function fetchSessionIdpJwt(dir: string, idpUrl: string, session: I
     const rejected = "idp OIDC: the provider rejected the cached sign-in; sign in again with --oidc and the same issuer, client ID and audience";
     const metadata = await discoverOidc(oidc.issuer, signal);
     const endpoint = oidcEndpoint(oidc.issuer, "token_endpoint", metadata.token_endpoint);
-    return withOidcSessionLock(dir, async () => {
-      const latest = requireIdpSession(dir, base);
-      if (!latest.oidc || latest.oidc.loginId !== oidc.loginId) throw new IdpSessionRejectedError("idp OIDC: the cached sign-in changed; retry using the current sign-in");
+    const { accessToken, sub } = await withOidcSessionLock(dir, base, async () => {
+      const latest = requireCurrentOidcSession(dir, base, oidc.loginId);
       throwIfCancelled(signal);
       // A request already sent may rotate the token. Finish receiving and recording that
-      // response under the lock even when the caller stops waiting for its mesh proof.
+      // response even if the caller cancels. Do not restore a forgotten or replaced sign-in.
       const body = await oidcTokenResponse(endpoint, { grant_type: "refresh_token", client_id: oidc.clientId, refresh_token: latest.oidc.refreshToken }, "refresh", rejected);
-      const grant = oidcGrant(body);
-      saveIdpSessionLocked(dir, base, { ...latest, oidc: { ...latest.oidc, refreshToken: grant.refreshToken ?? latest.oidc.refreshToken }, expiresAt: grant.expiresAt });
-      throwIfCancelled(signal);
-      return exchangeOidcProof(oidc, endpoint, grant.accessToken, rejected, signal, latest.sub);
-    });
+      const { accessToken, expiresAt, refreshToken } = oidcGrant(body);
+      withIdpSessionLock(dir, () => {
+        const current = requireCurrentOidcSession(dir, base, oidc.loginId);
+        saveIdpSessionLocked(dir, base, { ...current, oidc: { ...current.oidc, refreshToken: refreshToken ?? current.oidc.refreshToken }, expiresAt });
+      });
+      return { accessToken, sub: latest.sub };
+    }, signal);
+    // The access token is local to this request. Exchanging it cannot rotate the stored refresh token.
+    return exchangeOidcProof(oidc, endpoint, accessToken, rejected, signal, sub);
   }, signal);
-  if (loadIdpSession(dir, base)?.oidc?.loginId !== oidc.loginId)
-    throw new IdpSessionRejectedError("idp OIDC: the cached sign-in changed; retry using the current sign-in");
+  requireCurrentOidcSession(dir, base, oidc.loginId);
   return result.jwt;
 }
 
 function oidcProofKey(dir: string, base: string, oidc: OidcLogin): string {
   return `${resolve(dir)}\0${base}\0${oidc.loginId}`;
+}
+
+function requireCurrentOidcSession(dir: string, base: string, loginId: string): Extract<IdpSession, { oidc: OidcLogin }> {
+  const session = loadIdpSession(dir, base);
+  if (!session?.oidc || session.oidc.loginId !== loginId)
+    throw new IdpSessionRejectedError("idp OIDC: the cached sign-in changed; retry using the current sign-in");
+  return session;
 }
 
 /** Opaque Better Auth bearer for routes whose contract is a provider session, not a mesh proof. */
@@ -1115,13 +1126,14 @@ export async function revokeStoredOidcSession(dir: string, idpUrl: string, expec
   const base = normalizeIdpUrl(idpUrl);
   const metadata = await discoverOidc(expected.issuer);
   const endpoint = oidcEndpoint(expected.issuer, "revocation_endpoint", metadata.revocation_endpoint);
-  await withOidcSessionLock(dir, async () => {
-    const current = loadIdpSession(dir, base)?.oidc;
-    if (current?.loginId !== expected.loginId) throw new Error("idp OIDC: the cached sign-in changed before revocation");
+  await withOidcSessionLock(dir, base, async () => {
+    const { oidc: current } = requireCurrentOidcSession(dir, base, expected.loginId);
     const res = await postOidc(endpoint, { client_id: current.clientId, token: current.refreshToken, token_type_hint: "refresh_token" });
     if (!res.ok) throw new Error(`idp OIDC: revocation failed (HTTP ${res.status}); redirects are not followed`);
     jwtCache.delete(oidcProofKey(dir, base, current));
-    deleteIdpSessionLocked(dir, base);
+    withIdpSessionLock(dir, () => {
+      if (loadIdpSession(dir, base)?.oidc?.loginId === current.loginId) deleteIdpSessionLocked(dir, base);
+    });
   });
 }
 
@@ -1140,13 +1152,20 @@ interface SessionsFile {
 
 function readSessionsFile(dir: string): SessionsFile {
   const f = join(dir, SESSIONS_FILE);
+  let source: string;
+  try {
+    source = readFileSync(f, "utf8");
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { ver: SESSIONS_VER, sessions: {} };
+    throw new Error(`${f}: could not read the session cache (${code ?? "unknown error"}) - restore access before retrying`);
+  }
   // A torn write or a hand-edit must not reach requireIdpSession (the no-fallback gate) as a raw
   // "SyntaxError: Unexpected token" — say what's wrong and how to recover, like everywhere else.
   let parsed: SessionsFile;
   try {
-    parsed = JSON.parse(readFileSync(f, "utf8")) as SessionsFile;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { ver: SESSIONS_VER, sessions: {} };
+    parsed = JSON.parse(source) as SessionsFile;
+  } catch {
     throw new Error(`${f}: the session cache is not valid JSON - inspect it without printing its credentials, then sign in again`);
   }
   if (parsed === null || typeof parsed !== "object")
@@ -1202,27 +1221,31 @@ export function hasIdpSessions(dir: string): boolean {
 }
 
 const sessionLocks = new Set<string>();
-const oidcSessionLocks = new Set<string>();
 
 /** Serialize a read-modify-write of one session cache, including service-store propagation. */
 export function withIdpSessionLock<T>(dir: string, run: () => T): T {
   const path = resolve(dir, "idp-sessions.lock");
   if (sessionLocks.has(path)) return run();
   mkSecretDir(dir);
-  // A synchronous writer must not block its own event loop waiting for its refresh response.
-  const lock = acquireLock(path, { label: "IdP session cache", waitMs: oidcSessionLocks.has(path) ? 0 : 5000 });
+  const lock = acquireLock(path, { label: "IdP session cache", waitMs: 5000 });
   sessionLocks.add(path);
   try { return run(); }
   finally { sessionLocks.delete(path); lock.release(); }
 }
 
-async function withOidcSessionLock<T>(dir: string, run: () => Promise<T>): Promise<T> {
-  const path = resolve(dir, "idp-sessions.lock");
+/** Only refresh and revocation of the same provider wait on its network request. Cache writers
+ *  take the shared file lock separately and never hold it over network I/O. */
+async function withOidcSessionLock<T>(dir: string, base: string, run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const path = resolve(dir, `idp-oidc-${createHash("sha256").update(base).digest("hex")}.lock`);
   mkSecretDir(dir);
-  const lock = await acquireLockAsync(path, { label: "IdP session cache", waitMs: idpTimeoutMs() });
-  oidcSessionLocks.add(path);
-  try { return await run(); }
-  finally { oidcSessionLocks.delete(path); lock.release(); }
+  const lock = await acquireLockAsync(path, { label: "OIDC provider session", waitMs: idpTimeoutMs(), signal }).catch(error => {
+    throwIfCancelled(signal);
+    throw error;
+  });
+  try {
+    throwIfCancelled(signal);
+    return await run();
+  } finally { lock.release(); }
 }
 
 export function saveIdpSession(dir: string, idpUrl: string, session: IdpSession): void {

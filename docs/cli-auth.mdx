@@ -306,6 +306,9 @@ Use `--oidc` for a [configured standards provider](identity-service-auth.mdx#idp
 Its `--idp` is the exact issuer URL and `--audience` defaults to `--client-id`. Repeat those
 flags to sign in again. OIDC sign-in does not discover hosted space catalogs or copy a rotating
 refresh token to a private Manager sign-in store. Approve each separate store independently.
+Refresh and revocation are serialized for each provider in a store. A slow provider does not
+block changes to other sign-ins. Local sign-out does not wait for an in-flight refresh, and the
+refresh cannot restore the forgotten sign-in.
 OIDC logout revokes the refresh token through the advertised revocation endpoint. If the provider
 has no such endpoint, revoke the session at the provider and use `cotal logout --local` to forget it.
 

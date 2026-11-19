@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { promisify } from "node:util";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
-import { createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
+import { createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { assertUserAuthInfo, authDir, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { cotalAuthProvider, fetchStoredIdpJwt, loadIdpSession, loadPinnedIdp, pinnedJwksResolver, verifyIdpToken, verifyToolResultHumanProof } from "../src/index.js";
@@ -40,26 +40,40 @@ const jwk = { ...await exportJWK(key.publicKey), kid: "local-oidc-smoke" };
 const clientId = "cotal-native", audience = "pinned-audience", subject = "local-human";
 const ID = "urn:ietf:params:oauth:token-type:id_token";
 const GRANT = "urn:ietf:params:oauth:grant-type:";
-let origin = "", issuer = "";
+let origin = "", issuer = "", otherIssuer = "";
 let active = 0, revoked = false, tokenRequests = 0, proofRequests = 0, unrelated = 0;
+let devicePollRedirect = false;
 let discoveryMode: "normal" | "redirect" | "foreign" | "mismatch" = "normal";
 let jwksRedirect = false, exchangeMode: "normal" | "redirect" | "extra-audience" | "short" | "different-subject" = "normal";
 const acceptedRefreshes: number[] = [];
 const unexpected: string[] = [];
-const issuedAccess = () => `loopback-access-${active}`;
+const issuedAccess = (generation: number) => `loopback-access-${generation}`;
 const refresh = () => `loopback-refresh-${active}`;
+type Paused = { entered: Promise<void>; release: () => void; pause: () => Promise<void> };
+let refreshPause: Paused | undefined, exchangePause: Paused | undefined;
+
+function pauseResponse(): Paused {
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const resumed = new Promise<void>(resolve => { release = resolve; });
+  return { entered, release, pause: () => { enter(); return resumed; } };
+}
 
 async function serve(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const send = (status: number, body: object) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
   const redirect = () => { res.writeHead(307, { location: `${origin}/redirect-target` }); res.end(); };
-  const grant = () => send(200, { access_token: issuedAccess(), refresh_token: refresh(), token_type: "Bearer", expires_in: 600 });
+  const grant = (other = false) => send(200, {
+    access_token: other ? "loopback-other-access" : issuedAccess(active),
+    refresh_token: other ? "loopback-other-refresh" : refresh(), token_type: "Bearer", expires_in: 600,
+  });
   const error = (code: string) => send(400, { error: code });
-  if (req.url === "/tenant/.well-known/openid-configuration" && req.method === "GET") {
+  if ((req.url === "/tenant/.well-known/openid-configuration" || req.url === "/other/.well-known/openid-configuration") && req.method === "GET") {
+    const selected = req.url.startsWith("/other") ? otherIssuer : issuer;
     if (discoveryMode === "redirect") return redirect();
     return send(200, {
-      issuer: discoveryMode === "mismatch" ? `${issuer}/unexpected` : issuer,
+      issuer: discoveryMode === "mismatch" ? `${selected}/unexpected` : selected,
       device_authorization_endpoint: `${origin}/protocol/device`,
-      token_endpoint: `${discoveryMode === "foreign" ? origin.replace("127.0.0.1", "127.0.0.2") : origin}/protocol/token`,
+      token_endpoint: `${discoveryMode === "foreign" ? origin.replace("127.0.0.1", "127.0.0.2") : origin}/protocol/${selected === issuer ? "token" : "other-token"}`,
       revocation_endpoint: `${origin}/protocol/revoke`,
       jwks_uri: `${origin}/keys/provider`,
     });
@@ -82,16 +96,22 @@ async function serve(req: IncomingMessage, res: ServerResponse): Promise<void> {
     revoked = true;
     return send(200, {});
   }
-  assert.equal(req.url, "/protocol/token");
+  assert.ok(req.url === "/protocol/token" || req.url === "/protocol/other-token");
   tokenRequests++;
   switch (form.get("grant_type")) {
     case `${GRANT}device_code`:
       assert.equal(form.get("device_code"), "demo-device");
-      return grant();
+      if (devicePollRedirect) {
+        devicePollRedirect = false;
+        res.setHeader("location", `${origin}/redirect-target`);
+        return send(307, { error: "authorization_pending" });
+      }
+      return grant(req.url === "/protocol/other-token");
     case "refresh_token": {
       const accepted = active;
       const wanted = refresh();
       await wait(200);
+      await refreshPause?.pause();
       if (revoked || form.get("refresh_token") !== wanted || active !== accepted) return error("invalid_grant");
       acceptedRefreshes.push(active++);
       return grant();
@@ -101,10 +121,19 @@ async function serve(req: IncomingMessage, res: ServerResponse): Promise<void> {
       assert.equal(form.get("subject_token_type"), "urn:ietf:params:oauth:token-type:access_token");
       assert.equal(form.get("requested_token_type"), ID);
       assert.equal(form.get("audience"), audience);
-      assert.ok(form.get("subject_token") === issuedAccess(), "uses the fresh access token, never the refresh token");
+      const other = req.url === "/protocol/other-token";
+      const access = form.get("subject_token");
+      if (other) assert.equal(access, "loopback-other-access");
+      else {
+        const generation = Number(access?.split("-").at(-1));
+        assert.ok(Number.isInteger(generation) && generation >= 0 && generation <= active && access === issuedAccess(generation), "uses an issued access token, never the refresh token");
+      }
+      const pause = exchangePause;
+      exchangePause = undefined;
+      await pause?.pause();
       if (exchangeMode === "redirect") return redirect();
       const aud = exchangeMode === "extra-audience" ? [audience, "project"] : [audience];
-      const proof = await new SignJWT({ azp: audience, amr: ["pwd"] }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(issuer)
+      const proof = await new SignJWT({ azp: audience, amr: ["pwd"] }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(other ? otherIssuer : issuer)
         .setAudience(aud).setSubject(exchangeMode === "different-subject" ? "another-user" : subject).setIssuedAt()
         .setExpirationTime(exchangeMode === "short" ? "20s" : "2m").sign(key.privateKey);
       return send(200, { access_token: proof, issued_token_type: ID, token_type: "N_A" });
@@ -117,11 +146,17 @@ const server = createServer((req, res) => { void serve(req, res).catch((e: unkno
 await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
 origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 issuer = `${origin}/tenant`;
-const login = () => cmd("login", "--oidc", "--idp", issuer, "--client-id", clientId, "--audience", audience, "--no-browser", "--plain");
+otherIssuer = `${origin}/other`;
+const login = (idp = issuer) => cmd("login", "--oidc", "--idp", idp, "--client-id", clientId, "--audience", audience, "--no-browser", "--plain");
 const space = "oidc-smoke";
 const pinPath = userAuthStateDir(root, space, { readOnly: true });
 const idpPins = { audience, jwksUri: `${origin}/keys/provider` };
 const record = () => loadIdpSession(store, issuer);
+
+/** Fail if a shipped operation finishes instead of reaching the provider response barrier. */
+async function atResponse(pause: Paused, operation: Promise<unknown>): Promise<void> {
+  await Promise.race([pause.entered, operation.then(() => { throw new Error("operation finished without reaching the expected provider response"); })]);
+}
 
 /** Native test broker and auth child. Neither is managed by an operating-system service. */
 async function verifyMeshUse(): Promise<void> {
@@ -162,6 +197,24 @@ async function verifyMeshUse(): Promise<void> {
     const before = proofRequests;
     const send = await cmd("send", "--channel", "general", "--space", space, "standards OIDC message", "--plain");
     check("shipped send uses the refreshed OIDC proof through the real broker callout", send.code === 0 && proofRequests > before, send.stderr || send.stdout);
+    for (const stage of ["refresh", "exchange"]) {
+      const signedIn = await login(otherIssuer);
+      assert.equal(signedIn.code, 0, signedIn.stderr);
+      const pause = pauseResponse();
+      if (stage === "refresh") refreshPause = pause;
+      else exchangePause = pause;
+      const pending = cmd("send", "--channel", "general", "--space", space, `slow ${stage}`, "--plain");
+      try {
+        await atResponse(pause, pending);
+        const out = await cmd("logout", "--idp", otherIssuer, "--local", "--plain");
+        check(`shipped logout clears another provider during a mesh send's ${stage}`, out.code === 0 && loadIdpSession(store, otherIssuer) === undefined, out.stderr);
+      } finally {
+        pause.release();
+        refreshPause = exchangePause = undefined;
+        const result = await pending;
+        check(`the mesh send still succeeds after its ${stage} resumes`, result.code === 0 && record()?.oidc?.refreshToken === refresh(), result.stderr);
+      }
+    }
   } finally {
     if (service) await killAndAwaitExit(service, "SIGTERM");
     await killAndAwaitExit(broker, "SIGTERM");
@@ -170,6 +223,9 @@ async function verifyMeshUse(): Promise<void> {
 }
 
 try {
+  devicePollRedirect = true;
+  const redirect = await login();
+  check("device poll redirect fails immediately even with an OAuth pending body", redirect.code === 1 && /HTTP 307/.test(redirect.stderr) && tokenRequests === 1 && unrelated === 0 && record() === undefined, { code: redirect.code, polls: tokenRequests, redirectHits: unrelated });
   const first = await login();
   check("shipped login signs in using discovery, form bodies and token exchange", first.code === 0 && first.stdout.includes(subject) && first.stderr.includes("Approval code"), first.stderr);
   check("only the rotating refresh credential is retained", record()?.oidc?.refreshToken === refresh() && record()?.token === undefined && record()?.sub === subject);
@@ -201,6 +257,40 @@ try {
 
   await verifyMeshUse();
   const pinned = loadPinnedIdp(pinPath)!;
+
+  const pause = refreshPause = pauseResponse();
+  const controller = new AbortController();
+  const holding = fetchStoredIdpJwt(store, issuer, controller.signal).then(() => "succeeded", String);
+  let queued: Promise<string> | undefined;
+  try {
+    await atResponse(pause, holding);
+    queued = fetchStoredIdpJwt(store, issuer, AbortSignal.timeout(150)).then(() => "succeeded", String);
+    const observed = await Promise.race([queued, wait(1000, "still queued")]);
+    check("a cancelled waiter rejects before the live refresh finishes", /cancelled/.test(observed), observed);
+    controller.abort();
+  } finally {
+    const before = proofRequests;
+    const refreshes = acceptedRefreshes.length;
+    refreshPause = undefined;
+    pause.release();
+    const stopped = await holding;
+    await queued;
+    check("an aborted refresh still records one rotation without exchanging a proof", /cancelled/.test(stopped) && acceptedRefreshes.length === refreshes + 1 && record()?.oidc?.refreshToken === refresh() && proofRequests === before, stopped);
+  }
+
+  const exchanging = exchangePause = pauseResponse();
+  const pendingProof = readProof();
+  try {
+    await atResponse(exchanging, pendingProof);
+    const before = acceptedRefreshes.length;
+    const nextProof = await readProof();
+    check("a new reader rotates the same provider while an earlier exchange is pending", nextProof.code === 0 && acceptedRefreshes.length === before + 1, nextProof.stderr);
+  } finally {
+    exchangePause = undefined;
+    exchanging.release();
+    const firstProof = await pendingProof;
+    check("the earlier exchange succeeds with its own access token after the next rotation", firstProof.code === 0, firstProof.stderr);
+  }
 
   const proof = await fetchStoredIdpJwt(store, issuer);
   const pins = { issuer: pinned.issuer, audience: pinned.audience, key: pinnedJwksResolver(pinned.jwksUri) };
@@ -236,6 +326,22 @@ try {
   check("shipped logout revokes the current refresh credential and clears the local record", out.code === 0 && revoked && record() === undefined, out.stderr);
   const signedOut = await fetchStoredIdpJwt(store, issuer).catch((e: unknown) => e);
   check("a proof cached in memory cannot survive local sign-out", /not logged in/.test(String(signedOut)));
+
+  revoked = false;
+  const signedInAgain = await login();
+  assert.equal(signedInAgain.code, 0, signedInAgain.stderr);
+  const rotating = refreshPause = pauseResponse();
+  const abandonedProof = readProof();
+  try {
+    await atResponse(rotating, abandonedProof);
+    const forgotten = await cmd("logout", "--idp", issuer, "--local", "--plain");
+    check("shipped local logout can forget the same provider while it refreshes", forgotten.code === 0 && record() === undefined, forgotten.stderr);
+  } finally {
+    refreshPause = undefined;
+    rotating.release();
+    const abandoned = await abandonedProof;
+    check("the completed refresh cannot restore a forgotten login or return its proof", abandoned.code !== 0 && /cached sign-in changed/.test(abandoned.stderr) && record() === undefined, abandoned.stderr);
+  }
   check("provider observed only the expected requests", unexpected.length === 0, unexpected);
   finish();
 } finally {

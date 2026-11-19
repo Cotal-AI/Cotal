@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { linkSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
+import { setTimeout as sleepAsync } from "node:timers/promises";
 import { createPrivateRecord } from "./secret-fs.js";
 
 /**
@@ -334,22 +335,25 @@ function lockTimeoutError(path: string, opts: AcquireOptions, owner: LockOwner, 
  * {@link acquireLock} for callers on a live event loop: every attempt is the same non-blocking
  * try-acquire/reclaim step, and the wait between attempts is an awaited timer, so timers, RPCs and
  * cancellation keep running while a live holder or a live reclaimer is outstanding. `opts.waitMs` is one
- * deadline for the whole wait, whichever of the two is in the way.
+ * deadline for the whole wait, whichever of the two is in the way. `opts.signal` stops acquisition
+ * without waiting for the next poll. It does not release a lock that has already been returned.
  */
-export async function acquireLockAsync(path: string, opts: AcquireOptions = {}): Promise<HeldLock> {
+export async function acquireLockAsync(path: string, opts: AcquireOptions & { readonly signal?: AbortSignal } = {}): Promise<HeldLock> {
   const waitMs = opts.waitMs ?? 300000;
   const pollMs = opts.pollMs ?? 200;
+  opts.signal?.throwIfAborted();
   const attempt = newAttempt(path, opts);
   const deadline = Date.now() + waitMs;
 
   for (;;) {
+    opts.signal?.throwIfAborted();
     const result = tryAcquireOnce(attempt);
     if (result.kind === "acquired") return result.held;
     if (result.kind === "retry") continue;
     const left = deadline - Date.now();
     if (left <= 0) throw lockTimeoutError(path, opts, result.owner, waitMs);
     const interval = result.kind === "reclaiming" ? reclaimPollMs(pollMs) : pollMs;
-    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(interval, left)));
+    await sleepAsync(Math.min(interval, left), undefined, { signal: opts.signal });
   }
 }
 
