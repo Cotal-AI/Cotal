@@ -229,7 +229,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   local("ext seed --help through the alias prints help and writes nothing", seedHelp);
   // After `--` every word is text, so `-h` there is not a help request.
   refused("-h after -- is a word, not a help request", cotal(["ext", "--", "-h"]), /cotal ext has no subcommand "-h"/);
-  refused("ext seed -- -h is a usage error, not help", cotal(["ext", "seed", "--", "-h"]), /usage: cotal ext/);
+  refused("ext seed -- -h is a usage error, not help", cotal(["ext", "seed", "--", "-h"]), /`cotal ext seed` does not take positional arguments/);
 }
 
 // ── Version ────────────────────────────────────────────────────────────────────────────────────────

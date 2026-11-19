@@ -49,10 +49,13 @@ function atThisVersion(spec: string): string {
 }
 
 export function validateExtArguments(args: ParsedArgs): void {
-  const [sub] = args.positionals;
+  const [sub, ...rest] = args.positionals;
   const v = args.values as FlagValues<typeof extFlags>;
   presentationOf(v);
-  if (sub !== "seed" && (v.repair || v.reset || v.force)) {
+  if (sub === "seed") {
+    if (rest.length) throw usage("`cotal ext seed` does not take positional arguments");
+    if (v.json || v.plain) throw usage("ext seed: --json and --plain are taken by the listing only");
+  } else if (v.repair || v.reset || v.force) {
     const flag = v.repair ? "--repair" : v.reset ? "--reset" : "--force";
     throw usage(`${flag} belongs to \`cotal ext seed\``);
   }
@@ -78,6 +81,10 @@ export async function ext(args: ParsedArgs): Promise<void> {
   validateExtArguments(args);
   const [sub, ...rest] = args.positionals;
   const v = args.values as FlagValues<typeof extFlags>;
+  if (sub === "seed") {
+    const { repair, reset, force } = v;
+    return runSeed({ repair, reset, force });
+  }
   // Bare `cotal ext` lists the inventory: it is the most natural probe for "what's installed / where",
   // and these extensions never appear in `npm list -g` (they live in a cotal-owned prefix, not npm's
   // global tree), so erroring here left the honest answer undiscoverable.
@@ -105,10 +112,6 @@ export async function ext(args: ParsedArgs): Promise<void> {
   if (sub === "root" && !rest.length) {
     console.log(extensionsDir());
     return;
-  }
-  if (sub === "seed" && !rest.length) {
-    const { repair, reset, force } = args.values as { repair?: boolean; reset?: boolean; force?: boolean };
-    return runSeed({ repair, reset, force });
   }
   throw usage("usage: cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force]");
 }

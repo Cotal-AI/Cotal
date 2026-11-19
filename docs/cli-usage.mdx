@@ -163,12 +163,16 @@ longer than 128 characters, such as an unknown command, a space name or a run id
 still checks and uses the whole value. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
-`--`, which the refusal names, and an option value that starts with one is written `--limit=-1`,
-which the refusal gives. An option given with no value, last or just before another option, is
-refused naming the option and its placeholder. A short option takes its value after a space, so `-c=general` is refused
-rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
-typeset text, is refused naming the option it meant, rather than read as a positional. Before the
-command word the same holds for the leading flags, so `cotal ––json status` names `--json`.
+`--` when the command takes positional arguments. An option value that starts with `-` is written
+`--limit=-1`, which the refusal gives. An option given with no value, last or just before another
+option, is refused naming the option and its placeholder. A short option takes its value after a
+space, so `-c=general` is refused rather than read as the value `=general`. An option typed with a
+typographic dash, as pasted from typeset text, is refused naming the option it meant, rather than
+read as a positional. Before the command word the same holds for the leading flags, so
+`cotal ––json status` names `--json`.
+
+`cotal ext seed` takes no positional arguments. It reports invalid flags or extra arguments with
+seed help on stderr before attempting extension recovery.
 
 
 ### Color

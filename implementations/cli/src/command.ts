@@ -96,14 +96,6 @@ function takeGlobalFlag(word: string): boolean {
   return true;
 }
 
-/** Node's unknown-option error, trimmed to its first sentence, with the nearest of `cmd`'s flags. */
-function parseErrorMessage(cmd: Command, e: Error): string {
-  const message = e.message.split(".")[0]!;
-  const option = (e as { code?: string }).code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" ? /^Unknown option '(--[^']+)'/.exec(message)?.[1] : undefined;
-  const hint = option ? didYouMean(option, [...(cmd.flags ?? []).map((flag) => `--${flag.name}`), "--no-color", "--no-input", "--help"]) : "";
-  return hint ? `${message} - ${hint}` : message;
-}
-
 /** `words` without the global flags before any `--`, each applied. A global flag is given once, as
  *  any flag is: one already in `words` or in `leading`, those taken before the command word, is the
  *  usage error a repeated flag of `cmd` is. */
@@ -111,7 +103,7 @@ function stripGlobalFlags(words: readonly string[], leading: ReadonlySet<string>
   const end = words.indexOf("--");
   const taken = new Set(leading);
   const head = (end === -1 ? words : words.slice(0, end)).filter((word) => {
-    if (taken.has(word)) usageExit(`Option '${word}' cannot be repeated`, cmd, cmd !== undefined && asksForJson(cmd, words), words.includes("--plain"));
+    if (taken.has(word)) usageExit(`Option '${word}' cannot be repeated`, cmd, cmd !== undefined && asksForJson(cmd, words), words.includes("--plain"), undefined, words);
     if (!takeGlobalFlag(word)) return true;
     taken.add(word);
     return false;
@@ -196,25 +188,11 @@ function configFolderRefusal(problem: ConfigFolderProblem): CommandFailure {
   return new CommandFailure("refused", "SCHEMA_INVALID", `${problem.message}; Cotal keeps your preferences, config and extensions there, so the command did not run`, { remedy: problem.remedy });
 }
 
-/**
- * `ext seed [--repair|--reset|--force]`, dispatched before the manifest overlay so repair survives a
- * corrupt manifest. Returns `true` iff `argv` was that command (or its help), so the caller returns.
- * The overlay cannot list the command yet, so the built-in `ext` is found through the registry,
- * which resolves its alias too.
- */
-async function extSeedGate(registry: Registry, argv: string[], configFolder: ConfigFolderProblem | undefined, leading: ReadonlySet<string>): Promise<boolean> {
-  const [word, ...words] = argv;
-  const extCmd = word === undefined || !registry.has("command", word) ? undefined : registry.resolve<Command>("command", word);
-  if (extCmd?.name !== "ext" || metadataPositionals(extCmd, words).positionals[0]?.value !== "seed") return false;
-  // A help request short-circuits to usage and mutates NOTHING (the maintenance run writes the seed
-  // stamp/manifest).
-  if (asksForHelp(argv)) {
-    paintFor(process.stdout, () => printHelpPath(extCmd, ["seed"]));
-    return true;
-  }
-  if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);
-  await extCmd.run(parseCommandArgs(extCmd, stripGlobalFlags(argv.slice(1), leading, extCmd)));
-  return true;
+/** The seed mode can be recognized from built-in metadata even when the extension manifest is corrupt. */
+function extSeedMode(cmd: Command, words: readonly string[]): Subcommand | undefined {
+  if (cmd.name !== "ext") return undefined;
+  const mode = findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value);
+  return mode?.name === "seed" ? mode : undefined;
 }
 
 /**
@@ -392,15 +370,15 @@ function typographicOption(word: string, names: ReadonlySet<string>, shorts: Rea
 /** An option the parser would misread without an error: a short option written `-c=value`, which
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
-function misspelledOption(cmd: Command, rest: readonly string[]): { message: string; remedy: string } | undefined {
-  const names = new Set<string>([...(cmd.flags ?? []).map((flag) => flag.name), ...GLOBAL_FLAGS]);
-  const shorts = new Set<string>((cmd.flags ?? []).flatMap((flag) => (flag.short ? [flag.short] : [])));
+function misspelledOption(flags: readonly FlagSpec[], rest: readonly string[]): { message: string; remedy: string } | undefined {
+  const names = new Set<string>([...flags.map((flag) => flag.name), ...GLOBAL_FLAGS]);
+  const shorts = new Set<string>(flags.flatMap((flag) => (flag.short ? [flag.short] : [])));
   for (const [index, word] of rest.entries()) {
     if (word === "--") return undefined;
     const previous = rest[index - 1];
-    if (previous !== undefined && cmd.flags?.some((flag) => flag.type === "string" && (previous === `--${flag.name}` || previous === `-${flag.short}`))) continue;
+    if (previous !== undefined && flags.some((flag) => flag.type === "string" && (previous === `--${flag.name}` || previous === `-${flag.short}`))) continue;
     const short = /^-([^-=])=(.*)$/su.exec(word);
-    const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
+    const flag = short && flags.find((item) => item.short === short[1] && item.type === "string");
     if (short && flag) return { message: `${word} gives -${short[1]} the value "=${short[2]}"`, remedy: `write -${short[1]} ${short[2]} or --${flag.name}=${short[2]}` };
     const typed = typographicOption(word, names, shorts);
     if (typed) return typed;
@@ -408,24 +386,28 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
   return undefined;
 }
 
-/** A parse error as a refusal. Node's message is trimmed to its first sentence, and the hint its tail
- *  carries is given as the remedy in this CLI's words: a word that starts with `-` goes after `--`,
- *  an option value that starts with `-` is written `--name=value`, and an option given with no value,
- *  last or before another of the command's options, is named with its placeholder. */
-function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[]): { message: string; remedy?: string } {
-  const message = parseErrorMessage(cmd, error);
-  if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" && cmd.positionals !== undefined)
-    return { message, remedy: "to pass a word that starts with \"-\", put -- before it" };
+/** A parse error as a refusal. Replace Node's hints with remedies for the selected command's
+ *  grammar: a dash-leading operand goes after `--`, a dash-leading value is written `--name=value`,
+ *  and an option missing a value is named with its placeholder. */
+function parseRefusal(error: Error & { code?: string }, flags: readonly FlagSpec[], takesOperands: boolean, rest: readonly string[]): { message: string; remedy?: string } {
+  if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
+    const reason = error.message.replace(/'\. To specify a positional argument[\s\S]*$/, "'");
+    const option = /^Unknown option '(--[^']+)'$/.exec(reason)?.[1];
+    const hint = option ? didYouMean(option, [...flags.map((flag) => `--${flag.name}`), "--no-color", "--no-input", "--help"]) : "";
+    const message = hint ? `${reason} - ${hint}` : reason;
+    return takesOperands ? { message, remedy: "to pass a word that starts with \"-\", put -- before it" } : { message };
+  }
+  const message = error.message.split(".")[0]!;
   const missingValue = (flag: FlagSpec) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}` });
   const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
-  const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
+  const last = bare === undefined ? undefined : flags.find((item) => item.name === bare);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(last);
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
-  const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
+  const flag = long === undefined ? undefined : flags.find((item) => item.name === long);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag) {
     const at = rest.findIndex((word) => word === `--${flag.name}` || (flag.short !== undefined && word === `-${flag.short}`));
     const value = at < 0 ? undefined : rest[at + 1];
-    if (value !== undefined && cmd.flags?.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
+    if (value !== undefined && flags.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
       return missingValue(flag);
     if (value?.startsWith("-")) return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${value}` };
   }
@@ -436,14 +418,17 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
 function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const json = asksForJson(cmd, rest);
   const plain = rest.includes("--plain");
-  const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest);
+  const seed = extSeedMode(cmd, rest);
+  const names = seed?.flagNames;
+  const flags = names ? (cmd.flags ?? []).filter((flag) => names.includes(flag.name)) : cmd.flags ?? [];
+  const misspelled = cmd.rawArgs ? undefined : misspelledOption(flags, rest);
   if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, rest);
   let parsed: ParsedArgs;
   try {
     parsed = parseCommandArgs(cmd, rest);
   } catch (e) {
     if (isArgError(e)) {
-      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest);
+      const refusal = parseRefusal(e as Error & { code?: string }, flags, !seed && cmd.positionals !== undefined, rest);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
     throw e;
@@ -620,9 +605,15 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     && parseOrExit(builtin, ownWords(builtin, argv.slice(1), leadingGlobals)).values.check === true;
   const configFolder = globalConfigDirProblem();
   if (opts.extensions && !updateCheck) {
+    const words = argv.slice(1);
+    // Validate seed before promotion recovery and run it before reading the manifest it can repair.
+    const seed = builtin && extSeedMode(builtin, words) ? builtin : undefined;
+    if (seed && asksForHelp(words)) return printHelpFor(seed, words);
+    const parsed = seed && parseOrExit(seed, ownWords(seed, words, leadingGlobals));
+    if (seed && configFolder) failureExit(seed, configFolderRefusal(configFolder), false);
     try {
       recoverExtensionPromotion();
-      if (await extSeedGate(registry, argv, configFolder, leadingGlobals)) return;
+      if (seed && parsed) return await seed.run(parsed);
     } catch (e) {
       seedRefusal(e);
       process.exit(1);

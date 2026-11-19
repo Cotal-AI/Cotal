@@ -1,8 +1,6 @@
 /**
- * `cotal ext seed --help` / `-h` must print the seed maintenance usage and exit 0 WITHOUT running the
- * seed (which writes the ever-seeded stamp + manifest). Seed maintenance is dispatched before the
- * global help intercept, so its help has to be routed explicitly; this proves it exits clean and
- * mutates nothing.
+ * `cotal ext seed` prints scoped help for both help requests and usage errors, before reading or
+ * repairing the extension store.
  *
  * Also covers the two `ext` discoverability contracts that only break on a FRESH config (an empty
  * XDG_CONFIG_HOME, where the auto-reconcile would otherwise seed and print `✓ added …` first):
@@ -13,7 +11,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,18 +19,69 @@ const REPO = join(import.meta.dirname, "..", "..", "..");
 const BIN = join(REPO, "bin", "dist", "cotal.js");
 assert.ok(existsSync(BIN), `built binary missing at ${BIN} - run \`pnpm --filter cotal-ai... build\` first`);
 
-for (const flag of ["--help", "-h"]) {
-  const xdg = mkdtempSync(join(tmpdir(), "cotal-ext-seed-help-"));
+{
+  const home = mkdtempSync(join(tmpdir(), "cotal-ext-seed-help-"));
+  const xdg = join(home, "config");
+  const config = join(xdg, "cotal");
+  const journal = join(config, ".extensions-promotion.json");
   try {
-    const r = spawnSync("node", [BIN, "ext", "seed", flag], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: xdg } });
-    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-    assert.equal(r.status, 0, `\`ext seed ${flag}\` should exit 0, got ${r.status}: ${out}`);
-    assert.match(out, /--repair/, `\`ext seed ${flag}\` should render the seed usage: ${out}`);
-    assert.match(out, /--reset|--force/, "seed usage lists its maintenance flags");
-    assert.equal(existsSync(join(xdg, "cotal", "extensions")), false, `\`ext seed ${flag}\` must not write config`);
-    console.log(`  ✓ ext seed ${flag}: exit 0, usage rendered, no config written`);
+    mkdirSync(config, { recursive: true, mode: 0o700 });
+    writeFileSync(journal, "{}\n", { mode: 0o600 });
+    const run = (args: string[]) => spawnSync(process.execPath, [BIN, ...args], {
+      cwd: home,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, "state"),
+        PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TMPDIR: tmpdir(),
+        LANG: "C.UTF-8", LC_ALL: "C.UTF-8", NO_COLOR: "1", COTAL_NO_UPDATE_CHECK: "1",
+      },
+    });
+    const help = run(["ext", "seed", "--help"]);
+    assert.equal(help.status, 0, help.stderr);
+    assert.equal(help.stderr, "");
+    assert.match(help.stdout, /^cotal ext seed$/m);
+    for (const flag of ["--repair", "--reset", "--force"]) assert.ok(help.stdout.includes(flag));
+    const shortHelp = run(["x", "seed", "-h"]);
+    assert.equal(shortHelp.status, 0, shortHelp.stderr);
+    assert.equal(shortHelp.stderr, "");
+    assert.equal(shortHelp.stdout, help.stdout);
+
+    for (const [args, reason] of [
+      [["ext", "seed", "--not-an-option"], /Unknown option '--not-an-option'$/],
+      [["ext", "--reapir", "seed"], /Unknown option '--reapir' - did you mean --repair\?/],
+      [["ext", "seed", "--missing.flag"], /Unknown option '--missing\.flag'/],
+      [["ext", "seed", "--jsno"], /Unknown option '--jsno'$/],
+      [["ext", "seed", "--repair", "--repair"], /Option '--repair' cannot be repeated/],
+      [["ext", "seed", "--repair=unexpected"], /Option '--repair' does not take an argument/],
+      [["ext", "seed", "connector"], /does not take positional arguments/],
+      [["ext", "seed", "--", "-h"], /does not take positional arguments/],
+      [["x", "seed", "--json"], /--json and --plain are taken by the listing only/],
+      [["--no-input", "x", "seed", "--no-input"], /Option '--no-input' cannot be repeated/],
+    ] as const) {
+      const r = run([...args]);
+      assert.equal(r.status, 1, `${args.join(" ")}: ${r.stderr}`);
+      assert.equal(r.stdout, "");
+      const endOfReason = r.stderr.indexOf("\n");
+      assert.match(r.stderr.slice(0, endOfReason), reason);
+      assert.equal(r.stderr.slice(endOfReason + 1), help.stdout);
+    }
+    const plain = run(["ext", "seed", "--plain"]);
+    assert.equal(plain.status, 1);
+    assert.equal(plain.stdout, "");
+    assert.match(plain.stderr, /--json and --plain are taken by the listing only/);
+    assert.ok(plain.stderr.endsWith(help.stdout));
+
+    const valid = run(["x", "--repair", "seed"]);
+    assert.equal(valid.status, 1);
+    assert.equal(valid.stdout, "");
+    assert.match(valid.stderr, /invalid extension promotion journal/);
+    assert.deepEqual(readdirSync(home), ["config"]);
+    assert.deepEqual(readdirSync(config), [".extensions-promotion.json"]);
+    assert.equal(readFileSync(journal, "utf8"), "{}\n");
+    console.log("  ✓ ext seed: scoped help and refusals leave promotion state untouched");
   } finally {
-    rmSync(xdg, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   }
 }
 
