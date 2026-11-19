@@ -1,9 +1,8 @@
 import { UserProvision, type ProvisionUserAgentOpts, type ProvisionedUserAgent, type UserAgentRefusal } from "./user-provision.js";
 import { TurnRelay, goalKey, caughtEnvelope, TURN_ANSWER_RETENTION_MS, type PendingTurn, type OnceRetire, type TurnAcceptance } from "./turn-relay.js";
 import { createHash, randomBytes } from "node:crypto";
-import { drainAndClose, requestSafeReconnect } from "@cotal-ai/core";
+import { drainAndClose } from "@cotal-ai/core";
 import { hostname } from "node:os";
-import { credsAuthenticator, RequestError } from "@nats-io/transport-node";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -21,11 +20,7 @@ import {
   MANAGER_LEASE_RENEW_MS,
   STANDING_RENEWABLE_TTL_SEC,
   discardLaunchArtifacts,
-  divergentSecretStoreNotice,
   injectedSecretStoreIdentity,
-  parseDaemonStoreAnswer,
-  parseSecretStoreIdentity,
-  sameSecretStoreIdentity,
   agentFilePath,
   clearSpaceHistory,
   dialerFor,
@@ -39,7 +34,6 @@ import {
   idFromCreds,
   identityFromCreds,
   inspectCredHealth,
-  credsRenewalDelayMs,
   composeWirePersona,
   loadAgentFile,
   listPersonaCatalog,
@@ -56,7 +50,6 @@ import {
   managedRetirementOpId,
   newIdentity,
   oneLine,
-  actionContext,
   parsePrincipalKey,
   principalKey,
   probeConnect,
@@ -67,8 +60,8 @@ import {
 } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { logicalExecutionEntry, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, MEMBERSHIP_RW_CREDS_KIND, remintDaemonCreds, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type RenewalRecord, type SeatCap } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, InlinePersona, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
+import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, EpErrorCode, InlinePersona, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -88,14 +81,17 @@ export type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "
 import { ServePlane } from "./serve-plane.js";
 import { NamesCapacity, type Occupancy } from "./names-capacity.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
-import { DELIVERY_ADMIN_BOOT_WAIT_MS, isUnansweredDeliveryAdmin, makeManagerEndpointHolderEvictor, untilDeliveryAdminAnswers, withScopedEndpoint } from "./endpoint-evict.js";
+import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor, withScopedEndpoint } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { ManagedStaticLifecycle, STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
 export { STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
+export { credRenewIntervalMs } from "./credential-renewal.js";
 import { LeaseKeeper } from "./lease-keeper.js";
 export { ManagerInstanceLeaseHeld } from "./lease-keeper.js";
 import { SessionRecovery } from "./session-recovery.js";
 import { SeatCustody, watchConnectorHolder } from "./seat-custody.js";
+import { GoalWriter } from "./goal-writer.js";
+import { CredentialRenewal, credRenewIntervalMs, REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft, sameStrings } from "./credential-renewal.js";
 import { SeatLaunch, foreignEventChannels, userMeshEndpointsRefusal, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
 import { withTimeout } from "./manager-timeout.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
@@ -110,7 +106,7 @@ import { TranscriptReceiver, type TranscriptReceiveInput } from "./transcript-re
 // manager-side adapter (transport + slot orchestration + the terminal) — see static-lifecycle.ts.
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { recordsBucket, epAuthBucket, ensureAuthorityStores, standaloneConnectOpts, credentialIdOf, REMOTE_MANAGER_IDENTITY_NAMES, type LifecycleStateTransport, type StaticManagedSlotRow } from "@cotal-ai/core";
+import { recordsBucket, epAuthBucket, ensureAuthorityStores, standaloneConnectOpts, type LifecycleStateTransport, type StaticManagedSlotRow } from "@cotal-ai/core";
 // The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
 // per-session credentials on their own short-lived connections).
@@ -118,7 +114,7 @@ import { ManagerSessionPlane } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
-import { serveIssuanceGateKv, commitSiblingIssuance, epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, bindGoal, createGoal, transitionGoal, commitGoalResult, goalAlreadyTerminal, settleGoalUncertain, readGoalResult, readGoalStatus, readGoalSpec, recordGoalIndex, readGoalIndex, clearGoalIndex, listGoalIndex, MAX_SCHEDULE_MS, type GoalIndexEntry, GOAL_TERMINAL_STATES, goalRefOf, goalProgressTopic, turnNoticeSubject, epeSubject, submissionFingerprint, EpEnvelopeError, lifecycleBlocked, lifecycleBlockedFrom, type EpCommandDef, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
+import { epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, bindGoal, createGoal, transitionGoal, commitGoalResult, goalAlreadyTerminal, settleGoalUncertain, readGoalResult, readGoalSpec, recordGoalIndex, readGoalIndex, clearGoalIndex, listGoalIndex, MAX_SCHEDULE_MS, type GoalIndexEntry, goalRefOf, turnNoticeSubject, submissionFingerprint, EpEnvelopeError, lifecycleBlocked, lifecycleBlockedFrom, type EpCommandDef, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, managerCommandDefs, type ManagerConnectorStatus, type ManagerStaticReconciliationStatus, type ManagerStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import { measureManagerVitals } from "./vitals.js";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -181,11 +177,6 @@ const DEPROVISION_TIMEOUT_MS = 15_000;
  *  1.9 s, near the 2 s limit), none at 8 with the shortest total (3.7 s, against 4.8 s at 4). At 8,
  *  one manager queues at most 8 evictions on the daemon, about 3 s of its work at that load. */
 const RETIREMENT_CONCURRENCY = 8;
-/** The delivery-admin `reloadCreds` request bound — STRICTLY GREATER than the daemon's internal
- * per-component preflight bound (4s each, run in parallel) so a slow or refused proof returns the
- * daemon's STRUCTURED per-component failure, never a client-side timeout that the catch below would
- * misrecord as "no delivery-admin responder" (a false negative while the daemon is mid-proof). */
-const DELIVERY_ADMIN_RELOAD_TIMEOUT_MS = 15_000;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
@@ -209,31 +200,10 @@ export const PASTE_END = "\x1b[201~";
  * stream. The message carries that runtime's own guidance, which is operator copy and changes; this
  * marker is the contract a caller keys on so it can act without reading the wording. */
 export const RUNTIME_NO_TERMINAL_DETAIL = "ai.cotal.manager.runtime-no-terminal";
-/** Pick a `setInterval` period for {@link Manager.renewDaemonCreds} that guarantees at least one
- * tick lands inside every renewal owner's `[renewAt, exp)` window.
- *
- * `inspectCredHealth` marks a credential `near-expiry` at 75% of its iat-to-exp lifetime and
- * `expired` at 100%, so the window width is TTL/4. Ticks TTL/4 apart therefore land at least once
- * inside every window; ticks TTL/2 apart (the old schedule) can miss it entirely for any TTL. That
- * is the cause of Cotal #457, reproduced at both TTL=86400 and TTL=20 (the compressed-ratio probe).
- *
- * Deriving from the caller's TTL keeps the schedule correct for any credential class: the 24h
- * `STANDING_RENEWABLE_TTL_SEC` and the 30-day `ROTATION_RENEWED_TTL_SEC` both get a tick inside
- * their own renewal window without a hardcoded number. Post-boot responsiveness is already
- * covered by the caller invoking `renewDaemonCreds` once synchronously before starting the timer,
- * so no separate floor is needed. The pass is idempotent, since `renewDaemonCreds` no-ops each
- * credential when its state is `healthy`, so a tick that lands before the window costs one health
- * check per owner. A managed seat's credential is judged as of the next tick instead, because the
- * seat re-reads its file only once a minute and nothing pushes the renewal to it: a tick that
- * lands in the window's last minute can come too late for the seat to adopt it. */
-export function credRenewIntervalMs(ttlSeconds: number): number {
-  return Math.max(1, Math.floor((ttlSeconds / 4) * 1000));
-}
 /** Startup reconciliation overlaps control-service registration. A spawn or attach for one of
  * these aliases must wait until THAT alias's exact-op terminal attempt returns rather than racing
  * a reuse. */
 const STARTUP_RECONCILING = "startup static lifecycle reconciliation";
-const REMOTE_STANDING_BUDGET_MS = 10_000;
 
 /** The owner a retained seat resumes under: its inventory identity's, which is the same value the
  *  adopted seat records as `userOwner`, so a resumed seat is counted against the owner that held
@@ -286,17 +256,6 @@ function failedTerminal(error: string, source: { details?: unknown } | undefined
     }
   } catch { /* unreadable or not interchangeable */ }
   return { error: text };
-}
-
-/** One absolute budget across authority, preflight and adoption waits, or one closed-serve attempt. */
-function remoteStandingTimeLeft(deadline: number): number {
-  const left = deadline - performance.now();
-  if (left <= 0) throw new Error("remote manager standing operation exceeded its 10000ms aggregate budget");
-  return Math.ceil(left);
-}
-
-function sameStrings(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
-  return JSON.stringify([...(a ?? [])].sort()) === JSON.stringify([...(b ?? [])].sort());
 }
 
 /** The start of every agent's bearer command: node, its loader flags and this manager's entry,
@@ -774,20 +733,6 @@ function resolveHarness(name: string, requires: readonly string[]): { binaries: 
   }
   return missing.length ? { binaries, reason: `${name} harness needs ${missing.join(", ")} on PATH - not found` } : { binaries };
 }
-
-/** True only when the delivery-admin rail has no bound responder. A timeout is a hung rail, not absence. */
-function isAbsentDeliveryAdmin(error: unknown): boolean {
-  return error instanceof RequestError && error.isNoResponders();
-}
-
-/** The store challenge went UNANSWERED while a delivery daemon exists: the rail timed out, or it had
- *  no responder while the lease row names a holder. Both are what a daemon that is starting or
- *  re-acquiring its lease looks like, so manager boot waits them out (#871); a renewal pass still
- *  refuses on the first one. A reply that does not decode was answered and is never this. */
-class DeliveryAdminUnanswered extends Error {}
-
-/** How long one store challenge waits for the delivery daemon's answer. */
-const STORE_CHALLENGE_TIMEOUT_MS = 5_000;
 
 /** The refusal a control instance with `execution: none` gives every launch, hosting, model and write door. */
 const EXECUTION_NONE_REFUSAL = "execution: none forbids seat launch, workflow hosting, model inspection and caller-driven writes on this control instance; select the participant Manager with an instance-pinned manager-caller view";
@@ -1356,6 +1301,94 @@ export class Manager {
     withProvisioner: (fn) => this.withProvisioner(fn),
     shredUserSecrets: (failures, family) => this.shredUserSecrets(failures, family),
     bearerEntryArgv,
+  });
+
+  /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
+  private readonly goalWriterComponent = new GoalWriter({
+    auth: () => this.auth,
+    goalAcceptances: () => this.goalAcceptances,
+    goalWriter: () => this.goalWriter,
+    setGoalWriter: (value) => { this.goalWriter = value; },
+    goalWriterCreds: () => this.goalWriterCreds,
+    setGoalWriterCreds: (value) => { this.goalWriterCreds = value; },
+    goalWriterIdentity: () => this.goalWriterIdentity,
+    leaseStopping: () => this.leaseStopping,
+    managerInstanceId: () => this.managerInstanceId,
+    readinessTimeoutMs: () => this.readinessTimeoutMs,
+    remoteAuthority: () => this.remoteAuthority,
+    serviceServe: () => this.serviceServe,
+    space: () => this.space,
+    turnRelay: () => this.turnRelay,
+    goalReconcileDone: () => this.goalReconcileDone,
+    setGoalReconcileDone: (value) => { this.goalReconcileDone = value; },
+    adoptTurnGoal: (...args) => this.adoptTurnGoal(...args),
+    boundedReconnect: (...args) => this.boundedReconnect(...args),
+    dial: (...args) => this.dial(...args),
+    noticeSeatTurns: (...args) => this.noticeSeatTurns(...args),
+    renewRemoteBeforeRedial: (...args) => this.renewRemoteBeforeRedial(...args),
+    retireConnection: (...args) => this.retireConnection(...args),
+    trackTransport: (...args) => this.trackTransport(...args),
+    withEndpointServeExecutor: (fn) => this.withEndpointServeExecutor(fn),
+  });
+
+  /** Renewal of the manager's standing credentials. Every dependency reads through at its use. */
+  private readonly credentialRenewal = new CredentialRenewal({
+    agents: () => this.agents,
+    auth: () => this.auth,
+    credentialPushRetry: () => this.credentialPushRetry,
+    setCredentialPushRetry: (value) => { this.credentialPushRetry = value; },
+    credentialPushes: () => this.credentialPushes,
+    daemonRenewalEligible: () => this.daemonRenewalEligible,
+    setDaemonRenewalEligible: (value) => { this.daemonRenewalEligible = value; },
+    daemonRenewalOwner: () => this.daemonRenewalOwner,
+    setDaemonRenewalOwner: (value) => { this.daemonRenewalOwner = value; },
+    endpointServeRenewalTimer: () => this.endpointServeRenewalTimer,
+    setEndpointServeRenewalTimer: (value) => { this.endpointServeRenewalTimer = value; },
+    ep: () => this.ep,
+    finishRemoteBundleAdoption: () => this.finishRemoteBundleAdoption,
+    setFinishRemoteBundleAdoption: (value) => { this.finishRemoteBundleAdoption = value; },
+    goalWriter: () => this.goalWriter,
+    goalWriterCreds: () => this.goalWriterCreds,
+    setGoalWriterCreds: (value) => { this.goalWriterCreds = value; },
+    leaseStopping: () => this.leaseStopping,
+    managerInstanceId: () => this.managerInstanceId,
+    pendingCredentialPushes: () => this.pendingCredentialPushes,
+    remoteAuthority: () => this.remoteAuthority,
+    remoteBundleAdoption: () => this.remoteBundleAdoption,
+    setRemoteBundleAdoption: (value) => { this.remoteBundleAdoption = value; },
+    remoteBundleRenewal: () => this.remoteBundleRenewal,
+    setRemoteBundleRenewal: (value) => { this.remoteBundleRenewal = value; },
+    remoteExecutorCreds: () => this.remoteExecutorCreds,
+    setRemoteExecutorCreds: (value) => { this.remoteExecutorCreds = value; },
+    remoteRenewalDebt: () => this.remoteRenewalDebt,
+    setRemoteRenewalDebt: (value) => { this.remoteRenewalDebt = value; },
+    remoteSupervisorCreds: () => this.remoteSupervisorCreds,
+    setRemoteSupervisorCreds: (value) => { this.remoteSupervisorCreds = value; },
+    runHosting: () => this.runHosting,
+    secretStoreIdentity: () => this.secretStoreIdentity,
+    setSecretStoreIdentity: (value) => { this.secretStoreIdentity = value; },
+    secrets: () => this.secrets,
+    serviceServe: () => this.serviceServe,
+    sessionLedgerConn: () => this.sessionLedgerConn,
+    sessionLedgerCreds: () => this.sessionLedgerCreds,
+    setSessionLedgerCreds: (value) => { this.sessionLedgerCreds = value; },
+    space: () => this.space,
+    supervisorCredentialPush: () => this.supervisorCredentialPush,
+    setSupervisorCredentialPush: (value) => { this.supervisorCredentialPush = value; },
+    supervisorCredentialPushPending: () => this.supervisorCredentialPushPending,
+    setSupervisorCredentialPushPending: (value) => { this.supervisorCredentialPushPending = value; },
+    userMode: () => this.userMode,
+    workspaceRoot: () => this.workspaceRoot,
+    beginLifecycle: (...args) => this.beginLifecycle(...args),
+    dialRemoteStanding: (...args) => this.dialRemoteStanding(...args),
+    dialServeConnection: (...args) => this.dialServeConnection(...args),
+    discardServeCandidate: (...args) => this.discardServeCandidate(...args),
+    mintAndStageGoalWriter: (...args) => this.mintAndStageGoalWriter(...args),
+    mintAndStageSessionLedger: (...args) => this.mintAndStageSessionLedger(...args),
+    probeStaticCredential: (...args) => this.probeStaticCredential(...args),
+    renewManagedStaticCred: (...args) => this.renewManagedStaticCred(...args),
+    withEndpointServeExecutor: (fn) => this.withEndpointServeExecutor(fn),
+    renewRemoteStandingBundle: (...args) => this.renewRemoteStandingBundle(...args),
   });
 
   /** The launch pipeline's leaf steps. Every dependency reads through at its use. */
@@ -2136,630 +2169,31 @@ export class Manager {
   /** The delivery shard whose lease names the process that reloads the standing credentials.
    *  Delivery is single-shard today and the endpoint's own responder reads row 0; naming it here
    *  keeps the manager's binding check and that reply arguing about the same row. */
-  private static readonly DELIVERY_SHARD = 0;
-
-  /** Proof that this manager remints into the store the delivery daemon reloads from.
-   *  Fingerprint-only `reloadCreds` is safe only after this. Two named, different stores
-   *  refuse the pass. A daemon that is not bound yet is not a named store: start and
-   *  remint still proceed (tests, delayed delivery), writing this manager's store. The
-   *  challenge runs again before every remint, so a later daemon on a foreign store is
-   *  refused then rather than certified by an earlier absence. A request timeout is not
-   *  absence: a hung rail would skip the proof, so it fails closed.
-   *
-   *  ABSENCE IS READ OFF THE LEASE ROW, never off the rail's no-responder shape alone (#1694).
-   *  The rail is queue-grouped, so "no responder answered" is itself something the rail reports,
-   *  and a responder that answers in a shape the client turns into that error makes the pass read
-   *  "absent" while a holder is live on the row — certifying every later remint with no proof at
-   *  all. So a no-responder outcome is decided by the row: a row that names a holder makes the
-   *  pass refuse (undetermined — a live daemon went unanswered, which must not read as "no
-   *  daemon"), and only a row that is absent or holderless settles "absent", the state start()
-   *  treats as not-yet-bound. An unreadable row (a failed read, or a key that exists but does not
-   *  parse) is a genuine unknown and refuses fail-closed, like a hung rail. */
-  private async daemonStoreRelation(timeoutMs: number): Promise<"shared" | "absent" | "divergent"> {
-    let reply: ControlReply;
-    try {
-      reply = await this.ep.requestDeliveryAdmin("reloadStoreIdentity", {}, timeoutMs);
-    } catch (e) {
-      const msg = rejectionText(e);
-      if (isAbsentDeliveryAdmin(e)) return this.absentByLeaseRow(isUnansweredDeliveryAdmin(e));
-      const failure = `could not challenge the delivery daemon's SecretStore: ${msg}`;
-      throw isUnansweredDeliveryAdmin(e) ? new DeliveryAdminUnanswered(failure) : new Error(failure);
-    }
-    if (!reply.ok)
-      throw new Error(
-        reply.error ?? "delivery daemon refused to name the SecretStore it reloads from",
-      );
-    let answer: DaemonStoreAnswer;
-    try {
-      answer = parseDaemonStoreAnswer(reply.data);
-    } catch (e) {
-      throw new Error(
-        `delivery daemon named an unreadable SecretStore: ${rejectionText(e)}. Nothing reminted. ` +
-          `Check that delivery and manager use the same Cotal version, then restart delivery through its supervisor. ` +
-          `For a saved local delivery service: \`cotal down delivery --space ${this.space}\`, ` +
-          `then \`cotal up --space ${this.space}\``,
-      );
-    }
-    // The answerer's own claim first, so an honest non-holder is refused by its own admission and
-    // the operator-facing reason names that. This is the CHEAP half of the test and NOT the binding
-    // one: a responder that does not hold the lease can assert `true` here just as easily.
-    if (!answer.holdsDeliveryLease)
-      throw new Error(
-        "the delivery-admin rail was answered by a responder that does not hold this space's " +
-          "delivery lease, so its SecretStore is not the store the daemon reloads from - nothing reminted",
-      );
-    // THE BINDING TEST, measured by this manager rather than asserted by the answerer. The lease
-    // row's holder is read here under this manager's own credential; the answerer must BE that
-    // principal. A reply asserting the claim while some other process holds the shard fails here,
-    // which is the case a bare store identity could not see. An unreadable row is an unknown and
-    // refuses too: this test may never be satisfied by failing to run.
-    const holder = await this.ep.deliveryLeaseHolder(Manager.DELIVERY_SHARD);
-    if (holder === undefined)
-      throw new Error(
-        "this manager could not read the delivery lease row, so it cannot verify that the answering " +
-          "responder is the process that reloads the standing credentials - nothing reminted",
-      );
-    if (holder !== answer.responder)
-      throw new Error(
-        `the delivery-admin rail was answered by ${answer.responder}, which is not the holder of ` +
-          `this space's delivery lease (${holder}), so its SecretStore is not the store the daemon ` +
-          `reloads from - nothing reminted`,
-      );
-    const daemon = answer.identity;
-    // The workspace store records its id the first time it is named, so it is named here, where
-    // only an auth manager reaches, rather than in a constructor every open-mode manager runs.
-    this.secretStoreIdentity ??= parseSecretStoreIdentity(this.secrets.identity);
-    if (!sameSecretStoreIdentity(this.secretStoreIdentity, daemon)) {
-      console.error(`! ${divergentSecretStoreNotice(this.secretStoreIdentity, daemon)}`);
-      return "divergent";
-    }
-    return "shared";
-  }
-
-  /** Settle a no-responder challenge outcome from the lease row, never from the rail's own
-   *  reporting shape (#1694). The three cases:
-   *
-   *  1. The row READS but names a holder: a live daemon holds the shard and the rail went
-   *     unanswered. That is undetermined, not "no daemon" — treating it as absent would let this
-   *     manager remint with no proof while a reloading daemon runs, which is exactly what the
-   *     challenge exists to prevent. Refuse.
-   *  2. The row is unreadable — a read that fails (a denied or erroring bucket) OR a key that
-   *     exists but does not parse as a lease record (`readDeliveryLeaseEntry` throws for both):
-   *     undetermined, and it refuses the same fail-closed way a hung rail does. Never a silent
-   *     "absent" over a row the manager could not read.
-   *  3. The row is absent or holderless (no key, a DEL/PURGE tombstone, or a row that names no
-   *     holder): today's "absent", the state start() treats as a daemon that is not bound yet.
-   *
-   *  `deliveryLeaseHolder` swallows its read failures into `undefined`, which would fold case 2
-   *  into case 3 — so this reads the entry directly and lets the read's own failure refuse. */
-  private async absentByLeaseRow(unanswered: boolean): Promise<"absent"> {
-    let entry: { info: DeliveryLeaseInfo } | undefined;
-    try {
-      entry = await this.ep.readDeliveryLeaseEntry(Manager.DELIVERY_SHARD);
-    } catch (e) {
-      throw new Error(
-        `could not read the delivery lease row to settle whether the delivery daemon is absent ` +
-          `(${rejectionText(e)}) - absence is undetermined, nothing reminted`,
-      );
-    }
-    const holder = entry?.info.holder;
-    if (holder !== undefined && holder !== "") {
-      const refusal =
-        `the delivery-admin rail reported no responder while the delivery lease names a holder ` +
-        `(${holder}) - absence cannot be read off the rail alone, and nothing reminted`;
-      throw unanswered ? new DeliveryAdminUnanswered(refusal) : new Error(refusal);
-    }
-    return "absent";
-  }
-
-  /** Keep this manager's renewal lease alive between credential passes (#1634). The manager bucket
-   *  expires keys at MANAGER_LEASE_TTL_MS, far below the credential pass's cadence, so the lease
-   *  needs its own heartbeat like the per-instance liveness lease. A non-owner calls this too: the
-   *  CAS is how a survivor picks up a dead owner's expired lease with no operator step. Never
-   *  throws; a failed heartbeat leaves ownership to the next pass rather than ending the process. */
-  private async keepDaemonRenewalLease(): Promise<void> {
-    if (!this.auth || !this.daemonRenewalEligible) return;
-    try {
-      const held = await this.ep.holdDaemonRenewalLease(this.managerInstanceId);
-      if (this.daemonRenewalOwner && !held)
-        console.error(`! daemon credential renewal for space "${this.space}" passed to another manager (this one lost the renewal lease) - it keeps serving its seats`);
-      this.daemonRenewalOwner = held;
-    } catch (e) {
-      console.error(`! could not refresh the daemon renewal lease: ${rejectionText(e)} - ownership is re-decided on the next pass`);
-    }
-  }
-
-  /** Decide whether THIS manager owns the daemon's credential renewal (#1634). Both conditions are
-   *  required, because each answers a question the other cannot:
-   *
-   *  1. The daemon must reload from this manager's store (#1447). Reminting into a store the daemon
-   *     never reads writes bytes nobody adopts, and fingerprint-only `reloadCreds` would then name a
-   *     generation the daemon cannot see.
-   *  2. This manager must hold the per-space renewal lease. Store identity CANNOT pick one owner on
-   *     its own: `sameSecretStoreIdentity` is pure equality with no holder and no tiebreak, so every
-   *     manager sharing one store passes it, and two owners reminting on independent timers have no
-   *     ordering between them - one's write lands between the other's re-sign and its adoption
-   *     request, which is the #773 refusal the challenge exists to prevent.
-   *
-   *  A manager failing either test serves the space normally and skips only the daemon remint. */
-  private async claimDaemonRenewalOwnership(waitMs = 0): Promise<void> {
-    // EVERY refusal outcome drops a held lease, not only "divergent". The refusal paths THROW
-    // (#1694: a non-holder answer, an unbindable answerer, an unreadable or holder-naming row on a
-    // no-responder rail), and a thrown refusal caught by renewDaemonCreds would otherwise leave a
-    // manager that once owned the renewal still holding the lease behind its own heartbeat — the
-    // pass refuses, the log says so, and the space keeps a renewal owner that must not remint.
-    // Deciding here, inside the claim, is what keeps the release on the refusal path itself.
-    let relation: "shared" | "absent" | "divergent";
-    try {
-      // Only the read-only challenge is retried, so a wait that ends mid-attempt abandons a read,
-      // never the lease work below.
-      relation = await untilDeliveryAdminAnswers(
-        waitMs,
-        (requestMs) => this.daemonStoreRelation(requestMs(STORE_CHALLENGE_TIMEOUT_MS)),
-        (reason, delayMs) => console.error(`! delivery-admin rail did not answer the store challenge (${reason}); retrying in ${delayMs / 1000}s`),
-        (e) => e instanceof DeliveryAdminUnanswered,
-      );
-    } catch (e) {
-      this.daemonRenewalEligible = false;
-      if (this.daemonRenewalOwner) await this.ep.releaseDaemonRenewalLease().catch(() => {});
-      this.daemonRenewalOwner = false;
-      throw e;
-    }
-    this.daemonRenewalEligible = relation !== "divergent";
-    if (relation === "divergent") {
-      // Not our daemon's store: drop any lease we hold rather than sit on it, so the manager that
-      // CAN remint is not blocked behind us.
-      if (this.daemonRenewalOwner) await this.ep.releaseDaemonRenewalLease();
-      this.daemonRenewalOwner = false;
-      return;
-    }
-    await this.keepDaemonRenewalLease();
-  }
-
-  /** #2073: arm the `endpoint-serve` credential's own renewal from its `[renewAt, exp)` window
-   *  instead of `credRenewTimer`'s boot-phased TTL/4 tick, which can miss that window depending on
-   *  when the timer happened to start relative to the credential's `iat`. Called after the initial
-   *  mint (`registerManagerService`) and after every successful re-mint in the serve branch below,
-   *  so the schedule always tracks the CURRENT credential. `credsRenewalDelayMs` is the same 75%
-   *  convention the endpoint's delivery renewal and the membership feed use (`@cotal-ai/core`); no
-   *  second copy of that arithmetic lives here. */
-  private scheduleServeRenewal(creds: string): void {
-    if (this.endpointServeRenewalTimer) clearTimeout(this.endpointServeRenewalTimer);
-    const delay = Math.max(1_000, credsRenewalDelayMs(creds));
-    const renewAt = new Date(Date.now() + delay).toISOString();
-    this.endpointServeRenewalTimer = setTimeout(() => { void this.renewDaemonCreds(); }, delay);
-    this.endpointServeRenewalTimer.unref?.();
-    console.error(`manager endpoint-serve renewal scheduled at ${renewAt}`);
-  }
+  static readonly DELIVERY_SHARD = 0;
+  /** {@link CredentialRenewal.absentByLeaseRow}. */
+  absentByLeaseRow(...args: Parameters<CredentialRenewal["absentByLeaseRow"]>): ReturnType<CredentialRenewal["absentByLeaseRow"]> { return this.credentialRenewal.absentByLeaseRow(...args); }
+  /** {@link CredentialRenewal.keepDaemonRenewalLease}. */
+  private keepDaemonRenewalLease(...args: Parameters<CredentialRenewal["keepDaemonRenewalLease"]>): ReturnType<CredentialRenewal["keepDaemonRenewalLease"]> { return this.credentialRenewal.keepDaemonRenewalLease(...args); }
+  /** {@link CredentialRenewal.claimDaemonRenewalOwnership}. */
+  private claimDaemonRenewalOwnership(...args: Parameters<CredentialRenewal["claimDaemonRenewalOwnership"]>): ReturnType<CredentialRenewal["claimDaemonRenewalOwnership"]> { return this.credentialRenewal.claimDaemonRenewalOwnership(...args); }
+  /** {@link CredentialRenewal.scheduleServeRenewal}. */
+  private scheduleServeRenewal(...args: Parameters<CredentialRenewal["scheduleServeRenewal"]>): ReturnType<CredentialRenewal["scheduleServeRenewal"]> { return this.credentialRenewal.scheduleServeRenewal(...args); }
 
   private credentialPushRetry?: ReturnType<typeof setTimeout>;
   private readonly credentialPushes = new Map<NatsConnection, Promise<void>>();
   private supervisorCredentialPush?: Promise<void>;
   private readonly pendingCredentialPushes = new Set<NatsConnection>();
   private supervisorCredentialPushPending = false;
-
-  private scheduleCredentialPushRetry(): void {
-    if (this.credentialPushRetry || this.leaseStopping) return;
-    this.credentialPushRetry = setTimeout(() => {
-      this.credentialPushRetry = undefined;
-      if (this.leaseStopping) return;
-      void Promise.all([
-        ...[...this.pendingCredentialPushes].map((nc) => this.pushRenewedCreds(nc)),
-        ...(this.supervisorCredentialPushPending ? [this.pushSupervisorCreds()] : []),
-      ]);
-    }, 1_000);
-    this.credentialPushRetry.unref();
-  }
-
-  /** Retain a busy transport and retry its adopted credential without replaying requests. */
-  private pushRenewedCreds(nc: NatsConnection): Promise<void> {
-    const active = this.credentialPushes.get(nc);
-    if (active) return active;
-    const push = this.pushRenewedCredsOnce(nc).finally(() => { this.credentialPushes.delete(nc); });
-    this.credentialPushes.set(nc, push);
-    return push;
-  }
-
-  private async pushRenewedCredsOnce(nc: NatsConnection): Promise<void> {
-    this.pendingCredentialPushes.add(nc);
-    try {
-      await requestSafeReconnect(nc);
-      this.pendingCredentialPushes.delete(nc);
-    } catch (e) {
-      if (nc.isClosed()) this.pendingCredentialPushes.delete(nc);
-      console.error(`! manager credential push deferred: ${rejectionText(e)}`);
-      if (!nc.isClosed()) this.scheduleCredentialPushRetry();
-    }
-  }
-
-  private pushSupervisorCreds(): Promise<void> {
-    if (this.supervisorCredentialPush) return this.supervisorCredentialPush;
-    const push = this.pushSupervisorCredsOnce().finally(() => { this.supervisorCredentialPush = undefined; });
-    this.supervisorCredentialPush = push;
-    return push;
-  }
-
-  private async pushSupervisorCredsOnce(): Promise<void> {
-    this.supervisorCredentialPushPending = true;
-    try {
-      await this.ep.refreshCredsRequestSafe();
-      this.supervisorCredentialPushPending = false;
-    } catch (e) {
-      console.error(`! remote manager supervisor credential push deferred: ${rejectionText(e)}`);
-      this.scheduleCredentialPushRetry();
-    }
-  }
-
-  /** #2073: the shared bounded-retry shape for a closed standing connection: wait out each of
-   *  {@link STATIC_RECONCILE_RETRY_DELAYS_MS}, trying `attempt` after each. Waiting does not repair
-   *  two closes, so they skip the first delay. One that closes while an all-duty renewal is in flight,
-   *  as one the broker expires just before adoption, tries when that renewal adopts. One whose
-   *  credential has `expired` tries at once, because its attempt renews the credential. A stop landing
-   *  while this loop waits is not a fault this loop reports (the caller re-checks `leaseStopping`). */
-  private async boundedReconnect(label: string, attempt: () => Promise<boolean>, expired = false): Promise<boolean> {
-    let first = this.remoteBundleAdoption ?? (expired ? Promise.resolve() : undefined);
-    for (const delayMs of STATIC_RECONCILE_RETRY_DELAYS_MS) {
-      await (first ?? new Promise((r) => setTimeout(r, delayMs)));
-      first = undefined;
-      if (this.leaseStopping) return true;
-      try {
-        if (await attempt()) return true;
-      } catch (e) {
-        console.error(`! manager ${label} re-dial attempt failed: ${rejectionText(e)}`);
-      }
-    }
-    return false;
-  }
-
-  /** One class-2 renewal pass: re-sign `.cotal/delivery.creds` + `.cotal/membership-rw.creds`
-   *  for their existing nkeys, then request the delivery daemon's EXPLICIT `reloadCreds` adoption on the
-   *  delivery-admin rail and persist the audit record (`.cotal/renewal.<spaceKey>.json`) that `cotal doctor auth`
-   *  renders — so "file re-signed" and "daemon adopted" are distinguishable states. A missing daemon
-   *  (no responder) is recorded honestly: each daemon's own 75% renewal timer remains the adoption backstop.
-   *  Never throws — renewal failure must be LOUD (log + record), not fatal to the supervisor. */
-  private async renewDaemonCreds(): Promise<void> {
-    const release = this.beginLifecycle();
-    if (!release) return;
-    try {
-      // #1634: re-decide every pass, so a daemon that moved onto this manager's store becomes
-      // ownable, one that moved off retires this manager's ownership, and a crashed owner's expired
-      // lease is taken over by a survivor.
-      await this.claimDaemonRenewalOwnership();
-      // Re-sign through the manager's ONE store — the SAME store the delivery daemon reads
-      // (`runDelivery(args, store)`), so a hosted remint writes the store the daemon renews from,
-      // never a divergent one. Locally this is the workstation FS store (`.cotal/*.creds`).
-      // `this.space` gates cross-space signer swaps; the `preflight` proves broker acceptance before
-      // overwriting from ANY signer form (full or stripped). A same-label alternate full bundle is
-      // self-bound, not broker-bound, so the manager-hosted path proves every re-sign before it could
-      // clobber the last-good with a broker-dead cred; a wrong-account signer's cred is refused here.
-      const results = this.daemonRenewalOwner
-        ? await remintDaemonCreds(this.workspaceRoot, this.space, this.secrets, {
-            preflight: (creds) => this.probeStaticCredential(creds).then((r) => r.ok),
-          })
-        : [];
-      const resigned = results.filter((r) => r.ok);
-      let adoption: RenewalRecord["adoption"];
-      if (resigned.length) {
-        // Hand the daemon the EXPECTED generation per component (SHA-256 of the JWT we just
-        // re-signed) so its reply proves it adopted THIS generation, not merely re-read some file.
-        const expected: { delivery?: string; membership?: string } = {};
-        for (const r of resigned) {
-          if (r.file === DELIVERY_CREDS_KIND && r.fingerprint) expected.delivery = r.fingerprint;
-          else if (r.file === MEMBERSHIP_RW_CREDS_KIND && r.fingerprint) expected.membership = r.fingerprint;
-        }
-        try {
-          const reply = await this.ep.requestDeliveryAdmin("reloadCreds", { expected }, DELIVERY_ADMIN_RELOAD_TIMEOUT_MS);
-          // Keep the per-component aggregate on BOTH outcomes: on a top-level failure `reply.data`
-          // still carries which component adopted and which was refused, which `doctor auth` renders.
-          adoption = reply.ok
-            ? { ok: true, detail: reply.data }
-            : { ok: false, error: reply.error, detail: reply.data };
-        } catch (e) {
-          adoption = { ok: false, error: `no delivery-admin responder (${rejectionText(e)}) - the daemon's 75% re-read backstop adopts the re-signed file` };
-        }
-      }
-      for (const r of results.filter((x) => !x.ok && !x.skipped))
-        console.error(`! credential renewal: could not re-sign ${r.file}: ${r.error} - the daemon dies loud at this cred's expiry unless it is reminted`);
-      if (adoption && !adoption.ok) console.error(`! credential renewal: daemon adoption failed: ${adoption.error}`);
-      // `writeRenewalRecord` redacts the ephemeral fingerprint at the persistence boundary (covering
-      // the `doctor auth --fix` writer too), so the results pass straight through.
-      // A non-owner (#1634) re-signed nothing, so it writes no record: an empty one renders in
-      // `doctor auth` as a pass that never ran.
-      if (this.daemonRenewalOwner)
-        writeRenewalRecord(this.workspaceRoot, this.space, { ts: new Date().toISOString(), owner: "manager", results, adoption });
-      this.warnOnSystemCredExpiry();
-      // The MANAGER is the renewal owner for its managed-static agent creds —
-      // supervisor-side PUSH remint for recorded LIVE slots (the child JWT is never proof of
-      // incarnation; a copied credential cannot drive this and is stranded at its own row's TTL).
-      // Same class-2 mechanics as the daemon creds: re-sign the file for the SAME nkey; the
-      // agent endpoint's 75% source re-read adopts it.
-      //
-      // Each credential is judged as of the NEXT pass, so one whose renewal point falls before it
-      // is re-signed now, ahead of the endpoint's re-read. Judged as of now, a credential whose
-      // renewal point lands just after a pass waited a whole interval: the endpoint warned every
-      // minute that the file still held the old generation, and when the next pass came in the
-      // credential's last minute, the endpoint's one-minute retry could miss it and the connection
-      // expired.
-      const nextPassSec = Math.floor(Date.now() / 1000) + Math.ceil(credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC) / 1000);
-      if (!this.userMode) {
-        for (const a of [...this.agents.values()]) {
-          // The `terminalizing` test here is an OPTIMISATION, NOT THE GUARD. There are awaits below
-          // it, so an agent can latch mid-iteration and this filter will have already let it
-          // through — what actually refuses is the same test at the top of
-          // {@link renewManagedStaticCred}, which every renewal on this path goes through.
-          // COUPLING: deleting or weakening that check silently promotes this line from an
-          // optimisation into the whole guard, and nothing fails at the moment of the change.
-          if (a.userOwner || a.terminalizing || !a.seed || !a.secretPaths?.creds) continue;
-          try {
-            const stored = await this.secrets.get(agentSecretKeyForFile(a.secretPaths.creds, this.space));
-            if (stored === undefined) continue; // no materialized cred (never minted here) - nothing to renew
-            const health = inspectCredHealth(stored, nextPassSec);
-            if (health.state === "healthy") continue;
-            if (health.state === "unbounded" || health.state === "unreadable") {
-              console.error(`! managed cred renewal ${a.name}: credential is ${health.state}${health.error ? ` (${health.error})` : ""} - not renewed (a pre-TTL credential stays as minted until respawn)`);
-              continue;
-            }
-            await this.renewManagedStaticCred(a);
-          } catch (e) {
-            console.error(`! managed cred renewal ${a.name}: ${rejectionText(e)} - the agent dies loud at this cred's expiry unless it is reminted`);
-          }
-        }
-      }
-      // The manager is the `endpoint-serve` renewal owner for its own
-      // service credential: re-mint the same serve identity with a fresh bounded exp through the
-      // §13.1 mint fence over a scoped one-shot executor (staging a new ledger row in a later
-      // second or idempotently re-staging the active row within the same second, and releasing only
-      // on winning the gate CAS; never the standing connection). The serve connection's
-      // authenticator presents the refreshed credential on its next (re)connect.
-      if (this.serviceServe?.creds && this.auth) {
-        const s = this.serviceServe;
-        const authRef = this.auth;
-        try {
-          const health = inspectCredHealth(this.serviceServe.creds);
-          if (health.state !== "healthy") {
-            s.creds = await this.withEndpointServeExecutor(({ authKv }) =>
-              mintCreds(authRef, s.identity, "endpoint-serve", {
-                serveIssuance: serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId }),
-                endpointServe: s.grant,
-              }));
-            // #2073: a superseded instance's re-mint fails the gate CAS above and lands in the
-            // catch below, not here — this re-mint already re-checks the issuance gate through
-            // the SAME executor a fresh registration would use, so there is no second epoch read
-            // to add before re-binding after a re-dial.
-            await this.pushRenewedCreds(s.nc);
-            this.scheduleServeRenewal(s.creds);
-          }
-        } catch (e) {
-          console.error(`! endpoint-serve renewal: ${rejectionText(e)} - the manager's service endpoint dies loud at this cred's expiry unless it is re-registered`);
-        }
-      }
-      // The manager is also the goal-writer's renewal owner — re-mint the SAME
-      // goal-writer nkey with a fresh bounded exp AND re-stage its new credId into the §13.1 family,
-      // through the scoped executor (never the standing seed). Without this the standing goal-writer
-      // connection dies at its TTL and spawn-as-action stops accepting until a restart. The
-      // connection's authenticator presents the refreshed credential on its next (re)connect.
-      if (this.goalWriter && this.goalWriterCreds && this.auth) {
-        const gw = this.goalWriter;
-        try {
-          if (inspectCredHealth(this.goalWriterCreds).state !== "healthy") {
-            const fresh = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageGoalWriter(authKv));
-            this.goalWriterCreds = fresh;
-            gw.creds = fresh;
-            await this.pushRenewedCreds(gw.nc);
-          }
-        } catch (e) {
-          console.error(`! goal-writer renewal: ${rejectionText(e)} - spawn-as-action stops accepting at this cred's expiry unless the manager restarts`);
-        }
-      }
-      // The manager is also the session-ledger's renewal owner — re-mint the SAME nkey
-      // with a fresh bounded exp AND re-stage its new credId into the §13.1 family, through the
-      // scoped executor. Without this the standing session-ledger connection dies at its TTL and
-      // `attach` stops establishing sessions until a restart. The connection's authenticator presents
-      // the refreshed credential on its next (re)connect.
-      // SPEC 14.6: every hosted drive's per-run `run-driver` credential is the manager's to renew
-      // for the same nkey; a run parked in a pause for days must not die at the credential's TTL.
-      await this.runHosting?.renew();
-      if (this.sessionLedgerConn && this.sessionLedgerCreds && this.auth) {
-        const sw = this.sessionLedgerConn;
-        try {
-          if (inspectCredHealth(this.sessionLedgerCreds).state !== "healthy") {
-            const fresh = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageSessionLedger(authKv));
-            this.sessionLedgerCreds = fresh;
-            sw.creds = fresh;
-            await this.pushRenewedCreds(sw.nc);
-          }
-        } catch (e) {
-          console.error(`! session-ledger renewal: ${rejectionText(e)} - attach stops establishing sessions at this cred's expiry unless the manager restarts`);
-        }
-      }
-    } catch (e) {
-      console.error(`! credential renewal pass failed: ${rejectionText(e)}`);
-    } finally {
-      release();
-    }
-  }
-
-  /** Renew the remote registration executor through the typed host protocol. A healthy credential
-   * is retained; near-expiry and expired credentials are replaced for the same nkey. */
-  private async renewRemoteExecutor(force = false): Promise<void> {
-    if (!this.remoteAuthority) return;
-    const current = this.remoteExecutorCreds;
-    if (!force && current && inspectCredHealth(current).state === "healthy") return;
-    try {
-      this.remoteExecutorCreds = await this.remoteAuthority.renewExecutor();
-    } catch (e) {
-      console.error(`! remote manager executor renewal: ${rejectionText(e)} - registration maintenance and clean deregistration remain unavailable until renewal succeeds`);
-      if (force) throw e;
-    }
-  }
-
-  /** An active signerless manager renews its standing duties together. The issuer stages the closed
-   * credential family first; broker preflight proves every JWT and existing caller-held nkey
-   * before any mutable holder changes. A failed candidate leaves all current creds intact. */
-  private async renewRemoteStandingBundle(force = false): Promise<void> {
-    if (this.remoteBundleRenewal) return this.remoteBundleRenewal;
-    if (this.leaseStopping) return;
-    this.remoteBundleAdoption = new Promise<void>((resolve) => { this.finishRemoteBundleAdoption = resolve; });
-    const renewal = this.renewRemoteStandingBundleOnce(force, performance.now() + REMOTE_STANDING_BUDGET_MS);
-    this.remoteBundleRenewal = renewal;
-    try { await renewal; } finally {
-      this.finishRemoteBundleAdoption?.();
-      if (this.remoteBundleRenewal === renewal) {
-        this.remoteBundleRenewal = undefined;
-        this.remoteBundleAdoption = undefined;
-        this.finishRemoteBundleAdoption = undefined;
-      }
-    }
-  }
-
-  /** A signerless manager's closed standing connection re-dials through the all-duty family only.
-   *  A healthy holder re-dials as is. An unhealthy one waits for the closed renewal and adoption,
-   *  and a refusal fails this attempt with last-good and debt kept. Nothing is minted locally. */
-  private async renewRemoteBeforeRedial(label: string, read: () => string | undefined): Promise<void> {
-    if (inspectCredHealth(read() ?? "").state === "healthy") return;
-    await this.renewRemoteStandingBundle(true);
-    if (inspectCredHealth(read() ?? "").state !== "healthy")
-      throw new Error(`the ${label} credential is not healthy after all-duty renewal; last-good is kept and nothing is minted locally`);
-  }
-
-  private async renewRemoteStandingBundleOnce(force: boolean, deadline: number): Promise<void> {
-    const remote = this.remoteAuthority;
-    if (!remote?.renewStandingBundle || !this.serviceServe) return;
-    const current = [this.remoteSupervisorCreds, this.remoteExecutorCreds, this.serviceServe.creds,
-      this.goalWriterCreds, this.sessionLedgerCreds];
-    if (!force && current.every((cred) => cred && inspectCredHealth(cred).state === "healthy")) {
-      await Promise.all([
-        ...[...this.pendingCredentialPushes].map((nc) => this.pushRenewedCreds(nc)),
-        ...(this.supervisorCredentialPushPending ? [this.pushSupervisorCreds()] : []),
-      ]);
-      return;
-    }
-    const processEpoch = this.serviceServe.grant.epoch;
-    let candidate: Awaited<ReturnType<NonNullable<typeof remote.renewStandingBundle>>> | undefined;
-    const serving = this.serviceServe;
-    const previous = { nc: serving.nc, handle: serving.handle };
-    let replacement: { nc: NatsConnection; handle: EpServeHandle } | undefined;
-    let adopted = false;
-    try {
-      // Only this continuation can adopt. A host operation may still issue after this wait times
-      // out, but its late result cannot re-enter preflight or change any Manager holder.
-      candidate = await withTimeout(remote.renewStandingBundle(processEpoch), remoteStandingTimeLeft(deadline),
-        "remote manager standing authority exceeded its 10000ms aggregate budget; issuance outcome is unknown");
-      if (Object.keys(candidate).sort().join(",") !== [...REMOTE_MANAGER_IDENTITY_NAMES].sort().join(","))
-        throw new Error("host returned an incomplete or widened standing credential family");
-      for (const name of REMOTE_MANAGER_IDENTITY_NAMES) {
-        if (typeof candidate[name] !== "string" || inspectCredHealth(candidate[name]).state === "unreadable")
-          throw new Error(`host returned an unreadable ${name} credential`);
-        if (!remote.accountPublicKey || accountFromCreds(candidate[name]) !== remote.accountPublicKey)
-          throw new Error(`host returned a ${name} credential for another account`);
-        if (credsClaims(candidate[name]).sub !== remote.identities[name].id)
-          throw new Error(`host returned a ${name} credential for a different nkey than the held identity`);
-        const staged = candidate[name];
-        const nc = await this.dialRemoteStanding({ authenticator: (nonce?: string) => credsAuthenticator(new TextEncoder().encode(staged))(nonce), maxReconnectAttempts: 0 }, deadline);
-        await nc.close();
-      }
-      remoteStandingTimeLeft(deadline);
-      if (this.leaseStopping || this.serviceServe !== serving || serving.nc !== previous.nc || serving.grant.epoch !== processEpoch)
-        throw new Error("manager changed its active serve epoch or connection while standing renewal was in flight");
-      const stagedServeCreds = candidate.serve;
-      replacement = await this.dialServeConnection({ ...serving, creds: stagedServeCreds },
-        () => adopted ? serving.creds! : stagedServeCreds, deadline);
-      remoteStandingTimeLeft(deadline);
-      if (this.leaseStopping || this.serviceServe !== serving || serving.nc !== previous.nc || serving.grant.epoch !== processEpoch)
-        throw new Error("manager changed its active serve epoch or connection while standing renewal was in flight");
-      if (REMOTE_MANAGER_IDENTITY_NAMES.some((name) => inspectCredHealth(candidate![name]).state !== "healthy"))
-        throw new Error("standing candidate is no longer healthy after broker preflight");
-      serving.nc = replacement.nc;
-      serving.handle = replacement.handle;
-      replacement = undefined;
-      this.remoteSupervisorCreds = candidate.supervisor;
-      this.remoteExecutorCreds = candidate.executor;
-      this.serviceServe.creds = candidate.serve;
-      adopted = true;
-      this.goalWriterCreds = candidate.goalWriter;
-      this.sessionLedgerCreds = candidate.sessionLedger;
-      if (this.goalWriter) this.goalWriter.creds = candidate.goalWriter;
-      if (this.sessionLedgerConn) this.sessionLedgerConn.creds = candidate.sessionLedger;
-      // Adoption is committed above; a connection that cannot come back yet is a push failure the
-      // endpoint's own reconnect loop retries with the adopted credential, not unadopted debt.
-      this.remoteRenewalDebt = undefined;
-      // Maintenance needed by admitted handlers must not wait for those same handlers to drain.
-      this.finishRemoteBundleAdoption?.();
-      await withTimeout(Promise.all([
-        this.pushSupervisorCreds(),
-        (async () => {
-          try {
-            // A handler or a lost broker PONG can keep stop/flush pending forever. Only the
-            // retired transport is expendable: never retry its requests or close the replacement.
-            await withTimeout((async () => {
-              await previous.handle.stop();
-              await previous.nc.flush();
-            })(), 5_000, "old serve drain unfinished after 5000ms; closing retired transport, in-flight request outcomes are unknown and must not be retried");
-          } finally {
-            await previous.nc.close();
-          }
-        })().catch((e) => console.error(`! remote manager retired serve drainage after renewal: ${rejectionText(e)}`)),
-        ...(this.goalWriter ? [this.pushRenewedCreds(this.goalWriter.nc)] : []),
-        ...(this.sessionLedgerConn ? [this.pushRenewedCreds(this.sessionLedgerConn.nc)] : []),
-      ]), remoteStandingTimeLeft(deadline), "remote manager standing reconnect exceeded its 10000ms aggregate budget; adopted transports keep their native reconnect ownership");
-    } catch (e) {
-      if (replacement) {
-        await this.discardServeCandidate(replacement.nc, replacement.handle);
-      }
-      if (adopted) {
-        console.error(`! remote manager adopted standing family: ${rejectionText(e)}`);
-        return;
-      }
-      const unadoptedSubjects = candidate && typeof candidate === "object"
-        ? Object.values(candidate).flatMap((cred) => { try { return typeof cred === "string" && credsClaims(cred).sub ? [credsClaims(cred).sub!] : []; } catch { return []; } })
-        : REMOTE_MANAGER_IDENTITY_NAMES.map((name) => remote.identities[name].id);
-      this.remoteRenewalDebt = { at: Date.now(), processEpoch, reason: rejectionText(e), unadoptedSubjects };
-      console.error(`! remote manager all-duty renewal: ${this.remoteRenewalDebt.reason} - no unsigned or local replacement is available`);
-      if (force) throw e;
-    }
-  }
-
-  /** Warn, on every renewal pass, when a $SYS credential is at or past its renewal point.
-   *
-   *  The manager is the renewal owner for every credential it CAN re-sign, and these two are the ones
-   *  it cannot: they are `rotation-renewed`, so no resident process re-mints them and they simply die
-   *  on their 30-day horizon. Before this, a mesh that never ran `doctor auth` got no signal at all,
-   *  it discovered the expiry as an "Authorization Violation" in the delivery log and a refused
-   *  membership adoption, weeks after the warning would have been actionable (#338). The pass runs
-   *  every half-TTL of the 24h class, so this repeats about twice a day for the ~7 days between the
-   *  renewal point and expiry: loud enough to be seen, bounded enough not to be noise.
-   *
-   *  Diagnostic only, and deliberately non-fatal: renewal is an operator action (`cotal down` then
-   *  `cotal up --rotate-sys`, which needs a broker restart), so the manager must report it, never
-   *  attempt it. An absent file is the unprovisioned space, reported by the daemon that needs it. */
-  private warnOnSystemCredExpiry(): void {
-    for (const file of SYSTEM_CREDS_FILES) {
-      let health: CredHealth;
-      try {
-        // The pair is PER-SPACE, so the location comes from the resolver and never from a
-        // path built here (§2 rule 1). Building `.cotal/<kind>` instead would not warn on a wrong
-        // file — it would silently warn on NOTHING, for every provisioned root, forever, which is
-        // exactly the signal #338 added this for. The resolver may also refuse (§2 rules 3, 4); that
-        // refusal is caught with the unreadable case for the reason on the tin — the daemon that
-        // NEEDS the pair resolves it through the same function and reports it loudly there, so a
-        // diagnostic pass has nothing to add by crashing renewal.
-        const path = join(this.workspaceRoot, ".cotal", spaceMaterialKey(file, this.space, { injected: false, root: this.workspaceRoot }));
-        if (!existsSync(path)) continue;
-        health = inspectCredHealth(readFileSync(path, "utf8"));
-      } catch {
-        continue; // an unreadable $SYS file is the daemon's loud failure, not a renewal-pass crash
-      }
-      const when = health.exp ? new Date(health.exp * 1000).toISOString() : "an unknown date";
-      if (health.state === "expired")
-        console.error(
-          `! $SYS credential ${file} EXPIRED ${when} - the broker denies it, and NOTHING renews it in place (it is rotation-renewed). Live eviction and the membership feed stay down until: \`cotal down\` then \`cotal up --rotate-sys\` (agents, creds and data survive)`,
-        );
-      else if (health.state === "near-expiry")
-        console.error(
-          `! $SYS credential ${file} expires ${when} and nothing renews it in place (it is rotation-renewed) - schedule: \`cotal down\` then \`cotal up --rotate-sys\` (agents, creds and data survive)`,
-        );
-    }
-  }
+  /** {@link CredentialRenewal.boundedReconnect}. */
+  private boundedReconnect(...args: Parameters<CredentialRenewal["boundedReconnect"]>): ReturnType<CredentialRenewal["boundedReconnect"]> { return this.credentialRenewal.boundedReconnect(...args); }
+  /** {@link CredentialRenewal.renewDaemonCreds}. */
+  private renewDaemonCreds(...args: Parameters<CredentialRenewal["renewDaemonCreds"]>): ReturnType<CredentialRenewal["renewDaemonCreds"]> { return this.credentialRenewal.renewDaemonCreds(...args); }
+  /** {@link CredentialRenewal.renewRemoteExecutor}. */
+  private renewRemoteExecutor(...args: Parameters<CredentialRenewal["renewRemoteExecutor"]>): ReturnType<CredentialRenewal["renewRemoteExecutor"]> { return this.credentialRenewal.renewRemoteExecutor(...args); }
+  /** {@link CredentialRenewal.renewRemoteStandingBundle}. */
+  private renewRemoteStandingBundle(...args: Parameters<CredentialRenewal["renewRemoteStandingBundle"]>): ReturnType<CredentialRenewal["renewRemoteStandingBundle"]> { return this.credentialRenewal.renewRemoteStandingBundle(...args); }
+  /** {@link CredentialRenewal.renewRemoteBeforeRedial}. */
+  private renewRemoteBeforeRedial(...args: Parameters<CredentialRenewal["renewRemoteBeforeRedial"]>): ReturnType<CredentialRenewal["renewRemoteBeforeRedial"]> { return this.credentialRenewal.renewRemoteBeforeRedial(...args); }
 
   /** Admit one lifecycle/control operation while active. The synchronous increment is the fence:
    * preserveState and stop close it before their first await, so work is either counted or rejected. */
@@ -6481,294 +5915,26 @@ export class Manager {
   ): Promise<{ nc: NatsConnection; handle: EpServeHandle }> { return this.servePlane.dialServeConnection(state, readCreds, deadline); }
   private registerManagerService(): Promise<void> { return this.servePlane.registerManagerService(); }
 
-  /** Mint the standing `goal-writer` credential and STAGE it into this
-   *  instance's §13.1 revocation family (`epcred.<e>.<iid>`), over the passed executor's `authKv`
-   *  (the scoped `endpoint-serve-executor`, which holds the epcred write grant). The GRANT profile
-   *  stays goal-writer-only (Q2, disjoint from the serve credential); only the FAMILY membership
-   *  is shared, so the registration barrier's existing enumerate+revoke+evict catches the
-   *  goal-writer on takeover/retire with NO barrier code change. Used both at registration (the run
-   *  block's `authKv`) and at renewal (a fresh executor's), re-minting the SAME stable nkey with a
-   *  fresh bounded exp: `mintCreds` stamps a random `issuance:` tag on `goal-writer` (`userTags`),
-   *  so each issuance signs distinct bytes and stages a distinct ledger row (per-JWT `credentialId`
-   *  digest) even within one second. */
-  private async mintAndStageGoalWriter(authKv: KV): Promise<string> {
-    const auth = this.auth!;
-    const identity = this.goalWriterIdentity!;
-    // The issuance gate + §13.1 revocation family are keyed by the REGISTRATION instanceId
-    // (the persisted logical id), NOT the per-process lifecycleUid — the barrier
-    // enumerates `epcred.<e>.<managerInstanceId>`, so the goal-writer must stage into that family.
-    const iid = this.managerInstanceId;
-    const creds = await mintCreds(auth, identity, "goal-writer", { goalWriter: { endpoint: MANAGER_ENDPOINT } });
-    const exp = inspectCredHealth(creds).exp;
-    if (exp === undefined)
-      throw new Error(`the goal-writer credential for ${MANAGER_ENDPOINT}/${iid} is unbounded; the §13.1 ledger row requires an expiry`);
-    const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
-    const observed = await fence.observe();
-    if (observed === null)
-      throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} vanished; the goal-writer cannot join its §13.1 revocation family`);
-    // The §13.1 open-and-commit fence, the SAME one the serve credential's own mint runs: a frozen
-    // gate refuses, and a gate that moved under us loses the CAS and revokes the staged row. Without
-    // it a barrier mid-takeover (already past its enumeration) would let this credential land
-    // ACTIVE in a family nothing revokes again.
-    await commitSiblingIssuance(fence, observed, {
-      credentialId: credentialIdOf(creds),
-      credentialKey: identity.id,
-      holderPrincipal: principalKey(DEV_OWNER, identity.id).key,
-      endpoint: MANAGER_ENDPOINT, lifecycleUid: iid, sourceChain: ["root"], state: "active", exp,
-      generation: observed.generation, processEpoch: observed.processEpoch,
-      registrationRevision: observed.registrationRevision, nameAuthorityRevision: observed.nameAuthorityRevision,
-    });
-    return creds;
-  }
+  /** {@link GoalWriter.mintAndStageGoalWriter}. */
+  private mintAndStageGoalWriter(...args: Parameters<GoalWriter["mintAndStageGoalWriter"]>): ReturnType<GoalWriter["mintAndStageGoalWriter"]> { return this.goalWriterComponent.mintAndStageGoalWriter(...args); }
 
-  /** #2073: dial the goal-writer's ONE standing connection and rebuild everything derived from it
-   *  (the fence-resolving action context, the issuance-gate reader) — shared by the initial start
-   *  and the closed-connection recovery ({@link onGoalWriterConnectionClosed}), so a redial never
-   *  leaves the context bound to a dead socket. */
-  private async dialGoalWriter(
-    gw: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate },
-  ): Promise<void> {
-    const nc = await this.dial({
-      ...((this.auth || this.remoteAuthority) ? standaloneConnectOpts({ creds: () => gw.creds!, tls: false }) : {}),
-      inboxPrefix: `_INBOX_${gw.identity.id}`,
-      maxReconnectAttempts: -1,
-    });
-    nc.closed().then((err) => { void this.onGoalWriterConnectionClosed(err ?? undefined); });
-    this.trackTransport(nc);
-    gw.nc = nc;
-    // The (i) fence resolver (SPEC 13.6): resolve an executing instance's CURRENT gate
-    // epoch. This manager reconciles only ITS OWN goals, so it resolves its own
-    // registration instanceId to this incarnation's serve-grant epoch; a foreign/retired instance
-    // is `null` (no current terminal to surface). A successor incarnation carries an ADVANCED epoch
-    // here, so its reads pick the current-epoch subject and the predecessor's terminal is fenced out.
-    gw.ctx = await actionContext(nc, this.space);
-    // The own-issuance-gate READER for the currency belt, on BOTH mesh modes. Reads
-    // `epgate.<e>.<iid>` over this connection; observe-only (stage/commit/revoke are never called
-    // through it — the goal-writer holds no gate/epcred WRITE grant, so a mis-call would
-    // broker-deny anyway).
-    //
-    // OPEN MESH IS NOT EXEMPT, and this is load-bearing. An open-mesh registration mints no
-    // credentials, so the §13.1 takeover barrier's revoke-and-evict loop enumerates an EMPTY family
-    // and is VACUOUS — yet it still advances processEpoch. The gate row itself DOES exist there
-    // (`provisionEndpointGateOpen`, over the authority stores the open serve path ensures), and a
-    // bare connection CAN read it (executed probe). So this belt is the ONLY thing standing between
-    // a deposed open-mesh incarnation and a wrong terminal on the one create-only result subject.
-    //
-    // NAME IT HONESTLY: on an open mesh this is a COOPERATIVE fence. The broker enforces nothing, so
-    // a hostile or non-conformant process can simply not run the check — the same guarantee class as
-    // every other open-mesh property. It is also a read-then-CAS, so it NARROWS the commit window
-    // rather than closing it. An AUTH mesh gets durable closure from the §13.1 barrier (revoke +
-    // cluster-verified eviction BEFORE the epoch advance); an open mesh gets none.
-    gw.gate = serveIssuanceGateKv(await new Kvm(nc).open(epAuthBucket(this.space)), this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId });
-  }
+  /** {@link GoalWriter.startGoalWriter}. */
+  private startGoalWriter(...args: Parameters<GoalWriter["startGoalWriter"]>): ReturnType<GoalWriter["startGoalWriter"]> { return this.goalWriterComponent.startGoalWriter(...args); }
 
-  /** #2073: the goal-writer rail's closed-connection fault, the same bounded shape the serve rail
-   *  uses ({@link onServeConnectionClosed}) through the same {@link boundedReconnect} helper:
-   *  re-dial with the current credential (a transport blip needs nothing new), re-mint through the
-   *  existing goal-writer renewal branch when the credential itself has expired, then re-attach.
-   *  Unlike the serve rail this never exits the process on exhaustion (brief step 4: only the serve
-   *  rail is the control plane the report lost) — it logs and leaves the credential to the next
-   *  scheduled renewal pass. */
-  private async onGoalWriterConnectionClosed(err: Error | undefined): Promise<void> {
-    if (this.leaseStopping) return;
-    console.error(`! manager goal-writer connection closed: ${err?.message ?? "unknown reason"}`);
-    const gw = this.goalWriter;
-    const recovered = await this.boundedReconnect("goal-writer", async () => {
-      if (!gw) return false;
-      if (this.remoteAuthority) await this.renewRemoteBeforeRedial("goal-writer", () => gw.creds);
-      else if (gw.creds !== undefined && inspectCredHealth(gw.creds).state !== "healthy") {
-        gw.creds = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageGoalWriter(authKv));
-        this.goalWriterCreds = gw.creds;
-      }
-      await this.dialGoalWriter(gw);
-      console.error("manager goal-writer re-dialed");
-      return true;
-    }, inspectCredHealth(gw?.creds ?? "").state === "expired");
-    if (this.leaseStopping || recovered) return;
-    console.error("! manager goal-writer could not be re-dialed; leaving the credential to the next renewal pass");
-  }
-
-  /** Spawn-as-action: stand up the standing self-mediated goal-writer connection +
-   *  ActionContext. Mode-dual, mirroring {@link registerManagerService}: an AUTH mesh uses the
-   *  scoped `goal-writer` credential already minted + family-STAGED inside registration's run block
-   *  ({@link mintAndStageGoalWriter} — DISJOINT grant from the serve cred, SHARED §13.1 revocation
-   *  family); an OPEN mesh uses a bare connection (no credential system to mint from - the broker
-   *  enforces nothing). The connection presents the CURRENT credential on every (re)connect (a
-   *  renewal is adopted without reconnecting the whole endpoint); the ActionContext bonds its
-   *  KV + JS + JSM to this one connection and space (SPEC 13.4), so a composition mixup cannot splice
-   *  goal state across brokers. */
-  private async startGoalWriter(): Promise<void> {
-    const identity = (this.auth || this.remoteAuthority) ? this.goalWriterIdentity! : newIdentity();
-    // The mutable holder captured by the authenticator (mirrors the serve connection): a half-TTL
-    // renewal updates `gw.creds` and the next (re)connect presents the refreshed credential.
-    const gw: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate } =
-      { nc: undefined as unknown as NatsConnection, ctx: undefined as unknown as ActionContext, creds: (this.auth || this.remoteAuthority) ? this.goalWriterCreds : undefined, identity };
-    await this.dialGoalWriter(gw);
-    this.goalWriter = gw;
-    console.error(`manager goal-writer standing (endpoint ${MANAGER_ENDPOINT}, ${(this.auth || this.remoteAuthority) ? "scoped cred, §13.1 family-staged" : "open/bare"})`);
-  }
-
-  /** Retire the goal-writer connection (best-effort, both exit paths). */
-  private async stopGoalWriter(): Promise<void> {
-    const gw = this.goalWriter;
-    if (!gw) return;
-    this.goalWriter = undefined;
-    await this.retireConnection(gw.nc);
-  }
+  /** {@link GoalWriter.stopGoalWriter}. */
+  private stopGoalWriter(...args: Parameters<GoalWriter["stopGoalWriter"]>): ReturnType<GoalWriter["stopGoalWriter"]> { return this.goalWriterComponent.stopGoalWriter(...args); }
   private mintAndStageSessionLedger(authKv: KV): Promise<string> { return this.servePlane.mintAndStageSessionLedger(authKv); }
   private startSessionPlane(): Promise<void> { return this.servePlane.startSessionPlane(); }
   private stopSessionPlane(): Promise<void> { return this.servePlane.stopSessionPlane(); }
 
-  /** The boot reconcile: a fresh incarnation (a manager restart takes a NEW
-   *  instanceId, so the in-memory acceptance map starts empty) inherits the endpoint's accepted-but-
-   *  unterminal goals from any predecessor. The local signer enumerates with an ephemeral PROVISIONER.
-   *  A remote manager calls the authenticated host-owned scan, which keeps the sealed consumer and its
-   *  lifecycle authority on the host; the instance executor, goal-writer, and supervisor hold NO records
-   *  consumer grant. Settle each orphan so an accepted goal is NEVER dropped across a restart. Open mesh:
-   *  a bare connection (the broker enforces nothing). Runs ONCE at start, BEFORE spawn-as-action begins
-   *  accepting (the `goalReconcileDone` gate), so it never races a live goal's acceptance. Never
-   *  fatal — a reconcile failure is logged and the gate opens either way. */
-  private async reconcileGoalIndex(): Promise<void> {
-    const gw = this.goalWriter;
-    if (!gw) { this.goalReconcileDone = true; return; }
-    try {
-      let entries: { ref: GoalRef; iid: string; allocated?: GoalIndexEntry["allocated"]; note?: string }[] = [];
-      if (this.remoteAuthority) {
-        entries = (await this.remoteAuthority.scanGoalIndex()).map((entry) => ({
-          ref: { endpoint: entry.endpoint, caller: { owner: entry.owner, actor: entry.actor, uid: entry.uid }, goalId: entry.goalId },
-          iid: entry.iid,
-          ...(entry.allocated !== undefined ? { allocated: entry.allocated } : {}),
-          ...(entry.note !== undefined ? { note: entry.note } : {}),
-        }));
-      } else {
-        const nc = this.auth
-          ? await this.dial({ ...standaloneConnectOpts({ creds: await mintCreds(this.auth, newIdentity(), "provisioner"), /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 })
-          : await this.dial({ maxReconnectAttempts: 0 });
-        try {
-          const kvm = new Kvm(nc);
-          await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
-          entries = await listGoalIndex(await kvm.open(recordsBucket(this.space)), MANAGER_ENDPOINT);
-        } finally {
-          await drainAndClose(nc);
-        }
-      }
-      // Single-manager: EVERY inherited entry belongs to a DEAD predecessor (only one manager
-      // at a time), so all are reconciled. The `iid` field is the hook the multi-instance sweep
-      // filters on (skip a goal whose accepting `iid` is a still-LIVE sibling — never settle its goal).
-      for (const entry of entries) {
-        const key = goalKey(entry.ref);
-        if (this.goalAcceptances.has(key) || this.turnRelay.hasAcceptance(key)) continue; // never settle a goal THIS incarnation drives
-        try {
-          // A note marks a TURN entry: its relay is rebuilt (the hold is its bounded ending), never
-          // settled uncertain — the spawn arm's readiness window is the wrong ending for a relay.
-          if (entry.note !== undefined) await this.adoptTurnGoal(entry);
-          else await this.reconcileOneGoal(entry.ref, entry.iid);
-        }
-        catch (e) { console.error(`! goal reconcile for ${entry.ref.goalId}: ${rejectionText(e)}`); }
-      }
-      if (entries.length) console.error(`goal-index boot reconcile: swept ${entries.length} inherited goal(s)`);
-    } catch (e) {
-      console.error(`! goal-index boot reconcile failed: ${rejectionText(e)} - accepted goals from a predecessor may stay unsettled until the next restart`);
-    } finally {
-      this.goalReconcileDone = true;
-      this.turnRelay.markReconciled(Date.now());
-      // A seat that pulled during the window was refused, and a predecessor may have died before
-      // its notice went out, so every seat holding a rebuilt turn is told once.
-      const seats = this.turnRelay.pendingSeats();
-      for (const seat of seats) this.noticeSeatTurns(seat);
-    }
-  }
+  /** {@link GoalWriter.reconcileGoalIndex}. */
+  private reconcileGoalIndex(...args: Parameters<GoalWriter["reconcileGoalIndex"]>): ReturnType<GoalWriter["reconcileGoalIndex"]> { return this.goalWriterComponent.reconcileGoalIndex(...args); }
 
-  /** Settle ONE inherited goal by evidence: no goal record (a crash between the index write and the
-   *  goal-record create) leaves the pointer untouched (never settle a goal that was never accepted,
-   *  and clearing it would race a live goal mid-creation); a TERMINAL goal clears the index
-   *  (converged — the predecessor committed but died before clearing); a NON-TERMINAL goal settles
-   *  `uncertain` (the accepting incarnation is gone, so the success signal will never reach us — the
-   *  bounded readiness outcome the plan maps the window to). Within the readiness window it arms a
-   *  bounded, unref'd timer to settle at the deadline (an early uncertain would steal a still-possible
-   *  success the substrate guards against). */
-  private async reconcileOneGoal(ref: GoalRef, acceptedByIid: string): Promise<void> {
-    const gw = this.goalWriter;
-    if (!gw) return;
-    const status = await readGoalStatus(gw.ctx, ref);
-    if (status === undefined) return; // index points at no goal record: a dead pointer, left for honesty
-    if (GOAL_TERMINAL_STATES.includes(status.value.state)) { await clearGoalIndex(gw.ctx, ref); return; }
-    const spec = await readGoalSpec(gw.ctx, ref);
-    if (spec === undefined) return; // a status without its spec is garbled — leave for the next boot
-    // NEVER A CROSS-INSTANCE SETTLE. The accepting incarnation is recorded on the INDEX ENTRY
-    // itself (`iid`, written at accept), which is the honest coordinate: a same-instanceId restart
-    // inherits its predecessor's orphans, and a goal accepted by a DIFFERENT (possibly still-live)
-    // sibling is left for its owner. This replaces the goal spec's `executor` pin, which existed
-    // only to epoch-scope the terminal subject and is gone with it (§13.2 reserved subjects).
-    if (acceptedByIid !== this.managerInstanceId) {
-      console.error(`goal reconcile ${ref.goalId}: accepted by instance "${acceptedByIid}", not this incarnation "${this.managerInstanceId}"; left for its owner (never a cross-instance settle)`);
-      return;
-    }
-    const settle = async () => {
-      // A SUCCESSOR settling work it inherited: the committer is THIS incarnation at its CURRENT
-      // serve epoch, which is strictly greater than the goal's acceptedEpoch — the `committed >
-      // accepted` arm of the attribution rule, and the reason that arm has to exist.
-      await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 } }); // first-terminal-wins: a racing terminal returns the winner, no throw
-      await clearGoalIndex(gw.ctx, ref);
-    };
-    const remaining = spec.value.acceptedAt + (spec.value.readinessDeadlineMs ?? this.readinessTimeoutMs) - Date.now();
-    if (remaining <= 0) { await settle(); return; }
-    console.error(`goal reconcile ${ref.goalId}: within the readiness window (${remaining}ms) - arming a bounded settle`);
-    const t = setTimeout(() => { settle().catch((e) => console.error(`! goal reconcile settle ${ref.goalId}: ${rejectionText(e)}`)); }, remaining + 100);
-    t.unref?.();
-  }
+  /** {@link GoalWriter.emitGoalProgress}. */
+  private emitGoalProgress(...args: Parameters<GoalWriter["emitGoalProgress"]>): ReturnType<GoalWriter["emitGoalProgress"]> { return this.goalWriterComponent.emitGoalProgress(...args); }
 
-  /** Publish a goal PROGRESS event on the caller-scoped epe subtree, over the SERVE
-   *  connection (which holds the `epe.<e>.<iid>.<epoch>.>` egress grant; the goal-writer deliberately
-   *  does not). The terminal rides a final event `phase:"terminal"` (the caller follows epe to
-   *  the terminal; the durable result fact + inspect/ps are the reconcile authority). A dropped event
-   *  is non-fatal (the terminal is authoritative in the journal). */
-  private emitGoalProgress(ref: GoalRef, epoch: number, event: Record<string, unknown>): void {
-    const nc = this.serviceServe?.nc;
-    if (!nc) return;
-    try {
-      nc.publish(
-        epeSubject(this.space, MANAGER_ENDPOINT, this.managerInstanceId, epoch, goalProgressTopic(ref)),
-        new TextEncoder().encode(JSON.stringify({ v: 1, goalId: ref.goalId, ...event })),
-      );
-    } catch (e) {
-      console.error(`! goal progress emit for ${ref.goalId} failed: ${rejectionText(e)}`);
-    }
-  }
-
-  /** The own-gate currency belt: before the goal-writer commits a terminal fact, the manager reads
-   *  its OWN issuance gate epoch and REFUSES the commit if superseded. This NARROWS the window; it
-   *  is not the fence. Layer 1 below is closed by the sibling-mint fence; layers 2 and 3 are not
-   *  closed by any planned slice and must not be described as temporary.
-   *
-   *  THE RESIDUAL, STACKED:
-   *   1. SIBLING-MINT INJECTION. A §13.1 barrier's revoke/evict loop closes only over the family
-   *      SNAPSHOT IT ENUMERATED, so a sibling mint that observes the gate and stages a ledger row
-   *      WITHOUT the observe/open/commit fence can be staged and released AFTER that enumerate and
-   *      never be revoked. This layer is closed exactly where BOTH sibling mint sites
-   *      ({@link mintAndStageGoalWriter}, {@link mintAndStageSessionLedger}) route their stage
-   *      through `commitSiblingIssuance` (the revision-pinned CAS that makes a losing mint release
-   *      nothing), and open exactly where they do not — state the mechanism, never the branch.
-   *   2. THE BARRIER WINDOW. A gate FREEZE neither kills this connection nor advances the epoch,
-   *      and this belt compares `processEpoch` alone, so it still PASSES from barrier start until
-   *      the reopen. A ledger revoke marks a row; it does not re-check a live JWT mid-publish. The
-   *      durable kill is the CLUSTER-VERIFIED EVICTION, so a deposed manager can INITIATE new
-   *      terminal publishes from barrier start until eviction is verified — not merely finish bytes
-   *      already on the wire. Successor EXISTENCE and corpse DEATH are different phases, so the
-   *      barrier's ordering licenses no conclusion about when the corpse stops being able to write.
-   *   3. OPEN MESH. No credential family exists, so the revoke/evict loop is vacuous and this belt
-   *      is COOPERATIVE only: a non-conformant process simply does not run it.
-   *  The named follow-up that would close 2 and 3 is the gate-linearized commit (routing the
-   *  terminal through the issuance gate's own CAS), deliberately deferred as substrate territory. */
-  private async assertGoalWriterEpochCurrent(epoch: number): Promise<void> {
-    const gate = this.goalWriter?.gate;
-    if (!gate) return; // no goal-writer standing yet
-    const observed = await gate.observe();
-    if (observed === null)
-      throw new EpEnvelopeError("expired", `the manager's issuance gate for ${MANAGER_ENDPOINT}/${this.managerInstanceId} is gone; a retired incarnation never commits a goal terminal (SPEC 13.1/13.6)`);
-    if (observed.processEpoch !== epoch)
-      throw new EpEnvelopeError("expired", `the manager's issuance gate epoch is ${observed.processEpoch} but this goal was accepted under epoch ${epoch}; a superseded incarnation never commits a goal terminal (SPEC 13.6)`);
-  }
+  /** {@link GoalWriter.assertGoalWriterEpochCurrent}. */
+  private assertGoalWriterEpochCurrent(...args: Parameters<GoalWriter["assertGoalWriterEpochCurrent"]>): ReturnType<GoalWriter["assertGoalWriterEpochCurrent"]> { return this.goalWriterComponent.assertGoalWriterEpochCurrent(...args); }
 
   /** A spawn's refusal reaches only its caller's terminal, so the manager also writes one line for it
    *  to its own log, naming the request ID the caller printed, the persona and the reason. */

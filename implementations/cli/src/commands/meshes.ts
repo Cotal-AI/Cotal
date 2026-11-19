@@ -248,13 +248,9 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
     }
   }
 
-  const result = writeRecord({ space, server, root, mode, origin: "manual", ...(tlsRequired ? { tlsRequired: true } : {}), ...(dial.residual ? { unencryptedOverlay: true } : {}), ts: new Date().toISOString() });
+  const result = writeRecord({ space, server, root, mode, origin: "manual", ...(tlsRequired ? { tlsRequired: true } : {}), ...(dial.residual ? { unencryptedOverlay: true } : {}), ...(v.force ? { unchecked: true } : {}), ts: new Date().toISOString() });
   console.log(
     c.green(`✓ registered "${space}"`),
-    // "recorded without verifying" describes THIS registration, not a durable property of the
-    // record: verification is point-in-time — a verified record loses it the moment a port is
-    // reused — so it is reported as what just happened rather than persisted as a stored claim
-    // that would quietly decay into a false one.
     c.dim(`${server}  ${mode}  ${root}${v.force ? "  (recorded without verifying)" : ""}`),
   );
   if (result.adoptedCurrent) {

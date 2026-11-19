@@ -45,6 +45,7 @@ Setup saves preparation before a separate startup decision. Configure-only is th
 application, runtimes, project folder and space.
 It shows the answers before it writes: Save writes them, Change asks every question again with the
 answers kept, and Cancel saves nothing.
+An empty `--project` is refused before setup writes anything. Use `--project .` for the current folder.
 
 Choose Cloud to set up a space of your Cotal Cloud account. When no Cloud space is registered on
 this machine, setup signs you in first: it prints the approval link and code, opens your browser,
@@ -78,18 +79,22 @@ A preferences folder another account could write is refused with `PERMISSION_DEN
 anything is written (see [Preferences](config.mdx#preferences)).
 When an application executable is missing, the next step is to install or repair it and rerun setup.
 Otherwise, the result names the next command: `cotal up` in the project for a local space, or
-`cotal spawn --space <name>`. `--json` writes one envelope whose `result.written` lists every file
-setup wrote.
+`cotal spawn --space <name>`. `--json` writes one envelope whose `result.written` lists the setup
+writes Cotal records. For Codex, this includes new or content-changed marketplace files, Codex
+configuration, and cached plugin files. The receipt does not inventory every write made by
+programs that setup calls.
 
-Setup needs an installed connector. With none, a `--harness` that names no official connector is
-refused with `USAGE_INVALID`, exit 1, and otherwise setup refuses with `DEPENDENCY_UNAVAILABLE`,
-exit 2. Its remedy names `cotal ext seed` on a released install. A source checkout does not seed
-connectors unless `COTAL_ALLOW_CHECKOUT_SEED=1` marks a sandboxed release test, and the remedy says
-so.
+Setup needs an installed connector. When `--harness` names a built-in connector that is not
+installed, setup reports `DEPENDENCY_UNAVAILABLE`. The remedy names the `cotal ext add` command
+for that connector. Setup does not reinstall removed connectors. If none are installed in a source
+checkout, setup instead points to a released install or to `COTAL_ALLOW_CHECKOUT_SEED=1` for a
+sandboxed release test. An unknown harness name reports `USAGE_INVALID`.
 
 After successful preparation, the terminal asks separately whether to start, and only a typed `y`
 or `yes` starts it. An explicit
-`--configure-only` suppresses that question. `--start` skips it; scripts must also pass `--detach`.
+`--configure-only` suppresses that question and does not check for a usable NATS server.
+Starting a local space still requires a supported NATS server. `--start` skips the question;
+scripts must also pass `--detach`.
 Missing application/runtime prerequisites keep preparation saved and do not launch anything.
 
 ```bash
@@ -256,8 +261,10 @@ reconciliation children. A relative `--creds` path keeps its meaning from the or
 After `update --self` replaces the installation, its verified replacement waits up to 120 seconds
 for the recorded same-installation daemon to load the new version and its intended hosted Managers
 to answer. It prints this wait before the continuity check. The daemon owns its automatic restart;
-the updater does not start a competing restart. Connector reconciliation still requires the
-continuity check to answer. If activation does not finish, the failure names the last daemon or
+the updater does not start a competing native job. On Linux, after a manual update verifies and
+reconciles the replacement, it asks the prepared daemon to exit so systemd can start the new version.
+Connector reconciliation still requires the continuity check to answer. If activation does not
+finish, the failure names the last daemon or
 Manager state and asks you to inspect `cotal daemon status` and the recorded user service, restore
 the connection, then run `cotal update` again. A machine without a recorded daemon service keeps
 the existing update path.
@@ -542,6 +549,7 @@ An interactive presence: join a space under your own name and role, without laun
 harness. Another participant whose name is only whitespace is shown as the id, in the roster,
 on an incoming line, and on a DM you send. A `--link` supplies the where and the auth in one value. See
 [Spaces](spaces.mdx) and [Identity and auth](identity-and-auth.mdx).
+Enter `/quit` to leave the session, including when pasting it after another command.
 
 A bare join on a static-auth mesh provisions its own inboxes and read grant for the landing
 channel. It establishes durable membership when the channel's delivery policy is durable, even
@@ -735,8 +743,10 @@ the seed keeps stdout to itself:
 | `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current. Refuses to downgrade a newer shared store. |
 
-Maintenance flags may precede `seed`: `cotal ext --repair seed` is equivalent to
-`cotal ext seed --repair`, including when the extensions manifest is corrupt.
+Pass at most one maintenance flag. Flags may precede `seed`: `cotal ext --repair seed` is
+equivalent to `cotal ext seed --repair`. If the extensions manifest is corrupt, repair moves
+the damaged file aside and rebuilds the built-in inventory. Add any third-party extensions
+recorded in that file again with `cotal ext add`.
 
 A seed that fails names the connector and the reason, such as npm missing from PATH. Until
 `cotal ext seed --repair` finishes it, each command that seeds refuses. The refusal says whether
@@ -848,7 +858,8 @@ Only an automatically adopted selection yields to a running space registered for
 With no space running here it is the selected space, or the only running one.
 With none of those it reads your defaults. `--user` reads your defaults alone.
 
-`set` and `unset` change your defaults, or your values for one space with `--space`. Only `harness`
+`set` and `unset` change your defaults, or your values for one space with `--space`.
+`config set` saves a preference without installing or refreshing connectors. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
 machine, and refuses any other name with `TARGET_NOT_FOUND` (exit 2) and the known spaces.
 A read and `unset --space` also take a space that still holds a saved value, so a value left for

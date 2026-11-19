@@ -527,10 +527,12 @@ BIN_DIR=$(absolutize "$BIN_DIR")
 # about to write through, because `>>` follows a symlink and lands wherever it points:
 # ~/.zshrc can be a link out of $HOME, and containment has to see the real destination.
 # The opposite of canonical_file below, which is for paths we only need to name.
+# When checking a new link target, stop if the chain reaches the link being replaced.
 resolved_target() {
   _rt="$1"
   _rt_hops=0
   while [ -L "$_rt" ]; do
+    [ -z "${2:-}" ] || [ "$(canonical_file "$_rt")" != "$2" ] || return 1
     # Linux follows 40 links. Stopping short and then treating the still-unresolved link as
     # canonical is how a long chain walks straight past a containment check, so running out
     # of hops is a refusal, not an answer.
@@ -542,7 +544,9 @@ resolved_target() {
     esac
     _rt_hops=$((_rt_hops + 1))
   done
-  canonical_file "$_rt"
+  _rt=$(canonical_file "$_rt")
+  [ -z "${2:-}" ] || [ "$_rt" != "$2" ] || return 1
+  printf '%s\n' "$_rt"
 }
 
 # Resolve a file's DIRECTORY physically (killing `..` and symlinks) while keeping its
@@ -687,7 +691,11 @@ repair_install_modes() {
 link_node_bin() {
   _nb="$INSTALL_DIR/nodebin"
   mkdir -p "$_nb"
-  ln -sf "$(resolved_target "$NODE_BIN")" "$_nb/node"
+  # Keep the selected Node entry, not the current version behind a distro's `node` symlink.
+  # Leave the link in place if the selected entry already points through it.
+  if resolved_target "$NODE_BIN" "$(canonical_file "$_nb/node")" >/dev/null; then
+    ln -sf "$NODE_BIN" "$_nb/node"
+  fi
   ln -sf "$(resolved_target "$NPM_BIN")" "$_nb/npm"
   _npx=$(dirname "$NPM_BIN")/npx
   [ -e "$_npx" ] && ln -sf "$(resolved_target "$_npx")" "$_nb/npx"
@@ -785,8 +793,7 @@ show_log_tail() {
   return 0
 }
 
-# The launcher is the whole reason a Cotal installed today still works after you change
-# your system Node tomorrow. It pins the runtime, and it points npm at Cotal's own prefix
+# The launcher selects the installed runtime link and points npm at Cotal's own prefix
 # so `cotal update` and `cotal ext add` keep writing where this installer wrote.
 write_launcher() {
   mkdir -p "$BIN_DIR"
@@ -795,8 +802,7 @@ write_launcher() {
   cat >"$_tmp" <<EOF
 #!/bin/sh
 # Cotal launcher, written by https://get.cotal.ai
-# Pins the Node this install was verified against, so a change to the system Node can never
-# leave Cotal running on a runtime it was not installed for.
+# Uses the Node executable selected by the installer. The CLI checks its version on launch.
 COTAL_ROOT=${_root_lit}
 
 # When the pin was a Node this installer did not own, the user can still remove it later.
@@ -836,10 +842,11 @@ EOF
 # PATH
 # ---------------------------------------------------------------------------------------
 
-PATH_STATE="" # already | added | manual
+PATH_STATE="" # already | added | manual | unverified
 PATH_RC=""
 PATH_UPDATED=""
 PATH_MANUAL=""
+PATH_UNVERIFIED=""
 
 on_path() {
   case ":$PATH:" in
@@ -859,14 +866,14 @@ setup_path() {
   fi
 
   _shell=$(basename "${SHELL:-sh}")
+  _bin_quoted=$(shquote "$BIN_DIR")
+  _path_command="export PATH=$_bin_quoted:\"\$PATH\""
   _login_rc=""
   case "$_shell" in
     zsh)
       PATH_RC="${ZDOTDIR:-$HOME}/.zshrc"
-      _line="export PATH=$(shquote "$BIN_DIR"):\"\$PATH\""
       ;;
     bash)
-      _line="export PATH=$(shquote "$BIN_DIR"):\"\$PATH\""
       if [ "$OS" = "linux" ]; then
         # An interactive non-login shell reads .bashrc. A login shell reads the first
         # readable login file, which need not source .bashrc. Default to .profile so
@@ -879,8 +886,6 @@ setup_path() {
             break
           fi
         done
-        # A login profile can also source .bashrc. Add the directory only once.
-        _line="case \":\$PATH:\" in *:$(shquote "$BIN_DIR"):*) ;; *) $_line ;; esac"
       elif [ -f "$HOME/.bash_profile" ] || [ ! -f "$HOME/.bashrc" ]; then
         PATH_RC="$HOME/.bash_profile"
       else
@@ -889,13 +894,19 @@ setup_path() {
       ;;
     fish)
       PATH_RC="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
-      _line="fish_add_path $(shquote "$BIN_DIR")"
+      _path_command="fish_add_path $_bin_quoted"
       ;;
     *)
       PATH_STATE="manual"
       return 0
       ;;
   esac
+
+  _line="$_path_command"
+  if [ -n "$_login_rc" ]; then
+    # A login profile can also source .bashrc. Add the directory only once.
+    _line="case \":\$PATH:\" in *:$_bin_quoted:*) ;; *) $_path_command ;; esac"
+  fi
 
   write_path_block || PATH_MANUAL=$(tildify "$PATH_RC")
   if [ -n "$_login_rc" ]; then
@@ -907,7 +918,7 @@ setup_path() {
   elif [ -n "$PATH_UPDATED" ]; then
     PATH_STATE="added"
   else
-    PATH_STATE="already"
+    PATH_STATE="unverified"
   fi
   if [ -n "$PATH_UPDATED" ]; then
     PATH="$BIN_DIR:$PATH"
@@ -915,7 +926,7 @@ setup_path() {
   fi
 }
 
-# Append one marked block per startup file, even when the installer is run again.
+# Append the marked block unless this startup file already has one for this launcher.
 write_path_block() {
   _marker="# cotal"
 
@@ -970,7 +981,7 @@ write_path_block() {
       ;;
   esac
 
-  # Checking for the marker and then appending is a read-modify-write, and two installers
+  # Checking for the block and then appending is a read-modify-write, and two installers
   # racing can both see "absent" and both append, leaving two blocks. mkdir is atomic on
   # every POSIX filesystem, so it is the lock. A stale lock is not worth a reaper: fall back
   # to printing the line rather than risk a duplicate.
@@ -979,9 +990,22 @@ write_path_block() {
     return 1
   fi
 
-  if [ -f "$PATH_RC" ] && grep -qF "$_marker" "$PATH_RC" 2>/dev/null; then
-    rmdir "$_lock" 2>/dev/null || true
-    return 0
+  if [ -f "$PATH_RC" ]; then
+    if ! _rc_contents=$(cat "$PATH_RC" 2>/dev/null); then
+      rmdir "$_lock" 2>/dev/null || true
+      return 1
+    fi
+    # Match the marker and command verbatim on adjacent lines. Also accept the plain
+    # export from before Bash on Linux started guarding against duplicate PATH entries.
+    _nl='
+'
+    case "$_nl$_rc_contents$_nl" in
+      *"$_nl$_marker$_nl$_line$_nl"* | *"$_nl$_marker$_nl$_path_command$_nl"*)
+        rmdir "$_lock" 2>/dev/null || true
+        PATH_UNVERIFIED="${PATH_UNVERIFIED:+$PATH_UNVERIFIED, }$(tildify "$PATH_RC")"
+        return 0
+        ;;
+    esac
   fi
   if ! { printf '\n%s\n%s\n' "$_marker" "$_line" >>"$PATH_RC"; } 2>/dev/null; then
     rmdir "$_lock" 2>/dev/null || true
@@ -989,6 +1013,25 @@ write_path_block() {
   fi
   rmdir "$_lock" 2>/dev/null || true
   PATH_UPDATED="${PATH_UPDATED:+$PATH_UPDATED, }$(tildify "$PATH_RC")"
+}
+
+report_path_setup() {
+  case "$PATH_STATE" in
+    already) ok_line "$(tildify "$BIN_DIR") is on your PATH" ;;
+    added) ok_line "Added $(tildify "$BIN_DIR") to your shell's PATH configuration" ;;
+    manual) warn_line "PATH setup for $(tildify "$BIN_DIR") needs a manual step" ;;
+  esac
+  if [ -n "$PATH_UNVERIFIED" ]; then
+    dim_line "Found matching Cotal PATH lines in $PATH_UNVERIFIED. The installer does not run startup files."
+  fi
+  if [ "$PATH_STATE" = manual ]; then
+    dim_line "To set PATH in your current shell, run:"
+  elif [ -n "$PATH_UNVERIFIED" ]; then
+    dim_line "If a new shell cannot find cotal, run:"
+  else
+    return 0
+  fi
+  dim_line "  export PATH=$(shquote "$BIN_DIR"):\"\$PATH\""
 }
 
 # The child shell can inspect PATH, but cannot clear its parent's command cache or aliases.
@@ -1092,17 +1135,17 @@ next_steps() {
       printf '    %s%s%s   %sreload your shell, once%s\n' "$C_BRAND" "$_reload" "$C_OFF" "$C_DIM" "$C_OFF"
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
       ;;
-    manual)
-      printf '    %s%s%s\n' "$C_BRAND" "export PATH=$(shquote "$BIN_DIR"):\"\$PATH\"" "$C_OFF"
+    manual | unverified)
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
-      blank
       if [ -n "$PATH_MANUAL" ]; then
+        blank
         dim_line "Add that export to: $PATH_MANUAL"
-      else
+      elif [ "$PATH_STATE" = manual ]; then
+        blank
         dim_line "Add that export to your shell rc to make it permanent."
       fi
       ;;
-    *)
+    already)
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
       printf '    %s%s%s     %s%s%s\n' "$C_BRAND" "$_cotal up --detach" "$C_OFF" "$C_DIM" "start your mesh" "$C_OFF"
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal spawn" "$C_OFF" "$C_DIM" "put an agent on it" "$C_OFF"
@@ -1261,12 +1304,7 @@ main() {
     fi
   fi
   setup_path
-  case "$PATH_STATE" in
-    already) ok_line "$(tildify "$BIN_DIR") is on your PATH" ;;
-    added) ok_line "Added $(tildify "$BIN_DIR") to your shell's PATH configuration" ;;
-    manual) warn_line "PATH setup for $(tildify "$BIN_DIR") needs a manual step" ;;
-  esac
-
+  report_path_setup
   report_path_selection
   ELAPSED=$(($(date +%s) - _t0))
 

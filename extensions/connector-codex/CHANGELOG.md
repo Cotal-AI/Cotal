@@ -1,5 +1,11 @@
 # @cotal-ai/connector-codex
 
+## 0.171.0
+
+### Patch Changes
+
+- 7ff146c: Codex setup lists its configuration and plugin files in the JSON receipt, status reports disabled plugins, and updates leave read-only Codex configuration unchanged.
+
 ## 0.170.0
 
 ### Minor Changes

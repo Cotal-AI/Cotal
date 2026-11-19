@@ -1,3 +1,4 @@
+import { isUtf8 } from "node:buffer";
 import { spawn, type StdioOptions } from "node:child_process";
 import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -112,10 +113,11 @@ export function requirePersonaSource(path: string): PersonaSource {
  *  seeded `default` persona launches as `default_agent`. */
 export function validatePersona(bytes: Buffer, path: string, name?: string): AgentDef {
   // Its encoding names no value from the file, so it is the one reason given.
-  const encoding = utf16Problem(bytes.toString("utf8"));
+  const source = bytes.toString("utf8");
+  const encoding = utf16Problem(source) ?? (isUtf8(bytes) ? undefined : "it is not valid UTF-8");
   if (encoding) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition: ${path}: ${encoding}`, { remedy: `save ${path} as UTF-8` });
   let def: AgentDef;
-  try { def = parseAgentFileSource(bytes.toString("utf8"), path); }
+  try { def = parseAgentFileSource(source, path); }
   catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${path}: ${personaDefinitionProblem(error, path)}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
   if (name !== undefined && def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'`);
   return def;

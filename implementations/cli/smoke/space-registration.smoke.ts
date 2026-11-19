@@ -318,6 +318,15 @@ setCurrent("keep");
   const whoUnchecked = await json(["whoami", "--space", "dead1"]);
   check("whoami does not state an unchecked mode as fact: partial, exit 4, MODE_NOT_CHECKED",
     whoUnchecked.status === 4 && whoUnchecked.env?.outcome === "partial" && whoUnchecked.env.result.modeChecked === false && whoUnchecked.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(whoUnchecked));
+  const legacyForced = await run(["meshes", "add", "legacy-unchecked", "--server", DEAD, "--root", root, "--mode", "open", "--force"]);
+  check("legacy meshes add also records the mode as unchecked when forced",
+    legacyForced.status === 0 && legacyForced.stdout.includes("recorded without verifying") && findMesh("legacy-unchecked")?.unchecked === true, shown(legacyForced));
+  const legacyWho = await json(["whoami", "--space", "legacy-unchecked"]);
+  check("whoami reports partial access for a legacy forced registration",
+    legacyWho.status === 4 && legacyWho.env?.outcome === "partial" && legacyWho.env.result.modeChecked === false && legacyWho.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(legacyWho));
+  const legacyShow = await run(["space", "show", "legacy-unchecked", "--plain"]);
+  check("space show marks a legacy forced registration as unchecked",
+    legacyShow.status === 0 && /mode:\s+open, not checked: added with --force/.test(legacyShow.stdout), shown(legacyShow));
 
   clearCurrent();
   const unselected = await json(["space", "add", "open3", "--server", LIVE, "--root", root]);
@@ -657,8 +666,14 @@ if (process.platform === "linux") {
   if (previousSelection) {
     if (previousSelection.source === "adopted") setAdoptedCurrent(previousSelection.space); else setCurrent(previousSelection.space);
   }
-  check("status there names the other home even when this home prepared a space at the root",
-    status.status === 4 && status.env?.error?.code === "OPERATION_PARTIAL" && status.env?.warnings?.some((warning: { code: string }) => warning.code === "FOLDER_BROKER_UNAVAILABLE") && status.env?.result?.selected?.code === "not-started" && /member records are missing/.test(status.env.result.selected.message ?? ""), { status: status.status, selected: status.env?.result?.selected, warnings: status.env?.warnings, error: status.env?.error });
+  const broker = status.env?.result?.folder?.processes?.find((row: { name: string }) => row.name === "nats");
+  const warning = status.env?.warnings?.find((row: { code: string }) => row.code === "FOLDER_BROKER_UNAVAILABLE");
+  check("status is partial when a prepared root has a live stack with missing member records and no recorded home",
+    status.status === 4 && status.env?.error?.code === "OPERATION_PARTIAL" && broker?.state === "unknown" &&
+      warning?.target?.root === awayRoot && warning?.target?.space === "away" && /member records are missing/.test(warning.message ?? "") &&
+      status.env?.result?.selected?.code === "not-started" && /member records are missing/.test(status.env.result.selected.message ?? "") &&
+      status.env?.result?.hints?.some((hint: string) => hint.includes("COTAL_HOME set to the Cotal home the stack was started under")),
+    { status: status.status, broker, selected: status.env?.result?.selected, warnings: status.env?.warnings, error: status.env?.error, hints: status.env?.result?.hints });
   removePreparedSpace("away");
   await new Promise((done) => { awayManager.once("exit", done); awayManager.kill("SIGKILL"); });
   rmSync(awayRecord);
@@ -1041,6 +1056,22 @@ if (process.platform === "linux") {
     list.env?.result.prepared.some((p: { space: string; state: string; lastOperation: unknown }) => p.space === "demo" && p.state === "prepared" && p.lastOperation === null) && show.env?.result.state === "prepared" && show.env.result.lastOperation === null, { list: list.env?.result.prepared, show: show.env?.result });
   const named = await json(["who", "--space", "demo"]);
   check("a command naming it with --space is TARGET_UNAVAILABLE, naming its root", refused(named, 2, "TARGET_UNAVAILABLE") && /prepared but not started/.test(named.env?.error?.message ?? "") && named.env?.error?.remedy?.includes(fresh), shown(named));
+  for (const form of [["history", "general"], ["send", "-c", "general", "hello"]]) {
+    const explicit = await json([...form, "--space", "demo", "--server", DEAD]);
+    check(`${form[0]} on an unreachable explicit broker gives a startup command for the prepared project`,
+      refused(explicit, 2, "TARGET_UNAVAILABLE") && explicit.env?.target?.space === "demo" && explicit.env.target.root === fresh
+        && explicit.env.error?.message.includes(DEAD) && explicit.env.error.remedy?.includes(`--space demo --server '${DEAD}'`)
+        && explicit.env.error.remedy.includes("cotal up --root ") && explicit.env.error.remedy.includes("check that address"), shown(explicit));
+  }
+  const raw = await json(["history", "general", "--space", "not-prepared", "--server", DEAD]);
+  check("without preparation, an unreachable explicit broker only gives an address check",
+    refused(raw, 2, "TARGET_UNAVAILABLE") && raw.env?.error?.remedy === "check that address and that a broker runs there", shown(raw));
+  const live = ["--space", "demo", "--server", LIVE];
+  const sent = await json(["send", "-c", "general", "explicit broker control", ...live]);
+  const history = await json(["history", "general", ...live]);
+  check("a live explicit broker is still used for send and history even when the name is prepared here",
+    sent.status === 0 && history.status === 0 && history.stdout.includes("explicit broker control") && findPreparedSpace("demo")?.root === fresh,
+    [sent, history].map(shown));
   const channelForms = [["channel"], ["channel", "show", "general"], ["channel", "set", "general", "--desc", "x"], ["channel", "defaults"], ["channel", "members", "general"], ["channel", "remove", "general", "--yes"]];
   const channelRefusals: Awaited<ReturnType<typeof json>>[] = [];
   for (const form of channelForms) channelRefusals.push(await json([...form, "--space", "demo"]));
@@ -1272,6 +1303,26 @@ if (process.platform === "linux") {
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
   const down = await run(["down", "--yes"], {}, fresh);
   check("down stops it", down.status === 0, shown(down));
+  const seedRemedy = `fix or remove ${defaultSeed}`;
+  for (const [seed, problem] of [["{\n", "is not valid JSON"], ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay']] as const) {
+    writeFileSync(defaultSeed, seed);
+    const badUp = await json(["up", "--no-manager"], fresh);
+    const status = await json(["status", "--space", "demo"], fresh);
+    const statusText = await run(["status", "--space", "demo"], {}, fresh);
+    const ps = await json(["ps", "--space", "demo"], elsewhere);
+    const diagnosis = `the channels file ${defaultSeed} ${problem}`;
+    check(`up, status and ps agree on the stopped stack's seed ${problem}`,
+      badUp.status === 1 && badUp.env?.error?.message?.includes(diagnosis) && badUp.env.error.remedy === seedRemedy &&
+        status.status === 0 && status.env?.result?.selected?.code === "not-started" && status.env.result.selected.message.includes("is stopped") && status.env.result.selected.channelSeedBlocksRestart === true &&
+        status.env.result.hints.some((hint: string) => hint.includes(diagnosis) && hint.includes(seedRemedy)) &&
+        statusText.stdout.includes(seedRemedy) && !statusText.stdout.includes("start it again with `cotal up`") && !/^ +(?:pnpm )?cotal up(?:\s|$)/m.test(statusText.stdout) &&
+        refused(ps, 2, "TARGET_UNAVAILABLE") && ps.env?.error?.message?.includes(diagnosis) && ps.env.error.remedy === seedRemedy &&
+        readFileSync(defaultSeed, "utf8") === seed, { up: shown(badUp), status: status.env?.result?.hints, text: shown(statusText), ps: shown(ps) });
+  }
+  writeFileSync(defaultSeed, "{}\n");
+  const repairedPs = await json(["ps", "--space", "demo"], fresh);
+  check("repairing the seed restores ordinary restart advice", refused(repairedPs, 2, "TARGET_UNAVAILABLE") && repairedPs.env?.error?.remedy === `start it again with \`cotal up\` in ${fresh}`, shown(repairedPs));
+  unlinkSync(defaultSeed);
   // The stopped stack keeps its recorded address and broker inputs. Another --server, or a --host it
   // did not record, refuses before anything is written, naming the recorded value and the bare up
   // that starts the stack there.

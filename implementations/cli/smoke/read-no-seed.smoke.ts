@@ -61,6 +61,8 @@ const GATE = /refusing to reconcile the operator-global seed store/;
     { args: ["docs", "--json"], exit: 0 },
     { args: ["config", "--json"], exit: 0 },
     { args: ["space", "--json"], exit: 0 },
+    { args: ["meshes"], exit: 0 },
+    { args: ["meshes", "list"], exit: 0 },
     { args: ["ps", "--json"], exit: 2 },
     { args: ["models", "--json"], exit: 2 },
     { args: ["who", "--json"], exit: 2 },
@@ -81,10 +83,31 @@ const GATE = /refusing to reconcile the operator-global seed store/;
       && next.includes(`${displayCmd()} setup Set up an agent application and a space`), shown(human));
 }
 
+{
+  const { xdg, run } = sandbox();
+  const before = run(["ext", "list", "--json"]);
+  for (const [args, usage] of [
+    [["config", "set", "editor"], /usage: cotal config set <key> <value>/],
+    [["ext", "add"], /usage: cotal ext .*ext add <npm-package>/],
+    [["ext", "add", "one", "two"], /usage: cotal ext .*ext add <npm-package>/],
+    [["ext", "rm"], /usage: cotal ext .*ext remove <name>/],
+  ] as const) {
+    const r = run([...args]);
+    check(`${args.join(" ")} refuses before seeding`, r.status === 1 && r.stdout === "" && usage.test(r.stderr) && !GATE.test(r.stderr), shown(r));
+  }
+  const saved = run(["config", "set", "editor", "vi", "--json"]);
+  const editor = run(["config", "get", "editor", "--json"], { VISUAL: "", EDITOR: "" });
+  check("config set saves an editor without seeding", saved.status === 0 && editor.status === 0 && JSON.parse(editor.stdout).result.setting.value === "vi", { saved: shown(saved), editor: shown(editor) });
+  const after = run(["ext", "list", "--json"]);
+  check("usage refusals and saving an editor leave the extension inventory empty",
+    before.status === 0 && after.status === 0 && before.stdout === after.stdout && JSON.parse(after.stdout).result.items.length === 0 &&
+      !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions", "extensions.json")), shown(after));
+}
+
 // ── A command that is not a read still meets the gate ───────────────────────────────────────────────
 {
   const { run } = sandbox();
-  for (const args of [["space", "forget", "nope"], ["ext", "add", "@acme/none"]]) {
+  for (const args of [["space", "forget", "nope"], ["meshes", "rm", "nope"], ["ext", "add", "@acme/none"]]) {
     const r = run(args);
     check(`${args.join(" ")} is not a read: the seed gate runs first and refuses from a source checkout`, r.status === 1 && GATE.test(r.stderr), shown(r));
   }

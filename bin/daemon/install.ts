@@ -184,7 +184,7 @@ export interface NativeResult {
 }
 
 /** Runs one native tool by absolute path with an argument vector, never through a shell. */
-export type NativeRun = (file: string, args: readonly string[], env?: NodeJS.ProcessEnv) => NativeResult;
+export type NativeRun = (file: string, args: readonly string[], env?: NodeJS.ProcessEnv, timeoutMs?: number) => NativeResult;
 
 /** What a macOS or Windows install would write and register, with no effect yet. */
 export interface NativePlan {
