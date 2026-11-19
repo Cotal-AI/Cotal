@@ -57,7 +57,7 @@ import {
   processStopped,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
-import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
+import { addressHolder, brokerListenAddress, brokerReservationKey, listenerBindError, WILDCARD_HOSTS } from "../lib/broker-service.js";
 import { brokerStoreWrite, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, storeDamageNotice, storeFull } from "../lib/broker-store-health.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
@@ -624,7 +624,7 @@ export function stackUpInterrupted(root: string, space: string, noManager = fals
 /** Whether a broker bound to `host` is reached at `server`'s address: a wildcard bind is reached at
  *  any address, and any other host must name that address. */
 export function bindReaches(host: string, server: string): boolean {
-  if (host === "0.0.0.0" || host === "::" || host === "[::]") return true;
+  if (WILDCARD_HOSTS.has(host)) return true;
   try {
     return new URL(`nats://${isIP(host) === 6 ? `[${host}]` : host}:1`).hostname === new URL(server).hostname;
   } catch {
@@ -932,12 +932,20 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
           : `${stopHolder}, then run bare \`cotal up\` from ${root}; this stack keeps its recorded address`,
       });
     }
+    // The advertised address can be quiet even when the wildcard bind would also serve a stopped
+    // registration on another interface. Keep the exact-address refusal in the broker adapter.
+    if (!brokerRunning && brokerHost !== undefined && WILDCARD_HOSTS.has(brokerHost)) {
+      const keyOf = brokerReservationKey(brokerHost);
+      const key = keyOf(server);
+      const holder = loadMeshes().find((mesh) => mesh.space !== space && mesh.server !== server && keyOf(mesh.server) === key);
+      if (holder) throw new CommandFailure("refused", "CONFLICT", `the bind for ${server} overlaps the broker address of "${holder.space}"; no broker was launched`, { target: { root, space, server, heldSpace: holder.space, heldBy: holder.root }, remedy: "choose another port or a bind host that does not overlap the registered address" });
+    }
     // A program that holds the address without answering NATS, such as a web server, is refused here
     // too, before any broker instance is recorded, so a first start names another address.
-    const bindError = brokerRunning ? undefined : await listenerBindError(server);
+    const bindError = brokerRunning ? undefined : await listenerBindError(server, brokerHost);
     if (bindError !== undefined && bindError !== "timeout" && bindError.code === "EADDRINUSE") {
       const { host, port } = brokerListenAddress(server), address = new URL(server);
-      const { says, frees } = addressHolder("the stack's broker address", host, port);
+      const { says, frees } = addressHolder("the stack's broker address", brokerHost ?? host, port);
       throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
         target: { root, space, server, bindError: bindError.code },
         remedy: previous === undefined

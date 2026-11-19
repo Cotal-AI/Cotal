@@ -183,18 +183,19 @@ try {
         const rows = spaces.receipt?.result?.items;
         const own = rows?.find((row) => row.space === name);
         check("the new broker answers on a distinct registered address", own?.check === "reachable" && own.server !== "nats://127.0.0.1:4222", shown(spaces));
+        check("the startup output names the selected broker address", own !== undefined && started.stdout.includes(`starting "${name}" at ${own.server} instead`), shown(started));
         check("the original reservation is unchanged", rows?.some((row) => row.space === "held" && row.server === "nats://127.0.0.1:4222") === true, shown(spaces));
       } finally { stopLegacy(root); }
     }
   }
 
-  if (!selected || selected === "legacy-collision") {
+  if ((!selected || selected === "legacy-collision") && process.platform === "linux") {
     mkdirSync(join(home, ".cotal"), { recursive: true, mode: 0o700 });
     const legacy = join(home, "legacy-project"), occupant = join(home, "occupant");
     mkdirSync(legacy, { mode: 0o700 });
     mkdirSync(occupant, { mode: 0o700 });
-    const server = `nats://127.0.0.1:${await freePort()}`;
-    const up = (root: string, ...flags: string[]) => invoke(root, "up", "--open", "--no-manager", ...flags);
+    const server = `nats://127.0.0.2:${await freePort()}`;
+    const up = (root: string, ...flags: string[]) => invoke(root, "up", "--open", "--no-manager", "--host", "127.0.0.2", ...flags);
     try {
       const first = up(legacy, "--space", "legacy-space", "--server", server);
       check("a legacy project starts with a space named differently from its folder", first.status === 0, shown(first));
@@ -206,10 +207,47 @@ try {
       const restarted = invoke(legacy, "up", "--no-manager");
       const spaces = run(legacy, "space");
       const own = spaces.receipt?.result?.items?.find((row) => row.space === "legacy-space");
-      check("implicit legacy restart uses another reachable address while the recorded address is live elsewhere", restarted.status === 0 && own?.check === "reachable" && own.server !== server, shown(restarted));
+      check("implicit legacy restart keeps its concrete bind host on a different reachable port", restarted.status === 0 && own?.check === "reachable" && own.server !== server && new URL(own.server).hostname === "127.0.0.2", shown(restarted));
+      check("the restart names the address it actually serves", own !== undefined && restarted.stdout.includes(`starting "legacy-space" at ${own.server} instead`), shown(restarted));
       check("the other broker is still reachable at its address", spaces.receipt?.result?.items?.some((row) => row.space === "occupant" && row.server === server && row.check === "reachable") === true, shown(spaces));
     } finally {
       try { stopLegacy(occupant); } finally { stopLegacy(legacy); }
+    }
+  }
+
+  if ((!selected || selected === "wildcard-address") && process.platform === "linux") {
+    mkdirSync(join(home, ".cotal"), { recursive: true, mode: 0o700 });
+    const alias = "nats://127.0.0.2:4222";
+    check("the default loopback reservation can be removed", run(held, "space", "forget", "held").status === 0);
+    const heldAlias = run(held, "space", "add", "held", "--server", alias, "--root", held, "--mode", "open", "--force", "--yes");
+    check("the other loopback address reserves the preferred port", heldAlias.status === 0, shown(heldAlias));
+    const root = join(home, "wildcard-address"), concrete = join(home, "concrete-address");
+    mkdirSync(root, { mode: 0o700 });
+    mkdirSync(concrete, { mode: 0o700 });
+    try {
+      const explicit = invoke(root, "up", "--no-manager", "--host", "0.0.0.0", "--server", "nats://127.0.0.1:4222");
+      check("an explicit wildcard bind refuses an overlapping reservation", explicit.status === 2 && /CONFLICT/.test(explicit.stderr) && explicit.stderr.includes('overlaps the broker address of "held"'), shown(explicit));
+      const started = invoke(root, "up", "--no-manager", "--host", "0.0.0.0");
+      const spaces = run(root, "space");
+      const own = spaces.receipt?.result?.items?.find((row) => row.space === "wildcard-address");
+      check("an implicit wildcard start avoids the reservation across loopback addresses", started.status === 0 && own?.check === "reachable" && new URL(own.server).port !== "4222", shown(started));
+      check("the wildcard binds the selected port and reports its dial address", own !== undefined && started.stdout.includes(`starting "wildcard-address" at ${own.server} instead`), shown(started));
+      check("the untouched reservation stays unreachable", spaces.receipt?.result?.items?.some((row) => row.space === "held" && row.server === alias && row.check === "unreachable") === true, shown(spaces));
+
+      // Both reservations use the same port number here, but only the wildcard would overlap.
+      const prepared = project("prepared-wildcard");
+      active.push(prepared);
+      const controller = run(prepared, "up", "--no-manager", "--host", "0.0.0.0");
+      check("prepared implicit startup also skips the wildcard reservation", controller.status === 0 && new URL(controller.receipt?.result?.server ?? alias).port !== "4222", shown(controller));
+
+      const local = invoke(concrete, "up", "--no-manager", "--server", "nats://127.0.0.1:4222");
+      const peers = run(concrete, "space");
+      check("a concrete start can use the same port on a different loopback address", local.status === 0 && peers.receipt?.result?.items?.some((row) => row.space === "concrete-address" && row.server === "nats://127.0.0.1:4222" && row.check === "reachable") === true, shown(local));
+    } finally {
+      try { stopLegacy(concrete); } finally { stopLegacy(root); }
+      check("the alternate loopback reservation can be removed", run(held, "space", "forget", "held").status === 0);
+      const restore = run(held, "space", "add", "held", "--server", "nats://127.0.0.1:4222", "--root", held, "--mode", "open", "--force", "--yes");
+      check("the original reservation is restored for the remaining cases", restore.status === 0, shown(restore));
     }
   }
 

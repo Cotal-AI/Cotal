@@ -3,12 +3,12 @@
  *  kernel-exit stop. Planning prepares no trust, writes no broker config and starts nothing else. */
 import { createHash } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { createServer, isIP } from "node:net";
-import { homedir } from "node:os";
+import { BlockList, createServer, isIP } from "node:net";
+import { homedir, networkInterfaces } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { isReachable, registry, writeSecretFileCreateOnly } from "@cotal-ai/core";
 import {
-  CommandFailure, assertRecordIdentity, assertSingleSpaceBroker, authDir, canonicalRoot, decodeLocalJson,
+  CommandFailure, assertRecordIdentity, assertSingleSpaceBroker, authDir, brokerAddressKey, canonicalRoot, decodeLocalJson,
   findMesh, findPreparedSpace, listSpaceAccounts, loadMeshes, localMeshesForRoot, localProcessPath, oneLine,
   localRecordAccess, NATS_PIDFILE, parsePid, readBrokerPolicy, readLocalRecordSource, readMaintenanceJournal, readPidfile,
   controllerAttemptBroker, cutController, maintenanceAdmitsStackWork, serviceAdapterAttempt,
@@ -33,6 +33,31 @@ const refuse = (code: "CONFLICT" | "LIFECYCLE_BLOCKED" | "UNSUPPORTED" | "TARGET
 };
 
 const LISTENER_PROBE_TIMEOUT_MS = 5000;
+export const WILDCARD_HOSTS: ReadonlySet<string> = new Set(["0.0.0.0", "::", "[::]"]);
+
+/** Compare dial addresses for a concrete bind. A wildcard also covers other local addresses on
+ *  its port, including the whole IPv4 loopback range. Hostnames may resolve locally. */
+export function brokerReservationKey(bindHost?: string): (server: string) => string | undefined {
+  if (bindHost === undefined || !WILDCARD_HOSTS.has(bindHost)) return brokerAddressKey;
+  const dual = bindHost !== "0.0.0.0";
+  const local = new BlockList();
+  local.addSubnet("127.0.0.0", 8, "ipv4");
+  if (dual) local.addAddress("::1", "ipv6");
+  for (const rows of Object.values(networkInterfaces())) {
+    for (const { address, family } of rows ?? []) {
+      if (family === "IPv4" || dual) local.addAddress(address, family === "IPv4" ? "ipv4" : "ipv6");
+    }
+  }
+  return (server) => {
+    const key = brokerAddressKey(server);
+    if (key === undefined) return undefined;
+    const split = key.lastIndexOf(":");
+    const host = key.slice(0, split).replace(/^\[|\]$/g, "");
+    const family = isIP(host);
+    if (!family || WILDCARD_HOSTS.has(host) || local.check(host, family === 4 ? "ipv4" : "ipv6")) return key.slice(split + 1);
+    return key;
+  };
+}
 const portsDirectory = (context: ServiceAdapterContext) => join(context.stateDirectory, `.broker-ports-${context.launchRequestId}`);
 const launchReceipt = (context: Pick<ServiceAdapterContext, "stateDirectory" | "launchRequestId">) => join(context.stateDirectory, `.broker-launch-${context.launchRequestId}.json`);
 
@@ -145,10 +170,10 @@ function brokerTarget(context: ServiceAdapterContext, purpose: BrokerPurpose = "
 
 /** Bind a broker address's listener once and release it: the OS error when that fails, "timeout"
  *  when the bind does not finish, or undefined when the address is free. */
-export async function listenerBindError(server: string): Promise<NodeJS.ErrnoException | "timeout" | undefined> {
+export async function listenerBindError(server: string, bindHost?: string): Promise<NodeJS.ErrnoException | "timeout" | undefined> {
   const target = brokerListenAddress(server);
   // The target host is URL-shaped: an IPv6 literal keeps its brackets there.
-  const host = target.host.startsWith("[") ? target.host.slice(1, -1) : target.host;
+  const host = (bindHost ?? target.host).replace(/^\[|\]$/g, "");
   const probe = createServer();
   let timer: NodeJS.Timeout | undefined;
   const error = await new Promise<NodeJS.ErrnoException | "timeout" | undefined>((resolve) => {

@@ -103,7 +103,6 @@ import {
   listSpaceAccounts,
   preloadSpaceAccounts,
   putSpaceAuth,
-  brokerAddressKey,
   canonicalRoot,
   rootPathProblem,
   rootControlProblem,
@@ -306,7 +305,7 @@ import {
 } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
-import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
+import { addressHolder, brokerListenAddress, brokerReservationKey, listenerBindError, WILDCARD_HOSTS } from "../lib/broker-service.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl } from "../lib/control.js";
 
@@ -1757,8 +1756,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       if (cleaned) throw new CommandFailure("refused", "CONFLICT", `this folder was deployed from a manifest as "${cleaned.space}" at ${cleaned.server} in ${cleaned.mode === "open" ? "open" : "static auth"} mode, and its identity and broker configuration were removed, so a bare up would not start it as it was deployed; nothing was started`, { target: { root: cotalRoot(), space: cleaned.space, server: cleaned.server }, remedy: `deploy it again with ${codeSpan(cleaned.command)}` });
     }
     // A registered address stays as recorded, so a running stack is still found by it.
+    const savedHost = recorded ? new URL(recorded.server).hostname : undefined;
+    const savedWildcard = savedHost !== undefined && WILDCARD_HOSTS.has(savedHost);
     const implicitServer = registeredServer ?? serving(retained?.server ?? registration?.server ?? DEFAULT_SERVER);
-    const host = values.host ?? "127.0.0.1";
     // `--host` is the BIND address; `server` is the URL the readiness probe, the mesh registry, and
     // every later client use. They must name the SAME address. Left independent, `--host <non-loopback>`
     // bound correctly and was then probed on the loopback default, found nothing, timed out, and
@@ -1768,11 +1768,24 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const requestedServer = values.host
       ? reconcileHostAndServer(values.host, values.server, "--host", "--server", implicitServer)
       : values.server ?? implicitServer;
+    // Recover a concrete bind from the rendered config. A past wildcard is not implicit consent
+    // to open every interface again. With a retained registration, keep its dial address.
+    const retainedBind = values.server === undefined && savedHost !== undefined && savedHost !== "127.0.0.1"
+      && !savedWildcard && bindReaches(savedHost, requestedServer) ? savedHost : undefined;
+    const bindHost = values.host ?? retainedBind;
+    const host = bindHost ?? "127.0.0.1";
+    const addressFlag = (server: string) => {
+      const address = new URL(server);
+      const hostFlag = bindHost === undefined ? "" : `--host ${shellWord(bindHost)} `;
+      return `${hostFlag}--server ${address.protocol}//${address.hostname}:<port>`;
+    };
     // Only a first boot skips a stopped registration at the preferred address. A prior store or
     // launch record can survive the loss of the address, and a cleaned manifest can leave a summary.
     const firstAddress = !resumeAttempt && values.server === undefined && !values["rotate-sys"] && recordsNameNoSpace(cotalRoot())
       && !existsSync(cotalPath("stack-home.json")) && !existsSync(cotalPath("team-summaries")) && !hasLegacyStore(cotalPath("nats"));
-    let server = firstAddress ? await freshStackServer(serving(requestedServer), host) : requestedServer;
+    const preferredServer = firstAddress ? serving(requestedServer) : requestedServer;
+    let server = firstAddress ? await freshStackServer(preferredServer, host) : preferredServer;
+    let movedBecause = server !== preferredServer ? `${preferredServer} is occupied or reserved` : undefined;
     // A same-root repair reopens the store the mesh record names, ONCE, before the ordinary-up
     // assertion below reads --store-dir (#2218): an ordinary `up` on a space whose broker died must
     // not silently fall back to the root's default store while the record still names a custom one.
@@ -2219,32 +2232,36 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       );
       process.exit(1);
     }
-    if (values.server === undefined && (!held || held.root !== root)) {
-      const next = await freshStackServer(server, host, { skipPreferred: true });
-      console.log(c.dim(`${server} is already in use by ${who}; starting "${space}" at ${next} instead`));
-      server = next;
+    if (values.server === undefined && (!held || held.root !== root) && bindReaches(host, server)) {
+      movedBecause ??= `${server} is already in use by ${who}`;
+      server = await freshStackServer(server, host, { skipPreferred: true });
     } else {
       console.error(
         c.red(
-          `✗ ${server} is already in use by ${who} - to run "${space}" use \`--server nats://${host}:<port>\` with a free port`,
+          `✗ ${server} is already in use by ${who} - to run "${space}" use \`${addressFlag(server)}\` with a free port`,
         ),
       );
       process.exit(1);
     }
   }
-  if (retained && server === serving(retained.server)) {
-    console.log(c.dim(`starting this folder's stopped stack as it last ran: ${server}${values.open ? ", open" : ""}`));
-  } else if (recorded?.open) {
-    console.log(c.dim("starting this folder's stopped stack in the mode it last ran: open"));
+  if (!resumeAttempt && !bindReaches(host, server)) {
+    const dialHost = new URL(server).hostname;
+    const remedy = savedWildcard ? `run ${codeSpan(`cotal up --host ${savedHost} --server ${registration?.server ?? "<url>"}`)} with the original client address` : `run ${codeSpan(`cotal up --host ${dialHost}`)} with the broker's bind host`;
+    throw new CommandFailure("refused", "CONFLICT", `the broker address ${server} does not match this start's bind host; no broker was launched`, { target: { root: cotalRoot(), space: recordedSpace, server }, remedy });
   }
-
-  if (!resumeAttempt) refuseRegisteredAddress(server, values.space ?? folderSpace(), `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
-  await assertBrokerAddressFree(server, "cotal up");
+  if (!resumeAttempt) refuseRegisteredAddress(server, recordedSpace, `start this one at another address with \`cotal up ${addressFlag(server)}\``, host);
+  await assertBrokerAddressFree(server, "cotal up", host);
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
     if (values["store-dir"] === undefined) values["store-dir"] = reopenLastStore(cotalPath("nats"));
     else refuseMissingNamedStore(resolve(values["store-dir"]));
     checkStartStore(values["store-dir"], values.space ?? folderSpace());
+  }
+  if (movedBecause) console.log(c.dim(`${movedBecause}; starting "${recordedSpace}" at ${server} instead`));
+  if (retained && !movedBecause && server === serving(retained.server)) {
+    console.log(c.dim(`starting this folder's stopped stack as it last ran: ${server}${values.open ? ", open" : ""}`));
+  } else if (recorded?.open) {
+    console.log(c.dim("starting this folder's stopped stack in the mode it last ran: open"));
   }
   const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
   const boundListener: DetachOpts["boundListener"] = restored ? {
@@ -2288,10 +2305,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       publicExchange,
       channels: values.channels,
-      // The RAW flag, not the loopback-defaulted `host` above: `startMeshDetached` applies the same
-      // default itself, and what it records must distinguish "the operator asked for this address"
-      // from "nobody asked", or every mesh would persist an exposure decision it never made.
-      host: values.host,
+      host: bindHost,
       runtime: values.runtime,
       maxSessions,
       noManager,
@@ -2563,7 +2577,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       child, server, space, storeDir, setup, seedFile, transport, maxPayload: brokerMaxPayload,
       ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
-      host: values.host,
+      host: bindHost,
       maxSessions,
       maxFileStore,
       publicExchange,
@@ -3665,7 +3679,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   if (!opts.freshTeamBoot)
     refuseRegisteredAddress(server, m.space, opts.server !== undefined
       ? `start this one at another address with \`cotal up -f ${file} --server nats://${host}:<port>\``
-      : `point broker.servers in ${file} at another address`);
+      : `point broker.servers in ${file} at another address`, host);
   if (opts.freshTeamBoot) {
     const other = loadMeshes().filter((row) => row.space !== m.space && row.server === server);
     if (other.length) throw new CommandFailure("refused", "CONFLICT", "another local registration names this exact broker address; fresh team boot did not create a listener over its recorded target", { target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable", otherSpaces: other.map((row) => row.space) }, remedy: "inspect both registrations and their native brokers; exact-address conflicts block creation, while no conflict does not prove exclusivity" });
@@ -3735,7 +3749,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     stderrLine("✗ ", `${brokerAddressForDisplay(server) ?? "selected address"} already has a broker - a fresh boot will not adopt it. Stop the owned stack or select another address; team deploy supports only all-new channel cards, not agent apply.`, c.red);
     process.exit(1);
   }
-  await assertBrokerAddressFree(server, `cotal up -f ${file}`);
+  await assertBrokerAddressFree(server, `cotal up -f ${file}`, host);
   // Connectors + their required binaries must exist before any mutation (no fallback).
   const conn = await preflightConnectors(prepared);
   if (conn) {
@@ -4428,11 +4442,11 @@ export async function startMeshDetached(
 /** Refuse a broker address another program holds without answering NATS, such as a web server, as
  *  the controller stack refuses it. nats-server would exit on its bind with only a log line, and the
  *  readiness probe would wait on that program instead. `command` is the start the remedy reruns. */
-async function assertBrokerAddressFree(server: string, command: string): Promise<void> {
-  const bindError = await listenerBindError(server);
+async function assertBrokerAddressFree(server: string, command: string, bindHost: string): Promise<void> {
+  const bindError = await listenerBindError(server, bindHost);
   if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return;
-  const { host, port } = brokerListenAddress(server), address = new URL(server);
-  const { says, frees } = addressHolder("the broker address", host, port);
+  const { port } = brokerListenAddress(server), address = new URL(server);
+  const { says, frees } = addressHolder("the broker address", bindHost, port);
   throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
     target: { root: cotalRoot(), server, bindError: bindError.code },
     remedy: `start it at another address with ${codeSpan(`${command} --server ${address.protocol}//${address.hostname}:<port>`)}, or ${frees} and run ${codeSpan(command)} again`,
@@ -4875,11 +4889,6 @@ function belowPresenceSafeBroker(version: string): boolean {
   return p.patch < 5;
 }
 
-/** Wildcard binds mean "every interface", so they are NOT an address a client can be told to dial:
- *  the probe/registry URL stays whatever it already is (loopback by default), which the wildcard
- *  bind necessarily covers. */
-const WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
-
 /** Establish that a bind-host value IS a host, BEFORE anything brackets it, and return the
  *  bracketed literal a URL can hold (#1697).
  *
@@ -4986,13 +4995,15 @@ async function assertFreshTeamBindAvailable(server: string, host: string, space:
  *  start that names its own address asks this, a manifest's `broker.servers` included, and
  *  `elsewhere` names the way to move the one being started. A space this start takes the name of is
  *  left to the name rules. */
-function refuseRegisteredAddress(server: string, space: string, elsewhere: string): void {
-  const key = brokerAddressKey(server);
+function refuseRegisteredAddress(server: string, space: string, elsewhere: string, bindHost: string): void {
+  const keyOf = brokerReservationKey(bindHost);
+  const key = keyOf(server);
   if (key === undefined) return;
   const root = canonicalRoot(cotalRoot());
-  const held = loadMeshes().find((m) => m.space !== space && canonicalRoot(m.root) !== root && brokerAddressKey(m.server) === key);
+  const held = loadMeshes().find((m) => m.space !== space && canonicalRoot(m.root) !== root && keyOf(m.server) === key);
   if (!held) return;
-  throw new CommandFailure("refused", "CONFLICT", `${server} is the broker address of "${held.space}", registered for ${held.root} and stopped; nothing was started`, {
+  const address = WILDCARD_HOSTS.has(bindHost) && held.server !== server ? `the bind for ${server} overlaps the broker address of` : `${server} is the broker address of`;
+  throw new CommandFailure("refused", "CONFLICT", `${address} "${held.space}", registered for ${held.root} and stopped; nothing was started`, {
     target: { root: cotalRoot(), server, space, heldSpace: held.space, heldBy: held.root },
     remedy: `${elsewhere}, or free that one with \`cotal space forget ${held.space}\``,
   });
@@ -5003,10 +5014,11 @@ function refuseRegisteredAddress(server: string, space: string, elsewhere: strin
 async function freshStackServer(server: string, bindHost?: string, options?: { skipPreferred: true }): Promise<string> {
   const url = new URL(server);
   const host = (bindHost ?? url.hostname).replace(/^\[|\]$/g, "");
+  const keyOf = brokerReservationKey(host);
   const reserved = new Set<string>();
   // A recorded address this cannot take apart reserves nothing: it names no host and port to avoid.
   for (const mesh of loadMeshes()) {
-    const key = brokerAddressKey(mesh.server);
+    const key = keyOf(mesh.server);
     if (key !== undefined) reserved.add(key);
   }
   const excluded = options?.skipPreferred ? Number(url.port) || 4222 : undefined;
@@ -5014,7 +5026,7 @@ async function freshStackServer(server: string, bindHost?: string, options?: { s
   for (let attempt = 0; attempt < 16; attempt++) {
     const address = new URL(candidate);
     const port = Number(address.port) || 4222;
-    const key = brokerAddressKey(candidate);
+    const key = keyOf(candidate);
     if (port !== excluded && (key === undefined || !reserved.has(key))) {
       try {
         await freePort(host, port);
