@@ -1,7 +1,7 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmdirSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
@@ -47,6 +47,34 @@ for (const consistent of [false, true]) {
 }
 const { seedInstallationCurrent } = await import("../src/seed/reconcile.js");
 assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not proven current");
+{
+  const home = mkdtempSync(join(tmpdir(), "cotal-update-no-npm-"));
+  try {
+    const path = join(home, "node-only");
+    mkdirSync(path);
+    if (process.platform === "win32") copyFileSync(process.execPath, join(path, "node.exe"));
+    else symlinkSync(process.execPath, join(path, "node"));
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && key.toLowerCase() !== "path"));
+    for (const flags of [["--self"], ["--check"], ["--check", "--plain"], ["--check", "--json"]]) {
+      const result = spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "update", ...flags], {
+        cwd: home, encoding: "utf8", timeout: 30_000,
+        env: { ...env, HOME: home, USERPROFILE: home, APPDATA: join(home, "config"), LOCALAPPDATA: join(home, "config"),
+          COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "config"), XDG_RUNTIME_DIR: home, PATH: path,
+          COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1" },
+      });
+      const output = result.stdout + result.stderr;
+      assert.equal(result.status, flags[0] === "--self" ? 1 : 4, output);
+      assert.match(output, /npm is not on PATH/);
+      assert.match(output, /Install npm or add it to this command's PATH/);
+      assert.doesNotMatch(output, /registry cannot be reached|Check registry access/);
+      if (flags.includes("--json")) {
+        const report = JSON.parse(result.stdout);
+        assert.equal(report.warnings[0].code, "NPM_UNAVAILABLE");
+        assert.equal(report.result.installationChanged, false);
+      }
+    }
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}
 const { registryArrivalCell } = await import("../../../bin/smoke/update-registry-arrival.smoke.mjs");
 const cacheUpdate = await registryArrivalCell({ scenario: "cache" });
 assert.equal(cacheUpdate.code, 0, "real CLI and npm update succeed with a user-owned cache that is not writable");

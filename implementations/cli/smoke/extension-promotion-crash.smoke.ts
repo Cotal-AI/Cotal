@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
@@ -29,6 +29,15 @@ try {
     writeFileSync(hook, `const fs=require('node:fs');const {syncBuiltinESMExports}=require('node:module');const original=fs.renameSync;fs.renameSync=function(from,to){const r=original.apply(this,arguments);if(${JSON.stringify(phase)}==='old-renamed'?String(to).includes('.extensions.rollback-'):String(from).endsWith('.ready')&&String(to).endsWith('extensions'))process.kill(process.pid,'SIGKILL');return r;};syncBuiltinESMExports();`);
     const crashed = run(["ext", "add", source("2.0.0")], { NODE_OPTIONS: `--require=${hook}` });
     assert.equal(crashed.signal, "SIGKILL", `${phase}: reached actual directory publication`);
+    const journal = join(config, "cotal/.extensions-promotion.json");
+    const old = (JSON.parse(readFileSync(journal, "utf8")) as { old: string }).old;
+    chmodSync(join(old, "node_modules/promotion-crash-fixture"), 0o500);
+    const recovery = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+      import { recoverExtensionPromotion } from ${JSON.stringify(new URL("../src/lib/extension-stage.ts", import.meta.url).href)};
+      if (!recoverExtensionPromotion(true)) process.exit(1);
+    `], { env, encoding: "utf8", timeout: 30_000 });
+    assert.equal(recovery.status, 0, recovery.stderr);
+    assert(!existsSync(old), "read-only rollback tree is removed after recovery");
     const listed = run(["ext", "list", "--json"]);
     assert.equal(listed.status, 0, listed.stderr);
     const inventory = JSON.parse(listed.stdout).result.items;
