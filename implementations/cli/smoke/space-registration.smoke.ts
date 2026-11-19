@@ -412,27 +412,27 @@ setCurrent("keep");
   check("forget of the second damaged space then succeeds, and the listing works again",
     forgetLima.status === 0 && forgetLima.env?.result.kind === "space-forgotten" && !existsSync(limaFile) && findMesh("lima") === undefined && listedClean.status === 0, shown(forgetLima));
 
-  // The same circle must not survive for a space this machine started (#7826): its forget
-  // runs the gone-folder checks, which used to re-read the whole registry and throw on any
-  // other damaged record. The root here exists, so no gone-folder refusal applies.
+  // A healthy registration is not a recovery target, even for a locally started space.
   const upServer = `nats://127.0.0.1:${await freePort()}`;
   recordMesh({ space: "up1", server: upServer, root, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   recordMesh({ space: "beta", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   const betaFile = join(meshesDir(), `${spaceSegment("beta")}.json`);
   writeFileSync(betaFile, "not JSON\n");
   const forgetUp1 = await json(["space", "forget", "up1"]);
-  check("forget of a started space succeeds while another record is damaged, and removes only its own file",
-    forgetUp1.status === 0 && forgetUp1.env?.result.kind === "space-forgotten" && !existsSync(join(meshesDir(), `${spaceSegment("up1")}.json`)) && existsSync(betaFile), shown(forgetUp1));
-  check("...and it warns about the damaged record it leaves, naming the forget that clears it",
-    forgetUp1.env?.warnings.some((w: { code: string; message: string }) => w.code === "MESH_REGISTRY_DAMAGED" && w.message.includes(betaFile) && w.message.includes("cotal space forget beta")), forgetUp1.env?.warnings);
+  const up1File = join(meshesDir(), `${spaceSegment("up1")}.json`);
+  check("forget of a healthy started space refuses while another record is damaged and preserves both files",
+    refused(forgetUp1, 1, "SCHEMA_INVALID") && existsSync(up1File) && existsSync(betaFile), shown(forgetUp1));
+  check("...and it names the damaged file and the exact forget that clears it",
+    (forgetUp1.env?.error?.message ?? "").includes(betaFile) && (forgetUp1.env?.error?.remedy ?? "").includes("cotal space forget beta"), shown(forgetUp1));
   const forgetBeta = await json(["space", "forget", "beta"]);
-  check("forget of the damaged record it warned about then succeeds",
-    forgetBeta.status === 0 && forgetBeta.env?.result.kind === "space-forgotten" && !existsSync(betaFile), shown(forgetBeta));
+  check("forget of the damaged record succeeds and leaves the healthy space registered",
+    forgetBeta.status === 0 && forgetBeta.env?.result.kind === "space-forgotten" && !existsSync(betaFile) && findMesh("up1") !== undefined, shown(forgetBeta));
+  const retryUp1 = await json(["space", "forget", "up1"]);
+  check("forget of the healthy started space works after recovery", retryUp1.status === 0 && !existsSync(up1File), shown(retryUp1));
 
   if (process.platform === "linux") {
-    // With the folder gone, the forget runs the full gone-folder refusal path, which also
-    // re-read the registry before this fix. No process runs there and nothing listens on its
-    // broker address, so the forget succeeds.
+    // A missing folder is not an exception to the healthy-record refusal. After recovery,
+    // the usual gone-folder checks can confirm that nothing still runs at its broker address.
     const up2Server = `nats://127.0.0.1:${await freePort()}`;
     const goneRoot = join(home, "deleted-up2");
     recordMesh({ space: "up2", server: up2Server, root: goneRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
@@ -440,11 +440,14 @@ setCurrent("keep");
     const gammaFile = join(meshesDir(), `${spaceSegment("gamma")}.json`);
     writeFileSync(gammaFile, "not JSON\n");
     const forgetUp2 = await json(["space", "forget", "up2"]);
-    check("forget of a started space whose folder is gone succeeds while another record is damaged",
-      forgetUp2.status === 0 && forgetUp2.env?.result.kind === "space-forgotten" && !existsSync(join(meshesDir(), `${spaceSegment("up2")}.json`)) && existsSync(gammaFile), shown(forgetUp2));
+    const up2File = join(meshesDir(), `${spaceSegment("up2")}.json`);
+    check("forget of a healthy space whose folder is gone refuses while another record is damaged",
+      refused(forgetUp2, 1, "SCHEMA_INVALID") && (forgetUp2.env?.error?.remedy ?? "").includes("cotal space forget gamma") && existsSync(up2File) && existsSync(gammaFile), shown(forgetUp2));
     const forgetGamma = await json(["space", "forget", "gamma"]);
-    check("forget of the damaged record it warned about then succeeds",
-      forgetGamma.status === 0 && forgetGamma.env?.result.kind === "space-forgotten" && !existsSync(gammaFile), shown(forgetGamma));
+    check("forget of that damaged record succeeds without removing the gone-folder registration",
+      forgetGamma.status === 0 && forgetGamma.env?.result.kind === "space-forgotten" && !existsSync(gammaFile) && findMesh("up2") !== undefined, shown(forgetGamma));
+    const retryUp2 = await json(["space", "forget", "up2"]);
+    check("forget of the healthy gone-folder space works after recovery", retryUp2.status === 0 && !existsSync(up2File), shown(retryUp2));
   }
 
   recordMesh({ space: "listed", server: LIVE, root, mode: "user", origin: "catalog", catalogOwner: "acct-1", userAuth: { provider: "cotal", idp: { url: "https://idp.test", issuer: "https://idp.test", audience: "cotal" }, remote: true, endpoints: { url: "https://auth.test" }, sentinelCredsPath: join(root, "sentinel.creds") }, ts: new Date(0).toISOString() });
@@ -577,18 +580,21 @@ setCurrent("keep");
       brokerDefinition(name, at);
       recordPreparedSpace({ space: name, root: at, ts });
       const file = join(meshesDir(), `${spaceSegment(name)}.json`);
+      const unrelatedFile = join(meshesDir(), `${spaceSegment("unrelateddamaged")}.json`);
       const good = readFileSync(file, "utf8");
       writeFileSync(file, `{"space":"${name}",`);
+      writeFileSync(unrelatedFile, "not JSON\n");
       const result = await json(["space", "forget", name]);
       if (active) {
         check("a damaged registration with a running stack refuses before either record or definitions are removed",
-          refused(result, 2, "LIFECYCLE_BLOCKED") && existsSync(file) && findPreparedSpace(name)?.root === at && serviceDefinitionStore(name).read("stack-broker") !== undefined, shown(result));
+          refused(result, 2, "LIFECYCLE_BLOCKED") && existsSync(file) && existsSync(unrelatedFile) && findPreparedSpace(name)?.root === at && serviceDefinitionStore(name).read("stack-broker") !== undefined, shown(result));
         writeFileSync(file, good);
         removePreparedSpace(name);
       } else {
         check("forget of a damaged registration releases stopped stack definitions and prepared state in one call",
-          result.status === 0 && !existsSync(file) && findPreparedSpace(name) === undefined && serviceDefinitionStore(name).read("stack-broker") === undefined && result.env?.result.releasedDefinitions.includes("stack-broker"), shown(result));
+          result.status === 0 && !existsSync(file) && existsSync(unrelatedFile) && findPreparedSpace(name) === undefined && serviceDefinitionStore(name).read("stack-broker") === undefined && result.env?.result.releasedDefinitions.includes("stack-broker"), shown(result));
       }
+      rmSync(unrelatedFile);
     }
 
     // A prepared space releases the definitions saved for its own root, and only those.
