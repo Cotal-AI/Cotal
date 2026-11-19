@@ -301,8 +301,7 @@ async function completionOut(positionals: string[]): Promise<string> {
 }
 
 // --- version --json is one envelope; an unreadable extensions manifest makes its list partial -----
-// The binary's overlay refuses a corrupt manifest before version runs; a composition root without
-// extensions reaches version's own read.
+// Exercise the version handler here. The built entry suite separately covers overlay dispatch.
 {
   const { runCli } = await import("../src/command.js");
   const { extensionsManifestPath } = await import("@cotal-ai/workspace");

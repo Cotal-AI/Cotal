@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { logicalExecutionEntry, extensionProvides, loadExtensionsManifest, type InstalledExtension } from "@cotal-ai/workspace";
+import { logicalExecutionEntry, extensionProvides, loadExtensionsManifest } from "@cotal-ai/workspace";
 import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
 
@@ -57,17 +57,19 @@ export function extensionVersions(): ExtensionVersion[] {
 /** {@link extensionVersions}, with the reason when the manifest could not be read, so a structured
  *  report can say its list is incomplete rather than empty. */
 export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string } {
-  let extensions: readonly InstalledExtension[];
   try {
-    extensions = loadExtensionsManifest().extensions;
+    const versions = loadExtensionsManifest().extensions.map((entry, index) => {
+      if (!entry || typeof entry.pkg !== "string" || !entry.pkg || typeof entry.version !== "string" || !entry.version || !Array.isArray(entry.commands)) {
+        throw new Error(`invalid extension inventory entry at index ${index}`);
+      }
+      const refs = extensionProvides(entry);
+      if (!Array.isArray(refs) || refs.some((ref) => typeof ref?.name !== "string" || !ref.name)) {
+        throw new Error(`invalid extension inventory entry at index ${index}: expected named contributions`);
+      }
+      return { label: [...new Set(refs.map((ref) => ref.name))].join(", ") || entry.pkg, version: entry.version, pkg: entry.pkg };
+    });
+    return { versions };
   } catch (e) {
     return { versions: [], unreadable: e instanceof Error ? e.message : String(e) };
   }
-  return {
-    versions: extensions.map((e) => ({
-      label: [...new Set(extensionProvides(e).map((ref) => ref.name))].join(", ") || e.pkg,
-      version: e.version,
-      pkg: e.pkg,
-    })),
-  };
 }

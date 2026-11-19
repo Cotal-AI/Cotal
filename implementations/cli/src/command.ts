@@ -627,6 +627,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // The built-in check reports an unreadable inventory itself. Do not require that inventory to
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
   const builtin = findCommand(registry.all<Command>("command"), argv[0]);
+  // Structured version reports inventory failures itself and needs no extension commands.
+  const versionJson = builtin?.name === "version" && !asksForHelp(argv.slice(1)) && asksForJson(builtin, argv.slice(1));
   const updateCheck = builtin?.name === "update" && argv.includes("--check") && !asksForHelp(argv.slice(1))
     && parseOrExit(builtin, ownWords(builtin, argv.slice(1), leadingGlobals)).values.check === true;
   const configFolder = globalConfigDirProblem();
@@ -642,7 +644,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const surface = (): Command[] => {
     let commands: Command[];
     try {
-      commands = opts.extensions && !updateCheck ? overlayExtensions(registry) : registry.all<Command>("command");
+      commands = opts.extensions && !versionJson && !updateCheck ? overlayExtensions(registry) : registry.all<Command>("command");
     } catch (e) {
       // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
       // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
