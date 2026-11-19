@@ -715,9 +715,9 @@ across upgrades. `cotal ext add <your-package>` adds a third-party connector the
 dashboard (`@cotal-ai/web`, providing `service-preset:web`) is the seventh built-in seeded on the
 same path.
 
-`cotal ext seed` is the maintenance entry for that seeding (it runs automatically before the first
-command of each boot that is not a read, so you rarely call it; `cotal up` runs it when it first
-starts a process). A read, such as `status`, `ps`,
+`cotal ext seed` is the maintenance entry for that seeding. Most commands that change state run
+it automatically. When `cotal up` starts a mesh with a manager, it seeds before launching its
+first process. A broker-only `cotal up --no-manager` skips seeding. A read, such as `status`, `ps`,
 bare `use`, `ext list` or `docs`, installs and refreshes nothing. An installed extension's `reads` declaration is
 cached when it is added. Account catalog refresh with `sync` also skips connector seeding.
 A bare read and a read subcommand skip that seed prelude; a subcommand

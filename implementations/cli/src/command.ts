@@ -55,7 +55,7 @@ import {
   setInstalledExtensionsEnabled,
 } from "./ext-loader.js";
 import { recoverExtensionPromotion } from "./lib/extension-stage.js";
-import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors } from "./seed/reconcile.js";
+import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedDowngradeRefusal } from "./seed/reconcile.js";
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
@@ -714,9 +714,12 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     const deferred = cmd?.name === "up";
     try {
       if (deferred) {
-        const refusal = deferredSeedRefusal();
+        // Broker-only startup still checks the store generation. An explicit restore can start its
+        // recorded manager even when --no-manager is present, so it retains the full seed path.
+        const brokerOnly = parsed?.values["no-manager"] === true && !parsed.values.restore;
+        const refusal = brokerOnly ? seedDowngradeRefusal() : deferredSeedRefusal();
         if (refusal) throw refusal;
-        deferSeedToLaunch();
+        if (!brokerOnly) deferSeedToLaunch();
       } else await reconcileSeededConnectors();
     } catch (e) {
       // The seed runs before the command, so a command that asked for JSON has not reached its own
