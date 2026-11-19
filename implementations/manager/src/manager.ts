@@ -112,7 +112,7 @@ export { STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js"
 import { LeaseKeeper } from "./lease-keeper.js";
 export { ManagerInstanceLeaseHeld } from "./lease-keeper.js";
 import { SessionRecovery } from "./session-recovery.js";
-import { SeatCustody } from "./seat-custody.js";
+import { SeatCustody, watchConnectorHolder } from "./seat-custody.js";
 import { withTimeout } from "./manager-timeout.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { inlinePersonaDir, inlineSnapshotPath, launchSpecForRun, materializePersona, launchAgentToStartOpts, removeInlineSnapshot, writeInlineSnapshot, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, type ContinuityAssignment } from "./launch.js";
@@ -1251,6 +1251,34 @@ class DeliveryAdminUnanswered extends Error {}
 /** How long one store challenge waits for the delivery daemon's answer. */
 const STORE_CHALLENGE_TIMEOUT_MS = 5_000;
 
+/** The refusal a control instance with `execution: none` gives every launch, hosting, model and write door. */
+const EXECUTION_NONE_REFUSAL = "execution: none forbids seat launch, workflow hosting, model inspection and caller-driven writes on this control instance; select the participant Manager with an instance-pinned manager-caller view";
+
+/** The sha256 hex digest of a file's bytes. */
+function fileDigest(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+/** The wire PRINCIPAL dot-form a managed agent's presence/control identity carries: user-mode
+ *  entries already store it in `id`; static mints store the raw nkey there (the durable/teardown
+ *  key), so the wire form derives under DEV_OWNER. Every comparison against an AUTHENTICATED wire
+ *  id (presence card.id, control from.id) must go through this, never raw `a.id`. */
+function managedPrincipal(a: { id: string; userOwner?: string }): string {
+  return a.userOwner ? a.id : principalKey(DEV_OWNER, a.id).key;
+}
+
+/** How a once seat's startup watch ended, waited for until {@link STARTUP_OUTCOME_MS} after its
+ *  launch or the readiness window, whichever is longer. A watch that has not ended by then, or a
+ *  seat being stopped, answers what the handle reports at that moment. */
+async function awaitStartupOutcome(a: ManagedAgent, launchedAt: number, readinessTimeoutMs: number, stopping: () => boolean): Promise<StartupOutcome> {
+  const until = launchedAt + Math.max(readinessTimeoutMs, STARTUP_OUTCOME_MS);
+  for (;;) {
+    const outcome = a.handle.startupOutcome?.() ?? "pending";
+    if (outcome !== "pending" || a.terminalizing || stopping() || Date.now() >= until) return outcome;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
 /**
  * The agent supervisor: a long-lived mesh node that owns agent process lifecycle.
  * It serves control requests on the "manager" service and spawns/kills agents
@@ -1892,7 +1920,7 @@ export class Manager {
   }
 
   private executionRefusal(): string {
-    return "execution: none forbids seat launch, workflow hosting, model inspection and caller-driven writes on this control instance; select the participant Manager with an instance-pinned manager-caller view";
+    return EXECUTION_NONE_REFUSAL;
   }
 
   /** A defensive last barrier, not a substitute Runtime. Entry admission runs before effects. */
@@ -3420,9 +3448,7 @@ export class Manager {
     return undefined;
   }
 
-  private fileDigest(path: string): string {
-    return createHash("sha256").update(readFileSync(path)).digest("hex");
-  }
+  private fileDigest(path: string): string { return fileDigest(path); }
 
   private fileDigestOrEmpty(path: string): string {
     try { return this.fileDigest(path); } catch { return ""; }
@@ -4665,13 +4691,8 @@ export class Manager {
     });
   }
 
-  /** The wire PRINCIPAL dot-form a managed agent's presence/control identity carries: user-mode
-   *  entries already store it in `id`; static mints store the raw nkey there (the durable/teardown
-   *  key), so the wire form derives under DEV_OWNER. Every comparison against an AUTHENTICATED wire
-   *  id (presence card.id, control from.id) must go through this, never raw `a.id`. */
-  private managedPrincipal(a: { id: string; userOwner?: string }): string {
-    return a.userOwner ? a.id : principalKey(DEV_OWNER, a.id).key;
-  }
+  /** The wire principal of a managed agent: {@link managedPrincipal}. */
+  private managedPrincipal(a: { id: string; userOwner?: string }): string { return managedPrincipal(a); }
 
   private resumeLivenessErrors(inventory: ManagerResumeInventory, roster: Presence[]): string[] {
     const inactive: string[] = [];
@@ -8998,16 +9019,9 @@ export class Manager {
     seat: { name: string; owner: string; actor: string; uid: string }; prompt: string; spawner: string; deadlineMs: number | undefined; readinessDeadlineMs: number; retire?: string;
   }): Promise<{ ref: GoalRef; deadlineAt?: number }> { return this.turnRelay.acceptOnceTurn(o); }
 
-  /** How a once seat's startup watch ended, waited for until {@link STARTUP_OUTCOME_MS} after its
-   *  launch or the readiness window, whichever is longer. A watch that has not ended by then, or a
-   *  seat being stopped, answers what the handle reports at that moment. */
-  private async awaitStartupOutcome(a: ManagedAgent, launchedAt: number, readinessTimeoutMs: number): Promise<StartupOutcome> {
-    const until = launchedAt + Math.max(readinessTimeoutMs, STARTUP_OUTCOME_MS);
-    for (;;) {
-      const outcome = a.handle.startupOutcome?.() ?? "pending";
-      if (outcome !== "pending" || a.terminalizing || this.leaseStopping || Date.now() >= until) return outcome;
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
+  /** How a once seat's startup watch ended: {@link awaitStartupOutcome}. */
+  private awaitStartupOutcome(a: ManagedAgent, launchedAt: number, readinessTimeoutMs: number): Promise<StartupOutcome> {
+    return awaitStartupOutcome(a, launchedAt, readinessTimeoutMs, () => this.leaseStopping);
   }
 
   /** Serve a once task from now on: its spawn's succeeded terminal is written. */
@@ -9113,14 +9127,8 @@ export class Manager {
     return this.seatCustody.spawnCustodied(runtime, name, spec, cwd, reserved);
   }
 
-  /** Keep launch provenance independent of status and runtime wire contracts. */
-  private watchConnectorHolder(handle: AgentHandle, holder: ReturnType<typeof retainConnectorSeat>): void {
-    if (!holder.active) return;
-    holder.launched(handle.pid);
-    // A released handle may outlive its Manager. Only an authoritative exit removes
-    // identity-less holders, never a release or a failed stop request.
-    watchProvedExit(handle, () => holder.ended(), () => true);
-  }
+  /** Keep launch provenance independent of status and runtime wire contracts: {@link watchConnectorHolder}. */
+  private watchConnectorHolder(handle: AgentHandle, holder: ReturnType<typeof retainConnectorSeat>): void { watchConnectorHolder(handle, holder); }
 
   private recordSeat(a: ManagedAgent): void {
     return this.seatCustody.recordSeat(a);
