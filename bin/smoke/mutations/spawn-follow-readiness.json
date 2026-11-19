@@ -24,7 +24,7 @@
     },
     {
       "name": "the manager acceptance reports its generic default instead of the connector-selected readiness budget",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/spawn-goal.ts",
       "find": "readinessDeadlineMs: readinessTimeoutMs, executor",
       "replace": "readinessDeadlineMs: this.readinessTimeoutMs, executor",
       "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/manager build && pnpm smoke:manager-service-invoke",

@@ -540,7 +540,7 @@ if (process.platform !== "win32") {
   {
     const dir = project("pty-cloud");
     const before = files();
-    const t = terminal(dir);
+    const t = terminal(dir, ["--configure-only"]);
     check("a terminal is asked where the space runs, with Cloud among the choices", (await t.at(DESTINATION)) && /○ Cloud/.test(t.s.text()), t.s.text().slice(-600));
     t.write(DOWN);
     await wait(300);
@@ -549,7 +549,7 @@ if (process.platform !== "win32") {
     const frame = t.s.text().slice(t.s.text().lastIndexOf(DESTINATION));
     check("Cloud can be chosen on a terminal, and with no Cloud space here it offers the sign-in", /● Cloud \(sign in to Cotal Cloud and choose your space\)/.test(frame.slice(frame.lastIndexOf("Local"))), frame.slice(-400));
     t.write("\x03");
-    check("Ctrl-C leaves setup and saves nothing", (await t.exited()) && JSON.stringify(files()) === JSON.stringify(before), { code: t.s.code, added: files().filter(f => !before.includes(f)), removed: before.filter(f => !files().includes(f)) });
+    check("Ctrl-C leaves setup before sign-in with exit 130 and saves nothing", (await t.exited()) && t.s.code === 130 && JSON.stringify(files()) === JSON.stringify(before), { code: t.s.code, added: files().filter(f => !before.includes(f)), removed: before.filter(f => !files().includes(f)) });
   }
   {
     const dir = project("pty-local");

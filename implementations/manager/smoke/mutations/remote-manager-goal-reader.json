@@ -25,9 +25,9 @@
     },
     {
       "name": "omit real mediated result read",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/command-dispatch.ts",
       "find": "const result = await readGoalResult(gw.ctx, goalRefOf(ctx.subject, goalId));",
-      "replace": "const result = undefined;",
+      "replace": "const result = undefined; void readGoalResult; void goalRefOf;",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "expectRed": "owner 0 reads a canonical failed terminal over actual goal-result",
       "cell": "owner 0 reads a canonical failed terminal over actual goal-result"

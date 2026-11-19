@@ -248,6 +248,33 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   // a probe that warns once the CLI is running still prints.
   const probeDir = mkdtempSync(join(tmpdir(), "cotal-entry-probe-"));
   cleanup.push(probeDir);
+  const extDir = join(probeDir, "config", "cotal", "extensions");
+  const extPackage = join(extDir, "node_modules", "version-fixture");
+  mkdirSync(extPackage, { recursive: true });
+  writeFileSync(join(extPackage, "package.json"), JSON.stringify({ name: "version-fixture", version: "1.2.3", main: "index.js" }));
+  writeFileSync(join(extPackage, "index.js"), 'throw new Error("version must not import this extension");\n');
+  writeFileSync(join(extDir, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "version-fixture", spec: "version-fixture@1.2.3", version: "1.2.3", commands: [], provides: [{ kind: "connector", name: "version-fixture" }] }] }));
+  const versionEnv = { XDG_CONFIG_HOME: join(probeDir, "config"), COTAL_TELEMETRY: "off" };
+  const updateCache = (home: string) => writeFileSync(join(home, "update-check.json"), JSON.stringify({ v: 1, latest: "99.0.0", checkedAt: Date.now(), attemptedAt: Date.now(), firstSeenAt: Date.now() }));
+  const inventory = cotal(["version"], updateCache, versionEnv);
+  check("version lists the recorded extension version", /^  version-fixture  1\.2\.3$/m.test(inventory.stdout), shown(inventory));
+  check("version lists a cached newer version", inventory.stdout.includes("99.0.0"), shown(inventory));
+  writeFileSync(join(probeDir, "version-hooks.mjs"), [
+    'export async function load(url, context, next) {',
+    '  if (/\\/bin\\/dist\\/run\\.js$|\\/cli\\/dist\\/(command|index)\\.js$|\\/node_modules\\/version-fixture\\//.test(url)) {',
+    '    throw new Error(`unexpected version import: ${url}`);',
+    '  }',
+    '  return next(url, context);',
+    '}',
+  ].join("\n"));
+  writeFileSync(join(probeDir, "version-register.mjs"), 'import { register } from "node:module";\nregister("./version-hooks.mjs", import.meta.url);\n');
+  for (const flag of ["--version", "-V"]) {
+    const r = cotal([flag], updateCache, { ...versionEnv, NODE_OPTIONS: `--import=${join(probeDir, "version-register.mjs")}` });
+    check(`${flag} prints the same inventory without loading a command runtime or extension`, same(inventory, r), shown(r));
+  }
+  const invalidHome = { ...noSeed, COTAL_HOME: "relative-home" };
+  const refusedVersion = cotal(["version"], undefined, invalidHome);
+  check("--version keeps the relative COTAL_HOME refusal", refusedVersion.status !== 0 && same(refusedVersion, cotal(["--version"], undefined, invalidHome)), shown(refusedVersion));
   writeFileSync(join(probeDir, "probe.mjs"), 'setTimeout(() => process.emitWarning("probe-warning"), 100);\n');
   const both = cotal(["help"], undefined, { ...noSeed, FORCE_COLOR: "1", NO_COLOR: "1", NODE_OPTIONS: `--import=${join(probeDir, "probe.mjs")}` });
   check("FORCE_COLOR with NO_COLOR prints no Node color warning, and another warning still prints",

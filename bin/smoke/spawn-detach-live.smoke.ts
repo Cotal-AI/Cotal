@@ -25,6 +25,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { assertScratchHeld, makeScratch } from "./_scratch.js";
 
 /** Resolve once the child has actually exited (or immediately if it already has); bounded by ms. */
 const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
@@ -34,6 +35,9 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
     setTimeout(r, ms).unref?.();
   });
 
+// Every temp folder below comes from this scratch, which no `.cotal` above can capture: the CLI
+// finds its folder by walking up to the nearest one, and a home holding `.cotal` would answer.
+const scratch = makeScratch("cotal-detach-");
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
 process.env.COTAL_HOME = home;
 
@@ -231,7 +235,32 @@ try {
   mkdirSync(fakeBin);
   const previousPath = process.env.PATH;
   const previousUv = process.env.COTAL_HERMES_UV_BIN;
+  const previousAdoptHome = process.env.COTAL_HERMES_ADOPT_HOME;
   try {
+    await import("../../extensions/connector-hermes/dist/index.js");
+    process.env.PATH = fakeBin;
+    delete process.env.COTAL_HERMES_ADOPT_HOME;
+    const hermesWithoutUv = async (extra: string[] = []): Promise<unknown> => {
+      try { await run("spawn", ["poet", "--harness", "hermes", "--space", SPACE, ...extra]); }
+      catch (error) { return error; }
+    };
+    const noModel = await hermesWithoutUv();
+    ok("foreground Hermes without uv or a model reports both and gives a basic launch example",
+      isCommandFailure(noModel) && noModel.code === "DEPENDENCY_UNAVAILABLE" && noModel.message.includes("needs uv on PATH")
+        && noModel.message.includes("needs a model") && noModel.remedy?.includes("spawn --harness hermes --no-events --model <model>") === true
+        && !noModel.remedy.includes("then retry:"), noModel);
+    const hasModel = await hermesWithoutUv(["--model", "test-model"]);
+    ok("foreground Hermes with a model retains the missing-uv retry",
+      isCommandFailure(hasModel) && hasModel.code === "DEPENDENCY_UNAVAILABLE" && !hasModel.message.includes("needs a model")
+        && hasModel.remedy?.includes("then retry:") === true
+        && hasModel.remedy.includes(`spawn poet --harness hermes --space ${SPACE} --model test-model`), hasModel);
+    process.env.COTAL_HERMES_ADOPT_HOME = fakeBin;
+    const adopt = await hermesWithoutUv();
+    ok("missing uv with profile adoption points to profile requirements without demanding a model or promising a retry",
+      isCommandFailure(adopt) && adopt.code === "DEPENDENCY_UNAVAILABLE" && adopt.remedy?.includes("adopted Hermes profile") === true
+        && !adopt.message.includes("needs a model") && adopt.remedy?.includes("https://docs.cotal.ai/docs/connect-hermes/") === true
+        && !adopt.remedy.includes("then retry:"), adopt);
+    delete process.env.COTAL_HERMES_ADOPT_HOME;
     const fixture = (name: string, body: string): void => writeFileSync(join(fakeBin, name), `#!${process.execPath}\n${body}\n`, { mode: 0o755 });
     const errorLines = "console.error('harness error line 1: invalid provider key');console.error('harness error line 2: run auth login to reauthenticate');process.exit(1);";
     for (const name of ["codex", "opencode", "jcode", "hermes"]) fixture(name, errorLines);
@@ -241,7 +270,6 @@ try {
     await import("../../extensions/connector-codex/dist/index.js");
     await import("../../extensions/connector-opencode/dist/index.js");
     await import("../../extensions/connector-jcode/dist/index.js");
-    await import("../../extensions/connector-hermes/dist/index.js");
     const failedLaunch = async (harness: string, name: string, extra: string[] = []): Promise<unknown> => {
       try {
         await capture(() => run("spawn", ["poet", "--detach", "--agent", harness, "--space", SPACE, "--name", name, ...extra]));
@@ -284,6 +312,7 @@ try {
   } finally {
     if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
     if (previousUv === undefined) delete process.env.COTAL_HERMES_UV_BIN; else process.env.COTAL_HERMES_UV_BIN = previousUv;
+    if (previousAdoptHome === undefined) delete process.env.COTAL_HERMES_ADOPT_HOME; else process.env.COTAL_HERMES_ADOPT_HOME = previousAdoptHome;
   }
 
   // A — detached spawn with the FULL override set (incl. identity: `--name bard` beside the
@@ -708,6 +737,8 @@ try {
     const callerRoot = join(resumeRoot, "caller");
     const transcriptRoot = join(resumeRoot, "claude");
     mkdirSync(callerRoot);
+    // The implicit cases need a caller folder that is no project, so no `.cotal` may sit above it.
+    assertScratchHeld(callerRoot, "resume probe caller");
     mkdirSync(join(resumeRoot, "offline"));
     mkdirSync(join(transcriptRoot, "projects", "synthetic"), { recursive: true });
     const heldId = "11111111-2222-4333-8444-555555555555";
@@ -719,16 +750,18 @@ try {
     await new Promise<void>((resolve) => tarpit.listen(0, "127.0.0.1", resolve));
     const address = tarpit.address();
     if (!address || typeof address === "string") throw new Error("resume probe listener has no TCP address");
-    const childRun = (args: string[]): Promise<{ status: number | null; out: string }> => new Promise((resolve) => {
+    const childRun = (args: string[]): Promise<{ status: number | null; out: string; stdout: string; stderr: string }> => new Promise((resolve) => {
       const child = spawnProc(TSX, [join(import.meta.dirname, "..", "cotal.ts"), ...args], {
         cwd: callerRoot, env: { ...subEnv, CLAUDE_CONFIG_DIR: transcriptRoot }, stdio: ["ignore", "pipe", "pipe"],
       });
       kids.push(child);
       let out = "";
-      child.stdout.on("data", (data: Buffer) => { out += data.toString(); });
-      child.stderr.on("data", (data: Buffer) => { out += data.toString(); });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (data: Buffer) => { const text = data.toString(); stdout += text; out += text; });
+      child.stderr.on("data", (data: Buffer) => { const text = data.toString(); stderr += text; out += text; });
       const timeout = setTimeout(() => child.kill("SIGKILL"), 60_000);
-      child.once("close", (status) => { clearTimeout(timeout); resolve({ status, out }); });
+      child.once("close", (status) => { clearTimeout(timeout); resolve({ status, out, stdout, stderr }); });
     });
     try {
       const added = await childRun(["space", "add", "resume-offline", "--server", `nats://127.0.0.1:${address.port}`, "--mode", "open", "--root", join(resumeRoot, "offline"), "--force"]);
@@ -736,6 +769,13 @@ try {
       const cleared = await childRun(["use", "--clear"]);
       ok("resume probe leaves the target to registry resolution", cleared.status === 0, cleared.out);
       const on = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
+      for (const [harness, status, code] of [["claude", 1, "USAGE_INVALID"], ["no-such-connector", 2, "DEPENDENCY_UNAVAILABLE"]] as const) {
+        const result = await childRun(["spawn", "--detach", "--harness", harness, "--space", SPACE, "--resume", heldId, "--json"]);
+        const envelope = JSON.parse(result.stdout || "null");
+        ok(`detached ${harness} resume writes a refusal envelope before sending a launch`,
+          result.status === status && result.stderr === "" && envelope?.outcome === "refused" && envelope.error?.code === code
+          && envelope.target?.requestId === undefined && (harness !== "claude" || envelope.error?.remedy === "pass --on <instance>"), result);
+      }
       for (const [label, id, explicit, expected] of [
         ["held implicit", heldId, false, 2],
         ["unheld implicit", unheldId, false, 2],
@@ -766,5 +806,6 @@ try {
     return awaitExit(k);
   }));
   releaseBroker?.();
+  rmSync(scratch, { recursive: true, force: true });
   console.log("spawn-detach:live finally-complete");
 }

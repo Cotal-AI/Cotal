@@ -418,18 +418,22 @@ try {
   check("OFFLINE: child signaled to offline status", existsSync(childOfflineFile));
   check("OFFLINE: durable memberships retained while offline", await memberRow("general", workerUid!) && await memberRow("dynamic", workerUid!));
 
-  // A hard-pinned spawn of the offline agent's alias cannot steal it: its process still runs, so the
-  // manager refuses the collision before launch. Verify the original child is unchanged below.
-  const stealCli = runCli(["spawn", "worker", "--name", "worker", "--space", space, "--server", servers, "--agent", "scripted-sdk", "--detach", "--no-events"]);
-  check("OFFLINE: hard-pinned spawn refuses the occupied alias with CONFLICT already-exists",
-    stealCli.code === 2 && /Code:\s+CONFLICT/.test(stealCli.err) && /Native code:\s+already-exists/.test(stealCli.err),
-    { code: stealCli.code, out: stealCli.out, err: stealCli.err });
+  // The manager still runs the child while its presence is offline, so the CLI reports a no-op.
+  const repeatSpawn = runCli(["spawn", "worker", "--name", "worker", "--space", space, "--server", servers, "--agent", "scripted-sdk", "--detach", "--no-events"]);
+  check("OFFLINE: hard-pinned spawn reports the existing worker without launching another",
+    repeatSpawn.code === 0 && /worker is already running on .+; nothing new was launched\./.test(repeatSpawn.out),
+    repeatSpawn);
+  const slotAfter = slotKey ? await records.get(slotKey) : null;
+  check("OFFLINE: spawn leaves the original lifecycle in the durable slot",
+    !!slotAfter && JSON.parse(new TextDecoder().decode(slotAfter.value)).lifecycleUid === workerUid);
 
   console.log("D2) in-process PTY retains the child without durable custody");
   check("PTY: product-written slot has no adoptable runtime reference", slotData.runtime === undefined);
   check("PTY: stock launch created no custodian records", readdirSync(seatRoot).length === 0);
   check("PTY: original child process still alive in kernel", typeof childPid === "number" && isProcessAlive(childPid));
-  check("PTY: child start identity unchanged after refused spawn", typeof childPid === "number" && processStartToken(childPid) === initialChildStart);
+  check("PTY: child PID and start identity unchanged after no-op spawn",
+    typeof childPid === "number" && existsSync(childPidFile) && Number(readFileSync(childPidFile, "utf8").trim()) === childPid &&
+    processStartToken(childPid) === initialChildStart);
 
   // Public name-based stop resolves live presence, so return the fixture online after the offline checks.
   if (childPid) process.kill(childPid, "SIGCONT");

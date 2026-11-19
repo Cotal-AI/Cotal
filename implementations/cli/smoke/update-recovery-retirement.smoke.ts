@@ -97,11 +97,17 @@ if (process.platform === "linux" || process.platform === "darwin") {
   mkdirSync(local, { mode: 0o700 });
   c.save({ ...c.record, phase: "replacing", snapshot: local, owner: { pid: process.pid, start: processStartToken(process.pid)!, nonce: "live-owner" } });
   const entry = join(import.meta.dirname, "../../../bin/dist/cotal.js");
-  const version = () => spawnSync(process.execPath, [entry, "--version"], { env: c.env, encoding: "utf8", timeout: 30000 });
-  const live = version();
+  const version = (word = "--version") => spawnSync(process.execPath, [entry, word], { env: c.env, encoding: "utf8", timeout: 30000 });
+  const live = version("version");
   assert.equal(live.status, 0, live.stderr);
-  assert.match(live.stdout, /An update is in progress in pid \d+\. Wait for it to finish\./);
+  assert.equal(live.stdout.match(/An update is in progress in pid \d+\. Wait for it to finish\./g)?.length, 1);
   assert.doesNotMatch(live.stdout + live.stderr, /needs repair|interrupted update|update --self/);
+  for (const flag of ["--version", "-V"]) {
+    const result = version(flag);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, live.stdout);
+    assert.equal(result.stderr, live.stderr);
+  }
   c.save({ ...c.record, phase: "replacing", snapshot: local });
   const stopped = version();
   assert.equal(stopped.status, 0, stopped.stderr);

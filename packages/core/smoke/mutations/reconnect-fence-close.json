@@ -13,7 +13,7 @@
   "mutations": [
     {
       "name": "a reconnect-disabled teardown drains instead of closing",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "    this.disableLibraryReconnect(nc);\n    await nc.close();\n",
       "replace": "    this.disableLibraryReconnect(nc);\n    await nc.drain();\n",
       "expectRed": "stop() after a reconnect-disable on a half-open socket returns without waiting for a drain PONG",

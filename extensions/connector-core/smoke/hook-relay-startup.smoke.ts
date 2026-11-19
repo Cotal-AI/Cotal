@@ -5,7 +5,8 @@
  * The relay used to make one connect attempt, get ENOENT, and exit 0. Every later hook still worked,
  * so presence and model turns looked healthy while the only event carrying SessionStart.source was
  * gone forever. This drives the shipped relay in its own process, observes its first real failed dial,
- * then starts a production-shaped IPC endpoint inside the relay's existing 2s budget.
+ * then starts a production-shaped IPC endpoint. A launch SessionStart keeps dialing past the 2s budget
+ * the other hooks keep, because a connector starting on a loaded host can bind later than that.
  *
  * Run: pnpm smoke:hook-relay-startup
  */
@@ -186,9 +187,28 @@ try {
   check("startup race: confirmed handoff still reaches the connector", delivered === true);
   check("startup race: relay exits cleanly", result.code === 0 && result.stderr === "", result);
 
+  // Six managed seats starting at once bound their connectors up to four seconds after SessionStart
+  // began, and the two whose relay stopped at two seconds published no events all session.
+  const slow = mint("slow-bind", "slow-bind-token");
+  const slowEvent = { hook_event_name: "SessionStart", source: "startup" };
+  const slowRun = launchRelay(slow, slowEvent);
+  await within(slowRun.ready, 3_000, "slow-bind relay to start");
+  await within(slowRun.firstDialFailed, 3_000, "slow-bind relay to attempt its first dial");
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  const slowFrames: unknown[] = [];
+  const slowServer = await listen(slow, slowFrames);
+  const slowResult = await within(slowRun.done, 3_000, "relay to deliver to a connector that bound after 3s");
+  await close(slowServer.server);
+  const slowReply = slowResult.stdout.split("\n").filter((line) => line && line !== "RELAY_READY");
+  check(
+    "slow connector start: a launch SessionStart still delivers when the socket binds after two seconds",
+    slowFrames.length === 1 && slowReply[0] === JSON.stringify({ handled: true }) && slowResult.code === 0 && slowResult.stderr === "",
+    { frames: slowFrames.length, ...slowResult },
+  );
+
   const absent = launchRelay(
     mint("never-bound", "absent-race-token"),
-    { hook_event_name: "SessionStart", source: "startup" },
+    { hook_event_name: "SessionStart", source: "compact" },
   );
   await within(absent.ready, 3_000, "absent-socket relay to start");
   await within(absent.firstDialFailed, 3_000, "absent-socket relay to attempt its first dial");
@@ -197,7 +217,7 @@ try {
   const absentElapsed = performance.now() - absentStart;
   const absentReply = absentResult.stdout.split("\n").filter((line) => line && line !== "RELAY_READY");
   check(
-    "absent connector: retry remains inside the two-second budget and fails open with no reply",
+    "absent connector at a compaction: retry remains inside the two-second budget and fails open with no reply",
     absentResult.code === 0 && absentReply.length === 0 && absentResult.stderr === "" && absentElapsed < 2_500,
     { ...absentResult, elapsedMs: Math.round(absentElapsed) },
   );

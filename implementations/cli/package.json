@@ -13,6 +13,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./app-identity": {
+      "types": "./dist/commands/app-identity.d.ts",
+      "import": "./dist/commands/app-identity.js"
+    },
     "./default-persona": {
       "types": "./dist/lib/default-persona.d.ts",
       "import": "./dist/lib/default-persona.js"
@@ -36,6 +40,10 @@
     "./dispatch": {
       "types": "./dist/dispatch.d.ts",
       "import": "./dist/dispatch.js"
+    },
+    "./version": {
+      "types": "./dist/lib/version.d.ts",
+      "import": "./dist/lib/version.js"
     },
     "./service-unit": {
       "types": "./dist/service-unit.d.ts",
