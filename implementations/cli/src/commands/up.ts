@@ -5272,7 +5272,7 @@ async function refuseRunningElsewhere(space: string, root: string): Promise<void
     ? `${rootExists ? `move what is now at ${owner.root} aside, then ` : ""}move this folder back to ${owner.root} and run \`cotal down --yes\` there`
     : !rootExists
       ? `restore the original project at ${owner.root}, then run \`cotal down --yes\` there`
-      : `stop it with \`cotal down${controller ? " --yes" : ""}\` in ${owner.root}`;
+      : `use it from here with --space ${space}, or stop it with \`cotal down${controller ? " --yes" : ""}\` in ${owner.root}`;
   throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${owner.server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server: owner.server }, remedy });
 }
 
