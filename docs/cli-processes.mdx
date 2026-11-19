@@ -612,6 +612,9 @@ Relative paths, control characters and malformed quoting are refused.
 
 On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation and reports `Already installed`. It leaves the unit, receipt and running daemon unchanged. A modified source or another installation still refuses.
 
+On Linux, if a daemon already answers but there is no install receipt or service unit, desktop
+installation reports a conflict and leaves the running daemon alone.
+
 Daemon launches keep the invoked Node path when it resolves to the running Node in the same
 directory, including a distribution's stable `node` symlink. Links through another directory,
 such as a version manager's per-shell directory, use the resolved runtime instead.
@@ -994,6 +997,9 @@ A failed reconcile refuses the
 space with its cause and repair command and retries from five seconds up to five minutes.
 The serving Manager never runs first-use seeding. A child rejects a handed generation that differs
 from the Manager implementation it loaded.
+On macOS and Linux, a desktop app daemon starts its Managers from a verified private copy of
+its runtime. A running Manager can load an installed connector and launch new seats after the
+app path disappears. This does not change the service's recorded program or repair a missing app.
 Every Manager using installed extensions checks each first-party connector's manifest version
 against the generation loaded by that Manager before a new launch, including a connector already
 loaded in that process. This includes Managers started by `up` and `manager start`. A mismatch names
