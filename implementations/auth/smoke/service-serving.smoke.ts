@@ -39,7 +39,8 @@ import { authClientSentinelKey, ensurePinnedIdp, loadOwnerSecret, saveAuthServic
 import type { ServiceEndpointHost, ServiceHostRequest, ServiceHostResult } from "../src/service-host-contract.js";
 import { answerServiceAuthority, serviceAuthorityEngineRequestId } from "../src/service-endpoint-authority.js";
 import { parseServiceRequestIntentIndexRecord, parseServiceRequestIntentRecord, serviceHostOperationId } from "../src/service-host-ops.js";
-import { serviceHostEngineOf, startAuthService, type AuthServiceHandle } from "../src/service.js";
+import { serviceHostEngineOf } from "../src/service.js";
+import { startAuthService, type AuthServiceHandle } from "../src/service-host.js";
 import { checks } from "./_service-custody-fixture.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
