@@ -1130,7 +1130,11 @@ function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
   try {
     const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
     if (result.signal) throw new DependencyCheckInterrupted(`npm dependency check was terminated by ${result.signal}`);
-    if (result.status !== 0) throw releaseReadError(result, `installed extension dependency closure is unavailable: ${failure(result)}`);
+    if (result.status !== 0) {
+      const detail = `installed extension dependency closure is unavailable: ${failure(result)}`;
+      if (/^npm (?:error|ERR!) code ENOSPC\s*$/m.test(result.stderr)) throw new DependencyCheckNoSpace(detail);
+      throw releaseReadError(result, detail);
+    }
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
   }
@@ -1257,6 +1261,7 @@ function collectArchiveCaches(parent: string): void {
 class ReleaseNotAvailable extends Error {}
 class ReleaseDateExcluded extends Error {}
 class DependencyCheckInterrupted extends Error {}
+class DependencyCheckNoSpace extends Error {}
 class RegistryUnavailable extends Error {}
 
 const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND)$/;
@@ -1358,6 +1363,11 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     if (e instanceof DependencyCheckInterrupted) {
       recordUpdateDeferral(targetVersion, message(e));
       rt.err(c.red(`✗ ${message(e)}. No installed packages were replaced. Run \`cotal update --self\` again.`));
+      return 1;
+    }
+    if (e instanceof DependencyCheckNoSpace) {
+      recordUpdateDeferral(targetVersion, "temporary filesystem is out of space", true);
+      rt.err(c.red(`✗ ${message(e)}. No global install was attempted. Free space on the temporary filesystem, then run \`cotal update --self\` again.`));
       return 1;
     }
     if (e instanceof ReleaseDateExcluded) {

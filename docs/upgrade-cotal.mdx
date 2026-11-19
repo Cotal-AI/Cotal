@@ -462,6 +462,10 @@ keeps its original-host refusal rather than guessing a shutdown command.
 
 ## Recover an interrupted update
 
+If a recorded npm install child is still running, `cotal update --self` skips preliminary
+cleanup and can wait for the child to finish. Run the command again only if it stops and asks
+you to retry.
+
 `cotal update --self` restores an interrupted update when its snapshot is a valid directory of
 this installation. If the snapshot is absent, outside this configuration, or not a plain directory,
 the command checks the recorded owner. A dead or reused owner lets it retain the unusable records

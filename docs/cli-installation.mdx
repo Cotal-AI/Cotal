@@ -210,6 +210,8 @@ npm workers have exited. It leaves unrecorded caches and active archive checks a
 An unwritable cache configured in `.npmrc` does not block the update. Cotal leaves that cache and
 its permissions unchanged and still applies your registry,
 authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement.
+If npm runs out of space while checking installed extension dependencies, no global install is
+attempted. Free space on the temporary filesystem, then run `cotal update --self` again.
 If a signal terminates the npm dependency check, the command names the signal and leaves installed
 packages unchanged. Run `cotal update --self` again.
 A failed replacement is followed by another reconcile attempt, then a verified reinstall
