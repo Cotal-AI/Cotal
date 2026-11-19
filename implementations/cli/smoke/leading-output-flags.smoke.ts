@@ -14,11 +14,11 @@
  * Run: pnpm smoke:leading-output-flags
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { jsonFlag } from "@cotal-ai/workspace";
+import { jsonFlag, type CachedCommand } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -48,8 +48,8 @@ const env = {
   COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1",
   COTAL_TELEMETRY: "off", LC_ALL: "C.UTF-8", NO_COLOR: "1",
 };
-const run = (args: string[]) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], configHome = env.XDG_CONFIG_HOME) => {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env: { ...env, XDG_CONFIG_HOME: configHome }, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
@@ -156,18 +156,60 @@ for (const { args, scope } of [
 const managerJson = run(["--no-color", "manager", "--runtime", "pty", "start", "--dry-run", "--json", "--no-color", "--help"]);
 check("manager lifecycle options before the verb do not hide its JSON refusal, even with --help", jsonRefusal(managerJson, "manager", duplicateColor), shown(managerJson));
 
+const missingPreset = ["svc", "add", "duplicate-probe", "--preset", "missing-probe", "--json"];
+const missingControl = run([...missingPreset, "--no-color"]);
+check("control: a missing preset without repeated globals reports an unavailable dependency", missingControl.status === 2 &&
+  missingControl.stderr === "" && missingControl.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE", shown(missingControl));
+for (const invocation of colorPlacements(missingPreset)) {
+  const refused = run(invocation);
+  check(`cotal ${invocation.join(" ")} reports the duplicate before preset lookup errors`, jsonRefusal(refused, "service", duplicateColor), shown(refused));
+}
+const mixedErrors = run(["service", "add", "duplicate-probe", "--preset", "broker", "--preset", "broker", "--no-input", "--no-input"]);
+check("repeated preset options do not mask the repeated global flag", mixedErrors.status === 1 && mixedErrors.stdout === "" &&
+  mixedErrors.stderr.startsWith(`✗ ${duplicateInput}\ncotal service add\n`), shown(mixedErrors));
+const brokenConfig = join(home, "broken-config");
+const brokenExtensions = join(brokenConfig, "cotal", "extensions");
+mkdirSync(brokenExtensions, { recursive: true });
+writeFileSync(join(brokenExtensions, "extensions.json"), "invalid manifest\n");
+const brokenPreset = run(["--json", "--no-input", "--no-input", "service", "add", "duplicate-probe", "--preset", "broker"], brokenConfig);
+check("unreadable preset metadata does not mask a JSON duplicate refusal", jsonRefusal(brokenPreset, "service"), shown(brokenPreset));
+
+// Recovery may change the command's argument grammar. An old raw descriptor cannot exempt the
+// newly resolved command from the duplicate check.
+const promotionHome = join(home, "promotion-config"), promotionConfig = join(promotionHome, "cotal");
+const live = join(promotionConfig, "extensions"), stage = join(promotionConfig, ".extensions.stage-proof.ready");
+const old = join(promotionConfig, ".extensions.rollback-proof"), journal = join(promotionConfig, ".extensions-promotion.json");
+const web = { name: "web", summary: "Probe the promoted command grammar", flags: [jsonFlag], outputs: ["json"] } satisfies CachedCommand;
+const collision = { name: "config", summary: "An installed command shadowed by a built-in" };
+const warnsOfCollision = (warnings: Envelope["warnings"]) => warnings?.some((item) => item.message?.includes('command "config" is provided by both')) === true;
+const manifest = (pkg: string, commands: CachedCommand[]) => JSON.stringify({ extensions: [{ pkg, spec: pkg, version: "1.0.0", commands }] });
+mkdirSync(live, { recursive: true });
+mkdirSync(stage);
+writeFileSync(join(live, "extensions.json"), manifest("@cotal-ai/web", [web]));
+const rawWeb = run(["--no-input", "web", "--no-input", "-j", "--help"], promotionHome);
+check("control: the retired raw web descriptor does not interpret trailing flags", rawWeb.status === 0 && rawWeb.stderr === "" &&
+  rawWeb.stdout.includes("outdated dashboard descriptor"), shown(rawWeb));
+writeFileSync(join(stage, "extensions.json"), manifest("replacement-web-probe", [web, collision]));
+const identity = (path: string) => {
+  const stat = lstatSync(path);
+  return { dev: String(stat.dev), ino: String(stat.ino), birth: stat.birthtimeMs };
+};
+writeFileSync(journal, JSON.stringify({ v: 1, root: live, stage, old, stageIdentity: identity(stage), oldIdentity: identity(live) }), { mode: 0o600 });
+const promotedWeb = run(["--no-input", "web", "--no-input", "-j", "--help"], promotionHome);
+check("a command promoted from raw to parsed refuses on its new surface before printing help", jsonRefusal(promotedWeb, "web") &&
+  warnsOfCollision(promotedWeb.envelope?.warnings), shown(promotedWeb));
+const newHelp = run(["web", "--help"], promotionHome);
+check("control: promotion activated the new metadata and ordinary help still works", !existsSync(journal) && !existsSync(stage) &&
+  newHelp.status === 0 && newHelp.stderr.includes('command "config" is provided by both') && newHelp.stdout.includes(web.summary), shown(newHelp));
+
 // Neither a provider package nor a recoverable installation is needed to report a duplicate.
 const config = join(env.XDG_CONFIG_HOME, "cotal");
 const extensions = join(config, "extensions");
 mkdirSync(extensions, { recursive: true });
-writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{
-  pkg: "duplicate-probe", spec: "duplicate-probe", version: "1.0.0", commands: [{
-    name: "duplicate-probe", aliases: ["dup-probe"], summary: "Report the duplicate without loading a package", outputs: ["json"],
-    flags: [jsonFlag],
-  }, {
-    name: "config", summary: "An installed command shadowed by a built-in",
-  }],
-}] }));
+writeFileSync(join(extensions, "extensions.json"), manifest("duplicate-probe", [{
+  name: "duplicate-probe", aliases: ["dup-probe"], summary: "Report the duplicate without loading a package", outputs: ["json"],
+  flags: [jsonFlag],
+}, collision]));
 const normalHelp = run(["dup-probe", "--help"]);
 check("control: normal extension help still warns about collisions on stderr", normalHelp.status === 0 &&
   normalHelp.stdout.includes("cotal duplicate-probe") && normalHelp.stderr.includes('command "config" is provided by both'), shown(normalHelp));
@@ -175,10 +217,9 @@ writeFileSync(join(config, ".extensions-promotion.json"), "invalid journal\n");
 for (const command of ["version", "dup-probe"]) {
   for (const invocation of colorPlacements([command, "--json"])) {
     const refused = run(invocation);
-    const warning = refused.envelope?.warnings?.some((item) => item.message?.includes('command "config" is provided by both'));
     check(`cotal ${invocation.join(" ")} refuses before recovery with one envelope`,
       jsonRefusal(refused, command === "version" ? "version" : "duplicate-probe", duplicateColor) &&
-      (command === "version" || warning === true), shown(refused));
+      (command === "version" || warnsOfCollision(refused.envelope?.warnings)), shown(refused));
   }
 }
 

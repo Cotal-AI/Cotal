@@ -107,8 +107,12 @@ function repeatedGlobalFlag(word: string, cmd: Command | undefined, words: reado
   const options = end === -1 ? words : words.slice(0, end);
   const json = cmd !== undefined && asksForJson(cmd, words);
   const plain = cmd !== undefined && options.includes("--plain");
-  if (!json) for (const warning of warnings) stderrLine("! ", oneLine(warning.message), c.red);
+  if (!json) printCollisionWarnings(warnings);
   return runOperation({ warnings }, () => usageExit(`Option '${word}' cannot be repeated`, cmd, json, plain, undefined, words));
+}
+
+function printCollisionWarnings(warnings: readonly OutputWarning[]): void {
+  for (const warning of warnings) stderrLine("! ", oneLine(warning.message), c.red);
 }
 
 /** Separate trailing global flags before `--`, without applying them or choosing a refusal format. */
@@ -558,16 +562,17 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
   paintFor(process.stdout, () => printHelpPath(cmd, unknown === undefined ? path : [...path, unknown]));
 }
 
-/** A service invocation takes its preset's flags. `manager <verb>` is `service <verb> manager`. */
-async function serviceSurface(found: Command | undefined, words: string[]): Promise<{ cmd: Command | undefined; rest: string[] }> {
+/** A service invocation takes its preset's flags. `manager <verb>` is `service <verb> manager`.
+ *  In a refusal, the preset only enriches the display and cannot replace the primary error. */
+async function serviceSurface(found: Command | undefined, words: string[], forRefusal = false): Promise<{ cmd: Command | undefined; rest: string[] }> {
   if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
-  const [{ servicePresetCommand }, { managerServiceCommand }] = await serviceSurfaces();
   try {
+    const [{ servicePresetCommand }, { managerServiceCommand }] = await serviceSurfaces();
     if (found.name === "service") return { cmd: servicePresetCommand(found, words), rest: words };
     const lifecycle = managerServiceCommand(found, words);
     return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv } : { cmd: found, rest: words };
   } catch (error) {
-    if (asksForHelp(words)) return { cmd: found, rest: words };
+    if (forRefusal || asksForHelp(words)) return { cmd: found, rest: words };
     const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
     return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
   }
@@ -618,22 +623,22 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     for (const flag of globals.flags) applyGlobalFlag(flag);
     return [...globals.rest];
   };
+  const refuseRepeatedGlobals = async (found: Command | undefined, warnings: OutputWarning[]): Promise<void> => {
+    const raw = takesWordsRaw(found);
+    const repeated = repeatedLeading ?? (raw ? undefined : globals.repeated);
+    if (repeated === undefined) return;
+    const { cmd, rest } = await serviceSurface(raw ? undefined : found, ownWords(found), true);
+    repeatedGlobalFlag(repeated, cmd, rest, warnings);
+  };
   // A spawn takes its one-shot handoff even on a usage refusal. The private unit entry checks the
   // variable itself and refuses a handoff without consuming the file.
   if (word !== "__service-unit") takeManagedHandoffCustody(process.env, builtin?.name === "spawn");
   setInstalledExtensionsEnabled(Boolean(opts.extensions));
   if (repeatedLeading !== undefined || (globals.repeated !== undefined && !takesWordsRaw(builtin))) {
-    // Refusals use only display metadata. Recovery, seed and imports are for valid invocations.
+    // Refuse before recovery if the current command grammar already recognizes the duplicate.
     const warnings: OutputWarning[] = [];
-    const found = builtin ?? (word !== undefined && opts.extensions ? findCommand(surface(true, (message) => {
-      warnings.push({ code: "EXTENSION_COMMAND_COLLISION", target: null, message });
-    }), word) : undefined);
-    const raw = takesWordsRaw(found);
-    const repeated = repeatedLeading ?? (raw ? undefined : globals.repeated);
-    if (repeated !== undefined) {
-      const { cmd, rest } = await serviceSurface(raw ? undefined : found, ownWords(found));
-      repeatedGlobalFlag(repeated, cmd, rest, warnings);
-    }
+    const found = builtin ?? (word !== undefined && opts.extensions ? findCommand(surface(true, warnings), word) : undefined);
+    await refuseRepeatedGlobals(found, warnings);
   }
   if (output.length && word === undefined) usageExit(`${output[0]} needs a command after it - run \`cotal help\` to list commands`);
   if (output.length && takesWordsRaw(builtin))
@@ -668,10 +673,12 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       process.exit(1);
     }
   }
-  function surface(includeExtensions: boolean, warn?: (message: string) => void): Command[] {
+  function surface(includeExtensions: boolean, warnings?: OutputWarning[]): Command[] {
     let commands: Command[];
     try {
-      commands = includeExtensions ? overlayExtensions(registry, warn) : registry.all<Command>("command");
+      commands = includeExtensions ? overlayExtensions(registry, warnings && ((message) => {
+        warnings.push({ code: "EXTENSION_COMMAND_COLLISION", target: null, message });
+      })) : registry.all<Command>("command");
     } catch (e) {
       // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
       // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
@@ -691,9 +698,20 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     return commands;
   }
   const includeExtensions = opts.extensions === true && !updateCheck;
-  let commands = surface(includeExtensions);
+  const resolveCommand = async () => {
+    // Recovery and the seed can replace cached metadata. A raw exemption belongs only to the
+    // surface about to be used for dispatch.
+    const warnings: OutputWarning[] | undefined = globals.repeated === undefined ? undefined : [];
+    const commands = surface(includeExtensions, warnings);
+    const cmd = findCommand(commands, word);
+    if (warnings) {
+      await refuseRepeatedGlobals(cmd, warnings);
+      printCollisionWarnings(warnings);
+    }
+    return { commands, cmd };
+  };
+  let { commands, cmd } = await resolveCommand();
   if (word === undefined) return paintFor(process.stdout, () => printEntry(commands));
-  let cmd = findCommand(commands, word);
   let rest = ownWords(cmd);
   const wantsHelp = asksForHelp(rest);
   ({ cmd, rest } = await serviceSurface(cmd, rest));
@@ -757,8 +775,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       process.exit(1);
     }
     if (!deferred) {
-      commands = surface(includeExtensions);
-      cmd = findCommand(commands, word);
+      ({ commands, cmd } = await resolveCommand());
       if (!cmd) usageExit(unknownCommandMessage(commands, word));
       ({ cmd, rest } = await serviceSurface(cmd, ownWords(cmd)));
       arm();
