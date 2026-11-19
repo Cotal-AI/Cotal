@@ -59,7 +59,7 @@
   "mutations": [
     {
       "name": "the pump is never started: `settle` waits on the watcher alone, which is the shipped state",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "    const pump = this.pumpFires(ref, wait);",
       "replace": "    const pump = Promise.resolve();",
       "command": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep",
@@ -71,7 +71,7 @@
     },
     {
       "name": "the pump checks once and gives up, so it only ever works if the deadline already passed",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "    while (!wait.over) {\n      await this.takeFire(ref);",
       "replace": "    if (!wait.over) {\n      await this.takeFire(ref);",
       "command": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep",
@@ -83,7 +83,7 @@
     },
     {
       "name": "the fire is read at a neighbouring epoch, so a live fire is invisible on the wrong subject",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "      this.binding.instanceId, this.binding.epoch, ref.token, \"fire\",",
       "replace": "      this.binding.instanceId, this.binding.epoch + 1, ref.token, \"fire\",",
       "command": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep",
@@ -95,7 +95,7 @@
     },
     {
       "name": "the polling half is removed, so a `wait`'s timeout is read for and never produced",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "    if (!(await this.takeFire(ref))) return undefined;",
       "replace": "    return undefined;",
       "command": "pnpm smoke:runtime-mesh-wait",
@@ -106,7 +106,7 @@
     },
     {
       "name": "PAIRED: the pump is never started, graded on `checkpoint` rather than on `sleep`",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "    const pump = this.pumpFires(ref, wait);",
       "replace": "    const pump = Promise.resolve();",
       "command": "pnpm smoke:runtime-mesh-checkpoint",
