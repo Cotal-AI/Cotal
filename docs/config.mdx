@@ -538,7 +538,10 @@ The refusal names the paths and corrective `chmod`. A home others can only read 
 Service reads from a non-private home are refused with the same remedy.
 
 Controller stack records belong to the home that started the stack. Another `COTAL_HOME` cannot see those members.
-While its manager or delivery runs, `status` names the home in use. `up`, `down`, and `space create` refuse `TARGET_UNAVAILABLE`.
+While its manager or delivery runs, `status` names the recorded launching home. If the journal
+does not name that home and the member records are missing from the current home, `status` warns
+with `FOLDER_BROKER_UNAVAILABLE` and exits 4 (`OPERATION_PARTIAL`), even if the current home has
+prepared a space in that folder. `up`, `down`, and `space create` refuse `TARGET_UNAVAILABLE`.
 Run with the original `COTAL_HOME` before trying again.
 
 <Callout type="warn" title="COTAL_HOME does not relocate project state">

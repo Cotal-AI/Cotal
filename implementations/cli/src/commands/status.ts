@@ -161,6 +161,7 @@ import {
   type StackRole,
 } from "../lib/stack-journal.js";
 import { cotalLinkHere, homeHoldsStack, linkedCotalRemedy } from "../lib/paths.js";
+import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
@@ -371,6 +372,7 @@ type SelectedResult =
       resolved: false;
       code: string;
       message: string;
+      channelSeedBlocksRestart?: true;
       space?: string;
       root?: string;
       /** In a copy or a moved folder, the folder its records were recorded at, and `space` the space
@@ -391,6 +393,7 @@ type SelectedResult =
       idp: string | null;
       personas: PersonaCatalog;
       connection: string;
+      channelSeedBlocksRestart?: true;
       /** The stopped process holding a loopback broker's listener, when `connection` is `broker-stopped`. */
       brokerPid?: number;
       staleRecord: boolean;
@@ -505,6 +508,15 @@ export async function status(args: ParsedArgs): Promise<void> {
   const recovery = backupRecovery(maintenance);
   const selectedHints: string[] = [];
   const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight);
+  // Do not offer the conditional store reset when this folder needs a channel seed repair first,
+  // while a maintenance journal holds the store, or if the store is unwritable.
+  if (folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
+    const cmd = displayCmd();
+    const resetSpace = storeResetSpace(root, folder.processSpace);
+    hints.push(resetSpace !== undefined
+      ? `if the stored JetStream state is stale: \`${cmd} reset store ${resetSpace}\`, then \`up\` with your usual flags`
+      : `if the stored JetStream state is stale: \`${cmd} clean store --force\`, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
+  }
   // A held backup must be released before this root can start. Keep the selection's diagnostics,
   // but replace its ordinary restart advice with the journal's recovery step.
   if (recovery) hints.unshift(recovery);
@@ -875,7 +887,6 @@ async function readResponderAxis(selected: Selected, preflight: SelectedPrefligh
 }
 
 async function readFolder(root: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState, gaps: Gaps, hints: string[]): Promise<StatusResult["folder"]> {
-  const cmd = displayCmd();
   let stackJournal: NonNullable<StatusResult["folder"]["stackJournal"]>;
   try { stackJournal = lstatSync(stackJournalPath(root), { throwIfNoEntry: false }) === undefined ? "absent" : "present"; }
   catch { stackJournal = "unreadable"; }
@@ -1021,16 +1032,6 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   let legacyElsewhere = false;
   if (!controllerStack && !elsewhere && !copiedStack) try { legacyElsewhere = recordsElsewhereError(root) !== undefined; } catch { legacyElsewhere = false; }
   const storedState = !unusable && !controllerStack && !elsewhere && !copiedStack && !legacyElsewhere && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
-  // While a maintenance journal holds the store, clean store refuses, so it is not offered.
-  let maintained = false;
-  try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }
-  // Its next step is the unusable journal's, which every stack command refuses until it is fixed.
-  if (storedState && !maintained && !unusable && !rootStoreProblem(root)) {
-    const resetSpace = storeResetSpace(root, space);
-    hints.push(resetSpace !== undefined
-      ? `if the stored JetStream state is stale: \`${cmd} reset store ${resetSpace}\`, then \`up\` with your usual flags`
-      : `if the stored JetStream state is stale: \`${cmd} clean store --force\`, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
-  }
   // A stack started with --no-manager can still have a manager: a `manager` preset service run here.
   let managerService: StatusResult["folder"]["managerService"] = null;
   if (noManager && journal) try {
@@ -1122,8 +1123,12 @@ function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, ga
   // A missing or empty legacy record gives no process to observe, regardless of the connection.
   if (!journal && state === "stopped" && pid === null) row.state = "not-recorded";
   if (!journal) return row;
-  if (stackRunsUnderOtherHome(journal.root, journal) && journal.recovery?.home !== homeCotalDir())
-    return { ...row, state: "unknown", pid: null, detail: `stack member records belong to ${journal.recovery?.home ?? "another Cotal home"}` };
+  const recordedHome = journal.recovery?.home;
+  if (recordedHome !== homeCotalDir() && stackRunsUnderOtherHome(journal.root, journal)) {
+    const detail = recordedHome === undefined ? "stack member records are missing from this Cotal home" : `stack member records belong to ${recordedHome}`;
+    if (recordedHome === undefined) gaps.add("FOLDER_BROKER_UNAVAILABLE", `owned broker observation unavailable · ${detail}`, { root: journal.root, space: journal.space });
+    return { ...row, state: "unknown", pid: null, detail };
+  }
   try {
     const instances = serviceInstances(journal.space, STACK_DEFINITION.broker);
     if (instances.length === 0) {
@@ -1448,7 +1453,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // <name>`, `cotal up --user-auth`, …). A fixed `up --detach` hint would be right for at most one
     // of the codes and point the others at a command that does not fix them. The section states the
     // selection, and Next gives its repair once.
-    const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
+    const { message, remedy, restartRoot } = workspaceErrorParts({ kind: "target", error: e });
     const d = e.details;
     // A copy or a moved folder is reported under the space its records name, as the commands run here
     // refuse under it, and says what the folder holds; Next gives the step they name.
@@ -1472,7 +1477,13 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     if (journal) { const step = journal.remedy ?? journal.message; if (!hints.includes(step)) hints.push(step); }
     else if (instances) hints.push(instances.remedy ?? instances.message);
     else if (store) hints.push(`${store.message}; ${store.remedy}`);
-    else if (!d.unsettled || !servedStack(folder, result)) {
+    else if (restartRoot !== undefined) {
+      const block = channelSeedRestartBlock(restartRoot);
+      if (block) {
+        result.channelSeedBlocksRestart = true;
+        hints.push(`Restart blocked: ${block.message}. ${block.remedy}`);
+      } else hints.push(remedy ?? message);
+    } else if (!d.unsettled || !servedStack(folder, result)) {
       const step = remedy ?? message;
       hints.push(e.code === "no-meshes" && d.root === undefined ? step.replaceAll("`cotal ", () => `\`${cmd} `) : step);
     } else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with \`cotal up\` in ${d.root}`);
@@ -1546,16 +1557,20 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     const flagged = (target.source === "flag-server" || target.source === "flag-space-override") && target.recordedServer !== target.server;
     const offline = preflight.kind === "unreachable" && !flagged && target.origin === "up";
     const store = offline ? rootStoreProblem(target.root) : undefined;
+    let seedBlock: CommandFailure | undefined;
     // A blocked stack refuses that `up`, and Next names the step that clears the block instead.
     if (preflight.kind === "unreachable" && (flagged || offline) && !(servedStack(folder, base) && folder.stackBlock)) {
-      const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
-      hints.push(store ? `${store.message}; ${store.remedy}` : remedy === undefined ? message : `${message}; ${remedy}`);
+      const { message, remedy, restartRoot } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
+      seedBlock = store || restartRoot === undefined ? undefined : channelSeedRestartBlock(restartRoot);
+      if (store) hints.push(`${store.message}; ${store.remedy}`);
+      else if (seedBlock) hints.push(`${message}. Restart blocked: ${seedBlock.message}. ${seedBlock.remedy}`);
+      else hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
     }
     if (preflight.kind === "non-nats-listener" || preflight.kind === "auth-unsupported" || preflight.kind === "jetstream-unsupported") {
       const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false });
       hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
     }
-    return { ...base, connection: preflight.kind, ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune && !offline, snapshot: { state: "skipped", reason: "broker not connected" } };
+    return { ...base, connection: preflight.kind, ...(seedBlock ? { channelSeedBlocksRestart: true as const } : {}), ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune && !offline, snapshot: { state: "skipped", reason: "broker not connected" } };
   }
   // The mesh-level statement of the same axis (#1576). The folder section says what this machine's
   // delivery PROCESS is doing; this says whether the SPACE currently has a bound responder, which is
@@ -2194,6 +2209,7 @@ function nextActions(r: StatusResult): Section {
   const elsewhere = dialed !== undefined && dialed.mode !== "user" && (dialed.source === "flag-server" || dialed.source === "flag-space-override")
     && r.meshes.items.find((m) => m.space === dialed.space)?.server !== dialed.server;
   const stack = servedStack(r.folder, r.selected), own = stack !== undefined;
+  const seedBlocksRestart = r.selected.channelSeedBlocksRestart;
   // This folder's own stack is blocked the same way under another selection, and its block leads too.
   const blocked = stack ?? folderStack(r.folder, r.selected);
   const block = blocked ? r.folder.stackBlock : undefined;
@@ -2215,10 +2231,10 @@ function nextActions(r: StatusResult): Section {
     // running broker, and delivery does not start for a space that is not registered.
     items.unshift(...(part.kind === "up"
       ? r.selected.resolved || !part.running.length
-        ? [{ command: restart, description: `Finish starting the stack: the last up ended before ${roleList(part.stopped)} started` }]
+        ? seedBlocksRestart ? [] : [{ command: restart, description: `Finish starting the stack: the last up ended before ${roleList(part.stopped)} started` }]
         : [{ command: `${cmd} down --yes`, description: `Stop what the last up started: it ended before it registered the space, so up cannot finish it` }, { command: restart, description: "Then start the stack again" }]
       : [{ command: `${cmd} down --yes`, description: `Finish stopping the stack: the last down ended with ${roleList(part.running)} still running` },
-        ...(part.stopped.length ? [{ command: `${cmd} up --root ${shellWord(stack.root)}`, description: "Or restart this stack's stopped members from its recorded inputs" }] : [])]));
+        ...(part.stopped.length && !seedBlocksRestart ? [{ command: `${cmd} up --root ${shellWord(stack.root)}`, description: "Or restart this stack's stopped members from its recorded inputs" }] : [])]));
   } else if (r.selected.resolved && r.selected.spaceStreams.state === "absent") {
     // Up creates the streams again only while the stack's other members are stopped.
     const stack = r.selected.spaceStreams.stack;
@@ -2230,17 +2246,17 @@ function nextActions(r: StatusResult): Section {
       const absent = spaceStreamsAbsent(r.selected.space, r.selected.spaceStreams.root ?? undefined, stack ?? undefined);
       extra.push(`${absent.message}; ${absent.remedy}`);
     }
-  } else if (!storeBlocked && own && r.selected.resolved && r.store?.state !== "full" && (memberGone || !elsewhere && r.selected.connection !== "ok" && r.selected.connection !== "reachable")) {
+  } else if (!storeBlocked && !seedBlocksRestart && own && r.selected.resolved && r.store?.state !== "full" && (memberGone || !elsewhere && r.selected.connection !== "ok" && r.selected.connection !== "reachable")) {
     // `up` neither adopts nor replaces a service outside the stack that runs one of this root's
     // records, so each is stopped first, with the stop `up` names.
     const held = r.folder.heldServices ?? [], space = r.selected.space;
     items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
       { command: `${cmd} up --root ${shellWord(r.selected.root)}${r.folder.noManager ? " --no-manager" : ""}`, description: held.length ? "Then restart this stack's stopped members from its recorded inputs" : "Restart this stack's stopped members from its recorded inputs" });
-  } else if (!storeBlocked && exited.length) {
+  } else if (!storeBlocked && !seedBlocksRestart && exited.length) {
     const broker = exited.includes("nats"), manager = exited.includes("manager");
     const notes = [...(broker ? ["up reopens the recorded store"] : []), ...(manager ? ["pass --runtime again if the manager ran on one"] : [])];
     items.unshift({ command: `${cmd} up`, description: `Restart this folder's ${broker && manager ? "broker and manager" : broker ? "broker" : "manager"}, which exited; ${notes.join("; ")}` });
-  } else if (!storeBlocked && local && r.selected.resolved && r.selected.connection === "unreachable" && (r.folder.processes ?? []).every((row) => row.state === "stopped" || row.state === "not-recorded")) {
+  } else if (!storeBlocked && !seedBlocksRestart && local && r.selected.resolved && r.selected.connection === "unreachable" && (r.folder.processes ?? []).every((row) => row.state === "stopped" || row.state === "not-recorded")) {
     // A clean down leaves every member stopped with no pidfile. Spawn and ps need the stack, so the
     // bare `up` that starts it again on its recorded address and store comes first.
     items.unshift({ command: `${cmd} up`, description: "Start this folder's stopped stack again; pass --runtime again if the manager ran on one" });

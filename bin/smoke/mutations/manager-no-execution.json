@@ -111,7 +111,7 @@
     },
     {
       "name": "own inherited goal terminal settle is skipped",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/goal-writer.ts",
       "find": "    if (remaining <= 0) { await settle(); return; }",
       "replace": "    if (remaining <= 0) { return; }",
       "expectRed": "noexec recovery reports actual inherited acceptance uncertain, never fabricated success",
