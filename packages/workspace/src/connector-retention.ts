@@ -7,6 +7,7 @@ import { acquireLock, processStartToken } from "./advisory-lock.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 import { assertExtensionPrefixIdle, claimExtensionMutationLock } from "./extension-mutation.js";
 import { claimUpdateClosureAccess } from "./update-closure.js";
+import { readUpdateRecovery } from "./updates.js";
 import { readMeshRegistry } from "./mesh-registry.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { MANAGER_PIDFILE, localProcessPathCandidates, recordedLocalProcessPaths } from "./local-process.js";
@@ -116,10 +117,14 @@ function pruneConnectorSets(id: { entry: string; version: string; path: string }
     }
     const sets = dirname(id.path);
     ownedAncestors(sets);
+    // The reconcile child can borrow the update lock before final execution verification.
+    // Keep the set that contains the parent's rollback snapshot until the journal is cleared.
+    const snapshot = readUpdateRecovery()?.snapshot;
+    const rollbackConfig = snapshot && dirname(resolve(snapshot));
     for (const name of readdirSync(sets)) {
       if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(name)) continue;
       const path = join(sets, name);
-      if (path === id.path || keep.has(name)) continue;
+      if (path === id.path || keep.has(name) || resolve(path, "cotal") === rollbackConfig) continue;
       try { ownedAncestors(path); if (setHasHolders(path)) continue; rmSync(path, { recursive: true, force: true }); }
       catch { console.error(`connector set cleanup: could not remove ${name}; the update remains selected`); }
     }
