@@ -1,0 +1,129 @@
+---
+title: "Use an ACP client"
+description: "Spawn and drive Cotal agents from T3 Code, Zed and other Agent Client Protocol clients."
+kind: Guide
+audience: "operators"
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+An [Agent Client Protocol](https://agentclientprotocol.com) (ACP) client can spawn and drive Cotal agents.
+T3 Code, Zed, JetBrains IDEs and Neovim are ACP clients.
+In the client, each thread is one Cotal agent. Its first prompt spawns the agent through your space's manager, in the thread's folder.
+The agent belongs to the manager, so it keeps running on the mesh when the client closes.
+
+## Install the extension [#install]
+
+The `cotal acp` command comes from the optional `@cotal-ai/acp` extension.
+Add it on the machine where the client runs its agents:
+
+```bash
+cotal ext add @cotal-ai/acp
+```
+
+The agent needs a [running mesh](run-a-mesh.mdx) with a manager.
+It finds the space the way other commands do, from the folder the client starts it in.
+A client may start it anywhere, so pin the space with `--space`.
+
+## Add Cotal to the client [#add-to-a-client]
+
+Register `cotal` as a local ACP agent command, with `acp --space <name>` as its arguments.
+
+In T3 Code, add a provider instance with a local ACP command.
+The provider settings page writes it to T3's `settings.json`:
+
+```json
+{
+  "providerInstances": {
+    "cotal": {
+      "driver": "acpRegistry",
+      "enabled": true,
+      "config": { "source": "local", "commandPath": "cotal", "commandArgs": ["acp", "--space", "<name>"] }
+    }
+  }
+}
+```
+
+In Zed, add it under `agent_servers` in your settings:
+
+```json
+{
+  "agent_servers": {
+    "Cotal": { "command": "cotal", "args": ["acp", "--space", "<name>"] }
+  }
+}
+```
+
+To work in two spaces, add two instances, one per space.
+
+## How threads map to agents [#threads]
+
+| In the client | On the mesh |
+| --- | --- |
+| A new thread | Nothing yet. A thread that is opened and dropped leaves no agent. |
+| The thread's first prompt | Spawns an agent in the thread's folder, with that prompt as its first task. The thread's id is the agent's name. |
+| Listing sessions | The managed agents in that folder, including ones you spawned elsewhere. |
+| Importing a session | Shows what the agent's event channel still holds, then follows it live. |
+| Deleting a session | Hides that agent run from the list. The agent keeps running. |
+
+A turn shows the agent's messages, its reasoning when the application publishes it, and its tool calls by name and status.
+Tool arguments and results stay off the ordinary event channel, so the client does not show them.
+
+## Choose the agent [#options]
+
+A new thread offers these options next to the model list. They apply when the first prompt spawns the agent.
+
+| Option | What it sets |
+| --- | --- |
+| Model | The application and model, as `<application>/<model>`. `<application>/default` leaves the model to the application. A model id the list does not show is passed to the manager as given. |
+| Reasoning | The model's variant, when the model has more than one. |
+| Persona | A persona from the manager's catalog. |
+| Channel | One channel the new agent joins. |
+| Machine | Which manager spawns the agent, when more than one is live. The default is the manager on this machine. |
+
+Only applications that publish an event plane are offered, because the thread is built from it.
+Hermes and OpenCode 2.x publish none (see [Connectors](connectors.mdx)).
+A select that would hold 64 or more choices is not offered.
+
+## Slash commands [#slash-commands]
+
+| Command | What it does |
+| --- | --- |
+| `/despawn` | Stops the thread's agent. The thread stays, and its next prompt spawns a new agent. |
+| `/roster` | Lists who is on the mesh and what each is doing. |
+| `/channels` | Lists the space's channels. |
+
+## Sign in [#sign-in]
+
+When the space needs a sign-in, a client that can run a terminal offers **Sign in to Cotal**.
+It runs `cotal acp --auth`, which signs in to a space that authenticates users with `cotal login`.
+When this machine records no space at all, it runs `cotal setup` instead.
+
+## Limits [#limits]
+
+- Stopping a turn from the client does not interrupt the agent yet. The turn keeps running.
+- Only a thread's first prompt reaches its agent. A later prompt is refused until it can be tied to the turn it starts.
+- Work an agent does between your prompts, such as answering a peer, does not show live in T3 Code.
+- An agent on another machine's manager shows its conversation and tool calls, but T3 Code shows no diffs or checkpoints for it.
+- A rollback in T3 Code starts a fresh session, which spawns a new agent.
+- Pi agents publish text as completed messages, so their replies arrive whole.
+- Questions an agent stops to ask, such as tool permissions, are not forwarded to the client yet.
+- The client's own MCP servers are not passed to the agent.
+
+## cotal acp [#acp]
+
+```
+cotal acp [--space <name>] [--server <url>]
+cotal acp --auth [--space <name>]
+```
+
+Serves the ACP agent on standard input and output. Standard output carries the protocol only.
+Logs go to standard error.
+
+| Flag | Meaning |
+| --- | --- |
+| `--space <name>` | The space the agent works in. |
+| `--server <url>` | The broker address, when the space's record does not give it. |
+| `--auth` | Sign in to the space, or set one up, then exit. |
+
+Deleted sessions are kept as agent runs in `acp/hidden.json` under the Cotal home.
