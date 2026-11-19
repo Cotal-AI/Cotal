@@ -153,14 +153,16 @@ try {
   delete seedEnv.COTAL_SKIP_CONNECTOR_SEED;
   const setupConfig = join(sandbox, "setup-config"), controlConfig = join(sandbox, "setup-control-config");
   for (const dir of [setupConfig, controlConfig]) mkdirSync(dir, { mode: 0o700 });
+  // Each setup reconciles every bundled connector serially.
+  const seedTimeout = 300_000;
   if (setupCommand) {
     // Skills-only setup crosses the same automatic seed boundary without starting a space or app.
-    const seeded = spawnSync("/bin/sh", ["-c", `${setupCommand} --skills`], { cwd: outside, env: { ...seedEnv, XDG_CONFIG_HOME: setupConfig }, encoding: "utf8", timeout: 120_000 });
+    const seeded = spawnSync("/bin/sh", ["-c", `${setupCommand} --skills`], { cwd: outside, env: { ...seedEnv, XDG_CONFIG_HOME: setupConfig }, encoding: "utf8", timeout: seedTimeout });
     const receipt = { code: seeded.status, output: seeded.stdout + seeded.stderr };
     writeFileSync(join(sandbox, "setup-from-hint.json"), JSON.stringify(receipt, null, 2));
     suite.check("printed setup prefix can seed with npm absent from the parent PATH", seeded.status === 0 && completedSetupSeed(setupConfig), receipt);
   }
-  const control = spawnSync(launcher, ["setup", "--skills"], { cwd: outside, env: { ...seedEnv, XDG_CONFIG_HOME: controlConfig }, encoding: "utf8", timeout: 120_000 });
+  const control = spawnSync(launcher, ["setup", "--skills"], { cwd: outside, env: { ...seedEnv, XDG_CONFIG_HOME: controlConfig }, encoding: "utf8", timeout: seedTimeout });
   const controlReceipt = { code: control.status, output: control.stdout + control.stderr };
   writeFileSync(join(sandbox, "setup-launcher-control.json"), JSON.stringify(controlReceipt, null, 2));
   suite.check("fresh launcher control completes the same setup seed", control.status === 0 && completedSetupSeed(controlConfig), controlReceipt);
