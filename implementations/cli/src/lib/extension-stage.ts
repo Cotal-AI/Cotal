@@ -14,6 +14,18 @@ interface Promotion {
   readonly oldIdentity?: { readonly dev: string; readonly ino: string; readonly birth: number };
 }
 const journalPath = (): string => join(connectorConfigDir(), ".extensions-promotion.json");
+
+/** Report a journal's presence without reading or acting on the paths it records. */
+export function extensionPromotionProblem(): string | undefined {
+  try {
+    const path = journalPath();
+    if (lstatSync(path, { throwIfNoEntry: false })) return `an extension promotion is pending at ${path}`;
+  } catch (error) {
+    return `could not check for a pending extension promotion: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  return undefined;
+}
+
 function save(record: Promotion): void {
   const path = journalPath(), temp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   writeFileSync(temp, JSON.stringify(record), { flag: "wx", mode: 0o600 });

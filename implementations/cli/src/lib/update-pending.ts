@@ -6,10 +6,12 @@ export type UpdatePending =
   | { readonly kind: "none" }
   | { readonly kind: "receipt"; readonly recovery: UpdateRecovery; readonly instruction: string }
   | { readonly kind: "version-mismatch"; readonly extensions: readonly { readonly package: string; readonly version: string }[]; readonly instruction: string }
-  | { readonly kind: "unreadable"; readonly source: "receipt" | "manifest"; readonly error: string; readonly instruction: string };
+  | { readonly kind: "unreadable"; readonly source: "receipt" | "manifest" | "promotion"; readonly error: string; readonly instruction: string };
+
+export const extensionPromotionRemedy = "resolve the extension promotion journal before retrying";
 
 /** Read pending update evidence from metadata only, without seeding or checking package contents. */
-export function readUpdatePending(current: string): UpdatePending {
+export function readUpdatePending(current: string, promotionProblem?: string): UpdatePending {
   let recovery: UpdateRecovery | undefined;
   try {
     recovery = readUpdateRecovery();
@@ -17,6 +19,7 @@ export function readUpdatePending(current: string): UpdatePending {
     return { kind: "unreadable", source: "receipt", error: error instanceof Error ? error.message : String(error), instruction: repair };
   }
   if (recovery) return { kind: "receipt", recovery, instruction: `Reconciliation pending: ${recoveryDisposition(recovery).instruction}` };
+  if (promotionProblem !== undefined) return { kind: "unreadable", source: "promotion", error: promotionProblem, instruction: extensionPromotionRemedy };
   try {
     const extensions = loadExtensionsManifest().extensions
       .filter(entry => entry.pkg.startsWith("@cotal-ai/") && entry.version !== current)

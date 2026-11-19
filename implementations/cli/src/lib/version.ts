@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { logicalExecutionEntry, extensionProvides, loadExtensionsManifest } from "@cotal-ai/workspace";
+import { logicalExecutionEntry, loadExtensionsManifest } from "@cotal-ai/workspace";
 import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
 
@@ -46,25 +46,21 @@ export interface ExtensionVersion {
   pkg: string;
 }
 
-/** Read pinned versions from the manifest without importing or seeding extensions. */
-export function extensionVersions(): ExtensionVersion[] {
-  return loadExtensionsManifest().extensions.map((e, index) => {
-    if (!e || typeof e.pkg !== "string" || !e.pkg || typeof e.version !== "string" || !e.version) {
-      throw new Error(`invalid extension version entry at index ${index}`);
-    }
-    return {
-      label: [...new Set(extensionProvides(e).map((ref) => ref.name))].join(", ") || e.pkg,
-      version: e.version,
-      pkg: e.pkg,
-    };
-  });
-}
-
-/** {@link extensionVersions}, with the reason when the manifest could not be read, so a structured
- *  report can say its list is incomplete rather than empty. */
+/** Read pinned versions without importing or seeding extensions, and report unreadable inventory. */
 export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string } {
   try {
-    return { versions: extensionVersions() };
+    const versions = loadExtensionsManifest().extensions.map((e, index) => {
+      if (!e || typeof e.pkg !== "string" || !e.pkg || typeof e.version !== "string" || !e.version) {
+        throw new Error(`invalid extension version entry at index ${index}`);
+      }
+      // Older command-only records use their command names as labels.
+      const refs = e.provides === undefined ? e.commands : e.provides;
+      if (!Array.isArray(refs) || refs.some(ref => typeof ref?.name !== "string" || !ref.name)) {
+        throw new Error(`invalid extension version entry at index ${index}: expected named provides or commands`);
+      }
+      return { label: [...new Set(refs.map(ref => ref.name))].join(", ") || e.pkg, version: e.version, pkg: e.pkg };
+    });
+    return { versions };
   } catch (e) {
     return { versions: [], unreadable: e instanceof Error ? e.message : String(e) };
   }

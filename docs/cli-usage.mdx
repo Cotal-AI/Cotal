@@ -232,9 +232,11 @@ one JSON document on stdout. Most commands have one, among them `cotal status`, 
 {"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","extensions":[{"package":"@cotal-ai/web","version":"<version>"}]},"warnings":[]}
 ```
 
-If the extension manifest cannot be read, `cotal version --json` still reports the running CLI
-version. The report is partial, includes an `EXTENSIONS_UNREADABLE` warning, and exits 4. The read
-does not repair the corrupt manifest.
+If the extension manifest cannot be read or an extension promotion is pending, `cotal version --json`
+still reports the running CLI version. The report is partial, includes an `EXTENSIONS_UNREADABLE`
+warning, and exits 4. The command leaves the manifest and any promotion journal unchanged.
+When the plain version command cannot list recorded extension versions after startup, it keeps
+the CLI version on stdout and warns on stderr.
 
 | Field | Meaning |
 |---|---|

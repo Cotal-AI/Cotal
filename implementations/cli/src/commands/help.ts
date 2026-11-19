@@ -2,11 +2,13 @@ import { findCommand, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { cachedUpdateSummary, jsonFlag, paintFor, writeResult } from "@cotal-ai/workspace";
 import { commandSurface } from "../ext-loader.js";
 import { printCommandList, printHelpPath } from "../help.js";
+import { extensionPromotionProblem } from "../lib/extension-stage.js";
 import { unknownCommandMessage } from "../lib/nearest-word.js";
 import { findServicePreset, servicePresetCommand } from "../lib/service-presets.js";
-import { cliVersion, extensionVersions, readExtensionVersions } from "../lib/version.js";
+import { cliVersion, readExtensionVersions } from "../lib/version.js";
 import { managerServiceCommand } from "./manager-service.js";
-import { readUpdatePending } from "../lib/update-pending.js";
+import { extensionPromotionRemedy, readUpdatePending } from "../lib/update-pending.js";
+import { c, stderrLine } from "../ui.js";
 
 /** `--all`, the older way to ask for every command, which help now always lists. It is accepted and
  *  changes nothing, and neither help nor completion offers it. */
@@ -34,34 +36,35 @@ export const versionFlags = [jsonFlag] as const;
  *  extension's, read from disk. Plain text, since a version line is routinely machine-read, or one
  *  envelope with no target, since it reads only local metadata. */
 export async function version(args: ParsedArgs): Promise<void> {
+  const current = cliVersion();
   if ((args.values as FlagValues<typeof versionFlags>).json) {
-    const { versions, unreadable } = readExtensionVersions();
-    // An unreadable manifest leaves the extension list unread, so the read is partial rather than an
-    // empty complete list.
+    const promotion = extensionPromotionProblem();
+    const { versions, unreadable } = promotion === undefined ? readExtensionVersions() : { versions: [], unreadable: promotion };
     writeResult(
       "json",
       {
         command: "version",
         target: null,
-        result: { version: cliVersion(), update: cachedUpdateSummary(cliVersion()), reconciliation: readUpdatePending(cliVersion()), extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
+        result: { version: current, update: cachedUpdateSummary(current), reconciliation: readUpdatePending(current, promotion), extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
         ...(unreadable === undefined
           ? {}
           : {
               completeness: "partial",
-              warnings: [{ code: "EXTENSIONS_UNREADABLE", target: null, message: `the extensions manifest could not be read: ${unreadable}` }],
-              partial: { message: "the installed extensions could not be listed", remedy: "repair the manifest with `cotal ext seed --repair`" },
+              warnings: [{ code: "EXTENSIONS_UNREADABLE", target: null, message: promotion ?? `the extensions manifest could not be read: ${unreadable}` }],
+              partial: { message: "the installed extensions could not be listed", remedy: promotion === undefined ? "repair the manifest with `cotal ext seed --repair`" : extensionPromotionRemedy },
             }),
       },
       () => ({ sections: [] }),
     );
     return;
   }
-  const exts = extensionVersions();
+  const { versions: exts, unreadable } = readExtensionVersions();
+  if (unreadable !== undefined) stderrLine("! ", `the extensions manifest could not be read: ${unreadable}`, c.yellow);
   // The human form adds an update line only when there is something to act on. The JSON form
   // always carries the state.
-  const update = cachedUpdateSummary(cliVersion());
-  const pending = readUpdatePending(cliVersion());
-  const lines = [`cotal-ai ${cliVersion()}`, ...(pending.kind === "none" ? [] : [`  ${pending.instruction}`]), ...(update === "update status unknown" || update === "up to date" ? [] : [`  ${update}`])];
+  const update = cachedUpdateSummary(current);
+  const pending = readUpdatePending(current);
+  const lines = [`cotal-ai ${current}`, ...(pending.kind === "none" ? [] : [`  ${pending.instruction}`]), ...(update === "update status unknown" || update === "up to date" ? [] : [`  ${update}`])];
   if (exts.length) {
     const pad = Math.max(...exts.map((e) => e.label.length));
     for (const e of exts) lines.push(`  ${e.label.padEnd(pad)}  ${e.version}`);

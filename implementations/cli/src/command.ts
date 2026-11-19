@@ -613,14 +613,15 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (argv[0] === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
   if (argv[0] === "--version" || argv[0] === "-V") argv = ["version", ...argv.slice(1)];
   else if (argv[0] === "--help" || argv[0] === "-h") argv = ["help", ...argv.slice(1)];
-  // These built-in reads report an unreadable inventory themselves and do not use extension
-  // commands. Update check also skips the ordinary recovery of a pending installation promotion.
+  // These built-in reads report an unreadable inventory themselves. They neither recover an
+  // installation nor need the extension command overlay before dispatch.
   const builtin = findCommand(registry.all<Command>("command"), argv[0]);
   const versionJson = builtin?.name === "version" && !asksForHelp(argv.slice(1)) && asksForJson(builtin, argv.slice(1));
   const updateCheck = builtin?.name === "update" && argv.includes("--check") && !asksForHelp(argv.slice(1))
     && parseOrExit(builtin, ownWords(builtin, argv.slice(1), leadingGlobals)).values.check === true;
+  const useExtensionOverlay = opts.extensions && !versionJson && !updateCheck;
   const configFolder = globalConfigDirProblem();
-  if (opts.extensions && !updateCheck) {
+  if (useExtensionOverlay) {
     try {
       recoverExtensionPromotion();
       if (await extSeedGate(registry, argv, configFolder, leadingGlobals)) return;
@@ -632,7 +633,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const surface = (): Command[] => {
     let commands: Command[];
     try {
-      commands = opts.extensions && !versionJson && !updateCheck ? overlayExtensions(registry) : registry.all<Command>("command");
+      commands = useExtensionOverlay ? overlayExtensions(registry) : registry.all<Command>("command");
     } catch (e) {
       // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
       // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
