@@ -23,6 +23,10 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const prefix = join(root, 'prefix'), home = join(root, 'home');
   const marker = join(prefix, 'lib/node_modules/.cotal-update-child');
   const ready = join(root, 'reconcile.pid');
+  function readMarker() {
+    try { return JSON.parse(readFileSync(marker, 'utf8')); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
   for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   for (const version of [previous, target]) {
     writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
@@ -190,10 +194,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       const deadline = Date.now() + 30000;
       let record;
       while (Date.now() < deadline && updater.exitCode === null) {
-        if (existsSync(marker)) {
-          record = JSON.parse(readFileSync(marker, 'utf8'));
-          if (record.phase === 'live' && record.operation === 'global install') break;
-        }
+        record = readMarker();
+        if (record?.phase === 'live' && record.operation === 'global install') break;
         await new Promise(done => setTimeout(done, 5));
       }
       assert.equal(record?.phase, 'live', 'the actual updater published its install child');
@@ -220,7 +222,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       const deadline = Date.now() + 90000;
       let record;
       while (Date.now() < deadline && updater.exitCode === null && updater.signalCode === null) {
-        const row = existsSync(marker) ? JSON.parse(readFileSync(marker, 'utf8')) : undefined;
+        const row = readMarker();
         if (row?.owner === updater.pid && (pending
           ? row.phase === 'pending' && /^State:\s*T/m.test(readFileSync(`/proc/${updater.pid}/status`, 'utf8'))
           : row.phase === 'live' && row.operation === 'global reconcile' && existsSync(ready) && +readFileSync(ready, 'utf8') === row.pid)) {
