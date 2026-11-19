@@ -344,7 +344,9 @@ Already-issued identities keep their lifecycle record even if a later response c
 Retiring a request that is still pending drops it, and no identity is issued for it. An identity
 issued before connection approval keeps working, and its recovery stays exact. Another plugin server reuses that identity only after the process that held it no longer exists.
 `cotal_disconnect`, session end and a signal request retirement of that lifecycle only. Other
-conversations stay connected. When the mesh reports retirement pending or does not confirm it, the
+conversations stay connected. A disconnect waits at most 3 seconds for the conversation's event
+plane to finish publishing, then stops the connection. Events it did not publish stay in the
+transcript. When the mesh reports retirement pending or does not confirm it, the
 conversation stays disconnected and keeps its saved record. Every tool then reports the same
 unfinished cleanup with the mesh's retirement phase. Calling `cotal_disconnect` again retries it at
 once. `cotal_connect` retries it too, and connects with a new identity once the mesh confirms

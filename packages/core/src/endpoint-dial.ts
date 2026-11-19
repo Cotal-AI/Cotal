@@ -11,6 +11,7 @@ import {
   ConnectionError,
 } from "@nats-io/transport-node";
 import { wsconnect } from "@nats-io/nats-core";
+import { dialWebSocket } from "./websocket-dial.js";
 import { type PushConsumer } from "@nats-io/jetstream";
 import { type KV } from "@nats-io/kv";
 import { nativeCredsAuthenticator } from "./creds-authenticator.js";
@@ -197,7 +198,9 @@ export function defaultProbeTimeoutMs(servers: string): number {
  *  `wss://host/path`), everything else through the TCP transport. The websocket dial OWNS its
  *  transport options: a required TLS connection refuses any `ws://` target before dialing.
  *  `wss://` performs TLS itself, and the w3c transport refuses a `tls` block outright
- *  ("'tls' is not configurable"), so the block is removed after that check.
+ *  ("'tls' is not configurable"), so the block is removed after that check. Every websocket it
+ *  opens is a {@link dialWebSocket} socket, which names a failed dial and bounds a close the peer
+ *  never answers.
  *  A TCP dial that requires TLS to one IP address names that address as the host its certificate
  *  must cover (see {@link withDialedTlsHost}). */
 export function dialerFor(servers: string): typeof connect {
@@ -207,7 +210,7 @@ export function dialerFor(servers: string): typeof connect {
     const targets = Array.isArray(rest.servers) ? rest.servers : String(rest.servers ?? servers).split(",");
     if (tls && targets.some((target) => !/^wss:\/\//i.test(String(target).trim())))
       return Promise.reject(new Error("TLS-required WebSocket connections must use wss:// for every server"));
-    return (wsconnect as unknown as typeof connect)(rest as Parameters<typeof connect>[0]);
+    return (wsconnect as unknown as typeof connect)({ ...rest, wsFactory: dialWebSocket } as Parameters<typeof connect>[0]);
   }) as typeof connect;
 }
 
