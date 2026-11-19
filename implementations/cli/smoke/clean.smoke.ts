@@ -424,10 +424,12 @@ try {
   } finally { process.chdir(namedCwd); }
   check("store, all and restore-attempt with --space, --server or --creds each refuse USAGE_INVALID before any read",
     refusals.length === 7 && refusals.every((r) => r.code === "USAGE_INVALID" && /the mesh for clean history only; clean [a-z-]+ acts on the root of the folder it runs in, so nothing was removed$/.test(r.message ?? "")), refusals);
-  check("the refusal names its flag and tells the operator to keep the rest of the original command",
-    refusals[3]?.message?.startsWith("--server picks ") === true && refusals[3].remedy === "rerun the original command from the project folder you want to clean, removing only --server and its value", refusals[3]);
-  check("the refusal names every supplied mesh flag without replacing the command or dropping its options",
-    refusals[6]?.message?.startsWith("--server, --creds pick ") === true && refusals[6].remedy === "rerun the original command from the project folder you want to clean, removing only --server, --creds and their values", refusals[6]);
+  check("the refusal names both spellings of the space selector",
+    refusals[0]?.remedy === "if you ran this from the project you intend to clean, rerun from the same directory, removing only --space (-s) and its value", refusals[0]);
+  check("the refusal tells the operator to keep the directory and remove only the refused server flag and value",
+    refusals[3]?.message?.startsWith("--server picks ") === true && refusals[3].remedy === "if you ran this from the project you intend to clean, rerun from the same directory, removing only --server and its value", refusals[3]);
+  check("the refusal names every refused mesh flag and keeps the directory and other options",
+    refusals[6]?.message?.startsWith("--server, --creds pick ") === true && refusals[6].remedy === "if you ran this from the project you intend to clean, rerun from the same directory, removing only --server, --creds and their values", refusals[6]);
   check("...and the store and the space identity stay", existsSync(join(namedRoot, ".cotal", "nats", "jetstream", "stream.dat")) && existsSync(join(namedRoot, ".cotal", "auth", "auth.json")));
   rmSync(namedRoot, { recursive: true, force: true });
 

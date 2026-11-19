@@ -34,6 +34,7 @@ import {
   SYSTEM_CREDS_FILES,
   spaceRootTarget,
   targetErrorSpace,
+  targetFlags,
   workspaceErrorParts,
   workspaceSecretStore,
   type LocalProcess,
@@ -107,9 +108,14 @@ export async function clean(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "USAGE_INVALID", `--dry-run previews clean store and clean all only, not clean ${target}`);
   // --space, --server and --creds pick the running mesh that `history` purges. Every other target acts
   // on the root of the folder it runs in, which no flag selects, so they are refused there before any read.
-  const meshFlags = (["space", "server", "creds"] as const).filter((flag) => values[flag] !== undefined).map((flag) => `--${flag}`);
-  if (meshFlags.length && target !== "history")
-    throw new CommandFailure("refused", "USAGE_INVALID", `${meshFlags.join(", ")} ${meshFlags.length === 1 ? "picks" : "pick"} the mesh for clean history only; clean ${target} acts on the root of the folder it runs in, so nothing was removed`, { remedy: `rerun the original command from the project folder you want to clean, removing only ${meshFlags.join(", ")} and ${meshFlags.length === 1 ? "its value" : "their values"}` });
+  const meshFlags = targetFlags.filter(({ name }) => values[name] !== undefined)
+    .map((flag) => `--${flag.name}${"short" in flag ? ` (-${flag.short})` : ""}`);
+  if (meshFlags.length && target !== "history") {
+    const flags = meshFlags.join(", ");
+    throw new CommandFailure("refused", "USAGE_INVALID", `${flags} ${meshFlags.length === 1 ? "picks" : "pick"} the mesh for clean history only; clean ${target} acts on the root of the folder it runs in, so nothing was removed`, {
+      remedy: `if you ran this from the project you intend to clean, rerun from the same directory, removing only ${flags} and ${meshFlags.length === 1 ? "its value" : "their values"}`,
+    });
+  }
   if (!values.force && !dryRun) {
     // The command to run keeps every flag that picks what is deleted; without one it deletes another
     // target than the one asked for. The restore verbs act on one attempt, named as given or as a placeholder.
