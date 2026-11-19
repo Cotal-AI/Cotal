@@ -649,6 +649,11 @@ A `SessionStart` during an open turn, including compaction, preserves the curren
 | `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). `StopFailure` also relays Claude Code's native error value as `condition.source` and maps it to the closed condition vocabulary. On the [event plane](#event-plane) it closes the run with `RUN_ERROR`. |
 | `SessionEnd` | `offline` (graceful leave) |
 
+An interrupt, such as Escape in the session, fires no hook. Claude Code writes it to the transcript
+instead, so while a turn is open the connector watches the transcript for that record. The record
+ends the turn: presence returns to `idle` within about a second, and any `approval` or `input`
+condition clears.
+
 The connector also leaves gracefully when its stdin closes. An MCP client closes it to end the
 session, and a killed `claude` closes it with no `SessionEnd`, so a dead session drops off the
 roster instead of staying on it as a live peer.
@@ -750,9 +755,13 @@ Claude starts each hook in its own process, so a prompt or stop relay can reach 
 `SessionStart` relay. The connector holds those event flushes and the terminal until `SessionStart`
 supplies the source, then enqueues adopt, flush, and close in that order.
 
-`SessionStart` can also run before the connector process has bound its local control socket. The hook
-the `SessionStart` relay retries only transient pre-connect listener errors and a socket directory
-that does not exist yet, with capped backoff inside its existing two-second budget. Later hooks and permanent local faults still fail open
+`SessionStart` can also run before the connector process has bound its local control socket. Claude
+fires it at launch before the session's MCP servers are available, and on a busy host the connector
+can bind several seconds later. The `SessionStart` relay retries only transient pre-connect listener
+errors and a socket directory that does not exist yet, with capped backoff. At launch (`startup`,
+`resume` or `fork`) it keeps dialing for up to 30 seconds, the time Claude gives an MCP server to
+connect, and Claude holds the first prompt until it returns. A `SessionStart` from a clear or a
+compaction keeps the two-second budget. Later hooks and permanent local faults still fail open
 immediately. Once a socket has connected, a broken exchange is not retried: the connector may
 already have handled the frame, so replaying it could apply one lifecycle event twice.
 That retained `SessionStart` can itself arrive before Claude creates the transcript path. A genuinely
@@ -886,7 +895,8 @@ reported nor its error kind is published there: both are upstream values that ca
 tool output, and the events channel has a different read ACL. The error kind still reaches presence
 as the agent's condition (`rate_limit`, `auth`, `billing` and the rest). A turn that ended normally still
 ends with a run-finished event carrying no outcome, which says the turn ended and does not claim it
-succeeded.
+succeeded. A turn you interrupt ends with a run-finished event whose outcome is `interrupt`, read
+from the interrupt record Claude Code writes to the transcript.
 
 Events are written to a per-session write-ahead log before they are published, so a hook that fires
 after a restart resumes at the cursor it left rather than replaying or skipping, and a run that was

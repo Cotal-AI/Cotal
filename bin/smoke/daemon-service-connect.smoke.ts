@@ -106,7 +106,7 @@ import {
   deleteIdpSession, deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadIdpSession, loadOwnerSecret, saveIdpSession,
   saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
-import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
+import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, meshFile, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -181,7 +181,7 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--resume-only") && !/^(C1 |C2 |C15 |C6b )/.test(title)) return;
   if (cancelOnly && !/^(C1 |C2 |C15 |C6c |C10 )/.test(title)) return;
   if (setupHintsOnly && !["C1 ", "C2 ", "C17 "].some((prefix) => title.startsWith(prefix))) return;
-  if (process.argv.includes("--setup-session-only") && !title.startsWith("H2")) return;
+  if ((process.argv.includes("--setup-session-only") || process.argv.includes("--static-setup-only")) && !title.startsWith("H2")) return;
   if (process.argv.includes("--credential-expiry-only") && !/^C(1|2|7|10|15|18) /.test(title)) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
@@ -1765,7 +1765,7 @@ try {
       }
     });
 
-    await cell("H2 shipped setup recovers rejected cached sessions without relogin on outages", async () => {
+    await cell("H2 shipped setup checks local spaces and recovers rejected cached sessions", async () => {
       seedUnitReceipt();
       await d.close();
       const sessionSpace = spaces[4]!;
@@ -1796,6 +1796,61 @@ try {
       const otherIdp = `http://127.0.0.1:${(otherProvider.address() as AddressInfo).port}/api/auth`;
       recoverOnApproval = true;
       try {
+        const localSpace = "local-static";
+        const localRecord = meshFile(localSpace);
+        const legacyRecord = join(dirname(localRecord), `${localSpace}.json`);
+        const localState = join(home, "daemon", spaceSegment(localSpace));
+        const refusal = join(localState, "manager-refusal.json");
+        const localGuidance = (text: unknown) => /cotal up/.test(String(text)) && !/cotal daemon (setup|register)|cotal manager start/.test(String(text));
+        recordMesh({ space: localSpace, server: "nats://127.0.0.1:1", root, mode: "auth", ts: new Date().toISOString() });
+        try {
+          const setup = await cli("setup", "--space", localSpace);
+          check("H2 static setup refuses at the connection check without writing per-space state", setup.code === 2
+            && setup.doc.error?.code === "UNSUPPORTED" && setup.doc.error?.cause?.code === "NOT_USER_AUTH"
+            && localGuidance(setup.doc.error?.remedy) && !/turning on the space|starting the agent host/.test(setup.err)
+            && !existsSync(localState), setup);
+          const service = await cli("service-status", "--space", localSpace);
+          check("H2 static service-status recommends the local stack rather than registration", service.code === 2
+            && service.doc.error?.code === "UNSUPPORTED" && localGuidance(service.doc.error?.remedy), service.doc);
+          const registration = await cli("register", "--space", localSpace);
+          check("H2 static register preserves NOT_USER_AUTH and gives local guidance", registration.code === 2
+            && registration.doc.error?.cause?.code === "NOT_USER_AUTH" && localGuidance(registration.doc.error?.remedy), registration.doc);
+
+          await killAndAwaitExit(child, "SIGTERM");
+          child = await start();
+          const restarted = await cli("status", "--space", localSpace);
+          check("H2 restarting the daemon does not reveal a static setup refusal", restarted.code === 0 && !existsSync(localState), restarted.doc);
+
+          // Earlier versions persisted this refusal. Disconnect still has to clear it.
+          const seedRefusal = () => {
+            mkdirSync(localState, { recursive: true, mode: 0o700 });
+            writeFileSync(refusal, JSON.stringify({ space: localSpace, state: "refused", restarts: 0,
+              reason: "hosted Managers require a registered user-auth participant space",
+              next: "use `cotal manager start` from the folder that hosts the space" }), { mode: 0o600 });
+          };
+          renameSync(localRecord, legacyRecord);
+          seedRefusal();
+          const legacyStatus = await cli("service-status", "--space", localSpace);
+          const disconnected = await cli("service-disconnect", "--space", localSpace);
+          check("H2 legacy static registrations keep local guidance and disconnect clears the old refusal", legacyStatus.code === 2
+            && legacyStatus.doc.error?.code === "UNSUPPORTED" && localGuidance(legacyStatus.doc.error?.remedy)
+            && disconnected.code === 0 && localGuidance(disconnected.doc.result?.manager?.next) && !existsSync(refusal),
+          { status: legacyStatus.doc, disconnect: disconnected.doc });
+
+          seedRefusal();
+          writeFileSync(localRecord, "{", { mode: 0o600 });
+          const damaged = await cli("service-status", "--space", localSpace);
+          const overall = await cli("status");
+          const cleared = await cli("service-disconnect", "--space", localSpace);
+          check("H2 a damaged registration neither breaks daemon-wide status nor blocks cleanup", damaged.code === 2
+            && damaged.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && overall.code === 0
+            && cleared.code === 0 && !existsSync(refusal) && !/cotal daemon setup/.test(String(cleared.doc.result?.manager?.next)),
+          { status: damaged.doc, disconnect: cleared.doc });
+        } finally {
+          rmSync(localRecord, { force: true });
+          rmSync(legacyRecord, { force: true });
+        }
+        if (process.argv.includes("--static-setup-only")) return;
         deleteIdpSession(home, idpUrl);
         const mismatchBefore = deviceCodeRequests, postsBefore = posts(sessionSpace);
         for (const serviceOnly of [true, false]) {

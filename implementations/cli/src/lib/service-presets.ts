@@ -46,8 +46,8 @@ export function resolveServicePreset(name: string): ServicePreset {
   return row.preset;
 }
 
-function optionProperties(preset: ServicePreset) {
-  const adapter = resolveServiceAdapter(preset.adapter, {}, false);
+function optionProperties(preset: ServicePreset, registeredOnly = false) {
+  const adapter = resolveServiceAdapter(preset.adapter, {}, false, undefined, registeredOnly);
   return { adapter, properties: adapter.declaration.optionsSchema.properties as Record<string, Record<string, unknown>>, required: new Set((adapter.declaration.optionsSchema.required ?? []) as string[]) };
 }
 
@@ -72,8 +72,8 @@ function placeholder(kind: string | undefined, type: unknown): string {
 
 /** One source for parsing, help, completion and option collection. Complex options use bounded
  *  JSON strings; scalar fields are parsed according to their declared type, without coercion. */
-export function servicePresetFlags(preset: ServicePreset): FlagSpec[] {
-  const { adapter, properties, required } = optionProperties(preset);
+export function servicePresetFlags(preset: ServicePreset, registeredOnly = false): FlagSpec[] {
+  const { adapter, properties, required } = optionProperties(preset, registeredOnly);
   const flags: FlagSpec[] = [], names = new Set(Object.keys(properties).map(presetFlagName));
   if (names.size !== Object.keys(properties).length) throw new CommandFailure("refused", "UNSUPPORTED", "the preset option names cannot be represented without shadowing CLI flags; use a validated --file definition instead");
   for (const [option, schema] of Object.entries(properties)) {

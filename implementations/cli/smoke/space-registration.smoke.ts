@@ -72,7 +72,7 @@ const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 await import("../src/lib/broker-service.js");
 const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
-const { stackJournalPath, writeStackJournal } = await import("../src/lib/stack-journal.js");
+const { readStackJournal, stackJournalPath, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
@@ -1394,8 +1394,8 @@ if (process.platform === "linux") {
   const repairedPs = await json(["ps", "--space", "demo"], fresh);
   check("repairing the seed restores ordinary restart advice", refused(repairedPs, 2, "TARGET_UNAVAILABLE") && repairedPs.env?.error?.remedy === `start it again with \`cotal up\` in ${fresh}`, shown(repairedPs));
   unlinkSync(defaultSeed);
-  // The stopped stack keeps its recorded address and broker inputs. Another --server, or a --host it
-  // did not record, refuses before anything is written, naming the recorded value and the bare up
+  // The stopped stack keeps its recorded address and effective broker inputs. A different --server
+  // or --host refuses before anything is written, naming the recorded value and the bare up
   // that starts the stack there.
   const recordedRoot = realpathSync(fresh), journalBefore = readFileSync(stackJournalPath(fresh), "utf8");
   const moved = await json(["up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
@@ -1412,11 +1412,22 @@ if (process.platform === "linux") {
       refused(held, 2, "CONFLICT") && new RegExp(`a recorded stack is not moved to another address, and another process holds that address 127\\.0\\.0\\.1:${port}, where process ${process.pid} \\(\\S+\\) of this account listens$`).test(held.env?.error?.message ?? "") &&
         held.env?.error?.remedy === `stop the process listening on 127.0.0.1:${port}, then run bare \`cotal up\` from ${recordedRoot}; no command moves a stack that ran to another address, so it starts only at ${server}`, shown(held));
   } finally { await new Promise<void>((done) => occupier.close(() => done())); }
-  const bound = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.1", "--server", server], fresh);
-  check("up --host naming an unrecorded bind host is CONFLICT, exit 2, naming it, its recorded value and bare cotal up",
-    refused(bound, 2, "CONFLICT") && (bound.env?.error?.message ?? "").includes("--host 127.0.0.1 (recorded: none)") &&
+  // Omit --server to use the recorded address and reach the recorded-input comparison.
+  const bound = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.2"], fresh);
+  check("up --host naming a different bind is CONFLICT, exit 2, naming both hosts and bare cotal up, and prepares nothing",
+    refused(bound, 2, "CONFLICT") && (bound.env?.error?.message ?? "").includes("--host 127.0.0.2 (recorded: 127.0.0.1)") &&
+      (bound.env?.error?.message ?? "").includes("nothing was prepared") &&
       (bound.env?.error?.remedy ?? "").includes(`run bare \`cotal up\` from ${recordedRoot}`), shown(bound));
   check("none of these refusals changed the stack journal", readFileSync(stackJournalPath(fresh), "utf8") === journalBefore);
+  const brokerBefore = readStackJournal(fresh)?.journal.broker;
+  const sameBind = await json(["up", "--no-manager", "--server", server, "--host", "127.0.0.1"], fresh);
+  const brokerAfter = readStackJournal(fresh)?.journal.broker;
+  check("up --host naming the implicit loopback bind starts the stack and leaves the journal's broker inputs unchanged, with host omitted",
+    sameBind.status === 0 && sameBind.env?.outcome === "ok" && sameBind.env.result.server === server &&
+      brokerBefore !== undefined && brokerBefore.host === undefined && JSON.stringify(brokerAfter) === JSON.stringify(brokerBefore),
+    { up: shown(sameBind), brokerBefore, brokerAfter });
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
+  check("down stops the stack restarted with its implicit loopback bind", (await json(["down", "--yes"], fresh)).status === 0);
   // With no space selected, a start selects its own space and its JSON says so. The selection stays
   // through the space's down.
   clearCurrent();

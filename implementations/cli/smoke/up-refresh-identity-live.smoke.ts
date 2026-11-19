@@ -43,7 +43,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 15 + 2 + 15 + (process.platform === "linux" ? 9 + 12 : 0); // Includes suspended legacy broker and wildcard bind checks on Linux.
+const EXPECTED_CHECKS = 29 + 12 + 13 + 5 + 15 + 2 + 15 + (process.platform === "linux" ? 9 + 12 : 0); // Includes suspended legacy broker and wildcard bind checks on Linux.
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -209,7 +209,15 @@ async function namedSpaceElsewhere(): Promise<void> {
         r.status === 2 && envelope.outcome === "refused" && envelope.error?.code === "CONFLICT" && envelope.error.message === refusal && envelope.target?.root === fixture.root, `${r.stdout}${r.stderr}`);
     }
     check("none of those refusals wrote anything in the folder it ran from", !existsSync(join(other, ".cotal")), join(other, ".cotal"));
+    const created = cotal(fixture, ["persona", "create", "editcheck", "--prompt", "Original body.", "--subscribe", "", "--space", "home-space"]);
+    check("a local persona is saved before stopping the named space", created.status === 0, `${created.stdout}${created.stderr}`);
     started = !(await stop(fixture));
+    const personas = cotal(fixture, ["persona", "--space", "home-space", "--plain"]);
+    const shown = cotal(fixture, ["persona", "show", "editcheck", "--space", "home-space", "--plain"]);
+    check("the stopped named space lists and shows the local persona", !started && personas.status === 0 && /\beditcheck\b/.test(personas.stdout) && shown.status === 0 && shown.stdout.includes("Original body."), [personas, shown]);
+    const unknown = cotal(fixture, ["persona", "--space", "unknown-space", "--plain"]);
+    const outside = spawnSync(TSX, [CLI, "persona", "--space", "home-space", "--plain"], { cwd: other, env: fixture.env, encoding: "utf8", timeout: 120_000 });
+    check("another name or a folder outside the stopped project cannot read its catalog", [unknown, outside].every(r => r.status === 2 && /TARGET_NOT_FOUND/.test(r.stderr)), [unknown, { stdout: outside.stdout, stderr: outside.stderr }]);
   } finally {
     if (started) await stop(fixture);
     rmSync(fixture.home, { recursive: true, force: true });

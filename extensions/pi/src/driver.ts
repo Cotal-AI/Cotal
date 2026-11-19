@@ -248,6 +248,10 @@ export class PiDriver {
 
   onAgentEnd(messages: readonly unknown[], context: PiContextLike): void {
     if (this._state === "shuttingDown") return;
+    // Pi builds a new context for every event. The idle publish below waits on the context it is
+    // handed and stands down once a later event replaced `this.context`, so the end's own context
+    // must be the current one, or a turn ending without a Cotal batch never published idle.
+    this.context = context;
     this.running = false;
     const lastAssistant = [...messages]
       .reverse()

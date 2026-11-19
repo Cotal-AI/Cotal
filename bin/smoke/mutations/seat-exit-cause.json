@@ -66,7 +66,7 @@
     },
     {
       "name": "the line drops WHICH PATH, keeping only the runtime detail",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-stop.ts",
       "find": "- ${causeText}; ${detail}`,",
       "replace": "- ${detail}`,",
       "expectRed": "\u2026and says the manager did NOT stop it",
@@ -75,7 +75,7 @@
     },
     {
       "name": "the line drops the RUNTIME DETAIL, keeping only the path",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-stop.ts",
       "find": "- ${causeText}; ${detail}`,",
       "replace": "- ${causeText}`,",
       "expectRed": "the runtime's exit code is reported",
@@ -84,7 +84,7 @@
     },
     {
       "name": "an absent exitInfo is defaulted to a clean exit (the fabricated code 0)",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-stop.ts",
       "find": "      detail = info === undefined\n        ? `exit detail unavailable from runtime \"${a.handle.kind}\"`\n        : `exit code ${info.code ?? \"unknown\"}${info.signal === undefined ? \"\" : `, signal ${info.signal}`}${info.diagnostic ? `; diagnostic: ${info.diagnostic}` : \"\"}`;",
       "replace": "      const seen = info ?? { code: 0 };\n      detail = `exit code ${seen.code ?? \"unknown\"}${seen.signal === undefined ? \"\" : `, signal ${seen.signal}`}${seen.diagnostic ? `; diagnostic: ${seen.diagnostic}` : \"\"}`;",
       "expectRed": "a runtime that cannot see the exit says UNAVAILABLE, never a fabricated code 0",

@@ -24,7 +24,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import net from "node:net";
 import { join, resolve as resolvePath } from "node:path";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -115,6 +115,36 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
   }
   let asked = open ? 2097152 : SERVICE_CALLER_PAYLOAD_FLOOR;
   const flags = mode === "open-controller" ? ["--open"] : ["--no-manager", ...(open ? ["--open"] : [])];
+
+  if (open) {
+    const args = ["--no-manager", "--space", space, "--server", server];
+    let stopped = false;
+    try {
+      const started = await run(["up", "--open", ...args]);
+      ok("open broker starts with no payload override", started.status === 0 && await servedMaxPayload(port) === 1048576, started.out);
+      const reuse = await run(["up", ...args, "--max-payload", "1048576"]);
+      ok("explicit default payload reuses the running broker", reuse.status === 0 && /already running/.test(reuse.out), reuse.out);
+      ok("reusing the default does not record an override", !existsSync(join(root, ".cotal", "broker-policy.json")));
+      const change = await run(["up", ...args, "--max-payload", String(asked)]);
+      ok("a real change is refused and its retry keeps the broker manager-free",
+        change.status !== 0 && change.out.includes(`cotal up --no-manager --max-payload ${asked}`) && await servedMaxPayload(port) === 1048576, change.out);
+      const down = await run(["down", "--yes"]);
+      stopped = down.status === 0;
+      ok("the default broker stops", down.status === 0, down.out);
+      if (mode === "open-controller") {
+        stopped = false;
+        const widen = await run(["up", ...args, "--host", "0.0.0.0"]);
+        ok("a stopped stack refuses a wider bind", widen.status === 2 && widen.out.includes("--host 0.0.0.0 (recorded: 127.0.0.1)") && await servedMaxPayload(port) === undefined, widen.out);
+        const restart = await run(["up", ...args, "--host", "127.0.0.1"]);
+        ok("a stopped stack restarts on its explicit loopback bind", restart.status === 0 && restart.out.includes("Controller stack started") && await servedMaxPayload(port) === 1048576, restart.out);
+      }
+    } finally {
+      if (!stopped) {
+        const clean = await run(["down", "--yes"]);
+        ok("the default broker is down before testing an override", clean.status === 0, clean.out);
+      }
+    }
+  }
 
   console.log(`1) cotal up --max-payload ${asked}`);
   const first = await run(["up", "--detach", ...flags, "--space", space, "--server", server, "--max-payload", String(asked), ...(mode === "open-controller" ? ["--json"] : [])]);

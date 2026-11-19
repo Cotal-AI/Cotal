@@ -825,13 +825,15 @@ const OLDER_FORMAT_NO_RUNS = "This backup was made before full backups held work
 
 /** The step that moves a full restore attempt on from `state`, for a refusal to name. A committed or
  *  degraded attempt goes forward through bare `up`, which continues it. `leftOut` is what the restore
- *  left only in its previous store ({@link restoreLeftOut}). */
-export function restoreNextStep(state: string, attemptId: string, leftOut?: string): string {
+ *  left only in its previous store ({@link restoreLeftOut}). `cleanupRoot` is the project to enter
+ *  when an active restore was started from another root. */
+export function restoreNextStep(state: string, attemptId: string, leftOut?: string, cleanupRoot?: string): string {
   if (state === "restore-ready") return `roll the pre-commit attempt back with \`cotal backup recover ${attemptId} --yes\`; preview it first with --dry-run`;
-  // That restore's cleanup also deletes the store that holds the only copy of what it left out, so
-  // it runs only with --discard-history.
-  if (state === "active" && leftOut) return `the restore completed: \`cotal backup cleanup-fallback ${attemptId} --yes --discard-history\` retires its journal and deletes the previous store, the only copy of the ${leftOut} it left out; preview it first with --dry-run`;
-  if (state === "active") return `the restore completed: retire its journal with \`cotal backup cleanup-fallback ${attemptId} --yes\`; preview it first with --dry-run`;
+  if (state === "active") {
+    const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}cotal backup cleanup-fallback ${attemptId} --yes${leftOut ? " --discard-history" : ""}`);
+    if (leftOut) return `the restore completed: ${cleanup} retires its journal and deletes the previous store, the only copy of the ${leftOut} it left out; preview it first with --dry-run`;
+    return `the restore completed: retire its journal with ${cleanup}; preview it first with --dry-run`;
+  }
   return `recover forward with bare \`cotal up\` from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
 }
 
@@ -914,10 +916,11 @@ export function rolledBackNotes(rolledBack: ReturnType<typeof restoreRolledBackR
  *  that what was written after the artifact is not restored. One whose replaced store also held
  *  another account's streams says those are not restored. The store it set aside holds the only
  *  copy, which cleanup-fallback deletes only with `--discard-history`. */
-export function leftOutNotes(attemptId: string, selection: string, onlyCopy: ReturnType<typeof restoreOnlyCopy>): string[] {
+export function leftOutNotes(attemptId: string, selection: string, onlyCopy: ReturnType<typeof restoreOnlyCopy>, cleanupRoot?: string): string[] {
   if (!onlyCopy) return [];
   const accounts = onlyCopy.otherAccounts;
-  const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" && !accounts.length ? "them" : `the ${onlyCopy.leftOut}`}. \`cotal backup cleanup-fallback ${attemptId}\` deletes it only with --discard-history.` : undefined;
+  const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}cotal backup cleanup-fallback ${attemptId}`);
+  const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" && !accounts.length ? "them" : `the ${onlyCopy.leftOut}`}. ${cleanup} deletes it only with --discard-history.` : undefined;
   const other = accounts.length ? [`The store this restore replaced also held streams of ${accounts.length === 1 ? "account" : "accounts"} ${accounts.join(", ")}, which this backup does not hold, so they are not restored.`] : [];
   if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...other, ...(kept ? [kept] : [])];
   return ["A registry-only restore brings back channel settings only, so chat and DM history and workflow runs start empty.", ...other, kept ?? "No previous store was retained."];

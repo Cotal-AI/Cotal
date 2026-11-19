@@ -1,5 +1,9 @@
 # @cotal-ai/herdr
 
+## 0.171.2
+
+No changes in this release.
+
 ## 0.171.1
 
 No changes in this release.
