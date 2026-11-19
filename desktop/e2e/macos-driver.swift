@@ -6,7 +6,6 @@ import ApplicationServices
 var windowSelectionContext: [String: Any]?
 var loginDiagnosticContext: [String: Any]?
 let loginDiagnosticInvocation = UUID().uuidString
-let loginInvocationStartedUnixMs = Int64(Date().timeIntervalSince1970 * 1000)
 func loginReceipt(_ phase: String, _ fields: [String: Any] = [:]) {
     var record = fields
     record["phase"] = phase
@@ -242,12 +241,14 @@ func press(_ element: AXUIElement) {
             _ = receiptPolicy("check", loginCursor, String(firstLoginPost))
         } else {
             guard let context = ProcessInfo.processInfo.environment["COTAL_DESKTOP_E2E_CONTEXT"] else { fail("missing native context") }
-            loginCursor = receiptPolicy("baseline", context, String(pid), String(loginInvocationStartedUnixMs))
+            guard let settingsStartedUnixMs = Int64(arg(0)), settingsStartedUnixMs > 0,
+                  settingsStartedUnixMs <= Int64(Date().timeIntervalSince1970 * 1000) else { fail("missing valid native Settings timestamp") }
+            loginCursor = receiptPolicy("baseline", context, String(pid), String(settingsStartedUnixMs))
             if let data = loginCursor.data(using: .utf8),
                let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 loginReceipt("baseline-wait", [
                     "pid": pid,
-                    "invocationStartedUnixMs": loginInvocationStartedUnixMs,
+                    "settingsStartedUnixMs": settingsStartedUnixMs,
                     "receiptUnixMs": parsed["at"] ?? 0,
                     "waitMs": parsed["waitMs"] ?? 0
                 ])
@@ -518,8 +519,9 @@ case "settings", "quit":
     press(unique(extras))
     Thread.sleep(forTimeInterval: 0.2)
     let item = unique(nodes(bars[0]).filter { string($0, "AXRole") == "AXMenuItem" && string($0, "AXTitle") == (operation == "settings" ? "Settings…" : "Quit app (computer stays connected)") })
+    let menuActionStartedUnixMs = Int64(Date().timeIntervalSince1970 * 1000)
     guard AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else { fail("native menu action failed") }
-    output(["pid": pid, "visible": windowVisible()])
+    output(["pid": pid, "visible": windowVisible(), "menuActionStartedUnixMs": menuActionStartedUnixMs])
 case "screenshot":
     let window = appWindow()
     guard let rect = bounds(window) else { fail("selected window has no capture bounds") }

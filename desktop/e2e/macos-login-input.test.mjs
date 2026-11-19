@@ -61,7 +61,7 @@ test('requires a post-time fresh poll and rejects ambiguous time', t => {
   assert.throws(() => redelivery(f.cursor, f.cursor.at, f.now));
   assert.throws(() => redelivery(f.cursor, f.post, f.now - 1));
 });
-test('baseline requires a fresh same PID successful unchanged poll after invocation start', t => {
+test('baseline requires a fresh same PID successful unchanged poll after the supplied boundary', t => {
   const f = fixture(t);
   const context = join(f.path, '..', 'context.json');
   const now = Date.now();
@@ -73,6 +73,19 @@ test('baseline requires a fresh same PID successful unchanged poll after invocat
   const cursor = baseline(context, 42, now - 1000, 0);
   assert.equal(cursor.at, now - 500);
   assert.equal(typeof cursor.waitMs, 'number');
+});
+test('a Settings refresh before the disable-login helper starts is fresh for that Settings action', t => {
+  const f = fixture(t);
+  const context = join(f.path, '..', 'context.json');
+  const now = Date.now();
+  const settingsAction = now - 500;
+  const refreshed = now - 450;
+  const disableHelperStart = now - 200;
+  writeFileSync(f.path, row(settingsAction - 1) + row(refreshed));
+  assert.throws(() => baseline(context, 42, disableHelperStart, 0), /no fresh owned baseline poll/);
+  assert.equal(baseline(context, 42, settingsAction, 0).at, refreshed);
+  writeFileSync(f.path, row(settingsAction - 1));
+  assert.throws(() => baseline(context, 42, settingsAction, 0), /no fresh owned baseline poll/);
 });
 test('unreadable by policy and symlink files are refused', t => {
   const f = fixture(t);
@@ -100,6 +113,11 @@ test('native source keeps initial unchecked as no-input and gates second deliver
   assert.match(swift, /frontmostPID/);
   assert.match(swift, /focusReceipt\("at-post"/);
   assert.match(swift, /receiptPolicy\("baseline", context/);
+  assert.match(swift, /let menuActionStartedUnixMs = [^\n]+\n    guard AXUIElementPerformAction\(item/);
+  assert.match(swift, /receiptPolicy\("baseline", context, String\(pid\), String\(settingsStartedUnixMs\)\)/);
+  const wrapper = readFileSync(new URL('./macos-driver.ts', import.meta.url), 'utf8');
+  assert.match(wrapper, /const settings = this\.settingsAction;\s+this\.settingsAction = undefined;\s+assert\.ok\(settings\?\.pid === pid/);
+  assert.match(wrapper, /this\.settingsAction = \{ pid, at \}/);
   assert.match(swift, /receiptPolicy\("check", loginCursor[\s\S]*loginCheckboxState\(\).value == 1[\s\S]*receiptPolicy\("check"/);
   assert.equal((swift.match(/loginDelivery = "redelivery-1"/g) ?? []).length, 1);
   assert.ok(swift.indexOf('let finalState = loginCheckboxState()') > swift.indexOf('loginCursor = receiptPolicy("baseline"'));

@@ -14,6 +14,7 @@ export class MacOSDriver {
   private child?: ChildProcess;
   private launchError?: Error;
   private launchEnv: NodeJS.ProcessEnv;
+  private settingsAction?: { pid: number; at: number };
   session?: string;
   constructor(readonly env: NodeJS.ProcessEnv = process.env) { this.launchEnv = env; }
   private alive(): number {
@@ -59,6 +60,7 @@ export class MacOSDriver {
     // Launch the bundle executable directly so ownership never depends on pgrep or a shared bundle ID.
     const binary = application.endsWith(".app") ? join(application, "Contents/MacOS/cotal-desktop") : application;
     this.launchError = undefined;
+    this.settingsAction = undefined;
     this.launchEnv = env;
     this.child = spawn(resolve(binary), args, { env, cwd, stdio: "ignore" });
     this.child.once("error", error => { this.launchError = error; });
@@ -87,14 +89,29 @@ export class MacOSDriver {
     await writeFile(resolve(path), `${JSON.stringify(tree, null, 2)}\n`, "utf8");
   }
   async native(action: "describe" | "close-window" | "settings" | "quit" | "login-entry" | "settings-back" | "disable-login"): Promise<{ pid: number; visible: boolean; path?: string; args?: string[]; source?: string; title?: string; label?: string }> {
-    const result = await this.command<{ pid: number; visible: boolean; path?: string; args?: string[]; source?: string; title?: string; label?: string }>(action);
+    const pid = this.alive();
+    const args: string[] = [];
+    if (action === "disable-login") {
+      const settings = this.settingsAction;
+      this.settingsAction = undefined;
+      assert.ok(settings?.pid === pid, "disable-login requires a fresh native Settings action on the owned app");
+      args.push(String(settings.at));
+    } else if (action !== "describe" && action !== "login-entry") {
+      this.settingsAction = undefined;
+    }
+    const result = await this.command<{ pid: number; visible: boolean; path?: string; args?: string[]; source?: string; title?: string; label?: string; menuActionStartedUnixMs?: number }>(action, ...args);
+    if (action === "settings") {
+      const at = result.menuActionStartedUnixMs;
+      assert.ok(result.pid === pid && typeof at === "number" && Number.isSafeInteger(at) && at > 0 && at <= Date.now(), "native Settings must report an owned action timestamp");
+      this.settingsAction = { pid, at };
+    }
     if (action === "quit") {
       await until("owned macOS app quits", async () => this.child!.exitCode !== null || this.child!.signalCode !== null, Boolean, 15_000);
     }
     return result;
   }
   async closeWindow(): Promise<void> { await this.native("close-window"); }
-  async openSettings(): Promise<void> { await this.command("settings"); }
+  async openSettings(): Promise<void> { await this.native("settings"); }
   /** Does not activate or show the application, suitable after open(..., ["--background"]). */
   async windowVisible(): Promise<boolean> { return this.command("window-visible"); }
   async quit(): Promise<void> {
